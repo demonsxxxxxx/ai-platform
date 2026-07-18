@@ -617,18 +617,14 @@ async def get_scoped_context_file(
         join runs source_run on source_run.id = files.run_id and source_run.tenant_id = files.tenant_id
         join runs current_run on current_run.id = %s and current_run.tenant_id = files.tenant_id
         join sessions on sessions.id = current_run.session_id and sessions.tenant_id = current_run.tenant_id
-        join lateral (
-          select included_file_ids
-          from run_context_snapshots
-          where tenant_id = current_run.tenant_id
-            and workspace_id = current_run.workspace_id
-            and user_id = current_run.user_id
-            and session_id = current_run.session_id
-            and run_id = current_run.id
-            and context_kind = 'executor'
-          order by created_at desc, id desc
-          limit 1
-        ) context_snapshot on true
+        join run_context_snapshots context_snapshot
+          on context_snapshot.id = current_run.input_json->>'context_snapshot_id'
+          and context_snapshot.tenant_id = current_run.tenant_id
+          and context_snapshot.workspace_id = current_run.workspace_id
+          and context_snapshot.user_id = current_run.user_id
+          and context_snapshot.session_id = current_run.session_id
+          and context_snapshot.run_id = current_run.id
+          and context_snapshot.context_kind = 'executor'
         where files.tenant_id = %s
           and current_run.workspace_id = %s
           and current_run.user_id = %s
@@ -9995,6 +9991,50 @@ async def get_run_file(
         (tenant_id, file_id, run_id),
     )
     return await cursor.fetchone()
+
+
+async def list_authorized_session_input_files(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """Return files authorized by each source run's persisted immutable snapshot ID."""
+
+    cursor = await conn.execute(
+        """
+        select files.id, files.run_id, files.original_name, files.content_type,
+               files.size_bytes, files.created_at
+        from files
+        join sessions on sessions.id = files.session_id
+          and sessions.tenant_id = files.tenant_id
+          and sessions.workspace_id = files.workspace_id
+          and sessions.user_id = files.user_id
+        join runs on runs.id = files.run_id
+          and runs.tenant_id = files.tenant_id
+          and runs.workspace_id = files.workspace_id
+          and runs.user_id = files.user_id
+          and runs.session_id = files.session_id
+        join run_context_snapshots authorized_snapshot
+          on authorized_snapshot.id = runs.input_json->>'context_snapshot_id'
+          and authorized_snapshot.tenant_id = files.tenant_id
+          and authorized_snapshot.workspace_id = files.workspace_id
+          and authorized_snapshot.user_id = files.user_id
+          and authorized_snapshot.session_id = files.session_id
+          and authorized_snapshot.run_id = files.run_id
+          and authorized_snapshot.context_kind = 'executor'
+          and authorized_snapshot.included_file_ids ? files.id
+        where files.tenant_id = %s
+          and files.workspace_id = %s
+          and files.user_id = %s
+          and files.session_id = %s
+        order by files.created_at asc, files.id asc
+        """,
+        (tenant_id, workspace_id, user_id, session_id),
+    )
+    return list(await cursor.fetchall())
 
 
 async def mark_run_running(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:

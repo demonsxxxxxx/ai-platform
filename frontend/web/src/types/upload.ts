@@ -12,6 +12,8 @@ export interface MessageAttachment {
   mimeType: string;
   size: number;
   url?: string;
+  /** Independently authorized download URL when it differs from preview. */
+  downloadUrl?: string;
   /** Upload progress (0-100) */
   uploadProgress?: number;
   /** Whether upload is in progress */

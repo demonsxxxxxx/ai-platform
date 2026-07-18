@@ -55,12 +55,10 @@ function isAllowedArtifactFilePath(pathname: string): boolean {
     return true;
   }
 
-  if (!pathname.startsWith("/api/ai/artifacts/")) {
-    return false;
-  }
-
   const segments = pathname.split("/").filter(Boolean);
-  if (segments.length < 5) {
+  const isPlatformArtifact = pathname.startsWith("/api/ai/artifacts/");
+  const isPlatformInputFile = pathname.startsWith("/api/ai/files/");
+  if ((!isPlatformArtifact && !isPlatformInputFile) || segments.length !== 5) {
     return false;
   }
   const action = segments[segments.length - 1];

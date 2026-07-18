@@ -90,8 +90,15 @@ import { clearSidebarHistory } from "../../chat/ChatMessage/items/sidebarHistory
 import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import { isFileLink } from "../../documents/utils";
 import { sessionApi } from "../../../services/api";
+import type { SessionInputFile } from "../../../services/api";
 import { buildFileLinkPreviewRequest } from "../../chat/ChatMessage/items/fileLinkPreview";
 import type { ModelOption } from "../../../services/api/modelPublic";
+import { openAttachmentPreview } from "../../chat/attachmentPreviewStore";
+import { downloadPreviewUrl } from "../../documents/documentPreviewSources";
+import {
+  mergeProjectedSessionFiles,
+  sessionInputFileToAttachment,
+} from "./sessionInputFiles";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
 
@@ -215,6 +222,10 @@ export function ChatView({
   const navigate = useNavigate();
   const { user } = useAuth();
   const [composerDraft, setComposerDraft] = useState("");
+  const [sessionFiles, setSessionFiles] = useState<SessionInputFile[]>([]);
+  const [sessionFilesStatus, setSessionFilesStatus] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
   const sessionRunning = isSessionRunning(messages, isLoading);
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
@@ -284,6 +295,39 @@ export function ChatView({
       return nextKey === previousKey ? previousKey : nextKey;
     });
   }, [messages.length, sessionId]);
+
+  useEffect(() => {
+    let current = true;
+    if (!sessionId) {
+      setSessionFiles([]);
+      setSessionFilesStatus("ready");
+      return () => {
+        current = false;
+      };
+    }
+    setSessionFiles([]);
+    setSessionFilesStatus("loading");
+    void sessionApi
+      .getInputFiles(sessionId)
+      .then((projection) => {
+        if (!current || projection.session_id !== sessionId) return;
+        setSessionFiles(projection.files);
+        setSessionFilesStatus("ready");
+      })
+      .catch(() => {
+        if (!current) return;
+        setSessionFiles([]);
+        setSessionFilesStatus("error");
+      });
+    return () => {
+      current = false;
+    };
+  }, [sessionId, currentRunId, messages.length, attachments.length]);
+
+  const displayMessages = useMemo(
+    () => mergeProjectedSessionFiles(messages, sessionFiles),
+    [messages, sessionFiles],
+  );
 
   const activeOutlineId = useMemo(() => {
     const rangeActiveId = getOutlineActiveAnchorIdForRange(
@@ -528,6 +572,34 @@ export function ChatView({
     [navigate, sessionId, t],
   );
 
+  const handleOpenSessionFile = useCallback(
+    (file: SessionInputFile) => {
+      if (!file.preview_url) {
+        void downloadPreviewUrl({
+          url: file.download_url,
+          fileName: file.name,
+        }).catch(() =>
+          toast.error(t("documents.failedToDownload", "Download failed")),
+        );
+        return;
+      }
+      openAttachmentPreview(sessionInputFileToAttachment(file), "session-files");
+    },
+    [t],
+  );
+
+  const handleDownloadSessionFile = useCallback(
+    (file: SessionInputFile) => {
+      void downloadPreviewUrl({
+        url: file.download_url,
+        fileName: file.name,
+      }).catch(() =>
+        toast.error(t("documents.failedToDownload", "Download failed")),
+      );
+    },
+    [t],
+  );
+
   const handleVirtuosoRangeChanged = useCallback((range: ListRange) => {
     setVisibleRange((current) =>
       current?.startIndex === range.startIndex &&
@@ -645,7 +717,10 @@ export function ChatView({
       messageCount={messages.length}
       skills={skills}
       tools={tools}
-      attachments={attachments}
+      sessionFiles={sessionFiles}
+      sessionFilesStatus={sessionFilesStatus}
+      onOpenSessionFile={handleOpenSessionFile}
+      onDownloadSessionFile={handleDownloadSessionFile}
       approvals={approvals}
     />
   );
@@ -719,7 +794,7 @@ export function ChatView({
   );
 
   return (
-    <SessionImageGalleryProvider messages={messages}>
+    <SessionImageGalleryProvider messages={displayMessages}>
       <WorkbenchShellComponent
         composer={messages.length > 0 ? composer : undefined}
         rightPanel={rightPanel}
@@ -747,7 +822,7 @@ export function ChatView({
             key={messageListSessionKey}
             ref={virtuosoRef}
             className="dark:divide-stone-800 overflow-x-hidden"
-            data={messages}
+            data={displayMessages}
             computeItemKey={(_, message) => message.id}
             atBottomStateChange={handleVirtuosoAtBottomChange}
             atBottomThreshold={getAtBottomThresholdPx(isMobileViewport)}

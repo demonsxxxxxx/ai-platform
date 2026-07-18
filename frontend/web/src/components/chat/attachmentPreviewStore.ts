@@ -5,7 +5,10 @@ import {
   pushCurrentPanelToHistory,
 } from "./ChatMessage/items/sidebarHistoryStore";
 
-export type AttachmentPreviewSource = "chat-input" | "user-message";
+export type AttachmentPreviewSource =
+  | "chat-input"
+  | "user-message"
+  | "session-files";
 
 export interface AttachmentPreviewState {
   attachment: MessageAttachment;

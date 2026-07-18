@@ -6,6 +6,7 @@ import {
   buildMessageForkUrl,
   buildRunCancelUrl,
   buildSessionListUrl,
+  buildSessionInputFilesUrl,
   buildSessionRunsUrl,
   buildChatSubmissionUrl,
   buildChatSubmissionRetryAdmissionUrl,
@@ -26,6 +27,13 @@ test("builds the default session runs url", () => {
   assert.equal(
     buildSessionRunsUrl("session-1"),
     "/api/sessions/session-1/runs",
+  );
+});
+
+test("builds the authoritative session input-file projection url with opaque session id", () => {
+  assert.equal(
+    buildSessionInputFilesUrl("session/a"),
+    "/api/ai/chat/sessions/session%2Fa/files",
   );
 });
 

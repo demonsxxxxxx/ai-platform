@@ -11,7 +11,11 @@ from app.artifact_preview import artifact_preview_allowed
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
-from app.models import UploadFileResponse
+from app.models import (
+    SessionInputFileResponse,
+    SessionInputFilesResponse,
+    UploadFileResponse,
+)
 from app.repositories import (
     RepositoryNotFoundError,
     append_audit_log,
@@ -21,6 +25,8 @@ from app.repositories import (
     get_admin_artifact,
     get_authorized_artifact,
     get_authorized_session,
+    get_scoped_context_file,
+    list_authorized_session_input_files,
     new_id,
 )
 from app.storage import ObjectStorage
@@ -57,6 +63,28 @@ MAX_ZIP_ENTRY_COUNT = 2000
 MAX_ZIP_SINGLE_ENTRY_BYTES = 32 * 1024 * 1024
 MAX_ZIP_TOTAL_BYTES = 128 * 1024 * 1024
 ACTIVE_SNIFF_BYTES = 4096
+INPUT_FILE_PREVIEW_CONTENT_TYPES = frozenset(
+    {
+        "application/json",
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "image/avif",
+        "image/bmp",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/tiff",
+        "image/webp",
+        "text/csv",
+        "text/markdown",
+        "text/plain",
+    }
+)
+SAFE_RESPONSE_CONTENT_TYPE_PATTERN = re.compile(
+    r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$"
+)
 
 
 def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
@@ -78,6 +106,98 @@ def _require_upload_permissions(principal: AuthPrincipal) -> None:
 
 def _normalized_content_type(value: object) -> str:
     return str(value or "").split(";", 1)[0].strip().lower()
+
+
+def _safe_response_content_type(value: object) -> str:
+    normalized = _normalized_content_type(value)
+    if SAFE_RESPONSE_CONTENT_TYPE_PATTERN.fullmatch(normalized):
+        return normalized
+    return "application/octet-stream"
+
+
+def _input_file_preview_allowed(value: object) -> bool:
+    return _normalized_content_type(value) in INPUT_FILE_PREVIEW_CONTENT_TYPES
+
+
+def _input_file_url(*, file_id: str, session_id: str, run_id: str, action: str) -> str:
+    return (
+        f"/api/ai/files/{quote(file_id, safe='')}/{action}"
+        f"?session_id={quote(session_id, safe='')}&run_id={quote(run_id, safe='')}"
+    )
+
+
+def _input_file_response(
+    *,
+    file_row: dict[str, object],
+    session_id: str,
+) -> SessionInputFileResponse:
+    file_id = str(file_row["id"])
+    run_id = str(file_row["run_id"])
+    content_type = _safe_response_content_type(file_row.get("content_type"))
+    return SessionInputFileResponse(
+        file_id=file_id,
+        run_id=run_id,
+        name=str(file_row.get("original_name") or file_id),
+        mime_type=content_type,
+        size_bytes=max(0, int(file_row.get("size_bytes") or 0)),
+        preview_url=(
+            _input_file_url(
+                file_id=file_id,
+                session_id=session_id,
+                run_id=run_id,
+                action="preview",
+            )
+            if _input_file_preview_allowed(content_type)
+            else None
+        ),
+        download_url=_input_file_url(
+            file_id=file_id,
+            session_id=session_id,
+            run_id=run_id,
+            action="download",
+        ),
+        created_at=file_row.get("created_at"),
+    )
+
+
+async def _authorized_input_file(
+    *,
+    file_id: str,
+    session_id: str,
+    run_id: str,
+    principal: AuthPrincipal,
+) -> dict[str, object]:
+    try:
+        tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
+        session_id = assert_safe_id(session_id, "session_id")
+        run_id = assert_safe_id(run_id, "run_id")
+        file_id = assert_safe_id(file_id, "file_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with transaction() as conn:
+        session = await get_authorized_session(
+            conn,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+            session_id=session_id,
+        )
+        if session is None:
+            raise HTTPException(status_code=404, detail="input_file_not_found")
+        workspace_id = str(session.get("workspace_id") or "")
+        if not workspace_id:
+            raise HTTPException(status_code=404, detail="input_file_not_found")
+        file_row = await get_scoped_context_file(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+            session_id=session_id,
+            run_id=run_id,
+            file_id=file_id,
+        )
+    if file_row is None:
+        raise HTTPException(status_code=404, detail="input_file_not_found")
+    return dict(file_row)
 
 
 async def _read_bounded_upload(file: UploadFile) -> bytes:
@@ -233,6 +353,109 @@ async def upload_file(
         file_id=file_id,
         sha256=stored.sha256,
         size_bytes=stored.size_bytes,
+    )
+
+
+@router.get(
+    "/chat/sessions/{session_id}/files",
+    response_model=SessionInputFilesResponse,
+)
+async def list_session_input_files(
+    session_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> SessionInputFilesResponse:
+    """Project persistent uploaded inputs for one exact owned session."""
+
+    try:
+        tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
+        session_id = assert_safe_id(session_id, "session_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with transaction() as conn:
+        session = await get_authorized_session(
+            conn,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+            session_id=session_id,
+        )
+        if session is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        workspace_id = str(session.get("workspace_id") or "")
+        if not workspace_id:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        rows = await list_authorized_session_input_files(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+            session_id=session_id,
+        )
+    return SessionInputFilesResponse(
+        session_id=session_id,
+        files=[
+            _input_file_response(file_row=dict(row), session_id=session_id)
+            for row in rows
+        ],
+    )
+
+
+@router.get("/files/{file_id}/preview")
+async def preview_input_file(
+    file_id: str,
+    session_id: str,
+    run_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> Response:
+    """Preview a passive input file authorized by one immutable run snapshot."""
+
+    file_row = await _authorized_input_file(
+        file_id=file_id,
+        session_id=session_id,
+        run_id=run_id,
+        principal=principal,
+    )
+    if not _input_file_preview_allowed(file_row.get("content_type")):
+        raise HTTPException(status_code=415, detail="input_file_preview_not_allowed")
+    filename = str(file_row.get("original_name") or file_id)
+    content = ObjectStorage().get_bytes(storage_key=str(file_row["storage_key"]))
+    return Response(
+        content=content,
+        media_type=_safe_response_content_type(file_row.get("content_type")),
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename, safe='')}",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Input-File-Id": file_id,
+        },
+    )
+
+
+@router.get("/files/{file_id}/download")
+async def download_input_file(
+    file_id: str,
+    session_id: str,
+    run_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> Response:
+    """Download an input file authorized by one immutable run snapshot."""
+
+    file_row = await _authorized_input_file(
+        file_id=file_id,
+        session_id=session_id,
+        run_id=run_id,
+        principal=principal,
+    )
+    filename = str(file_row.get("original_name") or file_id)
+    content = ObjectStorage().get_bytes(storage_key=str(file_row["storage_key"]))
+    return Response(
+        content=content,
+        media_type=_safe_response_content_type(file_row.get("content_type")),
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Input-File-Id": file_id,
+        },
     )
 
 
