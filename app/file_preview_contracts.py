@@ -13,7 +13,9 @@ import math
 import multiprocessing
 import os
 from pathlib import Path, PurePosixPath
+import stat
 import tempfile
+import threading
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -31,10 +33,14 @@ from app.file_parser_contracts import (
 FILE_PREVIEW_SCHEMA_VERSION = "ai-platform.file-preview.v1"
 XLSX_PREVIEW_TIMEOUT_SECONDS = 5.0
 XLSX_PREVIEW_MEMORY_LIMIT_BYTES = 192 * 1024 * 1024
+MAX_CONCURRENT_XLSX_PREVIEWS = 2
+_XLSX_STAGING_FILENAME = "preview.xlsx"
+_FORMULA_REDACTED_PLACEHOLDER = "[formula omitted]"
+_PREVIEW_ADMISSION = threading.BoundedSemaphore(MAX_CONCURRENT_XLSX_PREVIEWS)
 _XLSX_PREVIEW_WARNINGS = (
     "styles_not_rendered",
     "charts_not_rendered",
-    "formulas_not_recalculated",
+    "formulas_omitted",
     "external_links_not_resolved",
 )
 
@@ -56,7 +62,7 @@ class XlsxPreviewCell(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     column: int = Field(ge=1)
-    kind: Literal["boolean", "datetime", "formula", "number", "text"]
+    kind: Literal["boolean", "datetime", "number", "text"]
     value: str | int | float | bool
 
 
@@ -126,12 +132,28 @@ class XlsxPreviewResponse(BaseModel):
         return self
 
 
+class XlsxPreviewBusyError(RuntimeError):
+    """Raised when the bounded preview admission limit has been reached."""
+
+
 def is_xlsx_preview_request(*, file_name: object, content_type: object) -> bool:
     """Return whether this exact metadata is eligible for the XLSX DTO path."""
 
     normalized_name = PurePosixPath(str(file_name or "").replace("\\", "/")).name
     normalized_type = str(content_type or "").split(";", 1)[0].strip().casefold()
     return normalized_name.casefold().endswith(".xlsx") and normalized_type == XLSX_CONTENT_TYPE
+
+
+def xlsx_preview_max_bytes(*, file_name: object, content_type: object) -> int:
+    """Resolve the registered byte cap for an eligible XLSX presentation request."""
+
+    spec = parser_spec_for_attachment(file_name=file_name, content_type=content_type)
+    if spec is None or not is_xlsx_preview_request(
+        file_name=file_name,
+        content_type=content_type,
+    ):
+        raise ValueError("xlsx_preview_unsupported")
+    return spec.max_bytes
 
 
 def build_xlsx_preview(
@@ -153,10 +175,7 @@ def build_xlsx_preview(
 
     source_sha256 = hashlib.sha256(raw).hexdigest()
     spec = parser_spec_for_attachment(file_name=file_name, content_type=content_type)
-    if spec is None or not is_xlsx_preview_request(
-        file_name=file_name,
-        content_type=content_type,
-    ):
+    if spec is None or not is_xlsx_preview_request(file_name=file_name, content_type=content_type):
         return _failed_preview(
             source_sha256=source_sha256,
             parser_id=spec.parser_id if spec else "",
@@ -175,8 +194,8 @@ def build_xlsx_preview(
     try:
         requirement = AttachmentParserRequirement(
             file_id=file_id,
-            file_name=PurePosixPath(file_name.replace("\\", "/")).name,
-            extension=Path(file_name).suffix.casefold(),
+            file_name=_XLSX_STAGING_FILENAME,
+            extension=".xlsx",
             content_type=content_type,
             parser_id=spec.parser_id,
             parser_version=spec.parser_version,
@@ -191,11 +210,16 @@ def build_xlsx_preview(
             parser_version=spec.parser_version,
             code="xlsx_preview_unavailable",
         )
-    child_result = _invoke_isolated_xlsx_parser(
-        raw=raw,
-        requirement=requirement.model_dump(mode="json"),
-        timeout_seconds=timeout_seconds,
-    )
+    if not _PREVIEW_ADMISSION.acquire(blocking=False):
+        raise XlsxPreviewBusyError("xlsx_preview_busy")
+    try:
+        child_result = _invoke_isolated_xlsx_parser(
+            raw=raw,
+            requirement=requirement.model_dump(mode="json"),
+            timeout_seconds=timeout_seconds,
+        )
+    finally:
+        _PREVIEW_ADMISSION.release()
     if child_result["status"] != "parsed":
         return _failed_preview(
             source_sha256=source_sha256,
@@ -244,7 +268,6 @@ def _invoke_isolated_xlsx_parser(
         started = True
         send_conn.close()
         if not receive_conn.poll(timeout_seconds):
-            _stop_process(process)
             return {"status": "failed", "code": "xlsx_preview_timeout"}
         try:
             result = receive_conn.recv()
@@ -252,7 +275,6 @@ def _invoke_isolated_xlsx_parser(
             result = {"status": "failed", "code": "xlsx_preview_unavailable"}
         process.join(timeout=0.5)
         if process.is_alive():
-            _stop_process(process)
             return {"status": "failed", "code": "xlsx_preview_unavailable"}
         if not isinstance(result, dict):
             return {"status": "failed", "code": "xlsx_preview_unavailable"}
@@ -262,16 +284,22 @@ def _invoke_isolated_xlsx_parser(
     finally:
         receive_conn.close()
         send_conn.close()
-        if started and process.is_alive():
-            _stop_process(process)
-        elif started:
-            process.join(timeout=0)
+        if started:
+            if process.is_alive():
+                _stop_process(process)
+            else:
+                process.join(timeout=0)
+        try:
+            process.close()
+        except (OSError, ValueError):
+            pass
 
 
 def _stop_process(process: multiprocessing.Process) -> None:
     """Terminate, then kill if needed, so timed-out previews never leak a child."""
 
-    process.terminate()
+    if process.is_alive():
+        process.terminate()
     process.join(timeout=0.5)
     if process.is_alive():
         process.kill()
@@ -290,8 +318,7 @@ def _parse_xlsx_preview_child(
         _apply_child_resource_limits(timeout_seconds)
         requirement = AttachmentParserRequirement.model_validate(requirement_payload)
         with tempfile.TemporaryDirectory(prefix="ai-platform-xlsx-preview-") as directory:
-            staged_path = Path(directory) / requirement.file_name
-            staged_path.write_bytes(raw)
+            staged_path = _stage_xlsx_preview_bytes(Path(directory), raw)
             parsed = parse_xlsx_attachment(path=staged_path, requirement=requirement)
         send_conn.send({"status": "parsed", "parsed": parsed.model_dump(mode="json")})
     except AttachmentPreprocessingError as exc:
@@ -300,6 +327,39 @@ def _parse_xlsx_preview_child(
         send_conn.send({"status": "failed", "code": "xlsx_preview_unavailable"})
     finally:
         send_conn.close()
+
+
+def _stage_xlsx_preview_bytes(directory: Path, raw: bytes) -> Path:
+    """Stage bytes under one fixed private filename without trusting user metadata."""
+
+    root = directory.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("xlsx_preview_staging_invalid")
+    if os.name != "nt":
+        root.chmod(0o700)
+        if stat.S_IMODE(root.stat().st_mode) != 0o700:
+            raise ValueError("xlsx_preview_staging_invalid")
+    staged_path = (root / _XLSX_STAGING_FILENAME).resolve(strict=False)
+    if staged_path.parent != root or staged_path.name != _XLSX_STAGING_FILENAME:
+        raise ValueError("xlsx_preview_staging_invalid")
+    descriptor = os.open(
+        staged_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as staged_file:
+            staged_file.write(raw)
+    except Exception:
+        try:
+            staged_path.unlink(missing_ok=True)
+        finally:
+            raise
+    if os.name != "nt":
+        staged_path.chmod(0o600)
+        if stat.S_IMODE(staged_path.stat().st_mode) != 0o600:
+            raise ValueError("xlsx_preview_staging_invalid")
+    return staged_path
 
 
 def _apply_child_resource_limits(timeout_seconds: float) -> None:
@@ -371,12 +431,7 @@ def _preview_from_parsed_context(parsed: ParsedAttachmentContext) -> XlsxPreview
         )
     try:
         sheets = [
-            XlsxPreviewSheet.model_validate(
-                {
-                    "name": sheet.get("name"),
-                    "rows": sheet.get("rows"),
-                }
-            )
+            _public_preview_sheet(sheet)
             for sheet in raw_sheets
             if isinstance(sheet, dict)
         ]
@@ -402,4 +457,47 @@ def _preview_from_parsed_context(parsed: ParsedAttachmentContext) -> XlsxPreview
         content=content,
         truncated=truncated,
         warnings=list(_XLSX_PREVIEW_WARNINGS),
+    )
+
+
+def _public_preview_sheet(sheet: dict[str, Any]) -> XlsxPreviewSheet:
+    """Drop parser-only fields and redact formulas before they enter the UI DTO."""
+
+    raw_rows = sheet.get("rows")
+    if not isinstance(raw_rows, list):
+        raise ValueError("invalid XLSX sheet payload")
+    rows = [_public_preview_row(row) for row in raw_rows]
+    return XlsxPreviewSheet(name=sheet.get("name"), rows=rows)
+
+
+def _public_preview_row(row: object) -> XlsxPreviewRow:
+    """Map one parser row to public cells without formula expressions."""
+
+    if not isinstance(row, dict):
+        raise ValueError("invalid XLSX row payload")
+    raw_cells = row.get("cells")
+    if not isinstance(raw_cells, list):
+        raise ValueError("invalid XLSX row payload")
+    cells = [_public_preview_cell(cell) for cell in raw_cells]
+    return XlsxPreviewRow(row=row.get("row"), cells=cells)
+
+
+def _public_preview_cell(cell: object) -> XlsxPreviewCell:
+    """Replace formula source with a fixed safe placeholder for presentation."""
+
+    if not isinstance(cell, dict):
+        raise ValueError("invalid XLSX cell payload")
+    kind = cell.get("kind")
+    if kind == "formula":
+        return XlsxPreviewCell(
+            column=cell.get("column"),
+            kind="text",
+            value=_FORMULA_REDACTED_PLACEHOLDER,
+        )
+    return XlsxPreviewCell.model_validate(
+        {
+            "column": cell.get("column"),
+            "kind": kind,
+            "value": cell.get("value"),
+        }
     )

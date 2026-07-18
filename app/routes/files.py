@@ -15,8 +15,10 @@ from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
 from app.file_preview_contracts import (
     XLSX_CONTENT_TYPE,
+    XlsxPreviewBusyError,
     build_xlsx_preview,
     is_xlsx_preview_request,
+    xlsx_preview_max_bytes,
 )
 from app.models import (
     SessionInputFileResponse,
@@ -31,12 +33,13 @@ from app.repositories import (
     ensure_workspace,
     get_admin_artifact,
     get_authorized_artifact,
+    get_authorized_run,
     get_authorized_session,
     get_scoped_context_file,
     list_authorized_session_input_files,
     new_id,
 )
-from app.storage import ObjectStorage
+from app.storage import ObjectStorage, ObjectStorageSizeLimitError
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -135,6 +138,57 @@ def _input_file_preview_allowed(value: object, *, file_name: object = "") -> boo
     if content_type == XLSX_CONTENT_TYPE:
         return is_xlsx_preview_request(file_name=file_name, content_type=content_type)
     return content_type in INPUT_FILE_PREVIEW_CONTENT_TYPES
+
+
+async def _read_bounded_xlsx_preview_bytes(
+    *,
+    storage_key: str,
+    declared_size_bytes: object,
+    max_bytes: int,
+) -> bytes:
+    """Read an authorized XLSX only after both metadata and streamed byte caps pass."""
+
+    declared_size = _optional_nonnegative_int(declared_size_bytes)
+    if declared_size is not None and declared_size > max_bytes:
+        raise HTTPException(status_code=413, detail="xlsx_preview_file_too_large")
+    try:
+        return await asyncio.to_thread(
+            ObjectStorage().get_bytes_bounded,
+            storage_key=storage_key,
+            max_bytes=max_bytes,
+        )
+    except ObjectStorageSizeLimitError as exc:
+        raise HTTPException(status_code=413, detail="xlsx_preview_file_too_large") from exc
+
+
+async def _build_xlsx_preview_response(
+    *,
+    raw: bytes,
+    file_id: str,
+    file_name: str,
+    content_type: str,
+    headers: dict[str, str],
+    expected_sha256: str | None = None,
+    expected_byte_count: int | None = None,
+) -> JSONResponse:
+    """Build one server preview or expose bounded admission pressure as public 503."""
+
+    try:
+        preview = await asyncio.to_thread(
+            build_xlsx_preview,
+            raw=raw,
+            file_id=file_id,
+            file_name=file_name,
+            content_type=content_type,
+            expected_sha256=expected_sha256,
+            expected_byte_count=expected_byte_count,
+        )
+    except XlsxPreviewBusyError as exc:
+        raise HTTPException(status_code=503, detail="xlsx_preview_busy") from exc
+    return JSONResponse(
+        content=preview.model_dump(mode="json"),
+        headers=headers,
+    )
 
 
 def _input_file_url(*, file_id: str, session_id: str, run_id: str, action: str) -> str:
@@ -439,26 +493,31 @@ async def preview_input_file(
         file_name=filename,
     ):
         raise HTTPException(status_code=415, detail="input_file_preview_not_allowed")
-    content = ObjectStorage().get_bytes(storage_key=str(file_row["storage_key"]))
     content_type = _safe_response_content_type(file_row.get("content_type"))
     if is_xlsx_preview_request(file_name=filename, content_type=content_type):
-        preview = await asyncio.to_thread(
-            build_xlsx_preview,
+        max_bytes = xlsx_preview_max_bytes(
+            file_name=filename,
+            content_type=content_type,
+        )
+        content = await _read_bounded_xlsx_preview_bytes(
+            storage_key=str(file_row["storage_key"]),
+            declared_size_bytes=file_row.get("size_bytes"),
+            max_bytes=max_bytes,
+        )
+        return await _build_xlsx_preview_response(
             raw=content,
             file_id=file_id,
             file_name=filename,
             content_type=content_type,
             expected_sha256=str(file_row.get("sha256") or "") or None,
             expected_byte_count=_optional_nonnegative_int(file_row.get("size_bytes")),
-        )
-        return JSONResponse(
-            content=preview.model_dump(mode="json"),
             headers={
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
                 "X-Input-File-Id": file_id,
             },
         )
+    content = ObjectStorage().get_bytes(storage_key=str(file_row["storage_key"]))
     return Response(
         content=content,
         media_type=content_type,
@@ -572,8 +631,23 @@ async def preview_artifact(
         )
         admin_preview = False
         if artifact is None and is_ai_admin(principal):
-            artifact = await get_admin_artifact(conn, tenant_id=tenant_id, artifact_id=artifact_id)
-            admin_preview = artifact is not None
+            admin_candidate = await get_admin_artifact(
+                conn,
+                tenant_id=tenant_id,
+                artifact_id=artifact_id,
+            )
+            target_user_id = str(admin_candidate.get("target_user_id") or "") if admin_candidate else ""
+            target_run_id = str(admin_candidate.get("run_id") or "") if admin_candidate else ""
+            if target_user_id and target_run_id:
+                active_run = await get_authorized_run(
+                    conn,
+                    tenant_id=tenant_id,
+                    user_id=target_user_id,
+                    run_id=target_run_id,
+                )
+                if active_run is not None:
+                    artifact = admin_candidate
+                    admin_preview = True
         if artifact is None:
             raise HTTPException(status_code=404, detail="artifact_not_found")
         if not artifact_preview_allowed(artifact.get("content_type")):
@@ -601,24 +675,29 @@ async def preview_artifact(
         and not is_xlsx_preview_request(file_name=filename, content_type=content_type)
     ):
         raise HTTPException(status_code=415, detail="artifact_preview_not_allowed")
-    content = ObjectStorage().get_bytes(storage_key=artifact["storage_key"])
     if is_xlsx_preview_request(file_name=filename, content_type=content_type):
-        preview = await asyncio.to_thread(
-            build_xlsx_preview,
+        max_bytes = xlsx_preview_max_bytes(
+            file_name=filename,
+            content_type=content_type,
+        )
+        content = await _read_bounded_xlsx_preview_bytes(
+            storage_key=str(artifact["storage_key"]),
+            declared_size_bytes=artifact.get("size_bytes"),
+            max_bytes=max_bytes,
+        )
+        return await _build_xlsx_preview_response(
             raw=content,
             file_id=artifact_id,
             file_name=filename,
             content_type=content_type,
             expected_byte_count=_optional_nonnegative_int(artifact.get("size_bytes")),
-        )
-        return JSONResponse(
-            content=preview.model_dump(mode="json"),
             headers={
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
                 "X-Artifact-Id": artifact_id,
             },
         )
+    content = ObjectStorage().get_bytes(storage_key=artifact["storage_key"])
     return Response(
         content=content,
         media_type=content_type,

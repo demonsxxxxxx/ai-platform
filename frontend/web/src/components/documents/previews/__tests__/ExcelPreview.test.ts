@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
-import { parseXlsxPreviewDto } from "../ExcelPreview.tsx";
+import ExcelPreview, { parseXlsxPreviewDto } from "../ExcelPreview.tsx";
 
 const sourceSha256 = "a".repeat(64);
 
@@ -101,6 +103,34 @@ test("fails closed for malformed or unexpected preview responses", () => {
       ),
     /invalid_xlsx_preview_dto/,
   );
+  assert.throws(
+    () =>
+      parseXlsxPreviewDto(
+        dto({
+          content: {
+            sheet_count: 1,
+            sheets: [{ name: "Checks", rows: [{ row: 1, cells: [{ column: 1, kind: "formula", value: "=SUM(40,2)" }] }] }],
+          },
+        }),
+      ),
+    /invalid_xlsx_preview_dto/,
+  );
+});
+
+test("renders real tab semantics and labelled sheet controls", () => {
+  const markup = renderToStaticMarkup(
+    createElement(ExcelPreview, {
+      previewJson: dto(),
+      t: (_key, options) => String(options?.defaultValue ?? "translated"),
+    }),
+  );
+
+  assert.match(markup, /role="tablist"/);
+  assert.match(markup, /role="tab"/);
+  assert.match(markup, /aria-selected="true"/);
+  assert.match(markup, /aria-label="Previous sheet"/);
+  assert.match(markup, /aria-label="Next sheet"/);
+  assert.match(markup, /role="tabpanel"/);
 });
 
 test("contains no browser ZIP or XML parser implementation", () => {
@@ -123,9 +153,10 @@ test("loads XLSX previews as authenticated DTO JSON and passes no workbook bytes
 
   assert.match(
     stateSource,
-    /else if \(excelFile\) \{\s+const previewJson = await fetchDocumentText\(url\);/,
+    /else if \(xlsxPreviewFile\) \{\s+const previewJson = await fetchXlsxPreviewJson\(url\);/,
   );
-  assert.doesNotMatch(stateSource, /wordPreviewFile \|\| excelFile/);
-  assert.match(contentSource, /<ExcelPreview previewJson=\{data\.content\} t=\{t\}/);
+  assert.match(stateSource, /setData\(null\);/);
+  assert.match(stateSource, /const currentData = isCurrentData \? data : null;/);
+  assert.match(contentSource, /<ExcelPreview key=\{previewIdentity\} previewJson=\{data\.content\} t=\{t\}/);
   assert.doesNotMatch(contentSource, /<ExcelPreview arrayBuffer=/);
 });

@@ -1,20 +1,32 @@
 import hashlib
 import io
+from pathlib import Path
+import tempfile
+import threading
 
+import pytest
 from openpyxl import Workbook
 
-from app.file_preview_contracts import build_xlsx_preview, is_xlsx_preview_request
+from app import file_preview_contracts
+from app.file_preview_contracts import (
+    XlsxPreviewBusyError,
+    _stage_xlsx_preview_bytes,
+    build_xlsx_preview,
+    is_xlsx_preview_request,
+)
 
 
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-def _workbook_bytes() -> bytes:
+def _workbook_bytes(*, formulas: list[str] | None = None) -> bytes:
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Checks"
     worksheet.append(["requirement", "status"])
     worksheet.append(["ACCEPT-XLSX-9472", True])
+    for formula in formulas or []:
+        worksheet.append([formula])
     buffer = io.BytesIO()
     workbook.save(buffer)
     workbook.close()
@@ -41,6 +53,25 @@ def test_xlsx_preview_uses_the_registered_parser_and_returns_only_the_presentati
     assert preview.error is None
     assert "storage_key" not in preview.model_dump_json()
     assert "workbook.xml" not in preview.model_dump_json()
+
+
+def test_xlsx_preview_redacts_local_and_external_formula_source():
+    raw = _workbook_bytes(
+        formulas=["=SUM(40,2)", "='[private-book.xlsx]Sheet1'!A1"],
+    )
+    preview = build_xlsx_preview(
+        raw=raw,
+        file_id="file-formulas",
+        file_name="checks.xlsx",
+        content_type=XLSX_CONTENT_TYPE,
+    )
+
+    serialized = preview.model_dump_json()
+    assert "SUM(40,2)" not in serialized
+    assert "private-book.xlsx" not in serialized
+    assert "formula" not in {cell.kind for row in preview.content.sheets[0].rows for cell in row.cells}
+    assert "[formula omitted]" in serialized
+    assert "formulas_omitted" in preview.warnings
 
 
 def test_xlsx_preview_metadata_requires_the_supported_xlsx_extension_and_mime_type():
@@ -70,3 +101,110 @@ def test_oversized_xlsx_preview_fails_with_a_stable_public_code():
     assert preview.error is not None
     assert preview.error.code == "xlsx_preview_file_too_large"
     assert preview.content is None
+
+
+def test_xlsx_staging_uses_a_fixed_private_filename_and_cleans_up():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        staged = _stage_xlsx_preview_bytes(root, b"preview")
+
+        assert staged.name == "preview.xlsx"
+        assert staged.parent == root.resolve()
+        assert staged.read_bytes() == b"preview"
+        if file_preview_contracts.os.name != "nt":
+            assert staged.stat().st_mode & 0o777 == 0o600
+    assert not root.exists()
+
+
+def test_xlsx_staging_uses_the_fixed_path_with_windows_semantics(monkeypatch):
+    real_os = file_preview_contracts.os
+
+    class WindowsOs:
+        name = "nt"
+
+        def __getattr__(self, attribute):
+            return getattr(real_os, attribute)
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        monkeypatch.setattr(file_preview_contracts, "os", WindowsOs())
+
+        staged = _stage_xlsx_preview_bytes(root, b"preview")
+
+        assert staged.name == "preview.xlsx"
+        assert staged.parent == root.resolve()
+        assert staged.read_bytes() == b"preview"
+    assert not root.exists()
+
+
+def test_xlsx_preview_admission_fails_fast_without_queue(monkeypatch):
+    admission = threading.BoundedSemaphore(1)
+    assert admission.acquire(blocking=False)
+    monkeypatch.setattr(file_preview_contracts, "_PREVIEW_ADMISSION", admission)
+
+    with pytest.raises(XlsxPreviewBusyError):
+        build_xlsx_preview(
+            raw=_workbook_bytes(),
+            file_id="file-busy",
+            file_name="checks.xlsx",
+            content_type=XLSX_CONTENT_TYPE,
+        )
+    admission.release()
+
+
+def test_timeout_reaps_and_closes_the_child_process(monkeypatch):
+    calls: list[str] = []
+
+    class Connection:
+        def poll(self, timeout):
+            calls.append(f"poll:{timeout}")
+            return False
+
+        def close(self):
+            calls.append("connection.close")
+
+    class Process:
+        def __init__(self):
+            self.alive = False
+
+        def start(self):
+            self.alive = True
+            calls.append("start")
+
+        def is_alive(self):
+            return self.alive
+
+        def terminate(self):
+            self.alive = False
+            calls.append("terminate")
+
+        def kill(self):
+            self.alive = False
+            calls.append("kill")
+
+        def join(self, timeout=0):
+            calls.append(f"join:{timeout}")
+
+        def close(self):
+            calls.append("process.close")
+
+    class Context:
+        def Pipe(self, *, duplex):
+            assert duplex is False
+            return Connection(), Connection()
+
+        def Process(self, **kwargs):
+            assert kwargs["daemon"] is True
+            return Process()
+
+    monkeypatch.setattr(file_preview_contracts.multiprocessing, "get_context", lambda _: Context())
+    result = file_preview_contracts._invoke_isolated_xlsx_parser(
+        raw=b"safe",
+        requirement={},
+        timeout_seconds=0.01,
+    )
+
+    assert result == {"status": "failed", "code": "xlsx_preview_timeout"}
+    assert "terminate" in calls
+    assert "join:0.5" in calls
+    assert "process.close" in calls

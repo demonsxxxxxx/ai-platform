@@ -1,6 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LoadingSpinner } from "../../common/LoadingSpinner";
 
 const excelPreviewStylesPromise =
   typeof document === "undefined"
@@ -28,7 +27,7 @@ type CellValue = string | number | boolean;
 
 export interface XlsxPreviewCell {
   column: number;
-  kind: "boolean" | "datetime" | "formula" | "number" | "text";
+  kind: "boolean" | "datetime" | "number" | "text";
   value: CellValue;
 }
 
@@ -114,7 +113,7 @@ function parsePreviewCell(value: unknown): XlsxPreviewCell {
     !isRecord(value) ||
     !hasOnlyKeys(value, ["column", "kind", "value"]) ||
     !isPositiveInteger(value.column) ||
-    !["boolean", "datetime", "formula", "number", "text"].includes(
+    !["boolean", "datetime", "number", "text"].includes(
       String(value.kind),
     ) ||
     !["string", "number", "boolean"].includes(typeof value.value)
@@ -296,10 +295,7 @@ const ExcelPreview = memo(function ExcelPreview({
   previewJson,
   t,
 }: ExcelPreviewProps) {
-  const [preview, setPreview] = useState<XlsxPreviewDto | null>(null);
   const [activeSheet, setActiveSheet] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [hoveredCell, setHoveredCell] = useState<{
     row: number;
     col: number;
@@ -307,27 +303,23 @@ const ExcelPreview = memo(function ExcelPreview({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const { progress, hasOverflow } = useScrollIndicator(scrollContainerRef);
 
-  useEffect(() => {
+  const parsedPreview = useMemo(() => {
     try {
-      const nextPreview = parseXlsxPreviewDto(previewJson);
-      setPreview(nextPreview);
-      setActiveSheet(0);
-      setHoveredCell(null);
-      setError(
-        nextPreview.status === "failed"
-          ? mapExcelPreviewError(new Error(nextPreview.error?.code), t)
-          : null,
-      );
-    } catch (nextError) {
-      setPreview(null);
-      setError(mapExcelPreviewError(nextError, t));
-    } finally {
-      setLoading(false);
+      return { preview: parseXlsxPreviewDto(previewJson), error: null };
+    } catch (error) {
+      return { preview: null, error: mapExcelPreviewError(error, t) };
     }
   }, [previewJson, t]);
+  const preview = parsedPreview.preview;
+  const error =
+    parsedPreview.error ??
+    (preview?.status === "failed"
+      ? mapExcelPreviewError(new Error(preview.error?.code), t)
+      : null);
 
   const sheets = preview?.content?.sheets ?? [];
   const currentSheet = sheets[activeSheet];
+  const tabPanelId = "xlsx-preview-table";
 
   const totalCols = useMemo(() => {
     if (!currentSheet) return 0;
@@ -364,20 +356,27 @@ const ExcelPreview = memo(function ExcelPreview({
     setHoveredCell(null);
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <LoadingSpinner
-          size="lg"
-          className="text-stone-400 dark:text-stone-500"
-        />
-      </div>
-    );
-  }
+  const handleSheetKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (sheets.length === 0) return;
+      let nextIndex: number | null = null;
+      if (event.key === "ArrowLeft") nextIndex = Math.max(0, activeSheet - 1);
+      if (event.key === "ArrowRight") {
+        nextIndex = Math.min(sheets.length - 1, activeSheet + 1);
+      }
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = sheets.length - 1;
+      if (nextIndex !== null) {
+        event.preventDefault();
+        setActiveSheet(nextIndex);
+      }
+    },
+    [activeSheet, sheets.length],
+  );
 
   if (error) {
     return (
-      <div className="p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+      <div role="alert" className="p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
         <p className="text-sm text-red-600 dark:text-red-400 font-medium">
           {t("documents.excelPreviewError")}: {error}
         </p>
@@ -413,17 +412,24 @@ const ExcelPreview = memo(function ExcelPreview({
           type="button"
           onClick={() => setActiveSheet((current) => Math.max(0, current - 1))}
           disabled={activeSheet === 0}
-          className="p-1 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 disabled:opacity-30 disabled:cursor-default transition-colors"
+          aria-label={t("documents.excelPreviousSheet", { defaultValue: "Previous sheet" })}
+          className="p-1 min-w-11 min-h-11 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 disabled:opacity-30 disabled:cursor-default transition-colors"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6" />
           </svg>
         </button>
-        <div className="flex-1 flex items-center gap-0.5 overflow-x-auto px-1 py-1">
+        <div role="tablist" aria-label={t("documents.excelSheets", { defaultValue: "Workbook sheets" })} className="flex-1 flex items-center gap-0.5 overflow-x-auto px-1 py-1">
           {sheets.map((sheet, index) => (
             <button
               key={`${index}:${sheet.name}`}
+              id={`xlsx-preview-tab-${index}`}
+              role="tab"
+              aria-controls={tabPanelId}
+              aria-selected={activeSheet === index}
+              tabIndex={activeSheet === index ? 0 : -1}
               onClick={() => setActiveSheet(index)}
+              onKeyDown={handleSheetKeyDown}
               className={`px-3 py-0.5 text-[11px] font-medium rounded-sm whitespace-nowrap transition-all ${
                 activeSheet === index
                   ? "bg-white dark:bg-stone-800 text-stone-800 dark:text-stone-100 shadow-sm border border-stone-300 dark:border-stone-600"
@@ -440,7 +446,8 @@ const ExcelPreview = memo(function ExcelPreview({
             setActiveSheet((current) => Math.min(sheets.length - 1, current + 1))
           }
           disabled={activeSheet === sheets.length - 1}
-          className="p-1 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 disabled:opacity-30 disabled:cursor-default transition-colors"
+          aria-label={t("documents.excelNextSheet", { defaultValue: "Next sheet" })}
+          className="p-1 min-w-11 min-h-11 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 disabled:opacity-30 disabled:cursor-default transition-colors"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="9 6 15 12 9 18" />
@@ -456,7 +463,7 @@ const ExcelPreview = memo(function ExcelPreview({
         </p>
       )}
 
-      <div ref={scrollContainerRef} className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-stone-300 dark:border-stone-600">
+      <div id={tabPanelId} role="tabpanel" aria-labelledby={`xlsx-preview-tab-${activeSheet}`} ref={scrollContainerRef} className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-stone-300 dark:border-stone-600">
         <table className="border-collapse w-max min-w-full text-[13px]">
           <thead>
             <tr className="sticky top-0 z-10">
@@ -520,7 +527,7 @@ const ExcelPreview = memo(function ExcelPreview({
         </span>
         <span className="text-right">
           {t("documents.excelPreviewLimitations", {
-            defaultValue: "Styles, charts, formula recalculation, macros, and external links are not reproduced.",
+            defaultValue: "Styles and charts are not reproduced; formulas are omitted; macros and external links are not run.",
           })}
         </span>
       </div>

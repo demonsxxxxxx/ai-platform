@@ -47,7 +47,8 @@ type ContentProps = Pick<
   | "markdownFile"
   | "htmlFile"
   | "pptFile"
-  | "excelFile"
+  | "xlsxPreviewFile"
+  | "previewIdentity"
   | "wordPreviewFile"
   | "legacyDocFile"
   | "excalidrawFile"
@@ -91,7 +92,8 @@ export default function DocumentPreviewContent({
   markdownFile,
   htmlFile,
   pptFile,
-  excelFile,
+  xlsxPreviewFile,
+  previewIdentity,
   wordPreviewFile,
   legacyDocFile,
   excalidrawFile,
@@ -296,10 +298,10 @@ export default function DocumentPreviewContent({
     );
   }
 
-  if (excelFile && data?.content) {
+  if (xlsxPreviewFile && data?.content) {
     return (
       <Suspense fallback={suspenseFallback}>
-        <ExcelPreview previewJson={data.content} t={t} />
+        <ExcelPreview key={previewIdentity} previewJson={data.content} t={t} />
       </Suspense>
     );
   }

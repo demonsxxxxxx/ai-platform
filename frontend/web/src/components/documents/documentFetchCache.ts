@@ -165,6 +165,25 @@ export function fetchDocumentText(
   return request;
 }
 
+/** Fetch a server-owned XLSX DTO only from a protected platform preview URL. */
+export async function fetchXlsxPreviewJson(
+  url: string,
+  options: DocumentFetchOptions = {},
+): Promise<string> {
+  if (!shouldUseAuthenticatedDocumentRequest(url, options)) {
+    throw new Error("Unsafe unauthenticated XLSX preview URL");
+  }
+  const response = await fetchWithValidation(url, options);
+  const contentType = response.headers.get("content-type")
+    ?.split(";", 1)[0]
+    ?.trim()
+    .toLowerCase();
+  if (contentType !== "application/json") {
+    throw new Error("Unexpected XLSX preview content type");
+  }
+  return response.text();
+}
+
 export function fetchDocumentArrayBuffer(
   url: string,
   options: DocumentFetchOptions = {},
