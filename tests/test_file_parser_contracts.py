@@ -8,6 +8,7 @@ from xml.etree import ElementTree
 import pytest
 from openpyxl import Workbook, load_workbook
 
+from app import file_parser_contracts
 from app.context_manifest import utf8_token_estimate
 from app.executors.claude_agent_sdk_runner import _attachment_context_data_message
 from app.file_parser_contracts import (
@@ -746,6 +747,48 @@ def test_xlsx_parser_bounds_dimensionless_row_column_cell_and_prompt_content(tmp
     assert utf8_token_estimate(rendered) <= MAX_XLSX_PROMPT_TOKENS
     assert parsed.evidence.truncated is True
     assert parsed.content["workbook"]["truncated"] is True
+
+
+def test_xlsx_parser_reserves_final_workbook_fields_before_accepting_prompt_content(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "book.xlsx"
+    _write_workbook(path)
+    initial = parse_xlsx_attachment(path=path, requirement=_requirement())
+    without_final_fields = json.loads(json.dumps(initial.content))
+    without_final_fields["workbook"].pop("sheet_count")
+    without_final_fields["workbook"].pop("truncated")
+    boundary = len(
+        json.dumps(
+            without_final_fields,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    assert boundary < len(
+        json.dumps(
+            initial.content,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    monkeypatch.setattr(file_parser_contracts, "MAX_XLSX_PROMPT_CHARS", boundary)
+
+    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+
+    rendered = json.dumps(
+        parsed.content,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert len(rendered) <= boundary
+    assert parsed.content["workbook"]["sheet_count"] == 1
+    assert parsed.content["workbook"]["truncated"] is True
+    assert parsed.evidence.truncated is True
 
 
 def test_xlsx_parser_rejects_stored_cell_overflow_before_openpyxl_load(tmp_path, monkeypatch):

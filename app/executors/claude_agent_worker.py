@@ -71,6 +71,16 @@ _WORD_MAIN_DOCUMENT_CONTENT_TYPE = (
 
 
 @dataclass(frozen=True)
+class _AuthorizedAttachmentMetadata:
+    """Authorized attachment metadata that never requires reading object bytes."""
+
+    file_id: str
+    file_name: str
+    content_type: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
 class PreparedSdkRun:
     """Resolved SDK staging inputs that can run locally or via SandboxRuntime."""
 
@@ -82,6 +92,8 @@ class PreparedSdkRun:
     staged_skill_names: list[str]
     prompt: str
     attachment_facts: list[MaterializedAttachmentFact] = field(default_factory=list)
+    attachment_metadata: list[_AuthorizedAttachmentMetadata] = field(default_factory=list)
+    materialized_file_names: list[str] | None = None
 
 
 class _MaterializedFileNames(list[str]):
@@ -90,9 +102,15 @@ class _MaterializedFileNames(list[str]):
         values: list[str],
         *,
         attachment_facts: list[MaterializedAttachmentFact],
+        attachment_metadata: list[_AuthorizedAttachmentMetadata] | None = None,
+        materialized_file_names: list[str] | None = None,
     ) -> None:
         super().__init__(values)
         self.attachment_facts = list(attachment_facts)
+        self.attachment_metadata = list(attachment_metadata or [])
+        self.materialized_file_names = list(
+            values if materialized_file_names is None else materialized_file_names
+        )
 
 
 async def resolve_claude_sdk_tool_permission(**_legacy_request: Any) -> dict[str, Any]:
@@ -183,6 +201,8 @@ def _attachment_preprocessing_contract(
     payload: RunPayload,
     prepared: PreparedSdkRun,
 ) -> dict[str, Any]:
+    if not _requires_typed_attachment_preprocessing(payload):
+        return build_attachment_preprocessing_contract()
     if prepared.attachment_facts:
         return build_attachment_preprocessing_contract(
             attachment_facts=list(prepared.attachment_facts)
@@ -191,6 +211,59 @@ def _attachment_preprocessing_contract(
         file_ids=list(payload.file_ids[: len(prepared.file_names)]),
         file_names=list(prepared.file_names),
     )
+
+
+def _requires_typed_attachment_preprocessing(payload: RunPayload) -> bool:
+    """Use only server-selected capability/Skill facts to require typed parsing."""
+
+    if payload.skill_id != "general-chat":
+        return True
+    return bool(_string_list(payload.input.get("skill_ids")))
+
+
+def _context_manifest_with_attachment_metadata(
+    manifest: dict[str, Any] | None,
+    metadata: list[_AuthorizedAttachmentMetadata],
+    *,
+    allow_file_content_tools: bool,
+) -> dict[str, Any]:
+    """Enrich authorized refs and remove file-content tools for metadata-only runs."""
+
+    result = dict(manifest or {})
+    available_tools = result.get("available_retrieval_tools")
+    if not allow_file_content_tools and isinstance(available_tools, list):
+        file_content_tools = (
+            "read_context_file",
+            "stage_context_file_to_workspace",
+        )
+        result["available_retrieval_tools"] = [
+            tool_name
+            for tool_name in available_tools
+            if tool_name not in file_content_tools
+        ]
+    raw_files = result.get("files")
+    if not metadata or not isinstance(raw_files, list):
+        return result
+    metadata_by_file_id = {item.file_id: item for item in metadata}
+    enriched_files: list[Any] = []
+    for raw_file in raw_files:
+        if not isinstance(raw_file, dict):
+            enriched_files.append(raw_file)
+            continue
+        file_ref = dict(raw_file)
+        item = metadata_by_file_id.get(str(file_ref.get("file_id") or ""))
+        if item is not None:
+            file_ref.update(
+                {
+                    "name": item.file_name,
+                    "content_type": item.content_type,
+                    "size_bytes": item.size_bytes,
+                    "requires_retrieval": True,
+                }
+            )
+        enriched_files.append(file_ref)
+    result["files"] = enriched_files
+    return result
 
 
 def _payload_sandbox_mode(payload: RunPayload) -> str:
@@ -777,6 +850,28 @@ class ClaudeAgentWorkerAdapter:
             and all(isinstance(fact, MaterializedAttachmentFact) for fact in raw_attachment_facts)
             else []
         )
+        raw_attachment_metadata = getattr(materialized_file_names, "attachment_metadata", [])
+        attachment_metadata = (
+            list(raw_attachment_metadata)
+            if isinstance(raw_attachment_metadata, list)
+            and len(raw_attachment_metadata) == len(file_names)
+            and all(
+                isinstance(item, _AuthorizedAttachmentMetadata)
+                for item in raw_attachment_metadata
+            )
+            else []
+        )
+        raw_staged_file_names = getattr(
+            materialized_file_names,
+            "materialized_file_names",
+            None,
+        )
+        staged_file_names = (
+            list(raw_staged_file_names)
+            if isinstance(raw_staged_file_names, list)
+            and all(isinstance(item, str) for item in raw_staged_file_names)
+            else list(file_names)
+        )
 
         skills = BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills()
         pinned_manifests = _pinned_skill_manifests(payload)
@@ -848,11 +943,22 @@ class ClaudeAgentWorkerAdapter:
                 },
             )
 
+        prompt_context_pack = self._executor_context_pack(payload)
+        prompt_context_manifest = _context_manifest_from_pack(prompt_context_pack)
+        if prompt_context_manifest is not None:
+            prompt_context_pack = dict(prompt_context_pack)
+            prompt_context_pack["context_manifest"] = (
+                _context_manifest_with_attachment_metadata(
+                    prompt_context_manifest,
+                    attachment_metadata,
+                    allow_file_content_tools=_requires_typed_attachment_preprocessing(payload),
+                )
+            )
         prompt = build_skill_prompt(
             skill_id=payload.skill_id,
             user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
             file_names=file_names,
-            context_pack=self._executor_context_pack(payload),
+            context_pack=prompt_context_pack,
         )
         return (
             PreparedSdkRun(
@@ -864,6 +970,8 @@ class ClaudeAgentWorkerAdapter:
                 staged_skill_names=staged_skill_names,
                 prompt=prompt,
                 attachment_facts=attachment_facts,
+                attachment_metadata=attachment_metadata,
+                materialized_file_names=staged_file_names,
             ),
             None,
         )
@@ -884,13 +992,17 @@ class ClaudeAgentWorkerAdapter:
             attachment_requirements = attachment_requirements_from_contract(attachment_contract)
         except AttachmentPreprocessingError as exc:
             return self._attachment_parser_failure_result(error_code=exc.code)
-        runtime_context_manifest = dict(context_manifest or {})
+        runtime_context_manifest = _context_manifest_with_attachment_metadata(
+            context_manifest,
+            prepared.attachment_metadata,
+            allow_file_content_tools=_requires_typed_attachment_preprocessing(payload),
+        )
         if attachment_requirements:
             if context_manifest is None:
                 return self._attachment_parser_failure_result(
                     error_code="attachment_parser_context_manifest_required"
                 )
-            manifest_file_ids = dispatched_context_file_ids(context_manifest)
+            manifest_file_ids = dispatched_context_file_ids(runtime_context_manifest)
             if any(
                 requirement.file_id not in manifest_file_ids
                 for requirement in attachment_requirements
@@ -899,7 +1011,7 @@ class ClaudeAgentWorkerAdapter:
                     error_code="attachment_parser_manifest_file_mismatch"
                 )
             if "stage_context_file_to_workspace" not in available_context_retrieval_tools(
-                context_manifest
+                runtime_context_manifest
             ):
                 return self._attachment_parser_failure_result(
                     error_code="attachment_parser_staging_not_authorized"
@@ -914,10 +1026,14 @@ class ClaudeAgentWorkerAdapter:
             agent_id=payload.agent_id,
             skill_ids=_runtime_request_skill_ids(payload, prepared),
             mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),
-            tool_policy_subjects=_runtime_tool_policy_subjects(payload, context_manifest),
+            tool_policy_subjects=_runtime_tool_policy_subjects(payload, runtime_context_manifest),
             input_message=prepared.prompt,
             file_ids=payload.file_ids,
-            materialized_file_names=prepared.file_names,
+            materialized_file_names=(
+                prepared.file_names
+                if prepared.materialized_file_names is None
+                else prepared.materialized_file_names
+            ),
             sandbox_mode=_payload_sandbox_mode(payload),
             browser_enabled=bool(payload.input.get("browser_enabled")),
             model=payload.model_value or payload.model_id or getattr(settings, "claude_agent_model", ""),
@@ -1311,8 +1427,31 @@ class ClaudeAgentWorkerAdapter:
                 "run workspace must stay inside the configured workspace root",
             )
             workspace.mkdir(parents=True, exist_ok=True)
-        file_names = file_names if file_names is not None else await self._materialize_files(payload, workspace)
+        prepared_file_names = (
+            file_names
+            if file_names is not None
+            else await self._materialize_files(payload, workspace)
+        )
+        raw_attachment_metadata = getattr(prepared_file_names, "attachment_metadata", [])
+        attachment_metadata = (
+            [
+                item
+                for item in raw_attachment_metadata
+                if isinstance(item, _AuthorizedAttachmentMetadata)
+            ]
+            if isinstance(raw_attachment_metadata, list)
+            else []
+        )
+        file_names = list(prepared_file_names)
         context_pack = self._executor_context_pack(payload)
+        context_manifest = _context_manifest_from_pack(context_pack)
+        if context_manifest is not None:
+            context_pack = dict(context_pack)
+            context_pack["context_manifest"] = _context_manifest_with_attachment_metadata(
+                context_manifest,
+                attachment_metadata,
+                allow_file_content_tools=_requires_typed_attachment_preprocessing(payload),
+            )
         prompt = prompt or build_skill_prompt(
             skill_id=payload.skill_id,
             user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
@@ -1387,9 +1526,12 @@ class ClaudeAgentWorkerAdapter:
             return []
         if workspace.exists() and workspace.is_symlink():
             raise ValueError("run workspace must not be a symlink")
-        storage = ObjectStorage()
+        typed_preprocessing = _requires_typed_attachment_preprocessing(payload)
+        storage = ObjectStorage() if typed_preprocessing else None
         file_names: list[str] = []
+        materialized_file_names: list[str] = []
         attachment_facts: list[MaterializedAttachmentFact] = []
+        attachment_metadata: list[_AuthorizedAttachmentMetadata] = []
         async with transaction() as conn:
             for file_id in payload.file_ids:
                 row = await repositories.get_run_file(
@@ -1401,23 +1543,40 @@ class ClaudeAgentWorkerAdapter:
                 if row is None:
                     continue
                 filename = Path(str(row["original_name"] or file_id)).name
+                content_type = str(row.get("content_type") or "")
+                size_bytes = max(0, int(row.get("size_bytes") or 0))
+                attachment_metadata.append(
+                    _AuthorizedAttachmentMetadata(
+                        file_id=file_id,
+                        file_name=filename,
+                        content_type=content_type,
+                        size_bytes=size_bytes,
+                    )
+                )
+                file_names.append(filename)
+                if not typed_preprocessing:
+                    continue
                 target = workspace / filename
                 ensure_creatable_inside(workspace, target, "uploaded file target must stay inside the run workspace")
+                if storage is None:
+                    raise RuntimeError("typed attachment storage is unavailable")
                 content = storage.get_bytes(storage_key=row["storage_key"])
                 attachment_facts.append(
                     MaterializedAttachmentFact(
                         file_id=file_id,
                         file_name=filename,
-                        content_type=str(row.get("content_type") or ""),
+                        content_type=content_type,
                         byte_count=len(content),
                         sha256=hashlib.sha256(content).hexdigest(),
                     )
                 )
                 target.write_bytes(content)
-                file_names.append(filename)
+                materialized_file_names.append(filename)
         return _MaterializedFileNames(
             file_names,
             attachment_facts=attachment_facts,
+            attachment_metadata=attachment_metadata,
+            materialized_file_names=materialized_file_names,
         )
 
     def _collect_workspace_artifacts(self, payload: RunPayload, workspace: Path) -> list[ArtifactManifest]:

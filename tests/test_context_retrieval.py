@@ -215,6 +215,34 @@ async def test_file_and_artifact_reads_are_scoped_limited_and_redacted():
 
 
 @pytest.mark.asyncio
+async def test_artifact_tools_cannot_resolve_or_stage_an_uploaded_file_id(tmp_path):
+    retrieval = _retrieval()
+
+    with pytest.raises(ContextRetrievalDenied, match="context_scope_denied"):
+        await retrieval.read_run_artifact(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            artifact_id="file-a",
+        )
+
+    with pytest.raises(ContextRetrievalDenied, match="context_scope_denied"):
+        await retrieval.stage_run_artifact_to_workspace(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            artifact_id="file-a",
+            workspace_root=str(tmp_path),
+        )
+
+    assert not (tmp_path / "context").exists()
+
+
+@pytest.mark.asyncio
 async def test_read_context_file_rejects_binary_xlsx_instead_of_utf8_decoding():
     retrieval = ContextRetrieval(
         InMemoryContextRetrievalRepository(

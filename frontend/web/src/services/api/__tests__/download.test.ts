@@ -7,6 +7,7 @@ test("downloads protected relative artifact URLs through an authenticated reques
   const removed: unknown[] = [];
   const clicks: string[] = [];
   const revoked: string[] = [];
+  const scheduledRevocations: Array<() => void> = [];
 
   const anchor = {
     href: "",
@@ -43,6 +44,9 @@ test("downloads protected relative artifact URLs through an authenticated reques
       revokeObjectURL(url) {
         revoked.push(url);
       },
+      scheduleRevoke(callback) {
+        scheduledRevocations.push(callback);
+      },
       request: async (input, init) => {
         assert.equal(input, "/api/ai/artifacts/art-reviewed/download");
         assert.equal(init?.method, "GET");
@@ -63,5 +67,10 @@ test("downloads protected relative artifact URLs through an authenticated reques
   assert.deepEqual(clicks, ["blob:artifact-download"]);
   assert.deepEqual(appended, [anchor]);
   assert.deepEqual(removed, [anchor]);
+  assert.deepEqual(revoked, []);
+  assert.equal(scheduledRevocations.length, 1);
+
+  scheduledRevocations[0]();
+
   assert.deepEqual(revoked, ["blob:artifact-download"]);
 });
