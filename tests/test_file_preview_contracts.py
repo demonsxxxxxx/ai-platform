@@ -335,14 +335,25 @@ def test_xlsx_child_uses_stdlib_xml_and_reports_memory_failure_without_source_da
     def fail_with_memory_error(**kwargs):
         raise MemoryError
 
-    configured_backends: list[str | None] = []
+    inherited_thread_counts = {
+        "OPENBLAS_NUM_THREADS": "32",
+        "OMP_NUM_THREADS": "16",
+        "MKL_NUM_THREADS": "8",
+        "NUMEXPR_NUM_THREADS": "4",
+    }
+    configured_environments: list[dict[str, str | None]] = []
 
     def observe_resource_limit_application(_timeout_seconds):
-        configured_backends.append(
-            file_preview_contracts.os.environ.get("OPENPYXL_LXML")
+        configured_environments.append(
+            {
+                name: file_preview_contracts.os.environ.get(name)
+                for name in ("OPENPYXL_LXML", *inherited_thread_counts)
+            }
         )
 
     monkeypatch.setenv("OPENPYXL_LXML", "True")
+    for name, value in inherited_thread_counts.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setattr(
         file_preview_contracts,
         "_apply_child_resource_limits",
@@ -362,7 +373,15 @@ def test_xlsx_child_uses_stdlib_xml_and_reports_memory_failure_without_source_da
     )
 
     assert file_preview_contracts.os.environ["OPENPYXL_LXML"] == "False"
-    assert configured_backends == ["False"]
+    assert configured_environments == [
+        {
+            "OPENPYXL_LXML": "False",
+            "OPENBLAS_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+        }
+    ]
     assert sent == [
         {
             "status": "failed",
