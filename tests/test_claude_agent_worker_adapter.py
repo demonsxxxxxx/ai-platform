@@ -602,6 +602,9 @@ def test_collect_workspace_artifacts_assigns_safe_mime_types_and_keeps_unknown_f
     delivery.mkdir(parents=True)
     (delivery / "report.pdf").write_bytes(b"pdf")
     (delivery / "chart.png").write_bytes(b"png")
+    (delivery / "page.html").write_bytes(b"html")
+    (delivery / "script.js").write_bytes(b"javascript")
+    (delivery / "vector.svg").write_bytes(b"svg")
     (delivery / "payload.unknown").write_bytes(b"unknown")
     stored = []
 
@@ -617,13 +620,19 @@ def test_collect_workspace_artifacts_assigns_safe_mime_types_and_keeps_unknown_f
     assert [artifact.content_type for artifact in artifacts] == [
         "image/png",
         "application/octet-stream",
+        "application/octet-stream",
         "application/pdf",
+        "application/octet-stream",
+        "application/octet-stream",
     ]
     assert artifacts[1].artifact_type == "runtime_file"
     assert [content_type for _storage_key, content_type in stored] == [
         "image/png",
         "application/octet-stream",
+        "application/octet-stream",
         "application/pdf",
+        "application/octet-stream",
+        "application/octet-stream",
     ]
 
 

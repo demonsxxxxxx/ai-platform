@@ -3910,3 +3910,79 @@ async def test_docker_provider_cleanup_orphan_containers_removes_stopped_same_te
     assert same_tenant_running.removed is False
     assert same_tenant_created.removed is False
     assert foreign_exited.removed is False
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sidecar():
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+
+    def container(*, name, owner, run_id, tenant_id="tenant-a"):
+        labels = {
+            "ai-platform.owner": owner,
+            "ai-platform.tenant_id": tenant_id,
+            "ai-platform.workspace_id": "workspace-a",
+            "ai-platform.user_id": "user-a",
+            "ai-platform.session_id": "session-a",
+            "ai-platform.run_id": run_id,
+            "ai-platform.sandbox_mode": "ephemeral",
+            "ai-platform.browser_enabled": "false",
+        }
+        if owner == "sandbox-native-tool":
+            labels["ai-platform.role"] = "native-skill-command"
+        item = FakeDockerContainer(
+            image="ai-platform-executor:dev",
+            name=name,
+            detach=True,
+            labels=labels,
+            volumes={},
+            environment={},
+            ports={},
+        )
+        item.status = "running"
+        return item
+
+    primary = container(
+        name="executor-paired",
+        owner="sandbox-runtime",
+        run_id="run-paired",
+    )
+    paired_native = container(
+        name="native-tool-run-paired",
+        owner="sandbox-native-tool",
+        run_id="run-paired",
+    )
+    orphan_native = container(
+        name="native-tool-run-orphan",
+        owner="sandbox-native-tool",
+        run_id="run-orphan",
+    )
+    foreign_native = container(
+        name="native-tool-run-foreign",
+        owner="sandbox-native-tool",
+        run_id="run-foreign",
+        tenant_id="tenant-b",
+    )
+    fake.containers_by_name = {
+        item.name: item
+        for item in (primary, paired_native, orphan_native, foreign_native)
+    }
+
+    statuses = await provider.list_runtime_containers({"tenant_id": "tenant-a"})
+    assert {status.container_id for status in statuses} == {
+        "exec-run-paired",
+        "native-tool-run-paired",
+        "native-tool-run-orphan",
+    }
+
+    results = await provider.cleanup_orphan_containers(
+        {"tenant_id": "tenant-a"},
+        reason="admin_runtime",
+    )
+
+    assert [result.container_id for result in results] == ["native-tool-run-orphan"]
+    assert orphan_native.removed is True
+    assert paired_native.removed is False
+    assert foreign_native.removed is False

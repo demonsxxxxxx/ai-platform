@@ -148,11 +148,14 @@ def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
     manifest = primary_manifest("native-review", "hash-native")
     manifest["source"] = {"kind": "uploaded"}
     manifest["builtin_tool_identities"] = []
+    manifest["dependency_ids"] = ["minimax-docx"]
+    dependency = primary_manifest("minimax-docx", "hash-minimax")
+    dependency["builtin_tool_identities"] = ["Bash", "Write"]
     payload = parse_queue_payload(
         base_payload(
             skill_id="native-review",
             skill_version="hash-native",
-            skill_manifests=[manifest],
+            skill_manifests=[manifest, dependency],
         )
     )
 
@@ -165,6 +168,9 @@ def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
 
     assert [subject["identity"] for subject in subjects] == ["Skill"]
     assert subjects[0]["execution_strategy"] == "sdk_restricted"
+    assert not container_provider._native_tool_required(
+        types.SimpleNamespace(tool_policy_subjects=subjects)
+    )
 
 
 def snapshot_governance(digest: str = "hash-a") -> dict:

@@ -25,6 +25,7 @@ from app.skills.lifecycle import (
     SKILL_VERSION_DISABLED,
     SKILL_VERSION_DRAFT,
     SKILL_VERSION_RELEASED,
+    SKILL_VERSION_REVIEWED,
     is_releasable_status,
     normalize_skill_version_status,
 )
@@ -638,6 +639,15 @@ async def admin_update_skill_version_status(
         current = await repositories.get_skill_version(conn, skill_id=skill_id, version=version)
         if current is None:
             raise HTTPException(status_code=404, detail="skill_version_not_found")
+        current_status = normalize_skill_version_status(current.get("status"))
+        if (
+            request.status == "reviewed"
+            and current_status not in {SKILL_VERSION_DRAFT, SKILL_VERSION_REVIEWED}
+        ) or (
+            current_status in {SKILL_VERSION_DISABLED, SKILL_VERSION_DEPRECATED}
+            and request.status != current_status
+        ):
+            raise HTTPException(status_code=409, detail="skill_version_status_transition_invalid")
         review: dict[str, object] | None = None
         if request.status == "reviewed":
             review = _build_skill_version_admin_review(current)

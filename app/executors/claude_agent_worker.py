@@ -2,7 +2,6 @@ import base64
 import binascii
 from dataclasses import dataclass, field
 import hashlib
-import mimetypes
 from pathlib import Path
 import posixpath
 import re
@@ -2045,8 +2044,7 @@ def _artifact_content_type(filename: str) -> str:
     for suffix, content_type in explicit.items():
         if lower.endswith(suffix):
             return content_type
-    guessed, _encoding = mimetypes.guess_type(filename, strict=False)
-    return guessed or "application/octet-stream"
+    return "application/octet-stream"
 
 
 def _artifact_type(filename: str, skill_id: str | None = None) -> str:

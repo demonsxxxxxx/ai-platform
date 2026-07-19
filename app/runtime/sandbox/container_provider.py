@@ -248,13 +248,17 @@ def _container_labels(container: Any) -> dict[str, str]:
 
 def _container_status_from_labels(container: Any) -> ContainerStatus | None:
     labels = _container_labels(container)
-    if labels.get("ai-platform.owner") != "sandbox-runtime":
+    owner = labels.get("ai-platform.owner")
+    if owner not in {"sandbox-runtime", "sandbox-native-tool"}:
         return None
     run_id = labels.get("ai-platform.run_id")
     sandbox_mode = labels.get("ai-platform.sandbox_mode")
     if sandbox_mode not in {"ephemeral", "persistent"}:
         sandbox_mode = None
-    container_id = f"exec-{run_id}" if run_id else getattr(container, "id", getattr(container, "name", ""))
+    if run_id:
+        container_id = f"native-tool-{run_id}" if owner == "sandbox-native-tool" else f"exec-{run_id}"
+    else:
+        container_id = getattr(container, "id", getattr(container, "name", ""))
     return ContainerStatus(
         container_id=container_id,
         container_name=getattr(container, "name", ""),
@@ -267,7 +271,11 @@ def _container_status_from_labels(container: Any) -> ContainerStatus | None:
         run_id=run_id,
         sandbox_mode=sandbox_mode,
         browser_enabled=labels.get("ai-platform.browser_enabled", "false").lower() == "true",
-        executor_url=_published_executor_url_from_container(container),
+        executor_url=(
+            None
+            if owner == "sandbox-native-tool"
+            else _published_executor_url_from_container(container)
+        ),
         detail={"labels": labels},
     )
 
@@ -299,6 +307,17 @@ def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> boo
         ) and str(labels.get(key) or "") != expected:
             return False
     return True
+
+
+def _container_scope_key(status: ContainerStatus) -> tuple[str | None, ...]:
+    return (
+        status.tenant_id,
+        status.workspace_id,
+        status.user_id,
+        status.session_id,
+        status.run_id,
+        status.sandbox_mode,
+    )
 
 
 def _lease_matches_request_workspace(
@@ -418,6 +437,7 @@ def _native_tool_labels(request: SandboxRuntimeRequest) -> dict[str, str]:
         "ai-platform.session_id": request.session_id,
         "ai-platform.run_id": request.run_id,
         "ai-platform.sandbox_mode": request.sandbox_mode,
+        "ai-platform.browser_enabled": "true" if request.browser_enabled else "false",
     }
 
 
@@ -2123,7 +2143,10 @@ class DockerContainerProvider:
 
     async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]:
         try:
-            containers = self._get_client().containers.list(all=True, filters={"label": ["ai-platform.owner=sandbox-runtime"]})
+            containers = self._get_client().containers.list(
+                all=True,
+                filters={"label": ["ai-platform.owner"]},
+            )
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
             if normalized_exc is not None:
@@ -2138,20 +2161,40 @@ class DockerContainerProvider:
 
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
         try:
-            containers = self._get_client().containers.list(all=True, filters={"label": ["ai-platform.owner=sandbox-runtime"]})
+            containers = self._get_client().containers.list(
+                all=True,
+                filters={"label": ["ai-platform.owner"]},
+            )
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
             if normalized_exc is not None:
                 raise normalized_exc from exc
             raise
-        results: list[StopResult] = []
+        owned: list[tuple[Any, ContainerStatus]] = []
         for container in containers:
             status = _container_status_from_labels(container)
             if status is None or not _matches_filters(status, filters):
                 continue
-            if status.status == "running":
+            owned.append((container, status))
+        live_primary_scopes = {
+            _container_scope_key(status)
+            for _container, status in owned
+            if status.detail.get("labels", {}).get("ai-platform.owner") == "sandbox-runtime"
+            and status.status in {"created", "running", "restarting"}
+        }
+        results: list[StopResult] = []
+        for container, status in owned:
+            labels = status.detail.get("labels")
+            owner = labels.get("ai-platform.owner") if isinstance(labels, dict) else ""
+            if owner == _NATIVE_TOOL_OWNER:
+                if (
+                    status.status in {"created", "running", "restarting"}
+                    and _container_scope_key(status) in live_primary_scopes
+                ):
+                    continue
+            elif status.status == "running":
                 continue
-            if status.status not in {"exited", "dead", "removing", "removed"}:
+            elif status.status not in {"exited", "dead", "removing", "removed"}:
                 continue
             try:
                 if hasattr(container, "remove"):

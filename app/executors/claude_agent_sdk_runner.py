@@ -936,11 +936,13 @@ def _parameters_match_subject(subject: dict[str, Any], tool_name: str, tool_inpu
 
 _WORKSPACE_PATH_PARAMETER = {
     "Read": "file_path",
-    "Glob": "path",
     "LS": "path",
     "Write": "file_path",
     "Edit": "file_path",
 }
+_WORKSPACE_INTERNAL_ROOTS = frozenset(
+    {".ai-platform", ".claude-config", ".home", ".pins", ".tmp"}
+)
 _NATIVE_TOOL_MAX_COMMAND_BYTES = 64 * 1024
 _NATIVE_TOOL_DEFAULT_TIMEOUT_MS = 120_000
 _NATIVE_TOOL_MAX_TIMEOUT_MS = 600_000
@@ -958,27 +960,32 @@ def _workspace_path_parameters_authorized(
 ) -> bool:
     if str(subject.get("workspace_contract") or "") != SKILL_WORKSPACE_CONTRACT_VERSION:
         return True
+
+    def path_authorized(raw: object) -> bool:
+        if not isinstance(raw, str) or not raw or "\x00" in raw:
+            return False
+        try:
+            root = workspace_root.resolve(strict=True)
+            candidate = Path(raw)
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            relative = candidate.resolve(strict=False).relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return not (
+            relative.parts and relative.parts[0].lower() in _WORKSPACE_INTERNAL_ROOTS
+        )
+
+    if not isinstance(tool_input, dict):
+        return False
+    if tool_name == "Glob":
+        return path_authorized(tool_input.get("path") or ".") and path_authorized(
+            tool_input.get("pattern")
+        )
     key = _WORKSPACE_PATH_PARAMETER.get(tool_name)
     if key is None:
         return True
-    if not isinstance(tool_input, dict):
-        return False
-    raw = tool_input.get(key)
-    if raw in (None, "") and tool_name == "Glob":
-        raw = "."
-    if not isinstance(raw, str) or not raw or "\x00" in raw:
-        return False
-    try:
-        root = workspace_root.resolve(strict=True)
-        candidate = Path(raw)
-        if not candidate.is_absolute():
-            candidate = root / candidate
-        relative = candidate.resolve(strict=False).relative_to(root)
-    except (OSError, RuntimeError, ValueError):
-        return False
-    if relative.parts and relative.parts[0] == ".ai-platform":
-        return False
-    return True
+    return path_authorized(tool_input.get(key))
 
 
 def _native_tool_proxy_input(tool_input: object) -> dict[str, Any] | None:

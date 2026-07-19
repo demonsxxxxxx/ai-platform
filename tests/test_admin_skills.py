@@ -1970,6 +1970,47 @@ def test_admin_skill_version_status_reviewed_requires_release_review(monkeypatch
     assert response.json()["detail"] == "skill_release_review_not_verified"
 
 
+@pytest.mark.parametrize("current_status", ["active", "released", "disabled", "deprecated"])
+def test_admin_skill_version_status_rejects_review_transition_from_non_draft_version(
+    monkeypatch,
+    current_status,
+):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    async def fake_get_version(conn, *, skill_id, version):
+        return {
+            **materializable_uploaded_qa_version(version),
+            "status": current_status,
+        }
+
+    async def fail_update_status(conn, **kwargs):
+        raise AssertionError("invalid lifecycle transition must not update status")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.repositories.update_skill_version_status",
+        fail_update_status,
+        raising=False,
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/hash-existing/status",
+        json={"status": "reviewed"},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "skill_version_status_transition_invalid"
+
+
 def test_admin_skill_version_status_marks_reviewed_and_audits(monkeypatch):
     class FakeConnection:
         pass

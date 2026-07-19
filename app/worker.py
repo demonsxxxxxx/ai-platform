@@ -1064,15 +1064,12 @@ _BUILTIN_CAPABILITY_PARAMETERS = {
 }
 
 
-def _declared_builtin_tool_identities(payload: QueueRunPayload) -> set[str]:
-    """Read only server-built immutable manifest declarations."""
+def _declared_builtin_tool_identities(manifest: dict[str, Any] | None) -> set[str]:
+    """Read only the primary pinned Skill's server-built tool declarations."""
 
-    declarations: set[str] = set()
-    for manifest in payload.skill_manifests:
-        if not isinstance(manifest, dict):
-            continue
-        declarations.update(repositories.canonical_builtin_tool_identities(manifest))
-    return declarations
+    if not isinstance(manifest, dict):
+        return set()
+    return set(repositories.canonical_builtin_tool_identities(manifest))
 
 
 def _builtin_capability_subjects(
@@ -1106,7 +1103,7 @@ def _builtin_capability_subjects(
         if isinstance(primary_manifest, dict)
         else None
     )
-    identities = _declared_builtin_tool_identities(payload)
+    identities = _declared_builtin_tool_identities(primary_manifest)
     if primary_skill_pinned:
         identities.add("Skill")
     for identity in sorted(identities):
