@@ -2475,8 +2475,10 @@ test("useAgent keeps persisted submissions structurally isolated across A-to-B-t
 
 async function assertStaleSubmitCannotOverwriteNewSession({
   clear,
+  resolverFailure,
 }: {
   clear: boolean;
+  resolverFailure: "malformed" | "notFound";
 }) {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -2485,15 +2487,13 @@ async function assertStaleSubmitCannotOverwriteNewSession({
   const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
   const originalFetch = dom.window.fetch;
   let resolveSubmit!: (value: ChatStreamResponse) => void;
-  let resolveSubmissionResolution!: (value: ChatSubmissionResolution) => void;
   let resolverSubmissionId: string | null = null;
   let submissionCalls = 0;
+  let retryCalls = 0;
   let sseCalls = 0;
-  const pendingSubmissionResolution = new Promise<ChatSubmissionResolution>((resolve) => {
-    resolveSubmissionResolution = resolve;
-  });
   dom.window.fetch = async () => {
     sseCalls += 1;
     return completedSseResponse();
@@ -2510,7 +2510,27 @@ async function assertStaleSubmitCannotOverwriteNewSession({
   sessionApi.getEvents = async () => ({ events: [] });
   sessionApi.getChatSubmission = async (submissionId) => {
     resolverSubmissionId = submissionId;
-    return pendingSubmissionResolution;
+    if (resolverFailure === "notFound") {
+      throw new ApiRequestError("submission not found", 404, "chat_submission_not_found");
+    }
+    return {
+      protocol_version: "chat_submission_resolution.v2",
+      submission_id: submissionId,
+      state: "queued",
+      outcome: {
+        submission_id: submissionId,
+        status: "queued",
+        session_id: "session-malformed",
+      },
+    } as unknown as ChatSubmissionResolution;
+  };
+  sessionApi.retryChatSubmissionAdmission = async (submissionId) => {
+    retryCalls += 1;
+    return {
+      protocol_version: "chat_submission_resolution.v2",
+      submission_id: submissionId,
+      state: "absent_before_ledger",
+    };
   };
   sessionApi.submitChat = (() => {
     submissionCalls += 1;
@@ -2569,14 +2589,10 @@ async function assertStaleSubmitCannotOverwriteNewSession({
     assert.equal(sseCalls, 0);
     assert.equal(harness.hook.canRetryPendingSubmission, true);
     await harness.act(async () => {
-      resolveSubmissionResolution({
-        protocol_version: "chat_submission_resolution.v2",
-        submission_id: resolverSubmissionId as string,
-        state: "absent_before_ledger",
-      });
-      await Promise.resolve();
+      await harness.hook.retryPendingSubmission();
     });
     await settle(harness.act);
+    assert.equal(retryCalls, 1);
     assert.equal(harness.hook.canRetryPendingSubmission, false);
     assert.equal(harness.hook.messages.length, 0);
     if (clear) {
@@ -2591,18 +2607,25 @@ async function assertStaleSubmitCannotOverwriteNewSession({
     sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
 }
 
-test("useAgent ignores a late submit response after switching sessions", async () => {
-  await assertStaleSubmitCannotOverwriteNewSession({ clear: false });
-});
-
-test("useAgent ignores a late submit response after clearing the session", async () => {
-  await assertStaleSubmitCannotOverwriteNewSession({ clear: true });
-});
+for (const { clear, label } of [
+  { clear: false, label: "switching history" },
+  { clear: true, label: "starting New Chat" },
+]) {
+  for (const resolverFailure of ["malformed", "notFound"] as const) {
+    test(
+      `useAgent keeps a ${label} transcript blank after ${resolverFailure} recovery`,
+      async () => {
+        await assertStaleSubmitCannotOverwriteNewSession({ clear, resolverFailure });
+      },
+    );
+  }
+}
 
 test("useAgent ignores an old title response after clear creates a new session", async () => {
   const harness = await loadReactHarness();

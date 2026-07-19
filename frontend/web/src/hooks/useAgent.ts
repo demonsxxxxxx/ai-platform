@@ -2441,6 +2441,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             submissionId,
             owner,
             previousMessages: submissionUncertaintyRef.current?.previousMessages,
+            suppressMessageProjection: pending.suppressMessageProjection,
           };
           setPendingSubmissionId(submissionId);
           setError(statusUnavailable);
@@ -2531,6 +2532,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             submissionId,
             owner,
             previousMessages: submissionUncertaintyRef.current?.previousMessages,
+            suppressMessageProjection: pending.suppressMessageProjection,
           };
           setPendingSubmissionId(submissionId);
           setError(statusUnavailable);
