@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { UseAgentReturn } from "../types.ts";
+import type { UseAgentOptions, UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
-import type { ChatStreamResponse } from "../../../services/api/session.ts";
+import type {
+  ChatStreamResponse,
+  ChatSubmissionResolution,
+} from "../../../services/api/session.ts";
 
 type Listener = (event: { type: string; [key: string]: unknown }) => void;
 
@@ -293,10 +296,12 @@ function persistedSubmissionStorageValues(): string[] {
 }
 
 async function loadReactHarness({
+  agentOptions,
   strict = false,
   onAuthScopeLayout,
   preserveSubmissionReferences = false,
 }: {
+  agentOptions?: UseAgentOptions;
   strict?: boolean;
   onAuthScopeLayout?: () => void;
   preserveSubmissionReferences?: boolean;
@@ -337,7 +342,7 @@ async function loadReactHarness({
 
   function Probe() {
     authSnapshot = useAuth();
-    snapshot = useAgent();
+    snapshot = useAgent(agentOptions);
     return null;
   }
 
@@ -989,6 +994,896 @@ test("useAgent retains an unknown submission and blocks an automatic duplicate",
   }
 });
 
+test("useAgent preserves a stale fence through New Chat and same-principal login until explicit tombstone recovery", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+  const originalLogout = authApi.logout;
+  const originalLogin = authApi.login;
+  let submissions = 0;
+  let resolverCalls = 0;
+  let returnAuthoritativeAbsence = false;
+  sessionApi.submitChat = (async () => {
+    submissions += 1;
+    if (submissions === 1) {
+      throw new ApiRequestError("gateway failure", 500, "queue_unavailable");
+    }
+    return { status: "needs_confirmation", suggestions: [] };
+  }) as typeof sessionApi.submitChat;
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolverCalls += 1;
+    void submissionId;
+    throw new ApiRequestError(
+      "legacy resolver not found",
+      404,
+      "chat_submission_not_found",
+    );
+  };
+  sessionApi.retryChatSubmissionAdmission = async (submissionId) => {
+    if (!returnAuthoritativeAbsence) {
+      throw new ApiRequestError("recovery not found", 404, "chat_submission_not_found");
+    }
+    return {
+      protocol_version: "chat_submission_resolution.v2",
+      submission_id: submissionId,
+      state: "absent_before_ledger",
+    };
+  };
+  authApi.logout = async () => {};
+  authApi.login = async () => {};
+
+  try {
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("migration-lost submission"), {
+        status: "failed",
+      });
+    });
+    await settle(harness.act);
+    assert.equal(resolverCalls, 1);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+
+    await harness.act(async () => {
+      harness.hook.clearMessages();
+      assert.deepEqual(await harness.hook.sendMessage("New Chat must not clear it"), {
+        status: "failed",
+      });
+    });
+    assert.equal(submissions, 1);
+
+    await harness.act(async () => {
+      assert.equal(await harness.auth.logout(), true);
+    });
+    await settle(harness.act);
+    returnAuthoritativeAbsence = true;
+    await harness.act(async () => {
+      await harness.auth.login({ username: "user-a", password: "test-password" });
+    });
+    await settle(harness.act);
+
+    assert.equal(resolverCalls, 2);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+    await harness.act(async () => {
+      await harness.hook.retryPendingSubmission();
+    });
+    assert.equal(harness.hook.canRetryPendingSubmission, false);
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("recovered same principal"), {
+        status: "accepted",
+      });
+    });
+    assert.equal(submissions, 2);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+    authApi.logout = originalLogout;
+    authApi.login = originalLogin;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent clears a stale pre-ledger fence through explicit retry only after the versioned proof", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+  let submissions = 0;
+  sessionApi.submitChat = (async () => {
+    submissions += 1;
+    if (submissions === 1) {
+      throw new ApiRequestError("gateway failure", 500, "queue_unavailable");
+    }
+    return { status: "needs_confirmation", suggestions: [] };
+  }) as typeof sessionApi.submitChat;
+  sessionApi.getChatSubmission = async () => {
+    throw new ApiRequestError("legacy resolver not found", 404, "chat_submission_not_found");
+  };
+  sessionApi.retryChatSubmissionAdmission = async (submissionId) => ({
+    protocol_version: "chat_submission_resolution.v2",
+    submission_id: submissionId,
+    state: "absent_before_ledger",
+  });
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("retry pre-ledger submission");
+    });
+    await settle(harness.act);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+
+    await harness.act(async () => {
+      await harness.hook.retryPendingSubmission();
+    });
+    assert.equal(harness.hook.canRetryPendingSubmission, false);
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("retry recovery is clear"), {
+        status: "accepted",
+      });
+    });
+    assert.equal(submissions, 2);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent keeps generic, network, malformed, legacy, mismatched-ID, and unknown-version GET/retry results fenced", async () => {
+  const ambiguousResolvers = [
+    {
+      name: "network failure",
+      resolve: async (_submissionId: string) => {
+        throw new Error("resolver network loss");
+      },
+    },
+    {
+      name: "generic 404",
+      resolve: async (_submissionId: string) => {
+        throw new ApiRequestError("not found", 404, "not_found");
+      },
+    },
+    {
+      name: "legacy submission 404",
+      resolve: async (_submissionId: string) => {
+        throw new ApiRequestError("not found", 404, "chat_submission_not_found");
+      },
+    },
+    {
+      name: "unknown protocol version",
+      resolve: async (submissionId: string) =>
+        ({
+          protocol_version: "chat_submission_resolution.v1",
+          submission_id: submissionId,
+          state: "absent_before_ledger",
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "unversioned absence",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "absent_before_ledger",
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "mismatched submission ID",
+      resolve: async (_submissionId: string) =>
+        ({
+          protocol_version: "chat_submission_resolution.v2",
+          submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+          state: "absent_before_ledger",
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "rejection without the exact disposition",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "rejected_before_persist",
+          rejection_code: "chat_submission_retired_before_ledger",
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "rejection without a nonempty code",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "rejected_before_persist",
+          submission_disposition: "rejected_before_persist",
+          rejection_code: " ",
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "rejection with a contradictory outcome",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "rejected_before_persist",
+          submission_disposition: "rejected_before_persist",
+          rejection_code: "chat_submission_retired_before_ledger",
+          outcome: {
+            session_id: "session-contradictory",
+            run_id: "run-contradictory",
+            status: "queued",
+            submission_id: submissionId,
+          },
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "queued outcome without the exact submission ID",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "queued",
+          outcome: {
+            session_id: "session-missing-id",
+            run_id: "run-missing-id",
+            status: "queued",
+          },
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "pending admission outcome without a run ID",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "accepted_pending_enqueue",
+          outcome: {
+            session_id: "session-missing-run",
+            status: "accepted_pending_enqueue",
+            submission_id: submissionId,
+          },
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "confirmation outcome with malformed suggestions",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "needs_confirmation",
+          outcome: {
+            status: "needs_confirmation",
+            submission_id: submissionId,
+            suggestions: [{ capability_id: "skill-a", label: "Skill A" }],
+          },
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "malformed enqueue failure without the exact code",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "enqueue_failed",
+        }) as unknown as ChatSubmissionResolution,
+    },
+  ];
+
+  for (const { name, resolve } of ambiguousResolvers) {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const originalSubmitChat = sessionApi.submitChat;
+    const originalGetChatSubmission = sessionApi.getChatSubmission;
+    const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+    let submissions = 0;
+    sessionApi.submitChat = (async () => {
+      submissions += 1;
+      throw new ApiRequestError("gateway failure", 500, "queue_unavailable");
+    }) as typeof sessionApi.submitChat;
+    sessionApi.getChatSubmission = async (submissionId) => resolve(submissionId);
+    sessionApi.retryChatSubmissionAdmission = async (submissionId) => resolve(submissionId);
+
+    try {
+      await harness.act(async () => {
+        await harness.hook.sendMessage(`ambiguous resolver: ${name}`);
+      });
+      await settle(harness.act);
+      assert.equal(harness.hook.canRetryPendingSubmission, true, name);
+
+      await harness.act(async () => {
+        harness.hook.clearMessages();
+        assert.deepEqual(await harness.hook.sendMessage(`must remain locked: ${name}`), {
+          status: "failed",
+        });
+        await harness.hook.retryPendingSubmission();
+      });
+      assert.equal(submissions, 1, name);
+      assert.equal(harness.hook.canRetryPendingSubmission, true, name);
+    } finally {
+      sessionApi.submitChat = originalSubmitChat;
+      sessionApi.getChatSubmission = originalGetChatSubmission;
+      sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+      await harness.cleanup();
+    }
+  }
+});
+
+test("useAgent preserves a durable A fence when an option getter publishes then throws", async () => {
+  const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
+    "../../browserAuthCoordinator.ts"
+  );
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  let submitCalls = 0;
+  let firedIncarnation = false;
+  sessionApi.submitChat = async () => {
+    submitCalls += 1;
+    throw new Error("the pre-submit ownership check should block this POST");
+  };
+  const harness = await loadReactHarness({
+    agentOptions: {
+      getAgentOptions: () => {
+        if (!firedIncarnation) {
+          firedIncarnation = true;
+          dom.window.dispatchEvent(
+            new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
+              detail: { incarnation: "reentrant-submit-fence" },
+            }) as unknown as { type: string; [key: string]: unknown },
+          );
+          throw new Error("option getter fails after publishing auth invalidation");
+        }
+        return {};
+      },
+    },
+  });
+
+  try {
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("re-entrant auth event"), {
+        status: "failed",
+      });
+    });
+    assert.equal(firedIncarnation, true);
+    assert.equal(submitCalls, 0);
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+    assert.match(
+      persistedSubmissionStorageValues().join("\n"),
+      /"owner":\["tenant-a","user-a"\]/,
+      "the resolver key is retained for the original A owner",
+    );
+
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("still fail closed"), {
+        status: "failed",
+      });
+    });
+    assert.equal(submitCalls, 0);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent fences send, resolver, and retry through deferred same-principal refresh", async () => {
+  const submissionA = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+  clearPersistedSubmissionReferences();
+  dom.window.localStorage.setItem(
+    "ai_platform_chat_submission_references_v1",
+    JSON.stringify([
+      { version: 1, owner: ["tenant-a", "user-a"], submissionId: submissionA },
+    ]),
+  );
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalAuthLogin = authApi.login;
+  const originalAuthGetCurrentUser = authApi.getCurrentUser;
+  const resolverCalls: string[] = [];
+  let retryCalls = 0;
+  let submitCalls = 0;
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolverCalls.push(submissionId);
+    throw new ApiRequestError("not found", 404, "chat_submission_not_found");
+  };
+  sessionApi.retryChatSubmissionAdmission = async () => {
+    retryCalls += 1;
+    throw new Error("refresh fence should block retry admission");
+  };
+  sessionApi.submitChat = async () => {
+    submitCalls += 1;
+    throw new Error("refresh fence should block chat admission");
+  };
+  const harness = await loadReactHarness({ preserveSubmissionReferences: true });
+  authApi.login = async () => {};
+
+  try {
+    await harness.loginAsBeforePassiveEffects("user-a", "tenant-a");
+    await settle(harness.act);
+    assert.deepEqual(resolverCalls, [submissionA]);
+    const principalA = harness.auth.user;
+    if (principalA === null) {
+      throw new Error("the initial A principal should be hydrated");
+    }
+    let resolvePrincipal!: (value: NonNullable<typeof harness.auth.user>) => void;
+    let markPrincipalRequested!: () => void;
+    const principalRequested = new Promise<void>((resolve) => {
+      markPrincipalRequested = resolve;
+    });
+    const deferredPrincipal = new Promise<NonNullable<typeof harness.auth.user>>((resolve) => {
+      resolvePrincipal = resolve;
+    });
+    authApi.getCurrentUser = (() => {
+      markPrincipalRequested();
+      return deferredPrincipal;
+    }) as typeof authApi.getCurrentUser;
+
+    let refresh!: Promise<unknown>;
+    await harness.act(async () => {
+      refresh = harness.auth.refreshUser();
+      await principalRequested;
+    });
+    const resolverCallsBeforeRefreshSettles = resolverCalls.length;
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("must wait for refresh"), {
+        status: "failed",
+      });
+      await harness.hook.retryPendingSubmission();
+    });
+    assert.equal(submitCalls, 0);
+    assert.equal(retryCalls, 0);
+    assert.equal(resolverCalls.length, resolverCallsBeforeRefreshSettles);
+
+    await harness.act(async () => {
+      resolvePrincipal(principalA);
+      await refresh;
+    });
+    await settle(harness.act);
+    assert.deepEqual(
+      resolverCalls.slice(resolverCallsBeforeRefreshSettles),
+      [submissionA],
+    );
+    assert.match(
+      persistedSubmissionStorageValues().join("\n"),
+      new RegExp(submissionA),
+      "the settled same-principal refresh must reinstall A's durable reference",
+    );
+    assert.equal(submitCalls, 0);
+    assert.equal(retryCalls, 0);
+  } finally {
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+    sessionApi.submitChat = originalSubmitChat;
+    authApi.login = originalAuthLogin;
+    authApi.getCurrentUser = originalAuthGetCurrentUser;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent settles its fence when refresh context setup fails before hydration", async () => {
+  const { BrowserAuthCoordinatorError } = await import(
+    "../../browserAuthCoordinator.ts"
+  );
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const harness = await loadReactHarness();
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const originalLogin = authApi.login;
+  let submitCalls = 0;
+  sessionApi.submitChat = (async () => {
+    submitCalls += 1;
+    return { status: "needs_confirmation", suggestions: [] };
+  }) as typeof sessionApi.submitChat;
+  authApi.bootstrapAuthContext = async () => {
+    throw new BrowserAuthCoordinatorError("auth_context_coordination_unavailable");
+  };
+
+  try {
+    let refreshOutcome!: Awaited<ReturnType<typeof harness.auth.refreshUser>>;
+    await harness.act(async () => {
+      refreshOutcome = await harness.auth.refreshUser();
+    });
+    await settle(harness.act);
+    assert.equal(refreshOutcome.status, "failed");
+    assert.equal(harness.auth.isLoading, false);
+    assert.equal(harness.auth.isAuthenticated, false);
+
+    // Restore the browser-context seam and prove the hook no longer remains
+    // fenced after the pre-hydration failure.
+    authApi.bootstrapAuthContext = originalBootstrap;
+    authApi.login = async () => {};
+    await harness.loginAsBeforePassiveEffects("user-a", "tenant-a");
+    await settle(harness.act);
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("fence is settled"), {
+        status: "accepted",
+      });
+    });
+    assert.equal(submitCalls, 1);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    authApi.bootstrapAuthContext = originalBootstrap;
+    authApi.login = originalLogin;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent hands off an active submission during same-principal refresh", async () => {
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalAuthGetCurrentUser = authApi.getCurrentUser;
+  let startSubmit!: () => void;
+  let resolveSubmit!: (value: ChatStreamResponse) => void;
+  let markPrincipalRequested!: () => void;
+  const submitStarted = new Promise<void>((resolve) => {
+    startSubmit = resolve;
+  });
+  const pendingSubmit = new Promise<ChatStreamResponse>((resolve) => {
+    resolveSubmit = resolve;
+  });
+  const principalRequested = new Promise<void>((resolve) => {
+    markPrincipalRequested = resolve;
+  });
+  const resolverCalls: string[] = [];
+  sessionApi.submitChat = (() => {
+    startSubmit();
+    return pendingSubmit;
+  }) as typeof sessionApi.submitChat;
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolverCalls.push(submissionId);
+    throw new ApiRequestError("not found", 404, "chat_submission_not_found");
+  };
+  const harness = await loadReactHarness();
+
+  try {
+    const principalA = harness.auth.user;
+    if (principalA === null) {
+      throw new Error("the initial A principal should be hydrated");
+    }
+    let resolvePrincipal!: (value: NonNullable<typeof harness.auth.user>) => void;
+    const deferredPrincipal = new Promise<NonNullable<typeof harness.auth.user>>((resolve) => {
+      resolvePrincipal = resolve;
+    });
+    authApi.getCurrentUser = (() => {
+      markPrincipalRequested();
+      return deferredPrincipal;
+    }) as typeof authApi.getCurrentUser;
+
+    let submission!: Promise<unknown>;
+    await harness.act(async () => {
+      submission = harness.hook.sendMessage("refresh while POST awaits");
+      await submitStarted;
+    });
+    let refresh!: Promise<unknown>;
+    await harness.act(async () => {
+      refresh = harness.auth.refreshUser();
+      await principalRequested;
+    });
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+    assert.match(
+      persistedSubmissionStorageValues().join("\n"),
+      /"owner":\["tenant-a","user-a"\]/,
+    );
+
+    await harness.act(async () => {
+      resolvePrincipal(principalA);
+      await refresh;
+    });
+    await settle(harness.act);
+    assert.equal(resolverCalls.length, 1);
+
+    resolveSubmit({
+      session_id: "session-stale-refresh",
+      run_id: "run-stale-refresh",
+      trace_id: "trace-stale-refresh",
+      status: "queued",
+    });
+    await harness.act(async () => {
+      await submission;
+    });
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    authApi.getCurrentUser = originalAuthGetCurrentUser;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent never projects A's active submission after B replaces the principal", async () => {
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalAuthLogin = authApi.login;
+  const originalAuthGetCurrentUser = authApi.getCurrentUser;
+  let startSubmit!: () => void;
+  let resolveSubmit!: (value: ChatStreamResponse) => void;
+  let markPrincipalRequested!: () => void;
+  const submitStarted = new Promise<void>((resolve) => {
+    startSubmit = resolve;
+  });
+  const pendingSubmit = new Promise<ChatStreamResponse>((resolve) => {
+    resolveSubmit = resolve;
+  });
+  const principalRequested = new Promise<void>((resolve) => {
+    markPrincipalRequested = resolve;
+  });
+  let resolverCalls = 0;
+  sessionApi.submitChat = (() => {
+    startSubmit();
+    return pendingSubmit;
+  }) as typeof sessionApi.submitChat;
+  sessionApi.getChatSubmission = async () => {
+    resolverCalls += 1;
+    throw new Error("B must not resolve A's persisted submission");
+  };
+  const harness = await loadReactHarness();
+  authApi.login = async () => {};
+
+  try {
+    const principalA = harness.auth.user;
+    if (principalA === null) {
+      throw new Error("the initial A principal should be hydrated");
+    }
+    const principalB = {
+      ...principalA,
+      id: "user-b",
+      tenant_id: "tenant-b",
+      username: "user-b",
+      email: "user-b@example.test",
+    };
+    let resolvePrincipal!: (value: NonNullable<typeof harness.auth.user>) => void;
+    const deferredPrincipal = new Promise<NonNullable<typeof harness.auth.user>>((resolve) => {
+      resolvePrincipal = resolve;
+    });
+    authApi.getCurrentUser = (() => {
+      markPrincipalRequested();
+      return deferredPrincipal;
+    }) as typeof authApi.getCurrentUser;
+
+    let submission!: Promise<unknown>;
+    await harness.act(async () => {
+      submission = harness.hook.sendMessage("A POST waits through B login");
+      await submitStarted;
+    });
+    let login!: Promise<unknown>;
+    await harness.act(async () => {
+      login = harness.auth.login({ username: "user-b", password: "test-password" });
+      await principalRequested;
+    });
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+
+    await harness.act(async () => {
+      resolvePrincipal(principalB);
+      await login;
+    });
+    await settle(harness.act);
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.canRetryPendingSubmission, false);
+    assert.equal(resolverCalls, 0);
+    assert.match(
+      persistedSubmissionStorageValues().join("\n"),
+      /"owner":\["tenant-a","user-a"\]/,
+      "A's durable key remains recoverable without being projected to B",
+    );
+
+    resolveSubmit({
+      session_id: "session-stale-b",
+      run_id: "run-stale-b",
+      trace_id: "trace-stale-b",
+      status: "queued",
+    });
+    await harness.act(async () => {
+      await submission;
+    });
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.canRetryPendingSubmission, false);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    authApi.login = originalAuthLogin;
+    authApi.getCurrentUser = originalAuthGetCurrentUser;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent clears only exact enqueue failures from GET and retry resolution", async () => {
+  const exactEnqueueFailure = (submissionId: string) =>
+    ({
+      submission_id: submissionId,
+      state: "enqueue_failed",
+      submission_disposition: null,
+      rejection_code: "queue_enqueue_failed",
+      outcome: null,
+    }) as unknown as ChatSubmissionResolution;
+
+  for (const resolutionPath of ["GET", "retry"] as const) {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const originalSubmitChat = sessionApi.submitChat;
+    const originalGetChatSubmission = sessionApi.getChatSubmission;
+    const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+    let submissions = 0;
+    let retryAdmissions = 0;
+    sessionApi.submitChat = (async () => {
+      submissions += 1;
+      if (submissions === 1) {
+        throw new Error("response lost after enqueue failure");
+      }
+      return { status: "needs_confirmation", suggestions: [] };
+    }) as typeof sessionApi.submitChat;
+    sessionApi.getChatSubmission = async (submissionId) => {
+      if (resolutionPath === "GET") return exactEnqueueFailure(submissionId);
+      throw new ApiRequestError("not found", 404, "chat_submission_not_found");
+    };
+    sessionApi.retryChatSubmissionAdmission = async (submissionId) => {
+      retryAdmissions += 1;
+      return exactEnqueueFailure(submissionId);
+    };
+
+    try {
+      await harness.act(async () => {
+        await harness.hook.sendMessage(`enqueue failure via ${resolutionPath}`);
+      });
+      await settle(harness.act);
+      if (resolutionPath === "retry") {
+        assert.equal(harness.hook.canRetryPendingSubmission, true);
+        await harness.act(async () => {
+          await harness.hook.retryPendingSubmission();
+        });
+      }
+      assert.equal(harness.hook.canRetryPendingSubmission, false, resolutionPath);
+      assert.ok(harness.hook.error, "the terminal enqueue failure is visible");
+      await harness.act(async () => {
+        assert.deepEqual(await harness.hook.sendMessage("new submission is allowed"), {
+          status: "accepted",
+        });
+      });
+      assert.equal(submissions, 2, resolutionPath);
+      assert.equal(retryAdmissions, resolutionPath === "retry" ? 1 : 0);
+    } finally {
+      sessionApi.submitChat = originalSubmitChat;
+      sessionApi.getChatSubmission = originalGetChatSubmission;
+      sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+      await harness.cleanup();
+    }
+  }
+});
+
+test("useAgent blocks A mutations through deferred B hydration and restores only the settled owner fence", async () => {
+  const submissionA = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+  const submissionB = "82f7e9d6-2d0d-4be7-9d85-8e558fb07d83";
+  clearPersistedSubmissionReferences();
+  dom.window.localStorage.setItem(
+    "ai_platform_chat_submission_references_v1",
+    JSON.stringify([
+      { version: 1, owner: ["tenant-a", "user-a"], submissionId: submissionA },
+      { version: 1, owner: ["tenant-b", "user-b"], submissionId: submissionB },
+    ]),
+  );
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalAuthLogin = authApi.login;
+  const originalAuthGetCurrentUser = authApi.getCurrentUser;
+  const resolverCalls: string[] = [];
+  let retryCalls = 0;
+  let submitCalls = 0;
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolverCalls.push(submissionId);
+    throw new ApiRequestError("not found", 404, "chat_submission_not_found");
+  };
+  sessionApi.retryChatSubmissionAdmission = async () => {
+    retryCalls += 1;
+    throw new Error("the incarnation fence should block retry admission");
+  };
+  sessionApi.submitChat = async () => {
+    submitCalls += 1;
+    throw new Error("the incarnation fence should block new admission");
+  };
+  authApi.login = async () => {};
+  const harness = await loadReactHarness({ preserveSubmissionReferences: true });
+
+  try {
+    await settle(harness.act);
+    assert.deepEqual(resolverCalls, [submissionA]);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+
+    const principalA = harness.auth.user;
+    if (principalA === null) {
+      throw new Error("the initial A principal should be hydrated");
+    }
+    const principalB = {
+      ...principalA,
+      id: "user-b",
+      tenant_id: "tenant-b",
+      username: "user-b",
+      email: "user-b@example.test",
+    };
+    let resolveBPrincipal!: (value: NonNullable<typeof harness.auth.user>) => void;
+    let markBPrincipalRequested!: () => void;
+    const bPrincipalRequested = new Promise<void>((resolve) => {
+      markBPrincipalRequested = resolve;
+    });
+    const deferredBPrincipal = new Promise<NonNullable<typeof harness.auth.user>>((resolve) => {
+      resolveBPrincipal = resolve;
+    });
+    authApi.getCurrentUser = (() => {
+      markBPrincipalRequested();
+      return deferredBPrincipal;
+    }) as typeof authApi.getCurrentUser;
+
+    let loginB!: Promise<unknown>;
+    await harness.act(async () => {
+      loginB = harness.auth.login({ username: "user-b", password: "test-password" });
+      await bPrincipalRequested;
+    });
+    const resolverCallsBeforeBHydrates = resolverCalls.length;
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("must not submit as A"), {
+        status: "failed",
+      });
+      await harness.hook.retryPendingSubmission();
+    });
+    assert.equal(submitCalls, 0);
+    assert.equal(retryCalls, 0);
+    assert.equal(resolverCalls.length, resolverCallsBeforeBHydrates);
+    assert.match(
+      persistedSubmissionStorageValues().join("\n"),
+      new RegExp(submissionA),
+      "the A durable reference must survive B's deferred principal read",
+    );
+
+    await harness.act(async () => {
+      resolveBPrincipal(principalB);
+      await loginB;
+    });
+    await settle(harness.act);
+    assert.deepEqual(resolverCalls.slice(resolverCallsBeforeBHydrates), [submissionB]);
+
+    let resolveAPrincipal!: (value: NonNullable<typeof harness.auth.user>) => void;
+    let markAPrincipalRequested!: () => void;
+    const aPrincipalRequested = new Promise<void>((resolve) => {
+      markAPrincipalRequested = resolve;
+    });
+    const deferredAPrincipal = new Promise<NonNullable<typeof harness.auth.user>>((resolve) => {
+      resolveAPrincipal = resolve;
+    });
+    authApi.getCurrentUser = (() => {
+      markAPrincipalRequested();
+      return deferredAPrincipal;
+    }) as typeof authApi.getCurrentUser;
+    let loginA!: Promise<unknown>;
+    await harness.act(async () => {
+      loginA = harness.auth.login({ username: "user-a", password: "test-password" });
+      await aPrincipalRequested;
+    });
+    await harness.act(async () => {
+      resolveAPrincipal(principalA);
+      await loginA;
+    });
+    await settle(harness.act);
+    assert.deepEqual(resolverCalls, [submissionA, submissionB, submissionA]);
+    assert.equal(submitCalls, 0);
+    assert.equal(retryCalls, 0);
+  } finally {
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+    sessionApi.submitChat = originalSubmitChat;
+    authApi.login = originalAuthLogin;
+    authApi.getCurrentUser = originalAuthGetCurrentUser;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent keeps an unknown submission locked until explicit admission retry", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -1580,8 +2475,10 @@ test("useAgent keeps persisted submissions structurally isolated across A-to-B-t
 
 async function assertStaleSubmitCannotOverwriteNewSession({
   clear,
+  resolverFailure,
 }: {
   clear: boolean;
+  resolverFailure: "malformed" | "notFound";
 }) {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -1589,8 +2486,13 @@ async function assertStaleSubmitCannotOverwriteNewSession({
   const originalGetEvents = sessionApi.getEvents;
   const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
   const originalFetch = dom.window.fetch;
   let resolveSubmit!: (value: ChatStreamResponse) => void;
+  let resolverSubmissionId: string | null = null;
+  let submissionCalls = 0;
+  let retryCalls = 0;
   let sseCalls = 0;
   dom.window.fetch = async () => {
     sseCalls += 1;
@@ -1606,10 +2508,39 @@ async function assertStaleSubmitCannotOverwriteNewSession({
     metadata: {},
   });
   sessionApi.getEvents = async () => ({ events: [] });
-  sessionApi.submitChat = (() =>
-    new Promise<ChatStreamResponse>((resolve) => {
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolverSubmissionId = submissionId;
+    if (resolverFailure === "notFound") {
+      throw new ApiRequestError("submission not found", 404, "chat_submission_not_found");
+    }
+    return {
+      protocol_version: "chat_submission_resolution.v2",
+      submission_id: submissionId,
+      state: "queued",
+      outcome: {
+        submission_id: submissionId,
+        status: "queued",
+        session_id: "session-malformed",
+      },
+    } as unknown as ChatSubmissionResolution;
+  };
+  sessionApi.retryChatSubmissionAdmission = async (submissionId) => {
+    retryCalls += 1;
+    return {
+      protocol_version: "chat_submission_resolution.v2",
+      submission_id: submissionId,
+      state: "absent_before_ledger",
+    };
+  };
+  sessionApi.submitChat = (() => {
+    submissionCalls += 1;
+    if (submissionCalls > 1) {
+      throw new Error("the durable submission fence should block this POST");
+    }
+    return new Promise<ChatStreamResponse>((resolve) => {
       resolveSubmit = resolve;
-    })) as typeof sessionApi.submitChat;
+    });
+  }) as typeof sessionApi.submitChat;
 
   try {
     let staleSubmit: Promise<unknown> | null = null;
@@ -1617,6 +2548,7 @@ async function assertStaleSubmitCannotOverwriteNewSession({
       staleSubmit = harness.hook.sendMessage("旧会话请求");
       await Promise.resolve();
     });
+    assert.ok(harness.hook.messages.length > 0);
     if (clear) {
       await harness.act(async () => {
         harness.hook.clearMessages();
@@ -1626,6 +2558,19 @@ async function assertStaleSubmitCannotOverwriteNewSession({
         await harness.hook.loadHistory("session-new");
       });
     }
+    await settle(harness.act);
+    assert.ok(resolverSubmissionId, "the active durable key should enter resolver recovery");
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+    assert.match(
+      persistedSubmissionStorageValues().join("\n"),
+      new RegExp(resolverSubmissionId),
+    );
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("不得重复提交"), {
+        status: "failed",
+      });
+    });
+    assert.equal(submissionCalls, 1);
     resolveSubmit({
       session_id: "session-old",
       run_id: "run-old",
@@ -1642,6 +2587,14 @@ async function assertStaleSubmitCannotOverwriteNewSession({
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.messages.length, 0);
     assert.equal(sseCalls, 0);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+    await harness.act(async () => {
+      await harness.hook.retryPendingSubmission();
+    });
+    await settle(harness.act);
+    assert.equal(retryCalls, 1);
+    assert.equal(harness.hook.canRetryPendingSubmission, false);
+    assert.equal(harness.hook.messages.length, 0);
     if (clear) {
       assert.equal(harness.hook.isLoading, false);
       assert.equal(harness.hook.isLoadingHistory, false);
@@ -1653,18 +2606,26 @@ async function assertStaleSubmitCannotOverwriteNewSession({
     sessionApi.getEvents = originalGetEvents;
     sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
 }
 
-test("useAgent ignores a late submit response after switching sessions", async () => {
-  await assertStaleSubmitCannotOverwriteNewSession({ clear: false });
-});
-
-test("useAgent ignores a late submit response after clearing the session", async () => {
-  await assertStaleSubmitCannotOverwriteNewSession({ clear: true });
-});
+for (const { clear, label } of [
+  { clear: false, label: "switching history" },
+  { clear: true, label: "starting New Chat" },
+]) {
+  for (const resolverFailure of ["malformed", "notFound"] as const) {
+    test(
+      `useAgent keeps a ${label} transcript blank after ${resolverFailure} recovery`,
+      async () => {
+        await assertStaleSubmitCannotOverwriteNewSession({ clear, resolverFailure });
+      },
+    );
+  }
+}
 
 test("useAgent ignores an old title response after clear creates a new session", async () => {
   const harness = await loadReactHarness();

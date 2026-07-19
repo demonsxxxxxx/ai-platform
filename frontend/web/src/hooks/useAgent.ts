@@ -30,6 +30,11 @@ import {
   type CapabilitySuggestion,
   type ChatStreamResponse,
 } from "../services/api";
+import {
+  CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION,
+  type ChatSubmissionPreLedgerAbsenceResolution,
+  type ChatSubmissionResolution,
+} from "../services/api/session";
 import { feedbackApi } from "../services/api/feedback";
 import { getAccessToken } from "../services/api/token";
 import { useAuth } from "../hooks/useAuth";
@@ -109,6 +114,107 @@ function isProvenPrePersistenceChatRejection(error: unknown): boolean {
     error.status < 500 &&
     error.submissionDisposition === "rejected_before_persist"
   );
+}
+
+function parseChatSubmissionResolution(
+  value: unknown,
+  submissionId: string,
+): ChatSubmissionResolution | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const protocolVersion = candidate.protocol_version;
+  if (
+    protocolVersion !== undefined &&
+    protocolVersion !== CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION
+  ) {
+    return null;
+  }
+  if (candidate.submission_id !== submissionId) {
+    return null;
+  }
+  if (candidate.state === "absent_before_ledger") {
+    return protocolVersion === CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION
+      ? (candidate as unknown as ChatSubmissionPreLedgerAbsenceResolution)
+      : null;
+  }
+
+  if (candidate.state === "enqueue_failed") {
+    return (
+      (candidate.submission_disposition === undefined ||
+        candidate.submission_disposition === null) &&
+      candidate.rejection_code === "queue_enqueue_failed" &&
+      (candidate.outcome === undefined || candidate.outcome === null)
+    )
+      ? (candidate as unknown as ChatSubmissionResolution)
+      : null;
+  }
+
+  if (candidate.state === "rejected_before_persist") {
+    return candidate.submission_disposition === "rejected_before_persist" &&
+      typeof candidate.rejection_code === "string" &&
+      candidate.rejection_code.trim().length > 0 &&
+      (candidate.outcome === undefined || candidate.outcome === null)
+      ? (candidate as unknown as ChatSubmissionResolution)
+      : null;
+  }
+
+  if (
+    candidate.state !== "queued" &&
+    candidate.state !== "accepted_pending_enqueue" &&
+    candidate.state !== "needs_confirmation"
+  ) {
+    return null;
+  }
+
+  const outcome = candidate.outcome;
+  if (outcome === null || typeof outcome !== "object" || Array.isArray(outcome)) {
+    return null;
+  }
+  const outcomeRecord = outcome as Record<string, unknown>;
+  if (outcomeRecord.submission_id !== submissionId) return null;
+
+  if (
+    candidate.state === "queued" ||
+    candidate.state === "accepted_pending_enqueue"
+  ) {
+    return outcomeRecord.status === candidate.state &&
+      typeof outcomeRecord.session_id === "string" &&
+      outcomeRecord.session_id.length > 0 &&
+      typeof outcomeRecord.run_id === "string" &&
+      outcomeRecord.run_id.length > 0
+      ? (candidate as unknown as ChatSubmissionResolution)
+      : null;
+  }
+
+  if (
+    outcomeRecord.status !== "needs_confirmation" ||
+    !Array.isArray(outcomeRecord.suggestions)
+  ) {
+    return null;
+  }
+  const suggestionsAreValid = outcomeRecord.suggestions.every((suggestion) => {
+    if (suggestion === null || typeof suggestion !== "object" || Array.isArray(suggestion)) {
+      return false;
+    }
+    const suggestionRecord = suggestion as Record<string, unknown>;
+    return (
+      typeof suggestionRecord.capability_id === "string" &&
+      suggestionRecord.capability_id.length > 0 &&
+      typeof suggestionRecord.label === "string" &&
+      suggestionRecord.label.length > 0 &&
+      typeof suggestionRecord.reason === "string"
+    );
+  });
+  if (!suggestionsAreValid) return null;
+  return candidate as unknown as ChatSubmissionResolution;
+}
+
+function isAuthoritativePreLedgerAbsence(
+  resolution: ChatSubmissionResolution,
+): resolution is ChatSubmissionPreLedgerAbsenceResolution {
+  return resolution.state === "absent_before_ledger";
 }
 
 function formatConfirmationMessage(suggestions: CapabilitySuggestion[]): string {
@@ -206,6 +312,15 @@ interface SubmissionUncertainty {
   submissionId: string;
   owner: AuthScope;
   previousMessages?: Message[];
+  suppressMessageProjection?: boolean;
+}
+
+interface ActivePreAdmissionSubmission {
+  owner: AuthScope;
+  submissionId: string;
+  sessionId: string | null;
+  previousMessages: Message[];
+  token: number;
 }
 
 interface PersistedSubmissionReference {
@@ -430,7 +545,12 @@ function runControlAuthKey(identity: RunControlAuthIdentity): string {
 const TERMINAL_HISTORY_HYDRATION_TIMEOUT_MS = 10_000;
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
-  const { hasAnyPermission, isAuthenticated, user } = useAuth();
+  const {
+    hasAnyPermission,
+    isAuthenticated,
+    isLoading: isAuthLoading,
+    user,
+  } = useAuth();
   const [browserAuthIncarnation, setBrowserAuthIncarnation] = useState(
     getBrowserAuthIncarnation,
   );
@@ -531,6 +651,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const authScopeGenerationRef = useRef(0);
   const submissionUncertaintyRef = useRef<SubmissionUncertainty | null>(null);
   const submissionResolverOwnerRef = useRef<string | null>(null);
+  // An incarnation event proves that the browser credential context changed,
+  // but the authoritative principal can still be awaiting hydration.
+  const submissionAuthIncarnationFenceRef = useRef<string | null>(null);
+  const activePreAdmissionSubmissionRef =
+    useRef<ActivePreAdmissionSubmission | null>(null);
   const [pendingSubmissionId, setPendingSubmissionId] = useState<string | null>(null);
   // Resolver-only confirmation has no transcript owner. Keep it separate
   // until a later user action rather than inventing an assistant turn.
@@ -565,6 +690,64 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  const clearActivePreAdmissionSubmission = useCallback(
+    (expectedToken?: number) => {
+      const active = activePreAdmissionSubmissionRef.current;
+      if (!active || (expectedToken !== undefined && active.token !== expectedToken)) {
+        return false;
+      }
+      activePreAdmissionSubmissionRef.current = null;
+      return true;
+    },
+    [],
+  );
+
+  const handoffActivePreAdmissionSubmission = useCallback(
+    ({
+      expectedToken,
+      messages,
+      projectMessages = true,
+      requireCurrentToken = false,
+    }: {
+      expectedToken?: number;
+      messages?: Message[];
+      projectMessages?: boolean;
+      requireCurrentToken?: boolean;
+    } = {}) => {
+      const active = activePreAdmissionSubmissionRef.current;
+      if (!active || (expectedToken !== undefined && active.token !== expectedToken)) {
+        return false;
+      }
+      activePreAdmissionSubmissionRef.current = null;
+      if (
+        (requireCurrentToken && submissionTokenRef.current !== active.token) ||
+        authScopeRef.current !== active.owner
+      ) {
+        return false;
+      }
+      const recoveryMessages = messages ?? active.previousMessages;
+      if (projectMessages) {
+        messagesRef.current = recoveryMessages;
+        setMessages(recoveryMessages);
+      }
+      submissionUncertaintyRef.current = {
+        sessionId: active.sessionId,
+        submissionId: active.submissionId,
+        owner: active.owner,
+        previousMessages: active.previousMessages,
+        suppressMessageProjection: !projectMessages,
+      };
+      setPendingSubmissionId(active.submissionId);
+      setError(
+        i18n.t("chat.runTerminal.statusUnavailable", {
+          defaultValue: i18n.t("chat.requestFailed"),
+        }),
+      );
+      return true;
+    },
+    [],
+  );
 
   const currentRunControlParent = useCallback(
     (target = runControlParentRef.current): RunControlParentIdentity | null => {
@@ -615,6 +798,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       // This handler is the same-tab ownership seam. Abort/invalidate before
       // scheduling React work so a role refresh, login or logout cannot leave
       // an old parent alive long enough to begin a mutation.
+      const hadActivePreAdmission =
+        activePreAdmissionSubmissionRef.current !== null;
+      handoffActivePreAdmissionSubmission();
+      submissionAuthIncarnationFenceRef.current = incarnation;
+      authScopeGenerationRef.current += 1;
+      submissionResolverOwnerRef.current = null;
+      submissionTokenRef.current += 1;
+      isSendingRef.current = false;
+      if (hadActivePreAdmission) {
+        setIsLoading(false);
+      }
       runControlAuthEventRevisionRef.current += 1;
       runControlAuthRevisionRef.current += 1;
       invalidateRunControl();
@@ -629,7 +823,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         BROWSER_AUTH_INCARCINATION_EVENT,
         handleAuthIncarnationChange,
       );
-  }, [invalidateRunControl]);
+  }, [handoffActivePreAdmissionSubmission, invalidateRunControl]);
 
   const clearReconcileOwners = useCallback(() => {
     reconcileOwnerRef.current = null;
@@ -1008,6 +1202,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       invalidateRunControl();
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
+      activePreAdmissionSubmissionRef.current = null;
       streamVersionRef.current += 1;
       statusRetryCountRef.current = 0;
       acceptedRunEventSequenceRef.current = {
@@ -1071,6 +1266,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         isMountedRef.current &&
         mountedGenerationRef.current === mountedGeneration &&
         isCurrentHistoryLoad(historyLoadTokenRef, historyLoadToken);
+      handoffActivePreAdmissionSubmission({ projectMessages: false });
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
       streamVersionRef.current += 1;
@@ -1411,6 +1607,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       reconcileCurrentRun,
       clearReconcileOwners,
       bindRunControlParent,
+      handoffActivePreAdmissionSubmission,
       invalidateRunControl,
       runControlLifecycle,
     ],
@@ -1499,6 +1696,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       if (!isMountedRef.current) return { status: "failed" };
       if (!content.trim()) return { status: "failed" };
 
+      if (submissionAuthIncarnationFenceRef.current !== null) {
+        return { status: "failed" };
+      }
+
       if (submissionUncertaintyRef.current !== null) {
         const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
           defaultValue: i18n.t("chat.requestFailed"),
@@ -1578,6 +1779,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         finishCurrentSubmission();
         return { status: "failed" };
       }
+      activePreAdmissionSubmissionRef.current = {
+        owner: submissionOwner,
+        submissionId,
+        sessionId: requestSessionId,
+        previousMessages,
+        token: submissionToken,
+      };
       if (confirmationRecovery !== null) {
         setConfirmationRecovery(null);
       }
@@ -1615,6 +1823,27 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           ...agentOptions,
         };
 
+        // Option getters are application extension seams. A getter can
+        // synchronously publish an auth-incarnation event, so validate the
+        // same ownership facts immediately before the irreversible POST.
+        if (
+          submissionTokenRef.current !== submissionToken ||
+          submissionAuthIncarnationFenceRef.current !== null ||
+          authScopeRef.current !== submissionOwner
+        ) {
+          handoffActivePreAdmissionSubmission({
+            expectedToken: submissionToken,
+            requireCurrentToken: true,
+          });
+          setConnectionStatus("disconnected");
+          setIsInitializingSandbox(false);
+          setIsLoading(false);
+          if (submissionTokenRef.current === submissionToken) {
+            isSendingRef.current = false;
+          }
+          return { status: "failed" };
+        }
+
         const submitData: ChatStreamResponse = await sessionApi.submitChat(
           content,
           requestSessionId ?? undefined,
@@ -1628,6 +1857,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         );
 
         if (!isCurrentRequestSession()) {
+          handoffActivePreAdmissionSubmission({
+            expectedToken: submissionToken,
+            requireCurrentToken: true,
+          });
           return { status: "failed" };
         }
 
@@ -1638,6 +1871,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         const protocolEchoed = submitData.submission_id === submissionId;
 
         if (isChatStreamNeedsConfirmation(submitData)) {
+          clearActivePreAdmissionSubmission(submissionToken);
           const confirmationMessages = projectOwnedConfirmationMessages(
             messagesRef.current,
             submitData.suggestions,
@@ -1688,6 +1922,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             previousMessages,
           };
           setPendingSubmissionId(submissionId);
+          clearActivePreAdmissionSubmission(submissionToken);
           setError(statusUnavailable);
           toast.error(statusUnavailable);
           setConnectionStatus("disconnected");
@@ -1825,6 +2060,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           throw new Error("Missing session_id or run_id");
         }
         admissionAccepted = true;
+        clearActivePreAdmissionSubmission(submissionToken);
         removePersistedSubmissionReference(submissionOwner, submissionId);
         setPendingSubmissionId(null);
 
@@ -1866,12 +2102,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return { status: "accepted" };
       } catch (err) {
         if (!isCurrentRequestSession()) {
+          handoffActivePreAdmissionSubmission({
+            expectedToken: submissionToken,
+            requireCurrentToken: true,
+          });
           return { status: "failed" };
         }
         toast.dismiss("chat-queue");
         const prePersistenceRejection =
           !admissionAccepted && isProvenPrePersistenceChatRejection(err);
         if (prePersistenceRejection) {
+          clearActivePreAdmissionSubmission(submissionToken);
           removePersistedSubmissionReference(submissionOwner, submissionId);
           setPendingSubmissionId(null);
           messagesRef.current = previousMessages;
@@ -1906,15 +2147,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           // The request may have committed before its response was lost. Keep
           // its user turn without projecting an invented assistant result, and
           // block another mutation until history/status reconciliation.
-          messagesRef.current = uncertainMessages;
-          setMessages(uncertainMessages);
-          submissionUncertaintyRef.current = {
-            sessionId: requestSessionId,
-            submissionId,
-            owner: submissionOwner,
-            previousMessages,
-          };
-          setPendingSubmissionId(submissionId);
+          handoffActivePreAdmissionSubmission({
+            expectedToken: submissionToken,
+            messages: uncertainMessages,
+            requireCurrentToken: true,
+          });
           setError(statusUnavailable);
           toast.error(statusUnavailable);
         } else {
@@ -1950,8 +2187,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       finalizeRunStatusUnavailable,
       reconcileCurrentRun,
       clearReconcileOwners,
+      clearActivePreAdmissionSubmission,
       confirmationRecovery,
       bindRunControlParent,
+      handoffActivePreAdmissionSubmission,
       invalidateRunControl,
     ],
   );
@@ -1981,6 +2220,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     // delayed submit or history restore cannot repopulate this blank session.
     historyLoadTokenRef.current += 1;
     invalidateRunControl();
+    handoffActivePreAdmissionSubmission({ projectMessages: false });
     sessionGenerationRef.current += 1;
     submissionTokenRef.current += 1;
     streamVersionRef.current += 1;
@@ -2022,7 +2262,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     }
     clearReconnectTimeout(reconnectTimeoutRef);
     toast.dismiss("chat-queue");
-  }, [clearReconcileOwners, invalidateRunControl]);
+  }, [
+    clearReconcileOwners,
+    handoffActivePreAdmissionSubmission,
+    invalidateRunControl,
+  ]);
 
   useLayoutEffect(() => {
     if (runControlAuthIdentityRef.current === runControlAuthIdentity) {
@@ -2080,6 +2324,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           current.submissionId === persisted.submissionId
             ? current.previousMessages
             : undefined,
+        suppressMessageProjection:
+          current &&
+          authScopesEqual(current.owner, owner) &&
+          current.submissionId === persisted.submissionId
+            ? current.suppressMessageProjection
+            : undefined,
       };
       setPendingSubmissionId(persisted.submissionId);
       return persisted;
@@ -2094,6 +2344,34 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     },
     [installPersistedSubmissionFence],
   );
+
+  useLayoutEffect(() => {
+    const fencedIncarnation = submissionAuthIncarnationFenceRef.current;
+    if (
+      fencedIncarnation === null ||
+      fencedIncarnation !== browserAuthIncarnation ||
+      isAuthLoading ||
+      (isAuthenticated && authScope === null)
+    ) {
+      return;
+    }
+    // Hydration has now settled on this incarnation. Reinstall only that
+    // principal's durable reference before passive resolver work may begin.
+    submissionAuthIncarnationFenceRef.current = null;
+    if (authScope !== null && installPersistedSubmissionFence(authScope)) {
+      setError(
+        i18n.t("chat.runTerminal.statusUnavailable", {
+          defaultValue: i18n.t("chat.requestFailed"),
+        }),
+      );
+    }
+  }, [
+    authScope,
+    browserAuthIncarnation,
+    installPersistedSubmissionFence,
+    isAuthenticated,
+    isAuthLoading,
+  ]);
 
   useLayoutEffect(() => {
     const previousAuthScope = authScopeRef.current;
@@ -2133,6 +2411,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const pending = submissionUncertaintyRef.current;
       if (
         !pending ||
+        submissionAuthIncarnationFenceRef.current !== null ||
         pending.submissionId !== submissionId ||
         !authScopesEqual(pending.owner, owner) ||
         !authScopesEqual(authScopeRef.current, owner)
@@ -2144,6 +2423,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const isCurrentResolution = (expectedSessionGeneration = resolverSessionGeneration) =>
         isMountedRef.current &&
         authScopeGenerationRef.current === authScopeGeneration &&
+        submissionAuthIncarnationFenceRef.current === null &&
         sessionGenerationRef.current === expectedSessionGeneration &&
         authScopesEqual(authScopeRef.current, owner) &&
         submissionUncertaintyRef.current?.submissionId === submissionId &&
@@ -2152,14 +2432,49 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         defaultValue: i18n.t("chat.requestFailed"),
       });
       try {
-        const resolution = await sessionApi.getChatSubmission(submissionId);
+        const response = await sessionApi.getChatSubmission(submissionId);
         if (!isCurrentResolution()) return;
-        const outcome = resolution.outcome;
-        if (resolution.state === "rejected_before_persist") {
-          const previous = pending.previousMessages || [];
+        const resolution = parseChatSubmissionResolution(response, submissionId);
+        if (resolution === null) {
+          submissionUncertaintyRef.current = {
+            sessionId: submissionUncertaintyRef.current?.sessionId || null,
+            submissionId,
+            owner,
+            previousMessages: submissionUncertaintyRef.current?.previousMessages,
+            suppressMessageProjection: pending.suppressMessageProjection,
+          };
+          setPendingSubmissionId(submissionId);
+          setError(statusUnavailable);
+          return;
+        }
+        if (isAuthoritativePreLedgerAbsence(resolution)) {
+          const previous = pending.suppressMessageProjection
+            ? []
+            : pending.previousMessages || [];
           messagesRef.current = previous;
           setMessages(previous);
           setError(null);
+          advancePersistedSubmissionFence(owner, submissionId);
+          return;
+        }
+        const outcome = resolution.outcome;
+        if (resolution.state === "rejected_before_persist") {
+          const previous = pending.suppressMessageProjection
+            ? []
+            : pending.previousMessages || [];
+          messagesRef.current = previous;
+          setMessages(previous);
+          setError(null);
+          advancePersistedSubmissionFence(owner, submissionId);
+          return;
+        }
+        if (resolution.state === "enqueue_failed") {
+          const previous = pending.suppressMessageProjection
+            ? []
+            : pending.previousMessages || [];
+          messagesRef.current = previous;
+          setMessages(previous);
+          setError(i18n.t("chat.runTerminal.failed"));
           advancePersistedSubmissionFence(owner, submissionId);
           return;
         }
@@ -2217,6 +2532,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             submissionId,
             owner,
             previousMessages: submissionUncertaintyRef.current?.previousMessages,
+            suppressMessageProjection: pending.suppressMessageProjection,
           };
           setPendingSubmissionId(submissionId);
           setError(statusUnavailable);
@@ -2228,12 +2544,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   const retryPendingSubmission = useCallback(async (): Promise<void> => {
     const pending = submissionUncertaintyRef.current;
-    if (!pending || !authScopesEqual(authScopeRef.current, pending.owner)) return;
+    if (
+      !pending ||
+      submissionAuthIncarnationFenceRef.current !== null ||
+      !authScopesEqual(authScopeRef.current, pending.owner)
+    ) return;
     const authScopeGeneration = authScopeGenerationRef.current;
     const retrySessionGeneration = sessionGenerationRef.current;
     const isCurrentRetry = (expectedSessionGeneration = retrySessionGeneration) =>
       isMountedRef.current &&
       authScopeGenerationRef.current === authScopeGeneration &&
+      submissionAuthIncarnationFenceRef.current === null &&
       sessionGenerationRef.current === expectedSessionGeneration &&
       authScopesEqual(authScopeRef.current, pending.owner) &&
       submissionUncertaintyRef.current?.submissionId === pending.submissionId &&
@@ -2242,15 +2563,42 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       defaultValue: i18n.t("chat.requestFailed"),
     });
     try {
-      const resolution = await sessionApi.retryChatSubmissionAdmission(
+      const response = await sessionApi.retryChatSubmissionAdmission(
         pending.submissionId,
       );
       if (!isCurrentRetry()) return;
-      if (resolution.state === "rejected_before_persist") {
-        const previous = pending.previousMessages || [];
+      const resolution = parseChatSubmissionResolution(response, pending.submissionId);
+      if (resolution === null) {
+        setError(statusUnavailable);
+        return;
+      }
+      if (isAuthoritativePreLedgerAbsence(resolution)) {
+        const previous = pending.suppressMessageProjection
+          ? []
+          : pending.previousMessages || [];
         messagesRef.current = previous;
         setMessages(previous);
         setError(null);
+        advancePersistedSubmissionFence(pending.owner, pending.submissionId);
+        return;
+      }
+      if (resolution.state === "rejected_before_persist") {
+        const previous = pending.suppressMessageProjection
+          ? []
+          : pending.previousMessages || [];
+        messagesRef.current = previous;
+        setMessages(previous);
+        setError(null);
+        advancePersistedSubmissionFence(pending.owner, pending.submissionId);
+        return;
+      }
+      if (resolution.state === "enqueue_failed") {
+        const previous = pending.suppressMessageProjection
+          ? []
+          : pending.previousMessages || [];
+        messagesRef.current = previous;
+        setMessages(previous);
+        setError(i18n.t("chat.runTerminal.failed"));
         advancePersistedSubmissionFence(pending.owner, pending.submissionId);
         return;
       }
@@ -2300,6 +2648,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   useEffect(() => {
     const pending = submissionUncertaintyRef.current;
     if (
+      submissionAuthIncarnationFenceRef.current !== null ||
       authScope === null ||
       pending === null ||
       pendingSubmissionId !== pending.submissionId ||
@@ -2322,7 +2671,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         submissionResolverOwnerRef.current = null;
       }
     });
-  }, [authScope, pendingSubmissionId, resolvePersistedSubmission]);
+  }, [
+    authScope,
+    browserAuthIncarnation,
+    isAuthLoading,
+    pendingSubmissionId,
+    resolvePersistedSubmission,
+  ]);
 
   // Reconnect function
   const handleReconnectSSE = reconcileCurrentRun;

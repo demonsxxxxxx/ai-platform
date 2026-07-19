@@ -807,6 +807,14 @@ class ChatSubmissionResponse(BaseModel):
     outcome: ChatStreamResponse | None = None
 
 
+class ChatSubmissionPreLedgerAbsenceResponse(BaseModel):
+    """Versioned proof that this principal has no durable submission ledger row."""
+
+    protocol_version: Literal["chat_submission_resolution.v2"] = "chat_submission_resolution.v2"
+    submission_id: str
+    state: Literal["absent_before_ledger"] = "absent_before_ledger"
+
+
 class AdminRunSummaryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

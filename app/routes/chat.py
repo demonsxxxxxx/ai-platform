@@ -1,6 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+import logging
 from typing import Any
 from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from starlette.responses import PlainTextResponse
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -15,6 +24,7 @@ from app.models import (
     ChatSessionRequest,
     ChatSessionResponse,
     ChatSessionsResponse,
+    ChatSubmissionPreLedgerAbsenceResponse,
     ChatStreamRequest,
     ChatStreamResponse,
     ChatSubmissionResponse,
@@ -55,8 +65,33 @@ from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 _MISSING = object()
 _ORIGINAL_ENQUEUE_RUN = enqueue_run
+_CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL = "private, no-store"
+_PRELEDGER_RECOVERY_REJECTION_CODE = "chat_submission_retired_before_ledger"
+
+
+class _ChatSubmissionNoStoreRoute(APIRoute):
+    """Make every resolver response non-cacheable without widening router scope."""
+
+    def get_route_handler(self):  # type: ignore[override]
+        original_handler = super().get_route_handler()
+
+        async def no_store_handler(request: Request) -> Response:
+            try:
+                response = await original_handler(request)
+            except HTTPException as exc:
+                response = await http_exception_handler(request, exc)
+            except RequestValidationError as exc:
+                response = await request_validation_exception_handler(request, exc)
+            except Exception:
+                logger.exception("chat submission resolver failed unexpectedly")
+                response = PlainTextResponse("Internal Server Error", status_code=500)
+            response.headers["Cache-Control"] = _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL
+            return response
+
+        return no_store_handler
 
 
 def _chat_submission_http_error(*, status_code: int, code: str) -> HTTPException:
@@ -114,6 +149,93 @@ def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
         rejection_code=str(row["rejection_code"]) if row.get("rejection_code") else None,
         outcome=ChatStreamResponse.model_validate(outcome) if isinstance(outcome, dict) and outcome else None,
     )
+
+
+async def _resolve_chat_submission(
+    *,
+    principal: AuthPrincipal,
+    submission_id: str,
+) -> ChatSubmissionResponse | None:
+    """Read one principal-scoped durable ledger row without changing it."""
+
+    async with transaction() as conn:
+        submission = await repositories.get_chat_submission(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=submission_id,
+        )
+    if submission is None:
+        return None
+    return _chat_submission_resolution(submission)
+
+
+def _preledger_recovery_fingerprint(principal: AuthPrincipal) -> str:
+    """Return the reserved principal-scoped fingerprint for a recovery tombstone."""
+
+    return repositories.chat_submission_fingerprint(
+        {
+            "submission_protocol": "chat_submission_resolution.v2",
+            "recovery": "retire_absent_before_ledger",
+        },
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+    )
+
+
+def _is_preledger_recovery_tombstone(
+    row: dict[str, Any],
+    *,
+    principal: AuthPrincipal,
+) -> bool:
+    """Recognize only the reserved durable record created by recovery POST."""
+
+    return (
+        str(row.get("state") or "") == "rejected_before_persist"
+        and row.get("submission_disposition") == "rejected_before_persist"
+        and row.get("rejection_code") == _PRELEDGER_RECOVERY_REJECTION_CODE
+        and row.get("request_fingerprint_sha256")
+        == _preledger_recovery_fingerprint(principal)
+    )
+
+
+async def _recover_preledger_chat_submission(
+    *,
+    principal: AuthPrincipal,
+    submission_id: str,
+) -> ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse:
+    """Atomically resolve a row or retire an absent key before a late POST can win."""
+
+    recovery_fingerprint = _preledger_recovery_fingerprint(principal)
+    async with transaction() as conn:
+        await repositories.ensure_submission_principal(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            display_name=principal.display_name,
+        )
+        row, created = await repositories.claim_chat_submission(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=submission_id,
+            workspace_id=None,
+            request_fingerprint_sha256=recovery_fingerprint,
+        )
+        if created:
+            await repositories.finalize_chat_submission(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                submission_id=submission_id,
+                state="rejected_before_persist",
+                submission_disposition="rejected_before_persist",
+                rejection_code=_PRELEDGER_RECOVERY_REJECTION_CODE,
+            )
+            return ChatSubmissionPreLedgerAbsenceResponse(submission_id=submission_id)
+        if _is_preledger_recovery_tombstone(row, principal=principal):
+            return ChatSubmissionPreLedgerAbsenceResponse(submission_id=submission_id)
+        return _chat_submission_resolution(row)
 
 
 async def _persist_pre_persistence_rejection(
@@ -187,6 +309,8 @@ async def _load_existing_chat_submission(
         )
     if existing is None:
         return None
+    if _is_preledger_recovery_tombstone(existing, principal=principal):
+        return _chat_stream_response_from_submission(existing)
     if existing.get("request_fingerprint_sha256") != request_fingerprint:
         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
     return _chat_stream_response_from_submission(existing)
@@ -961,6 +1085,11 @@ async def chat_stream(
                     request_fingerprint_sha256=request_fingerprint,
                 )
                 if not created_submission:
+                    if _is_preledger_recovery_tombstone(
+                        claimed_submission,
+                        principal=principal,
+                    ):
+                        return _chat_stream_response_from_submission(claimed_submission)
                     if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
                         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
                     return _chat_stream_response_from_submission(claimed_submission)
@@ -1441,30 +1570,59 @@ async def chat_stream(
     )
 
 
-@router.get("/chat/submissions/{submission_id}", response_model=ChatSubmissionResponse)
 async def get_chat_submission(
     submission_id: UUID,
+    response: Response,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> ChatSubmissionResponse:
     """Resolve a durable client submission without inferring from session history."""
 
-    async with transaction() as conn:
-        submission = await repositories.get_chat_submission(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            submission_id=str(submission_id),
+    response.headers["Cache-Control"] = _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL
+    resolved = await _resolve_chat_submission(
+        principal=principal,
+        submission_id=str(submission_id),
+    )
+    if resolved is None:
+        raise HTTPException(
+            status_code=404,
+            detail="chat_submission_not_found",
+            headers={"Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL},
         )
-    if submission is None:
-        raise HTTPException(status_code=404, detail="chat_submission_not_found")
-    return _chat_submission_resolution(submission)
+    return resolved
 
 
-@router.post("/chat/submissions/{submission_id}/retry-admission", response_model=ChatSubmissionResponse)
 async def retry_chat_submission_admission(
     submission_id: UUID,
+    response: Response,
     principal: AuthPrincipal = Depends(require_principal),
-) -> ChatSubmissionResponse:
+) -> ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse:
     """Explicitly retry queue admission for one already-created run only."""
 
-    return await _admit_chat_submission(principal=principal, submission_id=str(submission_id))
+    response.headers["Cache-Control"] = _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL
+    try:
+        resolved = await _recover_preledger_chat_submission(
+            principal=principal,
+            submission_id=str(submission_id),
+        )
+        if isinstance(resolved, ChatSubmissionPreLedgerAbsenceResponse):
+            return resolved
+        return await _admit_chat_submission(principal=principal, submission_id=str(submission_id))
+    except HTTPException as exc:
+        headers = {**(exc.headers or {}), "Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL}
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers) from exc
+
+
+router.add_api_route(
+    "/chat/submissions/{submission_id}",
+    get_chat_submission,
+    methods=["GET"],
+    response_model=ChatSubmissionResponse,
+    route_class_override=_ChatSubmissionNoStoreRoute,
+)
+router.add_api_route(
+    "/chat/submissions/{submission_id}/retry-admission",
+    retry_chat_submission_admission,
+    methods=["POST"],
+    response_model=ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse,
+    route_class_override=_ChatSubmissionNoStoreRoute,
+)

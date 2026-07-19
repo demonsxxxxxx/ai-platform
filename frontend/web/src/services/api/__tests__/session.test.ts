@@ -144,6 +144,37 @@ test("carries an opaque submission id and resolves its exact status route", () =
   );
 });
 
+test("resolves a chat submission with cache disabled", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method?: string; cache?: RequestCache }> = [];
+  globalThis.fetch = (async (input, init) => {
+    calls.push({
+      url: String(input),
+      method: init?.method,
+      cache: init?.cache,
+    });
+    return new Response(
+      JSON.stringify({
+        submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        state: "queued",
+      }),
+    );
+  }) as typeof fetch;
+
+  try {
+    await sessionApi.getChatSubmission("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4");
+    assert.deepEqual(calls, [
+      {
+        url: "/api/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        method: undefined,
+        cache: "no-store",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("submits one authorized Skill through the exact nested selector", () => {
   const body = buildSubmitChatBody({
     message: "review this document",
