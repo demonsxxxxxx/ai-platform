@@ -1614,19 +1614,23 @@ async def test_docker_provider_uses_no_network_native_sidecar_and_refuses_invali
     assert sidecar["network_disabled"] is True
     assert sidecar["entrypoint"] == ["python", "-m", "app.runtime.sandbox.native_tool_app"]
     assert sidecar["command"] == []
-    assert sidecar["user"] == "0:0"
+    assert sidecar["user"] == "10001:10001"
     assert sidecar["privileged"] is False
     assert sidecar["security_opt"] == ["no-new-privileges:true"]
     assert sidecar["cap_drop"] == ["ALL"]
-    assert sidecar["cap_add"] == ["SETUID", "SETGID", "KILL"]
+    assert "cap_add" not in sidecar
     assert sidecar["read_only"] is True
+    assert sidecar["tmpfs"] == {
+        "/tmp": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m",
+        "/home/ai-platform": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=32m",
+    }
     assert sidecar["environment"] == {
         "AI_PLATFORM_NATIVE_TOOL_TOKEN": executor["environment"]["AI_PLATFORM_NATIVE_TOOL_TOKEN"],
         "AI_PLATFORM_NATIVE_TOOL_WORKSPACE": "/workspace",
         "AI_PLATFORM_NATIVE_TOOL_SOCKET": "/workspace/.ai-platform/native-tool.sock",
         "AI_PLATFORM_NATIVE_TOOL_UID": "10001",
         "AI_PLATFORM_NATIVE_TOOL_GID": "10001",
-        "HOME": "/root",
+        "HOME": "/home/ai-platform",
         "TMPDIR": "/tmp",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONUNBUFFERED": "1",

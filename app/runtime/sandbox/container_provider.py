@@ -453,11 +453,12 @@ def _native_tool_security_kwargs() -> dict[str, Any]:
         "privileged": False,
         "security_opt": ["no-new-privileges:true"],
         "cap_drop": ["ALL"],
-        "cap_add": ["SETUID", "SETGID", "KILL"],
         "read_only": True,
         "tmpfs": {
-            "/tmp": "rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=64m",
-            "/root": "rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=32m",
+            "/tmp": f"rw,noexec,nosuid,nodev,uid={RUNTIME_UID},gid={RUNTIME_GID},mode=0700,size=64m",
+            "/home/ai-platform": (
+                f"rw,noexec,nosuid,nodev,uid={RUNTIME_UID},gid={RUNTIME_GID},mode=0700,size=32m"
+            ),
         },
     }
 
@@ -469,7 +470,7 @@ def _native_tool_environment(token: str) -> dict[str, str]:
         "AI_PLATFORM_NATIVE_TOOL_SOCKET": _NATIVE_TOOL_SOCKET,
         "AI_PLATFORM_NATIVE_TOOL_UID": str(RUNTIME_UID),
         "AI_PLATFORM_NATIVE_TOOL_GID": str(RUNTIME_GID),
-        "HOME": "/root",
+        "HOME": "/home/ai-platform",
         "TMPDIR": "/tmp",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONUNBUFFERED": "1",
@@ -1736,7 +1737,7 @@ class DockerContainerProvider:
                 entrypoint=["python", "-m", "app.runtime.sandbox.native_tool_app"],
                 command=[],
                 network_disabled=True,
-                user="0:0",
+                user=f"{RUNTIME_UID}:{RUNTIME_GID}",
                 **_native_tool_security_kwargs(),
                 **_docker_resource_kwargs(request.resource_limits),
             )
