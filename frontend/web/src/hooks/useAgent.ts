@@ -314,6 +314,14 @@ interface SubmissionUncertainty {
   previousMessages?: Message[];
 }
 
+interface ActivePreAdmissionSubmission {
+  owner: AuthScope;
+  submissionId: string;
+  sessionId: string | null;
+  previousMessages: Message[];
+  token: number;
+}
+
 interface PersistedSubmissionReference {
   version: 1;
   owner: AuthScope;
@@ -645,6 +653,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // An incarnation event proves that the browser credential context changed,
   // but the authoritative principal can still be awaiting hydration.
   const submissionAuthIncarnationFenceRef = useRef<string | null>(null);
+  const activePreAdmissionSubmissionRef =
+    useRef<ActivePreAdmissionSubmission | null>(null);
   const [pendingSubmissionId, setPendingSubmissionId] = useState<string | null>(null);
   // Resolver-only confirmation has no transcript owner. Keep it separate
   // until a later user action rather than inventing an assistant turn.
@@ -679,6 +689,59 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  const clearActivePreAdmissionSubmission = useCallback(
+    (expectedToken?: number) => {
+      const active = activePreAdmissionSubmissionRef.current;
+      if (!active || (expectedToken !== undefined && active.token !== expectedToken)) {
+        return false;
+      }
+      activePreAdmissionSubmissionRef.current = null;
+      return true;
+    },
+    [],
+  );
+
+  const handoffActivePreAdmissionSubmission = useCallback(
+    ({
+      expectedToken,
+      messages,
+      requireCurrentToken = false,
+    }: {
+      expectedToken?: number;
+      messages?: Message[];
+      requireCurrentToken?: boolean;
+    } = {}) => {
+      const active = activePreAdmissionSubmissionRef.current;
+      if (!active || (expectedToken !== undefined && active.token !== expectedToken)) {
+        return false;
+      }
+      activePreAdmissionSubmissionRef.current = null;
+      if (
+        (requireCurrentToken && submissionTokenRef.current !== active.token) ||
+        authScopeRef.current !== active.owner
+      ) {
+        return false;
+      }
+      const recoveryMessages = messages ?? active.previousMessages;
+      messagesRef.current = recoveryMessages;
+      setMessages(recoveryMessages);
+      submissionUncertaintyRef.current = {
+        sessionId: active.sessionId,
+        submissionId: active.submissionId,
+        owner: active.owner,
+        previousMessages: active.previousMessages,
+      };
+      setPendingSubmissionId(active.submissionId);
+      setError(
+        i18n.t("chat.runTerminal.statusUnavailable", {
+          defaultValue: i18n.t("chat.requestFailed"),
+        }),
+      );
+      return true;
+    },
+    [],
+  );
 
   const currentRunControlParent = useCallback(
     (target = runControlParentRef.current): RunControlParentIdentity | null => {
@@ -729,11 +792,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       // This handler is the same-tab ownership seam. Abort/invalidate before
       // scheduling React work so a role refresh, login or logout cannot leave
       // an old parent alive long enough to begin a mutation.
+      const hadActivePreAdmission =
+        activePreAdmissionSubmissionRef.current !== null;
+      handoffActivePreAdmissionSubmission();
       submissionAuthIncarnationFenceRef.current = incarnation;
       authScopeGenerationRef.current += 1;
       submissionResolverOwnerRef.current = null;
       submissionTokenRef.current += 1;
       isSendingRef.current = false;
+      if (hadActivePreAdmission) {
+        setIsLoading(false);
+      }
       runControlAuthEventRevisionRef.current += 1;
       runControlAuthRevisionRef.current += 1;
       invalidateRunControl();
@@ -748,7 +817,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         BROWSER_AUTH_INCARCINATION_EVENT,
         handleAuthIncarnationChange,
       );
-  }, [invalidateRunControl]);
+  }, [handoffActivePreAdmissionSubmission, invalidateRunControl]);
 
   const clearReconcileOwners = useCallback(() => {
     reconcileOwnerRef.current = null;
@@ -1127,6 +1196,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       invalidateRunControl();
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
+      activePreAdmissionSubmissionRef.current = null;
       streamVersionRef.current += 1;
       statusRetryCountRef.current = 0;
       acceptedRunEventSequenceRef.current = {
@@ -1192,6 +1262,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         isCurrentHistoryLoad(historyLoadTokenRef, historyLoadToken);
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
+      activePreAdmissionSubmissionRef.current = null;
       streamVersionRef.current += 1;
       clearReconcileOwners();
       isSendingRef.current = false;
@@ -1701,6 +1772,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         finishCurrentSubmission();
         return { status: "failed" };
       }
+      activePreAdmissionSubmissionRef.current = {
+        owner: submissionOwner,
+        submissionId,
+        sessionId: requestSessionId,
+        previousMessages,
+        token: submissionToken,
+      };
       if (confirmationRecovery !== null) {
         setConfirmationRecovery(null);
       }
@@ -1746,21 +1824,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           submissionAuthIncarnationFenceRef.current !== null ||
           authScopeRef.current !== submissionOwner
         ) {
-          const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
-            defaultValue: i18n.t("chat.requestFailed"),
+          handoffActivePreAdmissionSubmission({
+            expectedToken: submissionToken,
+            requireCurrentToken: true,
           });
-          messagesRef.current = previousMessages;
-          setMessages(previousMessages);
-          // Keep the newly persisted key: no POST was observed, but only the
-          // durable resolver may authoritatively prove it absent.
-          submissionUncertaintyRef.current = {
-            sessionId: requestSessionId,
-            submissionId,
-            owner: submissionOwner,
-            previousMessages,
-          };
-          setPendingSubmissionId(submissionId);
-          setError(statusUnavailable);
           setConnectionStatus("disconnected");
           setIsInitializingSandbox(false);
           setIsLoading(false);
@@ -1783,6 +1850,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         );
 
         if (!isCurrentRequestSession()) {
+          handoffActivePreAdmissionSubmission({
+            expectedToken: submissionToken,
+            requireCurrentToken: true,
+          });
           return { status: "failed" };
         }
 
@@ -1793,6 +1864,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         const protocolEchoed = submitData.submission_id === submissionId;
 
         if (isChatStreamNeedsConfirmation(submitData)) {
+          clearActivePreAdmissionSubmission(submissionToken);
           const confirmationMessages = projectOwnedConfirmationMessages(
             messagesRef.current,
             submitData.suggestions,
@@ -1843,6 +1915,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             previousMessages,
           };
           setPendingSubmissionId(submissionId);
+          clearActivePreAdmissionSubmission(submissionToken);
           setError(statusUnavailable);
           toast.error(statusUnavailable);
           setConnectionStatus("disconnected");
@@ -1980,6 +2053,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           throw new Error("Missing session_id or run_id");
         }
         admissionAccepted = true;
+        clearActivePreAdmissionSubmission(submissionToken);
         removePersistedSubmissionReference(submissionOwner, submissionId);
         setPendingSubmissionId(null);
 
@@ -2021,12 +2095,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return { status: "accepted" };
       } catch (err) {
         if (!isCurrentRequestSession()) {
+          handoffActivePreAdmissionSubmission({
+            expectedToken: submissionToken,
+            requireCurrentToken: true,
+          });
           return { status: "failed" };
         }
         toast.dismiss("chat-queue");
         const prePersistenceRejection =
           !admissionAccepted && isProvenPrePersistenceChatRejection(err);
         if (prePersistenceRejection) {
+          clearActivePreAdmissionSubmission(submissionToken);
           removePersistedSubmissionReference(submissionOwner, submissionId);
           setPendingSubmissionId(null);
           messagesRef.current = previousMessages;
@@ -2061,15 +2140,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           // The request may have committed before its response was lost. Keep
           // its user turn without projecting an invented assistant result, and
           // block another mutation until history/status reconciliation.
-          messagesRef.current = uncertainMessages;
-          setMessages(uncertainMessages);
-          submissionUncertaintyRef.current = {
-            sessionId: requestSessionId,
-            submissionId,
-            owner: submissionOwner,
-            previousMessages,
-          };
-          setPendingSubmissionId(submissionId);
+          handoffActivePreAdmissionSubmission({
+            expectedToken: submissionToken,
+            messages: uncertainMessages,
+            requireCurrentToken: true,
+          });
           setError(statusUnavailable);
           toast.error(statusUnavailable);
         } else {
@@ -2105,8 +2180,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       finalizeRunStatusUnavailable,
       reconcileCurrentRun,
       clearReconcileOwners,
+      clearActivePreAdmissionSubmission,
       confirmationRecovery,
       bindRunControlParent,
+      handoffActivePreAdmissionSubmission,
       invalidateRunControl,
     ],
   );
@@ -2138,6 +2215,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     invalidateRunControl();
     sessionGenerationRef.current += 1;
     submissionTokenRef.current += 1;
+    activePreAdmissionSubmissionRef.current = null;
     streamVersionRef.current += 1;
     isLoadingHistoryRef.current = false;
     isSendingRef.current = false;

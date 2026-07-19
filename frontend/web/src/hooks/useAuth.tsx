@@ -359,6 +359,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
       applyLoggedOut(owner);
       return failedAuthOperation(error);
+    } finally {
+      // ensureBrowserAuthContext can fail before hydrateOwnedUser reaches its
+      // own finally. Only the still-current owner may settle this loading bit.
+      if (isCurrentAuthOperation(owner)) setIsLoading(false);
     }
   }, [
     applyLoggedOut,
