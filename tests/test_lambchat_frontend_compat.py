@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -921,6 +922,380 @@ def test_lambchat_sse_stream_does_not_duplicate_answer_when_assistant_delta_was_
     assert response.text.count("hello from worker") == 1
     assert '"projection_kind": "assistant_final"' in response.text
     assert "evt-delta" not in response.text
+
+
+@pytest.mark.parametrize(
+    (
+        "agent_id",
+        "skill_id",
+        "private_identifier",
+        "public_identifier",
+        "message",
+        "expected_answer",
+    ),
+    [
+        (
+            "general-agent",
+            "general-chat",
+            "general-chat",
+            "general-agent",
+            "当前 general-chat 没有 Bash 工具，无法执行该命令。",
+            "当前 general-agent 没有 Bash 工具，无法执行该命令。",
+        ),
+        (
+            "qa-word-review",
+            "qa-file-reviewer",
+            "qa-word-review",
+            "document-review",
+            "当前 qa-word-review 没有 Bash 工具，无法执行该命令。",
+            "当前 document-review 没有 Bash 工具，无法执行该命令。",
+        ),
+    ],
+)
+def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_history(
+    monkeypatch,
+    agent_id,
+    skill_id,
+    private_identifier,
+    public_identifier,
+    message,
+    expected_answer,
+):
+    run = {
+        "id": "run_a",
+        "session_id": "ses_a",
+        "trace_id": "trace_run_a",
+        "agent_id": agent_id,
+        "skill_id": skill_id,
+        "status": "succeeded",
+        "result_json": {"message": message},
+        "error_code": None,
+        "error_message": None,
+        "finished_at": "2026-07-19T00:00:00Z",
+    }
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run_a")
+        return run
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "evt-delta",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 1,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "severity": "info",
+                "visible_to_user": True,
+                "error_code": None,
+                "payload_json": {
+                    "delta": "旧的部分输出",
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+                "created_at": "2026-07-19T00:00:00Z",
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.get_settings",
+        lambda: SimpleNamespace(run_event_stream_max_heartbeats=1),
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        fake_list_run_artifacts,
+    )
+    client = TestClient(create_app())
+
+    stream_response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=auth_headers(),
+    )
+    history_response = client.get(
+        "/api/sessions/ses_a/events?run_id=run_a",
+        headers=auth_headers(),
+    )
+
+    assert stream_response.status_code == 200
+    assert history_response.status_code == 200
+    stream_payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in stream_response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    stream_final = next(
+        payload
+        for payload in stream_payloads
+        if payload.get("projection_kind") == "assistant_final"
+    )
+    history_final = next(
+        event["data"]
+        for event in history_response.json()["events"]
+        if event["data"].get("projection_kind") == "assistant_final"
+    )
+    assert stream_final == history_final
+    assert stream_final["content"] == expected_answer
+    assert "没有 Bash 工具，无法执行" in stream_final["content"]
+    assert public_identifier in stream_final["content"]
+    assert private_identifier not in stream_response.text
+    assert private_identifier not in history_response.text
+    assert stream_response.text.count(expected_answer) == 1
+    assert "evt-delta" not in stream_response.text
+    assert "evt-delta" not in history_response.text
+    assert "旧的部分输出" not in stream_response.text
+    assert "旧的部分输出" not in history_response.text
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "skill_id", "message", "expected_content"),
+    [
+        (
+            "general-agent",
+            "x",
+            "execute exactly once",
+            "execute exactly once",
+        ),
+        (
+            "general-agent",
+            "x",
+            "x 没有 Bash 工具，无法执行。",
+            "任务完成",
+        ),
+        (
+            "general-agent",
+            "general-chat",
+            "non-general-chat-support 没有 Bash 工具，无法执行。",
+            "non-general-chat-support 没有 Bash 工具，无法执行。",
+        ),
+        (
+            "general-agent",
+            "general-chat",
+            "当前（general-chat），没有 Bash 工具，无法执行。",
+            "当前（general-agent），没有 Bash 工具，无法执行。",
+        ),
+        (
+            "general-agent",
+            "general-chat",
+            "请查看 https://general-chat.example.com/help",
+            "请查看 https://general-chat.example.com/help",
+        ),
+        (
+            "general-agent",
+            "general-chat",
+            "team.general-chat.policy 不可用",
+            "team.general-chat.policy 不可用",
+        ),
+        (
+            "general-agent",
+            "general-chat",
+            "team_general-chat_policy 不可用",
+            "team_general-chat_policy 不可用",
+        ),
+        (
+            "general-agent",
+            "general-chat",
+            "team:general-chat:policy 不可用",
+            "team:general-chat:policy 不可用",
+        ),
+        (
+            "general-agent",
+            "general-chat",
+            "团队general-chat策略不可用",
+            "团队general-chat策略不可用",
+        ),
+        (
+            "unknown-agent",
+            "unknown-skill",
+            "unknown-skill 没有 Bash 工具，无法执行。",
+            "任务完成",
+        ),
+    ],
+    ids=[
+        "one-character-substring",
+        "one-character-exact-unknown",
+        "larger-token",
+        "punctuated-exact-token",
+        "url-domain-token",
+        "dot-qualified-token",
+        "underscore-qualified-token",
+        "colon-qualified-token",
+        "unicode-adjacent-token",
+        "unknown-exact-identifier",
+    ],
+)
+def test_lambchat_terminal_answer_uses_trusted_identifier_token_boundaries(
+    agent_id,
+    skill_id,
+    message,
+    expected_content,
+):
+    from app.routes.lambchat_compat import _terminal_final_payload
+
+    final_payload = _terminal_final_payload(
+        {
+            "id": "run_a",
+            "agent_id": agent_id,
+            "skill_id": skill_id,
+            "status": "succeeded",
+            "result_json": {"message": message},
+        }
+    )
+
+    assert final_payload is not None
+    _, payload, _ = final_payload
+    assert payload["content"] == expected_content
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "skill_id", "message", "expected_content"),
+    [
+        (
+            "qa-word-review",
+            "general-chat",
+            "general-chat 拒绝执行",
+            "任务完成",
+        ),
+        (
+            "qa-word-review",
+            "general-chat",
+            "qa-word-review 拒绝执行",
+            "任务完成",
+        ),
+        (
+            "unknown-agent",
+            "general-chat",
+            "general-chat 拒绝执行",
+            "任务完成",
+        ),
+        (
+            "unknown-agent",
+            "general-chat",
+            "unknown-agent 拒绝执行",
+            "任务完成",
+        ),
+        (
+            "qa-word-review",
+            "unknown-skill",
+            "unknown-skill 拒绝执行",
+            "任务完成",
+        ),
+        (
+            "qa-word-review",
+            "unknown-skill",
+            "qa-word-review 拒绝执行",
+            "任务完成",
+        ),
+        (
+            "qa-word-review",
+            "",
+            "qa-word-review 拒绝执行",
+            "document-review 拒绝执行",
+        ),
+        (
+            "",
+            "general-chat",
+            "general-chat 拒绝执行",
+            "任务完成",
+        ),
+    ],
+    ids=[
+        "mapped-mismatch-skill-side",
+        "mapped-mismatch-agent-side",
+        "mapped-skill-unmapped-agent-skill-side",
+        "mapped-skill-unmapped-agent-agent-side",
+        "unmapped-skill-mapped-agent-skill-side",
+        "unmapped-skill-mapped-agent-agent-side",
+        "missing-skill-mapped-agent",
+        "mapped-skill-missing-agent",
+    ],
+)
+def test_lambchat_terminal_answer_requires_consistent_identifier_capabilities(
+    agent_id,
+    skill_id,
+    message,
+    expected_content,
+):
+    from app.routes.lambchat_compat import _terminal_final_payload
+
+    final_payload = _terminal_final_payload(
+        {
+            "id": "run_a",
+            "agent_id": agent_id,
+            "skill_id": skill_id,
+            "status": "succeeded",
+            "result_json": {"message": message},
+        }
+    )
+
+    assert final_payload is not None
+    _, payload, _ = final_payload
+    assert payload["content"] == expected_content
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "skill_id", "message", "private_marker"),
+    [
+        (
+            "general-agent",
+            "general-chat",
+            "general-chat 拒绝读取 /var/lib/private/answer.txt",
+            "/var/",
+        ),
+        (
+            "executor_native",
+            "custom-skill",
+            "custom-skill 拒绝暴露运行时详情",
+            "executor_native",
+        ),
+    ],
+)
+def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate(
+    agent_id,
+    skill_id,
+    message,
+    private_marker,
+):
+    from app.routes.lambchat_compat import _terminal_final_payload
+
+    final_payload = _terminal_final_payload(
+        {
+            "id": "run_a",
+            "agent_id": agent_id,
+            "skill_id": skill_id,
+            "status": "succeeded",
+            "result_json": {"message": message},
+        }
+    )
+
+    assert final_payload is not None
+    _, payload, _ = final_payload
+    assert payload["content"] == "任务完成"
+    assert private_marker not in str(payload)
+    assert skill_id not in str(payload)
 
 
 def test_lambchat_sse_stream_projects_only_safe_versioned_chat_progress(monkeypatch):
