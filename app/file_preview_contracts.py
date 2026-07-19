@@ -701,12 +701,16 @@ def _parse_xlsx_preview_child(
 
 
 def _configure_isolated_xlsx_parser() -> None:
-    """Select openpyxl's stdlib XML backend before imports in the bounded child."""
+    """Bound native threads and select stdlib XML before child parser imports."""
 
     # The authoritative ZIP/OPC/XML preflight already uses the standard-library
     # parser.  Avoiding openpyxl's optional native backend keeps native library
     # mappings out of the separately address-space-bounded preview child.
     os.environ["OPENPYXL_LXML"] = "False"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 
 def _send_isolated_xlsx_result(send_conn: Any, result: dict[str, Any]) -> None:
