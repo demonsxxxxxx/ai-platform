@@ -266,23 +266,23 @@ def test_build_uploaded_skill_manifest_pin_uses_source_snapshot_files():
             "description": "Review Word documents.",
             "source": {"kind": "uploaded", "storage_key": "package.zip", "files": files},
             "dependency_ids": ["minimax-docx"],
-            "status": "active",
+            "status": "reviewed",
         }
     )
 
-    assert pin == {
-        "skill_id": "qa-file-reviewer",
-        "description": "Review Word documents.",
-        "version": "hash-uploaded",
-        "content_hash": "hash-uploaded",
-        "source": {"kind": "uploaded", "storage_key": "package.zip"},
-            "files": files,
-            "dependency_ids": ["minimax-docx"],
-            "builtin_tool_identities": [],
-            "allowed": True,
-        "staged": False,
-        "used": False,
+    assert pin["source"] == {"kind": "uploaded", "storage_key": "package.zip"}
+    assert pin["files"] == files
+    assert pin["dependency_ids"] == ["minimax-docx"]
+    assert pin["lifecycle_status"] == "reviewed"
+    assert pin["execution_profile"] == {
+        "schema_version": "ai-platform.skill-execution-profile.v1",
+        "strategy": "sdk_native",
+        "trust_basis": "admin_reviewed_release",
+        "builtin_tool_identities": ["Read", "Glob", "LS", "Bash", "Write", "Edit"],
+        "workspace_contract": "ai-platform.skill-workspace.v1",
+        "command_isolation": "sibling-tool-sandbox-v1",
     }
+    assert pin["builtin_tool_identities"] == pin["execution_profile"]["builtin_tool_identities"]
 
 
 def test_build_skill_version_manifest_pin_uses_builtin_snapshot_files():
@@ -296,23 +296,49 @@ def test_build_skill_version_manifest_pin_uses_builtin_snapshot_files():
             "description": "Review Word documents.",
             "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-builtin", "files": files},
             "dependency_ids": [],
-            "status": "active",
+            "status": "released",
         }
     )
 
-    assert pin == {
-        "skill_id": "qa-file-reviewer",
-        "description": "Review Word documents.",
-        "version": "hash-builtin",
-        "content_hash": "hash-builtin",
-        "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-builtin"},
-            "files": files,
-            "dependency_ids": [],
-            "builtin_tool_identities": ["Bash", "Write"],
-            "allowed": True,
-        "staged": False,
-        "used": False,
+    assert pin["source"] == {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-builtin"}
+    assert pin["files"] == files
+    assert pin["lifecycle_status"] == "released"
+    assert pin["execution_profile"] == {
+        "schema_version": "ai-platform.skill-execution-profile.v1",
+        "strategy": "platform_controlled",
+        "trust_basis": "repository_builtin",
+        "builtin_tool_identities": ["Bash", "Write"],
+        "workspace_contract": "ai-platform.skill-workspace.v1",
+        "command_isolation": "minimal-environment-v1",
     }
+    assert pin["builtin_tool_identities"] == ["Bash", "Write"]
+
+
+def test_snapshot_source_rejects_forged_uploaded_execution_profile():
+    files = [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}]
+    manifest = build_uploaded_skill_manifest_pin(
+        {
+            "skill_id": "qa-file-reviewer",
+            "version": "hash-uploaded",
+            "content_hash": "hash-uploaded",
+            "description": "Review Word documents.",
+            "source": {"kind": "uploaded", "storage_key": "package.zip", "files": files},
+            "dependency_ids": [],
+            "status": "released",
+        }
+    )
+
+    forged = {
+        **manifest,
+        "execution_profile": {
+            **manifest["execution_profile"],
+            "strategy": "platform_controlled",
+            "trust_basis": "repository_builtin",
+        },
+    }
+
+    with pytest.raises(repository_module.RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
+        repository_module.run_skill_snapshot_source_json(forged)
 
 
 def test_build_skill_version_policy_manifest_pins_rejects_stale_builtin_dependencies():

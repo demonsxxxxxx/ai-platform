@@ -427,6 +427,9 @@ test("skills phase one backed operations match current public contracts", () => 
   assert.match(skillApi, /\/toggle/);
   assert.match(skillApi, /async updateFile/);
   assert.match(skillApi, /async uploadZip/);
+  assert.match(skillApi, /async adminReviewSkillVersion/);
+  assert.match(skillApi, /async adminPromoteSkillVersion/);
+  assert.match(skillApi, /authFetch<unknown>/);
   assert.match(skillApi, /async previewGitHub/);
   assert.match(skillApi, /async installGitHub/);
   assert.match(skillsPanel, /skillFileWriteBacked = true/);
@@ -438,9 +441,11 @@ test("skills phase one backed operations match current public contracts", () => 
     skillsActions,
     /initialZipSkillSelection\(result\.skills, canAdminUploadSkills\)/,
   );
+  assert.match(skillsActions, /canAdminUploadSkills = isAiAdminUser\(user\)/);
+  assert.doesNotMatch(skillsActions, /Permission\.SKILL_ADMIN/);
   assert.match(zipUploadModal, /const backedCount = zipSkills\.filter\(\(s\) => s\.already_exists\)\.length/);
-  assert.match(zipUploadModal, /canSelectZipSkill\(skill, allowNewSkills\)/);
-  assert.match(zipUploadModal, /!skill\.already_exists && !allowNewSkills/);
+  assert.match(zipUploadModal, /canSelectZipSkill\(skill, adminRelease\)/);
+  assert.match(zipUploadModal, /!skill\.already_exists && !adminRelease/);
   assert.doesNotMatch(skillsPanel, /skillBatchWriteBacked = false/);
 });
 

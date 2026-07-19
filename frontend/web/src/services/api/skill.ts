@@ -23,18 +23,58 @@ import type {
 
 const SKILLS_API = `${API_BASE}/api/skills`;
 
+export type AdminSkillVersionStatus =
+  | "draft"
+  | "reviewed"
+  | "released"
+  | "disabled"
+  | "deprecated"
+  | "active";
+
+/** Safe lifecycle projection. Package, storage, and source metadata stay private. */
+export interface AdminSkillVersionSummary {
+  skillId: string;
+  version: string;
+  status: AdminSkillVersionStatus;
+}
+
 export interface AdminSkillUploadResponse {
-  uploaded: {
-    skill_id: string;
-    version: string;
-    content_hash: string;
+  uploaded: AdminSkillVersionSummary;
+}
+
+/** Safe release-policy projection used only to verify the requested stable promotion. */
+export interface AdminSkillReleasePolicy {
+  skillId: string;
+  channel: "stable";
+  currentVersion: string;
+  rolloutPercent: number;
+  status: "active";
+}
+
+/** Safe admin catalog record. It intentionally excludes source, storage, and package data. */
+export interface AdminSkillCatalogItem {
+  skillId: string;
+  name: string;
+  description: string;
+  lifecycleStatus: "active" | "disabled";
+  distributionStatus: "active" | "disabled";
+  visibleToUser: boolean;
+  latestVersion: string | null;
+  latestVersionStatus: AdminSkillVersionStatus | null;
+  currentVersion: string | null;
+  rolloutPercent: number | null;
+}
+
+/** ZIP preview projection; file paths remain in the package boundary. */
+export interface SkillZipPreviewResponse {
+  skill_count: number;
+  skills: Array<{
+    name: string;
     description: string;
-    source: Record<string, unknown>;
-    dependency_ids: string[];
-    status: string;
-    created_by?: string | null;
-    created_at?: unknown;
-  };
+    file_count: number;
+    files: string[];
+    already_exists: boolean;
+  }>;
 }
 
 export interface SkillListParams {
@@ -71,6 +111,25 @@ export function buildAdminSkillPreviewUrl(): string {
   return `${API_BASE}/api/ai/admin/skills/upload/preview`;
 }
 
+export function buildAdminSkillVersionStatusUrl(
+  skillName: string,
+  version: string,
+): string {
+  return `${API_BASE}/api/ai/admin/skills/${encodeURIComponent(
+    skillName,
+  )}/versions/${encodeURIComponent(version)}/status`;
+}
+
+export function buildAdminSkillPromoteUrl(skillName: string): string {
+  return `${API_BASE}/api/ai/admin/skills/${encodeURIComponent(
+    skillName,
+  )}/promote`;
+}
+
+export function buildAdminSkillCatalogUrl(): string {
+  return `${API_BASE}/api/ai/admin/skills`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -81,6 +140,165 @@ function isStringArray(value: unknown): value is string[] {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return Number.isInteger(value) && (value as number) >= 0;
+}
+
+const ADMIN_SKILL_VERSION_STATUSES = new Set<AdminSkillVersionStatus>([
+  "draft",
+  "reviewed",
+  "released",
+  "disabled",
+  "deprecated",
+  "active",
+]);
+
+function isAdminSkillVersionStatus(
+  value: unknown,
+): value is AdminSkillVersionStatus {
+  return (
+    typeof value === "string" &&
+    ADMIN_SKILL_VERSION_STATUSES.has(value as AdminSkillVersionStatus)
+  );
+}
+
+function invalidAdminSkillLifecycle(): never {
+  throw new Error("admin_skill_lifecycle_invalid");
+}
+
+/**
+ * Drop the raw `source` tree and any package/storage fields before data reaches
+ * application state. Lifecycle actions only need the immutable version identity
+ * and its allowed lifecycle status.
+ */
+export function normalizeAdminSkillVersionResponse(
+  response: unknown,
+): AdminSkillVersionSummary {
+  if (
+    !isRecord(response) ||
+    typeof response.skill_id !== "string" ||
+    response.skill_id.trim().length === 0 ||
+    typeof response.version !== "string" ||
+    response.version.trim().length === 0 ||
+    !isAdminSkillVersionStatus(response.status)
+  ) {
+    invalidAdminSkillLifecycle();
+  }
+  return {
+    skillId: response.skill_id,
+    version: response.version,
+    status: response.status,
+  };
+}
+
+export function normalizeAdminSkillUploadResponse(
+  response: unknown,
+): AdminSkillUploadResponse {
+  if (!isRecord(response)) invalidAdminSkillLifecycle();
+  return { uploaded: normalizeAdminSkillVersionResponse(response.uploaded) };
+}
+
+export function normalizeAdminSkillReleasePolicy(
+  response: unknown,
+): AdminSkillReleasePolicy {
+  if (
+    !isRecord(response) ||
+    typeof response.skill_id !== "string" ||
+    response.skill_id.trim().length === 0 ||
+    response.channel !== "stable" ||
+    typeof response.current_version !== "string" ||
+    response.current_version.trim().length === 0 ||
+    !isNonNegativeInteger(response.rollout_percent) ||
+    response.rollout_percent !== 100 ||
+    response.status !== "active"
+  ) {
+    invalidAdminSkillLifecycle();
+  }
+  return {
+    skillId: response.skill_id,
+    channel: "stable",
+    currentVersion: response.current_version,
+    rolloutPercent: response.rollout_percent,
+    status: "active",
+  };
+}
+
+function isNullableNonBlankString(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && value.trim().length > 0);
+}
+
+export function normalizeAdminSkillCatalogResponse(
+  response: unknown,
+): AdminSkillCatalogItem[] {
+  if (!isRecord(response) || !Array.isArray(response.items)) {
+    invalidAdminSkillLifecycle();
+  }
+  return response.items.map((item) => {
+    if (
+      !isRecord(item) ||
+      typeof item.skill_id !== "string" ||
+      item.skill_id.trim().length === 0 ||
+      typeof item.name !== "string" ||
+      item.name.trim().length === 0 ||
+      typeof item.description !== "string" ||
+      (item.lifecycle_status !== "active" && item.lifecycle_status !== "disabled") ||
+      (item.distribution_status !== "active" && item.distribution_status !== "disabled") ||
+      typeof item.visible_to_user !== "boolean" ||
+      !isNullableNonBlankString(item.latest_version) ||
+      (item.latest_version_status !== null &&
+        !isAdminSkillVersionStatus(item.latest_version_status)) ||
+      !isNullableNonBlankString(item.current_version) ||
+      (item.rollout_percent !== null &&
+        (!isNonNegativeInteger(item.rollout_percent) || item.rollout_percent > 100)) ||
+      (item.latest_version === null) !== (item.latest_version_status === null)
+    ) {
+      invalidAdminSkillLifecycle();
+    }
+    return {
+      skillId: item.skill_id,
+      name: item.name,
+      description: item.description,
+      lifecycleStatus: item.lifecycle_status,
+      distributionStatus: item.distribution_status,
+      visibleToUser: item.visible_to_user,
+      latestVersion: item.latest_version,
+      latestVersionStatus: item.latest_version_status,
+      currentVersion: item.current_version,
+      rolloutPercent: item.rollout_percent,
+    };
+  });
+}
+
+/** Discard raw package file paths after validating the ZIP selection preview. */
+export function normalizeSkillZipPreviewResponse(
+  response: unknown,
+): SkillZipPreviewResponse {
+  if (!isRecord(response) || !isNonNegativeInteger(response.skill_count)) {
+    invalidAdminSkillLifecycle();
+  }
+  const rawSkills = response.skills;
+  if (!Array.isArray(rawSkills) || rawSkills.length !== response.skill_count) {
+    invalidAdminSkillLifecycle();
+  }
+  const skills = rawSkills.map((skill) => {
+    if (
+      !isRecord(skill) ||
+      typeof skill.name !== "string" ||
+      skill.name.trim().length === 0 ||
+      typeof skill.description !== "string" ||
+      !isNonNegativeInteger(skill.file_count) ||
+      typeof skill.already_exists !== "boolean"
+    ) {
+      invalidAdminSkillLifecycle();
+    }
+    return {
+      name: skill.name,
+      description: skill.description,
+      file_count: skill.file_count,
+      // The current UI needs a count, not raw paths from the submitted ZIP.
+      files: [],
+      already_exists: skill.already_exists,
+    };
+  });
+  return { skill_count: response.skill_count, skills };
 }
 
 function isUserSkill(value: unknown): value is UserSkill {
@@ -231,6 +449,12 @@ async function listAllAuthorizedSkills(): Promise<SkillsResponse> {
 }
 
 export const skillApi = {
+  /** List the safe admin lifecycle catalog, including unpublished drafts. */
+  async adminListSkills(): Promise<AdminSkillCatalogItem[]> {
+    const response = await authFetch<unknown>(buildAdminSkillCatalogUrl());
+    return normalizeAdminSkillCatalogResponse(response);
+  },
+
   /**
    * List all user skills
    */
@@ -420,43 +644,27 @@ export const skillApi = {
   /**
    * Preview skills in a ZIP file (without creating them)
    */
-  async previewZip(file: File): Promise<{
-    skill_count: number;
-    skills: Array<{
-      name: string;
-      description: string;
-      file_count: number;
-      files: string[];
-      already_exists: boolean;
-    }>;
-  }> {
+  async previewZip(file: File): Promise<SkillZipPreviewResponse> {
     const formData = new FormData();
     formData.append("file", file);
-    return authFetch(`${SKILLS_API}/upload/preview`, {
+    const response = await authFetch<unknown>(`${SKILLS_API}/upload/preview`, {
       method: "POST",
       body: formData,
     });
+    return normalizeSkillZipPreviewResponse(response);
   },
 
   /**
    * Preview a ZIP file through the admin Skill path with global catalog checks.
    */
-  async adminPreviewZip(file: File): Promise<{
-    skill_count: number;
-    skills: Array<{
-      name: string;
-      description: string;
-      file_count: number;
-      files: string[];
-      already_exists: boolean;
-    }>;
-  }> {
+  async adminPreviewZip(file: File): Promise<SkillZipPreviewResponse> {
     const formData = new FormData();
     formData.append("file", file);
-    return authFetch(buildAdminSkillPreviewUrl(), {
+    const response = await authFetch<unknown>(buildAdminSkillPreviewUrl(), {
       method: "POST",
       body: formData,
     });
+    return normalizeSkillZipPreviewResponse(response);
   },
 
   /**
@@ -491,10 +699,45 @@ export const skillApi = {
   ): Promise<AdminSkillUploadResponse> {
     const formData = new FormData();
     formData.append("package", file);
-    return authFetch(buildAdminSkillUploadUrl(skillName), {
+    const response = await authFetch<unknown>(buildAdminSkillUploadUrl(skillName), {
       method: "POST",
       body: formData,
     });
+    return normalizeAdminSkillUploadResponse(response);
+  },
+
+  /** Mark an immutable draft version as reviewed before stable promotion. */
+  async adminReviewSkillVersion(
+    skillName: string,
+    version: string,
+  ): Promise<AdminSkillVersionSummary> {
+    const response = await authFetch<unknown>(
+      buildAdminSkillVersionStatusUrl(skillName, version),
+      {
+        method: "POST",
+        body: JSON.stringify({ status: "reviewed" }),
+      },
+    );
+    return normalizeAdminSkillVersionResponse(response);
+  },
+
+  /** Promote a reviewed version to the fully rolled-out stable channel. */
+  async adminPromoteSkillVersion(
+    skillName: string,
+    version: string,
+  ): Promise<AdminSkillReleasePolicy> {
+    const response = await authFetch<unknown>(
+      buildAdminSkillPromoteUrl(skillName),
+      {
+        method: "POST",
+        body: JSON.stringify({
+          version,
+          channel: "stable",
+          rollout_percent: 100,
+        }),
+      },
+    );
+    return normalizeAdminSkillReleasePolicy(response);
   },
 
   /**

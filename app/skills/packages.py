@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import io
+import re
+import stat
 import zipfile
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -19,8 +22,11 @@ from app.validation import assert_safe_id
 
 MAX_SKILL_PACKAGE_FILE_BYTES = MAX_SKILL_SNAPSHOT_FILE_BYTES
 MAX_SKILL_PACKAGE_TOTAL_BYTES = MAX_SKILL_SNAPSHOT_TOTAL_BYTES
+MAX_SKILL_PACKAGE_FILES = 1024
+_SUPPORTED_SKILL_PACKAGE_COMPRESSION = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
 SKILL_PACKAGE_CONTRACT_SCHEMA_VERSION = "ai-platform.skill-package-contract.v1"
 SKILL_DEPENDENCY_EVIDENCE_SCHEMA_VERSION = "ai-platform.skill-dependency-evidence.v1"
+SKILL_ADMIN_TRUST_REVIEW_SCHEMA_VERSION = "ai-platform.skill-admin-trust-review.v1"
 
 
 @dataclass(frozen=True)
@@ -33,13 +39,36 @@ class ParsedSkillPackage:
 
 
 def _safe_zip_member_path(name: str) -> str:
-    normalized = name.replace("\\", "/").strip("/")
-    if not normalized:
+    if not name or "\x00" in name:
+        raise ValueError("skill_package_path_escape")
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/") or normalized.startswith("//") or re.match(r"^[A-Za-z]:", normalized):
+        raise ValueError("skill_package_path_escape")
+    normalized = normalized.rstrip("/")
+    if not normalized or any(part in {"", ".", ".."} for part in normalized.split("/")):
         raise ValueError("skill_package_path_escape")
     path = PurePosixPath(normalized)
-    if path.is_absolute() or ".." in path.parts:
+    if path.is_absolute():
         raise ValueError("skill_package_path_escape")
     return path.as_posix()
+
+
+def _validate_zip_entry(info: zipfile.ZipInfo) -> None:
+    if info.flag_bits & 0x1:
+        raise ValueError("skill_package_encrypted_entry")
+    if info.compress_type not in _SUPPORTED_SKILL_PACKAGE_COMPRESSION:
+        raise ValueError("skill_package_unsupported_compression")
+    if info.create_system != 3:
+        return
+    mode = (info.external_attr >> 16) & 0xFFFF
+    file_type = stat.S_IFMT(mode)
+    if file_type == 0:
+        return
+    if info.is_dir() and stat.S_ISDIR(mode):
+        return
+    if not info.is_dir() and stat.S_ISREG(mode):
+        return
+    raise ValueError("skill_package_non_regular_entry")
 
 
 def _content_hash(files: list[tuple[str, bytes]]) -> str:
@@ -79,9 +108,10 @@ def _normalized_package_files(files: list[tuple[str, bytes]]) -> list[tuple[str,
             relative = path.relative_to(root).as_posix()
         except ValueError as exc:
             raise ValueError("skill_package_mixed_root") from exc
-        if not relative or relative in seen:
+        normalized_key = relative.casefold()
+        if not relative or normalized_key in seen:
             raise ValueError("skill_package_duplicate_path")
-        seen.add(relative)
+        seen.add(normalized_key)
         normalized.append((relative, data))
     return normalized
 
@@ -163,6 +193,112 @@ def validate_skill_package_contract(
     return contract
 
 
+def validate_skill_package_snapshot(
+    files: object,
+    *,
+    skill_id: str,
+    content_hash: str,
+) -> dict[str, int]:
+    """Validate immutable uploaded file bytes without requiring platform metadata."""
+
+    if not isinstance(files, list) or not files or len(files) > MAX_SKILL_PACKAGE_FILES:
+        raise ValueError("skill_package_snapshot_files_invalid")
+    decoded: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    for item in files:
+        if not isinstance(item, dict):
+            raise ValueError("skill_package_snapshot_files_invalid")
+        relative_path = _safe_zip_member_path(str(item.get("relative_path") or ""))
+        normalized_key = relative_path.casefold()
+        if normalized_key in seen:
+            raise ValueError("skill_package_duplicate_path")
+        seen.add(normalized_key)
+        encoded = item.get("content_base64")
+        if not isinstance(encoded, str):
+            raise ValueError("skill_package_snapshot_files_invalid")
+        try:
+            content = base64.b64decode(encoded.encode("ascii"), validate=True)
+        except (binascii.Error, UnicodeEncodeError, ValueError) as exc:
+            raise ValueError("skill_package_snapshot_files_invalid") from exc
+        try:
+            declared_size = int(item.get("size_bytes"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("skill_package_snapshot_files_invalid") from exc
+        if declared_size != len(content) or len(content) > MAX_SKILL_PACKAGE_FILE_BYTES:
+            raise ValueError("skill_package_snapshot_files_invalid")
+        total_bytes += len(content)
+        if total_bytes > MAX_SKILL_PACKAGE_TOTAL_BYTES:
+            raise ValueError("skill_package_snapshot_files_invalid")
+        decoded.append((relative_path, content))
+
+    sorted_files = sorted(decoded, key=lambda item: item[0])
+    if _content_hash(sorted_files) != content_hash:
+        raise ValueError("skill_package_snapshot_hash_mismatch")
+    by_path = {relative_path: content for relative_path, content in sorted_files}
+    skill_md = by_path.get("SKILL.md")
+    if skill_md is None:
+        raise ValueError("skill_package_skill_md_required")
+    try:
+        metadata = parse_skill_markdown_front_matter(skill_md.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ValueError("skill_package_invalid_utf8") from exc
+    if metadata.get("name") != skill_id or not metadata.get("description"):
+        raise ValueError("skill_package_manifest_mismatch")
+    return {"file_count": len(sorted_files), "size_bytes": total_bytes}
+
+
+def build_uploaded_skill_admin_trust_review(skill_version: dict[str, Any]) -> dict[str, Any]:
+    """Build the server-owned trust verdict used by the explicit admin review action."""
+
+    skill_id = str(skill_version.get("skill_id") or "")
+    version = str(skill_version.get("version") or "")
+    content_hash = str(skill_version.get("content_hash") or "")
+    source = skill_version.get("source") if isinstance(skill_version.get("source"), dict) else {}
+    blockers: list[str] = []
+    summary: dict[str, int] = {"file_count": 0, "size_bytes": 0}
+    contract: dict[str, Any] = {}
+    try:
+        assert_safe_id(skill_id, "skill_id")
+        if not version or version != content_hash or source.get("kind") != "uploaded":
+            raise ValueError("skill_package_version_identity_invalid")
+        raw_contract = source.get("package_contract")
+        if not isinstance(raw_contract, dict):
+            raise ValueError("skill_package_contract_required")
+        contract = validate_skill_package_contract(
+            raw_contract,
+            skill_id=skill_id,
+            content_hash=content_hash,
+        )
+        summary = validate_skill_package_snapshot(
+            source.get("files"),
+            skill_id=skill_id,
+            content_hash=content_hash,
+        )
+        if (
+            str(source.get("storage_key") or "") != str(contract.get("storage_key") or "")
+            or str(source.get("package_sha256") or "") != str(contract.get("package_sha256") or "")
+            or summary["file_count"] != int(contract.get("file_count") or -1)
+            or summary["size_bytes"] != int(contract.get("size_bytes") or -1)
+            or not str(contract.get("uploaded_by") or "")
+        ):
+            raise ValueError("skill_package_contract_snapshot_mismatch")
+    except (TypeError, ValueError):
+        blockers.append("uploaded_skill_package_trust_not_verified")
+    return {
+        "schema_version": SKILL_ADMIN_TRUST_REVIEW_SCHEMA_VERSION,
+        "status": "blocked" if blockers else "passed",
+        "skill_id": skill_id,
+        "version": version,
+        "content_hash": content_hash,
+        "trust_basis": "admin_reviewed_immutable_upload",
+        "package_contract_valid": not blockers,
+        "file_count": summary["file_count"],
+        "size_bytes": summary["size_bytes"],
+        "blockers": blockers,
+    }
+
+
 def build_skill_dependency_evidence(
     *,
     dependency_ids: list[str],
@@ -199,18 +335,26 @@ def parse_skill_package_zip(content: bytes, *, expected_skill_id: str | None = N
     files: list[tuple[str, bytes]] = []
     total_bytes = 0
     with archive:
-        for info in archive.infolist():
+        entries = archive.infolist()
+        if len(entries) > MAX_SKILL_PACKAGE_FILES:
+            raise ValueError("skill_package_too_many_files")
+        for info in entries:
+            _validate_zip_entry(info)
             relative_path = _safe_zip_member_path(info.filename)
             if info.is_dir():
                 continue
-            if relative_path in seen:
+            normalized_key = relative_path.casefold()
+            if normalized_key in seen:
                 raise ValueError("skill_package_duplicate_path")
-            seen.add(relative_path)
+            seen.add(normalized_key)
             if info.file_size > MAX_SKILL_PACKAGE_FILE_BYTES:
                 raise ValueError("skill_package_file_too_large")
             if total_bytes + info.file_size > MAX_SKILL_PACKAGE_TOTAL_BYTES:
                 raise ValueError("skill_package_too_large")
-            data = archive.read(info)
+            try:
+                data = archive.read(info)
+            except (RuntimeError, OSError, NotImplementedError, zipfile.BadZipFile) as exc:
+                raise ValueError("skill_package_invalid_zip") from exc
             if len(data) != info.file_size:
                 raise ValueError("skill_package_invalid_zip")
             total_bytes += len(data)

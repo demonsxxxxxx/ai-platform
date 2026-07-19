@@ -10513,6 +10513,60 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_list_admin_skill_summaries_excludes_package_source(monkeypatch):
+    async def no_backfill(_conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+
+    class SummaryCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": "native-demo",
+                    "name": "native-demo",
+                    "description": "Native demo",
+                    "lifecycle_status": "active",
+                    "distribution_status": "disabled",
+                    "visible_to_user": False,
+                    "latest_version": "hash-a",
+                    "latest_version_status": "draft",
+                    "current_version": None,
+                    "rollout_percent": None,
+                }
+            ]
+
+    class SummaryConnection:
+        async def execute(self, sql, params):
+            compact = " ".join(sql.split())
+            assert params == ("tenant-a", "tenant-a")
+            assert "source_json" not in compact
+            assert "storage_key" not in compact
+            assert "left join lateral" in compact
+            return SummaryCursor()
+
+    rows = await repositories.list_admin_skill_summaries(
+        SummaryConnection(),
+        tenant_id="tenant-a",
+    )
+
+    assert rows == [
+        {
+            "skill_id": "native-demo",
+            "name": "native-demo",
+            "description": "Native demo",
+            "lifecycle_status": "active",
+            "distribution_status": "disabled",
+            "visible_to_user": False,
+            "latest_version": "hash-a",
+            "latest_version_status": "draft",
+            "current_version": None,
+            "rollout_percent": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_set_workbench_skill_status_rejects_internal_dependency_skill():
     conn = RecordingConnection()
 

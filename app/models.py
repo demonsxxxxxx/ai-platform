@@ -1621,6 +1621,27 @@ class AdminSkillDetailResponse(BaseModel):
     recent_snapshots: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class AdminSkillSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: str
+    name: str
+    description: str = ""
+    lifecycle_status: str
+    distribution_status: str
+    visible_to_user: bool = False
+    latest_version: str | None = None
+    latest_version_status: str | None = None
+    current_version: str | None = None
+    rollout_percent: int | None = None
+
+
+class AdminSkillListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[AdminSkillSummaryResponse] = Field(default_factory=list)
+
+
 class AdminSkillSyncResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

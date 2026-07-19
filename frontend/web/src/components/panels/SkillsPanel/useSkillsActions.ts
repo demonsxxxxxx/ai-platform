@@ -5,9 +5,12 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { exportProjectZip } from "../../../utils/exportProjectZip";
 import { useAuth } from "../../../hooks/useAuth";
 import { useSkills } from "../../../hooks/useSkills";
+import type { AdminSkillCatalogItem } from "../../../services/api/skill";
 import { sanitizeSkillName } from "../../../utils/skillFilters";
-import { Permission, type SkillResponse, type SkillCreate } from "../../../types";
+import { type SkillResponse, type SkillCreate } from "../../../types";
+import { isAiAdminUser } from "../capabilityAdmin";
 import {
+  adminReleaseActionForStatus,
   coerceZipSkillSelection,
   initialZipSkillSelection,
   toggleZipSkillSelection,
@@ -15,6 +18,13 @@ import {
 } from "./zipSelection";
 
 export type { ZipSkillPreview } from "./zipSelection";
+
+export type AdminSkillReleasePhase =
+  | "idle"
+  | "uploading"
+  | "reviewing"
+  | "promoting"
+  | "refreshing";
 
 interface GitHubSkill {
   name: string;
@@ -24,7 +34,7 @@ interface GitHubSkill {
 
 export function useSkillsActions(options?: { enabled?: boolean }) {
   const { t } = useTranslation();
-  const { hasAnyPermission } = useAuth();
+  const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const enabled = options?.enabled !== false;
@@ -66,17 +76,19 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     toggleSkill,
     uploadSkill,
     adminUploadSkill,
+    adminReviewSkillVersion,
+    adminPromoteSkillVersion,
+    adminListSkills,
     previewZipSkills,
     adminPreviewZipSkills,
     previewGitHubSkills,
     installGitHubSkills,
     publishToMarketplace,
     clearError,
+    fetchSkills,
   } = useSkills({ enabled, listParams });
   const filteredSkills = skills;
-  const canAdminUploadSkills =
-    hasAnyPermission([Permission.SKILL_ADMIN]) ||
-    effectivePermissions.includes(Permission.SKILL_ADMIN);
+  const canAdminUploadSkills = isAiAdminUser(user);
 
   useEffect(() => {
     setPage(1);
@@ -139,8 +151,22 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   const [zipPreviewing, setZipPreviewing] = useState(false);
   const [zipSkills, setZipSkills] = useState<ZipSkillPreview[]>([]);
   const [selectedZipSkills, setSelectedZipSkills] = useState<string[]>([]);
+  const [adminReleasePhase, setAdminReleasePhase] =
+    useState<AdminSkillReleasePhase>("idle");
+  const [adminReleaseBlocked, setAdminReleaseBlocked] = useState(false);
+  const [adminCatalogItems, setAdminCatalogItems] = useState<
+    AdminSkillCatalogItem[]
+  >([]);
   const zipInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+
+  const refreshAdminSkillCatalog = async (): Promise<
+    AdminSkillCatalogItem[] | null
+  > => {
+    const items = await adminListSkills();
+    if (items) setAdminCatalogItems(items);
+    return items;
+  };
 
   // GitHub import state
   const [showGithubModal, setShowGithubModal] = useState(false);
@@ -355,8 +381,13 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     setZipFile(null);
     setZipSkills([]);
     setSelectedZipSkills([]);
+    setAdminReleasePhase("idle");
+    setAdminReleaseBlocked(false);
     setIsDragging(false);
     setShowZipModal(true);
+    if (canAdminUploadSkills) {
+      void refreshAdminSkillCatalog();
+    }
   };
 
   const processZipFile = (file: File) => {
@@ -367,6 +398,8 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     setZipFile(file);
     setZipSkills([]);
     setSelectedZipSkills([]);
+    setAdminReleasePhase("idle");
+    setAdminReleaseBlocked(false);
     handleZipPreviewWithFile(file);
   };
 
@@ -415,12 +448,16 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   };
 
   const handleZipSkillToggle = (name: string) => {
+    setAdminReleasePhase("idle");
+    setAdminReleaseBlocked(false);
     setSelectedZipSkills((prev) =>
       toggleZipSkillSelection(prev, name, zipSkills, canAdminUploadSkills),
     );
   };
 
   const handleZipSelectAll = (names: string[]) => {
+    setAdminReleasePhase("idle");
+    setAdminReleaseBlocked(false);
     setSelectedZipSkills(
       coerceZipSkillSelection(names, zipSkills, canAdminUploadSkills),
     );
@@ -438,17 +475,120 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
         const selectedSkill = zipSkills.find(
           (skill) => skill.name === selectedZipSkills[0],
         );
-        if (!selectedSkill || selectedSkill.already_exists) {
-          toast.error(t("skills.adminUploadRequiresNewSkill"));
+        if (!selectedSkill) {
+          toast.error(t("skills.adminUploadSelectOne"));
           return;
         }
-        const result = await adminUploadSkill(zipFile, selectedZipSkills[0]);
-        if (result?.uploaded) {
-          setShowZipModal(false);
-          setZipFile(null);
-          setZipSkills([]);
-          setSelectedZipSkills([]);
+        setAdminReleaseBlocked(false);
+        setAdminReleasePhase("uploading");
+        const uploaded = await adminUploadSkill(zipFile, selectedSkill.name);
+        let nextReleaseAction = adminReleaseActionForStatus(
+          uploaded?.uploaded.status ?? "",
+        );
+        if (
+          !uploaded ||
+          uploaded.uploaded.skillId !== selectedSkill.name ||
+          nextReleaseAction === "blocked"
+        ) {
+          setAdminReleaseBlocked(true);
+          toast.error(t("skills.adminReleaseDraftFailed"));
+          return;
         }
+
+        const { skillId, version } = uploaded.uploaded;
+        const uploadedCatalog = await refreshAdminSkillCatalog();
+        const uploadedCatalogItem = uploadedCatalog?.find(
+          (item) => item.skillId === skillId,
+        );
+        if (
+          !uploadedCatalogItem ||
+          uploadedCatalogItem.latestVersion !== version ||
+          uploadedCatalogItem.latestVersionStatus !== uploaded.uploaded.status
+        ) {
+          setAdminReleaseBlocked(true);
+          toast.error(t("skills.adminReleaseDraftFailed"));
+          return;
+        }
+        if (nextReleaseAction === "review") {
+          setAdminReleasePhase("reviewing");
+          const reviewed = await adminReviewSkillVersion(skillId, version);
+          if (
+            !reviewed ||
+            reviewed.skillId !== skillId ||
+            reviewed.version !== version ||
+            reviewed.status !== "reviewed"
+          ) {
+            setAdminReleaseBlocked(true);
+            toast.error(t("skills.adminReleaseReviewFailed"));
+            return;
+          }
+          nextReleaseAction = adminReleaseActionForStatus(reviewed.status);
+          const reviewedCatalog = await refreshAdminSkillCatalog();
+          const reviewedCatalogItem = reviewedCatalog?.find(
+            (item) => item.skillId === skillId,
+          );
+          if (
+            !reviewedCatalogItem ||
+            reviewedCatalogItem.latestVersion !== version ||
+            reviewedCatalogItem.latestVersionStatus !== "reviewed"
+          ) {
+            setAdminReleaseBlocked(true);
+            toast.error(t("skills.adminReleaseReviewFailed"));
+            return;
+          }
+        }
+
+        if (nextReleaseAction === "promote") {
+          setAdminReleasePhase("promoting");
+          const release = await adminPromoteSkillVersion(skillId, version);
+          if (
+            !release ||
+            release.skillId !== skillId ||
+            release.currentVersion !== version ||
+            release.channel !== "stable" ||
+            release.rolloutPercent !== 100 ||
+            release.status !== "active"
+          ) {
+            setAdminReleaseBlocked(true);
+            toast.error(t("skills.adminReleasePromoteFailed"));
+            return;
+          }
+          nextReleaseAction = "refresh";
+        }
+        if (nextReleaseAction !== "refresh") {
+          setAdminReleaseBlocked(true);
+          toast.error(t("skills.adminReleasePromoteFailed"));
+          return;
+        }
+
+        setAdminReleasePhase("refreshing");
+        const [publicCatalogRefreshed, adminCatalog] = await Promise.all([
+          fetchSkills(),
+          refreshAdminSkillCatalog(),
+        ]);
+        const releasedCatalogItem = adminCatalog?.find(
+          (item) => item.skillId === skillId,
+        );
+        if (
+          !publicCatalogRefreshed ||
+          !releasedCatalogItem ||
+          releasedCatalogItem.latestVersion !== version ||
+          releasedCatalogItem.latestVersionStatus !== "released" ||
+          releasedCatalogItem.currentVersion !== version ||
+          releasedCatalogItem.rolloutPercent !== 100 ||
+          releasedCatalogItem.distributionStatus !== "active" ||
+          !releasedCatalogItem.visibleToUser
+        ) {
+          setAdminReleaseBlocked(true);
+          toast.error(t("skills.adminReleaseRefreshFailed"));
+          return;
+        }
+        toast.success(t("skills.adminReleaseSuccess"));
+        setShowZipModal(false);
+        setZipFile(null);
+        setZipSkills([]);
+        setSelectedZipSkills([]);
+        setAdminReleasePhase("idle");
         return;
       }
       const result = await uploadSkill(zipFile, selectedZipSkills);
@@ -609,6 +749,9 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     zipPreviewing,
     zipSkills,
     selectedZipSkills,
+    adminReleasePhase,
+    adminReleaseBlocked,
+    adminCatalogItems,
     zipInputRef,
     isDragging,
     handleZipClick,

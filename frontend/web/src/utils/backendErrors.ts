@@ -32,6 +32,16 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   skill_package_duplicate_path: "backendErrors.skillPackageUnsafe",
   skill_package_invalid_utf8: "backendErrors.skillPackageInvalidText",
   skill_package_name_mismatch: "backendErrors.skillPackageNameMismatch",
+  skill_version_not_found: "backendErrors.skillVersionNotFound",
+  skill_version_already_exists: "backendErrors.skillVersionAlreadyExists",
+  skill_release_review_not_verified:
+    "backendErrors.skillReleaseReviewNotVerified",
+  skill_version_not_materializable:
+    "backendErrors.skillVersionNotMaterializable",
+  skill_dependency_policy_violation:
+    "backendErrors.skillDependencyPolicyViolation",
+  skill_version_has_active_release_policy:
+    "backendErrors.skillVersionHasActiveReleasePolicy",
   marketplace_direct_write_contract_not_backed:
     "backendErrors.marketplaceDirectWriteNotBacked",
   mcp_lifecycle_contract_not_backed:

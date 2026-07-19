@@ -154,7 +154,10 @@ export function SkillsPanel({
         zipPreviewing={actions.zipPreviewing}
         zipSkills={actions.zipSkills}
         selectedZipSkills={actions.selectedZipSkills}
-        allowNewSkills={actions.canAdminUploadSkills}
+        adminRelease={actions.canAdminUploadSkills}
+        adminReleasePhase={actions.adminReleasePhase}
+        adminReleaseBlocked={actions.adminReleaseBlocked}
+        adminCatalogItems={actions.adminCatalogItems}
         zipInputRef={actions.zipInputRef}
         isDragging={actions.isDragging}
         onZipFileChange={actions.handleZipFileChange}

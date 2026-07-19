@@ -596,6 +596,79 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
     ]
 
 
+def test_collect_workspace_artifacts_assigns_safe_mime_types_and_keeps_unknown_files_generic(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    delivery = workspace / "outputs" / "delivery"
+    delivery.mkdir(parents=True)
+    (delivery / "report.pdf").write_bytes(b"pdf")
+    (delivery / "chart.png").write_bytes(b"png")
+    (delivery / "page.html").write_bytes(b"html")
+    (delivery / "script.js").write_bytes(b"javascript")
+    (delivery / "vector.svg").write_bytes(b"svg")
+    (delivery / "payload.unknown").write_bytes(b"unknown")
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(payload(), workspace)
+
+    assert [artifact.content_type for artifact in artifacts] == [
+        "image/png",
+        "application/octet-stream",
+        "application/octet-stream",
+        "application/pdf",
+        "application/octet-stream",
+        "application/octet-stream",
+    ]
+    assert artifacts[1].artifact_type == "runtime_file"
+    assert [content_type for _storage_key, content_type in stored] == [
+        "image/png",
+        "application/octet-stream",
+        "application/octet-stream",
+        "application/pdf",
+        "application/octet-stream",
+        "application/octet-stream",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit_value", "files", "expected_error"),
+    [
+        ("_MAX_WORKSPACE_ARTIFACT_FILES", 1, {"one.txt": b"1", "two.txt": b"2"}, "file count"),
+        ("_MAX_WORKSPACE_ARTIFACT_FILE_BYTES", 3, {"large.txt": b"1234"}, "per-file"),
+        ("_MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES", 3, {"one.txt": b"12", "two.txt": b"34"}, "total"),
+    ],
+)
+def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
+    monkeypatch,
+    tmp_path,
+    limit_name,
+    limit_value,
+    files,
+    expected_error,
+):
+    workspace = tmp_path / "workspace"
+    delivery = workspace / "outputs" / "delivery"
+    delivery.mkdir(parents=True)
+    for name, content in files.items():
+        (delivery / name).write_bytes(content)
+    monkeypatch.setattr(claude_agent_worker, limit_name, limit_value)
+
+    class FailIfStored:
+        def put_bytes(self, **_kwargs):
+            raise AssertionError("limit violations must reject before object storage")
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailIfStored)
+
+    with pytest.raises(ValueError, match=expected_error):
+        ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(payload(), workspace)
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -1039,6 +1112,7 @@ async def test_general_chat_with_explicit_skill_keeps_typed_attachment_materiali
     assert prepared_files.materialized_file_names == ["book.xlsx"]
     assert len(prepared_files.attachment_facts) == 1
     assert (workspace / "book.xlsx").read_bytes() == raw
+    assert (workspace / "inputs" / "book.xlsx").read_bytes() == raw
 
 
 def test_qa_file_reviewer_includes_minimax_docx_dependency_when_available():

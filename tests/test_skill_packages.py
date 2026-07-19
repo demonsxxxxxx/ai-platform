@@ -1,9 +1,11 @@
 import base64
 import io
+import stat
 import zipfile
 
 import pytest
 
+from app.skills import packages as skill_packages
 from app.skills.packages import (
     build_skill_package_contract,
     parse_skill_package_zip,
@@ -106,6 +108,19 @@ def test_parse_skill_package_zip_rejects_path_escape():
         parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
 
 
+def test_parse_skill_package_zip_rejects_casefold_duplicate_paths():
+    content = package_zip(
+        {
+            "SKILL.md": skill_md(),
+            "references/Guide.md": "first",
+            "references/guide.MD": "second",
+        }
+    )
+
+    with pytest.raises(ValueError, match="skill_package_duplicate_path"):
+        parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
 def test_parse_skill_package_zip_rejects_missing_description():
     content = package_zip({"SKILL.md": "---\nname: qa-file-reviewer\n---\n\n# Skill\n"})
 
@@ -148,6 +163,68 @@ def test_parse_skill_package_zip_rejects_oversized_file(monkeypatch):
 
     with pytest.raises(ValueError, match="skill_package_file_too_large"):
         parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
+def test_parse_skill_package_zip_rejects_excessive_entry_count(monkeypatch):
+    content = package_zip(
+        {
+            "SKILL.md": skill_md(),
+            "references/guide.md": "review guide",
+        }
+    )
+    monkeypatch.setattr("app.skills.packages.MAX_SKILL_PACKAGE_FILES", 1)
+
+    with pytest.raises(ValueError, match="skill_package_too_many_files"):
+        parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
+def test_parse_skill_package_zip_rejects_unsupported_compression_method():
+    buffer = io.BytesIO()
+    info = zipfile.ZipInfo("SKILL.md")
+    info.compress_type = zipfile.ZIP_BZIP2
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(info, skill_md())
+
+    with pytest.raises(ValueError, match="skill_package_unsupported_compression"):
+        parse_skill_package_zip(buffer.getvalue(), expected_skill_id="qa-file-reviewer")
+
+
+@pytest.mark.parametrize(
+    ("info", "expected_error"),
+    [
+        (zipfile.ZipInfo("SKILL.md"), "skill_package_encrypted_entry"),
+        (zipfile.ZipInfo("scripts/run.sh"), "skill_package_non_regular_entry"),
+    ],
+)
+def test_skill_package_entry_validation_rejects_encrypted_and_non_regular_entries(info, expected_error):
+    if expected_error == "skill_package_encrypted_entry":
+        info.flag_bits = 0x1
+    else:
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+
+    with pytest.raises(ValueError, match=expected_error):
+        skill_packages._validate_zip_entry(info)
+
+
+def test_parse_skill_package_zip_preserves_native_skill_scripts_and_assets_byte_for_byte():
+    script = b"#!/bin/sh\nprintf '\\x00native artifact'\n"
+    asset = b"\x89PNG\r\n\x1a\nasset-bytes"
+    parsed = parse_skill_package_zip(
+        package_zip(
+            {
+                "native-review/SKILL.md": skill_md(name="native-review", description="Review with local tools."),
+                "native-review/scripts/run-review.sh": script,
+                "native-review/assets/template.bin": asset,
+                "native-review/references/guide.md": "Use the packaged command.",
+            }
+        ),
+        expected_skill_id="native-review",
+    )
+
+    files = {item["relative_path"]: base64.b64decode(item["content_base64"]) for item in parsed.files}
+    assert files["scripts/run-review.sh"] == script
+    assert files["assets/template.bin"] == asset
 
 
 def test_skill_package_contract_round_trips_safe_upload_metadata():

@@ -134,8 +134,8 @@ export function useSkills(options?: {
 
   // Fetch all skills (basic info only)
   const fetchSkills = useCallback(
-    async (params?: SkillListParams) => {
-      if (!enabled) return;
+    async (params?: SkillListParams): Promise<boolean> => {
+      if (!enabled) return false;
       setIsLoading(true);
       setError(null);
       setListError(null);
@@ -170,6 +170,7 @@ export function useSkills(options?: {
             }),
           );
         }
+        return true;
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Failed to fetch skills";
@@ -186,6 +187,7 @@ export function useSkills(options?: {
           setTotal(0);
           setAvailableTags([]);
         }
+        return false;
       } finally {
         setIsLoading(false);
       }
@@ -597,7 +599,9 @@ export function useSkills(options?: {
     [enabled, fetchSkills],
   );
 
-  // Upload a governed Skill package through the admin release path.
+  // Upload an immutable governed Skill draft. Review and promotion are explicit
+  // follow-up calls so a new draft never has to be rediscovered from the public
+  // catalog before it can be released.
   const adminUploadSkill = useCallback(
     async (
       file: File,
@@ -607,9 +611,7 @@ export function useSkills(options?: {
       setIsUploading(true);
       setError(null);
       try {
-        const result = await skillApi.adminUploadZip(skillName, file);
-        await fetchSkills();
-        return result;
+        return await skillApi.adminUploadZip(skillName, file);
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to upload admin skill",
@@ -619,7 +621,70 @@ export function useSkills(options?: {
         setIsUploading(false);
       }
     },
-    [enabled, fetchSkills],
+    [enabled],
+  );
+
+  const adminReviewSkillVersion = useCallback(
+    async (
+      skillName: string,
+      version: string,
+    ): Promise<Awaited<ReturnType<typeof skillApi.adminReviewSkillVersion>> | null> => {
+      if (!enabled) return null;
+      setIsUploading(true);
+      setError(null);
+      try {
+        return await skillApi.adminReviewSkillVersion(skillName, version);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to review admin skill",
+        );
+        return null;
+      } finally {
+        setIsUploading(false);
+      }
+    },
+    [enabled],
+  );
+
+  const adminPromoteSkillVersion = useCallback(
+    async (
+      skillName: string,
+      version: string,
+    ): Promise<Awaited<ReturnType<typeof skillApi.adminPromoteSkillVersion>> | null> => {
+      if (!enabled) return null;
+      setIsUploading(true);
+      setError(null);
+      try {
+        return await skillApi.adminPromoteSkillVersion(skillName, version);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to promote admin skill",
+        );
+        return null;
+      } finally {
+        setIsUploading(false);
+      }
+    },
+    [enabled],
+  );
+
+  /** Read the admin-safe lifecycle catalog, including drafts not yet public. */
+  const adminListSkills = useCallback(
+    async (): Promise<Awaited<ReturnType<typeof skillApi.adminListSkills>> | null> => {
+      if (!enabled) return null;
+      setError(null);
+      try {
+        return await skillApi.adminListSkills();
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to refresh admin skill catalog",
+        );
+        return null;
+      }
+    },
+    [enabled],
   );
 
   // Preview skills from ZIP file
@@ -812,6 +877,9 @@ export function useSkills(options?: {
     toggleAll,
     uploadSkill,
     adminUploadSkill,
+    adminReviewSkillVersion,
+    adminPromoteSkillVersion,
+    adminListSkills,
     previewZipSkills,
     adminPreviewZipSkills,
     previewGitHubSkills,

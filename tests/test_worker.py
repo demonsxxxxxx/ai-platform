@@ -26,6 +26,8 @@ from app.worker import (
     process_run_payload,
 )
 from app.auth import is_ai_admin
+from app.runtime.sandbox import container_provider
+from app.skills.execution_profiles import resolve_skill_execution_profile
 
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
@@ -82,6 +84,93 @@ def primary_manifest(skill_id: str, version: str) -> dict:
         "staged": False,
         "used": False,
     }
+
+
+def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile():
+    profile = resolve_skill_execution_profile(
+        skill_id="native-review",
+        source_kind="uploaded",
+        lifecycle_status="released",
+    )
+    payload = parse_queue_payload(
+        base_payload(
+            skill_id="native-review",
+            skill_version="hash-native",
+            skill_manifests=[
+                {
+                    "skill_id": "native-review",
+                    "version": "hash-native",
+                    "content_hash": "hash-native",
+                    "source": {"kind": "uploaded"},
+                    "files": [
+                        {
+                            "relative_path": "SKILL.md",
+                            "content_base64": "c2tpbGw=",
+                            "size_bytes": 5,
+                        }
+                    ],
+                    "dependency_ids": [],
+                    "lifecycle_status": "released",
+                    "execution_profile": profile,
+                    "builtin_tool_identities": profile["builtin_tool_identities"],
+                    "mcp_tool_ids": [],
+                    "allowed": True,
+                    "staged": False,
+                    "used": False,
+                }
+            ],
+        )
+    )
+
+    subjects = worker_module._builtin_capability_subjects(
+        payload=payload,
+        run_identity={"skill_id": "native-review"},
+        skill={"skill_id": "native-review", "skill_status": "active"},
+        skill_decision=types.SimpleNamespace(usable=True),
+    )
+    by_identity = {subject["identity"]: subject for subject in subjects}
+
+    assert set(by_identity) == {"Skill", "Read", "Glob", "LS", "Bash", "Write", "Edit"}
+    assert all(
+        subject["declared_identities"] == [subject["identity"]]
+        for subject in subjects
+    )
+    assert container_provider._native_tool_required(
+        types.SimpleNamespace(tool_policy_subjects=subjects)
+    )
+    assert by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
+    assert by_identity["Bash"]["execution_strategy"] == "sdk_native"
+    assert by_identity["Read"]["required_parameter_keys"] == ["file_path"]
+    assert by_identity["Skill"]["allowed_skill_names"] == ["native-review"]
+
+
+def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
+    manifest = primary_manifest("native-review", "hash-native")
+    manifest["source"] = {"kind": "uploaded"}
+    manifest["builtin_tool_identities"] = []
+    manifest["dependency_ids"] = ["minimax-docx"]
+    dependency = primary_manifest("minimax-docx", "hash-minimax")
+    dependency["builtin_tool_identities"] = ["Bash", "Write"]
+    payload = parse_queue_payload(
+        base_payload(
+            skill_id="native-review",
+            skill_version="hash-native",
+            skill_manifests=[manifest, dependency],
+        )
+    )
+
+    subjects = worker_module._builtin_capability_subjects(
+        payload=payload,
+        run_identity={"skill_id": "native-review"},
+        skill={"skill_id": "native-review", "skill_status": "active"},
+        skill_decision=types.SimpleNamespace(usable=True),
+    )
+
+    assert [subject["identity"] for subject in subjects] == ["Skill"]
+    assert subjects[0]["execution_strategy"] == "sdk_restricted"
+    assert not container_provider._native_tool_required(
+        types.SimpleNamespace(tool_policy_subjects=subjects)
+    )
 
 
 def snapshot_governance(digest: str = "hash-a") -> dict:
