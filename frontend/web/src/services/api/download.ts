@@ -11,6 +11,7 @@ interface DownloadAuthenticatedFileOptions {
   documentRef?: Document;
   createObjectURL?: (blob: Blob) => string;
   revokeObjectURL?: (url: string) => void;
+  scheduleRevoke?: (callback: () => void) => void;
 }
 
 export interface DownloadAuthenticatedFileResult {
@@ -69,6 +70,11 @@ export async function downloadAuthenticatedFile(
     options.createObjectURL ?? URL.createObjectURL.bind(URL);
   const revokeObjectURL =
     options.revokeObjectURL ?? URL.revokeObjectURL.bind(URL);
+  const scheduleRevoke =
+    options.scheduleRevoke ??
+    ((callback: () => void) => {
+      setTimeout(callback, 0);
+    });
 
   if (!documentRef) {
     throw new Error("Document is not available for file download");
@@ -90,7 +96,7 @@ export async function downloadAuthenticatedFile(
   documentRef.body.appendChild(anchor);
   anchor.click();
   documentRef.body.removeChild(anchor);
-  revokeObjectURL(objectUrl);
+  scheduleRevoke(() => revokeObjectURL(objectUrl));
 
   return { filename, objectUrl };
 }

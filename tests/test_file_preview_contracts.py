@@ -3,11 +3,13 @@ import io
 from pathlib import Path
 import tempfile
 import threading
+import zipfile
 
 import pytest
 from openpyxl import Workbook
 
 from app import file_preview_contracts
+from app.file_parser_contracts import MAX_XLSX_PROMPT_CHARS
 from app.file_preview_contracts import (
     _stage_xlsx_preview_bytes,
     acquire_xlsx_preview_lease,
@@ -32,6 +34,39 @@ def _workbook_bytes(*, formulas: list[str] | None = None) -> bytes:
     workbook.save(buffer)
     workbook.close()
     return buffer.getvalue()
+
+
+def _large_text_workbook_bytes() -> bytes:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Large text"
+    for row in range(1, 101):
+        worksheet.append(
+            [
+                hashlib.sha256(f"cell-{row}-{column}".encode()).hexdigest() * 2
+                for column in range(1, 17)
+            ]
+        )
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+    return buffer.getvalue()
+
+
+def _workbook_with_worksheet_entity_declaration() -> bytes:
+    source = io.BytesIO(_workbook_bytes())
+    output = io.BytesIO()
+    worksheet_path = "xl/worksheets/sheet1.xml"
+    declaration = b'<!DOCTYPE worksheet [<!ENTITY unsafe "blocked">]>'
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == worksheet_path:
+                insertion = payload.find(b"<worksheet")
+                assert insertion >= 0
+                payload = payload[:insertion] + declaration + payload[insertion:]
+            rewritten.writestr(entry, payload)
+    return output.getvalue()
 
 
 def _build_preview(**kwargs):
@@ -83,6 +118,45 @@ def test_xlsx_preview_redacts_local_and_external_formula_source():
     assert "formula" not in {cell.kind for row in preview.content.sheets[0].rows for cell in row.cells}
     assert "[formula omitted]" in serialized
     assert "formulas_omitted" in preview.warnings
+
+
+def test_large_text_xlsx_preview_uses_preview_bounds_instead_of_prompt_json_cap():
+    raw = _large_text_workbook_bytes()
+    assert 60_000 <= len(raw) < 1024 * 1024
+
+    preview = _build_preview(
+        raw=raw,
+        file_id="file-large-text",
+        file_name="large-text.xlsx",
+        content_type=XLSX_CONTENT_TYPE,
+    )
+
+    assert preview.status in {"ready", "truncated"}
+    assert preview.error is None
+    assert preview.content is not None
+    assert len(preview.content.sheets[0].rows) == 100
+    assert len(preview.model_dump_json()) > MAX_XLSX_PROMPT_CHARS
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(b"not-a-zip", id="corrupt-archive"),
+        pytest.param(_workbook_with_worksheet_entity_declaration(), id="xml-entity"),
+    ],
+)
+def test_xlsx_preview_keeps_authoritative_archive_and_xml_preflight(raw):
+    preview = _build_preview(
+        raw=raw,
+        file_id="file-unsafe",
+        file_name="unsafe.xlsx",
+        content_type=XLSX_CONTENT_TYPE,
+    )
+
+    assert preview.status == "failed"
+    assert preview.error is not None
+    assert preview.error.code == "xlsx_preview_failed"
+    assert preview.content is None
 
 
 def test_xlsx_preview_metadata_requires_the_supported_xlsx_extension_and_mime_type():

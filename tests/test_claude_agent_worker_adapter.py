@@ -948,6 +948,99 @@ async def test_materialize_files_captures_exact_facts_before_duplicate_basename_
     assert materialized.attachment_facts[0].sha256 != materialized.attachment_facts[1].sha256
 
 
+@pytest.mark.asyncio
+async def test_general_chat_attachment_refs_are_metadata_only_without_object_reads_or_workspace_files(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError("metadata-only general chat must not fetch object bytes")
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
+        return {
+            "original_name": "book.xlsx",
+            "content_type": XLSX_CONTENT_TYPE,
+            "size_bytes": 68_412,
+            "storage_key": "files/private-book",
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_run_file", fake_get_run_file)
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+
+    prepared_files = await adapter._materialize_files(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=["file_1"],
+            input={"message": "hello"},
+        ),
+        workspace,
+    )
+
+    assert list(prepared_files) == ["book.xlsx"]
+    assert prepared_files.materialized_file_names == []
+    assert prepared_files.attachment_facts == []
+    assert [item.file_id for item in prepared_files.attachment_metadata] == ["file_1"]
+    assert prepared_files.attachment_metadata[0].size_bytes == 68_412
+    assert list(workspace.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_general_chat_with_explicit_skill_keeps_typed_attachment_materialization(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    raw = b"typed-workbook"
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            assert storage_key == "files/private-book"
+            return raw
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
+        return {
+            "original_name": "book.xlsx",
+            "content_type": XLSX_CONTENT_TYPE,
+            "size_bytes": len(raw),
+            "storage_key": "files/private-book",
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_run_file", fake_get_run_file)
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+
+    prepared_files = await adapter._materialize_files(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=["file_1"],
+            input={"skill_ids": ["spreadsheet-analysis"]},
+        ),
+        workspace,
+    )
+
+    assert prepared_files.materialized_file_names == ["book.xlsx"]
+    assert len(prepared_files.attachment_facts) == 1
+    assert (workspace / "book.xlsx").read_bytes() == raw
+
+
 def test_qa_file_reviewer_includes_minimax_docx_dependency_when_available():
     selected = _allowed_skill_names(
         types.SimpleNamespace(skill_id="qa-file-reviewer", input={}, skill_manifests=[]),
@@ -1305,9 +1398,23 @@ async def test_worker_threads_server_xlsx_contract_and_accepts_matching_runtime_
     runtime_requests = install_sandbox_runtime(monkeypatch, executor_response=executor_response)
     context_manifest = {
         "schema_version": "ai-platform.context-manifest.v1",
-        "scope": {"run_id": "run_1"},
-        "files": [{"file_id": "file_1", "requires_retrieval": True}],
-        "available_retrieval_tools": ["stage_context_file_to_workspace"],
+        "scope": {"session_id": "ses_1", "run_id": "run_1"},
+        "files": [
+            {"file_id": "file_1", "requires_retrieval": True},
+            {
+                "file_id": "file-prior",
+                "name": "prior.docx",
+                "content_type": (
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ),
+                "size_bytes": 12_345,
+                "requires_retrieval": True,
+            },
+        ],
+        "available_retrieval_tools": [
+            "read_context_file",
+            "stage_context_file_to_workspace",
+        ],
     }
 
     result = await adapter.submit_run(
@@ -1319,6 +1426,7 @@ async def test_worker_threads_server_xlsx_contract_and_accepts_matching_runtime_
             context_pack={
                 "schema_version": "ai-platform.executor-context-pack.v1",
                 "execution_tier": "document_worker",
+                "prompt_summary": "Authorized context refs",
                 "context_manifest": context_manifest,
             },
         )
@@ -1326,7 +1434,241 @@ async def test_worker_threads_server_xlsx_contract_and_accepts_matching_runtime_
 
     assert result.status == "succeeded"
     assert len(runtime_requests) == 1
+    runtime_request = runtime_requests[0]
+    assert runtime_request.context_manifest["files"][1]["file_id"] == "file-prior"
+    assert runtime_request.context_manifest["files"][1]["name"] == "prior.docx"
+    assert runtime_request.context_manifest["available_retrieval_tools"] == [
+        "read_context_file",
+        "stage_context_file_to_workspace",
+    ]
+    context_subjects = {
+        subject["identity"] for subject in runtime_request.tool_policy_subjects
+    }
+    assert "mcp__ai-platform-context__read_context_file" in context_subjects
+    assert "mcp__ai-platform-context__stage_context_file_to_workspace" in context_subjects
+    assert "read_context_file" in runtime_request.input_message
+    assert "stage_context_file_to_workspace" in runtime_request.input_message
+    assert runtime_request.context_retrieval_scope is not None
+    assert runtime_request.context_retrieval_scope.tenant_id == "default"
+    assert runtime_request.context_retrieval_scope.workspace_id == "default"
+    assert runtime_request.context_retrieval_scope.user_id == "user-a"
+    assert runtime_request.context_retrieval_scope.session_id == "ses_1"
     assert result.executor_payload["attachment_parser_evidence"] == [_xlsx_parser_evidence()]
+
+
+@pytest.mark.asyncio
+async def test_general_chat_xlsx_metadata_does_not_create_parser_contract_or_require_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+
+    storage_reads: list[str] = []
+
+    class FailIfReadStorage:
+        def get_bytes(self, *, storage_key):
+            storage_reads.append(storage_key)
+            raise AssertionError("metadata-only dispatch must not read object bytes")
+
+        def put_bytes(self, **_kwargs):
+            raise AssertionError("metadata-only dispatch produced an unexpected artifact")
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
+        assert (tenant_id, run_id, file_id) == ("default", "run_1", "file_1")
+        return {
+            "original_name": "book.xlsx",
+            "content_type": XLSX_CONTENT_TYPE,
+            "size_bytes": 68_412,
+            "storage_key": "files/private-book",
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.ObjectStorage",
+        FailIfReadStorage,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_run_file",
+        fake_get_run_file,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
+    context_manifest = {
+        "schema_version": "ai-platform.context-manifest.v1",
+        "scope": {"session_id": "ses_1", "run_id": "run_1"},
+        "recent_messages": [{"message_id": "message-prior"}],
+        "files": [
+            {"file_id": "file_1", "requires_retrieval": True},
+            {
+                "file_id": "file-prior",
+                "name": "prior.xlsx",
+                "content_type": XLSX_CONTENT_TYPE,
+                "size_bytes": 12_345,
+                "requires_retrieval": True,
+            },
+        ],
+        "artifacts": [{"artifact_id": "artifact-a", "requires_retrieval": True}],
+        "available_retrieval_tools": [
+            "read_session_messages",
+            "read_context_file",
+            "read_run_artifact",
+            "stage_context_file_to_workspace",
+            "stage_run_artifact_to_workspace",
+        ],
+    }
+
+    result = await adapter.submit_run(
+        sandbox_writing_payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=["file_1"],
+            input={"message": "hello"},
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "execution_tier": "document_worker",
+                "prompt_summary": "Authorized context refs",
+                "context_manifest": context_manifest,
+            },
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert len(runtime_requests) == 1
+    request = runtime_requests[0]
+    assert request.materialized_file_names == []
+    assert "attachment_preprocessing" not in request.context_manifest
+    assert request.context_manifest["available_retrieval_tools"] == [
+        "read_session_messages",
+        "read_run_artifact",
+        "stage_run_artifact_to_workspace",
+    ]
+    context_subjects = {
+        subject["identity"]: subject
+        for subject in request.tool_policy_subjects
+        if str(subject.get("identity") or "").startswith("mcp__ai-platform-context__")
+    }
+    assert set(context_subjects) == {
+        "mcp__ai-platform-context__read_session_messages",
+        "mcp__ai-platform-context__read_run_artifact",
+        "mcp__ai-platform-context__stage_run_artifact_to_workspace",
+    }
+    assert context_subjects[
+        "mcp__ai-platform-context__read_run_artifact"
+    ]["allowed_parameter_keys"] == ["artifact_id", "max_bytes"]
+    assert context_subjects[
+        "mcp__ai-platform-context__stage_run_artifact_to_workspace"
+    ]["required_parameter_keys"] == ["artifact_id"]
+    assert all(
+        "file_id" not in subject["allowed_parameter_keys"]
+        for subject in context_subjects.values()
+    )
+    assert request.context_manifest["files"] == [
+        {
+            "file_id": "file_1",
+            "name": "book.xlsx",
+            "content_type": XLSX_CONTENT_TYPE,
+            "size_bytes": 68_412,
+            "requires_retrieval": True,
+        },
+        {
+            "file_id": "file-prior",
+            "name": "prior.xlsx",
+            "content_type": XLSX_CONTENT_TYPE,
+            "size_bytes": 12_345,
+            "requires_retrieval": True,
+        },
+    ]
+    assert request.context_manifest["artifacts"] == [
+        {"artifact_id": "artifact-a", "requires_retrieval": True}
+    ]
+    assert "read_context_file" not in request.input_message
+    assert "stage_context_file_to_workspace" not in request.input_message
+    assert "read_session_messages" in request.input_message
+    assert "read_run_artifact" in request.input_message
+    assert "stage_run_artifact_to_workspace" in request.input_message
+    workspace = sandbox_workspace_path(current_settings)
+    assert not list(workspace.rglob("*.xlsx"))
+    assert storage_reads == []
+    assert result.executor_payload["attachment_parser_evidence"] == []
+
+
+@pytest.mark.asyncio
+async def test_general_chat_explicit_skill_dispatch_keeps_prior_file_tools_and_typed_contract(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    context_manifest = {
+        "schema_version": "ai-platform.context-manifest.v1",
+        "scope": {"session_id": "ses_1", "run_id": "run_1"},
+        "files": [
+            {"file_id": "file_1", "name": "book.xlsx", "requires_retrieval": True},
+            {"file_id": "file-prior", "name": "prior.docx", "requires_retrieval": True},
+        ],
+        "available_retrieval_tools": [
+            "read_context_file",
+            "stage_context_file_to_workspace",
+        ],
+    }
+    current_payload = sandbox_writing_payload(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        file_ids=["file_1"],
+        input={"skill_ids": ["qa-rag-skill"]},
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "execution_tier": "document_worker",
+            "context_manifest": context_manifest,
+        },
+    )
+    captured_requests = []
+
+    class CapturingRuntime:
+        async def submit(self, request, event_sink=None):
+            captured_requests.append(request)
+            return types.SimpleNamespace(
+                status="accepted",
+                provider="docker",
+                executor_response={
+                    "status": "accepted",
+                    "message": "xlsx answer",
+                    "sdk_used": True,
+                    "attachment_parser_evidence": [_xlsx_parser_evidence()],
+                },
+                timings={},
+            )
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    result = await ClaudeAgentWorkerAdapter()._submit_prepared_run_to_sandbox_runtime(
+        current_payload,
+        _xlsx_prepared_run(tmp_path),
+        sandbox_runtime=CapturingRuntime(),
+    )
+
+    assert result.status == "succeeded"
+    assert len(captured_requests) == 1
+    request = captured_requests[0]
+    assert request.context_manifest["attachment_preprocessing"]["requirements"][0][
+        "file_id"
+    ] == "file_1"
+    assert request.context_manifest["files"][1]["file_id"] == "file-prior"
+    assert request.context_manifest["files"][1]["name"] == "prior.docx"
+    assert request.context_manifest["available_retrieval_tools"] == [
+        "read_context_file",
+        "stage_context_file_to_workspace",
+    ]
+    context_subjects = {
+        subject["identity"] for subject in request.tool_policy_subjects
+    }
+    assert "mcp__ai-platform-context__read_context_file" in context_subjects
+    assert "mcp__ai-platform-context__stage_context_file_to_workspace" in context_subjects
+    assert request.context_retrieval_scope is not None
+    assert request.context_retrieval_scope.session_id == "ses_1"
 
 
 @pytest.mark.asyncio
@@ -1718,6 +2060,29 @@ def test_worker_rejects_sandbox_success_without_required_xlsx_parser_evidence(tm
     assert result.result["error_code"] == "attachment_parser_evidence_missing"
 
 
+def test_general_chat_with_explicit_skill_still_requires_exact_xlsx_parser_evidence(tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        sandbox_writing_payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=["file_1"],
+            input={"skill_ids": ["spreadsheet-analysis"]},
+        ),
+        _xlsx_prepared_run(tmp_path),
+        types.SimpleNamespace(
+            status="accepted",
+            provider="docker",
+            executor_response={"status": "accepted", "message": "claimed success", "sdk_used": True},
+            timings={},
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "attachment_parser_evidence_missing"
+
+
 @pytest.mark.parametrize(
     ("evidence", "expected_status", "expected_error"),
     [
@@ -2087,7 +2452,10 @@ async def test_general_chat_heavy_sandbox_request_carries_context_retrieval_scop
         )
     )
 
-    assert runtime_calls[0].context_manifest["available_retrieval_tools"] == ["read_context_file"]
+    assert runtime_calls[0].context_manifest["available_retrieval_tools"] == []
+    assert "mcp__ai-platform-context__read_context_file" not in {
+        subject["identity"] for subject in runtime_calls[0].tool_policy_subjects
+    }
     assert runtime_calls[0].context_retrieval_scope.user_id == "user-a"
     assert runtime_calls[0].trace_id == "trace-sdk"
 
@@ -2857,6 +3225,67 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
     ]
     assert subjects[1]["allowed_parameter_keys"] == ["artifact_id", "max_bytes"]
     assert subjects[2]["write_capable"] is True
+
+
+@pytest.mark.asyncio
+async def test_direct_general_chat_sdk_path_removes_file_tools_but_keeps_artifact_tools(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    captured = {}
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured.update(kwargs)
+        return FakeQueryResult()
+
+    current_payload = payload(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        file_ids=["file_1"],
+        input={"message": "hello"},
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "prompt_summary": "Authorized context refs",
+            "context_manifest": {
+                "schema_version": "ai-platform.context-manifest.v1",
+                "files": [{"file_id": "file_1", "name": "book.xlsx"}],
+                "artifacts": [{"artifact_id": "artifact-a"}],
+                "available_retrieval_tools": [
+                    "read_context_file",
+                    "read_run_artifact",
+                    "stage_context_file_to_workspace",
+                    "stage_run_artifact_to_workspace",
+                ],
+            },
+        },
+    )
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+
+    result = await adapter._try_run_sdk(
+        current_payload,
+        workspace=tmp_path / "workspaces" / "default" / "run_1",
+        file_names=["book.xlsx"],
+        staged_skill_names=[],
+    )
+
+    assert result.error is None
+    context_subjects = {
+        subject["identity"] for subject in captured["tool_policy_subjects"]
+    }
+    assert context_subjects == {
+        "mcp__ai-platform-context__read_run_artifact",
+        "mcp__ai-platform-context__stage_run_artifact_to_workspace",
+    }
+    assert "read_context_file" not in captured["prompt"]
+    assert "stage_context_file_to_workspace" not in captured["prompt"]
+    assert "read_run_artifact" in captured["prompt"]
+    assert "stage_run_artifact_to_workspace" in captured["prompt"]
 
 
 @pytest.mark.asyncio

@@ -29,7 +29,7 @@ from app.file_parser_contracts import (
     AttachmentPreprocessingError,
     ParsedAttachmentContext,
     XLSX_CONTENT_TYPE,
-    parse_xlsx_attachment,
+    parse_xlsx_preview_attachment,
     parser_spec_for_attachment,
 )
 
@@ -516,7 +516,7 @@ def _parse_xlsx_preview_child(
         requirement = AttachmentParserRequirement.model_validate(requirement_payload)
         with tempfile.TemporaryDirectory(prefix="ai-platform-xlsx-preview-") as directory:
             staged_path = _stage_xlsx_preview_bytes(Path(directory), raw)
-            parsed = parse_xlsx_attachment(path=staged_path, requirement=requirement)
+            parsed = parse_xlsx_preview_attachment(path=staged_path, requirement=requirement)
         send_conn.send({"status": "parsed", "parsed": parsed.model_dump(mode="json")})
     except AttachmentPreprocessingError as exc:
         send_conn.send({"status": "failed", "code": _public_failure_code(exc.code)})

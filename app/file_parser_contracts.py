@@ -967,6 +967,35 @@ def parse_xlsx_attachment(
 ) -> ParsedAttachmentContext:
     """Parse one broker-staged XLSX with deterministic, bounded read-only rules."""
 
+    return _parse_xlsx_attachment(
+        path=path,
+        requirement=requirement,
+        enforce_prompt_caps=True,
+    )
+
+
+def parse_xlsx_preview_attachment(
+    *,
+    path: Path,
+    requirement: AttachmentParserRequirement,
+) -> ParsedAttachmentContext:
+    """Parse one XLSX for the separately bounded server preview projection."""
+
+    return _parse_xlsx_attachment(
+        path=path,
+        requirement=requirement,
+        enforce_prompt_caps=False,
+    )
+
+
+def _parse_xlsx_attachment(
+    *,
+    path: Path,
+    requirement: AttachmentParserRequirement,
+    enforce_prompt_caps: bool,
+) -> ParsedAttachmentContext:
+    """Apply one shared safety pipeline with consumer-specific output budgeting."""
+
     spec = parser_spec_for_attachment(
         file_name=requirement.file_name,
         content_type=requirement.content_type,
@@ -1040,6 +1069,11 @@ def parse_xlsx_attachment(
             )
             if actual_archive_path != worksheet_preflight[sheet_index].archive_path:
                 raise AttachmentPreprocessingError("xlsx_parse_failed")
+        content["workbook"]["sheet_count"] = len(sheet_names)
+        # JSON ``false`` is longer than ``true``.  Reserving it before the
+        # first prompt-cap decision therefore conservatively accounts for the
+        # final field regardless of the eventual truncation result.
+        content["workbook"]["truncated"] = False
         selected_sheet_names = sheet_names[:MAX_XLSX_SHEETS]
         if preflight_sheet_count > MAX_XLSX_SHEETS:
             truncated = True
@@ -1074,7 +1108,7 @@ def parse_xlsx_attachment(
             }
             content["workbook"]["sheets"].append(sheet_payload)
             sheets_processed += 1
-            if not _prompt_content_within_caps(content):
+            if enforce_prompt_caps and not _prompt_content_within_caps(content):
                 content["workbook"]["sheets"].pop()
                 sheets_processed -= 1
                 truncated = True
@@ -1100,7 +1134,7 @@ def parse_xlsx_attachment(
                 if row_cells:
                     row_payload = {"row": row_index, "cells": row_cells}
                     sheet_payload["rows"].append(row_payload)
-                    if not _prompt_content_within_caps(content):
+                    if enforce_prompt_caps and not _prompt_content_within_caps(content):
                         sheet_payload["rows"].pop()
                         truncated = True
                         stop_all = True
@@ -1117,9 +1151,8 @@ def parse_xlsx_attachment(
     finally:
         workbook.close()
 
-    content["workbook"]["sheet_count"] = len(sheet_names)
     content["workbook"]["truncated"] = truncated
-    if not _prompt_content_within_caps(content):
+    if enforce_prompt_caps and not _prompt_content_within_caps(content):
         raise AttachmentPreprocessingError("attachment_parser_prompt_too_large")
     evidence = AttachmentParserEvidence(
         file_id=requirement.file_id,
