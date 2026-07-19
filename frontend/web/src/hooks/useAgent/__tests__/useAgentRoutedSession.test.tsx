@@ -2484,9 +2484,16 @@ async function assertStaleSubmitCannotOverwriteNewSession({
   const originalGetEvents = sessionApi.getEvents;
   const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
   const originalFetch = dom.window.fetch;
   let resolveSubmit!: (value: ChatStreamResponse) => void;
+  let resolveSubmissionResolution!: (value: ChatSubmissionResolution) => void;
+  let resolverSubmissionId: string | null = null;
+  let submissionCalls = 0;
   let sseCalls = 0;
+  const pendingSubmissionResolution = new Promise<ChatSubmissionResolution>((resolve) => {
+    resolveSubmissionResolution = resolve;
+  });
   dom.window.fetch = async () => {
     sseCalls += 1;
     return completedSseResponse();
@@ -2501,10 +2508,19 @@ async function assertStaleSubmitCannotOverwriteNewSession({
     metadata: {},
   });
   sessionApi.getEvents = async () => ({ events: [] });
-  sessionApi.submitChat = (() =>
-    new Promise<ChatStreamResponse>((resolve) => {
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolverSubmissionId = submissionId;
+    return pendingSubmissionResolution;
+  };
+  sessionApi.submitChat = (() => {
+    submissionCalls += 1;
+    if (submissionCalls > 1) {
+      throw new Error("the durable submission fence should block this POST");
+    }
+    return new Promise<ChatStreamResponse>((resolve) => {
       resolveSubmit = resolve;
-    })) as typeof sessionApi.submitChat;
+    });
+  }) as typeof sessionApi.submitChat;
 
   try {
     let staleSubmit: Promise<unknown> | null = null;
@@ -2512,6 +2528,7 @@ async function assertStaleSubmitCannotOverwriteNewSession({
       staleSubmit = harness.hook.sendMessage("旧会话请求");
       await Promise.resolve();
     });
+    assert.ok(harness.hook.messages.length > 0);
     if (clear) {
       await harness.act(async () => {
         harness.hook.clearMessages();
@@ -2521,6 +2538,19 @@ async function assertStaleSubmitCannotOverwriteNewSession({
         await harness.hook.loadHistory("session-new");
       });
     }
+    await settle(harness.act);
+    assert.ok(resolverSubmissionId, "the active durable key should enter resolver recovery");
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+    assert.match(
+      persistedSubmissionStorageValues().join("\n"),
+      new RegExp(resolverSubmissionId),
+    );
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("不得重复提交"), {
+        status: "failed",
+      });
+    });
+    assert.equal(submissionCalls, 1);
     resolveSubmit({
       session_id: "session-old",
       run_id: "run-old",
@@ -2537,6 +2567,18 @@ async function assertStaleSubmitCannotOverwriteNewSession({
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.messages.length, 0);
     assert.equal(sseCalls, 0);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+    await harness.act(async () => {
+      resolveSubmissionResolution({
+        protocol_version: "chat_submission_resolution.v2",
+        submission_id: resolverSubmissionId as string,
+        state: "absent_before_ledger",
+      });
+      await Promise.resolve();
+    });
+    await settle(harness.act);
+    assert.equal(harness.hook.canRetryPendingSubmission, false);
+    assert.equal(harness.hook.messages.length, 0);
     if (clear) {
       assert.equal(harness.hook.isLoading, false);
       assert.equal(harness.hook.isLoadingHistory, false);
@@ -2548,6 +2590,7 @@ async function assertStaleSubmitCannotOverwriteNewSession({
     sessionApi.getEvents = originalGetEvents;
     sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
+    sessionApi.getChatSubmission = originalGetChatSubmission;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }

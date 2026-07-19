@@ -312,6 +312,7 @@ interface SubmissionUncertainty {
   submissionId: string;
   owner: AuthScope;
   previousMessages?: Message[];
+  suppressMessageProjection?: boolean;
 }
 
 interface ActivePreAdmissionSubmission {
@@ -706,10 +707,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     ({
       expectedToken,
       messages,
+      projectMessages = true,
       requireCurrentToken = false,
     }: {
       expectedToken?: number;
       messages?: Message[];
+      projectMessages?: boolean;
       requireCurrentToken?: boolean;
     } = {}) => {
       const active = activePreAdmissionSubmissionRef.current;
@@ -724,13 +727,16 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return false;
       }
       const recoveryMessages = messages ?? active.previousMessages;
-      messagesRef.current = recoveryMessages;
-      setMessages(recoveryMessages);
+      if (projectMessages) {
+        messagesRef.current = recoveryMessages;
+        setMessages(recoveryMessages);
+      }
       submissionUncertaintyRef.current = {
         sessionId: active.sessionId,
         submissionId: active.submissionId,
         owner: active.owner,
         previousMessages: active.previousMessages,
+        suppressMessageProjection: !projectMessages,
       };
       setPendingSubmissionId(active.submissionId);
       setError(
@@ -1260,9 +1266,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         isMountedRef.current &&
         mountedGenerationRef.current === mountedGeneration &&
         isCurrentHistoryLoad(historyLoadTokenRef, historyLoadToken);
+      handoffActivePreAdmissionSubmission({ projectMessages: false });
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
-      activePreAdmissionSubmissionRef.current = null;
       streamVersionRef.current += 1;
       clearReconcileOwners();
       isSendingRef.current = false;
@@ -1601,6 +1607,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       reconcileCurrentRun,
       clearReconcileOwners,
       bindRunControlParent,
+      handoffActivePreAdmissionSubmission,
       invalidateRunControl,
       runControlLifecycle,
     ],
@@ -2213,9 +2220,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     // delayed submit or history restore cannot repopulate this blank session.
     historyLoadTokenRef.current += 1;
     invalidateRunControl();
+    handoffActivePreAdmissionSubmission({ projectMessages: false });
     sessionGenerationRef.current += 1;
     submissionTokenRef.current += 1;
-    activePreAdmissionSubmissionRef.current = null;
     streamVersionRef.current += 1;
     isLoadingHistoryRef.current = false;
     isSendingRef.current = false;
@@ -2255,7 +2262,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     }
     clearReconnectTimeout(reconnectTimeoutRef);
     toast.dismiss("chat-queue");
-  }, [clearReconcileOwners, invalidateRunControl]);
+  }, [
+    clearReconcileOwners,
+    handoffActivePreAdmissionSubmission,
+    invalidateRunControl,
+  ]);
 
   useLayoutEffect(() => {
     if (runControlAuthIdentityRef.current === runControlAuthIdentity) {
@@ -2312,6 +2323,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           authScopesEqual(current.owner, owner) &&
           current.submissionId === persisted.submissionId
             ? current.previousMessages
+            : undefined,
+        suppressMessageProjection:
+          current &&
+          authScopesEqual(current.owner, owner) &&
+          current.submissionId === persisted.submissionId
+            ? current.suppressMessageProjection
             : undefined,
       };
       setPendingSubmissionId(persisted.submissionId);
@@ -2430,7 +2447,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return;
         }
         if (isAuthoritativePreLedgerAbsence(resolution)) {
-          const previous = pending.previousMessages || [];
+          const previous = pending.suppressMessageProjection
+            ? []
+            : pending.previousMessages || [];
           messagesRef.current = previous;
           setMessages(previous);
           setError(null);
@@ -2439,7 +2458,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         }
         const outcome = resolution.outcome;
         if (resolution.state === "rejected_before_persist") {
-          const previous = pending.previousMessages || [];
+          const previous = pending.suppressMessageProjection
+            ? []
+            : pending.previousMessages || [];
           messagesRef.current = previous;
           setMessages(previous);
           setError(null);
@@ -2447,7 +2468,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return;
         }
         if (resolution.state === "enqueue_failed") {
-          const previous = pending.previousMessages || [];
+          const previous = pending.suppressMessageProjection
+            ? []
+            : pending.previousMessages || [];
           messagesRef.current = previous;
           setMessages(previous);
           setError(i18n.t("chat.runTerminal.failed"));
@@ -2548,7 +2571,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return;
       }
       if (isAuthoritativePreLedgerAbsence(resolution)) {
-        const previous = pending.previousMessages || [];
+        const previous = pending.suppressMessageProjection
+          ? []
+          : pending.previousMessages || [];
         messagesRef.current = previous;
         setMessages(previous);
         setError(null);
@@ -2556,7 +2581,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return;
       }
       if (resolution.state === "rejected_before_persist") {
-        const previous = pending.previousMessages || [];
+        const previous = pending.suppressMessageProjection
+          ? []
+          : pending.previousMessages || [];
         messagesRef.current = previous;
         setMessages(previous);
         setError(null);
@@ -2564,7 +2591,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return;
       }
       if (resolution.state === "enqueue_failed") {
-        const previous = pending.previousMessages || [];
+        const previous = pending.suppressMessageProjection
+          ? []
+          : pending.previousMessages || [];
         messagesRef.current = previous;
         setMessages(previous);
         setError(i18n.t("chat.runTerminal.failed"));
