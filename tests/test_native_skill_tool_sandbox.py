@@ -214,10 +214,24 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
         {"path": ".", "pattern": "inputs/**/*.xlsx"},
         workspace_root=workspace,
     )
+    assert claude_agent_sdk_runner._workspace_path_parameters_authorized(
+        subject,
+        "Read",
+        {"file_path": ".claude/skills/native-skill/SKILL.md"},
+        workspace_root=workspace,
+    )
+    assert claude_agent_sdk_runner._workspace_path_parameters_authorized(
+        subject,
+        "Glob",
+        {"path": ".", "pattern": ".claude/skills/**/*.py"},
+        workspace_root=workspace,
+    )
     for forbidden_input in (
         {"path": ".", "pattern": "/proc/**"},
         {"path": ".", "pattern": ".ai-platform/**"},
         {"path": ".", "pattern": ".home/**"},
+        {"path": ".", "pattern": ".*/**"},
+        {"path": ".", "pattern": "**/*.xlsx"},
         {"path": ".claude-config", "pattern": "**/*"},
     ):
         assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
@@ -233,6 +247,12 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
             {"file_path": str(workspace / internal_root / "private")},
             workspace_root=workspace,
         )
+    assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
+        subject,
+        "Read",
+        {"file_path": ".claude/settings.json"},
+        workspace_root=workspace,
+    )
 
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", "/workspace/.ai-platform/native-tool.sock")
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", "x" * 32)

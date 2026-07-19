@@ -972,15 +972,53 @@ def _workspace_path_parameters_authorized(
             relative = candidate.resolve(strict=False).relative_to(root)
         except (OSError, RuntimeError, ValueError):
             return False
-        return not (
-            relative.parts and relative.parts[0].lower() in _WORKSPACE_INTERNAL_ROOTS
+        if not relative.parts:
+            return True
+        lowered = tuple(part.lower() for part in relative.parts)
+        if lowered[0] in _WORKSPACE_INTERNAL_ROOTS:
+            return False
+        if lowered[0] == ".claude":
+            return len(lowered) >= 2 and lowered[1] == "skills"
+        return True
+
+    def glob_pattern_authorized(raw: object, *, search_path: object) -> bool:
+        if not path_authorized(raw):
+            return False
+        if not isinstance(search_path, str) or not search_path:
+            return False
+        try:
+            root = workspace_root.resolve(strict=True)
+            candidate = Path(search_path)
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            search_relative = candidate.resolve(strict=False).relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        if search_relative.parts:
+            return True
+        assert isinstance(raw, str)
+        parts = tuple(
+            part
+            for part in raw.replace("\\", "/").split("/")
+            if part not in {"", "."}
         )
+        if not parts:
+            return False
+        first = parts[0]
+        lowered = tuple(part.lower() for part in parts)
+        if first.startswith("."):
+            return len(lowered) >= 2 and lowered[:2] == (".claude", "skills")
+        if first == "**" or (len(parts) > 1 and any(char in first for char in "*?[]")):
+            return False
+        return True
 
     if not isinstance(tool_input, dict):
         return False
     if tool_name == "Glob":
-        return path_authorized(tool_input.get("path") or ".") and path_authorized(
-            tool_input.get("pattern")
+        search_path = tool_input.get("path") or "."
+        return path_authorized(search_path) and glob_pattern_authorized(
+            tool_input.get("pattern"),
+            search_path=search_path,
         )
     key = _WORKSPACE_PATH_PARAMETER.get(tool_name)
     if key is None:
