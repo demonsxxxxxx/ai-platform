@@ -272,6 +272,61 @@ async def _publish_socket(socket_path: Path) -> None:
     raise RuntimeError("native_tool_socket_publish_timeout")
 
 
+def _prepare_socket_parent(*, workspace: Path, socket_path: Path, uid: int, gid: int) -> Path:
+    """Create the fixed UDS parent before Uvicorn binds the native-tool socket."""
+
+    try:
+        resolved_workspace = workspace.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("native_tool_workspace_invalid") from exc
+    expected_socket = resolved_workspace / ".ai-platform" / "native-tool.sock"
+    if socket_path != expected_socket:
+        raise RuntimeError("native_tool_socket_invalid")
+    socket_parent = expected_socket.parent
+    try:
+        node = socket_parent.lstat()
+    except FileNotFoundError:
+        socket_parent.mkdir(mode=0o700, parents=False)
+        os.chown(socket_parent, uid, gid)
+    except OSError as exc:
+        raise RuntimeError("native_tool_socket_invalid") from exc
+    else:
+        if not stat.S_ISDIR(node.st_mode) or stat.S_ISLNK(node.st_mode):
+            raise RuntimeError("native_tool_socket_invalid")
+        if (node.st_uid, node.st_gid) != (uid, gid):
+            raise RuntimeError("native_tool_socket_parent_owner_invalid")
+        os.chmod(socket_parent, 0o700)
+    return expected_socket
+
+
+def main() -> int:
+    """Launch the native-tool app only after its UDS bind location is safe."""
+
+    workspace = Path(os.getenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE") or "/workspace")
+    socket_path = Path(
+        os.getenv("AI_PLATFORM_NATIVE_TOOL_SOCKET")
+        or workspace / ".ai-platform" / "native-tool.sock"
+    )
+    uid = int(os.getenv("AI_PLATFORM_NATIVE_TOOL_UID") or "10001")
+    gid = int(os.getenv("AI_PLATFORM_NATIVE_TOOL_GID") or "10001")
+    prepared_socket = _prepare_socket_parent(
+        workspace=workspace,
+        socket_path=socket_path,
+        uid=uid,
+        gid=gid,
+    )
+    import uvicorn
+
+    uvicorn.run(
+        "app.runtime.sandbox.native_tool_app:create_native_tool_app",
+        factory=True,
+        uds=str(prepared_socket),
+        access_log=False,
+        log_level="warning",
+    )
+    return 0
+
+
 def create_native_tool_app() -> FastAPI:
     """Build the token-authenticated command sidecar application."""
 
@@ -331,3 +386,7 @@ def create_native_tool_app() -> FastAPI:
             )
 
     return app
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

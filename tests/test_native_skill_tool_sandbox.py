@@ -2,6 +2,7 @@ import asyncio
 import base64
 import signal
 import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,66 @@ from fastapi import HTTPException
 
 from app.executors import claude_agent_sdk_runner
 from app.runtime.sandbox import native_tool_app
+
+
+def test_native_tool_launcher_prepares_socket_parent_before_uvicorn_binds(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    socket_path = workspace / ".ai-platform" / "native-tool.sock"
+    calls = {}
+
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "chown",
+        lambda path, uid, gid: calls.update(chown=(path, uid, gid)),
+        raising=False,
+    )
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE", str(workspace))
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", str(socket_path))
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_UID", "10001")
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_GID", "10001")
+
+    class FakeUvicorn:
+        @staticmethod
+        def run(*args, **kwargs):
+            calls["run"] = (args, kwargs)
+
+    monkeypatch.setitem(sys.modules, "uvicorn", FakeUvicorn)
+
+    assert native_tool_app.main() == 0
+    assert socket_path.parent.is_dir()
+    assert calls["chown"] == (socket_path.parent, 10001, 10001)
+    assert calls["run"] == (
+        ("app.runtime.sandbox.native_tool_app:create_native_tool_app",),
+        {"factory": True, "uds": str(socket_path), "access_log": False, "log_level": "warning"},
+    )
+
+
+def test_native_tool_launcher_rejects_foreign_socket_parent(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    socket_parent = workspace / ".ai-platform"
+    socket_parent.mkdir(parents=True)
+    socket_path = socket_parent / "native-tool.sock"
+    original_lstat = Path.lstat
+
+    class ForeignStat:
+        st_mode = 0o40700
+        st_uid = 99999
+        st_gid = 99999
+
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda path: ForeignStat() if path == socket_parent else original_lstat(path),
+    )
+
+    with pytest.raises(RuntimeError, match="native_tool_socket_parent_owner_invalid"):
+        native_tool_app._prepare_socket_parent(
+            workspace=workspace,
+            socket_path=socket_path,
+            uid=10001,
+            gid=10001,
+        )
 
 
 @pytest.mark.asyncio

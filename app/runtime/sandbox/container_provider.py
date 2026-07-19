@@ -79,6 +79,13 @@ class ContainerStartFailedError(SandboxRuntimeError):
         super().__init__("container_start_failed", message)
 
 
+class NativeToolAdmissionError(SandboxRuntimeError):
+    """Raised when the isolated native-command sidecar cannot become ready."""
+
+    def __init__(self, message: str = "Native tool sandbox admission failed") -> None:
+        super().__init__("native_tool_admission_failed", message)
+
+
 class ContainerCleanupFailedError(SandboxRuntimeError):
     """Raised when a rejected executor cannot be confirmed stopped and removed."""
 
@@ -1721,16 +1728,10 @@ class DockerContainerProvider:
                     }
                 },
                 environment=_native_tool_environment(token),
-                entrypoint=["python", "-m", "uvicorn"],
-                command=[
-                    "app.runtime.sandbox.native_tool_app:create_native_tool_app",
-                    "--factory",
-                    "--uds",
-                    _NATIVE_TOOL_SOCKET,
-                    "--no-access-log",
-                    "--log-level",
-                    "warning",
-                ],
+                # The launcher establishes the UDS parent before Uvicorn binds
+                # it. Lifespan hooks run too late to repair a missing parent.
+                entrypoint=["python", "-m", "app.runtime.sandbox.native_tool_app"],
+                command=[],
                 network_disabled=True,
                 user="0:0",
                 **_native_tool_security_kwargs(),
@@ -1739,12 +1740,18 @@ class DockerContainerProvider:
             container.start()
             await self._wait_for_native_tool_socket(socket_path, timeout_seconds)
             return container
-        except BaseException:
+        except asyncio.CancelledError:
             container_removed = container is None or _stop_and_remove_container(container)
             socket_removed = self._remove_native_tool_socket(workspace)
             if not (container_removed and socket_removed):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
             raise
+        except Exception as exc:
+            container_removed = container is None or _stop_and_remove_container(container)
+            socket_removed = self._remove_native_tool_socket(workspace)
+            if not (container_removed and socket_removed):
+                raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed") from exc
+            raise NativeToolAdmissionError() from exc
 
     async def _reuse_existing_container(
         self,
@@ -1985,6 +1992,12 @@ class DockerContainerProvider:
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise ContainerStartFailedError() from exc
+        except NativeToolAdmissionError as exc:
+            try:
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
+            raise
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
             try:
