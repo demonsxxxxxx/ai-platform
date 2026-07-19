@@ -26,6 +26,8 @@ NATIVE_TOOL_RUNTIME_UID = 10001
 NATIVE_TOOL_RUNTIME_GID = 10001
 _PR_GET_DUMPABLE = 3
 _PR_SET_DUMPABLE = 4
+_NATIVE_TOOL_PRE_SPAWN_FAILURE = "native_tool_stage=pre_spawn;class=failure"
+_NATIVE_TOOL_POST_SPAWN_FAILURE = "native_tool_stage=post_spawn;class=failure"
 
 
 def _require_native_tool_identity(uid: int, gid: int) -> None:
@@ -228,20 +230,31 @@ async def _run_command(
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
-    process = await asyncio.create_subprocess_exec(
-        "/bin/bash",
-        "-lc",
-        command,
-        cwd=str(workspace),
-        env=environment,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-        umask=0o077,
-    )
+    pre_spawn_failed = False
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            command,
+            cwd=str(workspace),
+            env=environment,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+            umask=0o077,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pre_spawn_failed = True
+    if pre_spawn_failed:
+        raise RuntimeError(_NATIVE_TOOL_PRE_SPAWN_FAILURE)
     stdout_task = asyncio.create_task(_read_bounded(process.stdout))
     stderr_task = asyncio.create_task(_read_bounded(process.stderr))
     timed_out = False
+    post_spawn_failed = False
     try:
         await asyncio.wait_for(process.wait(), timeout=timeout_ms / 1000.0)
     except TimeoutError:
@@ -250,6 +263,12 @@ async def _run_command(
     except asyncio.CancelledError:
         await _terminate_process_group(process)
         raise
+    except Exception:
+        try:
+            await _terminate_process_group(process)
+        except Exception:
+            pass
+        post_spawn_failed = True
     else:
         # A native Skill command may background children. The command boundary
         # ends when its shell exits, so no descendant may survive that boundary.
@@ -259,8 +278,16 @@ async def _run_command(
         # active untrusted process so setsid/new-process-group descendants
         # cannot outlive the command boundary.
         await _terminate_uid_processes(uid)
-    stdout, stdout_truncated = await stdout_task
-    stderr, stderr_truncated = await stderr_task
+    if post_spawn_failed:
+        raise RuntimeError(_NATIVE_TOOL_POST_SPAWN_FAILURE)
+    output_failed = False
+    try:
+        stdout, stdout_truncated = await stdout_task
+        stderr, stderr_truncated = await stderr_task
+    except Exception:
+        output_failed = True
+    if output_failed:
+        raise RuntimeError(_NATIVE_TOOL_POST_SPAWN_FAILURE)
     return NativeToolResult(
         returncode=124 if timed_out else int(process.returncode or 0),
         stdout=stdout.decode("utf-8", errors="replace"),
@@ -409,6 +436,7 @@ def main() -> int:
         "app.runtime.sandbox.native_tool_app:create_native_tool_app",
         factory=True,
         uds=str(prepared_socket),
+        loop="asyncio",
         access_log=False,
         log_level="warning",
     )

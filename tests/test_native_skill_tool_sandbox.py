@@ -53,7 +53,13 @@ def test_native_tool_launcher_prepares_socket_parent_before_uvicorn_binds(monkey
     }
     assert calls["run"] == (
         ("app.runtime.sandbox.native_tool_app:create_native_tool_app",),
-        {"factory": True, "uds": str(socket_path), "access_log": False, "log_level": "warning"},
+        {
+            "factory": True,
+            "uds": str(socket_path),
+            "loop": "asyncio",
+            "access_log": False,
+            "log_level": "warning",
+        },
     )
 
 
@@ -361,7 +367,7 @@ async def test_native_tool_command_uses_minimal_environment_and_process_isolatio
     )
 
     assert result.returncode == 0
-    assert captured["args"] == ("/bin/bash", "-lc", "printf safe")
+    assert captured["args"] == ("/bin/bash", "--noprofile", "--norc", "-c", "printf safe")
     assert captured["kwargs"]["cwd"] == str(workspace)
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["identity"] == (10001, 10001)
@@ -377,6 +383,83 @@ async def test_native_tool_command_uses_minimal_environment_and_process_isolatio
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
+
+
+@pytest.mark.asyncio
+async def test_native_tool_pre_spawn_failure_diagnostic_is_fixed_and_sanitized(monkeypatch, tmp_path):
+    workspace = tmp_path / "private-workspace"
+    workspace.mkdir()
+    secret_command = "printf private-command"
+    secret_token = "private-token-value"
+
+    async def fail_spawn(*_args, **_kwargs):
+        raise OSError(f"spawn failed for {secret_command} at {workspace} using {secret_token}")
+
+    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
+    monkeypatch.setattr(native_tool_app.asyncio, "create_subprocess_exec", fail_spawn)
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", secret_token)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await native_tool_app._run_command(
+            command=secret_command,
+            workspace=workspace,
+            uid=10001,
+            gid=10001,
+        )
+
+    diagnostic = str(exc_info.value)
+    assert diagnostic == "native_tool_stage=pre_spawn;class=failure"
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert all(value not in diagnostic for value in (secret_command, secret_token, str(workspace), "PATH"))
+
+
+@pytest.mark.asyncio
+async def test_native_tool_post_spawn_failure_diagnostic_is_fixed_and_sanitized(monkeypatch, tmp_path):
+    workspace = tmp_path / "private-workspace"
+    workspace.mkdir()
+    secret_command = "printf private-command"
+    secret_token = "private-token-value"
+    cleanup_calls = []
+
+    class Process:
+        pid = 123
+        returncode = None
+        stdout = None
+        stderr = None
+
+        async def wait(self):
+            raise OSError(f"wait failed for {secret_command} at {workspace} using {secret_token}")
+
+    async def create_subprocess_exec(*_args, **_kwargs):
+        return Process()
+
+    async def terminate_group(process, *, include_orphans=False):
+        cleanup_calls.append((process.pid, include_orphans))
+
+    async def terminate_uid(uid):
+        cleanup_calls.append((uid, "uid"))
+
+    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
+    monkeypatch.setattr(native_tool_app.asyncio, "create_subprocess_exec", create_subprocess_exec)
+    monkeypatch.setattr(native_tool_app, "_terminate_process_group", terminate_group)
+    monkeypatch.setattr(native_tool_app, "_terminate_uid_processes", terminate_uid)
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", secret_token)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await native_tool_app._run_command(
+            command=secret_command,
+            workspace=workspace,
+            uid=10001,
+            gid=10001,
+        )
+
+    diagnostic = str(exc_info.value)
+    assert diagnostic == "native_tool_stage=post_spawn;class=failure"
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert all(value not in diagnostic for value in (secret_command, secret_token, str(workspace), "PATH"))
+    assert cleanup_calls == [(123, False), (10001, "uid")]
 
 
 @pytest.mark.asyncio

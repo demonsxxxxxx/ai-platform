@@ -1611,7 +1611,8 @@ async def test_docker_provider_uses_no_network_native_sidecar_and_refuses_invali
 
     assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
     sidecar, executor = fake.created
-    assert sidecar["network_disabled"] is True
+    assert sidecar["network_mode"] == "none"
+    assert "network_disabled" not in sidecar
     assert sidecar["entrypoint"] == ["python", "-m", "app.runtime.sandbox.native_tool_app"]
     assert sidecar["command"] == []
     assert sidecar["user"] == "10001:10001"

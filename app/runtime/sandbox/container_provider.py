@@ -1736,7 +1736,7 @@ class DockerContainerProvider:
                 # it. Lifespan hooks run too late to repair a missing parent.
                 entrypoint=["python", "-m", "app.runtime.sandbox.native_tool_app"],
                 command=[],
-                network_disabled=True,
+                network_mode="none",
                 user=f"{RUNTIME_UID}:{RUNTIME_GID}",
                 **_native_tool_security_kwargs(),
                 **_docker_resource_kwargs(request.resource_limits),
