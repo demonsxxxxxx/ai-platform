@@ -373,6 +373,53 @@ def test_xlsx_child_uses_stdlib_xml_and_reports_memory_failure_without_source_da
     assert "sanitized-fixture" not in str(sent)
 
 
+@pytest.mark.parametrize(
+    "malformed_child_result",
+    [
+        {
+            "status": "failed",
+            "code": [],
+            "diagnostic": {"phase": [], "reason": {}},
+        },
+        {
+            "status": "failed",
+            "code": {},
+            "diagnostic": {"phase": {}, "reason": []},
+        },
+    ],
+    ids=("list-values", "dict-values"),
+)
+def test_malformed_child_allowlist_values_fail_closed_without_leaking(
+    malformed_child_result,
+    caplog,
+):
+    caplog.set_level(logging.WARNING, logger="app.file_preview_contracts")
+
+    file_preview_contracts._log_isolated_xlsx_result(malformed_child_result)
+    public_result = file_preview_contracts._strip_isolated_xlsx_diagnostic(
+        malformed_child_result
+    )
+
+    assert public_result == {
+        "status": "failed",
+        "code": "xlsx_preview_unavailable",
+    }
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("xlsx_preview_isolated_parser")
+    ]
+    assert len(records) == 1
+    assert records[0].xlsx_preview_phase == "parent_receive"
+    assert records[0].xlsx_preview_result == "failed"
+    assert records[0].xlsx_preview_code == "none"
+    assert records[0].xlsx_preview_reason == "invalid_child_result"
+    assert records[0].getMessage() == (
+        "xlsx_preview_isolated_parser phase=parent_receive result=failed "
+        "code=none reason=invalid_child_result"
+    )
+
+
 def test_xlsx_preview_admission_fails_fast_without_queue(monkeypatch):
     admission = threading.BoundedSemaphore(1)
     monkeypatch.setattr(file_preview_contracts, "_PREVIEW_ADMISSION", admission)

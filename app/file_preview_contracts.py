@@ -538,14 +538,18 @@ def _log_isolated_xlsx_result(result: object) -> None:
     diagnostic = payload.get("diagnostic")
     diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
     phase = diagnostic.get("phase")
-    if phase not in _XLSX_PREVIEW_DIAGNOSTIC_PHASES:
+    if not isinstance(phase, str) or phase not in _XLSX_PREVIEW_DIAGNOSTIC_PHASES:
         phase = "parent_receive"
     reason = diagnostic.get("reason")
-    if reason not in _XLSX_PREVIEW_DIAGNOSTIC_REASONS:
+    if not isinstance(reason, str) or reason not in _XLSX_PREVIEW_DIAGNOSTIC_REASONS:
         reason = "invalid_child_result"
     result_status = "parsed" if payload.get("status") == "parsed" else "failed"
     raw_code = payload.get("code")
-    code = raw_code if raw_code in _XLSX_PREVIEW_PUBLIC_FAILURE_CODES else "none"
+    code = (
+        raw_code
+        if isinstance(raw_code, str) and raw_code in _XLSX_PREVIEW_PUBLIC_FAILURE_CODES
+        else "none"
+    )
     log = logger.info if result_status == "parsed" else logger.warning
     log(
         "xlsx_preview_isolated_parser phase=%s result=%s code=%s reason=%s",
@@ -570,7 +574,7 @@ def _strip_isolated_xlsx_diagnostic(result: object) -> dict[str, Any]:
     if result.get("status") == "parsed":
         return {"status": "parsed", "parsed": result.get("parsed")}
     code = result.get("code")
-    if code not in _XLSX_PREVIEW_PUBLIC_FAILURE_CODES:
+    if not isinstance(code, str) or code not in _XLSX_PREVIEW_PUBLIC_FAILURE_CODES:
         code = "xlsx_preview_unavailable"
     return {"status": "failed", "code": code}
 
