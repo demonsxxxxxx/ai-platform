@@ -1008,7 +1008,14 @@ def _workspace_path_parameters_authorized(
         lowered = tuple(part.lower() for part in parts)
         if first.startswith("."):
             return len(lowered) >= 2 and lowered[:2] == (".claude", "skills")
-        if first == "**" or (len(parts) > 1 and any(char in first for char in "*?[]")):
+        if any(char in first for char in "{}()!\\"):
+            return False
+        if len(parts) > 1 and not all(
+            char.isalnum() or char in {"_", "-", "."}
+            for char in first
+        ):
+            return False
+        if first == "**":
             return False
         return True
 

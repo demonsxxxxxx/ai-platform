@@ -232,6 +232,8 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
         {"path": ".", "pattern": ".home/**"},
         {"path": ".", "pattern": ".*/**"},
         {"path": ".", "pattern": "**/*.xlsx"},
+        {"path": ".", "pattern": "{.home,.tmp}/**"},
+        {"path": ".", "pattern": "@(.home|.tmp)/**"},
         {"path": ".claude-config", "pattern": "**/*"},
     ):
         assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
