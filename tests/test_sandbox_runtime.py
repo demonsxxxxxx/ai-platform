@@ -98,7 +98,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert result.run_id == "run-a"
     assert result.executor_response["status"] == "accepted"
     assert Path(run_root / "workspace").is_dir()
-    assert Path(run_root / "inputs").is_dir()
+    assert Path(run_root / "workspace" / "inputs").is_dir()
     assert Path(run_root / "logs").is_dir()
     assert sent[0][0] == "http://executor.test"
     assert sent[0][1].session_id == "session-a"
