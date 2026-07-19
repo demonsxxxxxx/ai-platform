@@ -1692,6 +1692,128 @@ async def test_docker_provider_sanitizes_native_sidecar_admission_failure_withou
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_preserves_existing_native_sidecar_cleanup_failure(tmp_path):
+    from app.runtime.sandbox.container_provider import ContainerCleanupFailedError, DockerContainerProvider
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    old_sidecar = FakeDockerContainer(
+        image="ai-platform-executor:dev",
+        name="native-tool-run-a",
+        detach=True,
+        labels={
+            "ai-platform.owner": "sandbox-native-tool",
+            "ai-platform.tenant_id": "tenant-a",
+            "ai-platform.workspace_id": "workspace-a",
+            "ai-platform.user_id": "user-a",
+            "ai-platform.session_id": "session-a",
+            "ai-platform.run_id": "run-a",
+        },
+        volumes={},
+        environment={},
+        stop_error=RuntimeError("old sidecar stop failed"),
+        remove_error=RuntimeError("old sidecar remove failed"),
+    )
+    fake = FakeDockerClient()
+    fake.containers_by_name[old_sidecar.name] = old_sidecar
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+    native_subjects = [
+        {
+            "identity": "Skill",
+            "declared_identities": ["Skill"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "execution_strategy": "sdk_native",
+        },
+        {
+            "identity": "Bash",
+            "declared_identities": ["Bash"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "command_isolation": "sibling-tool-sandbox-v1",
+        },
+    ]
+
+    with pytest.raises(ContainerCleanupFailedError) as exc_info:
+        await provider.create_or_reuse(
+            request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+            workspace(workspace_host_path=str(workspace_path)),
+        )
+
+    assert exc_info.value.error_code == "container_cleanup_failed"
+    assert str(exc_info.value) == "native tool container cleanup could not be confirmed"
+    assert old_sidecar.removed is False
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_stage", "raw_error", "expected_error_name", "expected_code", "expected_message"),
+    [
+        ("create", "permission denied: private workspace", "permission", "docker_permission_denied", "Docker permission denied"),
+        ("start", "permission denied: private workspace", "permission", "docker_permission_denied", "Docker permission denied"),
+        ("create", "cannot connect to /var/run/docker.sock", "unavailable", "docker_unavailable", "Docker daemon is unavailable"),
+        ("start", "cannot connect to /var/run/docker.sock", "unavailable", "docker_unavailable", "Docker daemon is unavailable"),
+    ],
+)
+async def test_docker_provider_preserves_native_sidecar_docker_failure_taxonomy(
+    tmp_path,
+    failure_stage,
+    raw_error,
+    expected_error_name,
+    expected_code,
+    expected_message,
+):
+    from app.runtime.sandbox.container_provider import (
+        DockerContainerProvider,
+        DockerPermissionDeniedError,
+        DockerUnavailableError,
+    )
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    failure_kwargs = {f"{failure_stage}_error": RuntimeError(raw_error)}
+    fake = FakeDockerClient(**failure_kwargs)
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+    expected_error = DockerPermissionDeniedError if expected_error_name == "permission" else DockerUnavailableError
+    native_subjects = [
+        {
+            "identity": "Skill",
+            "declared_identities": ["Skill"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "execution_strategy": "sdk_native",
+        },
+        {
+            "identity": "Bash",
+            "declared_identities": ["Bash"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "command_isolation": "sibling-tool-sandbox-v1",
+        },
+    ]
+
+    with pytest.raises(expected_error) as exc_info:
+        await provider.create_or_reuse(
+            request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+            workspace(workspace_host_path=str(workspace_path)),
+        )
+
+    assert exc_info.value.error_code == expected_code
+    assert str(exc_info.value) == expected_message
+    assert raw_error not in str(exc_info.value)
+    assert provider._leases == {}
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
 

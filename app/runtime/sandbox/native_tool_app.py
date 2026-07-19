@@ -275,6 +275,10 @@ async def _publish_socket(socket_path: Path) -> None:
 def _prepare_socket_parent(*, workspace: Path, socket_path: Path, uid: int, gid: int) -> Path:
     """Create the fixed UDS parent before Uvicorn binds the native-tool socket."""
 
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    if os.name != "posix" or not no_follow or not directory_flag:
+        raise RuntimeError("native_tool_secure_filesystem_unavailable")
     try:
         resolved_workspace = workspace.resolve(strict=True)
     except OSError as exc:
@@ -282,20 +286,48 @@ def _prepare_socket_parent(*, workspace: Path, socket_path: Path, uid: int, gid:
     expected_socket = resolved_workspace / ".ai-platform" / "native-tool.sock"
     if socket_path != expected_socket:
         raise RuntimeError("native_tool_socket_invalid")
-    socket_parent = expected_socket.parent
+    open_flags = os.O_RDONLY | directory_flag | no_follow | getattr(os, "O_CLOEXEC", 0)
+    workspace_fd: int | None = None
+    socket_parent_fd: int | None = None
+    created = False
     try:
-        node = socket_parent.lstat()
-    except FileNotFoundError:
-        socket_parent.mkdir(mode=0o700, parents=False)
-        os.chown(socket_parent, uid, gid)
+        workspace_fd = os.open(resolved_workspace, open_flags)
+        workspace_node = os.fstat(workspace_fd)
+        if not stat.S_ISDIR(workspace_node.st_mode):
+            raise RuntimeError("native_tool_workspace_invalid")
+        try:
+            socket_parent_fd = os.open(".ai-platform", open_flags, dir_fd=workspace_fd)
+        except FileNotFoundError:
+            os.mkdir(".ai-platform", mode=0o700, dir_fd=workspace_fd)
+            created = True
+            socket_parent_fd = os.open(".ai-platform", open_flags, dir_fd=workspace_fd)
+        parent_before = os.fstat(socket_parent_fd)
+        if not stat.S_ISDIR(parent_before.st_mode):
+            raise RuntimeError("native_tool_socket_invalid")
+        parent_identity = (parent_before.st_dev, parent_before.st_ino)
+        if created:
+            os.fchown(socket_parent_fd, uid, gid)
+        elif (parent_before.st_uid, parent_before.st_gid) != (uid, gid):
+            raise RuntimeError("native_tool_socket_parent_owner_invalid")
+        os.fchmod(socket_parent_fd, 0o700)
+        parent_after = os.fstat(socket_parent_fd)
+        path_after = os.stat(".ai-platform", dir_fd=workspace_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(parent_after.st_mode)
+            or not stat.S_ISDIR(path_after.st_mode)
+            or (parent_after.st_dev, parent_after.st_ino) != parent_identity
+            or (path_after.st_dev, path_after.st_ino) != parent_identity
+            or (parent_after.st_uid, parent_after.st_gid) != (uid, gid)
+            or stat.S_IMODE(parent_after.st_mode) != 0o700
+        ):
+            raise RuntimeError("native_tool_socket_parent_changed")
     except OSError as exc:
         raise RuntimeError("native_tool_socket_invalid") from exc
-    else:
-        if not stat.S_ISDIR(node.st_mode) or stat.S_ISLNK(node.st_mode):
-            raise RuntimeError("native_tool_socket_invalid")
-        if (node.st_uid, node.st_gid) != (uid, gid):
-            raise RuntimeError("native_tool_socket_parent_owner_invalid")
-        os.chmod(socket_parent, 0o700)
+    finally:
+        if socket_parent_fd is not None:
+            os.close(socket_parent_fd)
+        if workspace_fd is not None:
+            os.close(workspace_fd)
     return expected_socket
 
 

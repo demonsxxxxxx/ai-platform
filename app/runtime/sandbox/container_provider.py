@@ -1746,11 +1746,18 @@ class DockerContainerProvider:
             if not (container_removed and socket_removed):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
             raise
+        except ContainerCleanupFailedError:
+            raise
         except Exception as exc:
+            normalized_exc = _normalize_docker_availability_error(exc)
             container_removed = container is None or _stop_and_remove_container(container)
             socket_removed = self._remove_native_tool_socket(workspace)
             if not (container_removed and socket_removed):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed") from exc
+            if normalized_exc is not None:
+                raise normalized_exc from exc
+            if isinstance(exc, SandboxRuntimeError):
+                raise
             raise NativeToolAdmissionError() from exc
 
     async def _reuse_existing_container(
@@ -1992,6 +1999,8 @@ class DockerContainerProvider:
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise ContainerStartFailedError() from exc
+        except ContainerCleanupFailedError:
+            raise
         except NativeToolAdmissionError as exc:
             try:
                 self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
@@ -2004,8 +2013,10 @@ class DockerContainerProvider:
                 self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
-            if isinstance(normalized_exc, DockerPermissionDeniedError):
+            if normalized_exc is not None:
                 raise normalized_exc from exc
+            if isinstance(exc, SandboxRuntimeError):
+                raise
             raise ContainerStartFailedError() from exc
         if container is None:
             try:
