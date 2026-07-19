@@ -1692,6 +1692,111 @@ async def test_docker_provider_sanitizes_native_sidecar_admission_failure_withou
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_occupied_native_socket_preflight_has_zero_false_runtime_evidence(tmp_path):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, NativeToolAdmissionError
+
+    workspace_path = tmp_path / "workspace"
+    socket_parent = workspace_path / ".ai-platform"
+    socket_parent.mkdir(parents=True)
+    occupied_path = socket_parent / "native-tool.sock"
+    occupied_path.write_text("owned by another subject", encoding="utf-8")
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+    native_subjects = [
+        {
+            "identity": "Skill",
+            "declared_identities": ["Skill"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "execution_strategy": "sdk_native",
+        },
+        {
+            "identity": "Bash",
+            "declared_identities": ["Bash"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "command_isolation": "sibling-tool-sandbox-v1",
+        },
+    ]
+
+    with pytest.raises(NativeToolAdmissionError) as exc_info:
+        await provider.create_or_reuse(
+            request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+            workspace(workspace_host_path=str(workspace_path)),
+        )
+
+    assert exc_info.value.error_code == "native_tool_admission_failed"
+    assert str(exc_info.value) == "Native tool sandbox admission failed"
+    assert occupied_path.is_file()
+    assert fake.created == []
+    assert provider._leases == {}
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_native_probe_timeout_is_admission_failure_without_false_runtime_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    from app.runtime.sandbox.container_provider import (
+        DockerContainerProvider,
+        ExecutorHealthTimeoutError,
+        NativeToolAdmissionError,
+    )
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    probe_calls = []
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        native_tool_probe=lambda socket_path: probe_calls.append(socket_path) or False,
+    )
+
+    async def false_probe_timeout(socket_path, _timeout_seconds):
+        assert provider._native_tool_probe(str(socket_path)) is False
+        raise ExecutorHealthTimeoutError("native tool sandbox did not become ready")
+
+    monkeypatch.setattr(provider, "_wait_for_native_tool_socket", false_probe_timeout)
+    native_subjects = [
+        {
+            "identity": "Skill",
+            "declared_identities": ["Skill"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "execution_strategy": "sdk_native",
+        },
+        {
+            "identity": "Bash",
+            "declared_identities": ["Bash"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "command_isolation": "sibling-tool-sandbox-v1",
+        },
+    ]
+
+    with pytest.raises(NativeToolAdmissionError) as exc_info:
+        await provider.create_or_reuse(
+            request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+            workspace(workspace_host_path=str(workspace_path)),
+        )
+
+    assert exc_info.value.error_code == "native_tool_admission_failed"
+    assert str(exc_info.value) == "Native tool sandbox admission failed"
+    assert len(probe_calls) == 1
+    assert [created["name"] for created in fake.created] == ["native-tool-run-a"]
+    assert fake.containers_by_name["native-tool-run-a"].removed is True
+    assert provider._leases == {}
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_preserves_existing_native_sidecar_cleanup_failure(tmp_path):
     from app.runtime.sandbox.container_provider import ContainerCleanupFailedError, DockerContainerProvider
 

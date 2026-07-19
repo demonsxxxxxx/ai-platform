@@ -48,6 +48,27 @@ def test_native_tool_launcher_prepares_socket_parent_before_uvicorn_binds(monkey
     )
 
 
+def test_native_tool_socket_parent_fails_closed_without_posix_directory_flags(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    socket_path = workspace / ".ai-platform" / "native-tool.sock"
+
+    monkeypatch.setattr(native_tool_app.os, "name", "nt")
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("unsupported platform must fail before opening paths"),
+    )
+
+    with pytest.raises(RuntimeError, match="native_tool_secure_filesystem_unavailable"):
+        native_tool_app._prepare_socket_parent(
+            workspace=workspace,
+            socket_path=socket_path,
+            uid=10001,
+            gid=10001,
+        )
+
+
 def test_native_tool_socket_parent_is_created_and_revalidated_through_directory_fds(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -136,6 +157,7 @@ def test_native_tool_socket_parent_rejects_foreign_owner_or_path_swap(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     socket_path = workspace / ".ai-platform" / "native-tool.sock"
+    closed = []
 
     def node(*, device, inode, uid=10001, gid=10001):
         return type(
@@ -168,7 +190,7 @@ def test_native_tool_socket_parent_rejects_foreign_owner_or_path_swap(
         "stat",
         lambda path, *, dir_fd, follow_symlinks: node(device=2, inode=path_inode),
     )
-    monkeypatch.setattr(native_tool_app.os, "close", lambda _fd: None)
+    monkeypatch.setattr(native_tool_app.os, "close", lambda fd: closed.append(fd))
 
     with pytest.raises(RuntimeError, match=expected_error):
         native_tool_app._prepare_socket_parent(
@@ -177,6 +199,7 @@ def test_native_tool_socket_parent_rejects_foreign_owner_or_path_swap(
             uid=10001,
             gid=10001,
         )
+    assert closed == [11, 10]
 
 
 @pytest.mark.asyncio

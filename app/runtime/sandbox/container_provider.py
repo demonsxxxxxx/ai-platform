@@ -1709,10 +1709,13 @@ class DockerContainerProvider:
         token: str,
         timeout_seconds: int,
     ) -> Any:
-        socket_path = self._prepare_native_tool_socket(workspace)
         client = self._get_client()
         container = None
+        socket_path = self._native_tool_socket_host_path(workspace)
+        socket_prepared = False
         try:
+            socket_path = self._prepare_native_tool_socket(workspace)
+            socket_prepared = True
             existing_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
             if not self._remove_owned_native_tool_container(existing_lease):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
@@ -1742,7 +1745,7 @@ class DockerContainerProvider:
             return container
         except asyncio.CancelledError:
             container_removed = container is None or _stop_and_remove_container(container)
-            socket_removed = self._remove_native_tool_socket(workspace)
+            socket_removed = not socket_prepared or self._remove_native_tool_socket(workspace)
             if not (container_removed and socket_removed):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
             raise
@@ -1751,11 +1754,13 @@ class DockerContainerProvider:
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
             container_removed = container is None or _stop_and_remove_container(container)
-            socket_removed = self._remove_native_tool_socket(workspace)
+            socket_removed = not socket_prepared or self._remove_native_tool_socket(workspace)
             if not (container_removed and socket_removed):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed") from exc
             if normalized_exc is not None:
                 raise normalized_exc from exc
+            if isinstance(exc, (ContainerStartFailedError, ExecutorHealthTimeoutError)):
+                raise NativeToolAdmissionError() from exc
             if isinstance(exc, SandboxRuntimeError):
                 raise
             raise NativeToolAdmissionError() from exc
@@ -2001,11 +2006,7 @@ class DockerContainerProvider:
             raise ContainerStartFailedError() from exc
         except ContainerCleanupFailedError:
             raise
-        except NativeToolAdmissionError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+        except NativeToolAdmissionError:
             raise
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
