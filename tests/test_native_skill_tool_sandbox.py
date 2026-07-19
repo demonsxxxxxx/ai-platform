@@ -2,6 +2,7 @@ import asyncio
 import base64
 import signal
 import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,315 @@ from fastapi import HTTPException
 
 from app.executors import claude_agent_sdk_runner
 from app.runtime.sandbox import native_tool_app
+
+
+def test_native_tool_launcher_prepares_socket_parent_before_uvicorn_binds(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    socket_path = workspace / ".ai-platform" / "native-tool.sock"
+    calls = {}
+    order = []
+
+    def prepare_socket_parent(**kwargs):
+        order.append("prepare")
+        calls["prepare"] = kwargs
+        return socket_path
+
+    monkeypatch.setattr(
+        native_tool_app,
+        "_require_native_tool_identity",
+        lambda uid, gid: order.append(("identity", uid, gid)),
+    )
+    monkeypatch.setattr(native_tool_app, "_set_process_non_dumpable", lambda: order.append("non_dumpable"))
+    monkeypatch.setattr(native_tool_app, "_prepare_socket_parent", prepare_socket_parent)
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE", str(workspace))
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", str(socket_path))
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_UID", "10001")
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_GID", "10001")
+
+    class FakeUvicorn:
+        @staticmethod
+        def run(*args, **kwargs):
+            calls["run"] = (args, kwargs)
+
+    monkeypatch.setitem(sys.modules, "uvicorn", FakeUvicorn)
+
+    assert native_tool_app.main() == 0
+    assert order == [("identity", 10001, 10001), "non_dumpable", "prepare"]
+    assert calls["prepare"] == {
+        "workspace": workspace,
+        "socket_path": socket_path,
+        "uid": 10001,
+        "gid": 10001,
+    }
+    assert calls["run"] == (
+        ("app.runtime.sandbox.native_tool_app:create_native_tool_app",),
+        {
+            "factory": True,
+            "uds": str(socket_path),
+            "loop": "asyncio",
+            "access_log": False,
+            "log_level": "warning",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("euid", "egid", "groups", "configured_uid", "configured_gid", "accepted"),
+    [
+        (10001, 10001, [], 10001, 10001, True),
+        (10001, 10001, [10001], 10001, 10001, True),
+        (0, 10001, [], 10001, 10001, False),
+        (10001, 0, [], 10001, 10001, False),
+        (10001, 10001, [0], 10001, 10001, False),
+        (10001, 10001, [10001, 20000], 10001, 10001, False),
+        (0, 0, [], 0, 0, False),
+    ],
+)
+def test_native_tool_identity_requires_fixed_uid_gid_and_bounded_supplementary_groups(
+    monkeypatch,
+    euid,
+    egid,
+    groups,
+    configured_uid,
+    configured_gid,
+    accepted,
+):
+    monkeypatch.setattr(native_tool_app.os, "name", "posix")
+    monkeypatch.setattr(native_tool_app.os, "geteuid", lambda: euid, raising=False)
+    monkeypatch.setattr(native_tool_app.os, "getegid", lambda: egid, raising=False)
+    monkeypatch.setattr(native_tool_app.os, "getgroups", lambda: groups, raising=False)
+
+    if accepted:
+        native_tool_app._require_native_tool_identity(configured_uid, configured_gid)
+    else:
+        with pytest.raises(RuntimeError, match="native_tool_identity_invalid"):
+            native_tool_app._require_native_tool_identity(configured_uid, configured_gid)
+
+
+def test_native_tool_non_dumpable_is_set_and_verified(monkeypatch):
+    calls = []
+    monkeypatch.setattr(native_tool_app.os, "name", "posix")
+    monkeypatch.setattr(
+        native_tool_app,
+        "_linux_prctl",
+        lambda option, argument=0: calls.append((option, argument)) or 0,
+    )
+
+    native_tool_app._set_process_non_dumpable()
+
+    assert calls == [
+        (native_tool_app._PR_SET_DUMPABLE, 0),
+        (native_tool_app._PR_GET_DUMPABLE, 0),
+    ]
+
+
+@pytest.mark.parametrize("results", [[-1], [0, 1]])
+def test_native_tool_non_dumpable_fails_closed_when_set_or_verification_fails(monkeypatch, results):
+    outcomes = iter(results)
+    monkeypatch.setattr(native_tool_app.os, "name", "posix")
+    monkeypatch.setattr(native_tool_app, "_linux_prctl", lambda _option, _argument=0: next(outcomes))
+
+    with pytest.raises(RuntimeError, match="native_tool_non_dumpable_failed"):
+        native_tool_app._set_process_non_dumpable()
+
+
+def test_native_tool_non_dumpable_fails_closed_when_prctl_is_unavailable(monkeypatch):
+    monkeypatch.setattr(native_tool_app.os, "name", "posix")
+
+    def unavailable(_option, _argument=0):
+        raise RuntimeError("native_tool_non_dumpable_unavailable")
+
+    monkeypatch.setattr(native_tool_app, "_linux_prctl", unavailable)
+
+    with pytest.raises(RuntimeError, match="native_tool_non_dumpable_unavailable"):
+        native_tool_app._set_process_non_dumpable()
+
+
+@pytest.mark.asyncio
+async def test_native_tool_lifespan_revalidates_identity(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    socket_parent = workspace / ".ai-platform"
+    socket_parent.mkdir(parents=True)
+    socket_path = socket_parent / "native-tool.sock"
+    identities = []
+
+    async def publish_socket(_socket_path):
+        return None
+
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", "x" * 32)
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE", str(workspace))
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", str(socket_path))
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_UID", "10001")
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_GID", "10001")
+    monkeypatch.setattr(
+        native_tool_app,
+        "_require_native_tool_identity",
+        lambda uid, gid: identities.append((uid, gid)),
+    )
+    monkeypatch.setattr(native_tool_app, "_publish_socket", publish_socket)
+    app = native_tool_app.create_native_tool_app()
+
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert identities == [(10001, 10001)]
+
+
+def test_native_tool_socket_parent_fails_closed_without_posix_directory_flags(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    socket_path = workspace / ".ai-platform" / "native-tool.sock"
+
+    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
+    monkeypatch.setattr(native_tool_app.os, "name", "nt")
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("unsupported platform must fail before opening paths"),
+    )
+
+    with pytest.raises(RuntimeError, match="native_tool_secure_filesystem_unavailable"):
+        native_tool_app._prepare_socket_parent(
+            workspace=workspace,
+            socket_path=socket_path,
+            uid=10001,
+            gid=10001,
+        )
+
+
+def test_native_tool_socket_parent_is_created_and_revalidated_through_directory_fds(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    socket_path = workspace / ".ai-platform" / "native-tool.sock"
+    calls = []
+    parent_open_count = 0
+
+    def node(*, device, inode, uid=10001, gid=10001):
+        return type(
+            "Node",
+            (),
+            {"st_mode": 0o40700, "st_dev": device, "st_ino": inode, "st_uid": uid, "st_gid": gid},
+        )()
+
+    def open_node(path, flags, *, dir_fd=None):
+        nonlocal parent_open_count
+        calls.append(("open", path, flags, dir_fd))
+        if path == workspace:
+            return 10
+        assert path == ".ai-platform" and dir_fd == 10
+        parent_open_count += 1
+        if parent_open_count == 1:
+            raise FileNotFoundError
+        return 11
+
+    monkeypatch.setattr(Path, "resolve", lambda path, strict=False: path)
+    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
+    monkeypatch.setattr(native_tool_app.os, "name", "posix")
+    monkeypatch.setattr(native_tool_app.os, "O_NOFOLLOW", 0x100, raising=False)
+    monkeypatch.setattr(native_tool_app.os, "O_DIRECTORY", 0x200, raising=False)
+    monkeypatch.setattr(native_tool_app.os, "open", open_node)
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "fstat",
+        lambda fd: node(device=1, inode=1) if fd == 10 else node(device=2, inode=2),
+    )
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "mkdir",
+        lambda path, mode, *, dir_fd: calls.append(("mkdir", path, mode, dir_fd)),
+    )
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "fchown",
+        lambda *_args: pytest.fail("unprivileged sidecar must not change directory ownership"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "fchmod",
+        lambda fd, mode: calls.append(("fchmod", fd, mode)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "stat",
+        lambda path, *, dir_fd, follow_symlinks: node(device=2, inode=2),
+    )
+    monkeypatch.setattr(native_tool_app.os, "close", lambda fd: calls.append(("close", fd)))
+
+    assert native_tool_app._prepare_socket_parent(
+        workspace=workspace,
+        socket_path=socket_path,
+        uid=10001,
+        gid=10001,
+    ) == socket_path
+    assert ("mkdir", ".ai-platform", 0o700, 10) in calls
+    assert ("fchmod", 11, 0o700) in calls
+    assert calls[-2:] == [("close", 11), ("close", 10)]
+
+
+@pytest.mark.parametrize(
+    ("foreign_owner", "path_inode", "expected_error"),
+    [
+        (True, 2, "native_tool_socket_parent_owner_invalid"),
+        (False, 3, "native_tool_socket_parent_changed"),
+    ],
+)
+def test_native_tool_socket_parent_rejects_foreign_owner_or_path_swap(
+    monkeypatch,
+    tmp_path,
+    foreign_owner,
+    path_inode,
+    expected_error,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    socket_path = workspace / ".ai-platform" / "native-tool.sock"
+    closed = []
+
+    def node(*, device, inode, uid=10001, gid=10001):
+        return type(
+            "Node",
+            (),
+            {"st_mode": 0o40700, "st_dev": device, "st_ino": inode, "st_uid": uid, "st_gid": gid},
+        )()
+
+    monkeypatch.setattr(Path, "resolve", lambda path, strict=False: path)
+    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
+    monkeypatch.setattr(native_tool_app.os, "name", "posix")
+    monkeypatch.setattr(native_tool_app.os, "O_NOFOLLOW", 0x100, raising=False)
+    monkeypatch.setattr(native_tool_app.os, "O_DIRECTORY", 0x200, raising=False)
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "open",
+        lambda path, flags, *, dir_fd=None: 10 if path == workspace else 11,
+    )
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "fstat",
+        lambda fd: (
+            node(device=1, inode=1)
+            if fd == 10
+            else node(device=2, inode=2, uid=99999 if foreign_owner else 10001, gid=99999 if foreign_owner else 10001)
+        ),
+    )
+    monkeypatch.setattr(native_tool_app.os, "fchmod", lambda *_args: None, raising=False)
+    monkeypatch.setattr(
+        native_tool_app.os,
+        "stat",
+        lambda path, *, dir_fd, follow_symlinks: node(device=2, inode=path_inode),
+    )
+    monkeypatch.setattr(native_tool_app.os, "close", lambda fd: closed.append(fd))
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        native_tool_app._prepare_socket_parent(
+            workspace=workspace,
+            socket_path=socket_path,
+            uid=10001,
+            gid=10001,
+        )
+    assert closed == [11, 10]
 
 
 @pytest.mark.asyncio
@@ -37,7 +347,11 @@ async def test_native_tool_command_uses_minimal_environment_and_process_isolatio
     async def terminate_uid(uid):
         captured["terminated_uid"] = uid
 
-    monkeypatch.setattr(native_tool_app.os, "chown", lambda *_args: None, raising=False)
+    monkeypatch.setattr(
+        native_tool_app,
+        "_require_native_tool_identity",
+        lambda uid, gid: captured.update(identity=(uid, gid)),
+    )
     monkeypatch.setattr(native_tool_app.asyncio, "create_subprocess_exec", create_subprocess_exec)
     monkeypatch.setattr(native_tool_app, "_terminate_process_group", terminate)
     monkeypatch.setattr(native_tool_app, "_terminate_uid_processes", terminate_uid)
@@ -53,12 +367,11 @@ async def test_native_tool_command_uses_minimal_environment_and_process_isolatio
     )
 
     assert result.returncode == 0
-    assert captured["args"] == ("/bin/bash", "-lc", "printf safe")
+    assert captured["args"] == ("/bin/bash", "--noprofile", "--norc", "-c", "printf safe")
     assert captured["kwargs"]["cwd"] == str(workspace)
     assert captured["kwargs"]["start_new_session"] is True
-    assert captured["kwargs"]["user"] == 10001
-    assert captured["kwargs"]["group"] == 10001
-    assert captured["kwargs"]["extra_groups"] == []
+    assert captured["identity"] == (10001, 10001)
+    assert all(key not in captured["kwargs"] for key in ("user", "group", "extra_groups"))
     assert captured["kwargs"]["umask"] == 0o077
     assert captured["include_orphans"] is True
     assert captured["terminated_uid"] == 10001
@@ -70,6 +383,83 @@ async def test_native_tool_command_uses_minimal_environment_and_process_isolatio
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
+
+
+@pytest.mark.asyncio
+async def test_native_tool_pre_spawn_failure_diagnostic_is_fixed_and_sanitized(monkeypatch, tmp_path):
+    workspace = tmp_path / "private-workspace"
+    workspace.mkdir()
+    secret_command = "printf private-command"
+    secret_token = "private-token-value"
+
+    async def fail_spawn(*_args, **_kwargs):
+        raise OSError(f"spawn failed for {secret_command} at {workspace} using {secret_token}")
+
+    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
+    monkeypatch.setattr(native_tool_app.asyncio, "create_subprocess_exec", fail_spawn)
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", secret_token)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await native_tool_app._run_command(
+            command=secret_command,
+            workspace=workspace,
+            uid=10001,
+            gid=10001,
+        )
+
+    diagnostic = str(exc_info.value)
+    assert diagnostic == "native_tool_stage=pre_spawn;class=failure"
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert all(value not in diagnostic for value in (secret_command, secret_token, str(workspace), "PATH"))
+
+
+@pytest.mark.asyncio
+async def test_native_tool_post_spawn_failure_diagnostic_is_fixed_and_sanitized(monkeypatch, tmp_path):
+    workspace = tmp_path / "private-workspace"
+    workspace.mkdir()
+    secret_command = "printf private-command"
+    secret_token = "private-token-value"
+    cleanup_calls = []
+
+    class Process:
+        pid = 123
+        returncode = None
+        stdout = None
+        stderr = None
+
+        async def wait(self):
+            raise OSError(f"wait failed for {secret_command} at {workspace} using {secret_token}")
+
+    async def create_subprocess_exec(*_args, **_kwargs):
+        return Process()
+
+    async def terminate_group(process, *, include_orphans=False):
+        cleanup_calls.append((process.pid, include_orphans))
+
+    async def terminate_uid(uid):
+        cleanup_calls.append((uid, "uid"))
+
+    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
+    monkeypatch.setattr(native_tool_app.asyncio, "create_subprocess_exec", create_subprocess_exec)
+    monkeypatch.setattr(native_tool_app, "_terminate_process_group", terminate_group)
+    monkeypatch.setattr(native_tool_app, "_terminate_uid_processes", terminate_uid)
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", secret_token)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await native_tool_app._run_command(
+            command=secret_command,
+            workspace=workspace,
+            uid=10001,
+            gid=10001,
+        )
+
+    diagnostic = str(exc_info.value)
+    assert diagnostic == "native_tool_stage=post_spawn;class=failure"
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert all(value not in diagnostic for value in (secret_command, secret_token, str(workspace), "PATH"))
+    assert cleanup_calls == [(123, False), (10001, "uid")]
 
 
 @pytest.mark.asyncio
@@ -96,7 +486,7 @@ async def test_native_tool_cancellation_terminates_the_process_group(monkeypatch
     async def terminate_uid(uid):
         terminated.append((uid, "uid"))
 
-    monkeypatch.setattr(native_tool_app.os, "chown", lambda *_args: None, raising=False)
+    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
     monkeypatch.setattr(native_tool_app.asyncio, "create_subprocess_exec", create_subprocess_exec)
     monkeypatch.setattr(native_tool_app, "_terminate_process_group", terminate)
     monkeypatch.setattr(native_tool_app, "_terminate_uid_processes", terminate_uid)
@@ -114,7 +504,12 @@ async def test_native_tool_cancellation_terminates_the_process_group(monkeypatch
 
 def test_native_tool_process_sweep_finds_detached_active_uid_processes(tmp_path):
     proc_root = tmp_path / "proc"
-    for process_id, uid, state in (("101", 10001, "S"), ("102", 10001, "Z"), ("103", 10002, "S")):
+    for process_id, uid, state in (
+        ("101", 10001, "S"),
+        ("102", 10001, "Z"),
+        ("103", 10002, "S"),
+        ("104", 10001, "S"),
+    ):
         process_dir = proc_root / process_id
         process_dir.mkdir(parents=True)
         (process_dir / "status").write_text(
@@ -122,15 +517,21 @@ def test_native_tool_process_sweep_finds_detached_active_uid_processes(tmp_path)
             encoding="utf-8",
         )
 
-    assert native_tool_app._active_process_ids_for_uid(10001, proc_root=proc_root) == [101]
+    original_getpid = native_tool_app.os.getpid
+    try:
+        native_tool_app.os.getpid = lambda: 101
+        assert native_tool_app._active_process_ids_for_uid(10001, proc_root=proc_root) == [104]
+    finally:
+        native_tool_app.os.getpid = original_getpid
 
 
 @pytest.mark.asyncio
 async def test_native_tool_process_sweep_escalates_to_kill(monkeypatch):
-    observed = [[222], [222], []]
+    observed = [[111, 222], [111, 222], [111]]
     killed = []
 
     monkeypatch.setattr(native_tool_app, "NATIVE_TOOL_TERMINATION_GRACE_SECONDS", 0)
+    monkeypatch.setattr(native_tool_app.os, "getpid", lambda: 111)
     monkeypatch.setattr(
         native_tool_app,
         "_active_process_ids_for_uid",

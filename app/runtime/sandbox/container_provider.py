@@ -79,6 +79,13 @@ class ContainerStartFailedError(SandboxRuntimeError):
         super().__init__("container_start_failed", message)
 
 
+class NativeToolAdmissionError(SandboxRuntimeError):
+    """Raised when the isolated native-command sidecar cannot become ready."""
+
+    def __init__(self, message: str = "Native tool sandbox admission failed") -> None:
+        super().__init__("native_tool_admission_failed", message)
+
+
 class ContainerCleanupFailedError(SandboxRuntimeError):
     """Raised when a rejected executor cannot be confirmed stopped and removed."""
 
@@ -446,11 +453,12 @@ def _native_tool_security_kwargs() -> dict[str, Any]:
         "privileged": False,
         "security_opt": ["no-new-privileges:true"],
         "cap_drop": ["ALL"],
-        "cap_add": ["SETUID", "SETGID", "KILL"],
         "read_only": True,
         "tmpfs": {
-            "/tmp": "rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=64m",
-            "/root": "rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=32m",
+            "/tmp": f"rw,noexec,nosuid,nodev,uid={RUNTIME_UID},gid={RUNTIME_GID},mode=0700,size=64m",
+            "/home/ai-platform": (
+                f"rw,noexec,nosuid,nodev,uid={RUNTIME_UID},gid={RUNTIME_GID},mode=0700,size=32m"
+            ),
         },
     }
 
@@ -462,7 +470,7 @@ def _native_tool_environment(token: str) -> dict[str, str]:
         "AI_PLATFORM_NATIVE_TOOL_SOCKET": _NATIVE_TOOL_SOCKET,
         "AI_PLATFORM_NATIVE_TOOL_UID": str(RUNTIME_UID),
         "AI_PLATFORM_NATIVE_TOOL_GID": str(RUNTIME_GID),
-        "HOME": "/root",
+        "HOME": "/home/ai-platform",
         "TMPDIR": "/tmp",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONUNBUFFERED": "1",
@@ -1702,10 +1710,13 @@ class DockerContainerProvider:
         token: str,
         timeout_seconds: int,
     ) -> Any:
-        socket_path = self._prepare_native_tool_socket(workspace)
         client = self._get_client()
         container = None
+        socket_path = self._native_tool_socket_host_path(workspace)
+        socket_prepared = False
         try:
+            socket_path = self._prepare_native_tool_socket(workspace)
+            socket_prepared = True
             existing_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
             if not self._remove_owned_native_tool_container(existing_lease):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
@@ -1721,30 +1732,39 @@ class DockerContainerProvider:
                     }
                 },
                 environment=_native_tool_environment(token),
-                entrypoint=["python", "-m", "uvicorn"],
-                command=[
-                    "app.runtime.sandbox.native_tool_app:create_native_tool_app",
-                    "--factory",
-                    "--uds",
-                    _NATIVE_TOOL_SOCKET,
-                    "--no-access-log",
-                    "--log-level",
-                    "warning",
-                ],
-                network_disabled=True,
-                user="0:0",
+                # The launcher establishes the UDS parent before Uvicorn binds
+                # it. Lifespan hooks run too late to repair a missing parent.
+                entrypoint=["python", "-m", "app.runtime.sandbox.native_tool_app"],
+                command=[],
+                network_mode="none",
+                user=f"{RUNTIME_UID}:{RUNTIME_GID}",
                 **_native_tool_security_kwargs(),
                 **_docker_resource_kwargs(request.resource_limits),
             )
             container.start()
             await self._wait_for_native_tool_socket(socket_path, timeout_seconds)
             return container
-        except BaseException:
+        except asyncio.CancelledError:
             container_removed = container is None or _stop_and_remove_container(container)
-            socket_removed = self._remove_native_tool_socket(workspace)
+            socket_removed = not socket_prepared or self._remove_native_tool_socket(workspace)
             if not (container_removed and socket_removed):
                 raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
             raise
+        except ContainerCleanupFailedError:
+            raise
+        except Exception as exc:
+            normalized_exc = _normalize_docker_availability_error(exc)
+            container_removed = container is None or _stop_and_remove_container(container)
+            socket_removed = not socket_prepared or self._remove_native_tool_socket(workspace)
+            if not (container_removed and socket_removed):
+                raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed") from exc
+            if normalized_exc is not None:
+                raise normalized_exc from exc
+            if isinstance(exc, (ContainerStartFailedError, ExecutorHealthTimeoutError)):
+                raise NativeToolAdmissionError() from exc
+            if isinstance(exc, SandboxRuntimeError):
+                raise
+            raise NativeToolAdmissionError() from exc
 
     async def _reuse_existing_container(
         self,
@@ -1985,14 +2005,20 @@ class DockerContainerProvider:
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise ContainerStartFailedError() from exc
+        except ContainerCleanupFailedError:
+            raise
+        except NativeToolAdmissionError:
+            raise
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
             try:
                 self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
-            if isinstance(normalized_exc, DockerPermissionDeniedError):
+            if normalized_exc is not None:
                 raise normalized_exc from exc
+            if isinstance(exc, SandboxRuntimeError):
+                raise
             raise ContainerStartFailedError() from exc
         if container is None:
             try:

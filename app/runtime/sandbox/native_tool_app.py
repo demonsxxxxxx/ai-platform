@@ -22,6 +22,56 @@ NATIVE_TOOL_TERMINATION_GRACE_SECONDS = 5.0
 NATIVE_TOOL_TERMINATION_POLL_SECONDS = 0.05
 NATIVE_TOOL_SOCKET_PUBLISH_TIMEOUT_SECONDS = 10.0
 NATIVE_TOOL_FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", 9)
+NATIVE_TOOL_RUNTIME_UID = 10001
+NATIVE_TOOL_RUNTIME_GID = 10001
+_PR_GET_DUMPABLE = 3
+_PR_SET_DUMPABLE = 4
+_NATIVE_TOOL_PRE_SPAWN_FAILURE = "native_tool_stage=pre_spawn;class=failure"
+_NATIVE_TOOL_POST_SPAWN_FAILURE = "native_tool_stage=post_spawn;class=failure"
+
+
+def _require_native_tool_identity(uid: int, gid: int) -> None:
+    """Fail closed unless the sidecar is the fixed unprivileged runtime identity."""
+
+    if os.name != "posix" or (uid, gid) != (NATIVE_TOOL_RUNTIME_UID, NATIVE_TOOL_RUNTIME_GID):
+        raise RuntimeError("native_tool_identity_invalid")
+    try:
+        effective_identity = (os.geteuid(), os.getegid())
+        supplementary_groups = set(os.getgroups())
+    except (AttributeError, OSError) as exc:
+        raise RuntimeError("native_tool_identity_invalid") from exc
+    if effective_identity != (uid, gid) or not supplementary_groups.issubset({gid}):
+        raise RuntimeError("native_tool_identity_invalid")
+
+
+def _linux_prctl(option: int, argument: int = 0) -> int:
+    """Invoke Linux prctl through the standard library without exposing errno."""
+
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        prctl = libc.prctl
+        prctl.argtypes = [
+            ctypes.c_int,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+        ]
+        prctl.restype = ctypes.c_int
+        return int(prctl(option, argument, 0, 0, 0))
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        raise RuntimeError("native_tool_non_dumpable_unavailable") from exc
+
+
+def _set_process_non_dumpable() -> None:
+    """Set and verify the Linux non-dumpable process boundary."""
+
+    if os.name != "posix":
+        raise RuntimeError("native_tool_non_dumpable_unavailable")
+    if _linux_prctl(_PR_SET_DUMPABLE, 0) != 0 or _linux_prctl(_PR_GET_DUMPABLE) != 0:
+        raise RuntimeError("native_tool_non_dumpable_failed")
 
 
 class NativeToolRequest(BaseModel):
@@ -99,6 +149,7 @@ async def _terminate_process_group(process: asyncio.subprocess.Process, *, inclu
 
 def _active_process_ids_for_uid(uid: int, *, proc_root: Path = Path("/proc")) -> list[int]:
     process_ids: list[int] = []
+    sidecar_pid = os.getpid()
     try:
         candidates = list(proc_root.iterdir())
     except OSError:
@@ -121,12 +172,19 @@ def _active_process_ids_for_uid(uid: int, *, proc_root: Path = Path("/proc")) ->
         }
         uid_fields = status.get("Uid", "").split()
         state = status.get("State", "")[:1]
-        if uid_fields and uid_fields[0] == str(uid) and state != "Z":
-            process_ids.append(int(candidate.name))
+        process_id = int(candidate.name)
+        if (
+            process_id != sidecar_pid
+            and uid_fields
+            and uid_fields[0] == str(uid)
+            and state != "Z"
+        ):
+            process_ids.append(process_id)
     return process_ids
 
 
 async def _terminate_uid_processes(uid: int) -> None:
+    sidecar_pid = os.getpid()
     term_attempts = max(
         1,
         int(NATIVE_TOOL_TERMINATION_GRACE_SECONDS / NATIVE_TOOL_TERMINATION_POLL_SECONDS),
@@ -136,7 +194,11 @@ async def _terminate_uid_processes(uid: int) -> None:
         (NATIVE_TOOL_FORCE_KILL_SIGNAL, 20),
     ):
         for _ in range(attempts):
-            process_ids = _active_process_ids_for_uid(uid)
+            process_ids = [
+                process_id
+                for process_id in _active_process_ids_for_uid(uid)
+                if process_id != sidecar_pid
+            ]
             if not process_ids:
                 return
             for process_id in process_ids:
@@ -145,7 +207,7 @@ async def _terminate_uid_processes(uid: int) -> None:
                 except ProcessLookupError:
                     pass
             await asyncio.sleep(NATIVE_TOOL_TERMINATION_POLL_SECONDS)
-    if _active_process_ids_for_uid(uid):
+    if any(process_id != sidecar_pid for process_id in _active_process_ids_for_uid(uid)):
         raise RuntimeError("native_tool_process_cleanup_failed")
 
 
@@ -157,9 +219,9 @@ async def _run_command(
     gid: int,
     timeout_ms: int = NATIVE_TOOL_DEFAULT_TIMEOUT_MS,
 ) -> NativeToolResult:
+    _require_native_tool_identity(uid, gid)
     temp_dir = workspace / ".native-skill-tmp"
     temp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chown(temp_dir, uid, gid)
     environment = {
         "HOME": str(workspace),
         "TMPDIR": str(temp_dir),
@@ -168,23 +230,31 @@ async def _run_command(
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
-    process = await asyncio.create_subprocess_exec(
-        "/bin/bash",
-        "-lc",
-        command,
-        cwd=str(workspace),
-        env=environment,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-        user=uid,
-        group=gid,
-        extra_groups=[],
-        umask=0o077,
-    )
+    pre_spawn_failed = False
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            command,
+            cwd=str(workspace),
+            env=environment,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+            umask=0o077,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pre_spawn_failed = True
+    if pre_spawn_failed:
+        raise RuntimeError(_NATIVE_TOOL_PRE_SPAWN_FAILURE)
     stdout_task = asyncio.create_task(_read_bounded(process.stdout))
     stderr_task = asyncio.create_task(_read_bounded(process.stderr))
     timed_out = False
+    post_spawn_failed = False
     try:
         await asyncio.wait_for(process.wait(), timeout=timeout_ms / 1000.0)
     except TimeoutError:
@@ -193,6 +263,12 @@ async def _run_command(
     except asyncio.CancelledError:
         await _terminate_process_group(process)
         raise
+    except Exception:
+        try:
+            await _terminate_process_group(process)
+        except Exception:
+            pass
+        post_spawn_failed = True
     else:
         # A native Skill command may background children. The command boundary
         # ends when its shell exits, so no descendant may survive that boundary.
@@ -202,8 +278,16 @@ async def _run_command(
         # active untrusted process so setsid/new-process-group descendants
         # cannot outlive the command boundary.
         await _terminate_uid_processes(uid)
-    stdout, stdout_truncated = await stdout_task
-    stderr, stderr_truncated = await stderr_task
+    if post_spawn_failed:
+        raise RuntimeError(_NATIVE_TOOL_POST_SPAWN_FAILURE)
+    output_failed = False
+    try:
+        stdout, stdout_truncated = await stdout_task
+        stderr, stderr_truncated = await stderr_task
+    except Exception:
+        output_failed = True
+    if output_failed:
+        raise RuntimeError(_NATIVE_TOOL_POST_SPAWN_FAILURE)
     return NativeToolResult(
         returncode=124 if timed_out else int(process.returncode or 0),
         stdout=stdout.decode("utf-8", errors="replace"),
@@ -272,6 +356,93 @@ async def _publish_socket(socket_path: Path) -> None:
     raise RuntimeError("native_tool_socket_publish_timeout")
 
 
+def _prepare_socket_parent(*, workspace: Path, socket_path: Path, uid: int, gid: int) -> Path:
+    """Create the fixed UDS parent before Uvicorn binds the native-tool socket."""
+
+    _require_native_tool_identity(uid, gid)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    if os.name != "posix" or not no_follow or not directory_flag:
+        raise RuntimeError("native_tool_secure_filesystem_unavailable")
+    try:
+        resolved_workspace = workspace.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("native_tool_workspace_invalid") from exc
+    expected_socket = resolved_workspace / ".ai-platform" / "native-tool.sock"
+    if socket_path != expected_socket:
+        raise RuntimeError("native_tool_socket_invalid")
+    open_flags = os.O_RDONLY | directory_flag | no_follow | getattr(os, "O_CLOEXEC", 0)
+    workspace_fd: int | None = None
+    socket_parent_fd: int | None = None
+    try:
+        workspace_fd = os.open(resolved_workspace, open_flags)
+        workspace_node = os.fstat(workspace_fd)
+        if not stat.S_ISDIR(workspace_node.st_mode):
+            raise RuntimeError("native_tool_workspace_invalid")
+        try:
+            socket_parent_fd = os.open(".ai-platform", open_flags, dir_fd=workspace_fd)
+        except FileNotFoundError:
+            os.mkdir(".ai-platform", mode=0o700, dir_fd=workspace_fd)
+            socket_parent_fd = os.open(".ai-platform", open_flags, dir_fd=workspace_fd)
+        parent_before = os.fstat(socket_parent_fd)
+        if not stat.S_ISDIR(parent_before.st_mode):
+            raise RuntimeError("native_tool_socket_invalid")
+        parent_identity = (parent_before.st_dev, parent_before.st_ino)
+        if (parent_before.st_uid, parent_before.st_gid) != (uid, gid):
+            raise RuntimeError("native_tool_socket_parent_owner_invalid")
+        os.fchmod(socket_parent_fd, 0o700)
+        parent_after = os.fstat(socket_parent_fd)
+        path_after = os.stat(".ai-platform", dir_fd=workspace_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(parent_after.st_mode)
+            or not stat.S_ISDIR(path_after.st_mode)
+            or (parent_after.st_dev, parent_after.st_ino) != parent_identity
+            or (path_after.st_dev, path_after.st_ino) != parent_identity
+            or (parent_after.st_uid, parent_after.st_gid) != (uid, gid)
+            or stat.S_IMODE(parent_after.st_mode) != 0o700
+        ):
+            raise RuntimeError("native_tool_socket_parent_changed")
+    except OSError as exc:
+        raise RuntimeError("native_tool_socket_invalid") from exc
+    finally:
+        if socket_parent_fd is not None:
+            os.close(socket_parent_fd)
+        if workspace_fd is not None:
+            os.close(workspace_fd)
+    return expected_socket
+
+
+def main() -> int:
+    """Launch the native-tool app only after its UDS bind location is safe."""
+
+    workspace = Path(os.getenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE") or "/workspace")
+    socket_path = Path(
+        os.getenv("AI_PLATFORM_NATIVE_TOOL_SOCKET")
+        or workspace / ".ai-platform" / "native-tool.sock"
+    )
+    uid = int(os.getenv("AI_PLATFORM_NATIVE_TOOL_UID") or "10001")
+    gid = int(os.getenv("AI_PLATFORM_NATIVE_TOOL_GID") or "10001")
+    _require_native_tool_identity(uid, gid)
+    _set_process_non_dumpable()
+    prepared_socket = _prepare_socket_parent(
+        workspace=workspace,
+        socket_path=socket_path,
+        uid=uid,
+        gid=gid,
+    )
+    import uvicorn
+
+    uvicorn.run(
+        "app.runtime.sandbox.native_tool_app:create_native_tool_app",
+        factory=True,
+        uds=str(prepared_socket),
+        loop="asyncio",
+        access_log=False,
+        log_level="warning",
+    )
+    return 0
+
+
 def create_native_tool_app() -> FastAPI:
     """Build the token-authenticated command sidecar application."""
 
@@ -287,7 +458,8 @@ def create_native_tool_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        if os.geteuid() != 0 or not token or len(token) < 32:
+        _require_native_tool_identity(uid, gid)
+        if not token or len(token) < 32:
             raise RuntimeError("native_tool_configuration_invalid")
         resolved_workspace = workspace.resolve(strict=True)
         if not resolved_workspace.is_dir():
@@ -331,3 +503,7 @@ def create_native_tool_app() -> FastAPI:
             )
 
     return app
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
