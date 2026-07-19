@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,20 +77,56 @@ def _public_terminal_text(run: dict[str, Any], principal: AuthPrincipal) -> str:
     return ""
 
 
+def _chat_identifier_token_pattern(identifier: str) -> re.Pattern[str]:
+    """Match an identifier only outside Unicode word, dash, dot, or colon tokens."""
+    token_character = r"[\w.:\-]"
+    return re.compile(
+        rf"(?<!{token_character}){re.escape(identifier)}(?!{token_character})"
+    )
+
+
 def _sanitize_chat_answer_text(run: dict[str, Any], value: object) -> str:
-    """Remove public-text hazards plus identifiers owned by the active run."""
+    """Remove public-text hazards and publicize identifiers owned by the run."""
     content = sanitize_public_text(value)
     if not content:
         return ""
     raw_skill_id = str(run.get("skill_id") or "")
     raw_agent_id = str(run.get("agent_id") or "")
+    skill_capability_id = capability_id_from_skill(raw_skill_id)
+    agent_capability_id = capability_id_from_skill(None, raw_agent_id)
+    run_capability_id = skill_capability_id or agent_capability_id
     public_agent_id = public_agent_id_for_projection(raw_agent_id, raw_skill_id)
-    private_identifiers = [raw_skill_id]
-    if raw_agent_id and public_agent_id != raw_agent_id:
-        private_identifiers.append(raw_agent_id)
-    if any(identifier and identifier in content for identifier in private_identifiers):
+    identifiers = (
+        (raw_skill_id, skill_capability_id),
+        (raw_agent_id, agent_capability_id),
+    )
+    matched_identifiers = []
+    for identifier, identifier_capability_id in identifiers:
+        if not identifier:
+            continue
+        token_pattern = _chat_identifier_token_pattern(identifier)
+        if token_pattern.search(content):
+            matched_identifiers.append(
+                (identifier, identifier_capability_id, token_pattern)
+            )
+    if (
+        matched_identifiers
+        and raw_skill_id
+        and raw_agent_id
+        and skill_capability_id != agent_capability_id
+    ):
         return ""
-    return content
+    for identifier, identifier_capability_id, token_pattern in matched_identifiers:
+        if (
+            not run_capability_id
+            or identifier_capability_id != run_capability_id
+            or not public_agent_id
+        ):
+            return ""
+        if public_agent_id != identifier:
+            content = token_pattern.sub(public_agent_id, content)
+    content = sanitize_public_text(content)
+    return content if content.strip() else ""
 
 
 def _terminal_final_payload(
