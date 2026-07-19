@@ -146,6 +146,28 @@ test("safe error projection translates only allowlisted exact detail or code", (
   );
 });
 
+test("projects company auth rejection to specific safe Chinese guidance", () => {
+  const message =
+    "公司账号登录失败，请检查账号或密码；如仍无法登录，请联系管理员确认账号已开通。";
+
+  assert.deepEqual(projectSafeBackendError("company_login_failed", 401, t), {
+    code: "company_login_failed",
+    message,
+  });
+  assert.deepEqual(
+    projectSafeBackendError(
+      { code: "company_login_failed", message: "password=private" },
+      401,
+      t,
+    ),
+    {
+      code: "company_login_failed",
+      message,
+    },
+  );
+  assert.equal(translateBackendError("company_login_failed", t), message);
+});
+
 test("safe error projection rejects private diagnostics and uses status-localized fallbacks", () => {
   const privateValues: unknown[] = [
     "C:\\private\\agent.log?token=secret",

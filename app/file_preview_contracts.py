@@ -12,6 +12,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
+import logging
 import math
 import multiprocessing
 import os
@@ -34,6 +35,8 @@ from app.file_parser_contracts import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 FILE_PREVIEW_SCHEMA_VERSION = "ai-platform.file-preview.v1"
 XLSX_PREVIEW_TIMEOUT_SECONDS = 5.0
 XLSX_PREVIEW_MEMORY_LIMIT_BYTES = 192 * 1024 * 1024
@@ -50,6 +53,48 @@ _XLSX_PREVIEW_WARNINGS = (
     "charts_not_rendered",
     "formulas_omitted",
     "external_links_not_resolved",
+)
+_XLSX_PREVIEW_DIAGNOSTIC_PHASES = frozenset(
+    {
+        "child_configure",
+        "child_limits",
+        "child_parse",
+        "child_requirement",
+        "child_send",
+        "child_stage",
+        "child_serialize",
+        "parent_close",
+        "parent_finalize",
+        "parent_receive",
+        "parent_start",
+        "parent_wait",
+    }
+)
+_XLSX_PREVIEW_DIAGNOSTIC_REASONS = frozenset(
+    {
+        "child_exception",
+        "child_message",
+        "connection_close_failed",
+        "deadline",
+        "invalid_child_result",
+        "memory_limit",
+        "parent_exception",
+        "parser_rejected",
+        "pipe_closed",
+        "process_not_exited",
+    }
+)
+_XLSX_PREVIEW_PUBLIC_FAILURE_CODES = frozenset(
+    {
+        "xlsx_preview_encrypted_unsupported",
+        "xlsx_preview_failed",
+        "xlsx_preview_file_too_large",
+        "xlsx_preview_limits_exceeded",
+        "xlsx_preview_macros_unsupported",
+        "xlsx_preview_timeout",
+        "xlsx_preview_unavailable",
+        "xlsx_preview_unsupported",
+    }
 )
 
 PreviewFailureCode = Literal[
@@ -419,17 +464,39 @@ def _invoke_isolated_xlsx_parser(
         started = True
         send_conn.close()
         if not receive_conn.poll(timeout_seconds):
-            result = {"status": "failed", "code": "xlsx_preview_timeout"}
+            result = _isolated_xlsx_failure(
+                code="xlsx_preview_timeout",
+                phase="parent_wait",
+                reason="deadline",
+            )
         else:
             try:
                 result = receive_conn.recv()
             except (EOFError, OSError):
-                result = {"status": "failed", "code": "xlsx_preview_unavailable"}
+                result = _isolated_xlsx_failure(
+                    code="xlsx_preview_unavailable",
+                    phase="parent_receive",
+                    reason="pipe_closed",
+                )
             process.join(timeout=0.5)
-            if process.is_alive() or not isinstance(result, dict):
-                result = {"status": "failed", "code": "xlsx_preview_unavailable"}
+            if process.is_alive():
+                result = _isolated_xlsx_failure(
+                    code="xlsx_preview_unavailable",
+                    phase="parent_finalize",
+                    reason="process_not_exited",
+                )
+            elif not isinstance(result, dict):
+                result = _isolated_xlsx_failure(
+                    code="xlsx_preview_unavailable",
+                    phase="parent_receive",
+                    reason="invalid_child_result",
+                )
     except Exception:
-        result = {"status": "failed", "code": "xlsx_preview_unavailable"}
+        result = _isolated_xlsx_failure(
+            code="xlsx_preview_unavailable",
+            phase="parent_start",
+            reason="parent_exception",
+        )
     finally:
         _finalize_isolated_parser_process(
             process=process,
@@ -440,8 +507,76 @@ def _invoke_isolated_xlsx_parser(
         if close_failed:
             # The public failure is emitted only after process ownership is
             # either confirmed or retained by the reaper.
-            result = {"status": "failed", "code": "xlsx_preview_unavailable"}
-    return result
+            result = _isolated_xlsx_failure(
+                code="xlsx_preview_unavailable",
+                phase="parent_close",
+                reason="connection_close_failed",
+            )
+    _log_isolated_xlsx_result(result)
+    return _strip_isolated_xlsx_diagnostic(result)
+
+
+def _isolated_xlsx_failure(
+    *,
+    code: PreviewFailureCode,
+    phase: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Build one internal failure envelope from fixed, public-safe values."""
+
+    return {
+        "status": "failed",
+        "code": code,
+        "diagnostic": {"phase": phase, "reason": reason},
+    }
+
+
+def _log_isolated_xlsx_result(result: object) -> None:
+    """Log only allowlisted phase/result fields from one isolated parser result."""
+
+    payload = result if isinstance(result, dict) else {}
+    diagnostic = payload.get("diagnostic")
+    diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
+    phase = diagnostic.get("phase")
+    if not isinstance(phase, str) or phase not in _XLSX_PREVIEW_DIAGNOSTIC_PHASES:
+        phase = "parent_receive"
+    reason = diagnostic.get("reason")
+    if not isinstance(reason, str) or reason not in _XLSX_PREVIEW_DIAGNOSTIC_REASONS:
+        reason = "invalid_child_result"
+    result_status = "parsed" if payload.get("status") == "parsed" else "failed"
+    raw_code = payload.get("code")
+    code = (
+        raw_code
+        if isinstance(raw_code, str) and raw_code in _XLSX_PREVIEW_PUBLIC_FAILURE_CODES
+        else "none"
+    )
+    log = logger.info if result_status == "parsed" else logger.warning
+    log(
+        "xlsx_preview_isolated_parser phase=%s result=%s code=%s reason=%s",
+        phase,
+        result_status,
+        code,
+        reason,
+        extra={
+            "xlsx_preview_phase": phase,
+            "xlsx_preview_result": result_status,
+            "xlsx_preview_code": code,
+            "xlsx_preview_reason": reason,
+        },
+    )
+
+
+def _strip_isolated_xlsx_diagnostic(result: object) -> dict[str, Any]:
+    """Remove internal diagnostics before the parser result reaches DTO code."""
+
+    if not isinstance(result, dict):
+        return {"status": "failed", "code": "xlsx_preview_unavailable"}
+    if result.get("status") == "parsed":
+        return {"status": "parsed", "parsed": result.get("parsed")}
+    code = result.get("code")
+    if not isinstance(code, str) or code not in _XLSX_PREVIEW_PUBLIC_FAILURE_CODES:
+        code = "xlsx_preview_unavailable"
+    return {"status": "failed", "code": code}
 
 
 def _finalize_isolated_parser_process(
@@ -511,19 +646,76 @@ def _parse_xlsx_preview_child(
 ) -> None:
     """Child entrypoint: constrain resources, stage private bytes, parse once."""
 
+    phase = "child_configure"
     try:
+        _configure_isolated_xlsx_parser()
+        phase = "child_limits"
         _apply_child_resource_limits(timeout_seconds)
+        phase = "child_requirement"
         requirement = AttachmentParserRequirement.model_validate(requirement_payload)
+        phase = "child_stage"
         with tempfile.TemporaryDirectory(prefix="ai-platform-xlsx-preview-") as directory:
             staged_path = _stage_xlsx_preview_bytes(Path(directory), raw)
+            phase = "child_parse"
             parsed = parse_xlsx_preview_attachment(path=staged_path, requirement=requirement)
-        send_conn.send({"status": "parsed", "parsed": parsed.model_dump(mode="json")})
+        phase = "child_serialize"
+        parsed_payload = parsed.model_dump(mode="json")
+        phase = "child_send"
+        _send_isolated_xlsx_result(
+            send_conn,
+            {
+                "status": "parsed",
+                "parsed": parsed_payload,
+                "diagnostic": {"phase": phase, "reason": "child_message"},
+            },
+        )
     except AttachmentPreprocessingError as exc:
-        send_conn.send({"status": "failed", "code": _public_failure_code(exc.code)})
+        _send_isolated_xlsx_result(
+            send_conn,
+            _isolated_xlsx_failure(
+                code=_public_failure_code(exc.code),
+                phase=phase,
+                reason="parser_rejected",
+            ),
+        )
+    except MemoryError:
+        _send_isolated_xlsx_result(
+            send_conn,
+            _isolated_xlsx_failure(
+                code="xlsx_preview_unavailable",
+                phase=phase,
+                reason="memory_limit",
+            ),
+        )
     except Exception:
-        send_conn.send({"status": "failed", "code": "xlsx_preview_unavailable"})
+        _send_isolated_xlsx_result(
+            send_conn,
+            _isolated_xlsx_failure(
+                code="xlsx_preview_unavailable",
+                phase=phase,
+                reason="child_exception",
+            ),
+        )
     finally:
         send_conn.close()
+
+
+def _configure_isolated_xlsx_parser() -> None:
+    """Select openpyxl's stdlib XML backend before imports in the bounded child."""
+
+    # The authoritative ZIP/OPC/XML preflight already uses the standard-library
+    # parser.  Avoiding openpyxl's optional native backend keeps native library
+    # mappings out of the separately address-space-bounded preview child.
+    os.environ["OPENPYXL_LXML"] = "False"
+
+
+def _send_isolated_xlsx_result(send_conn: Any, result: dict[str, Any]) -> None:
+    """Send one bounded child result without leaking a pipe exception traceback."""
+
+    try:
+        send_conn.send(result)
+    except Exception:
+        return
 
 
 def _stage_xlsx_preview_bytes(directory: Path, raw: bytes) -> Path:

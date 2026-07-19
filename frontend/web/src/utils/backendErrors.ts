@@ -1,5 +1,10 @@
 import type { TFunction } from "i18next";
 
+const SAFE_BACKEND_ERROR_COPY: Record<string, string> = {
+  company_login_failed:
+    "公司账号登录失败，请检查账号或密码；如仍无法登录，请联系管理员确认账号已开通。",
+};
+
 const BACKEND_ERROR_KEYS: Record<string, string> = {
   // Stable backend error codes
   invalid_credentials: "backendErrors.invalidCredentials",
@@ -189,6 +194,15 @@ export function projectSafeBackendError(
 ): { message: string; code?: string } {
   const code = safeBackendErrorCode(detail);
   const exactDetail = typeof detail === "string" ? detail : undefined;
+  const safeCopy =
+    (code ? SAFE_BACKEND_ERROR_COPY[code] : undefined) ??
+    (exactDetail ? SAFE_BACKEND_ERROR_COPY[exactDetail] : undefined);
+  if (safeCopy) {
+    return {
+      message: safeCopy,
+      ...(code ? { code } : {}),
+    };
+  }
   const translationKey =
     (code ? BACKEND_ERROR_KEYS[code] : undefined) ??
     (exactDetail ? BACKEND_ERROR_KEYS[exactDetail] : undefined) ??
@@ -227,6 +241,9 @@ const BACKEND_ERROR_PATTERNS: Array<{
 ];
 
 export function translateBackendError(message: string, t: TFunction): string {
+  const safeCopy = SAFE_BACKEND_ERROR_COPY[message];
+  if (safeCopy) return safeCopy;
+
   const key = BACKEND_ERROR_KEYS[message];
   if (key) return t(key, key);
 

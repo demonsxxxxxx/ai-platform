@@ -1,5 +1,6 @@
 import hashlib
 import io
+import logging
 from pathlib import Path
 import tempfile
 import threading
@@ -9,7 +10,11 @@ import pytest
 from openpyxl import Workbook
 
 from app import file_preview_contracts
-from app.file_parser_contracts import MAX_XLSX_PROMPT_CHARS
+from app.file_parser_contracts import (
+    AttachmentParserRequirement,
+    MAX_XLSX_PROMPT_CHARS,
+    parser_spec_for_attachment,
+)
 from app.file_preview_contracts import (
     _stage_xlsx_preview_bytes,
     acquire_xlsx_preview_lease,
@@ -120,9 +125,10 @@ def test_xlsx_preview_redacts_local_and_external_formula_source():
     assert "formulas_omitted" in preview.warnings
 
 
-def test_large_text_xlsx_preview_uses_preview_bounds_instead_of_prompt_json_cap():
+def test_generated_compatibility_xlsx_is_ready_through_the_isolated_deadline(caplog):
     raw = _large_text_workbook_bytes()
     assert 60_000 <= len(raw) < 1024 * 1024
+    caplog.set_level(logging.INFO, logger="app.file_preview_contracts")
 
     preview = _build_preview(
         raw=raw,
@@ -131,11 +137,23 @@ def test_large_text_xlsx_preview_uses_preview_bounds_instead_of_prompt_json_cap(
         content_type=XLSX_CONTENT_TYPE,
     )
 
-    assert preview.status in {"ready", "truncated"}
+    assert preview.status == "ready"
     assert preview.error is None
     assert preview.content is not None
     assert len(preview.content.sheets[0].rows) == 100
     assert len(preview.model_dump_json()) > MAX_XLSX_PROMPT_CHARS
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("xlsx_preview_isolated_parser")
+    ]
+    assert len(records) == 1
+    assert records[0].xlsx_preview_phase == "child_send"
+    assert records[0].xlsx_preview_result == "parsed"
+    assert records[0].xlsx_preview_code == "none"
+    assert records[0].xlsx_preview_reason == "child_message"
+    assert "file-large-text" not in records[0].getMessage()
+    assert "large-text.xlsx" not in records[0].getMessage()
 
 
 @pytest.mark.parametrize(
@@ -288,6 +306,120 @@ def test_xlsx_staging_uses_the_fixed_path_with_windows_semantics(monkeypatch):
     assert not root.exists()
 
 
+def test_xlsx_child_uses_stdlib_xml_and_reports_memory_failure_without_source_data(
+    monkeypatch,
+):
+    spec = parser_spec_for_attachment(
+        file_name="preview.xlsx",
+        content_type=XLSX_CONTENT_TYPE,
+    )
+    assert spec is not None
+    requirement = AttachmentParserRequirement(
+        file_id="sanitized-fixture",
+        file_name="preview.xlsx",
+        extension=".xlsx",
+        content_type=XLSX_CONTENT_TYPE,
+        parser_id=spec.parser_id,
+        parser_version=spec.parser_version,
+        max_bytes=spec.max_bytes,
+    )
+    sent: list[dict[str, object]] = []
+
+    class Connection:
+        def send(self, result):
+            sent.append(result)
+
+        def close(self):
+            return None
+
+    def fail_with_memory_error(**kwargs):
+        raise MemoryError
+
+    configured_backends: list[str | None] = []
+
+    def observe_resource_limit_application(_timeout_seconds):
+        configured_backends.append(
+            file_preview_contracts.os.environ.get("OPENPYXL_LXML")
+        )
+
+    monkeypatch.setenv("OPENPYXL_LXML", "True")
+    monkeypatch.setattr(
+        file_preview_contracts,
+        "_apply_child_resource_limits",
+        observe_resource_limit_application,
+    )
+    monkeypatch.setattr(
+        file_preview_contracts,
+        "parse_xlsx_preview_attachment",
+        fail_with_memory_error,
+    )
+
+    file_preview_contracts._parse_xlsx_preview_child(
+        Connection(),
+        b"sanitized",
+        requirement.model_dump(mode="json"),
+        5.0,
+    )
+
+    assert file_preview_contracts.os.environ["OPENPYXL_LXML"] == "False"
+    assert configured_backends == ["False"]
+    assert sent == [
+        {
+            "status": "failed",
+            "code": "xlsx_preview_unavailable",
+            "diagnostic": {"phase": "child_parse", "reason": "memory_limit"},
+        }
+    ]
+    assert "sanitized-fixture" not in str(sent)
+
+
+@pytest.mark.parametrize(
+    "malformed_child_result",
+    [
+        {
+            "status": "failed",
+            "code": [],
+            "diagnostic": {"phase": [], "reason": {}},
+        },
+        {
+            "status": "failed",
+            "code": {},
+            "diagnostic": {"phase": {}, "reason": []},
+        },
+    ],
+    ids=("list-values", "dict-values"),
+)
+def test_malformed_child_allowlist_values_fail_closed_without_leaking(
+    malformed_child_result,
+    caplog,
+):
+    caplog.set_level(logging.WARNING, logger="app.file_preview_contracts")
+
+    file_preview_contracts._log_isolated_xlsx_result(malformed_child_result)
+    public_result = file_preview_contracts._strip_isolated_xlsx_diagnostic(
+        malformed_child_result
+    )
+
+    assert public_result == {
+        "status": "failed",
+        "code": "xlsx_preview_unavailable",
+    }
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("xlsx_preview_isolated_parser")
+    ]
+    assert len(records) == 1
+    assert records[0].xlsx_preview_phase == "parent_receive"
+    assert records[0].xlsx_preview_result == "failed"
+    assert records[0].xlsx_preview_code == "none"
+    assert records[0].xlsx_preview_reason == "invalid_child_result"
+    assert records[0].getMessage() == (
+        "xlsx_preview_isolated_parser phase=parent_receive result=failed "
+        "code=none reason=invalid_child_result"
+    )
+
+
 def test_xlsx_preview_admission_fails_fast_without_queue(monkeypatch):
     admission = threading.BoundedSemaphore(1)
     monkeypatch.setattr(file_preview_contracts, "_PREVIEW_ADMISSION", admission)
@@ -298,8 +430,9 @@ def test_xlsx_preview_admission_fails_fast_without_queue(monkeypatch):
     lease.release()
 
 
-def test_timeout_reaps_and_closes_the_child_process(monkeypatch):
+def test_timeout_reaps_and_closes_the_child_process(monkeypatch, caplog):
     calls: list[str] = []
+    caplog.set_level(logging.WARNING, logger="app.file_preview_contracts")
 
     class Connection:
         def poll(self, timeout):
@@ -358,6 +491,17 @@ def test_timeout_reaps_and_closes_the_child_process(monkeypatch):
     assert "terminate" in calls
     assert "join:0.5" in calls
     assert "process.close" in calls
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("xlsx_preview_isolated_parser")
+    ]
+    assert len(records) == 1
+    assert records[0].xlsx_preview_phase == "parent_wait"
+    assert records[0].xlsx_preview_result == "failed"
+    assert records[0].xlsx_preview_code == "xlsx_preview_timeout"
+    assert records[0].xlsx_preview_reason == "deadline"
+    assert "safe" not in records[0].getMessage()
 
 
 def test_unreaped_child_retains_the_permit_until_the_reaper_confirms_exit(monkeypatch):
