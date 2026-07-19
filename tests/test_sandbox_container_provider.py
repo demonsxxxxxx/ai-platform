@@ -81,7 +81,7 @@ class FakeDockerContainer:
         labels: dict[str, str],
         volumes: dict[str, dict[str, str]],
         environment: dict[str, str],
-        ports: dict[str, Any],
+        ports: dict[str, Any] | None = None,
         start_error: Exception | None = None,
         stop_error: Exception | None = None,
         remove_error: Exception | None = None,
@@ -95,7 +95,7 @@ class FakeDockerContainer:
         self.labels = dict(labels)
         self.volumes = dict(volumes)
         self.environment = dict(environment)
-        self.ports = dict(ports)
+        self.ports = dict(ports or {})
         self.docker_kwargs = dict(docker_kwargs)
         self.status = "created"
         self.started = False
@@ -105,7 +105,7 @@ class FakeDockerContainer:
         self._stop_error = stop_error
         self._remove_error = remove_error
         published_host = "0.0.0.0"
-        port_binding = ports.get("18000/tcp")
+        port_binding = self.ports.get("18000/tcp")
         if isinstance(port_binding, tuple) and len(port_binding) == 2:
             candidate_host = str(port_binding[0] or "").strip()
             if candidate_host:
@@ -1568,6 +1568,82 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
     assert lease.executor_url == "http://127.0.0.1:18000"
     assert statuses[0].run_id == "run-a"
     assert statuses[0].sandbox_mode == "ephemeral"
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_uses_no_network_native_sidecar_and_refuses_invalid_reuse(tmp_path):
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    native_subjects = [
+        {
+            "identity": "Skill",
+            "declared_identities": ["Skill"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "execution_strategy": "sdk_native",
+        },
+        {
+            "identity": "Bash",
+            "declared_identities": ["Bash"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "command_isolation": "sibling-tool-sandbox-v1",
+        },
+    ]
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        native_tool_probe=lambda socket_path: True,
+    )
+
+    lease = await provider.create_or_reuse(
+        request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+        leased_workspace,
+    )
+
+    assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
+    sidecar, executor = fake.created
+    assert sidecar["network_disabled"] is True
+    assert sidecar["user"] == "0:0"
+    assert sidecar["privileged"] is False
+    assert sidecar["security_opt"] == ["no-new-privileges:true"]
+    assert sidecar["cap_drop"] == ["ALL"]
+    assert sidecar["cap_add"] == ["SETUID", "SETGID", "KILL"]
+    assert sidecar["read_only"] is True
+    assert sidecar["environment"] == {
+        "AI_PLATFORM_NATIVE_TOOL_TOKEN": executor["environment"]["AI_PLATFORM_NATIVE_TOOL_TOKEN"],
+        "AI_PLATFORM_NATIVE_TOOL_WORKSPACE": "/workspace",
+        "AI_PLATFORM_NATIVE_TOOL_SOCKET": "/workspace/.ai-platform/native-tool.sock",
+        "AI_PLATFORM_NATIVE_TOOL_UID": "10001",
+        "AI_PLATFORM_NATIVE_TOOL_GID": "10001",
+        "HOME": "/root",
+        "TMPDIR": "/tmp",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUNBUFFERED": "1",
+    }
+    assert all("AUTH" not in key and "CALLBACK" not in key for key in sidecar["environment"])
+
+    native = fake.containers_by_name["native-tool-run-a"]
+    primary = fake.containers_by_name[lease.container_name]
+    native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"] = "wrong-token"
+
+    with pytest.raises(ContainerStartFailedError, match="native tool sandbox reuse failed"):
+        await provider.create_or_reuse(
+            request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+            leased_workspace,
+        )
+
+    assert native.removed is True
+    assert primary.removed is True
+    assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
 
 
 @pytest.mark.asyncio

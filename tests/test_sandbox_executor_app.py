@@ -908,6 +908,58 @@ def test_executor_fails_closed_without_matching_skill_authorization(tmp_path, mo
     assert not (workspace / "output" / "translated.docx").exists()
 
 
+@pytest.mark.asyncio
+async def test_executor_routes_uploaded_controlled_id_collision_to_sdk_native(monkeypatch, tmp_path):
+    captured = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured.update(kwargs)
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "native uploaded skill completed",
+                "session_id": "sdk-session-a",
+                "usage": {},
+                "error": None,
+                "used_skills": ["qa-file-reviewer"],
+                "used_skills_source": "executor_hook",
+            },
+        )()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["skill_ids"] = ["qa-file-reviewer"]
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Skill",
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+            "allowed_skill_names": ["qa-file-reviewer"],
+            "execution_strategy": "sdk_native",
+        }
+    ]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    result = await _default_executor_runner(request, Path(tmp_path), lambda _event: None)
+
+    assert result["status"] == "completed"
+    assert result["executor_mode"] == "claude_agent_sdk"
+    assert result["sdk_used"] is True
+    assert captured["skill_id"] == "qa-file-reviewer"
+    assert captured["skills"] == ["qa-file-reviewer"]
+
+
 def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):
     class StubSettings:
         claude_agent_sdk_enabled = False

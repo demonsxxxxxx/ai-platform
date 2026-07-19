@@ -7,6 +7,7 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import (
     AdminSkillDetailResponse,
+    AdminSkillListResponse,
     AdminSkillPromoteRequest,
     AdminSkillReleasePolicyResponse,
     AdminSkillRollbackRequest,
@@ -31,6 +32,7 @@ from app.skills.packages import (
     MAX_SKILL_PACKAGE_TOTAL_BYTES,
     build_skill_dependency_evidence,
     build_skill_package_contract,
+    build_uploaded_skill_admin_trust_review,
     parse_skill_package_zip,
     validate_skill_package_contract,
 )
@@ -179,8 +181,15 @@ def _require_reusable_uploaded_skill_version(skill_id: str, version: dict[str, o
         raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
 
 
+def _build_skill_version_admin_review(version: dict[str, object]) -> dict[str, object]:
+    source = version.get("source") if isinstance(version.get("source"), dict) else {}
+    if source.get("kind") == "uploaded":
+        return build_uploaded_skill_admin_trust_review(version)
+    return build_skill_version_release_review(version)
+
+
 def _require_reviewed_skill_version_release(version: dict[str, object]) -> dict[str, object]:
-    review = build_skill_version_release_review(version)
+    review = _build_skill_version_admin_review(version)
     if review.get("status") != "passed" or review.get("blockers"):
         raise HTTPException(status_code=409, detail="skill_release_review_not_verified")
     return review
@@ -194,6 +203,8 @@ def _release_review_summary(review: dict[str, object] | None) -> dict[str, objec
     return {
         "schema_version": str(review.get("schema_version") or ""),
         "status": str(review.get("status") or ""),
+        "trust_basis": str(review.get("trust_basis") or ""),
+        "package_contract_valid": review.get("package_contract_valid") is True,
         "blocker_count": len(blockers) if isinstance(blockers, list) else 0,
         "dependency_evidence_present": bool(package_evidence)
         or any(
@@ -227,48 +238,6 @@ async def _mark_skill_version_released(
         skill_id=skill_id,
         version=version,
         status=SKILL_VERSION_RELEASED,
-    )
-
-
-async def _publish_uploaded_skill_to_tenant(
-    conn,
-    *,
-    principal: AuthPrincipal,
-    skill_id: str,
-    version: str,
-    previous_version: str | None,
-) -> None:
-    _require_admin(principal)
-    await repositories.set_skill_release_policy(
-        conn,
-        tenant_id=principal.tenant_id,
-        skill_id=skill_id,
-        version=version,
-        previous_version=previous_version,
-        promoted_by=principal.user_id,
-    )
-    try:
-        await repositories.set_uploaded_workbench_skill_status(
-            conn,
-            tenant_id=principal.tenant_id,
-            skill_id=skill_id,
-            status="active",
-        )
-    except repositories.RepositoryConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await repositories.append_audit_log(
-        conn,
-        tenant_id=principal.tenant_id,
-        user_id=principal.user_id,
-        action="skill_release_promoted_from_upload",
-        target_type="skill",
-        target_id=skill_id,
-        payload_json={
-            "skill_id": skill_id,
-            "version": version,
-            "channel": "stable",
-            "rollout_percent": 100,
-        },
     )
 
 
@@ -331,6 +300,19 @@ def _builtin_dependency_manifest_snapshots(dependency_ids: list[str]) -> list[di
         raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
     manifest_by_skill_id = {str(item.get("skill_id") or ""): item for item in dependency_pins}
     return _dependency_manifest_snapshots_or_409(dependency_ids, manifest_by_skill_id)
+
+
+@router.get("/admin/skills", response_model=AdminSkillListResponse)
+async def admin_list_skills(
+    principal: AuthPrincipal = Depends(require_principal),
+) -> AdminSkillListResponse:
+    _require_admin(principal)
+    async with transaction() as conn:
+        items = await repositories.list_admin_skill_summaries(
+            conn,
+            tenant_id=principal.tenant_id,
+        )
+    return AdminSkillListResponse(items=items)
 
 
 @router.get("/admin/skills/{skill_id}", response_model=AdminSkillDetailResponse)
@@ -440,8 +422,7 @@ async def admin_upload_skill_package(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> AdminSkillUploadResponse:
     _require_skill_upload_admin(principal)
-    can_publish_to_tenant = is_ai_admin(principal)
-    can_upload_existing_skill = can_publish_to_tenant
+    can_upload_existing_skill = is_ai_admin(principal)
     skill_id = _safe_skill_id(skill_id)
 
     package_content = await _read_skill_package_upload(package)
@@ -476,28 +457,10 @@ async def admin_upload_skill_package(
                 )
             except repositories.RepositoryConflictError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
-            release_policy = None
         else:
             existing = await repositories.get_skill_version(conn, skill_id=skill_id, version=parsed.content_hash)
             if existing is not None:
                 _require_reusable_uploaded_skill_version(skill_id, existing)
-                release_policy = await repositories.get_skill_release_policy(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    skill_id=skill_id,
-                )
-                should_publish_existing_to_tenant = can_publish_to_tenant and release_policy is None
-                previous_version = None
-                if should_publish_existing_to_tenant:
-                    previous_version = str(skill.get("version") or "") or None
-                uploaded = existing
-                if should_publish_existing_to_tenant:
-                    uploaded = await repositories.update_skill_version_status(
-                        conn,
-                        skill_id=skill_id,
-                        version=parsed.content_hash,
-                        status=SKILL_VERSION_RELEASED,
-                    )
                 await repositories.append_audit_log(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -513,25 +476,7 @@ async def admin_upload_skill_package(
                         else None,
                     },
                 )
-                if should_publish_existing_to_tenant:
-                    await _publish_uploaded_skill_to_tenant(
-                        conn,
-                        principal=principal,
-                        skill_id=skill_id,
-                        version=parsed.content_hash,
-                        previous_version=previous_version,
-                    )
-                return AdminSkillUploadResponse(uploaded=uploaded)
-            release_policy = await repositories.get_skill_release_policy(
-                conn,
-                tenant_id=principal.tenant_id,
-                skill_id=skill_id,
-            )
-
-        should_publish_to_tenant = can_publish_to_tenant and (is_new_skill or release_policy is None)
-        previous_version = None
-        if should_publish_to_tenant and skill is not None:
-            previous_version = str(skill.get("version") or "") or None
+                return AdminSkillUploadResponse(uploaded=existing)
 
         dependency_manifests = _builtin_dependency_manifest_snapshots(dependency_ids)
         storage_key = f"skills/{skill_id}/versions/{parsed.content_hash}/package.zip"
@@ -561,7 +506,9 @@ async def admin_upload_skill_package(
             dependency_manifests=dependency_manifests,
             package_contract=package_contract,
         )
-        upload_status = SKILL_VERSION_RELEASED if should_publish_to_tenant else SKILL_VERSION_DRAFT
+        # Upload creates immutable package evidence only. Trust and tenant
+        # distribution are separate, explicit review/promote transitions.
+        upload_status = SKILL_VERSION_DRAFT
         uploaded = {
             "skill_id": skill_id,
             "version": parsed.content_hash,
@@ -618,14 +565,6 @@ async def admin_upload_skill_package(
                 "size_bytes": stored.size_bytes,
             },
         )
-        if should_publish_to_tenant:
-            await _publish_uploaded_skill_to_tenant(
-                conn,
-                principal=principal,
-                skill_id=skill_id,
-                version=parsed.content_hash,
-                previous_version=previous_version,
-            )
         response = AdminSkillUploadResponse(uploaded=uploaded)
     return response
 
@@ -701,7 +640,7 @@ async def admin_update_skill_version_status(
             raise HTTPException(status_code=404, detail="skill_version_not_found")
         review: dict[str, object] | None = None
         if request.status == "reviewed":
-            review = build_skill_version_release_review(current)
+            review = _build_skill_version_admin_review(current)
             if review.get("status") != "passed" or review.get("blockers"):
                 raise HTTPException(status_code=409, detail="skill_release_review_not_verified")
         if request.status in {SKILL_VERSION_DISABLED, SKILL_VERSION_DEPRECATED}:
@@ -804,6 +743,17 @@ async def admin_promote_skill_version(
             skill_id=skill_id,
             version=request.version,
         )
+        source = version.get("source") if isinstance(version.get("source"), dict) else {}
+        if source.get("kind") == "uploaded":
+            try:
+                await repositories.set_uploaded_workbench_skill_status(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    skill_id=skill_id,
+                    status="active",
+                )
+            except repositories.RepositoryConflictError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         deprecated_version = None
         if should_deprecate_previous:
             deprecated_version = await _mark_superseded_skill_version_deprecated(
@@ -858,7 +808,7 @@ async def admin_rollback_skill_version(
             raise HTTPException(status_code=404, detail="skill_version_not_found")
         _require_rollback_target_skill_version(version)
         _require_rollback_materializable_skill_version(skill_id, version)
-        release_review = build_skill_version_release_review(version)
+        release_review = _build_skill_version_admin_review(version)
         policy = await repositories.get_skill_release_policy(
             conn,
             tenant_id=principal.tenant_id,

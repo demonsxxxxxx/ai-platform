@@ -61,6 +61,8 @@ test("projects stable Skill package failures to actionable Skill copy", () => {
     ["skill_package_multiple_skills_not_supported", "backendErrors.skillPackageMultipleSkills"],
     ["skill_package_description_required", "backendErrors.skillPackageDescriptionRequired"],
     ["skill_package_too_large", "backendErrors.skillPackageTooLarge"],
+    ["skill_release_review_not_verified", "backendErrors.skillReleaseReviewNotVerified"],
+    ["skill_version_not_materializable", "backendErrors.skillVersionNotMaterializable"],
   ]);
 
   for (const [code, key] of expected) {
@@ -86,6 +88,12 @@ test("all shipped locales include fail-closed governance error copy", () => {
     "skillPackageUnsafe",
     "skillPackageInvalidText",
     "skillPackageNameMismatch",
+    "skillVersionNotFound",
+    "skillVersionAlreadyExists",
+    "skillReleaseReviewNotVerified",
+    "skillVersionNotMaterializable",
+    "skillDependencyPolicyViolation",
+    "skillVersionHasActiveReleasePolicy",
   ];
 
   for (const locale of ["en", "zh", "ja", "ko", "ru"]) {

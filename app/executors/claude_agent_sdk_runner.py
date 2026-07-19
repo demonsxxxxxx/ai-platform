@@ -1,6 +1,9 @@
 import asyncio
+import base64
 import json
 import os
+import shlex
+import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +22,7 @@ from app.control_plane_contracts import sanitize_public_payload
 from app.file_parser_contracts import ParsedAttachmentContext
 from app.public_context_keys import safe_public_context_pack_version
 from app.settings import get_settings
+from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION, SKILL_WORKSPACE_CONTRACT_VERSION
 from app.tool_policy import evaluate_tool_policy
 
 _SDK_ENV_ALLOWLIST = {
@@ -261,6 +265,10 @@ def build_sdk_env(*, cwd: Path | None = None) -> dict[str, str]:
         env["ANTHROPIC_MODEL"] = settings.anthropic_model
     if settings.openai_api_key and not env.get("ANTHROPIC_AUTH_TOKEN"):
         env["ANTHROPIC_AUTH_TOKEN"] = settings.openai_api_key
+    for key in ("AI_PLATFORM_NATIVE_TOOL_SOCKET", "AI_PLATFORM_NATIVE_TOOL_TOKEN"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
     return env
 
 
@@ -429,9 +437,10 @@ def build_skill_prompt(
         "You are running inside the ai-platform controlled worker. "
         "Use only backend-managed skills staged in this workspace and do not access arbitrary shell, SQL, or host filesystem paths.\n\n"
         f"User request: {bounded_user_message}\n"
-        f"Workspace files:\n{files_text}\n\n"
+        f"Workspace input files (under inputs/):\n{files_text}\n\n"
         "If a staged Skill matches the task, use that Skill's instructions. "
-        "Return a concise execution summary and ensure generated artifacts are saved in the workspace output directory."
+        "Use inputs/ for attachments and save user-deliverable files under outputs/delivery/. "
+        "Return a concise execution summary."
         f"{_context_pack_prompt_section(context_pack)}"
     )
 
@@ -925,6 +934,89 @@ def _parameters_match_subject(subject: dict[str, Any], tool_name: str, tool_inpu
     return True
 
 
+_WORKSPACE_PATH_PARAMETER = {
+    "Read": "file_path",
+    "Glob": "path",
+    "LS": "path",
+    "Write": "file_path",
+    "Edit": "file_path",
+}
+_NATIVE_TOOL_MAX_COMMAND_BYTES = 64 * 1024
+_NATIVE_TOOL_DEFAULT_TIMEOUT_MS = 120_000
+_NATIVE_TOOL_MAX_TIMEOUT_MS = 600_000
+_NATIVE_TOOL_PROXY_SCRIPT = (
+    Path(__file__).resolve().parents[1] / "runtime" / "sandbox" / "native_tool_proxy.py"
+)
+
+
+def _workspace_path_parameters_authorized(
+    subject: dict[str, Any],
+    tool_name: str,
+    tool_input: object,
+    *,
+    workspace_root: Path,
+) -> bool:
+    if str(subject.get("workspace_contract") or "") != SKILL_WORKSPACE_CONTRACT_VERSION:
+        return True
+    key = _WORKSPACE_PATH_PARAMETER.get(tool_name)
+    if key is None:
+        return True
+    if not isinstance(tool_input, dict):
+        return False
+    raw = tool_input.get(key)
+    if raw in (None, "") and tool_name == "Glob":
+        raw = "."
+    if not isinstance(raw, str) or not raw or "\x00" in raw:
+        return False
+    try:
+        root = workspace_root.resolve(strict=True)
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        relative = candidate.resolve(strict=False).relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if relative.parts and relative.parts[0] == ".ai-platform":
+        return False
+    return True
+
+
+def _native_tool_proxy_input(tool_input: object) -> dict[str, Any] | None:
+    if not isinstance(tool_input, dict):
+        return None
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    if len(command.encode("utf-8")) > _NATIVE_TOOL_MAX_COMMAND_BYTES:
+        return None
+    raw_timeout = tool_input.get("timeout")
+    if raw_timeout is None:
+        timeout_ms = _NATIVE_TOOL_DEFAULT_TIMEOUT_MS
+    elif (
+        isinstance(raw_timeout, int)
+        and not isinstance(raw_timeout, bool)
+        and 1 <= raw_timeout <= _NATIVE_TOOL_MAX_TIMEOUT_MS
+    ):
+        timeout_ms = raw_timeout
+    else:
+        return None
+    socket_path = str(os.getenv("AI_PLATFORM_NATIVE_TOOL_SOCKET") or "")
+    token = str(os.getenv("AI_PLATFORM_NATIVE_TOOL_TOKEN") or "")
+    if not socket_path or not token:
+        return None
+    encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
+    proxy_command = " ".join(
+        (
+            shlex.quote(sys.executable),
+            "-I",
+            shlex.quote(str(_NATIVE_TOOL_PROXY_SCRIPT)),
+            shlex.quote(encoded),
+            str(timeout_ms),
+        )
+    )
+    return {"command": proxy_command, "timeout": timeout_ms}
+
+
 def _mcp_server_options(subjects: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
     servers: dict[str, dict[str, str]] = {}
     for identity, subject in subjects.items():
@@ -1144,6 +1236,19 @@ async def run_claude_agent_sdk(
                 subject_tool_name,
                 tool_input,
             )
+            if parameters_authorized and subject is not None:
+                parameters_authorized = _workspace_path_parameters_authorized(
+                    subject,
+                    subject_tool_name,
+                    tool_input,
+                    workspace_root=cwd,
+                )
+            if (
+                parameters_authorized
+                and subject_tool_name == "Bash"
+                and str((subject or {}).get("command_isolation") or "") == NATIVE_COMMAND_ISOLATION
+            ):
+                parameters_authorized = _native_tool_proxy_input(tool_input) is not None
             registered = bool(subject) and (
                 not identity.startswith("mcp__") or str(subject.get("mcp_server") or "") in mcp_servers
             )
@@ -1202,6 +1307,21 @@ async def run_claude_agent_sdk(
             "permissionDecision": decision.outcome,
             "permissionDecisionReason": decision.reason,
         }
+        if decision.allowed and isinstance(hook_input, dict):
+            tool_name = str(hook_input.get("tool_name") or "")
+            identity = adapter_identity(tool_name)
+            subject = internal_context_subjects.get(identity) or authorized_subjects.get(identity)
+            if (
+                tool_name == "Bash"
+                and isinstance(subject, dict)
+                and str(subject.get("command_isolation") or "") == NATIVE_COMMAND_ISOLATION
+            ):
+                updated_input = _native_tool_proxy_input(hook_input.get("tool_input"))
+                if updated_input is None:
+                    output["permissionDecision"] = "deny"
+                    output["permissionDecisionReason"] = "native_tool_isolation_unavailable"
+                else:
+                    output["updatedInput"] = updated_input
         return {"hookSpecificOutput": output}
     async def record_skill_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
         if not isinstance(hook_input, dict):

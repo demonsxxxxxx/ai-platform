@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import inspect
 import ipaddress
 import json
@@ -40,6 +41,7 @@ from app.runtime.sandbox.executor_client import (
     prepare_executor_http_request,
 )
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
+from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION, SDK_NATIVE
 
 
 class SandboxRuntimeError(RuntimeError):
@@ -368,6 +370,95 @@ def _docker_security_kwargs() -> dict[str, Any]:
     }
 
 
+_NATIVE_TOOL_OWNER = "sandbox-native-tool"
+_NATIVE_TOOL_SOCKET = "/workspace/.ai-platform/native-tool.sock"
+
+
+def _tool_policy_subject_authorized(subject: dict[str, Any], identity: str) -> bool:
+    declared = subject.get("declared_identities")
+    declared_identities = {
+        str(item)
+        for item in declared
+        if isinstance(item, str) and item
+    } if isinstance(declared, list) else set()
+    return (
+        str(subject.get("identity") or "") == identity
+        and all(subject.get(key) is True for key in ("registered", "declared", "active", "distributed"))
+        and identity in declared_identities
+    )
+
+
+def _native_tool_required(request: SandboxRuntimeRequest) -> bool:
+    skill_native = any(
+        _tool_policy_subject_authorized(subject, "Skill")
+        and str(subject.get("execution_strategy") or "") == SDK_NATIVE
+        for subject in request.tool_policy_subjects
+        if isinstance(subject, dict)
+    )
+    bash_isolated = any(
+        _tool_policy_subject_authorized(subject, "Bash")
+        and str(subject.get("command_isolation") or "") == NATIVE_COMMAND_ISOLATION
+        for subject in request.tool_policy_subjects
+        if isinstance(subject, dict)
+    )
+    return skill_native and bash_isolated
+
+
+def _native_tool_container_name(run_id: str) -> str:
+    return f"native-tool-{run_id}"
+
+
+def _native_tool_labels(request: SandboxRuntimeRequest) -> dict[str, str]:
+    return {
+        "ai-platform.owner": _NATIVE_TOOL_OWNER,
+        "ai-platform.role": "native-skill-command",
+        "ai-platform.tenant_id": request.tenant_id,
+        "ai-platform.workspace_id": request.workspace_id,
+        "ai-platform.user_id": request.user_id,
+        "ai-platform.session_id": request.session_id,
+        "ai-platform.run_id": request.run_id,
+        "ai-platform.sandbox_mode": request.sandbox_mode,
+    }
+
+
+def _native_tool_security_kwargs() -> dict[str, Any]:
+    return {
+        "privileged": False,
+        "security_opt": ["no-new-privileges:true"],
+        "cap_drop": ["ALL"],
+        "cap_add": ["SETUID", "SETGID", "KILL"],
+        "read_only": True,
+        "tmpfs": {
+            "/tmp": "rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=64m",
+            "/root": "rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=32m",
+        },
+    }
+
+
+def _native_tool_environment(token: str) -> dict[str, str]:
+    return {
+        "AI_PLATFORM_NATIVE_TOOL_TOKEN": token,
+        "AI_PLATFORM_NATIVE_TOOL_WORKSPACE": "/workspace",
+        "AI_PLATFORM_NATIVE_TOOL_SOCKET": _NATIVE_TOOL_SOCKET,
+        "AI_PLATFORM_NATIVE_TOOL_UID": str(RUNTIME_UID),
+        "AI_PLATFORM_NATIVE_TOOL_GID": str(RUNTIME_GID),
+        "HOME": "/root",
+        "TMPDIR": "/tmp",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUNBUFFERED": "1",
+    }
+
+
+def _default_native_tool_probe(socket_path: str) -> bool:
+    transport = httpx.HTTPTransport(uds=socket_path)
+    try:
+        with httpx.Client(transport=transport, base_url="http://native-tool", timeout=1.0) as client:
+            response = client.get("/health")
+        return response.status_code == 200 and response.json() == {"status": "ok"}
+    except (OSError, ValueError, httpx.HTTPError):
+        return False
+
+
 def _workspace_owner_stat(workspace_host_path: str) -> os.stat_result:
     if os.name != "posix":
         raise OSError("POSIX ownership semantics unavailable")
@@ -445,9 +536,11 @@ def _executor_environment(
     *,
     executor_auth_token: str,
     workspace_container_path: str = "/workspace",
+    native_tool_token: str = "",
+    native_tool_socket: str = "",
 ) -> dict[str, str]:
     trusted_callback = _trusted_callback_target(settings)
-    return {
+    environment = {
         "APP_MODULE": "app.runtime.sandbox.executor_app:create_executor_app",
         "APP_PORT": "18000",
         "AI_PLATFORM_SESSION_ID": request.session_id,
@@ -490,6 +583,10 @@ def _executor_environment(
             262144,
         ),
     }
+    if native_tool_token and native_tool_socket:
+        environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"] = native_tool_token
+        environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] = native_tool_socket
+    return environment
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -1423,12 +1520,14 @@ class DockerContainerProvider:
         docker_client_factory: Callable[[], Any] | None = None,
         health_probe: Callable[..., bool] | None = None,
         identity_probe: Callable[..., dict[str, int]] | None = None,
+        native_tool_probe: Callable[[str], bool] | None = None,
         monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._leases: dict[str, ContainerLease] = {}
         self._docker_client_factory = docker_client_factory
         self._health_probe = health_probe or default_executor_health_probe
         self._identity_probe = identity_probe or default_executor_identity_probe
+        self._native_tool_probe = native_tool_probe or _default_native_tool_probe
         self._monotonic = monotonic or time.monotonic
         self._client: Any | None = None
 
@@ -1470,6 +1569,162 @@ class DockerContainerProvider:
             return
         self._leases[lease.container_id] = lease
         raise ContainerCleanupFailedError("container cleanup could not be confirmed")
+
+    @staticmethod
+    def _native_tool_socket_host_path(workspace: WorkspaceLease | ContainerLease) -> Path:
+        return Path(workspace.workspace_host_path) / ".ai-platform" / "native-tool.sock"
+
+    def _prepare_native_tool_socket(self, workspace: WorkspaceLease) -> Path:
+        socket_path = self._native_tool_socket_host_path(workspace)
+        socket_dir = socket_path.parent
+        socket_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if socket_dir.is_symlink() or not socket_dir.is_dir():
+            raise ContainerStartFailedError("native tool socket directory is invalid")
+        if socket_path.exists() or socket_path.is_symlink():
+            try:
+                node = socket_path.lstat()
+            except OSError as exc:
+                raise ContainerStartFailedError("native tool socket cannot be inspected") from exc
+            if not stat.S_ISSOCK(node.st_mode):
+                raise ContainerStartFailedError("native tool socket path is occupied")
+            socket_path.unlink()
+        return socket_path
+
+    def _remove_native_tool_socket(self, workspace: WorkspaceLease | ContainerLease) -> bool:
+        socket_path = self._native_tool_socket_host_path(workspace)
+        if not (socket_path.exists() or socket_path.is_symlink()):
+            return True
+        try:
+            node = socket_path.lstat()
+            if not stat.S_ISSOCK(node.st_mode):
+                return False
+            socket_path.unlink()
+            return True
+        except OSError:
+            return False
+
+    async def _wait_for_native_tool_socket(self, socket_path: Path, timeout_seconds: int) -> None:
+        deadline = time.monotonic() + max(timeout_seconds, 1)
+        while time.monotonic() <= deadline:
+            try:
+                if self._native_tool_probe(str(socket_path)):
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(0.1)
+        raise ExecutorHealthTimeoutError("native tool sandbox did not become ready")
+
+    def _owned_native_tool_container(self, lease: ContainerLease) -> Any | None:
+        try:
+            container = self._get_client().containers.get(_native_tool_container_name(lease.run_id))
+        except Exception:
+            return None
+        labels = _container_labels(container)
+        expected = {
+            "ai-platform.owner": _NATIVE_TOOL_OWNER,
+            "ai-platform.tenant_id": lease.tenant_id,
+            "ai-platform.workspace_id": lease.workspace_id,
+            "ai-platform.user_id": lease.user_id,
+            "ai-platform.session_id": lease.session_id,
+            "ai-platform.run_id": lease.run_id,
+        }
+        if any(str(labels.get(key) or "") != value for key, value in expected.items()):
+            return None
+        return container
+
+    def _remove_owned_native_tool_container(self, lease: ContainerLease) -> bool:
+        container = self._owned_native_tool_container(lease)
+        return True if container is None else _stop_and_remove_container(container)
+
+    def _cleanup_runtime_pair_or_track(
+        self,
+        container: Any | None,
+        native_tool_container: Any | None,
+        lease: ContainerLease,
+    ) -> None:
+        primary_removed = container is None or _stop_and_remove_container(container)
+        native_removed = native_tool_container is None or _stop_and_remove_container(native_tool_container)
+        socket_removed = self._remove_native_tool_socket(lease)
+        if primary_removed and native_removed and socket_removed:
+            return
+        self._leases[lease.container_id] = lease
+        raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
+
+    def _native_tool_reuse_valid(self, lease: ContainerLease) -> bool:
+        if str(lease.labels.get("ai-platform.native_tool_required") or "") != "true":
+            return False
+        try:
+            executor = self._get_client().containers.get(lease.container_name)
+        except Exception:
+            return False
+        tool = self._owned_native_tool_container(lease)
+        if tool is not None and hasattr(tool, "reload"):
+            try:
+                tool.reload()
+            except Exception:
+                return False
+        if tool is None or getattr(tool, "status", "running") not in {"created", "running"}:
+            return False
+        executor_token = _container_environment(executor).get("AI_PLATFORM_NATIVE_TOOL_TOKEN", "")
+        tool_token = _container_environment(tool).get("AI_PLATFORM_NATIVE_TOOL_TOKEN", "")
+        if not executor_token or not hmac.compare_digest(executor_token, tool_token):
+            return False
+        try:
+            return bool(self._native_tool_probe(str(self._native_tool_socket_host_path(lease))))
+        except Exception:
+            return False
+
+    async def _start_native_tool_container(
+        self,
+        *,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+        token: str,
+        timeout_seconds: int,
+    ) -> Any:
+        socket_path = self._prepare_native_tool_socket(workspace)
+        client = self._get_client()
+        container = None
+        try:
+            existing_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
+            if not self._remove_owned_native_tool_container(existing_lease):
+                raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
+            container = client.containers.create(
+                image=get_settings().sandbox_executor_image,
+                name=_native_tool_container_name(request.run_id),
+                detach=True,
+                labels=_native_tool_labels(request),
+                volumes={
+                    workspace.workspace_host_path: {
+                        "bind": workspace.workspace_container_path,
+                        "mode": "rw",
+                    }
+                },
+                environment=_native_tool_environment(token),
+                entrypoint=["python", "-m", "uvicorn"],
+                command=[
+                    "app.runtime.sandbox.native_tool_app:create_native_tool_app",
+                    "--factory",
+                    "--uds",
+                    _NATIVE_TOOL_SOCKET,
+                    "--no-access-log",
+                    "--log-level",
+                    "warning",
+                ],
+                network_disabled=True,
+                user="0:0",
+                **_native_tool_security_kwargs(),
+                **_docker_resource_kwargs(request.resource_limits),
+            )
+            container.start()
+            await self._wait_for_native_tool_socket(socket_path, timeout_seconds)
+            return container
+        except BaseException:
+            container_removed = container is None or _stop_and_remove_container(container)
+            socket_removed = self._remove_native_tool_socket(workspace)
+            if not (container_removed and socket_removed):
+                raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
+            raise
 
     async def _reuse_existing_container(
         self,
@@ -1577,14 +1832,40 @@ class DockerContainerProvider:
                 raise normalized_exc from exc
             raise DockerUnavailableError("Docker daemon is unavailable") from exc
         expected_egress_labels = _egress_policy_labels(settings)
+        native_tool_required = _native_tool_required(request)
         workspace_user = _docker_workspace_user_value(workspace.workspace_host_path)
         existing = self._leases.get(container_id)
         if existing is not None:
+            existing_native_tool_required = (
+                str(existing.labels.get("ai-platform.native_tool_required") or "") == "true"
+            )
             if not _lease_matches_request_workspace(existing, request, workspace):
-                if not self._remove_owned_cached_container(existing):
-                    raise ContainerCleanupFailedError("cached container cleanup could not be confirmed")
+                native_removed = self._remove_owned_native_tool_container(existing)
+                primary_removed = self._remove_owned_cached_container(existing)
+                socket_removed = (
+                    self._remove_native_tool_socket(existing)
+                    if existing_native_tool_required
+                    else True
+                )
                 self._leases.pop(container_id, None)
+                if not (native_removed and primary_removed and socket_removed):
+                    self._leases[existing.container_id] = existing
+                    raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
                 raise ContainerStartFailedError("cached lease scope mismatch")
+            if existing_native_tool_required != native_tool_required:
+                native_removed = self._remove_owned_native_tool_container(existing)
+                primary_removed = self._remove_owned_cached_container(existing)
+                socket_removed = (
+                    self._remove_native_tool_socket(existing)
+                    if existing_native_tool_required
+                    else True
+                )
+                self._leases.pop(container_id, None)
+                if not (native_removed and primary_removed and socket_removed):
+                    self._leases[existing.container_id] = existing
+                    raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
+                raise ContainerStartFailedError("cached lease runtime profile mismatch")
+        if existing is not None:
             existing.labels.update(expected_egress_labels)
             recovered_existing = await self._reuse_existing_container(
                 existing,
@@ -1592,25 +1873,67 @@ class DockerContainerProvider:
                 endpoint,
             )
             if recovered_existing is None:
+                native_removed = (
+                    self._remove_owned_native_tool_container(existing)
+                    if existing_native_tool_required
+                    else True
+                )
+                socket_removed = (
+                    self._remove_native_tool_socket(existing)
+                    if existing_native_tool_required
+                    else True
+                )
                 self._leases.pop(container_id, None)
+                if not (native_removed and socket_removed):
+                    raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
                 raise ContainerStartFailedError()
-            self._leases[recovered_existing.container_id] = recovered_existing
-            return recovered_existing
+            elif native_tool_required and not self._native_tool_reuse_valid(recovered_existing):
+                native_removed = self._remove_owned_native_tool_container(recovered_existing)
+                primary_removed = self._remove_owned_cached_container(recovered_existing)
+                socket_removed = self._remove_native_tool_socket(recovered_existing)
+                self._leases.pop(container_id, None)
+                if not (native_removed and primary_removed and socket_removed):
+                    self._leases[recovered_existing.container_id] = recovered_existing
+                    raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
+                raise ContainerStartFailedError("native tool sandbox reuse failed")
+            if recovered_existing is not None:
+                self._leases[recovered_existing.container_id] = recovered_existing
+                return recovered_existing
 
         bootstrap_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
         bootstrap_lease.labels.update(expected_egress_labels)
+        bootstrap_lease.labels["ai-platform.native_tool_required"] = _env_bool(native_tool_required)
         recovered = await self._reuse_existing_container(
             bootstrap_lease,
             settings.sandbox_container_start_timeout_seconds,
             endpoint,
         )
         if recovered is not None:
+            if native_tool_required and not self._native_tool_reuse_valid(recovered):
+                native_removed = self._remove_owned_native_tool_container(recovered)
+                primary_removed = self._remove_owned_cached_container(recovered)
+                socket_removed = self._remove_native_tool_socket(recovered)
+                if not (native_removed and primary_removed and socket_removed):
+                    self._leases[recovered.container_id] = recovered
+                    raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
+                recovered = None
+        if recovered is not None:
             self._leases[recovered.container_id] = recovered
             return recovered
         cold_start_started_at = self._monotonic()
         executor_auth_token = _generate_executor_auth_token()
+        native_tool_token = _generate_executor_auth_token() if native_tool_required else ""
         bootstrap_lease.executor_headers = _executor_auth_headers(executor_auth_token)
+        native_tool_container = None
+        container = None
         try:
+            if native_tool_required:
+                native_tool_container = await self._start_native_tool_container(
+                    request=request,
+                    workspace=workspace,
+                    token=native_tool_token,
+                    timeout_seconds=settings.sandbox_container_start_timeout_seconds,
+                )
             container = client.containers.create(
                 image=settings.sandbox_executor_image,
                 name=bootstrap_lease.container_name,
@@ -1627,6 +1950,8 @@ class DockerContainerProvider:
                     settings,
                     executor_auth_token=executor_auth_token,
                     workspace_container_path=workspace.workspace_container_path,
+                    native_tool_token=native_tool_token,
+                    native_tool_socket=_NATIVE_TOOL_SOCKET if native_tool_required else "",
                 ),
                 ports={"18000/tcp": (endpoint.bind_ip, None)},
                 **_docker_egress_network_kwargs(client, settings),
@@ -1635,20 +1960,35 @@ class DockerContainerProvider:
                 **_docker_resource_kwargs(request.resource_limits),
             )
         except CallbackTargetValidationError as exc:
+            try:
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             raise ContainerStartFailedError() from exc
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
+            try:
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             if isinstance(normalized_exc, DockerPermissionDeniedError):
                 raise normalized_exc from exc
-            if "container" in locals():
-                self._cleanup_container_or_track(container, bootstrap_lease)
             raise ContainerStartFailedError() from exc
+        if container is None:
+            try:
+                self._cleanup_runtime_pair_or_track(None, native_tool_container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc
+            raise ContainerStartFailedError()
         try:
             if hasattr(container, "start"):
                 container.start()
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
-            self._cleanup_container_or_track(container, bootstrap_lease)
+            try:
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             if isinstance(normalized_exc, DockerPermissionDeniedError):
                 raise normalized_exc from exc
             raise ContainerStartFailedError() from exc
@@ -1662,19 +2002,19 @@ class DockerContainerProvider:
             bootstrap_lease.executor_url = executor_url
         except asyncio.CancelledError as exc:
             try:
-                self._cleanup_container_or_track(container, bootstrap_lease)
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
         except ExecutorHealthTimeoutError as exc:
             try:
-                self._cleanup_container_or_track(container, bootstrap_lease)
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
         except Exception as exc:
             try:
-                self._cleanup_container_or_track(container, bootstrap_lease)
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             if isinstance(exc, ContainerStartFailedError):
@@ -1697,19 +2037,22 @@ class DockerContainerProvider:
             )
         except asyncio.CancelledError as exc:
             try:
-                self._cleanup_container_or_track(container, bootstrap_lease)
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
         except Exception as exc:
-            self._cleanup_container_or_track(container, bootstrap_lease)
+            try:
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             raise ExecutorHealthTimeoutError() from exc
         sandbox_healthcheck_latency_ms = self._elapsed_ms(healthcheck_started_at)
         if not healthy:
-            self._cleanup_container_or_track(container, bootstrap_lease)
+            self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             raise ExecutorHealthTimeoutError()
         if _container_config_user(container) != workspace_user:
-            self._cleanup_container_or_track(container, bootstrap_lease)
+            self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             raise ContainerStartFailedError("executor Config.User mismatch")
         try:
             identity = await asyncio.to_thread(
@@ -1721,12 +2064,15 @@ class DockerContainerProvider:
             _require_expected_executor_identity(identity)
         except asyncio.CancelledError as exc:
             try:
-                self._cleanup_container_or_track(container, bootstrap_lease)
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
         except Exception as exc:
-            self._cleanup_container_or_track(container, bootstrap_lease)
+            try:
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             if isinstance(exc, ContainerStartFailedError):
                 raise
             raise ContainerStartFailedError("executor identity unavailable") from exc
@@ -1748,23 +2094,32 @@ class DockerContainerProvider:
         return lease
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
+        primary_status = "not_found"
+        primary_failed = False
         try:
             container = self._get_client().containers.get(lease.container_name)
             status = _container_status_from_labels(container)
             if status is None or not _status_matches_lease(status, lease):
-                self._leases.pop(lease.container_id, None)
-                return StopResult(container_id=lease.container_id, status="not_found", message=reason)
-            if not _stop_and_remove_container(container):
-                self._leases.setdefault(lease.container_id, lease)
-                return StopResult(container_id=lease.container_id, status="failed", message="Container stop failed")
+                primary_status = "not_found"
+            elif not _stop_and_remove_container(container):
+                primary_failed = True
+            else:
+                primary_status = "stopped"
         except Exception as exc:
-            if _is_not_found_error(exc):
-                self._leases.pop(lease.container_id, None)
-                return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+            primary_failed = not _is_not_found_error(exc)
+
+        native_required = str(lease.labels.get("ai-platform.native_tool_required") or "") == "true"
+        native_failed = False
+        if native_required:
+            native_failed = not self._remove_owned_native_tool_container(lease)
+            if not self._remove_native_tool_socket(lease):
+                native_failed = True
+
+        if primary_failed or native_failed:
             self._leases.setdefault(lease.container_id, lease)
             return StopResult(container_id=lease.container_id, status="failed", message="Container stop failed")
         self._leases.pop(lease.container_id, None)
-        return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+        return StopResult(container_id=lease.container_id, status=primary_status, message=reason)
 
     async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]:
         try:

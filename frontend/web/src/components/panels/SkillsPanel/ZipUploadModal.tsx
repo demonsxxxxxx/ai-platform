@@ -3,7 +3,9 @@ import { Archive, UploadCloud, FileArchive, Upload } from "lucide-react";
 import { LoadingSpinner } from "../../common/LoadingSpinner";
 import { EditorSidebar } from "../../common/EditorSidebar";
 import { Checkbox } from "../../common/Checkbox";
+import type { AdminSkillCatalogItem } from "../../../services/api/skill";
 import { canSelectZipSkill, type ZipSkillPreview } from "./zipSelection";
+import type { AdminSkillReleasePhase } from "./useSkillsActions";
 
 interface ZipUploadModalProps {
   showZipModal: boolean;
@@ -13,7 +15,10 @@ interface ZipUploadModalProps {
   zipPreviewing: boolean;
   zipSkills: ZipSkillPreview[];
   selectedZipSkills: string[];
-  allowNewSkills: boolean;
+  adminRelease: boolean;
+  adminReleasePhase: AdminSkillReleasePhase;
+  adminReleaseBlocked: boolean;
+  adminCatalogItems: AdminSkillCatalogItem[];
   zipInputRef: React.RefObject<HTMLInputElement | null>;
   isDragging: boolean;
   onZipFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -33,7 +38,10 @@ export function ZipUploadModal({
   zipPreviewing,
   zipSkills,
   selectedZipSkills,
-  allowNewSkills,
+  adminRelease,
+  adminReleasePhase,
+  adminReleaseBlocked,
+  adminCatalogItems,
   zipInputRef,
   isDragging,
   onZipFileChange,
@@ -47,19 +55,37 @@ export function ZipUploadModal({
   const { t } = useTranslation();
 
   const backedCount = zipSkills.filter((s) => s.already_exists).length;
-  const newSkillCount = zipSkills.filter((s) => !s.already_exists).length;
-  const selectableCount = allowNewSkills
-    ? Math.min(newSkillCount, 1)
+  const selectableCount = adminRelease
+    ? Math.min(zipSkills.length, 1)
     : backedCount;
-  const showNoNewSkillMessage =
-    allowNewSkills && zipSkills.length > 0 && newSkillCount === 0;
+  const lifecycleStages: Array<{
+    phase: Exclude<AdminSkillReleasePhase, "idle">;
+    label: string;
+  }> = [
+    { phase: "uploading", label: t("skills.adminReleaseDraftStep") },
+    { phase: "reviewing", label: t("skills.adminReleaseReviewStep") },
+    { phase: "promoting", label: t("skills.adminReleasePromoteStep") },
+    { phase: "refreshing", label: t("skills.adminReleaseRefreshStep") },
+  ];
+  const currentStageIndex = lifecycleStages.findIndex(
+    (stage) => stage.phase === adminReleasePhase,
+  );
+  const selectedAdminCatalogItem = adminRelease
+    ? adminCatalogItems.find((item) => item.skillId === selectedZipSkills[0])
+    : undefined;
 
   return (
     <EditorSidebar
       open={showZipModal}
       onClose={() => setShowZipModal(false)}
-      title={t("skills.uploadZipTitle")}
-      subtitle={t("skills.subtitle")}
+      title={
+        adminRelease
+          ? t("skills.adminReleaseZipTitle")
+          : t("skills.uploadZipTitle")
+      }
+      subtitle={
+        adminRelease ? t("skills.adminReleaseZipSubtitle") : t("skills.subtitle")
+      }
       icon={<Archive size={16} />}
       width="wide"
       footer={
@@ -83,7 +109,9 @@ export function ZipUploadModal({
                 <Upload size={16} />
               )}
               <span className="hidden sm:inline">
-                {t("skills.importSkills")} ({selectedZipSkills.length})
+                {adminRelease
+                  ? t("skills.adminReleaseAction")
+                  : t("skills.importSkills")} ({selectedZipSkills.length})
               </span>
             </button>
           )}
@@ -155,20 +183,79 @@ export function ZipUploadModal({
           </div>
         )}
 
+        {adminRelease && zipFile && (
+          <div className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-3">
+            <p className="text-sm font-medium text-[var(--theme-text)]">
+              {t("skills.adminReleaseLifecycleTitle")}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
+              {t("skills.adminReleaseLifecycleHint")}
+            </p>
+            <ol className="mt-3 space-y-2">
+              {lifecycleStages.map((stage, index) => {
+                const isCurrent = currentStageIndex === index;
+                const isComplete = currentStageIndex > index;
+                return (
+                  <li
+                    key={stage.phase}
+                    className="flex items-center gap-2 text-xs text-[var(--theme-text-secondary)]"
+                  >
+                    <span
+                      className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold ${
+                        isComplete
+                          ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
+                          : isCurrent
+                            ? "border-[var(--theme-primary)] text-[var(--theme-primary)]"
+                            : "border-[var(--theme-border)]"
+                      }`}
+                    >
+                      {isComplete ? "✓" : index + 1}
+                    </span>
+                    <span
+                      className={
+                        isCurrent
+                          ? "font-medium text-[var(--theme-text)]"
+                          : undefined
+                      }
+                    >
+                      {stage.label}
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
+            {adminReleaseBlocked && (
+              <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+                {t("skills.adminReleaseBlocked")}
+              </p>
+            )}
+            {selectedAdminCatalogItem?.latestVersionStatus === "draft" && (
+              <p className="mt-3 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2.5 py-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
+                {t("skills.adminReleaseCatalogDraft")}
+              </p>
+            )}
+            {selectedAdminCatalogItem?.latestVersionStatus === "reviewed" && (
+              <p className="mt-3 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2.5 py-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
+                {t("skills.adminReleaseCatalogReviewed")}
+              </p>
+            )}
+          </div>
+        )}
+
         {zipSkills.length > 0 && (
           <div className="es-section space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <label className="text-sm font-medium text-[var(--theme-text)]">
-                  {allowNewSkills
-                    ? t("skills.selectNewSkillToPublish")
+                  {adminRelease
+                    ? t("skills.selectSkillToRelease")
                     : t("skills.selectBackedZipSkills")}
                 </label>
                 <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--theme-primary)]/10 px-1.5 text-[11px] font-semibold text-[var(--theme-primary)]">
                   {selectedZipSkills.length}/{selectableCount}
                 </span>
               </div>
-              {!allowNewSkills && (
+              {!adminRelease && (
                 <button
                   onClick={() => {
                     const selectable = zipSkills
@@ -189,19 +276,14 @@ export function ZipUploadModal({
               )}
             </div>
             <p className="text-xs leading-5 text-[var(--theme-text-secondary)]">
-              {allowNewSkills
-                ? t("skills.adminZipImportHint")
+              {adminRelease
+                ? t("skills.adminReleaseZipHint")
                 : t("skills.zipImportBackedHint")}
             </p>
-            {showNoNewSkillMessage && (
-              <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
-                {t("skills.adminZipNoNewSkill")}
-              </p>
-            )}
             <div className="space-y-1.5 max-h-72 overflow-y-auto rounded-lg p-1">
               {zipSkills.map((skill) => {
                 const selected = selectedZipSkills.includes(skill.name);
-                const canSelectSkill = canSelectZipSkill(skill, allowNewSkills);
+                const canSelectSkill = canSelectZipSkill(skill, adminRelease);
                 return (
                   <div
                     key={skill.name}
@@ -235,17 +317,22 @@ export function ZipUploadModal({
                         >
                           {skill.name}
                         </p>
-                        {skill.already_exists && (
+                        {skill.already_exists && adminRelease && (
+                          <span className="shrink-0 rounded-full bg-[var(--theme-primary)]/8 px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-primary)]/70">
+                            {t("skills.adminReleaseExistingSkill")}
+                          </span>
+                        )}
+                        {skill.already_exists && !adminRelease && (
                           <span className="shrink-0 rounded-full bg-[var(--theme-primary)]/8 px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-primary)]/70">
                             {t("skills.publicCatalogSkill")}
                           </span>
                         )}
-                        {!skill.already_exists && allowNewSkills && (
+                        {!skill.already_exists && adminRelease && (
                           <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
                             {t("skills.newSkillAdminUpload")}
                           </span>
                         )}
-                        {!skill.already_exists && !allowNewSkills && (
+                        {!skill.already_exists && !adminRelease && (
                           <span className="shrink-0 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
                             {t("skills.newSkillImportUnsupported")}
                           </span>

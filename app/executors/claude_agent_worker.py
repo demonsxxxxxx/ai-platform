@@ -2,6 +2,7 @@ import base64
 import binascii
 from dataclasses import dataclass, field
 import hashlib
+import mimetypes
 from pathlib import Path
 import posixpath
 import re
@@ -9,6 +10,11 @@ import shutil
 from typing import Any, Awaitable, Callable
 import zipfile
 from xml.etree import ElementTree
+
+
+_MAX_WORKSPACE_ARTIFACT_FILES = 128
+_MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
+_MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
 
 from app import repositories
 from app.capabilities import required_artifact_types_for_skill
@@ -1528,6 +1534,7 @@ class ClaudeAgentWorkerAdapter:
             raise ValueError("run workspace must not be a symlink")
         typed_preprocessing = _requires_typed_attachment_preprocessing(payload)
         storage = ObjectStorage() if typed_preprocessing else None
+        inputs_dir = workspace / "inputs"
         file_names: list[str] = []
         materialized_file_names: list[str] = []
         attachment_facts: list[MaterializedAttachmentFact] = []
@@ -1558,6 +1565,13 @@ class ClaudeAgentWorkerAdapter:
                     continue
                 target = workspace / filename
                 ensure_creatable_inside(workspace, target, "uploaded file target must stay inside the run workspace")
+                inputs_dir.mkdir(parents=True, exist_ok=True)
+                canonical_target = inputs_dir / filename
+                ensure_creatable_inside(
+                    inputs_dir,
+                    canonical_target,
+                    "uploaded file target must stay inside the run inputs directory",
+                )
                 if storage is None:
                     raise RuntimeError("typed attachment storage is unavailable")
                 content = storage.get_bytes(storage_key=row["storage_key"])
@@ -1571,6 +1585,7 @@ class ClaudeAgentWorkerAdapter:
                     )
                 )
                 target.write_bytes(content)
+                canonical_target.write_bytes(content)
                 materialized_file_names.append(filename)
         return _MaterializedFileNames(
             file_names,
@@ -1584,6 +1599,7 @@ class ClaudeAgentWorkerAdapter:
         storage = ObjectStorage()
         candidates: list[Path] = []
         seen_candidates: set[Path] = set()
+        total_bytes = 0
         for output_dir in self._workspace_artifact_dirs(workspace):
             for item in sorted(output_dir.rglob("*")):
                 if item.is_symlink():
@@ -1594,6 +1610,14 @@ class ClaudeAgentWorkerAdapter:
                 resolved = item.resolve(strict=False)
                 if resolved in seen_candidates:
                     continue
+                size_bytes = item.stat().st_size
+                if size_bytes > _MAX_WORKSPACE_ARTIFACT_FILE_BYTES:
+                    raise ValueError("workspace artifact exceeds the per-file byte limit")
+                total_bytes += size_bytes
+                if total_bytes > _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES:
+                    raise ValueError("workspace artifacts exceed the total byte limit")
+                if len(candidates) >= _MAX_WORKSPACE_ARTIFACT_FILES:
+                    raise ValueError("workspace artifacts exceed the file count limit")
                 seen_candidates.add(resolved)
                 candidates.append(item)
         for index, path in enumerate(candidates, start=1):
@@ -2002,15 +2026,27 @@ def _with_skill_dependencies(selected: list[str], available: set[str]) -> list[s
 
 def _artifact_content_type(filename: str) -> str:
     lower = filename.lower()
-    if lower.endswith(".docx"):
-        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    if lower.endswith(".json"):
-        return "application/json"
-    if lower.endswith(".txt"):
-        return "text/plain; charset=utf-8"
-    if lower.endswith(".md"):
-        return "text/markdown; charset=utf-8"
-    return "application/octet-stream"
+    explicit = {
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".pdf": "application/pdf",
+        ".csv": "text/csv; charset=utf-8",
+        ".json": "application/json",
+        ".txt": "text/plain; charset=utf-8",
+        ".md": "text/markdown; charset=utf-8",
+        ".zip": "application/zip",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }
+    for suffix, content_type in explicit.items():
+        if lower.endswith(suffix):
+            return content_type
+    guessed, _encoding = mimetypes.guess_type(filename, strict=False)
+    return guessed or "application/octet-stream"
 
 
 def _artifact_type(filename: str, skill_id: str | None = None) -> str:

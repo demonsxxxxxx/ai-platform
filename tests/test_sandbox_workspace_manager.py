@@ -52,7 +52,9 @@ def test_prepare_creates_platform_workspace_namespace(tmp_path):
 
     assert Path(lease.host_root) == run_root
     assert (run_root / "workspace").is_dir()
-    assert (run_root / "inputs").is_dir()
+    assert (run_root / "workspace" / "inputs").is_dir()
+    assert (run_root / "workspace" / "outputs" / "delivery").is_dir()
+    assert (run_root / "workspace" / ".ai-platform").is_dir()
     assert (run_root / "logs").is_dir()
     assert meta_path.exists()
     assert json.loads(meta_path.read_text(encoding="utf-8")) == {
@@ -74,7 +76,7 @@ def test_workspace_lease_paths_match_platform_namespace(tmp_path):
     run_root = expected_run_root(tmp_path)
     assert Path(lease.host_root) == run_root
     assert Path(lease.workspace_host_path) == run_root / "workspace"
-    assert Path(lease.inputs_host_path) == run_root / "inputs"
+    assert Path(lease.inputs_host_path) == run_root / "workspace" / "inputs"
     assert Path(lease.logs_host_path) == run_root / "logs"
     assert lease.workspace_container_path == "/workspace"
 

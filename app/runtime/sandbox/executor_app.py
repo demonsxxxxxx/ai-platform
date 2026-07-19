@@ -43,6 +43,7 @@ from app.runtime.sandbox.contracts import (
     build_trusted_callback_target,
 )
 from app.settings import get_settings
+from app.skills.execution_profiles import PLATFORM_CONTROLLED
 
 
 CallbackPayload = dict[str, Any]
@@ -291,16 +292,28 @@ def _selected_authorized_file_skill_id(request: ExecutorTaskRequest) -> tuple[st
 
     selected_skill_ids = _task_skill_ids(request)
     selected_skill_id = selected_skill_ids[0] if selected_skill_ids else ""
-    if selected_skill_id not in _CONTROLLED_FILE_SKILLS:
-        return None, None
     subjects = _task_tool_policy_subjects(request)
-    skill_authorized = any(
-        str(subject.get("identity") or "") == "Skill"
-        and _authorized_capability_subject(subject)
-        and selected_skill_id in _safe_id_list(subject.get("allowed_skill_names"))
-        for subject in subjects
+    skill_subject = next(
+        (
+            subject
+            for subject in subjects
+            if str(subject.get("identity") or "") == "Skill"
+            and selected_skill_id in _safe_id_list(subject.get("allowed_skill_names"))
+        ),
+        None,
     )
-    if not skill_authorized:
+    if not isinstance(skill_subject, dict):
+        if selected_skill_id in _CONTROLLED_FILE_SKILLS:
+            return None, "controlled_skill_authorization_incomplete"
+        return None, None
+    if selected_skill_id not in _CONTROLLED_FILE_SKILLS:
+        if str(skill_subject.get("execution_strategy") or "") == PLATFORM_CONTROLLED:
+            return None, "controlled_skill_identity_invalid"
+        return None, None
+    execution_strategy = str(skill_subject.get("execution_strategy") or "")
+    if execution_strategy and execution_strategy != PLATFORM_CONTROLLED:
+        return None, None
+    if not _authorized_capability_subject(skill_subject):
         return None, "controlled_skill_authorization_incomplete"
     required_identities = _CONTROLLED_FILE_SKILL_CAPABILITIES[selected_skill_id]
     authorized_identities = {
@@ -310,6 +323,8 @@ def _selected_authorized_file_skill_id(request: ExecutorTaskRequest) -> tuple[st
     }
     if not required_identities.issubset(authorized_identities):
         return None, "controlled_skill_authorization_incomplete"
+    # Empty strategy is a compatibility path for already queued, canonical
+    # builtin pins. Uploaded legacy pins never carry the required identities.
     return selected_skill_id, None
 
 
@@ -413,7 +428,14 @@ def _user_message_from_skill_prompt(prompt: str) -> str:
     _, marker, remainder = str(prompt or "").partition("User request: ")
     if not marker:
         return ""
-    return remainder.partition("\nWorkspace files:\n")[0]
+    for workspace_marker in (
+        "\nWorkspace input files (under inputs/):\n",
+        "\nWorkspace files:\n",
+    ):
+        user_message, separator, _workspace = remainder.partition(workspace_marker)
+        if separator:
+            return user_message
+    return remainder
 
 
 def _safe_materialized_basename(value: object) -> str | None:

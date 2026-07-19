@@ -25,10 +25,13 @@ class SandboxWorkspaceManager:
             / request.run_id
         )
         workspace = run_root / "workspace"
-        inputs = run_root / "inputs"
+        inputs = workspace / "inputs"
+        outputs = workspace / "outputs"
+        delivery = outputs / "delivery"
+        internal = workspace / ".ai-platform"
         logs = run_root / "logs"
         runtime = run_root / "runtime"
-        for directory in (workspace, inputs, logs, runtime):
+        for directory in (workspace, inputs, outputs, delivery, internal, logs, runtime):
             directory.mkdir(parents=True, exist_ok=True)
 
         meta = {

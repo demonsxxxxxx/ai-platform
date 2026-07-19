@@ -40,10 +40,13 @@ from app.error_taxonomy import summarize_error_categories
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
 from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
+from app.skills.execution_profiles import (
+    SkillExecutionProfileError,
+    canonical_skill_execution_profile,
+)
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
     SkillVersionMaterializationError,
-    _server_declared_builtin_tool_identities,
     build_skill_snapshot_governance,
 )
 from app.skills.release_policy import resolve_rollout_skill_decision
@@ -6693,8 +6696,11 @@ def pin_primary_skill_mcp_tool_ids(
 def canonical_builtin_tool_identities(skill_manifest: dict[str, Any]) -> list[str]:
     """Return the exact server-owned builtin capability declaration for a pin."""
 
-    source = skill_manifest.get("source")
-    declared = _server_declared_builtin_tool_identities(skill_manifest.get("skill_id"), source)
+    try:
+        profile = canonical_skill_execution_profile(skill_manifest)
+    except SkillExecutionProfileError as exc:
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch") from exc
+    declared = profile["builtin_tool_identities"]
     raw = skill_manifest.get("builtin_tool_identities")
     if raw is None and not declared:
         return []
@@ -6731,6 +6737,10 @@ def run_skill_snapshot_source_json(
     projected["snapshot_governance"] = _without_snapshot_private_material(governance)
     projected["release_decision_sha256"] = _release_decision_sha256(release_decision)
     projected["builtin_tool_identities"] = canonical_builtin_tool_identities(skill_manifest)
+    try:
+        projected["execution_profile"] = canonical_skill_execution_profile(skill_manifest)
+    except SkillExecutionProfileError as exc:
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch") from exc
     raw_mcp_tool_ids = skill_manifest.get("mcp_tool_ids")
     if raw_mcp_tool_ids is None:
         raw_mcp_tool_ids = []
@@ -7349,6 +7359,51 @@ async def diff_skill_versions(
         "dependency_added": sorted(target_dependencies - source_dependencies),
         "dependency_removed": sorted(source_dependencies - target_dependencies),
     }
+
+
+async def list_admin_skill_summaries(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+) -> list[dict[str, Any]]:
+    """Return lifecycle summaries without exposing package or runtime-private source data."""
+
+    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    cursor = await conn.execute(
+        """
+        select
+          skills.id as skill_id,
+          skills.name,
+          skills.description,
+          skills.status as lifecycle_status,
+          coalesce(tenant_capability_distributions.status, 'disabled') as distribution_status,
+          coalesce(tenant_capability_distributions.visible_to_user, false) as visible_to_user,
+          latest_version.version as latest_version,
+          latest_version.status as latest_version_status,
+          skill_release_policies.current_version,
+          skill_release_policies.rollout_percent
+        from skills
+        left join tenant_capability_distributions
+          on tenant_capability_distributions.tenant_id = %s
+         and tenant_capability_distributions.capability_kind = 'skill'
+         and tenant_capability_distributions.capability_id = skills.id
+        left join lateral (
+          select skill_versions.version, skill_versions.status
+          from skill_versions
+          where skill_versions.skill_id = skills.id
+          order by skill_versions.created_at desc, skill_versions.version desc
+          limit 1
+        ) as latest_version on true
+        left join skill_release_policies
+          on skill_release_policies.tenant_id = %s
+         and skill_release_policies.skill_id = skills.id
+         and skill_release_policies.channel = 'stable'
+         and skill_release_policies.status = 'active'
+        order by skills.name asc, skills.id asc
+        """,
+        (tenant_id, tenant_id),
+    )
+    return list(await cursor.fetchall())
 
 
 async def get_admin_skill_detail(

@@ -3,10 +3,17 @@ import assert from "node:assert/strict";
 
 import {
   buildAdminSkillPreviewUrl,
+  buildAdminSkillCatalogUrl,
+  buildAdminSkillPromoteUrl,
   buildAdminSkillUploadUrl,
+  buildAdminSkillVersionStatusUrl,
   buildSkillListUrl,
   collectAllAuthorizedSkills,
+  normalizeAdminSkillReleasePolicy,
+  normalizeAdminSkillCatalogResponse,
+  normalizeAdminSkillUploadResponse,
   normalizeSkillListResponse,
+  normalizeSkillZipPreviewResponse,
 } from "../skill.ts";
 
 test("buildSkillListUrl includes pagination and search params", () => {
@@ -27,6 +34,134 @@ test("buildAdminSkillPreviewUrl targets global-catalog admin ZIP preview", () =>
   assert.equal(
     buildAdminSkillPreviewUrl(),
     "/api/ai/admin/skills/upload/preview",
+  );
+});
+
+test("admin lifecycle URLs target review and fully rolled-out stable promotion", () => {
+  assert.equal(buildAdminSkillCatalogUrl(), "/api/ai/admin/skills");
+  assert.equal(
+    buildAdminSkillVersionStatusUrl("research", "sha/one"),
+    "/api/ai/admin/skills/research/versions/sha%2Fone/status",
+  );
+  assert.equal(
+    buildAdminSkillPromoteUrl("research/skill"),
+    "/api/ai/admin/skills/research%2Fskill/promote",
+  );
+});
+
+test("admin catalog normalizer exposes draft rediscovery without private package fields", () => {
+  const catalog = normalizeAdminSkillCatalogResponse({
+    items: [
+      {
+        skill_id: "research",
+        name: "research",
+        description: "Research workflow",
+        lifecycle_status: "active",
+        distribution_status: "disabled",
+        visible_to_user: false,
+        latest_version: "sha-123",
+        latest_version_status: "draft",
+        current_version: null,
+        rollout_percent: null,
+        source: { storage_key: "private/skill.zip" },
+      },
+    ],
+  });
+  assert.deepEqual(catalog, [
+    {
+      skillId: "research",
+      name: "research",
+      description: "Research workflow",
+      lifecycleStatus: "active",
+      distributionStatus: "disabled",
+      visibleToUser: false,
+      latestVersion: "sha-123",
+      latestVersionStatus: "draft",
+      currentVersion: null,
+      rolloutPercent: null,
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(catalog), /source|storage|package/i);
+});
+
+test("admin lifecycle normalizers drop raw source, storage, and package fields", () => {
+  const uploaded = normalizeAdminSkillUploadResponse({
+    uploaded: {
+      skill_id: "research",
+      version: "sha-123",
+      status: "draft",
+      source: {
+        storage_key: "private/skill.zip",
+        package_contract: { files: ["SKILL.md"] },
+      },
+    },
+  });
+  assert.deepEqual(uploaded, {
+    uploaded: { skillId: "research", version: "sha-123", status: "draft" },
+  });
+  assert.doesNotMatch(JSON.stringify(uploaded), /source|storage|package|SKILL\.md/i);
+
+  const policy = normalizeAdminSkillReleasePolicy({
+    skill_id: "research",
+    channel: "stable",
+    current_version: "sha-123",
+    rollout_percent: 100,
+    status: "active",
+    previous_version: "sha-old",
+  });
+  assert.deepEqual(policy, {
+    skillId: "research",
+    channel: "stable",
+    currentVersion: "sha-123",
+    rolloutPercent: 100,
+    status: "active",
+  });
+});
+
+test("admin lifecycle normalizers reject unrecognized state and unsafe ZIP fields", () => {
+  assert.throws(
+    () =>
+      normalizeAdminSkillUploadResponse({
+        uploaded: { skill_id: "research", version: "sha-123", status: "pending" },
+      }),
+    /admin_skill_lifecycle_invalid/,
+  );
+  assert.throws(
+    () =>
+      normalizeAdminSkillReleasePolicy({
+        skill_id: "research",
+        channel: "stable",
+        current_version: "sha-123",
+        rollout_percent: 99,
+        status: "active",
+      }),
+    /admin_skill_lifecycle_invalid/,
+  );
+  assert.deepEqual(
+    normalizeSkillZipPreviewResponse({
+      skill_count: 1,
+      skills: [
+        {
+          name: "research",
+          description: "Research workflow",
+          file_count: 2,
+          files: ["SKILL.md", "private-notes.md"],
+          already_exists: true,
+        },
+      ],
+    }),
+    {
+      skill_count: 1,
+      skills: [
+        {
+          name: "research",
+          description: "Research workflow",
+          file_count: 2,
+          files: [],
+          already_exists: true,
+        },
+      ],
+    },
   );
 });
 

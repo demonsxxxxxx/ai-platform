@@ -38,6 +38,7 @@ from app.execution_boundary import decide_execution_boundary
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.skills.execution_profiles import canonical_skill_execution_profile
 from app.settings import get_settings
 from app.tool_policy import evaluate_tool_policy
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
@@ -1049,10 +1050,10 @@ def _mcp_tool_lifecycle_status(tool: dict[str, Any]) -> str:
 
 
 _BUILTIN_CAPABILITY_PARAMETERS = {
-    "Read": (["file_path"], []),
+    "Read": (["file_path", "offset", "limit", "pages"], ["file_path"]),
     "Glob": (["pattern", "path"], []),
     "LS": (["path"], []),
-    "Bash": (["command"], ["command"]),
+    "Bash": (["command", "timeout", "description"], ["command"]),
     "Write": (["file_path", "content"], ["file_path", "content"]),
     "Edit": (["file_path", "old_string", "new_string", "replace_all"], ["file_path", "old_string", "new_string"]),
     "NotebookEdit": (["notebook_path", "new_source", "cell_id", "cell_type", "edit_mode"], ["notebook_path", "new_source"]),
@@ -1068,7 +1069,7 @@ def _declared_builtin_tool_identities(payload: QueueRunPayload) -> set[str]:
 
     declarations: set[str] = set()
     for manifest in payload.skill_manifests:
-        if not isinstance(manifest, dict) or manifest.get("source", {}).get("kind") != "builtin":
+        if not isinstance(manifest, dict):
             continue
         declarations.update(repositories.canonical_builtin_tool_identities(manifest))
     return declarations
@@ -1091,6 +1092,20 @@ def _builtin_capability_subjects(
         and manifest["source"].get("kind") in {"builtin", "uploaded"}
         for manifest in payload.skill_manifests
     )
+    primary_manifest = next(
+        (
+            manifest
+            for manifest in payload.skill_manifests
+            if isinstance(manifest, dict)
+            and str(manifest.get("skill_id") or "") == run_identity["skill_id"]
+        ),
+        None,
+    )
+    execution_profile = (
+        canonical_skill_execution_profile(primary_manifest)
+        if isinstance(primary_manifest, dict)
+        else None
+    )
     identities = _declared_builtin_tool_identities(payload)
     if primary_skill_pinned:
         identities.add("Skill")
@@ -1099,6 +1114,7 @@ def _builtin_capability_subjects(
         subjects.append(
             {
                 "identity": identity,
+                "declared_identities": [identity],
                 "registered": bool(skill),
                 "declared": True,
                 "active": active,
@@ -1111,6 +1127,9 @@ def _builtin_capability_subjects(
                 "allowed_parameter_keys": keys,
                 "required_parameter_keys": required_keys,
                 "allowed_skill_names": [run_identity["skill_id"]] if identity == "Skill" else [],
+                "execution_strategy": str((execution_profile or {}).get("strategy") or "sdk_restricted"),
+                "command_isolation": str((execution_profile or {}).get("command_isolation") or "none"),
+                "workspace_contract": str((execution_profile or {}).get("workspace_contract") or ""),
             }
         )
     return subjects
