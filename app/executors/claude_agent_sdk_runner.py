@@ -984,6 +984,9 @@ def _workspace_path_parameters_authorized(
     def glob_pattern_authorized(raw: object, *, search_path: object) -> bool:
         if not path_authorized(raw):
             return False
+        assert isinstance(raw, str)
+        if ".." in raw or any(char in raw for char in "{}()!\\"):
+            return False
         if not isinstance(search_path, str) or not search_path:
             return False
         try:
@@ -996,7 +999,6 @@ def _workspace_path_parameters_authorized(
             return False
         if search_relative.parts:
             return True
-        assert isinstance(raw, str)
         parts = tuple(
             part
             for part in raw.replace("\\", "/").split("/")
@@ -1008,8 +1010,6 @@ def _workspace_path_parameters_authorized(
         lowered = tuple(part.lower() for part in parts)
         if first.startswith("."):
             return len(lowered) >= 2 and lowered[:2] == (".claude", "skills")
-        if any(char in first for char in "{}()!\\"):
-            return False
         if len(parts) > 1 and not all(
             char.isalnum() or char in {"_", "-", "."}
             for char in first
