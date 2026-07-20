@@ -489,7 +489,44 @@ def test_default_native_tool_probe_fails_closed_for_invalid_low_level_states_and
     assert private_path not in captured.out + captured.err + caplog.text
 
 
-def test_default_native_tool_probe_bounds_running_exec_inspection(monkeypatch):
+def test_default_native_tool_probe_accepts_completion_after_observed_probe_delay(monkeypatch):
+    from app.runtime.sandbox import container_provider
+
+    assert container_provider._NATIVE_TOOL_HEALTH_PROBE_TIMEOUT_SECONDS == 3.0
+
+    class ProbeAPI:
+        def __init__(self) -> None:
+            self.inspect_calls = 0
+
+        def exec_create(self, _container_id, _command, **_kwargs):
+            return {"Id": "fixed-health-probe"}
+
+        def exec_start(self, _exec_id, **_kwargs):
+            return None
+
+        def exec_inspect(self, _exec_id):
+            self.inspect_calls += 1
+            if self.inspect_calls == 1:
+                return {"Running": True, "ExitCode": None}
+            return {"Running": False, "ExitCode": 0}
+
+    api = ProbeAPI()
+    container = type(
+        "Container",
+        (),
+        {"id": "sidecar-container-id", "client": type("DockerClient", (), {"api": api})()},
+    )()
+    monotonic_values = iter((0.0, 1.1, 1.1, 1.11))
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(container_provider.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(container_provider.time, "sleep", sleep_calls.append)
+
+    assert container_provider._default_native_tool_probe(container) is True
+    assert api.inspect_calls == 2
+    assert sleep_calls == pytest.approx([container_provider._NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS])
+
+
+def test_default_native_tool_probe_fails_closed_after_inspection_deadline(monkeypatch):
     from app.runtime.sandbox import container_provider
 
     class ProbeAPI:
@@ -512,14 +549,14 @@ def test_default_native_tool_probe_bounds_running_exec_inspection(monkeypatch):
         (),
         {"id": "sidecar-container-id", "client": type("DockerClient", (), {"api": api})()},
     )()
-    monotonic_values = iter((0.0, 0.0, 0.24, 0.25))
+    monotonic_values = iter((0.0, 2.99, 2.99, 3.0))
     sleep_calls: list[float] = []
     monkeypatch.setattr(container_provider.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(container_provider.time, "sleep", sleep_calls.append)
 
     assert container_provider._default_native_tool_probe(container) is False
     assert api.inspect_calls == 1
-    assert sleep_calls == [container_provider._NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS]
+    assert sleep_calls == pytest.approx([container_provider._NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS])
 
 
 def test_default_native_tool_probe_rejects_missing_client_or_api():
