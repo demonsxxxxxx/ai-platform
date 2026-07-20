@@ -2,9 +2,18 @@ from app.projection_redaction import (
     default_skill_id_for_public_agent,
     internal_agent_id_for_request,
     public_agent_id_for_projection,
+    public_skill_display_label,
     redact_raw_skill_references,
     sanitize_user_control_input,
 )
+
+
+def test_public_skill_display_label_accepts_catalog_names_and_rejects_private_shapes():
+    assert public_skill_display_label("  Internal   Comms  ") == "Internal Comms"
+    assert public_skill_display_label("a" * 64) is None
+    assert public_skill_display_label("/skill internal-comms") is None
+    assert public_skill_display_label("C:\\private\\skill") is None
+    assert public_skill_display_label("/home/private/skill") is None
 
 
 def test_public_agent_projection_maps_known_internal_agent_ids():

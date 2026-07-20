@@ -14,7 +14,11 @@ from app.models import LoginRequest, SessionRenameRequest
 from app import repositories, session_actions
 from app.routes.auth import _login_principal
 from app.routes.files import upload_file as upload_platform_file
-from app.projection_redaction import capability_id_from_skill, public_agent_id_for_projection
+from app.projection_redaction import (
+    capability_id_from_skill,
+    public_agent_id_for_projection,
+    public_skill_display_label,
+)
 from app.control_plane_contracts import EVENT_ENVELOPE_SCHEMA_VERSION, sanitize_public_text, standard_trace_id
 from app.routes.runs import artifact_card, event_visible_to_principal, run_event_response
 from app.settings import get_settings
@@ -149,9 +153,14 @@ def _terminal_final_payload(
         # Keep final failure presentation code-only.  The frontend maps this
         # controlled marker to its localized product copy and never receives
         # executor/runtime text as a transport-like error frame.
+        detail_code = (
+            "skill_sandbox_admission_failed"
+            if str(run.get("error_code") or "") == "native_tool_admission_failed"
+            else "run_failed"
+        )
         return (
             "final_detail",
-            {"detail_kind": "failed", "detail_code": "run_failed"},
+            {"detail_kind": "failed", "detail_code": detail_code},
             "error",
         )
     return None
@@ -438,6 +447,13 @@ def _compatibility_events_for_run(
             "run_id": run_id,
             "content": str(message.get("content") or ""),
         }
+        metadata = message.get("metadata_json")
+        locked_skill = metadata.get("locked_skill") if isinstance(metadata, dict) else None
+        locked_skill_label = public_skill_display_label(
+            locked_skill.get("label") if isinstance(locked_skill, dict) else None
+        )
+        if locked_skill_label:
+            message_data["locked_skill_label"] = locked_skill_label
         compatibility_events.append(
             _CompatibilityWireEvent(
                 id=message_id,

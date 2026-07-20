@@ -398,6 +398,12 @@ def _docker_security_kwargs() -> dict[str, Any]:
 
 _NATIVE_TOOL_OWNER = "sandbox-native-tool"
 _NATIVE_TOOL_SOCKET = "/workspace/.ai-platform/native-tool.sock"
+_NATIVE_TOOL_HEALTH_PROBE_COMMAND = (
+    "python",
+    "-m",
+    "app.runtime.sandbox.native_tool_health_probe",
+)
+_NATIVE_TOOL_ADMISSION_PHASE = "authenticated_container_uds_health"
 
 
 def _tool_policy_subject_authorized(subject: dict[str, Any], identity: str) -> bool:
@@ -434,7 +440,29 @@ def _native_tool_container_name(run_id: str) -> str:
     return f"native-tool-{run_id}"
 
 
-def _native_tool_labels(request: SandboxRuntimeRequest) -> dict[str, str]:
+def _native_tool_admission_evidence(
+    workspace: WorkspaceLease | ContainerLease,
+) -> dict[str, str]:
+    """Return path-length-only evidence for the container-local admission probe."""
+
+    host_socket_path = (
+        Path(workspace.workspace_host_path) / ".ai-platform" / "native-tool.sock"
+    )
+    return {
+        "ai-platform.native_tool_admission_phase": _NATIVE_TOOL_ADMISSION_PHASE,
+        "ai-platform.native_tool_host_socket_path_bytes": str(
+            len(os.fsencode(str(host_socket_path)))
+        ),
+        "ai-platform.native_tool_container_socket_path_bytes": str(
+            len(_NATIVE_TOOL_SOCKET.encode("utf-8"))
+        ),
+    }
+
+
+def _native_tool_labels(
+    request: SandboxRuntimeRequest,
+    workspace: WorkspaceLease,
+) -> dict[str, str]:
     return {
         "ai-platform.owner": _NATIVE_TOOL_OWNER,
         "ai-platform.role": "native-skill-command",
@@ -445,6 +473,7 @@ def _native_tool_labels(request: SandboxRuntimeRequest) -> dict[str, str]:
         "ai-platform.run_id": request.run_id,
         "ai-platform.sandbox_mode": request.sandbox_mode,
         "ai-platform.browser_enabled": "true" if request.browser_enabled else "false",
+        **_native_tool_admission_evidence(workspace),
     }
 
 
@@ -477,13 +506,20 @@ def _native_tool_environment(token: str) -> dict[str, str]:
     }
 
 
-def _default_native_tool_probe(socket_path: str) -> bool:
-    transport = httpx.HTTPTransport(uds=socket_path)
+def _default_native_tool_probe(container: Any) -> bool:
+    """Run the fixed authenticated health probe inside the sidecar namespace."""
+
     try:
-        with httpx.Client(transport=transport, base_url="http://native-tool", timeout=1.0) as client:
-            response = client.get("/health")
-        return response.status_code == 200 and response.json() == {"status": "ok"}
-    except (OSError, ValueError, httpx.HTTPError):
+        result = container.exec_run(
+            list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
+            stdout=False,
+            stderr=False,
+        )
+        exit_code = getattr(result, "exit_code", None)
+        if exit_code is None and isinstance(result, (tuple, list)) and result:
+            exit_code = result[0]
+        return int(exit_code) == 0
+    except Exception:
         return False
 
 
@@ -1548,7 +1584,7 @@ class DockerContainerProvider:
         docker_client_factory: Callable[[], Any] | None = None,
         health_probe: Callable[..., bool] | None = None,
         identity_probe: Callable[..., dict[str, int]] | None = None,
-        native_tool_probe: Callable[[str], bool] | None = None,
+        native_tool_probe: Callable[[Any], bool] | None = None,
         monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._leases: dict[str, ContainerLease] = {}
@@ -1631,15 +1667,38 @@ class DockerContainerProvider:
         except OSError:
             return False
 
-    async def _wait_for_native_tool_socket(self, socket_path: Path, timeout_seconds: int) -> None:
-        deadline = time.monotonic() + max(timeout_seconds, 1)
-        while time.monotonic() <= deadline:
-            try:
-                if self._native_tool_probe(str(socket_path)):
-                    return
-            except Exception:
-                pass
-            await asyncio.sleep(0.1)
+    async def _probe_native_tool_before_deadline(self, container: Any, deadline: float) -> bool:
+        """Await one sidecar control-plane probe without exceeding its admission deadline."""
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ExecutorHealthTimeoutError("native tool sandbox did not become ready")
+        try:
+            # wait_for bounds this admission await and lets the owner clean the
+            # runtime pair. The Docker SDK call runs in a worker thread and is
+            # not cooperatively cancellable, so it may finish after this await.
+            return bool(
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._native_tool_probe, container),
+                    timeout=remaining,
+                )
+            )
+        except TimeoutError:
+            raise ExecutorHealthTimeoutError("native tool sandbox did not become ready") from None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+
+    async def _wait_for_native_tool_socket(self, container: Any, timeout_seconds: float) -> None:
+        deadline = time.monotonic() + max(float(timeout_seconds), 0.001)
+        while True:
+            if await self._probe_native_tool_before_deadline(container, deadline):
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.1, remaining))
         raise ExecutorHealthTimeoutError("native tool sandbox did not become ready")
 
     def _owned_native_tool_container(self, lease: ContainerLease) -> Any | None:
@@ -1678,7 +1737,11 @@ class DockerContainerProvider:
         self._leases[lease.container_id] = lease
         raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
 
-    def _native_tool_reuse_valid(self, lease: ContainerLease) -> bool:
+    async def _native_tool_reuse_valid(
+        self,
+        lease: ContainerLease,
+        timeout_seconds: float,
+    ) -> bool:
         if str(lease.labels.get("ai-platform.native_tool_required") or "") != "true":
             return False
         try:
@@ -1697,10 +1760,32 @@ class DockerContainerProvider:
         tool_token = _container_environment(tool).get("AI_PLATFORM_NATIVE_TOOL_TOKEN", "")
         if not executor_token or not hmac.compare_digest(executor_token, tool_token):
             return False
+        deadline = time.monotonic() + max(float(timeout_seconds), 0.001)
         try:
-            return bool(self._native_tool_probe(str(self._native_tool_socket_host_path(lease))))
-        except Exception:
+            return await self._probe_native_tool_before_deadline(tool, deadline)
+        except ExecutorHealthTimeoutError:
             return False
+
+    def _discard_native_tool_reuse(self, lease: ContainerLease) -> None:
+        native_removed = self._remove_owned_native_tool_container(lease)
+        primary_removed = self._remove_owned_cached_container(lease)
+        socket_removed = self._remove_native_tool_socket(lease)
+        self._leases.pop(lease.container_id, None)
+        if native_removed and primary_removed and socket_removed:
+            return
+        self._leases[lease.container_id] = lease
+        raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
+
+    async def _admit_native_tool_reuse(self, lease: ContainerLease, timeout_seconds: float) -> None:
+        try:
+            valid = await self._native_tool_reuse_valid(lease, timeout_seconds)
+        except asyncio.CancelledError:
+            self._discard_native_tool_reuse(lease)
+            raise
+        if valid:
+            return
+        self._discard_native_tool_reuse(lease)
+        raise NativeToolAdmissionError() from None
 
     async def _start_native_tool_container(
         self,
@@ -1708,7 +1793,7 @@ class DockerContainerProvider:
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
         token: str,
-        timeout_seconds: int,
+        timeout_seconds: float,
     ) -> Any:
         client = self._get_client()
         container = None
@@ -1724,7 +1809,7 @@ class DockerContainerProvider:
                 image=get_settings().sandbox_executor_image,
                 name=_native_tool_container_name(request.run_id),
                 detach=True,
-                labels=_native_tool_labels(request),
+                labels=_native_tool_labels(request, workspace),
                 volumes={
                     workspace.workspace_host_path: {
                         "bind": workspace.workspace_container_path,
@@ -1742,7 +1827,7 @@ class DockerContainerProvider:
                 **_docker_resource_kwargs(request.resource_limits),
             )
             container.start()
-            await self._wait_for_native_tool_socket(socket_path, timeout_seconds)
+            await self._wait_for_native_tool_socket(container, timeout_seconds)
             return container
         except asyncio.CancelledError:
             container_removed = container is None or _stop_and_remove_container(container)
@@ -1761,10 +1846,10 @@ class DockerContainerProvider:
             if normalized_exc is not None:
                 raise normalized_exc from exc
             if isinstance(exc, (ContainerStartFailedError, ExecutorHealthTimeoutError)):
-                raise NativeToolAdmissionError() from exc
+                raise NativeToolAdmissionError() from None
             if isinstance(exc, SandboxRuntimeError):
                 raise
-            raise NativeToolAdmissionError() from exc
+            raise NativeToolAdmissionError() from None
 
     async def _reuse_existing_container(
         self,
@@ -1873,6 +1958,9 @@ class DockerContainerProvider:
             raise DockerUnavailableError("Docker daemon is unavailable") from exc
         expected_egress_labels = _egress_policy_labels(settings)
         native_tool_required = _native_tool_required(request)
+        native_tool_admission_evidence = (
+            _native_tool_admission_evidence(workspace) if native_tool_required else {}
+        )
         workspace_user = _docker_workspace_user_value(workspace.workspace_host_path)
         existing = self._leases.get(container_id)
         if existing is not None:
@@ -1907,6 +1995,7 @@ class DockerContainerProvider:
                 raise ContainerStartFailedError("cached lease runtime profile mismatch")
         if existing is not None:
             existing.labels.update(expected_egress_labels)
+            existing.labels.update(native_tool_admission_evidence)
             recovered_existing = await self._reuse_existing_container(
                 existing,
                 settings.sandbox_container_start_timeout_seconds,
@@ -1927,15 +2016,11 @@ class DockerContainerProvider:
                 if not (native_removed and socket_removed):
                     raise ContainerCleanupFailedError("native tool container cleanup could not be confirmed")
                 raise ContainerStartFailedError()
-            elif native_tool_required and not self._native_tool_reuse_valid(recovered_existing):
-                native_removed = self._remove_owned_native_tool_container(recovered_existing)
-                primary_removed = self._remove_owned_cached_container(recovered_existing)
-                socket_removed = self._remove_native_tool_socket(recovered_existing)
-                self._leases.pop(container_id, None)
-                if not (native_removed and primary_removed and socket_removed):
-                    self._leases[recovered_existing.container_id] = recovered_existing
-                    raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
-                raise ContainerStartFailedError("native tool sandbox reuse failed")
+            elif native_tool_required:
+                await self._admit_native_tool_reuse(
+                    recovered_existing,
+                    settings.sandbox_container_start_timeout_seconds,
+                )
             if recovered_existing is not None:
                 self._leases[recovered_existing.container_id] = recovered_existing
                 return recovered_existing
@@ -1943,20 +2028,18 @@ class DockerContainerProvider:
         bootstrap_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
         bootstrap_lease.labels.update(expected_egress_labels)
         bootstrap_lease.labels["ai-platform.native_tool_required"] = _env_bool(native_tool_required)
+        bootstrap_lease.labels.update(native_tool_admission_evidence)
         recovered = await self._reuse_existing_container(
             bootstrap_lease,
             settings.sandbox_container_start_timeout_seconds,
             endpoint,
         )
         if recovered is not None:
-            if native_tool_required and not self._native_tool_reuse_valid(recovered):
-                native_removed = self._remove_owned_native_tool_container(recovered)
-                primary_removed = self._remove_owned_cached_container(recovered)
-                socket_removed = self._remove_native_tool_socket(recovered)
-                if not (native_removed and primary_removed and socket_removed):
-                    self._leases[recovered.container_id] = recovered
-                    raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
-                recovered = None
+            if native_tool_required:
+                await self._admit_native_tool_reuse(
+                    recovered,
+                    settings.sandbox_container_start_timeout_seconds,
+                )
         if recovered is not None:
             self._leases[recovered.container_id] = recovered
             return recovered

@@ -503,6 +503,7 @@
       "forkFailed": "Fork failed",
       "forkSuccess": "Forked to new session",
       "generating": "Generating",
+      "lockedSkill": "Locked Skill: {{skill}}",
       "mermaidError": "Mermaid Error",
       "model": "Model",
       "openInSidebar": "Open in sidebar",
@@ -563,6 +564,7 @@
     "runTerminal": {
       "failed": "The task could not be completed. Try again later or contact an administrator if the problem persists.",
       "resultUnavailable": "The task has finished, but its result is temporarily unavailable. Please refresh the session.",
+      "skillSandboxAdmissionFailed": "The selected Skill could not enter its isolated sandbox.",
       "statusUnavailable": "The task status could not be synchronized. Refresh this conversation and try again."
     },
     "sandbox": {

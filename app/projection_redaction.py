@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from app.control_plane_contracts import sanitize_public_payload
+from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 
 
 CAPABILITY_BY_SKILL_ID = {
@@ -75,6 +76,7 @@ RAW_SKILL_IDS_ALIASES = {
 }
 RAW_SKILL_LIST_ALIASES = {"allowedskills", "stagedskills", "usedskills"}
 AGENT_ID_ALIASES = {"agentid", "selectedagentid", "requestedagentid", "resolvedagentid", "rawagentid"}
+_HASH_ONLY_LABEL = re.compile(r"^[a-f0-9]{32,}$", re.IGNORECASE)
 
 
 def _normalized_key(value: object) -> str:
@@ -129,6 +131,20 @@ def default_skill_id_for_public_agent(agent_id: object) -> str | None:
     if not isinstance(agent_id, str) or not agent_id:
         return None
     return DEFAULT_SKILL_ID_BY_PUBLIC_AGENT_ID.get(agent_id)
+
+
+def public_skill_display_label(value: object) -> str | None:
+    """Return one bounded catalog label without path, hash, or command leakage."""
+
+    label = " ".join(sanitize_public_text(value).split()).strip()
+    if (
+        not label
+        or len(label) > 120
+        or _HASH_ONLY_LABEL.fullmatch(label)
+        or label.casefold().startswith("/skill")
+    ):
+        return None
+    return label
 
 
 def redact_raw_skill_references(value: Any, *, preserve_empty_skill_ids: bool = False) -> Any:

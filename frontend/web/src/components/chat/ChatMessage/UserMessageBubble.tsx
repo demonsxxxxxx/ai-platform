@@ -14,10 +14,12 @@ import { useSessionImageGallery } from "./sessionImageGallery";
 export function UserMessageBubble({
   content,
   attachments,
+  lockedSkillLabel,
   isLastMessage,
 }: {
   content?: string;
   attachments?: MessageAttachment[];
+  lockedSkillLabel?: string;
   isLastMessage?: boolean;
 }) {
   const { t } = useTranslation();
@@ -71,6 +73,15 @@ export function UserMessageBubble({
         <div className="flex flex-col items-end max-w-[90%]">
           {/* Attachment preview - outside message bubble */}
           {hasAttachments && renderAttachments()}
+
+          {lockedSkillLabel && (
+            <div
+              data-locked-skill-label={lockedSkillLabel}
+              className="mb-2 rounded-full border border-sky-200/80 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-300"
+            >
+              {t("chat.message.lockedSkill", { skill: lockedSkillLabel })}
+            </div>
+          )}
 
           {/* Message bubble */}
           {hasContent && (

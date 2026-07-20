@@ -7,9 +7,10 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from app.executors import claude_agent_sdk_runner
-from app.runtime.sandbox import native_tool_app
+from app.runtime.sandbox import native_tool_app, native_tool_health_probe
 
 
 def test_native_tool_launcher_prepares_socket_parent_before_uvicorn_binds(monkeypatch, tmp_path):
@@ -163,6 +164,99 @@ async def test_native_tool_lifespan_revalidates_identity(monkeypatch, tmp_path):
         pass
 
     assert identities == [(10001, 10001)]
+
+
+def test_native_tool_health_requires_the_internal_token(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    socket_parent = workspace / ".ai-platform"
+    socket_parent.mkdir(parents=True)
+    socket_path = socket_parent / "native-tool.sock"
+    token = "x" * 32
+
+    async def publish_socket(_socket_path):
+        return None
+
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", token)
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE", str(workspace))
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", str(socket_path))
+    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
+    monkeypatch.setattr(native_tool_app, "_publish_socket", publish_socket)
+
+    with TestClient(native_tool_app.create_native_tool_app()) as client:
+        assert client.get("/health").status_code == 403
+        assert client.get(
+            "/health",
+            headers={native_tool_app.NATIVE_TOOL_AUTH_HEADER: "wrong-token"},
+        ).status_code == 403
+        response = client.get(
+            "/health",
+            headers={native_tool_app.NATIVE_TOOL_AUTH_HEADER: token},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_native_tool_health_probe_reads_secret_from_environment_without_output(monkeypatch, capsys):
+    token = "probe-token-" + ("x" * 32)
+    captured = {}
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"status": "ok"}
+
+    class Client:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, path, *, headers):
+            captured["request"] = (path, headers)
+            return Response()
+
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", token)
+    monkeypatch.setenv(
+        "AI_PLATFORM_NATIVE_TOOL_SOCKET",
+        native_tool_health_probe.NATIVE_TOOL_CONTAINER_SOCKET,
+    )
+    monkeypatch.setattr(
+        native_tool_health_probe.httpx,
+        "HTTPTransport",
+        lambda **kwargs: captured.setdefault("transport", kwargs),
+    )
+    monkeypatch.setattr(native_tool_health_probe.httpx, "Client", Client)
+
+    assert native_tool_health_probe.main() == 0
+    assert captured["transport"] == {
+        "uds": native_tool_health_probe.NATIVE_TOOL_CONTAINER_SOCKET
+    }
+    assert captured["request"] == (
+        "/health",
+        {native_tool_app.NATIVE_TOOL_AUTH_HEADER: token},
+    )
+    assert capsys.readouterr() == ("", "")
+
+
+def test_native_tool_health_probe_failure_never_emits_secret_or_path(monkeypatch, capsys):
+    token = "probe-token-" + ("x" * 32)
+    private_path = "/private/host/workspace/native-tool.sock"
+
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", token)
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", private_path)
+
+    assert native_tool_health_probe.main() == 1
+    captured = capsys.readouterr()
+    assert captured == ("", "")
+    assert token not in captured.out + captured.err
+    assert private_path not in captured.out + captured.err
 
 
 def test_native_tool_socket_parent_fails_closed_without_posix_directory_flags(monkeypatch, tmp_path):

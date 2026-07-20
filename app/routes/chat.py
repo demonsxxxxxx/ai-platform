@@ -38,6 +38,7 @@ from app.projection_redaction import (
     capability_id_from_skill,
     default_skill_id_for_public_agent,
     internal_agent_id_for_request,
+    public_skill_display_label,
     public_agent_id_for_projection,
     redact_raw_skill_references,
     sanitize_user_control_input,
@@ -1036,6 +1037,7 @@ async def chat_stream(
     if existing_submission is not None:
         return existing_submission
     pending_submission_response: ChatStreamResponse | None = None
+    locked_skill_label: str | None = None
     effective_workspace_id = request.workspace_id
     try:
         async with transaction() as conn:
@@ -1216,6 +1218,9 @@ async def chat_stream(
                     rollout_key=principal.user_id,
                     **authorization_kwargs,
                 )
+                locked_skill_label = public_skill_display_label(
+                    skill.get("skill_display_label")
+                )
             else:
                 skill = await repositories.authorize_run_capabilities(
                     conn,
@@ -1351,6 +1356,11 @@ async def chat_stream(
                         "file_ids": resolved_file_ids,
                         "attachments": request.attachments,
                         "intent": decision_payload,
+                        **(
+                            {"locked_skill": {"label": locked_skill_label}}
+                            if locked_skill_label
+                            else {}
+                        ),
                     }
                 )
                 if not is_ai_admin(principal)
@@ -1359,6 +1369,11 @@ async def chat_stream(
                     "file_ids": resolved_file_ids,
                     "attachments": request.attachments,
                     "intent": decision_payload,
+                    **(
+                        {"locked_skill": {"label": locked_skill_label}}
+                        if locked_skill_label
+                        else {}
+                    ),
                 },
             )
             await repositories.bind_files_to_run(

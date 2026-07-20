@@ -1906,7 +1906,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
             defaultValue: i18n.t("chat.requestFailed"),
           });
-          const pendingMessages = optimisticMessages.filter(
+          const pendingMessages = messagesRef.current.filter(
             (message) => message.id !== assistantMessageId,
           );
           messagesRef.current = pendingMessages;
@@ -2037,8 +2037,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           if (runControlSessionId) {
             bindRunControlParent(runControlSessionId, newRunId);
           }
-          setMessages((prev) =>
-            prev.map((m) =>
+          setMessages((prev) => {
+            const nextMessages = prev.map((m) =>
               m.id === userMessageId
                 ? { ...m, runId: newRunId }
                 : m.id === assistantMessageId
@@ -2048,8 +2048,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                     runId: newRunId,
                   }
                 : m,
-            ),
-          );
+            );
+            messagesRef.current = nextMessages;
+            return nextMessages;
+          });
         }
 
         const streamSessionId = newSessionId || requestSessionId;

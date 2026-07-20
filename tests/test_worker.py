@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from app.runtime.sandbox.container_provider import NativeToolAdmissionError
+
 import app.worker as worker_module
 from app import repositories as repository_module
 from app.executors.base import ArtifactManifest, ExecutorResult
@@ -33,6 +35,23 @@ from app.skills.execution_profiles import resolve_skill_execution_profile
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 _CURRENT_QUEUE_PAYLOAD = None
 _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
+
+
+def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
+    private_token = "private-native-token"
+    private_path = "/home/private/workspace/native-tool.sock"
+    native_error = NativeToolAdmissionError()
+    native_error.__context__ = RuntimeError(f"{private_token} at {private_path}")
+
+    assert worker_module._executor_exception_failure(native_error) == (
+        "native_tool_admission_failed",
+        "Native tool sandbox admission failed",
+    )
+    assert worker_module._executor_exception_failure(
+        RuntimeError("ordinary executor failure")
+    ) == ("executor_failure", "ordinary executor failure")
+    assert private_token not in str(worker_module._executor_exception_failure(native_error))
+    assert private_path not in str(worker_module._executor_exception_failure(native_error))
 
 
 @pytest.mark.parametrize(
@@ -1594,6 +1613,66 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
     assert next(index for index, item in enumerate(calls) if item[0] == "fail") < next(
         index for index, item in enumerate(calls) if item[0] == "lease_release"
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(monkeypatch):
+    calls = []
+
+    class RaisingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise NativeToolAdmissionError()
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload")))
+        return "evt-native-admission"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", run_id, error_code, error_message))
+        return ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    async def create_sandbox_lease(conn, **kwargs):
+        return {"id": "lease-native-admission", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_release", kwargs["reason"]))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    outcome = await process_run_payload(
+        base_payload(),
+        AdapterRegistry({"fake": RaisingAdapter()}),
+    )
+
+    assert outcome == WorkerOutcome(
+        "failed",
+        "run-a",
+        "native_tool_admission_failed",
+        "Native tool sandbox admission failed",
+    )
+    assert (
+        "fail",
+        "run-a",
+        "native_tool_admission_failed",
+        "Native tool sandbox admission failed",
+    ) in calls
+    hidden_error = next(item for item in calls if item[:3] == ("event", "error", "executor"))
+    assert hidden_error[3]["visible_to_user"] is False
+    assert hidden_error[3]["error"] == "Native tool sandbox admission failed"
+    assert ("lease_release", "run_failed") in calls
 
 
 @pytest.mark.asyncio

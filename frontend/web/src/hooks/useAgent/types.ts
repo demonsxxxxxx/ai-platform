@@ -115,6 +115,7 @@ export interface EventData {
   model?: string;
   // user:message event fields
   message_id?: string;
+  locked_skill_label?: string;
   attachments?: Array<{
     id: string;
     key: string;
@@ -286,6 +287,7 @@ export interface HistoryEventData {
     url: string;
   }>;
   message_id?: string;
+  locked_skill_label?: string;
 }
 
 // History event from backend
