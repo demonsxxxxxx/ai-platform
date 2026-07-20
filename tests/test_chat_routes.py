@@ -1377,7 +1377,12 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["docx"]}
+        return {
+            "executor_type": "claude-agent-worker",
+            "skill_version": "0.1.0",
+            "skill_display_label": "internal-comms",
+            "input_modes": ["docx"],
+        }
 
     async def fake_authorize_selected(conn, **kwargs):
         assert kwargs["skill_id"] == "qa-file-reviewer"
@@ -1410,6 +1415,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
 
     async def fake_append_message(conn, **kwargs):
         calls.append(("message", kwargs["role"], kwargs["content"], kwargs["run_id"]))
+        calls.append(("message_metadata", kwargs["metadata_json"]))
         return "msg_3"
 
     async def fake_bind_files_to_run(conn, **kwargs):
@@ -1530,6 +1536,11 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     assert "track" not in serialized_governance
     assert "rollout" not in serialized_governance
     assert ("message", "user", "review this document", "run_3") in calls
+    message_metadata = next(item[1] for item in calls if item[0] == "message_metadata")
+    assert message_metadata["locked_skill"] == {"label": "internal-comms"}
+    assert "qa-file-reviewer" not in json.dumps(message_metadata, ensure_ascii=False)
+    assert "0.1.0" not in json.dumps(message_metadata, ensure_ascii=False)
+    assert "/skill" not in json.dumps(message_metadata, ensure_ascii=False)
     assert ("context", "chat_stream", ["msg_3"], ["file_1"], {"message": "review this document"}, True) in calls
     assert queue_payload["context_snapshot_id"] == "ctx_chat_3"
     assert queue_payload["context_snapshot"]["source"] == "chat_stream"

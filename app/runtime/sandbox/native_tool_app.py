@@ -481,7 +481,14 @@ def create_native_tool_app() -> FastAPI:
     app = FastAPI(title="ai-platform native Skill tool", version="1", lifespan=lifespan)
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
+    async def health(
+        provided_token: str | None = Header(
+            default=None,
+            alias=NATIVE_TOOL_AUTH_HEADER,
+        ),
+    ) -> dict[str, str]:
+        if not provided_token or not hmac.compare_digest(provided_token, token):
+            raise HTTPException(status_code=403, detail="invalid_native_tool_token")
         return {"status": "ok"}
 
     @app.post("/execute", response_model=NativeToolResult)

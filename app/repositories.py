@@ -393,6 +393,7 @@ async def _resolve_executable_skill(
           agents.status as agent_status,
           agents.default_skill_id,
           skills.id as skill_id,
+          skills.name as skill_display_label,
           skills.status as skill_status,
           coalesce(skill_release_policies.current_version, skills.version) as skill_version,
           coalesce(skill_versions.content_hash, coalesce(skill_release_policies.current_version, skills.version)) as skill_content_hash,
@@ -11275,7 +11276,8 @@ async def list_authorized_user_messages_for_runs(
         return []
     cursor = await conn.execute(
         """
-        select messages.id, messages.run_id, messages.content, messages.created_at
+        select messages.id, messages.run_id, messages.content, messages.metadata_json,
+               messages.created_at
         from messages
         join sessions on sessions.id = messages.session_id and sessions.tenant_id = messages.tenant_id
         where messages.tenant_id = %s

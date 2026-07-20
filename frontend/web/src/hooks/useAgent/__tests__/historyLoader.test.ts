@@ -19,6 +19,7 @@ test("reconstructMessagesFromEvents preserves backend user message ids", () => {
           content: "fork from here",
           message_id: "user-message-1",
           attachments: [],
+          locked_skill_label: "internal-comms",
         },
       } satisfies HistoryEvent,
     ],
@@ -29,6 +30,9 @@ test("reconstructMessagesFromEvents preserves backend user message ids", () => {
   assert.equal(messages.length, 1);
   assert.equal(messages[0]?.id, "user-message-1");
   assert.equal(messages[0]?.runId, "run-1");
+  assert.equal(messages[0]?.lockedSkillLabel, "internal-comms");
+  assert.equal(messages[0]?.content, "fork from here");
+  assert.doesNotMatch(messages[0]?.content || "", /\/skill/);
 });
 
 test("production compatibility history reconstructs each persisted user turn before its run answer", () => {

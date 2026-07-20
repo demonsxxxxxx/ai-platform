@@ -503,6 +503,7 @@
       "forkFailed": "分叉失败",
       "forkSuccess": "已分叉到新会话",
       "generating": "生成中",
+      "lockedSkill": "已锁定 Skill：{{skill}}",
       "mermaidError": "Mermaid 错误",
       "model": "模型",
       "openInSidebar": "在侧栏中打开",
@@ -563,6 +564,7 @@
     "runTerminal": {
       "failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
       "resultUnavailable": "任务终态已确认，但结果暂时无法加载。请刷新会话。",
+      "skillSandboxAdmissionFailed": "所选 Skill 未能通过隔离沙箱准入。",
       "statusUnavailable": "任务状态暂时无法同步。请刷新当前会话后重试。"
     },
     "sandbox": {

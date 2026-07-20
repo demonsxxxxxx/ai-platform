@@ -38,6 +38,7 @@ from app.execution_boundary import decide_execution_boundary
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.skills.execution_profiles import canonical_skill_execution_profile
 from app.settings import get_settings
 from app.tool_policy import evaluate_tool_policy
@@ -142,6 +143,14 @@ def _public_executor_failure_message(result: ExecutorResult) -> str:
         if safe_text and safe_text != generic_message:
             return safe_text
     return generic_message
+
+
+def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
+    """Keep native admission distinguishable while sanitizing every other exception."""
+
+    if isinstance(exc, NativeToolAdmissionError):
+        return exc.error_code, "Native tool sandbox admission failed"
+    return "executor_failure", str(exc)
 
 
 def parse_queue_payload(raw: dict[str, Any]) -> QueueRunPayload:
@@ -2431,7 +2440,10 @@ async def process_run_payload(
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:
         reconciled_parent = None
-        outcome_after_exception = WorkerOutcome("failed", payload.run_id, "executor_failure", str(exc))
+        failure_code, failure_message = _executor_exception_failure(exc)
+        outcome_after_exception = WorkerOutcome(
+            "failed", payload.run_id, failure_code, failure_message
+        )
         async with transaction() as conn:
             if await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id):
                 cancel_result = {"message": "任务已取消"}
@@ -2463,8 +2475,8 @@ async def process_run_payload(
                     payload=payload,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
-                    error_code="executor_failure",
-                    error_message=str(exc),
+                    error_code=failure_code,
+                    error_message=failure_message,
                 )
                 if not terminal_written:
                     outcome_after_exception = WorkerOutcome(
@@ -2481,7 +2493,11 @@ async def process_run_payload(
                         event_type="error",
                         stage="executor",
                         message="Executor failed",
-                        payload={"error": str(exc), "executor_type": payload.executor_type, "visible_to_user": False},
+                        payload={
+                            "error": failure_message,
+                            "executor_type": payload.executor_type,
+                            "visible_to_user": False,
+                        },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
         await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)

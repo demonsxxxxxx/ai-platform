@@ -2,11 +2,14 @@ import asyncio
 import inspect
 import importlib
 import json
+import os
 import socket
 import threading
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -86,6 +89,8 @@ class FakeDockerContainer:
         stop_error: Exception | None = None,
         remove_error: Exception | None = None,
         host_port: str | None = "18000",
+        exec_exit_code: int = 0,
+        exec_error: Exception | None = None,
         **docker_kwargs: Any,
     ) -> None:
         self.id = f"docker-{name}"
@@ -104,6 +109,9 @@ class FakeDockerContainer:
         self._start_error = start_error
         self._stop_error = stop_error
         self._remove_error = remove_error
+        self._exec_exit_code = exec_exit_code
+        self._exec_error = exec_error
+        self.exec_calls: list[tuple[list[str], dict[str, Any]]] = []
         published_host = "0.0.0.0"
         port_binding = self.ports.get("18000/tcp")
         if isinstance(port_binding, tuple) and len(port_binding) == 2:
@@ -145,6 +153,16 @@ class FakeDockerContainer:
     def reload(self) -> None:
         return None
 
+    def exec_run(self, command, **kwargs):
+        self.exec_calls.append((list(command), dict(kwargs)))
+        if self._exec_error is not None:
+            raise self._exec_error
+        return type(
+            "FakeExecResult",
+            (),
+            {"exit_code": self._exec_exit_code, "output": b""},
+        )()
+
 
 class FakeDockerContainers:
     def __init__(self, client: "FakeDockerClient") -> None:
@@ -161,6 +179,8 @@ class FakeDockerContainers:
             stop_error=self._client.stop_error,
             remove_error=self._client.remove_error,
             host_port=self._client.host_port,
+            exec_exit_code=self._client.exec_exit_code,
+            exec_error=self._client.exec_error,
             **kwargs,
         )
         self._client.created.append(kwargs)
@@ -206,6 +226,8 @@ class FakeDockerClient:
         remove_error: Exception | None = None,
         list_error: Exception | None = None,
         host_port: str | None = "18000",
+        exec_exit_code: int = 0,
+        exec_error: Exception | None = None,
     ) -> None:
         self.ping_error = ping_error
         self.create_error = create_error
@@ -214,6 +236,8 @@ class FakeDockerClient:
         self.remove_error = remove_error
         self.list_error = list_error
         self.host_port = host_port
+        self.exec_exit_code = exec_exit_code
+        self.exec_error = exec_error
         self.created: list[dict[str, Any]] = []
         self.containers_by_name: dict[str, FakeDockerContainer] = {}
         self.networks_by_name: dict[str, dict[str, Any]] = {}
@@ -1601,7 +1625,6 @@ async def test_docker_provider_uses_no_network_native_sidecar_and_refuses_invali
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
         health_probe=lambda executor_url, timeout_seconds: True,
-        native_tool_probe=lambda socket_path: True,
     )
 
     lease = await provider.create_or_reuse(
@@ -1640,6 +1663,12 @@ async def test_docker_provider_uses_no_network_native_sidecar_and_refuses_invali
 
     native = fake.containers_by_name["native-tool-run-a"]
     primary = fake.containers_by_name[lease.container_name]
+    assert native.exec_calls == [
+        (
+            ["python", "-m", "app.runtime.sandbox.native_tool_health_probe"],
+            {"stdout": False, "stderr": False},
+        )
+    ]
     native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"] = "wrong-token"
 
     with pytest.raises(ContainerStartFailedError, match="native tool sandbox reuse failed"):
@@ -1691,6 +1720,9 @@ async def test_docker_provider_sanitizes_native_sidecar_admission_failure_withou
     assert exc_info.value.error_code == "native_tool_admission_failed"
     assert str(exc_info.value) == "Native tool sandbox admission failed"
     assert str(workspace_path) not in str(exc_info.value)
+    assert str(workspace_path) not in "".join(
+        traceback.format_exception(exc_info.value)
+    )
     assert [created["name"] for created in fake.created] == ["native-tool-run-a"]
     assert fake.containers_by_name["native-tool-run-a"].removed is True
     assert provider._leases == {}
@@ -1758,11 +1790,11 @@ async def test_docker_provider_native_probe_timeout_is_admission_failure_without
     fake = FakeDockerClient()
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
-        native_tool_probe=lambda socket_path: probe_calls.append(socket_path) or False,
+        native_tool_probe=lambda container: probe_calls.append(container) or False,
     )
 
-    async def false_probe_timeout(socket_path, _timeout_seconds):
-        assert provider._native_tool_probe(str(socket_path)) is False
+    async def false_probe_timeout(container, _timeout_seconds):
+        assert provider._native_tool_probe(container) is False
         raise ExecutorHealthTimeoutError("native tool sandbox did not become ready")
 
     monkeypatch.setattr(provider, "_wait_for_native_tool_socket", false_probe_timeout)
@@ -1796,8 +1828,154 @@ async def test_docker_provider_native_probe_timeout_is_admission_failure_without
     assert exc_info.value.error_code == "native_tool_admission_failed"
     assert str(exc_info.value) == "Native tool sandbox admission failed"
     assert len(probe_calls) == 1
+    assert probe_calls[0] is fake.containers_by_name["native-tool-run-a"]
     assert [created["name"] for created in fake.created] == ["native-tool-run-a"]
     assert fake.containers_by_name["native-tool-run-a"].removed is True
+    assert provider._leases == {}
+
+
+def _workspace_path_for_native_socket_bytes(target_bytes: int) -> str:
+    base = "C:\\g3\\workspace"
+    suffix = str(Path(base) / ".ai-platform" / "native-tool.sock")
+    padding = target_bytes - len(os.fsencode(suffix))
+    assert padding >= 0
+    workspace_path = f"{base}{'x' * padding}"
+    assert len(
+        os.fsencode(str(Path(workspace_path) / ".ai-platform" / "native-tool.sock"))
+    ) == target_bytes
+    return workspace_path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host_socket_path_bytes", [211, 51])
+async def test_docker_provider_probes_native_health_inside_container_for_long_and_g3_paths(
+    monkeypatch,
+    host_socket_path_bytes,
+):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    workspace_path = _workspace_path_for_native_socket_bytes(host_socket_path_bytes)
+    leased_workspace = workspace(workspace_host_path=workspace_path)
+    monkeypatch.setattr(
+        provider,
+        "_prepare_native_tool_socket",
+        lambda selected_workspace: provider._native_tool_socket_host_path(selected_workspace),
+    )
+    native_subjects = [
+        {
+            "identity": "Skill",
+            "declared_identities": ["Skill"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "execution_strategy": "sdk_native",
+        },
+        {
+            "identity": "Bash",
+            "declared_identities": ["Bash"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "command_isolation": "sibling-tool-sandbox-v1",
+        },
+    ]
+
+    lease = await provider.create_or_reuse(
+        request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+        leased_workspace,
+    )
+
+    native = fake.containers_by_name["native-tool-run-a"]
+    token = native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"]
+    serialized_exec = repr(native.exec_calls)
+    assert native.exec_calls == [
+        (
+            ["python", "-m", "app.runtime.sandbox.native_tool_health_probe"],
+            {"stdout": False, "stderr": False},
+        )
+    ]
+    assert token not in serialized_exec
+    assert workspace_path not in serialized_exec
+    assert lease.labels["ai-platform.native_tool_admission_phase"] == "authenticated_container_uds_health"
+    assert lease.labels["ai-platform.native_tool_host_socket_path_bytes"] == str(host_socket_path_bytes)
+    assert lease.labels["ai-platform.native_tool_container_socket_path_bytes"] == "40"
+    assert native.labels["ai-platform.native_tool_host_socket_path_bytes"] == str(host_socket_path_bytes)
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_native_exec_failure_times_out_and_sanitizes_all_probe_inputs(
+    monkeypatch,
+):
+    from app.runtime.sandbox.container_provider import (
+        DockerContainerProvider,
+        ExecutorHealthTimeoutError,
+        NativeToolAdmissionError,
+    )
+
+    private_command = "private-native-command"
+    private_path = _workspace_path_for_native_socket_bytes(211)
+    fake = FakeDockerClient(
+        exec_error=RuntimeError(f"exec failed for {private_command} at {private_path}"),
+    )
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+    leased_workspace = workspace(workspace_host_path=private_path)
+    monkeypatch.setattr(
+        provider,
+        "_prepare_native_tool_socket",
+        lambda selected_workspace: provider._native_tool_socket_host_path(selected_workspace),
+    )
+
+    async def bounded_timeout(container, _timeout_seconds):
+        assert provider._native_tool_probe(container) is False
+        raise ExecutorHealthTimeoutError("native tool sandbox did not become ready")
+
+    monkeypatch.setattr(provider, "_wait_for_native_tool_socket", bounded_timeout)
+    native_subjects = [
+        {
+            "identity": "Skill",
+            "declared_identities": ["Skill"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "execution_strategy": "sdk_native",
+        },
+        {
+            "identity": "Bash",
+            "declared_identities": ["Bash"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "command_isolation": "sibling-tool-sandbox-v1",
+        },
+    ]
+
+    with pytest.raises(NativeToolAdmissionError) as exc_info:
+        await provider.create_or_reuse(
+            request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+            leased_workspace,
+        )
+
+    native = fake.containers_by_name["native-tool-run-a"]
+    token = native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"]
+    diagnostic = str(exc_info.value)
+    rendered_exception = "".join(traceback.format_exception(exc_info.value))
+    assert diagnostic == "Native tool sandbox admission failed"
+    assert all(
+        value not in diagnostic and value not in rendered_exception
+        for value in (token, private_command, private_path)
+    )
+    assert token not in repr(native.exec_calls)
+    assert private_path not in repr(native.exec_calls)
+    assert native.removed is True
     assert provider._leases == {}
 
 

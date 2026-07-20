@@ -319,6 +319,11 @@ export function reconstructMessagesFromEvents(
         content: eventData.content || "",
         timestamp: parseEventTimestamp(event.timestamp, Date.now()),
         attachments: userAttachments,
+        lockedSkillLabel:
+          typeof eventData.locked_skill_label === "string" &&
+          eventData.locked_skill_label.trim()
+            ? eventData.locked_skill_label.trim()
+            : undefined,
         runId: event.run_id,
       });
       continue;

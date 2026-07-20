@@ -4,6 +4,34 @@ import type { MessagePart } from "../../../types";
 import { processMessageEvent } from "../eventProcessor.ts";
 import { isAssistantTextProjection } from "../types.ts";
 
+test("projects the controlled native Skill sandbox admission failure stage", () => {
+  const result = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-native-failed",
+      detail_kind: "failed",
+      detail_code: "skill_sandbox_admission_failed",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-native-failed",
+  );
+
+  assert.equal(result.content.length > 0, true);
+  assert.equal(result.parts.length, 1);
+  const part = result.parts[0];
+  assert.equal(part?.type, "run_status");
+  if (part?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(part.stage, "skill_sandbox_admission");
+  assert.equal(part.event_type, "skill_sandbox_admission_failed");
+  assert.equal(part.severity, "error");
+  assert.doesNotMatch(JSON.stringify(part), /native_tool_admission_failed|\/home\/|token/);
+});
+
 test("merges streamed summary chunks inside a subagent by summary id", () => {
   let parts: MessagePart[] = [
     {

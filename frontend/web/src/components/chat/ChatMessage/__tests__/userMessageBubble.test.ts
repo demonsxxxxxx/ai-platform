@@ -28,3 +28,11 @@ test("uses AttachmentCard resolved blob src before opening user image previews",
   assert.doesNotMatch(source, /resolveSafeAttachmentImageSrc/);
   assert.doesNotMatch(source, /getFullUrl\(attachment\.url\)/);
 });
+
+test("renders the locked Skill label separately from user-authored message content", () => {
+  const source = readSource("../UserMessageBubble.tsx");
+
+  assert.match(source, /data-locked-skill-label/);
+  assert.match(source, /chat\.message\.lockedSkill/);
+  assert.doesNotMatch(source, /`\/skill|"\/skill|'\/skill/);
+});

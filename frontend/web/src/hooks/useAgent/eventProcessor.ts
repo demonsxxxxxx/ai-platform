@@ -369,11 +369,24 @@ export function processMessageEvent(
       // shapes fail closed instead of exposing executor text.
       if (
         data.detail_kind !== "failed" ||
-        data.detail_code !== "run_failed"
+        !["run_failed", "skill_sandbox_admission_failed"].includes(
+          data.detail_code || "",
+        )
       ) {
         break;
       }
       result.content = i18n.t("chat.runTerminal.failed");
+      if (data.detail_code === "skill_sandbox_admission_failed") {
+        result.parts = upsertRunStatusPart(parts, {
+          type: "run_status",
+          event_id: `failure-stage:${data.run_id || messageId}`,
+          event_type: "skill_sandbox_admission_failed",
+          stage: "skill_sandbox_admission",
+          message: i18n.t("chat.runTerminal.skillSandboxAdmissionFailed"),
+          severity: "error",
+          created_at: data.timestamp,
+        });
+      }
       break;
     }
 

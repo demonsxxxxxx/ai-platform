@@ -22,6 +22,8 @@ export interface Message {
   attachments?: MessageAttachment[];
   // 运行 ID - 用于反馈
   runId?: string;
+  // Server-authorized catalog label retained after Skill selection is accepted.
+  lockedSkillLabel?: string;
   // 用户对该消息的反馈 (从 feedback API 加载)
   feedback?: import("./feedback").RatingValue;
   // 反馈 ID

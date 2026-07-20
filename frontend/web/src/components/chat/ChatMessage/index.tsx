@@ -273,6 +273,7 @@ export const ChatMessage = memo(function ChatMessage({
         <UserMessageBubble
           content={message.content}
           attachments={message.attachments}
+          lockedSkillLabel={message.lockedSkillLabel}
           isLastMessage={isLastMessage}
         />
       </div>

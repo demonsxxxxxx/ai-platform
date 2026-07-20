@@ -656,7 +656,7 @@ async def test_authorized_user_messages_for_runs_minimize_and_scope_in_sql():
     assert "messages.run_id" in select_clause
     assert "messages.content" in select_clause
     assert "messages.created_at" in select_clause
-    assert "metadata" not in select_clause
+    assert "messages.metadata_json" in select_clause
     assert "role" not in select_clause
     assert "join sessions" in sql
     assert "messages.tenant_id = %s" in sql

@@ -546,6 +546,56 @@ function nonClosingSseEventResponse(event: string, data: Record<string, unknown>
   );
 }
 
+test("useAgent retains an accepted authorized Skill label without changing message text", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalFetch = dom.window.fetch;
+  dom.window.fetch = async () => completedSseResponse();
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async (sessionId) => ({
+    title: "Internal comms",
+    session_id: sessionId,
+  });
+  sessionApi.submitChat = (async (...args) => ({
+    session_id: "session-skill-lock",
+    run_id: "run-skill-lock",
+    trace_id: "trace-skill-lock",
+    status: "queued",
+    submission_id: args[7] as string,
+  })) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage(
+        "发布这则通知",
+        undefined,
+        undefined,
+        {
+          skill_id: "internal-comms",
+          expected_version: "a".repeat(64),
+        },
+      );
+    });
+    await settle(harness.act);
+
+    const userMessage = harness.hook.messages.find(
+      (message) => message.role === "user" && message.runId === "run-skill-lock",
+    );
+    assert.equal(userMessage?.content, "发布这则通知");
+    assert.equal(userMessage?.lockedSkillLabel, "internal-comms");
+    assert.doesNotMatch(userMessage?.content || "", /\/skill|internal-comms/);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent carries the routed agent into a same-tab continuation", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");

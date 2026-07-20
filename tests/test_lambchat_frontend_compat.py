@@ -2467,6 +2467,12 @@ def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(mon
                 "id": "msg-old-user",
                 "run_id": "run-old",
                 "content": "第一轮问题",
+                "metadata_json": {
+                    "locked_skill": {"label": "internal-comms"},
+                    "skill_id": "internal-comms",
+                    "expected_version": "a" * 64,
+                    "storage_key": "tenants/default/private/skill.zip",
+                },
                 "created_at": "2026-07-15T01:00:00Z",
             },
             {
@@ -2515,9 +2521,75 @@ def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(mon
         "msg-new-user",
     ]
     assert set(user_events[0]) == {"id", "type", "event_type", "timestamp", "run_id", "data"}
-    assert set(user_events[0]["data"]) == {"message_id", "run_id", "content"}
+    assert set(user_events[0]["data"]) == {
+        "message_id",
+        "run_id",
+        "content",
+        "locked_skill_label",
+    }
+    assert user_events[0]["data"]["locked_skill_label"] == "internal-comms"
+    assert "locked_skill_label" not in user_events[1]["data"]
     serialized = str(events)
     assert "metadata_json" not in serialized
+    assert "tenants/default" not in serialized
+    assert "a" * 64 not in serialized
+
+
+def test_lambchat_failed_run_projects_only_safe_native_skill_sandbox_stage(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        return [
+            {
+                "id": "run-native-failed",
+                "trace_id": "trace-native-failed",
+                "agent_id": "general-agent",
+                "skill_id": "internal-comms",
+                "status": "failed",
+                "result_json": {},
+                "error_code": "native_tool_admission_failed",
+                "error_message": "private token at /home/private/workspace",
+                "created_at": None,
+                "finished_at": None,
+            }
+        ]
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+
+    response = TestClient(create_app()).get(
+        "/api/sessions/ses_a/events",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    final_detail = next(
+        event for event in response.json()["events"] if event["event_type"] == "final_detail"
+    )
+    assert final_detail["data"] == {
+        "run_id": "run-native-failed",
+        "detail_kind": "failed",
+        "detail_code": "skill_sandbox_admission_failed",
+    }
+    assert "native_tool_admission_failed" not in response.text
+    assert "/home/private/workspace" not in response.text
+    assert "private token" not in response.text
 
 
 def test_lambchat_default_history_queries_user_messages_for_only_latest_fifty_runs(monkeypatch):
