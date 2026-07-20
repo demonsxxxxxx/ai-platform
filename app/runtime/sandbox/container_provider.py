@@ -537,13 +537,15 @@ def _default_native_tool_probe(container: Any) -> bool:
     try:
         result = container.exec_run(
             list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
-            stdout=False,
+            stdout=True,
             stderr=False,
         )
-        exit_code = getattr(result, "exit_code", None)
-        if exit_code is None and isinstance(result, (tuple, list)) and result:
-            exit_code = result[0]
-        return int(exit_code) == 0
+        if isinstance(result, (tuple, list)):
+            exit_code = result[0] if result else None
+        else:
+            exit_code = getattr(result, "exit_code", None)
+        del result
+        return type(exit_code) is int and exit_code == 0
     except Exception:
         return False
 

@@ -347,6 +347,118 @@ class FakeOpenSandboxFiles:
         raise FileNotFoundError(path)
 
 
+def test_default_native_tool_probe_attaches_stdout_for_docker_py_72_and_discards_output(capsys, caplog):
+    from app.runtime.sandbox.container_provider import (
+        _NATIVE_TOOL_HEALTH_PROBE_COMMAND,
+        _default_native_tool_probe,
+    )
+
+    private_token = "test-native-tool-token"
+    private_path = "/private/runtime/workspace"
+
+    class ExecResult(tuple):
+        def __new__(cls, exit_code: int | None, output: bytes):
+            return super().__new__(cls, (exit_code, output))
+
+        @property
+        def exit_code(self) -> int | None:
+            return self[0]
+
+        @property
+        def output(self) -> bytes:
+            raise AssertionError("probe output must not be inspected")
+
+    class DockerPy72Container:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[str], dict[str, Any]]] = []
+            self.exit_codes: list[int | None] = []
+
+        def exec_run(self, command, **kwargs):
+            self.calls.append((list(command), dict(kwargs)))
+            exit_code = 0 if kwargs["stdout"] else None
+            self.exit_codes.append(exit_code)
+            return ExecResult(exit_code, f"{private_token}:{private_path}".encode())
+
+    container = DockerPy72Container()
+    unattached = container.exec_run(
+        list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
+        stdout=False,
+        stderr=False,
+    )
+    assert unattached.exit_code is None
+    del unattached
+
+    assert _default_native_tool_probe(container) is True
+    assert container.exit_codes == [None, 0]
+    assert container.calls[-1] == (
+        list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
+        {"stdout": True, "stderr": False},
+    )
+    captured = capsys.readouterr()
+    assert private_token not in repr(container.calls)
+    assert private_path not in repr(container.calls)
+    assert private_token not in captured.out + captured.err + caplog.text
+    assert private_path not in captured.out + captured.err + caplog.text
+
+
+def test_default_native_tool_probe_fails_closed_for_bad_results_and_exceptions(capsys, caplog):
+    from app.runtime.sandbox.container_provider import (
+        _NATIVE_TOOL_HEALTH_PROBE_COMMAND,
+        _default_native_tool_probe,
+    )
+
+    private_token = "test-native-tool-token"
+    private_path = "/private/runtime/workspace"
+
+    class ProbeResult:
+        def __init__(self, exit_code: Any) -> None:
+            self.exit_code = exit_code
+            self.output = f"{private_token}:{private_path}".encode()
+
+    class StaticResultContainer:
+        def __init__(self, result: Any) -> None:
+            self.result = result
+            self.calls: list[tuple[list[str], dict[str, Any]]] = []
+
+        def exec_run(self, command, **kwargs):
+            self.calls.append((list(command), dict(kwargs)))
+            return self.result
+
+    for result, expected in (
+        (ProbeResult(1), False),
+        (ProbeResult(None), False),
+        (ProbeResult("0"), False),
+        (ProbeResult(True), False),
+        (object(), False),
+        ((0, b"ignored"), True),
+        ([0, b"ignored"], True),
+    ):
+        container = StaticResultContainer(result)
+        assert _default_native_tool_probe(container) is expected
+        assert container.calls == [
+            (
+                list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
+                {"stdout": True, "stderr": False},
+            )
+        ]
+
+    class RaisingContainer:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[str], dict[str, Any]]] = []
+
+        def exec_run(self, command, **kwargs):
+            self.calls.append((list(command), dict(kwargs)))
+            raise RuntimeError(f"probe failed for {private_token} at {private_path}")
+
+    raising_container = RaisingContainer()
+    assert _default_native_tool_probe(raising_container) is False
+    captured = capsys.readouterr()
+    assert private_token not in captured.out + captured.err + caplog.text
+    assert private_path not in captured.out + captured.err + caplog.text
+    assert private_token not in repr(raising_container.calls)
+    assert private_path not in repr(raising_container.calls)
+
+
 class FakeOpenSandboxCommands:
     def __init__(self, sandbox: "FakeOpenSandbox") -> None:
         self.sandbox = sandbox
@@ -1695,7 +1807,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     assert native.exec_calls == [
         (
             ["python", "-m", "app.runtime.sandbox.native_tool_health_probe"],
-            {"stdout": False, "stderr": False},
+            {"stdout": True, "stderr": False},
         )
     ]
     native._exec_exit_code = 1
@@ -2060,7 +2172,7 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
     assert native.exec_calls == [
         (
             ["python", "-m", "app.runtime.sandbox.native_tool_health_probe"],
-            {"stdout": False, "stderr": False},
+            {"stdout": True, "stderr": False},
         )
     ]
     assert token not in serialized_exec
