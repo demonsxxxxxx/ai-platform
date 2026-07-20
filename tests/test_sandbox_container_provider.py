@@ -27,6 +27,12 @@ def fixed_runtime_identity_test_seams(monkeypatch, request):
         {"st_uid": 10001, "st_gid": 10001, "st_mode": 0o40700},
     )()
     monkeypatch.setattr(container_provider, "_workspace_owner_stat", lambda _path: stat_result, raising=False)
+    monkeypatch.setattr(
+        container_provider,
+        "_secure_native_tool_socket_directory",
+        lambda _path: None,
+        raising=False,
+    )
     if request.node.name != "test_default_executor_probes_connect_to_pinned_ip_without_transmitting_private_metadata":
         monkeypatch.setattr(
             container_provider,
@@ -72,6 +78,29 @@ def workspace(**overrides) -> WorkspaceLease:
     }
     values.update(overrides)
     return WorkspaceLease(**values)
+
+
+def native_tool_subjects() -> list[dict[str, Any]]:
+    return [
+        {
+            "identity": "Skill",
+            "declared_identities": ["Skill"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "execution_strategy": "sdk_native",
+        },
+        {
+            "identity": "Bash",
+            "declared_identities": ["Bash"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "command_isolation": "sibling-tool-sandbox-v1",
+        },
+    ]
 
 
 class FakeDockerContainer:
@@ -1731,46 +1760,83 @@ async def test_docker_provider_sanitizes_native_sidecar_admission_failure_withou
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_occupied_native_socket_preflight_has_zero_false_runtime_evidence(tmp_path):
+async def test_docker_provider_occupied_native_socket_preflight_has_zero_false_runtime_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    import app.runtime.sandbox.container_provider as container_provider
     from app.runtime.sandbox.container_provider import DockerContainerProvider, NativeToolAdmissionError
 
     workspace_path = tmp_path / "workspace"
-    socket_parent = workspace_path / ".ai-platform"
-    socket_parent.mkdir(parents=True)
-    occupied_path = socket_parent / "native-tool.sock"
-    occupied_path.write_text("owned by another subject", encoding="utf-8")
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    settings = container_provider.get_settings().model_copy(
+        update={"sandbox_workspace_root": str(tmp_path.parent / "o")}
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     fake = FakeDockerClient()
     provider = DockerContainerProvider(docker_client_factory=lambda: fake)
-    native_subjects = [
-        {
-            "identity": "Skill",
-            "declared_identities": ["Skill"],
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "execution_strategy": "sdk_native",
-        },
-        {
-            "identity": "Bash",
-            "declared_identities": ["Bash"],
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "command_isolation": "sibling-tool-sandbox-v1",
-        },
-    ]
+    occupied_path = provider._native_tool_socket_host_path(leased_workspace)
+    socket_parent = occupied_path.parent
+    socket_parent.mkdir(parents=True)
+    occupied_path.write_text("owned by another subject", encoding="utf-8")
+    native_subjects = native_tool_subjects()
 
     with pytest.raises(NativeToolAdmissionError) as exc_info:
         await provider.create_or_reuse(
             request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
-            workspace(workspace_host_path=str(workspace_path)),
+            leased_workspace,
         )
 
     assert exc_info.value.error_code == "native_tool_admission_failed"
     assert str(exc_info.value) == "Native tool sandbox admission failed"
     assert occupied_path.is_file()
+    assert fake.created == []
+    assert provider._leases == {}
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_preexisting_socket_directory_with_wrong_owner(
+    monkeypatch,
+    tmp_path,
+):
+    import app.runtime.sandbox.container_provider as container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, NativeToolAdmissionError
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    settings = container_provider.get_settings().model_copy(
+        update={"sandbox_workspace_root": str(tmp_path.parent / "w")}
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+    socket_dir = provider._native_tool_socket_host_path(leased_workspace).parent
+    socket_dir.mkdir(parents=True)
+    expected_stat = type(
+        "ExpectedRuntimeWorkspaceStat",
+        (),
+        {"st_uid": 10001, "st_gid": 10001, "st_mode": 0o40700},
+    )()
+    wrong_owner_stat = type(
+        "WrongNativeSocketOwnerStat",
+        (),
+        {"st_uid": 10002, "st_gid": 10001, "st_mode": 0o40700},
+    )()
+    monkeypatch.setattr(
+        container_provider,
+        "_workspace_owner_stat",
+        lambda path: wrong_owner_stat if Path(path) == socket_dir else expected_stat,
+    )
+    native_subjects = native_tool_subjects()
+
+    with pytest.raises(NativeToolAdmissionError):
+        await provider.create_or_reuse(
+            request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+            leased_workspace,
+        )
+
+    assert socket_dir.is_dir()
     assert fake.created == []
     assert provider._leases == {}
 
@@ -1958,10 +2024,10 @@ def _workspace_path_for_native_socket_bytes(target_bytes: int) -> str:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("host_socket_path_bytes", [211, 51])
-async def test_docker_provider_probes_native_health_inside_container_for_long_and_g3_paths(
+@pytest.mark.parametrize("workspace_socket_path_bytes", [211, 51])
+async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_container(
     monkeypatch,
-    host_socket_path_bytes,
+    workspace_socket_path_bytes,
 ):
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
@@ -1970,33 +2036,16 @@ async def test_docker_provider_probes_native_health_inside_container_for_long_an
         docker_client_factory=lambda: fake,
         health_probe=lambda executor_url, timeout_seconds: True,
     )
-    workspace_path = _workspace_path_for_native_socket_bytes(host_socket_path_bytes)
+    workspace_path = _workspace_path_for_native_socket_bytes(workspace_socket_path_bytes)
     leased_workspace = workspace(workspace_host_path=workspace_path)
+    host_socket_path = provider._native_tool_socket_host_path(leased_workspace)
+    host_socket_path_bytes = len(os.fsencode(str(host_socket_path)))
     monkeypatch.setattr(
         provider,
         "_prepare_native_tool_socket",
         lambda selected_workspace: provider._native_tool_socket_host_path(selected_workspace),
     )
-    native_subjects = [
-        {
-            "identity": "Skill",
-            "declared_identities": ["Skill"],
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "execution_strategy": "sdk_native",
-        },
-        {
-            "identity": "Bash",
-            "declared_identities": ["Bash"],
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "command_isolation": "sibling-tool-sandbox-v1",
-        },
-    ]
+    native_subjects = native_tool_subjects()
 
     lease = await provider.create_or_reuse(
         request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
@@ -2004,6 +2053,7 @@ async def test_docker_provider_probes_native_health_inside_container_for_long_an
     )
 
     native = fake.containers_by_name["native-tool-run-a"]
+    executor = fake.containers_by_name[lease.container_name]
     token = native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"]
     serialized_exec = repr(native.exec_calls)
     assert native.exec_calls == [
@@ -2015,9 +2065,101 @@ async def test_docker_provider_probes_native_health_inside_container_for_long_an
     assert token not in serialized_exec
     assert workspace_path not in serialized_exec
     assert lease.labels["ai-platform.native_tool_admission_phase"] == "authenticated_container_uds_health"
+    assert workspace_socket_path_bytes in {51, 211}
+    assert host_socket_path_bytes <= 107
+    assert host_socket_path.parent != Path(workspace_path) / ".ai-platform"
     assert lease.labels["ai-platform.native_tool_host_socket_path_bytes"] == str(host_socket_path_bytes)
     assert lease.labels["ai-platform.native_tool_container_socket_path_bytes"] == "40"
     assert native.labels["ai-platform.native_tool_host_socket_path_bytes"] == str(host_socket_path_bytes)
+    expected_socket_mount = {
+        "bind": "/workspace/.ai-platform",
+        "mode": "rw",
+    }
+    assert native.volumes[str(host_socket_path.parent)] == expected_socket_mount
+    assert executor.volumes[str(host_socket_path.parent)] == expected_socket_mount
+    assert native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] == "/workspace/.ai-platform/native-tool.sock"
+    assert executor.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] == "/workspace/.ai-platform/native-tool.sock"
+
+
+def test_docker_provider_native_socket_paths_are_scope_unique_and_bounded(monkeypatch):
+    import app.runtime.sandbox.container_provider as container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    settings = container_provider.get_settings().model_copy(
+        update={"sandbox_workspace_root": "/tmp/ai-platform-sandbox-workspaces"}
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = DockerContainerProvider(docker_client_factory=FakeDockerClient)
+
+    first = provider._native_tool_socket_host_path(workspace(run_id="run-a"))
+    second = provider._native_tool_socket_host_path(workspace(run_id="run-b"))
+
+    assert first != second
+    assert first.name == second.name == "n.sock"
+    assert len(first.parent.name) == len(second.parent.name) == 24
+    assert len(os.fsencode(str(first))) <= 107
+    assert len(os.fsencode(str(second))) <= 107
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_overlong_configured_socket_root_before_container_start(
+    monkeypatch,
+):
+    import app.runtime.sandbox.container_provider as container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, NativeToolAdmissionError
+
+    settings = container_provider.get_settings().model_copy(
+        update={"sandbox_workspace_root": _workspace_path_for_native_socket_bytes(211)}
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+    native_subjects = native_tool_subjects()
+
+    with pytest.raises(NativeToolAdmissionError) as exc_info:
+        await provider.create_or_reuse(
+            request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+            workspace(),
+        )
+
+    assert exc_info.value.error_code == "native_tool_admission_failed"
+    assert fake.created == []
+    assert provider._leases == {}
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_stop_removes_only_the_owned_short_socket_directory(
+    monkeypatch,
+    tmp_path,
+):
+    import app.runtime.sandbox.container_provider as container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    settings = container_provider.get_settings().model_copy(
+        update={"sandbox_workspace_root": str(tmp_path.parent / "s")}
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    native_subjects = native_tool_subjects()
+
+    lease = await provider.create_or_reuse(
+        request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+        leased_workspace,
+    )
+    socket_dir = provider._native_tool_socket_host_path(leased_workspace).parent
+    assert socket_dir.is_dir()
+
+    result = await provider.stop(lease, reason="test-complete")
+
+    assert result.status == "stopped"
+    assert socket_dir.exists() is False
 
 
 @pytest.mark.asyncio
