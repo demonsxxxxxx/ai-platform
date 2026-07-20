@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import inspect
 import ipaddress
@@ -398,6 +399,12 @@ def _docker_security_kwargs() -> dict[str, Any]:
 
 _NATIVE_TOOL_OWNER = "sandbox-native-tool"
 _NATIVE_TOOL_SOCKET = "/workspace/.ai-platform/native-tool.sock"
+_NATIVE_TOOL_HOST_SOCKET_ROOT = ".uds"
+# Docker bind-mounts the scoped host directory onto the parent of this path.
+# Therefore this basename is also the actual host socket leaf created by the
+# native sidecar; preflight and cleanup must use the same leaf.
+_NATIVE_TOOL_HOST_SOCKET_NAME = _NATIVE_TOOL_SOCKET.rpartition("/")[2]
+_UNIX_SOCKET_PATH_MAX_BYTES = 107
 _NATIVE_TOOL_HEALTH_PROBE_COMMAND = (
     "python",
     "-m",
@@ -440,14 +447,32 @@ def _native_tool_container_name(run_id: str) -> str:
     return f"native-tool-{run_id}"
 
 
+def _native_tool_socket_host_path(workspace: WorkspaceLease | ContainerLease) -> Path:
+    identity = "\0".join(
+        (
+            workspace.tenant_id,
+            workspace.workspace_id,
+            workspace.user_id,
+            workspace.session_id,
+            workspace.run_id,
+        )
+    )
+    socket_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    socket_path = (
+        Path(get_settings().sandbox_workspace_root)
+        / _NATIVE_TOOL_HOST_SOCKET_ROOT
+        / socket_key
+        / _NATIVE_TOOL_HOST_SOCKET_NAME
+    )
+    return socket_path
+
+
 def _native_tool_admission_evidence(
     workspace: WorkspaceLease | ContainerLease,
 ) -> dict[str, str]:
     """Return path-length-only evidence for the container-local admission probe."""
 
-    host_socket_path = (
-        Path(workspace.workspace_host_path) / ".ai-platform" / "native-tool.sock"
-    )
+    host_socket_path = _native_tool_socket_host_path(workspace)
     return {
         "ai-platform.native_tool_admission_phase": _NATIVE_TOOL_ADMISSION_PHASE,
         "ai-platform.native_tool_host_socket_path_bytes": str(
@@ -527,6 +552,13 @@ def _workspace_owner_stat(workspace_host_path: str) -> os.stat_result:
     if os.name != "posix":
         raise OSError("POSIX ownership semantics unavailable")
     return Path(workspace_host_path).stat(follow_symlinks=False)
+
+
+def _secure_native_tool_socket_directory(socket_dir: Path) -> None:
+    if os.name != "posix":
+        return
+    os.chown(socket_dir, RUNTIME_UID, RUNTIME_GID)
+    os.chmod(socket_dir, 0o700)
 
 
 def _docker_workspace_user_kwargs(workspace_host_path: str) -> dict[str, str]:
@@ -1636,14 +1668,38 @@ class DockerContainerProvider:
 
     @staticmethod
     def _native_tool_socket_host_path(workspace: WorkspaceLease | ContainerLease) -> Path:
-        return Path(workspace.workspace_host_path) / ".ai-platform" / "native-tool.sock"
+        return _native_tool_socket_host_path(workspace)
 
     def _prepare_native_tool_socket(self, workspace: WorkspaceLease) -> Path:
         socket_path = self._native_tool_socket_host_path(workspace)
+        if len(os.fsencode(str(socket_path))) > _UNIX_SOCKET_PATH_MAX_BYTES:
+            raise ContainerStartFailedError("native tool socket path exceeds platform limit")
+        socket_root = socket_path.parent.parent
         socket_dir = socket_path.parent
-        socket_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        socket_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if socket_root.is_symlink() or not socket_root.is_dir():
+            raise ContainerStartFailedError("native tool socket root is invalid")
+        try:
+            socket_dir.mkdir(mode=0o700)
+            socket_dir_created = True
+        except FileExistsError:
+            socket_dir_created = False
         if socket_dir.is_symlink() or not socket_dir.is_dir():
             raise ContainerStartFailedError("native tool socket directory is invalid")
+        try:
+            if socket_dir_created:
+                _secure_native_tool_socket_directory(socket_dir)
+            directory_stat = _workspace_owner_stat(str(socket_dir))
+            if (
+                (directory_stat.st_uid, directory_stat.st_gid) != (RUNTIME_UID, RUNTIME_GID)
+                or stat.S_IMODE(directory_stat.st_mode) != 0o700
+            ):
+                raise ContainerStartFailedError("native tool socket directory ownership is invalid")
+        except OSError as exc:
+            raise ContainerStartFailedError("native tool socket directory cannot be secured") from exc
+        unexpected_entries = [entry for entry in socket_dir.iterdir() if entry != socket_path]
+        if unexpected_entries:
+            raise ContainerStartFailedError("native tool socket directory is occupied")
         if socket_path.exists() or socket_path.is_symlink():
             try:
                 node = socket_path.lstat()
@@ -1655,14 +1711,17 @@ class DockerContainerProvider:
         return socket_path
 
     def _remove_native_tool_socket(self, workspace: WorkspaceLease | ContainerLease) -> bool:
-        socket_path = self._native_tool_socket_host_path(workspace)
-        if not (socket_path.exists() or socket_path.is_symlink()):
-            return True
         try:
-            node = socket_path.lstat()
-            if not stat.S_ISSOCK(node.st_mode):
-                return False
-            socket_path.unlink()
+            socket_path = self._native_tool_socket_host_path(workspace)
+            if socket_path.exists() or socket_path.is_symlink():
+                node = socket_path.lstat()
+                if not stat.S_ISSOCK(node.st_mode):
+                    return False
+                socket_path.unlink()
+            if socket_path.parent.exists() or socket_path.parent.is_symlink():
+                if socket_path.parent.is_symlink() or not socket_path.parent.is_dir():
+                    return False
+                socket_path.parent.rmdir()
             return True
         except OSError:
             return False
@@ -1731,7 +1790,11 @@ class DockerContainerProvider:
     ) -> None:
         primary_removed = container is None or _stop_and_remove_container(container)
         native_removed = native_tool_container is None or _stop_and_remove_container(native_tool_container)
-        socket_removed = self._remove_native_tool_socket(lease)
+        socket_removed = (
+            self._remove_native_tool_socket(lease)
+            if str(lease.labels.get("ai-platform.native_tool_required") or "") == "true"
+            else True
+        )
         if primary_removed and native_removed and socket_removed:
             return
         self._leases[lease.container_id] = lease
@@ -1797,7 +1860,7 @@ class DockerContainerProvider:
     ) -> Any:
         client = self._get_client()
         container = None
-        socket_path = self._native_tool_socket_host_path(workspace)
+        socket_path: Path | None = None
         socket_prepared = False
         try:
             socket_path = self._prepare_native_tool_socket(workspace)
@@ -1814,7 +1877,11 @@ class DockerContainerProvider:
                     workspace.workspace_host_path: {
                         "bind": workspace.workspace_container_path,
                         "mode": "rw",
-                    }
+                    },
+                    str(socket_path.parent): {
+                        "bind": f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform",
+                        "mode": "rw",
+                    },
                 },
                 environment=_native_tool_environment(token),
                 # The launcher establishes the UDS parent before Uvicorn binds
@@ -2066,7 +2133,17 @@ class DockerContainerProvider:
                     workspace.workspace_host_path: {
                         "bind": workspace.workspace_container_path,
                         "mode": "rw",
-                    }
+                    },
+                    **(
+                        {
+                            str(self._native_tool_socket_host_path(workspace).parent): {
+                                "bind": f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform",
+                                "mode": "rw",
+                            }
+                        }
+                        if native_tool_required
+                        else {}
+                    ),
                 },
                 environment=_executor_environment(
                     request,
