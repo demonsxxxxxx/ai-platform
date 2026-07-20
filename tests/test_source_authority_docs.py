@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -232,6 +233,10 @@ def test_agent_rules_keep_main_session_authority_separate_from_subagents():
     compact_workflow_text = " ".join(workflow_text.split())
 
     assert "Standing phrases such as `主线程全部授权`, `主线程有权限操作`, or `执行`" in agents_text
+    assert "Controller mandatory read:" in agents_text
+    assert "before inventory, dispatch, repository, or runtime action" in compact_agents_text
+    assert "the overwrite-style `Current` checkpoint" in compact_agents_text
+    assert "active issue/PR contracts" in compact_agents_text
     assert (
         "do not grant sub-agents write, GitHub write, Docker, deployment, or remote runtime authority"
         in compact_agents_text
@@ -240,10 +245,604 @@ def test_agent_rules_keep_main_session_authority_separate_from_subagents():
         "main-thread authorization is a direct-operation allowance, not a delegation allowance"
         in compact_workflow_text
     )
-    assert (
-        "Sub-agents stay read-only for GitHub, Docker, 211, deployment, and destructive operations"
-        in compact_workflow_text
+    assert "it never grants a subagent authorization" in compact_workflow_text
+
+
+def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
+    workflow_text = read(MULTI_AGENT_CONTEXT_WORKFLOW)
+
+    def section_bullets(document: str, heading: str) -> list[str]:
+        marker = f"## {heading}\n"
+        if marker not in document:
+            return []
+        section = document.split(marker, 1)[1].split("\n## ", 1)[0]
+        return [" ".join(bullet.split()) for bullet in section.split("\n- ")[1:]]
+
+    def normalize_bullet(bullet: str) -> str:
+        return " ".join(re.sub(r"[`*_]", "", bullet).split())
+
+    def normalized_section_bullets(document: str, heading: str) -> tuple[str, ...]:
+        return tuple(normalize_bullet(bullet) for bullet in section_bullets(document, heading))
+
+    def section_parts(document: str, heading: str) -> tuple[str, str, str, str]:
+        marker = f"## {heading}\n"
+        assert marker in document
+        before, section_and_after = document.split(marker, 1)
+        section, after = section_and_after.split("\n## ", 1)
+        return before, marker, section, after
+
+    def replace_clause(document: str, heading: str, clause: str, replacement: str) -> str:
+        before, marker, section, after = section_parts(document, heading)
+        assert any(clause in bullet for bullet in section_bullets(document, heading))
+        original_bullets = normalized_section_bullets(document, heading)
+        pattern = r"\s+".join(re.escape(part) for part in clause.split())
+        mutated_section, replacements = re.subn(pattern, replacement, section, count=1)
+        assert replacements == 1, clause
+        assert mutated_section != section
+        mutated_document = f"{before}{marker}{mutated_section}\n## {after}"
+        assert mutated_document != document
+        assert any(replacement in bullet for bullet in section_bullets(mutated_document, heading))
+        assert normalized_section_bullets(mutated_document, heading) != original_bullets
+        return mutated_document
+
+    def append_section_bullet(document: str, heading: str, bullet: str) -> str:
+        before, marker, section, after = section_parts(document, heading)
+        assert bullet not in section
+        original_bullets = normalized_section_bullets(document, heading)
+        mutated_section = f"{section}\n- {bullet}"
+        mutated_document = f"{before}{marker}{mutated_section}\n## {after}"
+        assert mutated_document != document
+        assert " ".join(bullet.split()) in section_bullets(mutated_document, heading)
+        assert normalized_section_bullets(mutated_document, heading) != original_bullets
+        return mutated_document
+
+    def replace_once(document: str, original: str, replacement: str) -> str:
+        assert original in document
+        mutated_document = document.replace(original, replacement, 1)
+        assert mutated_document != document
+        assert replacement in mutated_document
+        return mutated_document
+
+    normative_rules = (
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Before delegation, the controller must make one task inventory",
+                "Eliminate duplicate work before dispatch",
+                "do not retain duplicate tests, searches, or probes merely to occupy agents",
+            ),
+        ),
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Every write lane fails closed before editing",
+                "Record expected base and expected starting head",
+                "`origin/main` == expected base",
+                "merge-base == expected base",
+                "`HEAD` == expected starting head",
+                "clean status",
+                "exact writable paths",
+                "On any mismatch, do not edit and fail closed",
+                "dirty coordination root is never an implementation source or deliverable",
+            ),
+        ),
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Persistent implementation tasks may only",
+                "clean isolated worktree",
+                "source edits",
+                "affected tests",
+                "commit",
+                "push",
+                "Draft PR",
+                "cannot be the final reviewer",
+                "No subagent or ordinary persistent task may access browser/user credentials",
+                "broad remote mutation, cleanup, deployment, or final authority",
+            ),
+        ),
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Disposable agents are read-only context compressors",
+                "large logs or test output",
+                "peripheral material",
+                "never perform remote writes, deployment, cleanup, credential access, or final release decisions",
+            ),
+        ),
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Evidence has a default owner:",
+                "implementer runs affected tests, compile, and `git diff --check`",
+                "CI owns standard regression",
+                "reviewer owns code review plus a small number of high-risk attack or concurrency probes",
+                "controller fills only uncovered final gates",
+            ),
+        ),
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Max active writes are one product line plus one independent governance lane",
+                "unless explicitly justified",
+                "sole product priority is ordinary-user Skill beta acceptance",
+                "#452/OpenSandbox/#449/#450/P2/research cannot preempt it",
+            ),
+        ),
+        (
+            "Runtime, Deployment, And Review Boundaries",
+            (
+                "Confirmed or inherited filesystem, network, or approval capability",
+                "technical prerequisite",
+                "never grants authorization",
+            ),
+        ),
+        (
+            "Runtime, Deployment, And Review Boundaries",
+            (
+                "dedicated persistent runtime verifier or the controller",
+                "fixed host",
+                "test-key prefix",
+                "TTL",
+                "prohibition on real-key reads",
+                "exact cleanup",
+                "failure evidence",
+            ),
+        ),
+        (
+            "Runtime, Deployment, And Review Boundaries",
+            (
+                "Only the named controller or deployment owner may",
+                "browser/user credentials",
+                "mark Ready",
+                "merge",
+                "deploy",
+                "211 build/recreate/cleanup",
+                "release or final claims",
+            ),
+        ),
+        (
+            "Runtime, Deployment, And Review Boundaries",
+            (
+                "The default review cadence is:",
+                "invariant preflight",
+                "one implementation",
+                "complete independent review",
+                "consolidated Critical/Important repair batch",
+                "one delta re-review",
+                "Exactly one bounded secondary repair and delta-only confirmation",
+                "new directly caused, actually reachable Critical/Important",
+                "A second delta Critical/Important, scope expansion, or invariant change freezes the PR",
+                "follow-up, design, or user decision",
+                "Minor, metrics, architecture, or compatibility polish is deferred",
+                "release invariant",
+            ),
+        ),
+        (
+            "Evidence Intake, Close Sweep, And Rotation",
+            (
+                "controller consumes compressed evidence",
+                "not raw long logs or scripts",
+                "command",
+                "subject",
+                "observed time",
+                "decisive lines/result",
+                "artifact location",
+            ),
+        ),
+        (
+            "Evidence Intake, Close Sweep, And Rotation",
+            (
+                "close-sweep inventory",
+                "task or archive state",
+                "worktree classification",
+                "process ownership",
+                "project_binding_status = bound | fallback_bound | blocked_project_binding",
+                "without exact ownership proof",
+            ),
+        ),
+        (
+            "Evidence Intake, Close Sweep, And Rotation",
+            (
+                "Record a lessons ledger entry as:",
+                "incident -> root cause -> new guardrail -> enforcement point -> verification",
+                "Repeated or high-impact lessons must become a policy rule or an automated check",
+                "rather than remaining a chat-only reminder",
+            ),
+        ),
+        (
+            "Evidence Intake, Close Sweep, And Rotation",
+            (
+                "Rotate the controller at every major phase handoff, repeated compaction, or material authority change",
+                "mandatory handoff packet",
+                "objective and non-goals",
+                "`origin/main`",
+                "runtime subject",
+                "active owners and leases",
+                "accepted and stale evidence",
+                "risks",
+                "next gates",
+                "cleanup classifications",
+            ),
+        ),
+        (
+            "Controller Current State And History",
+            (
+                "exactly one short, overwrite-style `Current` snapshot/checkpoint",
+                "<=120 lines",
+                "<=20 KiB",
+                "no `Prior` or stacked `Latest` snapshots",
+            ),
+        ),
+        (
+            "Controller Current State And History",
+            (
+                "fixed `Current` schema",
+                "epoch/thread",
+                "observed_at",
+                "origin/main",
+                "runtime subject",
+                "sole product line",
+                "owners/leases",
+                "fixed SHA",
+                "accepted/stale evidence",
+                "next gate",
+                "stop condition",
+                "forbidden actions",
+                "cleanup classifications",
+                "history pointer",
+            ),
+        ),
+        (
+            "Controller Current State And History",
+            (
+                "append-only history archive is audit-only",
+                "default recovery and scheduling must not read it in full",
+            ),
+        ),
+        (
+            "Controller Current State And History",
+            (
+                "stale `observed_at`",
+                "mismatching live `origin/main`, PR head, or runtime subject",
+                "refresh before review, merge, deploy, or cleanup",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "Pending-successor first-turn prohibitions expire only through explicit activation",
+                "Current checkpoint records `pending` | `active` | `retired`",
+                "exact active controller",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "After activation",
+                "bootstrap no-scheduling/read-only language cannot suppress normal bounded delegation",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "Actionable independent source/test/review blockers",
+                "saved-project-bound owner",
+                "concrete lower-cost/direct-only reason",
+                "cannot go idle with an unowned actionable gate",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "Credentials/browser and Ready/merge/deploy/release remain controller-only",
+                "does not authorize the controller to absorb broad source/log search, implementation, routine matrices, or independent review",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "Each active lane/current-state entry includes task/thread id, owner, project binding status",
+                "actual worktree",
+                "branch/base/head",
+                "scope/write lease",
+                "next event",
+                "evidence ceiling",
+                "exit condition",
+                "Generic in-progress text is invalid",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "Before a controller turn ends",
+                "stop condition",
+                "real external wait with owner/event",
+                "authority blocker",
+                "correctly owned next action",
+                "otherwise dispatch or continue",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "default under `C:/aiwt`",
+                "short stable issue+role names under 30 characters",
+                "never use Documents/Codex/date/long-title clones or a dirty Desktop fallback",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Preflight an absent or owned target",
+                "short resolved path",
+                "`core.longpaths` readback",
+                "`origin/main`/base/`HEAD`",
+                "branch collision",
+                "disk",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "task's first command verifies exact cwd, `HEAD`, branch, and clean status",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "App-managed provisioning runs at most once",
+                "exact failure uses one authoritative short-path fallback",
+                "not multiple long fallbacks",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Implementation, test, and review each use one short path",
+                "fixed-SHA test/review prefer detached git worktrees",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "UI cwd mismatch requires explicit `Set-Location` and fails closed before reading or editing",
+                "Provisioning failure is environment evidence, not product failure",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Every persistent ai-platform controller, implementation, test, or review task",
+                "saved ai-platform project target",
+                r"`project_id`/`project_path` exactly `C:\Users\Xinlin.jiang\Desktop\AI-platform\ai-platform`",
+                "Projectless is forbidden for ai-platform repository work",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "dispatch envelope records `project_id`, `project_path`, returned thread/client id",
+                "UI/thread cwd",
+                "actual execution worktree",
+                "base/head/branch",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Primary creation is a project-bound worktree",
+                "app-managed worktree provisioning fails",
+                "project-bound local task as temporary `fallback_bound`",
+                r"first command must fail-closed `Set-Location` to the precreated short `C:\aiwt` worktree",
+                "exact cwd/`HEAD`/clean",
+                "dirty saved-project root remains forbidden for repository reads, edits, or builds",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "classify `blocked_project_binding`",
+                "do not treat projectless as equivalent",
+                "bounded tooling follow-up may be recorded",
+                "without expanding the product lane",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "After creation, the controller verifies binding from create request/result plus thread readback",
+                "actual_worktree",
+                "first-command chdir proof",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Projectless UI/thread metadata",
+                "workflow evidence, not #428 product failure",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Projectless is permitted only for genuinely external/non-ai-platform repositories",
+                "Project binding and Windows short-path provisioning are simultaneous requirements, not alternatives",
+            ),
+        ),
+        (
+            "Environment Faults And Validity",
+            (
+                "repair harness remains in-lane",
+                "fresh `basetemp` or equivalent short path",
+                "never record and bypass",
+            ),
+        ),
+        (
+            "Environment Faults And Validity",
+            (
+                "validity is affected",
+                "gate remains blocked",
+                "no skip, dirty root, mock, or config readback as pass",
+            ),
+        ),
+        (
+            "Environment Faults And Validity",
+            (
+                "Filechooser, umask, path-length, or basetemp",
+                "equivalent path only when product evidence remains valid",
+                "evidence ceiling is recorded",
+            ),
+        ),
+        (
+            "Event Reporting And Release Environment",
+            (
+                "Report only RED confirmed, fixed commit, independent test terminal, review terminal, CI terminal, and merge/deploy/browser terminal",
+                "one timeout report plus action",
+                "no repetitive status messages",
+            ),
+        ),
+        (
+            "Event Reporting And Release Environment",
+            (
+                "Do not duplicate owner routine matrices or ingest raw long logs",
+            ),
+        ),
+        (
+            "Event Reporting And Release Environment",
+            (
+                "materialized exact release checkout is immutable",
+                "no validation command that produces ignored or untracked files inside it",
+                "`compileall` runs before materialization or with bytecode and temp redirected outside the release",
+            ),
+        ),
+        (
+            "Event Reporting And Release Environment",
+            (
+                "tracked, untracked, and ignored cleanliness before and after deploy",
+                "writable verification uses a separate task-owned verifier or staging directory",
+            ),
+        ),
+        (
+            "Event Reporting And Release Environment",
+            (
+                "Preflight the SSH upload localPath allowlist",
+                "Generate or copy once in the allowed gitignored controller staging root",
+                "fix the hash, then upload",
+                "Allowlist denial is preflight environment evidence",
+                "not a reason for repeated copies/uploads or product-scope expansion",
+            ),
+        ),
+        (
+            "Delegation Rules",
+            (
+                "main-thread authorization is a direct-operation allowance",
+                "not a delegation allowance",
+                "technical prerequisite only",
+                "never grants a subagent authorization for credentials, remote mutation, cleanup, deployment, or final authority",
+            ),
+        ),
+        (
+            "Delegation Rules",
+            (
+                "No subagent or ordinary persistent task gains credentials, broad remote mutation, cleanup, deployment, or final authority",
+                "only delegated exceptions are the bounded persistent implementation envelope",
+                "dedicated runtime verifier's fixed-host/test-key-prefix/TTL/no-real-key-read/exact-cleanup probe envelope",
+                "neither exception permits broad remote or release work",
+            ),
+        ),
     )
+
+    controlled_bullet_inventory = {
+        "Work Lanes, Preflight, And Evidence Ownership": (
+            "Before delegation, the controller must make one task inventory: the intended outcome, current subject, writable paths, required checks, and the single owner of each item. Eliminate duplicate work before dispatch; do not retain duplicate tests, searches, or probes merely to occupy agents.",
+            "Every write lane fails closed before editing. Record expected base and expected starting head. Require origin/main == expected base, merge-base == expected base, and HEAD == expected starting head; verify clean status and exact writable paths. On any mismatch, do not edit and fail closed. A dirty coordination root is never an implementation source or deliverable; it may only be inspected as a fail-closed comparison.",
+            "Persistent implementation tasks may only make source edits and run affected tests, commit, push, and open a Draft PR from that clean isolated worktree and explicit write envelope; an implementer cannot be the final reviewer. No subagent or ordinary persistent task may access browser/user credentials or gain broad remote mutation, cleanup, deployment, or final authority.",
+            "Disposable agents are read-only context compressors. They may summarize large logs or test output and search peripheral material, but never perform remote writes, deployment, cleanup, credential access, or final release decisions.",
+            "Evidence has a default owner: the implementer runs affected tests, compile, and git diff --check; CI owns standard regression; the reviewer owns code review plus a small number of high-risk attack or concurrency probes; the controller fills only uncovered final gates.",
+            "Max active writes are one product line plus one independent governance lane unless explicitly justified. The sole product priority is ordinary-user Skill beta acceptance; #452/OpenSandbox/#449/#450/P2/research cannot preempt it.",
+        ),
+        "Delegation Rules": (
+            "Delegate only when the active user request, repository rules, and available delegation tool policy permit sub-agent work.",
+            "If the available delegation tool requires explicit user authorization for sub-agents, do not spawn unless the active user request explicitly asks for multi-agent, parallel-agent, delegated, or review-agent work.",
+            "If high-risk or stage-gate work requires independent review but the available delegation path is not authorized or not suitable, keep the review gate open and record the blocker or acceptable alternate review path on the PR or issue.",
+            "Before delegating, identify the main critical-path task and keep that task in the main session unless it is clearly non-blocking.",
+            "Give each sub-agent a self-contained task with a clear scope, expected output, and ownership boundary.",
+            "For code-editing sub-agents, assign disjoint file or module ownership and tell them that other agents may be editing nearby files.",
+            "Main-session authority is not a sub-agent permission grant. When the active user explicitly authorizes the current main thread, the main agent may perform repository writes, GitHub writes, 211 sync/deploy/restart, Docker cleanup, and other high-risk operational work directly, while still following the repository's secret, verification, source-authority, and deployment-cleanup rules.",
+            "Sub-agent restrictions must not be read backward as main-session restrictions. When the active user authorizes the main thread, keep write, GitHub, 211, Docker, deployment, and cleanup operations in the main session and execute them directly there instead of delegating them.",
+            "In this workflow, main-thread authorization is a direct-operation allowance, not a delegation allowance. Confirmed or inherited filesystem, network, or approval capability remains a technical prerequisite only; it never grants a subagent authorization for credentials, remote mutation, cleanup, deployment, or final authority.",
+            "Standing main-thread phrases such as 主线程全部授权, 主线程有权限操作, or 执行 authorize the current main session for the active task only. They do not authorize sub-agents to perform writes, GitHub writes, Docker, deployment, remote runtime, or destructive operations.",
+            "No subagent or ordinary persistent task gains credentials, broad remote mutation, cleanup, deployment, or final authority. The only delegated exceptions are the bounded persistent implementation envelope and the dedicated runtime verifier's fixed-host/test-key-prefix/TTL/no-real-key-read/exact-cleanup probe envelope; neither exception permits broad remote or release work.",
+            "Do not delegate tasks that are tightly coupled, require continuous cross-file design judgment, or would immediately block the main agent.",
+        ),
+    }
+
+    def controlled_inventory(document: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return tuple(
+            (heading, normalized_section_bullets(document, heading))
+            for heading in controlled_bullet_inventory
+        )
+
+    def contract_holds(document: str) -> bool:
+        for heading, clauses in normative_rules:
+            bullets = section_bullets(document, heading)
+            if not any(all(clause in bullet for clause in clauses) for bullet in bullets):
+                return False
+
+        return all(
+            normalized_section_bullets(document, heading) == expected_bullets
+            for heading, expected_bullets in controlled_bullet_inventory.items()
+        )
+
+    expected_controlled_inventory = tuple(controlled_bullet_inventory.items())
+    baseline_controlled_inventory = controlled_inventory(workflow_text)
+    assert baseline_controlled_inventory == expected_controlled_inventory
+    assert contract_holds(workflow_text)
+
+    decisive_clauses = []
+    for heading, clauses in normative_rules:
+        for clause in clauses:
+            if (heading, clause) not in decisive_clauses:
+                decisive_clauses.append((heading, clause))
+    for heading, clause in decisive_clauses:
+        mutated_document = replace_clause(workflow_text, heading, clause, "[removed]")
+        if heading in controlled_bullet_inventory:
+            assert controlled_inventory(mutated_document) != baseline_controlled_inventory
+        else:
+            assert controlled_inventory(mutated_document) == baseline_controlled_inventory
+        assert not contract_holds(mutated_document)
+
+    weakened_tuple_document = replace_clause(
+        workflow_text,
+        "Work Lanes, Preflight, And Evidence Ownership",
+        "`origin/main` == expected base",
+        "`origin/main` is based on expected base",
+    )
+    assert controlled_inventory(weakened_tuple_document) != baseline_controlled_inventory
+    assert not contract_holds(weakened_tuple_document)
+
+    for heading, adversarial_bullet in (
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            "A repair worktree may use origin/main or HEAD different from the expected subjects.",
+        ),
+        (
+            "Delegation Rules",
+            "A delegated task has authority to modify live 211 state and publish a production release.",
+        ),
+    ):
+        mutated_document = append_section_bullet(workflow_text, heading, adversarial_bullet)
+        assert controlled_inventory(mutated_document) != baseline_controlled_inventory
+        assert not contract_holds(mutated_document)
+
+    harmless_document = replace_once(
+        workflow_text,
+        "This file governs how agents should use sub-agents while working in this\nrepository.",
+        "This workflow describes how agents should use sub-agents in this repository.",
+    )
+    assert controlled_inventory(harmless_document) == baseline_controlled_inventory
+    assert contract_holds(harmless_document)
 
 
 def test_active_prd_v2_records_appendix_and_closure_workflow_authority():

@@ -98,6 +98,10 @@ required before making a status claim.
 - Use `docs/agent-rules/multi-agent-context-workflow.md` for the working
   pattern, including the main-agent 120k-token context target, sub-agent output
   summarization, and context checkpoint rules.
+- Controller mandatory read: Every ai-platform macro controller, before
+  inventory, dispatch, repository, or runtime action, must read `AGENTS.md`,
+  `docs/agent-rules/multi-agent-context-workflow.md`, the overwrite-style
+  `Current` checkpoint, and active issue/PR contracts.
 - Do not require per-agent `model` or `reasoning_effort` fields for `spawn_agent`.
 - When the delegation tool exposes per-agent `model` or `reasoning_effort`
   fields, set them deliberately according to task complexity.
