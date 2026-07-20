@@ -410,6 +410,8 @@ _NATIVE_TOOL_HEALTH_PROBE_COMMAND = (
     "-m",
     "app.runtime.sandbox.native_tool_health_probe",
 )
+_NATIVE_TOOL_HEALTH_PROBE_TIMEOUT_SECONDS = 0.25
+_NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS = 0.01
 _NATIVE_TOOL_ADMISSION_PHASE = "authenticated_container_uds_health"
 
 
@@ -535,17 +537,39 @@ def _default_native_tool_probe(container: Any) -> bool:
     """Run the fixed authenticated health probe inside the sidecar namespace."""
 
     try:
-        result = container.exec_run(
+        client = getattr(container, "client", None)
+        api = getattr(client, "api", None)
+        container_id = getattr(container, "id", None)
+        if api is None or not isinstance(container_id, str) or not container_id:
+            return False
+        created = api.exec_create(
+            container_id,
             list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
-            stdout=True,
+            stdout=False,
             stderr=False,
         )
-        if isinstance(result, (tuple, list)):
-            exit_code = result[0] if result else None
-        else:
-            exit_code = getattr(result, "exit_code", None)
-        del result
-        return type(exit_code) is int and exit_code == 0
+        if not isinstance(created, dict):
+            return False
+        exec_id = created.get("Id")
+        if not isinstance(exec_id, str) or not exec_id:
+            return False
+        api.exec_start(exec_id, detach=True)
+        deadline = time.monotonic() + _NATIVE_TOOL_HEALTH_PROBE_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            inspected = api.exec_inspect(exec_id)
+            if not isinstance(inspected, dict):
+                return False
+            if inspected.get("Running") is True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(_NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS, remaining))
+                continue
+            if inspected.get("Running") is not False:
+                return False
+            exit_code = inspected.get("ExitCode")
+            return type(exit_code) is int and exit_code == 0
+        return False
     except Exception:
         return False
 

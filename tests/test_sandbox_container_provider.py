@@ -140,7 +140,6 @@ class FakeDockerContainer:
         self._remove_error = remove_error
         self._exec_exit_code = exec_exit_code
         self._exec_error = exec_error
-        self.exec_calls: list[tuple[list[str], dict[str, Any]]] = []
         published_host = "0.0.0.0"
         port_binding = self.ports.get("18000/tcp")
         if isinstance(port_binding, tuple) and len(port_binding) == 2:
@@ -182,15 +181,42 @@ class FakeDockerContainer:
     def reload(self) -> None:
         return None
 
-    def exec_run(self, command, **kwargs):
-        self.exec_calls.append((list(command), dict(kwargs)))
-        if self._exec_error is not None:
-            raise self._exec_error
-        return type(
-            "FakeExecResult",
-            (),
-            {"exit_code": self._exec_exit_code, "output": b""},
-        )()
+
+class FakeDockerAPI:
+    def __init__(self, client: "FakeDockerClient") -> None:
+        self._client = client
+        self._exec_containers: dict[str, FakeDockerContainer] = {}
+        self.exec_create_calls: list[tuple[str, list[str], dict[str, Any]]] = []
+        self.exec_start_calls: list[tuple[str, dict[str, Any]]] = []
+        self.exec_inspect_calls: list[str] = []
+
+    def _container(self, container_id: str) -> FakeDockerContainer:
+        for container in self._client.containers_by_name.values():
+            if container.id == container_id:
+                return container
+        raise RuntimeError("container not found")
+
+    def exec_create(self, container_id: str, command: list[str], **kwargs):
+        container = self._container(container_id)
+        self.exec_create_calls.append((container_id, list(command), dict(kwargs)))
+        if container._exec_error is not None:
+            raise container._exec_error
+        exec_id = f"exec-{len(self._exec_containers) + 1}"
+        self._exec_containers[exec_id] = container
+        return {"Id": exec_id}
+
+    def exec_start(self, exec_id: str, **kwargs) -> None:
+        self.exec_start_calls.append((exec_id, dict(kwargs)))
+        container = self._exec_containers[exec_id]
+        if container._exec_error is not None:
+            raise container._exec_error
+
+    def exec_inspect(self, exec_id: str) -> dict[str, Any]:
+        self.exec_inspect_calls.append(exec_id)
+        container = self._exec_containers[exec_id]
+        if container._exec_error is not None:
+            raise container._exec_error
+        return {"Running": False, "ExitCode": container._exec_exit_code}
 
 
 class FakeDockerContainers:
@@ -214,6 +240,7 @@ class FakeDockerContainers:
         )
         self._client.created.append(kwargs)
         self._client.containers_by_name[container.name] = container
+        container.client = self._client
         return container
 
     def list(self, all: bool = False, filters: dict[str, Any] | None = None) -> list[FakeDockerContainer]:
@@ -271,6 +298,7 @@ class FakeDockerClient:
         self.containers_by_name: dict[str, FakeDockerContainer] = {}
         self.networks_by_name: dict[str, dict[str, Any]] = {}
         self.network_create_calls: list[tuple[str, dict[str, Any]]] = []
+        self.api = FakeDockerAPI(self)
         self.containers = FakeDockerContainers(self)
         self.networks = FakeDockerNetworks(self)
         self.ping_count = 0
@@ -347,7 +375,7 @@ class FakeOpenSandboxFiles:
         raise FileNotFoundError(path)
 
 
-def test_default_native_tool_probe_attaches_stdout_for_docker_py_72_and_discards_output(capsys, caplog):
+def test_default_native_tool_probe_uses_detached_no_output_low_level_api(capsys, caplog):
     from app.runtime.sandbox.container_provider import (
         _NATIVE_TOOL_HEALTH_PROBE_COMMAND,
         _default_native_tool_probe,
@@ -356,52 +384,52 @@ def test_default_native_tool_probe_attaches_stdout_for_docker_py_72_and_discards
     private_token = "test-native-tool-token"
     private_path = "/private/runtime/workspace"
 
-    class ExecResult(tuple):
-        def __new__(cls, exit_code: int | None, output: bytes):
-            return super().__new__(cls, (exit_code, output))
-
-        @property
-        def exit_code(self) -> int | None:
-            return self[0]
-
-        @property
-        def output(self) -> bytes:
-            raise AssertionError("probe output must not be inspected")
-
-    class DockerPy72Container:
+    class ProbeAPI:
         def __init__(self) -> None:
-            self.calls: list[tuple[list[str], dict[str, Any]]] = []
-            self.exit_codes: list[int | None] = []
+            self.create_calls: list[tuple[str, list[str], dict[str, Any]]] = []
+            self.start_calls: list[tuple[str, dict[str, Any]]] = []
+            self.inspect_calls: list[str] = []
 
-        def exec_run(self, command, **kwargs):
-            self.calls.append((list(command), dict(kwargs)))
-            exit_code = 0 if kwargs["stdout"] else None
-            self.exit_codes.append(exit_code)
-            return ExecResult(exit_code, f"{private_token}:{private_path}".encode())
+        def exec_create(self, container_id, command, **kwargs):
+            self.create_calls.append((container_id, list(command), dict(kwargs)))
+            return {"Id": "fixed-health-probe"}
 
-    container = DockerPy72Container()
-    unattached = container.exec_run(
-        list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
-        stdout=False,
-        stderr=False,
-    )
-    assert unattached.exit_code is None
-    del unattached
+        def exec_start(self, exec_id, **kwargs):
+            self.start_calls.append((exec_id, dict(kwargs)))
 
+        def exec_inspect(self, exec_id):
+            self.inspect_calls.append(exec_id)
+            return {"Running": False, "ExitCode": 0}
+
+    class Container:
+        id = "sidecar-container-id"
+
+        def __init__(self) -> None:
+            self.client = type("DockerClient", (), {"api": ProbeAPI()})()
+
+        def exec_run(self, *_args, **_kwargs):
+            raise AssertionError("high-level output-returning exec_run must not be used")
+
+    container = Container()
     assert _default_native_tool_probe(container) is True
-    assert container.exit_codes == [None, 0]
-    assert container.calls[-1] == (
-        list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
-        {"stdout": True, "stderr": False},
-    )
+    api = container.client.api
+    assert api.create_calls == [
+        (
+            container.id,
+            list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
+            {"stdout": False, "stderr": False},
+        )
+    ]
+    assert api.start_calls == [("fixed-health-probe", {"detach": True})]
+    assert api.inspect_calls == ["fixed-health-probe"]
     captured = capsys.readouterr()
-    assert private_token not in repr(container.calls)
-    assert private_path not in repr(container.calls)
+    assert private_token not in repr(api.create_calls)
+    assert private_path not in repr(api.create_calls)
     assert private_token not in captured.out + captured.err + caplog.text
     assert private_path not in captured.out + captured.err + caplog.text
 
 
-def test_default_native_tool_probe_fails_closed_for_bad_results_and_exceptions(capsys, caplog):
+def test_default_native_tool_probe_fails_closed_for_invalid_low_level_states_and_exceptions(capsys, caplog):
     from app.runtime.sandbox.container_provider import (
         _NATIVE_TOOL_HEALTH_PROBE_COMMAND,
         _default_native_tool_probe,
@@ -410,53 +438,97 @@ def test_default_native_tool_probe_fails_closed_for_bad_results_and_exceptions(c
     private_token = "test-native-tool-token"
     private_path = "/private/runtime/workspace"
 
-    class ProbeResult:
-        def __init__(self, exit_code: Any) -> None:
-            self.exit_code = exit_code
-            self.output = f"{private_token}:{private_path}".encode()
+    class ProbeAPI:
+        def __init__(self, *, created: Any = None, start_error: Exception | None = None, inspected: Any = None) -> None:
+            self.created = {"Id": "fixed-health-probe"} if created is None else created
+            self.start_error = start_error
+            self.inspected = {"Running": False, "ExitCode": 0} if inspected is None else inspected
+            self.create_calls: list[tuple[str, list[str], dict[str, Any]]] = []
 
-    class StaticResultContainer:
-        def __init__(self, result: Any) -> None:
-            self.result = result
-            self.calls: list[tuple[list[str], dict[str, Any]]] = []
+        def exec_create(self, container_id, command, **kwargs):
+            self.create_calls.append((container_id, list(command), dict(kwargs)))
+            return self.created
 
-        def exec_run(self, command, **kwargs):
-            self.calls.append((list(command), dict(kwargs)))
-            return self.result
+        def exec_start(self, _exec_id, **_kwargs):
+            if self.start_error is not None:
+                raise self.start_error
 
-    for result, expected in (
-        (ProbeResult(1), False),
-        (ProbeResult(None), False),
-        (ProbeResult("0"), False),
-        (ProbeResult(True), False),
-        (object(), False),
-        ((0, b"ignored"), True),
-        ([0, b"ignored"], True),
-    ):
-        container = StaticResultContainer(result)
-        assert _default_native_tool_probe(container) is expected
-        assert container.calls == [
+        def exec_inspect(self, _exec_id):
+            return self.inspected
+
+    class Container:
+        id = "sidecar-container-id"
+
+        def __init__(self, api: Any) -> None:
+            self.client = type("DockerClient", (), {"api": api})()
+
+    cases = (
+        ProbeAPI(created=[]),
+        ProbeAPI(created={"Id": ""}),
+        ProbeAPI(inspected={"Running": False, "ExitCode": 1}),
+        ProbeAPI(inspected={"Running": False, "ExitCode": None}),
+        ProbeAPI(inspected={"Running": False, "ExitCode": "0"}),
+        ProbeAPI(inspected={"Running": False, "ExitCode": True}),
+        ProbeAPI(inspected={"Running": None, "ExitCode": 0}),
+        ProbeAPI(inspected=[]),
+        ProbeAPI(start_error=RuntimeError(f"probe failed for {private_token} at {private_path}")),
+    )
+    for api in cases:
+        assert _default_native_tool_probe(Container(api)) is False
+        assert api.create_calls == [
             (
+                "sidecar-container-id",
                 list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
-                {"stdout": True, "stderr": False},
+                {"stdout": False, "stderr": False},
             )
         ]
 
-    class RaisingContainer:
-        def __init__(self) -> None:
-            self.calls: list[tuple[list[str], dict[str, Any]]] = []
-
-        def exec_run(self, command, **kwargs):
-            self.calls.append((list(command), dict(kwargs)))
-            raise RuntimeError(f"probe failed for {private_token} at {private_path}")
-
-    raising_container = RaisingContainer()
-    assert _default_native_tool_probe(raising_container) is False
+    assert _default_native_tool_probe(object()) is False
     captured = capsys.readouterr()
     assert private_token not in captured.out + captured.err + caplog.text
     assert private_path not in captured.out + captured.err + caplog.text
-    assert private_token not in repr(raising_container.calls)
-    assert private_path not in repr(raising_container.calls)
+
+
+def test_default_native_tool_probe_bounds_running_exec_inspection(monkeypatch):
+    from app.runtime.sandbox import container_provider
+
+    class ProbeAPI:
+        def __init__(self) -> None:
+            self.inspect_calls = 0
+
+        def exec_create(self, _container_id, _command, **_kwargs):
+            return {"Id": "fixed-health-probe"}
+
+        def exec_start(self, _exec_id, **_kwargs):
+            return None
+
+        def exec_inspect(self, _exec_id):
+            self.inspect_calls += 1
+            return {"Running": True, "ExitCode": None}
+
+    api = ProbeAPI()
+    container = type(
+        "Container",
+        (),
+        {"id": "sidecar-container-id", "client": type("DockerClient", (), {"api": api})()},
+    )()
+    monotonic_values = iter((0.0, 0.0, 0.24, 0.25))
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(container_provider.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(container_provider.time, "sleep", sleep_calls.append)
+
+    assert container_provider._default_native_tool_probe(container) is False
+    assert api.inspect_calls == 1
+    assert sleep_calls == [container_provider._NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS]
+
+
+def test_default_native_tool_probe_rejects_missing_client_or_api():
+    from app.runtime.sandbox.container_provider import _default_native_tool_probe
+
+    assert _default_native_tool_probe(type("Container", (), {"id": "sidecar-container-id"})()) is False
+    assert _default_native_tool_probe(
+        type("Container", (), {"id": "sidecar-container-id", "client": object()})()
+    ) is False
 
 
 class FakeOpenSandboxCommands:
@@ -1804,12 +1876,15 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
 
     native = fake.containers_by_name["native-tool-run-a"]
     primary = fake.containers_by_name[lease.container_name]
-    assert native.exec_calls == [
+    assert fake.api.exec_create_calls == [
         (
+            native.id,
             ["python", "-m", "app.runtime.sandbox.native_tool_health_probe"],
-            {"stdout": True, "stderr": False},
+            {"stdout": False, "stderr": False},
         )
     ]
+    assert fake.api.exec_start_calls == [("exec-1", {"detach": True})]
+    assert fake.api.exec_inspect_calls == ["exec-1"]
     native._exec_exit_code = 1
 
     with pytest.raises(NativeToolAdmissionError) as exc_info:
@@ -2168,13 +2243,16 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
     native = fake.containers_by_name["native-tool-run-a"]
     executor = fake.containers_by_name[lease.container_name]
     token = native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"]
-    serialized_exec = repr(native.exec_calls)
-    assert native.exec_calls == [
+    serialized_exec = repr(fake.api.exec_create_calls)
+    assert fake.api.exec_create_calls == [
         (
+            native.id,
             ["python", "-m", "app.runtime.sandbox.native_tool_health_probe"],
-            {"stdout": True, "stderr": False},
+            {"stdout": False, "stderr": False},
         )
     ]
+    assert fake.api.exec_start_calls == [("exec-1", {"detach": True})]
+    assert fake.api.exec_inspect_calls == ["exec-1"]
     assert token not in serialized_exec
     assert workspace_path not in serialized_exec
     assert lease.labels["ai-platform.native_tool_admission_phase"] == "authenticated_container_uds_health"
@@ -2371,8 +2449,8 @@ async def test_docker_provider_native_exec_failure_times_out_and_sanitizes_all_p
         value not in diagnostic and value not in rendered_exception
         for value in (token, private_command, private_path)
     )
-    assert token not in repr(native.exec_calls)
-    assert private_path not in repr(native.exec_calls)
+    assert token not in repr(fake.api.exec_create_calls)
+    assert private_path not in repr(fake.api.exec_create_calls)
     assert native.removed is True
     assert provider._leases == {}
 
