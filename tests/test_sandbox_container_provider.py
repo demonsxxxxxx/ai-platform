@@ -1775,8 +1775,9 @@ async def test_docker_provider_occupied_native_socket_preflight_has_zero_false_r
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     fake = FakeDockerClient()
     provider = DockerContainerProvider(docker_client_factory=lambda: fake)
-    occupied_path = provider._native_tool_socket_host_path(leased_workspace)
-    socket_parent = occupied_path.parent
+    socket_parent = provider._native_tool_socket_host_path(leased_workspace).parent
+    occupied_path = socket_parent / "native-tool.sock"
+    assert occupied_path == provider._native_tool_socket_host_path(leased_workspace)
     socket_parent.mkdir(parents=True)
     occupied_path.write_text("owned by another subject", encoding="utf-8")
     native_subjects = native_tool_subjects()
@@ -2068,6 +2069,7 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
     assert workspace_socket_path_bytes in {51, 211}
     assert host_socket_path_bytes <= 107
     assert host_socket_path.parent != Path(workspace_path) / ".ai-platform"
+    assert host_socket_path.name == "native-tool.sock"
     assert lease.labels["ai-platform.native_tool_host_socket_path_bytes"] == str(host_socket_path_bytes)
     assert lease.labels["ai-platform.native_tool_container_socket_path_bytes"] == "40"
     assert native.labels["ai-platform.native_tool_host_socket_path_bytes"] == str(host_socket_path_bytes)
@@ -2079,6 +2081,22 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
     assert executor.volumes[str(host_socket_path.parent)] == expected_socket_mount
     assert native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] == "/workspace/.ai-platform/native-tool.sock"
     assert executor.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] == "/workspace/.ai-platform/native-tool.sock"
+    assert host_socket_path == (
+        Path(next(
+            host_path
+            for host_path, mount in native.volumes.items()
+            if mount == expected_socket_mount
+        ))
+        / Path(native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"]).name
+    )
+    assert host_socket_path == (
+        Path(next(
+            host_path
+            for host_path, mount in executor.volumes.items()
+            if mount == expected_socket_mount
+        ))
+        / Path(executor.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"]).name
+    )
 
 
 def test_docker_provider_native_socket_paths_are_scope_unique_and_bounded(monkeypatch):
@@ -2095,7 +2113,7 @@ def test_docker_provider_native_socket_paths_are_scope_unique_and_bounded(monkey
     second = provider._native_tool_socket_host_path(workspace(run_id="run-b"))
 
     assert first != second
-    assert first.name == second.name == "n.sock"
+    assert first.name == second.name == "native-tool.sock"
     assert len(first.parent.name) == len(second.parent.name) == 24
     assert len(os.fsencode(str(first))) <= 107
     assert len(os.fsencode(str(second))) <= 107
@@ -2153,13 +2171,28 @@ async def test_docker_provider_stop_removes_only_the_owned_short_socket_director
         request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
         leased_workspace,
     )
-    socket_dir = provider._native_tool_socket_host_path(leased_workspace).parent
+    native = fake.containers_by_name["native-tool-run-a"]
+    socket_dir = Path(next(
+        host_path
+        for host_path, mount in native.volumes.items()
+        if mount["bind"] == "/workspace/.ai-platform"
+    ))
+    actual_socket_path = socket_dir / Path(
+        native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"]
+    ).name
+    assert actual_socket_path == provider._native_tool_socket_host_path(leased_workspace)
     assert socket_dir.is_dir()
+    actual_socket_path.write_text("test socket leaf", encoding="utf-8")
+    unrelated_scope = socket_dir.parent / "unrelated-scope"
+    unrelated_scope.mkdir()
+    monkeypatch.setattr(container_provider.stat, "S_ISSOCK", lambda _mode: True)
 
     result = await provider.stop(lease, reason="test-complete")
 
     assert result.status == "stopped"
+    assert actual_socket_path.exists() is False
     assert socket_dir.exists() is False
+    assert unrelated_scope.is_dir()
 
 
 @pytest.mark.asyncio

@@ -400,7 +400,10 @@ def _docker_security_kwargs() -> dict[str, Any]:
 _NATIVE_TOOL_OWNER = "sandbox-native-tool"
 _NATIVE_TOOL_SOCKET = "/workspace/.ai-platform/native-tool.sock"
 _NATIVE_TOOL_HOST_SOCKET_ROOT = ".uds"
-_NATIVE_TOOL_HOST_SOCKET_NAME = "n.sock"
+# Docker bind-mounts the scoped host directory onto the parent of this path.
+# Therefore this basename is also the actual host socket leaf created by the
+# native sidecar; preflight and cleanup must use the same leaf.
+_NATIVE_TOOL_HOST_SOCKET_NAME = _NATIVE_TOOL_SOCKET.rpartition("/")[2]
 _UNIX_SOCKET_PATH_MAX_BYTES = 107
 _NATIVE_TOOL_HEALTH_PROBE_COMMAND = (
     "python",
