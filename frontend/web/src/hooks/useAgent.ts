@@ -1899,23 +1899,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return { status: "accepted" };
         }
 
-        const selectedCatalogLabel = selectedSkill?.skill_id.trim() || "";
-        const acceptedLockedSkillLabel =
-          selectedCatalogLabel.length <= 120 &&
-          !/^[a-f0-9]{32,}$/i.test(selectedCatalogLabel) &&
-          !selectedCatalogLabel.toLowerCase().startsWith("/skill")
-            ? selectedCatalogLabel
-            : undefined;
-        if (acceptedLockedSkillLabel) {
-          const lockedMessages = messagesRef.current.map((message) =>
-            message.id === userMessageId
-              ? { ...message, lockedSkillLabel: acceptedLockedSkillLabel }
-              : message,
-          );
-          messagesRef.current = lockedMessages;
-          setMessages(lockedMessages);
-        }
-
         if (submitData.status === "accepted_pending_enqueue") {
           if (!protocolEchoed) {
             throw new Error("chat_submission_protocol_unavailable");

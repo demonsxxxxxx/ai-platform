@@ -1595,8 +1595,8 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_uses_no_network_native_sidecar_and_refuses_invalid_reuse(tmp_path):
-    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+async def test_docker_provider_maps_failed_native_reuse_health_to_admission_failure(tmp_path):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, NativeToolAdmissionError
 
     workspace_path = tmp_path / "workspace"
     workspace_path.mkdir()
@@ -1669,14 +1669,16 @@ async def test_docker_provider_uses_no_network_native_sidecar_and_refuses_invali
             {"stdout": False, "stderr": False},
         )
     ]
-    native.environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"] = "wrong-token"
+    native._exec_exit_code = 1
 
-    with pytest.raises(ContainerStartFailedError, match="native tool sandbox reuse failed"):
+    with pytest.raises(NativeToolAdmissionError) as exc_info:
         await provider.create_or_reuse(
             request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
             leased_workspace,
         )
 
+    assert exc_info.value.error_code == "native_tool_admission_failed"
+    assert str(exc_info.value) == "Native tool sandbox admission failed"
     assert native.removed is True
     assert primary.removed is True
     assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
@@ -1832,6 +1834,115 @@ async def test_docker_provider_native_probe_timeout_is_admission_failure_without
     assert [created["name"] for created in fake.created] == ["native-tool-run-a"]
     assert fake.containers_by_name["native-tool-run-a"].removed is True
     assert provider._leases == {}
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_bounds_stuck_native_exec_await_and_cleans_sidecar(tmp_path):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, NativeToolAdmissionError
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    probe_started = threading.Event()
+    probe_finished = threading.Event()
+    release_probe = threading.Event()
+
+    def stuck_probe(_container):
+        probe_started.set()
+        release_probe.wait(timeout=5)
+        probe_finished.set()
+        return False
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        native_tool_probe=stuck_probe,
+    )
+    try:
+        with pytest.raises(NativeToolAdmissionError):
+            await asyncio.wait_for(
+                provider._start_native_tool_container(
+                    request=request(),
+                    workspace=workspace(workspace_host_path=str(workspace_path)),
+                    token="t" * 32,
+                    timeout_seconds=0.05,
+                ),
+                timeout=1,
+            )
+
+        assert probe_started.is_set()
+        assert probe_finished.is_set() is False
+        assert fake.containers_by_name["native-tool-run-a"].removed is True
+        assert provider._leases == {}
+    finally:
+        release_probe.set()
+        assert probe_finished.wait(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_reuse_cancellation_cleans_runtime_pair_while_exec_thread_finishes_later(
+    tmp_path,
+):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    native_subjects = [
+        {
+            "identity": "Skill",
+            "declared_identities": ["Skill"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "execution_strategy": "sdk_native",
+        },
+        {
+            "identity": "Bash",
+            "declared_identities": ["Bash"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "command_isolation": "sibling-tool-sandbox-v1",
+        },
+    ]
+    selected_request = request(skill_ids=["native-review"], tool_policy_subjects=native_subjects)
+    probe_started = threading.Event()
+    probe_finished = threading.Event()
+    release_probe = threading.Event()
+
+    def stuck_probe(_container):
+        probe_started.set()
+        release_probe.wait(timeout=5)
+        probe_finished.set()
+        return False
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    lease = await provider.create_or_reuse(selected_request, leased_workspace)
+    native = fake.containers_by_name["native-tool-run-a"]
+    primary = fake.containers_by_name[lease.container_name]
+    provider._native_tool_probe = stuck_probe
+    task = asyncio.create_task(
+        provider.create_or_reuse(selected_request, leased_workspace)
+    )
+    try:
+        assert await asyncio.to_thread(probe_started.wait, 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert probe_finished.is_set() is False
+        assert native.removed is True
+        assert primary.removed is True
+        assert provider._leases == {}
+    finally:
+        release_probe.set()
+        assert probe_finished.wait(timeout=1)
 
 
 def _workspace_path_for_native_socket_bytes(target_bytes: int) -> str:

@@ -31,8 +31,28 @@ test("uses AttachmentCard resolved blob src before opening user image previews",
 
 test("renders the locked Skill label separately from user-authored message content", () => {
   const source = readSource("../UserMessageBubble.tsx");
+  const lockedLabelBlock = source.match(
+    /\{lockedSkillLabel && \([\s\S]*?data-locked-skill-label[\s\S]*?\)\}/,
+  );
 
-  assert.match(source, /data-locked-skill-label/);
-  assert.match(source, /chat\.message\.lockedSkill/);
+  assert.ok(lockedLabelBlock);
+  assert.match(lockedLabelBlock[0], /chat\.message\.lockedSkill/);
+  assert.doesNotMatch(lockedLabelBlock[0], /MarkdownContent|content=/);
+  assert.match(source, /<MarkdownContent content=\{content!\} \/>/);
   assert.doesNotMatch(source, /`\/skill|"\/skill|'\/skill/);
+});
+
+test("accepts a locked Skill label only from the server-projected history event", () => {
+  const submissionSource = readSource("../../../../hooks/useAgent.ts");
+  const historySource = readSource("../../../../hooks/useAgent/historyLoader.ts");
+
+  assert.doesNotMatch(submissionSource, /lockedSkillLabel/);
+  assert.doesNotMatch(
+    submissionSource,
+    /selectedSkill\?\.skill_id[\s\S]{0,240}(locked|label)/i,
+  );
+  assert.match(
+    historySource,
+    /lockedSkillLabel:[\s\S]*eventData\.locked_skill_label/,
+  );
 });

@@ -546,7 +546,7 @@ function nonClosingSseEventResponse(event: string, data: Record<string, unknown>
   );
 }
 
-test("useAgent retains an accepted authorized Skill label without changing message text", async () => {
+test("useAgent defers the locked Skill label until the server projects it", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -585,7 +585,7 @@ test("useAgent retains an accepted authorized Skill label without changing messa
       (message) => message.role === "user" && message.runId === "run-skill-lock",
     );
     assert.equal(userMessage?.content, "发布这则通知");
-    assert.equal(userMessage?.lockedSkillLabel, "internal-comms");
+    assert.equal(userMessage?.lockedSkillLabel, undefined);
     assert.doesNotMatch(userMessage?.content || "", /\/skill|internal-comms/);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
