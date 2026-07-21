@@ -1,22 +1,24 @@
 # 211 Release Operations Runbook
 
-This runbook contains operational recovery details for ai-platform releases on
-the Docker-capable 211 host. `AGENTS.md` and the guardrails remain authoritative
-for source, secret, ownership, and verification boundaries.
+This runbook contains host commands, recovery paths, and terminal evidence for
+ai-platform releases on the Docker-capable 211 host. Product/source boundaries
+live in the guardrails; task ownership, readiness, leases, and break-glass
+authority live in `docs/agent-rules/multi-agent-context-workflow.md`.
 
-## Release Ownership And Readiness
+## Standard Command
 
-- Use one project-bound persistent release owner and one mutation lease.
-- Record `RELEASE_READINESS_PASS` for the exact publisher, target commit,
-  runtime, host, rollback subject, authority state, Docker/Compose capability,
-  and current per-service ownership before granting the lease.
-- The standard path is `tools/release_authority.py deploy-main-commit` from an
-  explicit full commit fetched from authoritative `origin/main`.
-- A tool-specific failure is not permission to improvise. A break-glass plan
-  requires explicit user approval, one persistent release owner, and the same
-  fetched-main, clean-checkout, immutable-image, rollback, and parity evidence.
-- Never use the dirty coordination root, a source archive, copied frontend
-  output, or a patched live container as release source.
+Use `tools/release_authority.py deploy-main-commit` with the explicit full commit
+fetched from authoritative `origin/main`. This command does not replace the
+readiness and ownership gates defined by the multi-agent workflow.
+
+## Readiness Evidence
+
+Before the workflow grants its release lease, the read-only host packet must
+identify the publisher and target commits, host and runtime subject, executable
+rollback subject, release-authority state and lock holder, Docker/Compose
+capability, per-service ownership and recover/adopt compatibility, and the exact
+services and method that require mutation. Missing or stale fields block release
+work rather than becoming discovery work inside a mutation task.
 
 ## Host Command Rules
 

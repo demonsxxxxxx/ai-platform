@@ -124,39 +124,16 @@ source/version ownership as the current platform gates.
   deploy-main-commit` with an explicit full commit fetched from authoritative
   `origin/main`. The tool is the preferred implementation of the release
   invariants, not an independent product-acceptance gate.
-- If the standard tool cannot safely execute for a tool-specific reason, do not
-  silently bypass it. A break-glass release requires explicit user approval of
-  the exact fallback plan and one project-bound persistent release owner. The
-  fallback must prove the same fetched-main ancestry, clean isolated checkout,
-  immutable image provenance, single lease, rollback subject, and final parity.
-  Never use a local source archive, hand-copied frontend dist, or dirty
-  coordination checkout.
 - Git-native release preparation must fail closed when the commit is not
   reachable from fetched main, the versioned checkout is dirty, contains
   ignored worktree files, or is mismatched, an interrupted staging directory
   remains, a release path escapes through a symlink or traversal, or canonical
-  and compatibility image provenance labels disagree. A release-owner
-  post-merge 211 rollout is still required before claiming `211 verified` or
-  source-authority closure.
-- Goal-sized work and gate closures should follow
-  `docs/agent-rules/github-issue-pr-workflow.md`: issue -> PR -> review ->
-  merge -> deploy/smoke -> close issue. Do not close or auto-close an issue
-  until the linked PR has merged and required local, review, docs, and 211
-  evidence are recorded.
-- Stage or high-risk completion requires independent multi-agent review. If the
-  delegation tool exposes per-agent model and reasoning controls, set them
-  deliberately for task complexity. If it does not expose those fields, record
-  the inherited/default configuration and do not claim a model-specific or
-  reasoning-specific gate.
-- Only fix review feedback after validating it against current PRD, roadmap,
-  guardrails, code, and tests.
-- Use layered verification: targeted tests for small/local changes, related
-  module plus key-path tests for medium changes, and higher verification for
-  the high-risk areas named above.
-- Run targeted tests for the changed or affected modules plus the relevant
-  integration or smoke checks before PR, deployment, merge, or stage-gate
-  closure. Do not require full-repository pytest as a routine gate.
-- Run Docker compose, image build, container restart, and sandbox Docker smoke
-  only on 211 or another Docker-capable host.
-- 211 verification must prove the current deployed containers, image identity,
-  API health, and relevant contract behavior after deployment.
+  and compatibility image provenance labels disagree.
+- Never release from a local source archive, copied frontend distribution, dirty
+  coordination checkout, or patched live container. Release readiness,
+  persistent ownership, mutation leases, and break-glass authority are defined
+  only in `docs/agent-rules/multi-agent-context-workflow.md`; host commands and
+  terminal parity evidence are defined only in
+  `docs/operations/211-release-operations-runbook.md`.
+- Issue, PR, review, verification, status, and closure rules are defined only in
+  `docs/agent-rules/github-issue-pr-workflow.md`.
