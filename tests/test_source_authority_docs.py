@@ -231,19 +231,14 @@ def test_agent_rules_keep_main_session_authority_separate_from_subagents():
     compact_agents_text = " ".join(agents_text.split())
     compact_workflow_text = " ".join(workflow_text.split())
 
-    assert "Standing phrases such as `主线程全部授权`, `主线程有权限操作`, or `执行`" in agents_text
+    assert "single source for task lifetimes, ownership, authority" in compact_agents_text
     assert (
-        "do not grant sub-agents write, GitHub write, Docker, deployment, or remote runtime authority"
-        in compact_agents_text
-    )
-    assert (
-        "main-thread authorization is a direct-operation allowance, not a delegation allowance"
+        "User authorization for one task or main session does not automatically grant"
         in compact_workflow_text
     )
-    assert (
-        "Sub-agents stay read-only for GitHub, Docker, 211, deployment, and destructive operations"
-        in compact_workflow_text
-    )
+    assert "A task may mutate only subjects explicitly covered by its dispatch" in compact_workflow_text
+    assert "Direct controller mutation is break-glass only" in compact_workflow_text
+    assert "broad standing authorization is insufficient" in compact_workflow_text
 
 
 def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
@@ -313,30 +308,14 @@ def test_github_workflow_records_sdk_worker_diagnostic_layers():
     compact_workflow_text = " ".join(workflow_text.split())
 
     for expected in (
-        "SDK / worker diagnostics must be layered",
-        "Claude Agent SDK",
-        "skill execution",
-        "worker launch",
-        "terminal execution",
-        "user-facing runtime errors",
+        "SDK, worker, skill, terminal, or user-facing runtime diagnostics",
         "tool registration -> runner selection -> subprocess/terminal -> SDK event -> user-facing error",
         "minimal reproduction",
-        "observable log or event evidence",
-        "Generic `sdk_error`",
-        "empty Bash input loops",
-        "terminal run failures",
-        "missing native skill evidence",
-        "platform-controlled runner selection",
-        "classified at the layer where they are observed",
+        "observable log/event evidence",
+        "Historical examples are non-normative",
+        "docs/agent-rules/history/github-sdk-diagnostic-examples.md",
     ):
         assert expected in compact_workflow_text
-
-    assert (
-        "Local diagnostic evidence by itself is `local partial` or `PR ready` evidence only"
-        in compact_workflow_text
-    )
-    assert "not `reviewed`, `211 verified`, or `gate closable`" in compact_workflow_text
-    assert "carries no #164 or stage/gate closure claim" in compact_workflow_text
 
 
 def test_technical_acceptance_summarizes_backend_p0_productization_bundles():
@@ -1136,14 +1115,21 @@ def test_foundation_alpha_runtime_evidence_subject_commit_parity_without_self_re
 
 
 def test_source_authority_docs_keep_current_repo_and_211_deploy_boundary():
+    guardrails_text = read(GUARDRAILS)
+    agents_text = read(AGENTS)
+    compact_agents_text = " ".join(agents_text.split())
+
+    assert "Current Source Boundaries" in guardrails_text
+    assert TARGET_211_BACKEND in guardrails_text
+    assert TARGET_211_DEPLOY in guardrails_text
+    assert "http://10.56.0.211:18001/" in guardrails_text
+    assert "ai-platform-api" in guardrails_text
+    assert "ai-platform-worker" in guardrails_text
+    assert "single source for current 211 paths" in compact_agents_text
+    assert TARGET_211_BACKEND not in agents_text
     for path in AUTHORITY_DOCS:
         text = read(path)
         assert "当前 `ai-platform` 仓库根目录" in text or "current `ai-platform` repository root" in text
-        assert TARGET_211_BACKEND in text
-        assert TARGET_211_DEPLOY in text
-        assert "http://10.56.0.211:18001/" in text
-        assert "ai-platform-api" in text
-        assert "ai-platform-worker" in text
         for stale_path in STALE_LOCAL_PATHS:
             assert stale_path not in text
 
@@ -1288,13 +1274,17 @@ def test_compose_forwards_public_skill_file_overlay_limit_to_api_and_worker():
 
 def test_agents_lock_211_runtime_verification_and_rebase_deploy_rules():
     agents_text = read(AGENTS)
+    runbook_text = read(ROOT / "docs/operations/211-release-operations-runbook.md")
     generator_text = read(ROOT / "scripts/generate_sandbox_runtime_evidence_211.py")
 
-    assert "python3" in agents_text
-    assert '--docker-cmd "sudo -n docker"' in agents_text
-    assert "--cancel-image ai-platform:local" in agents_text
-    assert "rebasing from the current/backup image" in agents_text
-    assert "compose with `--no-build`" in agents_text
+    assert "docs/operations/211-release-operations-runbook.md" in agents_text
+    assert "python3" in runbook_text
+    assert '--docker-cmd "sudo -n docker"' in runbook_text
+    assert "--cancel-image ai-platform:local" in runbook_text
+    assert "current or backup" in runbook_text
+    assert "recreate with `--no-build`" in runbook_text
+    assert "max depth exceeded" in runbook_text
+    assert "chmod +x /app/docker-entrypoint.sh" in runbook_text
     assert '"ai-platform:local"' in generator_text
     assert "--runtime-mode" in generator_text
     assert "platform" in generator_text
@@ -2716,12 +2706,12 @@ def test_prd_records_claude_sdk_execution_boundary_without_second_runtime():
     assert "DeerFlow" not in tech_text
     assert "platform multi-run / SDK subagent expansion" in compact_guardrails_text
     assert "shared contracts, multi-agent runtime" not in compact_guardrails_text
-    assert "assistant's working process" in multi_agent_workflow_text
-    assert "deferred G8 platform-level multi-run orchestration route" in compact_multi_agent_workflow_text
-    assert "B3 SDK subagent fanout capacity evidence" in compact_multi_agent_workflow_text
+    assert "assistant task lifetimes, ownership, authority, and context" in multi_agent_workflow_text
+    assert "deferred platform multi-run route" in compact_multi_agent_workflow_text
+    assert "B3 SDK subagent capacity" in compact_multi_agent_workflow_text
     assert (
-        "Assistant sub-agents in this workflow do not prove, open, or close "
-        "ordinary-user platform-level multi-run product exposure"
+        "does not define the product's deferred platform multi-run route or prove "
+        "B3 SDK subagent capacity"
     ) in compact_multi_agent_workflow_text
     assert "product-level multi-agent runtime" not in multi_agent_workflow_text
 
@@ -2749,3 +2739,119 @@ def test_skills_marketplace_public_api_documents_backed_file_overlay_contract():
     assert "skill_file_write_contract_not_backed" not in contract
     assert "skill_file_delete_contract_not_backed" not in contract
     assert "durable per-user skill file storage" not in contract
+
+
+def test_multi_agent_workflow_separates_task_lifetimes_and_budgets_release_work():
+    workflow = read(MULTI_AGENT_CONTEXT_WORKFLOW)
+    compact_workflow = " ".join(workflow.split())
+
+    assert "### Disposable probes" in workflow
+    assert "one-shot, read-only context-isolation task" in compact_workflow
+    assert "subject is not limited to a fixed task list" in compact_workflow
+    assert "must not read or receive a real `.env`, secret, credential" in compact_workflow
+    assert "Use authorized redacted evidence instead" in compact_workflow
+    assert "It receives no write lease" in compact_workflow
+    assert "Do not turn or re-charter a disposable probe into a writer" in compact_workflow
+    assert "### Persistent tasks" in workflow
+    assert "persistent, project-bound Codex task" in compact_workflow
+    assert "independent clean worktree" in compact_workflow
+
+    assert "## Release Lifecycle" in workflow
+    assert "`RELEASE_READINESS_PASS`" in workflow
+    assert "`RELEASE_READINESS_BLOCKED`" in workflow
+    assert "or count a release generation" in compact_workflow
+    assert "exactly one project-bound persistent release task and one mutation lease" in compact_workflow
+
+    assert "## Goal-Level Repair Budget" in workflow
+    assert "`repair_budget_total`" in workflow
+    assert "finite goal-specific `repair_budget_total`" in compact_workflow
+    assert "no permanent numeric default" in compact_workflow
+    assert "does not reset it" in compact_workflow
+    assert "`GOAL_REPAIR_BUDGET_EXHAUSTED`" in workflow
+    assert "Only an explicit user decision may increase or reset" in compact_workflow
+
+    assert "## Model And Review Routing" in workflow
+    assert "default reasoning ceiling" in compact_workflow
+    assert "`max` requires explicit user authorization" in compact_workflow
+    assert "Capacity is not a target" in compact_workflow
+    assert "economical read-only role for disposable probes" in compact_workflow
+    assert "Do not hard-code a probe to a particular model name" in compact_workflow
+
+
+def test_governance_docs_remove_stale_rules_without_weakening_release_invariants():
+    agents = read(AGENTS)
+    guardrails = read(GUARDRAILS)
+    github_workflow = read(GITHUB_WORKFLOW)
+    compact_github_workflow = " ".join(github_workflow.split())
+    multi_agent_workflow = read(MULTI_AGENT_CONTEXT_WORKFLOW)
+    compact_multi_agent_workflow = " ".join(multi_agent_workflow.split())
+    runbook = read(ROOT / "docs/operations/211-release-operations-runbook.md")
+    history = read(
+        ROOT / "docs/agent-rules/history/github-sdk-diagnostic-examples.md"
+    )
+
+    assert "Frontend source is maintained in `frontend/web`" in guardrails
+    assert "Frontend source is maintained in `frontend/web`" not in agents
+    assert "Move frontend source into this repository" not in agents
+    assert "Frontend source should move into this repository" not in guardrails
+    assert "#15/#16/#17" not in agents
+    assert "#15/#16/#17" not in guardrails
+
+    assert "actually observed on the PR count as CI gates" in compact_github_workflow
+    assert "Until backend CI/CD is configured" not in github_workflow
+    assert "Historical examples are non-normative" in github_workflow
+    for pr in ("PR #165", "PR #168", "PR #169"):
+        assert pr not in github_workflow
+        assert pr in history
+
+    assert "preferred implementation of the release" in guardrails
+    assert "not an independent product-acceptance gate" in guardrails
+    assert "persistent ownership, mutation leases, and break-glass authority" in guardrails
+    assert "Never release from a local source archive" in guardrails
+    assert "project-bound persistent release task" in compact_multi_agent_workflow
+    assert "one mutation lease" in compact_multi_agent_workflow
+    assert "final source/runtime parity" in runbook
+
+    assert "### Persistent tasks" in multi_agent_workflow
+    assert "### Disposable probes" in multi_agent_workflow
+    assert "No tool output found" in multi_agent_workflow
+    assert "orphan-call protocol error" in compact_multi_agent_workflow
+    assert "do not guess a result or replay" in compact_multi_agent_workflow
+
+
+def test_governance_docs_keep_cross_cutting_rules_in_one_authoritative_file():
+    docs = {
+        "agents": read(AGENTS),
+        "guardrails": read(GUARDRAILS),
+        "github": read(GITHUB_WORKFLOW),
+        "workflow": read(MULTI_AGENT_CONTEXT_WORKFLOW),
+        "runbook": read(ROOT / "docs/operations/211-release-operations-runbook.md"),
+    }
+
+    unique_contracts = {
+        "workflow": (
+            "`RELEASE_READINESS_PASS`",
+            "`repair_budget_total`",
+            "default reasoning ceiling",
+            "one-shot, read-only context-isolation task",
+        ),
+        "guardrails": (
+            TARGET_211_BACKEND,
+            "Frontend source is maintained in `frontend/web`",
+        ),
+        "github": (
+            "`local partial`",
+            "`gate closable`",
+        ),
+        "runbook": (
+            '--docker-cmd "sudo -n docker"',
+            "max depth exceeded",
+        ),
+    }
+
+    for owner, phrases in unique_contracts.items():
+        for phrase in phrases:
+            assert phrase in docs[owner]
+            for other_name, other_text in docs.items():
+                if other_name != owner:
+                    assert phrase not in other_text

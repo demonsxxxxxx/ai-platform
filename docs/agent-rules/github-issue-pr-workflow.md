@@ -1,205 +1,94 @@
 # GitHub Issue And PR Workflow
 
-This workflow applies to goal-sized ai-platform work, gate closures, and newly
-discovered defects. Keep `AGENTS.md` as the short entry point and update this
-file when the issue/PR workflow needs more detail.
+This file is the single source for issue/PR records, status language, review
+evidence, and closure. Product and deployment invariants remain in the
+guardrails and 211 runbook.
 
 ## Closure Loop
 
-Use this sequence by default:
+For goal-sized work, gate closures, and new defects, use:
 
-1. Create or update issue.
-2. Implement on a branch.
-3. Open PR.
-4. Run local verification.
-5. Request and resolve review.
-6. Merge.
-7. Deploy and smoke on 211 when required.
-8. Close the issue with evidence.
+`issue -> branch -> PR -> focused verification -> review -> merge -> deploy/smoke when required -> close with evidence`
 
-## CI/CD And Evidence Strategy
+Only concrete GitHub checks applicable to the changed path and actually observed
+on the PR count as CI gates. Do not wait for a nonexistent or inapplicable run.
+If missing CI is itself a blocker, track it separately instead of expanding an
+unrelated product PR.
 
-Backend CI/CD is not currently a merge gate unless a concrete GitHub workflow
-exists for the changed path and is observed on the PR. Do not invent an
-implicit CI status, and do not wait for a nonexistent CI run.
+## Records And Evidence Size
 
-Until backend CI/CD is configured, choose durable GitHub evidence first:
-
-- Run the focused local verification required for the changed path.
-- Run independent review when the issue, gate, or risk level requires it.
-- Post the review result and verification commands to the PR or issue before
-  merge or issue closure.
-- Treat chat-only review, local-only sub-agent output, or unposted terminal
-  output as insufficient for `reviewed`, `merged`, or `gate closable` claims.
-
-If the missing CI/CD coverage itself becomes a blocker, create a separate issue
-and PR for the CI/CD workflow. Do not silently upgrade every unrelated PR into a
-CI/CD implementation task.
-
-## Evidence Sizing
-
-For an ordinary implementation slice, use the linked GitHub issue and PR as the
-plan, change description, and continuing status record. Do not require a
-separate spec/plan/status trio by default.
-
-Create a separate design only when the slice changes a schema or public API,
-persistence, concurrency, infrastructure, or leaves an unresolved cross-module
-decision. A medium or long task may maintain one concise Phase status document
-when it improves handoff or verification clarity.
-
-Create a separate design for security, auth or authorization, tenant isolation,
-release or deployment, runtime, and other high-risk changes even when the slice
-is otherwise small.
-
-This sizing rule does not weaken verification. Keep risk-proportionate machine
-evidence: exact authorization and route checks, policy tests, and the relevant
-local or deployed smoke remain required. Do not delete or rewrite historical
-evidence merely because a future ordinary slice uses the smaller record.
+- The linked issue and PR are normally the plan, change description, and durable
+  status record. Do not create a spec/plan/status trio by default.
+- Create a separate design for security, auth or authorization, tenant isolation,
+  release, deployment, runtime, schemas or public contracts, persistence,
+  concurrency, infrastructure, or an unresolved cross-module decision.
+- Medium or long work may keep one concise phase status document when it improves
+  handoff or verification clarity.
+- Record blockers and evidence on the issue or PR, not only in chat. Historical
+  evidence remains historical and cannot prove current readiness.
 
 ## Status Language
 
-Use precise status labels. Do not let an earlier status imply a later one.
+- `local partial`: focused local checks or one bounded smoke passed.
+- `PR ready`: the candidate and focused evidence are ready for review; it is not
+  merged or deployed.
+- `reviewed`: required independent review ran and every finding was fixed,
+  rejected with evidence, or explicitly deferred.
+- `211 verified`: the exact deployed subject passed the required current runtime
+  checks on 211.
+- `gate closable`: implementation or decision, PR/merge when applicable, review,
+  required docs, and required runtime evidence are complete.
 
-- `local partial`: targeted tests or one focused smoke passed.
-- `PR ready`: code, focused tests, and docs are ready for review, but the PR has
-  not merged and runtime evidence may still be missing.
-- `reviewed`: independent review has run, and every finding is fixed, rejected
-  with evidence, or tracked as a follow-up issue.
-- `211 verified`: deployed runtime has been checked on 211 with the correct
-  container, image, route, principal, and contract behavior.
-- `gate closable`: issue, PR, review, tests, docs or roadmap updates, and
-  required 211 evidence are all complete.
+Never promote an earlier label into a later one without observing the additional
+evidence.
 
-Never describe `local partial`, `PR ready`, or `reviewed` work as deployed,
-closed, or gate-complete.
+## Issue, Branch, And PR Contract
 
-## Issue Triage
+An issue records scope, acceptance criteria, affected gate, verification and
+review requirements, runtime requirement when relevant, and known blockers.
 
-Before implementation, read the relevant PRD, roadmap, guardrails, current code,
-fresh 211 state, and the existing GitHub issue.
-
-If the problem is new, create or update a GitHub issue with:
-
-- scope;
-- affected gate or roadmap section;
-- acceptance criteria;
-- local verification requirement;
-- review requirement;
-- 211 deployment or smoke requirement when relevant;
-- known blockers or missing evidence.
-
-Do not hide blockers in chat. If review, tests, 211 smoke, source authority,
-auth, tenant quota, sandbox, or frontend projection evidence is missing, record
-it on the issue or PR before pausing.
-
-## Branch And PR Rules
-
-- Keep one coherent PR per issue or gate slice.
-- Use a branch name that includes the issue number or gate name.
-- A PR may close multiple issues only when their acceptance criteria are truly
-  covered by the same slice.
-- Direct commits to `main` are exceptions. Use them only when the user
-  explicitly requests direct-main work or when operational recovery requires it.
-  Still record the issue/PR exception and final evidence.
-
-## PR Description Requirements
-
-Every PR should state:
-
-- linked issue or gate;
-- changed modules;
-- user-visible or operator-visible behavior;
-- tests run;
-- review status;
-- docs or roadmap updates;
-- 211 deployment or smoke evidence, or why it is not required.
-
-Use `Closes #N` or `Fixes #N` only when the issue acceptance criteria are
-covered by code, tests, docs or roadmap updates, review, and required 211 smoke.
-Otherwise link the issue without auto-closing language.
+- Keep one coherent PR per issue or gate slice. One PR may cover multiple issues
+  only when it satisfies the same coherent acceptance boundary.
+- Use a branch name tied to the issue or gate.
+- Direct commits to `main` require an explicit user request or documented
+  operational exception, with the same evidence recorded afterward.
+- A PR states its linked subject, changed behavior/modules, tests observed,
+  review state, docs impact, and runtime evidence or why it is unnecessary.
+- Use `Closes #N` or `Fixes #N` only when all acceptance criteria, review, and
+  required runtime evidence will be satisfied by that merge. Otherwise link the
+  issue without auto-close wording.
 
 ## Review And Verification
 
-- High-risk or stage-gate work requires independent review when the available
-  delegation path is suitable.
-- SDK / worker diagnostics must be layered when a PR changes Claude Agent SDK,
-  skill execution, worker launch, terminal execution, or user-facing runtime
-  errors. Trace the fault through:
-  `tool registration -> runner selection -> subprocess/terminal -> SDK event -> user-facing error`.
-  Each such PR must leave at least one minimal reproduction and one observable
-  log or event evidence item on the PR or linked issue. Generic `sdk_error`,
-  empty Bash input loops, terminal run failures, missing native skill evidence,
-  and platform-controlled runner selection must be classified at the layer where
-  they are observed. Local diagnostic evidence by itself is `local partial` or
-  `PR ready` evidence only; it is not `reviewed`, `211 verified`, or
-  `gate closable`, and it carries no #164 or stage/gate closure claim
-  unless the normal review, deployed-runtime, and issue-closure gates below also
-  pass.
-  Recent evidence examples:
-  - PR #165 kept terminal run failures visible instead of hiding them behind
-    artifact ACL symptoms.
-  - PR #168 separated governed worker concurrency and sanitized public
-    `sdk_error` diagnostics.
-  - PR #169 tied the controlled runner fallback to proven empty Bash tool-input
-    loops while preserving ordinary SDK failure paths.
-- When review is performed by sub-agents or other local assistants, record the
-  result on GitHub before using it as review evidence. The comment should name
-  the reviewer role, scope, findings, fixes or rejections, and verification
-  evidence.
-- When the repository does not have an available GitHub review robot or formal
-  GitHub reviewer, a sub-agent review recorded on the PR is the accepted
-  independent review substitute. Before merge, run a follow-up sub-agent
-  re-review after fixes and verify that no Critical or Important findings remain
-  unhandled.
-- If GitHub `reviewDecision` is empty, do not call the PR formally approved.
-  Label the state explicitly, such as `sub-agent review substitute`,
-  `user-authorized review substitute`, or `inherited-configuration review`, and
-  keep that separate from a GitHub formal review decision.
-- Validate review findings against current PRD, roadmap, guardrails, code,
-  tests, and 211 evidence before changing code.
-- Every review finding must be handled in one of three ways: fixed with tests,
-  rejected with a written evidence-backed reason, or moved to a follow-up issue.
-  Do not leave review findings only in chat.
-- Before PR, deployment, merge, or stage-gate closure, run targeted tests for
-  the changed or affected modules plus relevant integration or smoke checks
-  unless the task is explicitly documented as no-code. Do not require or run
-  full-repository pytest as a routine gate.
-- For public/admin projection changes, verify the correct principal and route.
-  Admin checks do not prove ordinary-user behavior.
-- For 211 deployment, prove current deployed containers, image identity, API
-  health, and the relevant contract behavior after deployment.
-- If deployment needs `docker cp`, runtime-only rebase, `--no-build`, or another
-  workaround, label it as a workaround in the PR or issue. If the same workaround
-  is needed repeatedly, open a follow-up issue for the release path.
+- Use independent review for high-risk paths and stage-gate work when a suitable
+  review path is available. Record the reviewer identity/role, exact scope,
+  severity-ranked findings, handling decisions, and observed verification on the
+  PR or issue before claiming `reviewed`.
+- A local agent review may substitute for a formal GitHub reviewer when recorded
+  durably. If fixes follow, re-review the fixed SHA and leave no Critical or
+  Important finding unhandled. Do not call an empty GitHub `reviewDecision`
+  formally approved.
+- Validate findings against current requirements, guardrails, code, and tests.
+  Handle each finding by fixing it, rejecting it with evidence, or explicitly
+  deferring it without using the deferral to bypass current acceptance.
+- Run the narrowest relevant verification first. Before PR, merge, deployment,
+  or gate closure, run the changed-scope tests plus the integration or smoke
+  checks justified by risk. Full-repository pytest is not a routine gate.
+- Projection checks use the correct principal and route; Admin evidence does not
+  prove ordinary-user behavior.
+- Runtime evidence identifies the exact commit/image/container, route and
+  principal where applicable, API health, and target contract behavior.
+- Label deployment workarounds as workarounds and track repeated ones as release
+  path defects rather than normalizing them.
 
-## Shortcut Prevention Checklist
+SDK, worker, skill, terminal, or user-facing runtime diagnostics trace the fault
+through `tool registration -> runner selection -> subprocess/terminal -> SDK event -> user-facing error` and leave a minimal reproduction plus observable
+log/event evidence. Historical examples are non-normative and live in
+`docs/agent-rules/history/github-sdk-diagnostic-examples.md`.
 
-Before saying `complete`, `closed`, `deployed`, `passed`, or `ready to merge`,
-confirm:
+## Closure
 
-- there is an issue or explicit gate;
-- a PR exists, or a direct-main exception is recorded;
-- the correct local test level ran;
-- review ran when required, and findings were fixed, rejected with evidence, or
-  tracked as follow-up issues;
-- 211 smoke ran when required, with the correct principal, route, container, and
-  image evidence;
-- docs or roadmap updates are present when the slice changes gate status;
-- deployment workarounds are labeled as workarounds;
-- the issue can be closed without relying on chat-only evidence.
-
-## Issue Closure
-
-Close after evidence, not after intent.
-
-An issue is closed only after:
-
-- the linked PR has merged, or a no-code decision is recorded;
-- required local verification is posted;
-- required review is posted;
-- required docs or roadmap updates are present;
-- required 211 deployment or smoke evidence is posted.
-
-For no-code issues, close with a comment that cites the verification or decision
-evidence. Do not use auto-close wording on a PR if any issue acceptance item is
-still pending.
+Close after evidence, not intent. An issue closes only after its implementation
+or no-code decision, applicable merge, focused verification, required review,
+docs or roadmap update, and required runtime evidence are recorded. A no-code
+issue closes with the decision and its verification evidence.
