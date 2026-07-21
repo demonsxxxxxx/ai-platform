@@ -2754,6 +2754,8 @@ def test_skills_marketplace_public_api_documents_backed_file_overlay_contract():
 def test_multi_agent_workflow_separates_task_lifetimes_and_budgets_release_work():
     workflow = read(MULTI_AGENT_CONTEXT_WORKFLOW)
     compact_workflow = " ".join(workflow.split())
+    agents = read(AGENTS)
+    compact_agents = " ".join(agents.split())
 
     assert "## Disposable Subagents Versus Persistent Tasks" in workflow
     assert "`spawn_agent` creates a disposable, one-shot subagent" in compact_workflow
@@ -2784,3 +2786,16 @@ def test_multi_agent_workflow_separates_task_lifetimes_and_budgets_release_work(
     assert "does not reset the budget" in compact_workflow
     assert "`GOAL_REPAIR_BUDGET_EXHAUSTED`" in workflow
     assert "Only an explicit user decision may reset or increase" in compact_workflow
+
+    assert "## Model And Reasoning Ceiling" in workflow
+    assert "reasoning effort no higher than `xhigh`" in compact_workflow
+    assert "`max` and `ultra` are forbidden" in compact_workflow
+    assert "Luna with `low` reasoning" in compact_workflow
+    assert "At each new phase" in compact_workflow
+    assert "Capacity is not a target" in compact_workflow
+    assert "Luna-low probes are evidence compressors only" in compact_workflow
+
+    assert "reasoning effort no higher than `xhigh`" in compact_agents
+    assert "Do not select `max` or `ultra`" in compact_agents
+    assert "Luna with `low` reasoning" in compact_agents
+    assert "Luna-low disposable sub-agents must not implement" in compact_agents

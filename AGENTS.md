@@ -101,6 +101,17 @@ required before making a status claim.
 - Do not require per-agent `model` or `reasoning_effort` fields for `spawn_agent`.
 - When the delegation tool exposes per-agent `model` or `reasoning_effort`
   fields, set them deliberately according to task complexity.
+- The controller and every new, resumed, or re-chartered task must use a
+  reasoning effort no higher than `xhigh`. Do not select `max` or `ultra`, even
+  for release, deployment, sandbox, security, or final-review work.
+- Actively consider Luna with `low` reasoning for simple, one-shot, read-only
+  context-isolation work such as wide search, log compression, baseline
+  comparison, checklist extraction, state refresh, and peripheral evidence
+  reduction. Use `fork_turns = "none"`, a self-contained prompt, and a ten-minute
+  stop; do not dispatch work merely to fill capacity.
+- Luna-low disposable sub-agents must not implement, own a persistent test or
+  review generation, mutate GitHub or 211, deploy, receive credentials, or make
+  a final high-risk decision.
 - When the delegation tool does not expose those fields, use the tool's default
   or inherited configuration and state that model-specific settings were not
   externally asserted.

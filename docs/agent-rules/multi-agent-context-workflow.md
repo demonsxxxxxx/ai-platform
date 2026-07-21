@@ -94,6 +94,29 @@ open, or close ordinary-user platform-level multi-run product exposure.
   clean status, writable and forbidden paths, permissions, lease ID, next
   event, evidence ceiling, and terminal/exit conditions.
 
+## Model And Reasoning Ceiling
+
+- The controller and every newly created, resumed, or re-chartered task must use
+  a reasoning effort no higher than `xhigh`. `max` and `ultra` are forbidden;
+  high-risk work changes the model/role pairing and verification depth, not this
+  ceiling.
+- Prefer Luna with `low` reasoning for simple disposable work that isolates
+  broad or noisy context: cross-file search, large-log compression, failed-node
+  baseline comparison, inventory/checklist extraction, module-state refresh,
+  and peripheral evidence reduction.
+- At each new phase, the controller should first ask whether one or two
+  independent Luna-low probes would reduce context pollution. Use
+  `fork_turns = "none"`, a self-contained prompt, a compact evidence packet, and
+  a ten-minute stop. Capacity is not a target, so do not manufacture probe work.
+- Luna-low probes are evidence compressors only. They must not implement, own a
+  persistent test/review generation, mutate GitHub or 211, deploy, receive
+  credentials, or make a final decision for security, authorization,
+  concurrency, sandbox, deployment, or public contracts.
+- Use Terra at `high` or `xhigh` for bounded implementation and independent
+  testing/review, and Sol at `xhigh` for controller reasoning or decisive
+  high-risk work. Preserve reviewer independence instead of increasing effort
+  above `xhigh`.
+
 ## Release Readiness Before Mutation
 
 - A release generation, project-bound release owner, or mutation lease may be
