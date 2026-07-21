@@ -92,20 +92,35 @@ Redis operation only when no live ownership exists. Any malformed or
 over-limit legacy state fails closed without a fence.
 
 The claim interface returns an opaque owner token. Its Redis key has a typed,
-bounded TTL; release is a compare-token-and-delete Lua operation, so another
-owner cannot release it. Enqueue, quota lease, and atomic retry/requeue scripts
-all receive the same exact-run fence key and refuse to create ownership while
-it exists. The legacy blocking lease is safe because Redis serializes its
-queued-to-processing list move against claim acquisition: either the claim
-sees queued/processing ownership and fails, or a prior fence prevents every
-producer from placing the item in the queue.
+bounded TTL; release and renewal are compare-token Lua operations, so another
+owner cannot release or extend it. A matching processing/retry metadata row is
+live only when its row-level `heartbeat_at`/`leased_at` is fresh, its worker
+heartbeat is fresh, and its exact message ID/raw payload correlates to the
+processing list. A reused worker ID alone never keeps stale metadata live.
+Stale metadata is ignored without deletion until exclusive ownership is
+confirmed; malformed or partial metadata fails closed. Enqueue, quota lease,
+atomic retry/requeue, and expired-lease dead-letter scripts all receive the
+same exact-run fence key and refuse ownership mutation while it exists. The
+legacy blocking lease is safe because Redis serializes its queued-to-processing
+list move against claim acquisition: either the claim sees queued/processing
+ownership and fails, or a prior fence prevents every producer from placing the
+item in the queue.
 
 Worker maintenance acquires the claim before opening the scoped DB
-transaction. It holds the fence through the DB CAS commit and bounded
-permission terminalization commits. It releases only after a known CAS loss
-or a known terminal result. An ambiguous DB/Redis failure or partial drain
-leaves the bounded fence to expire instead of risking ownership creation
-during an uncertain terminalization.
+transaction. It renews the token-checked fence on a bounded background cadence
+and immediately before every reconciliation transaction commits, including
+bounded permission-drain and parent-reconciliation commits. A lost token or
+renewal failure raises from the transaction boundary so no further terminal
+intent/event/audit can commit; it then leaves the remaining bounded TTL to
+expire. It releases only after a known CAS loss or a known terminal result.
+An ambiguous DB/Redis failure or partial drain likewise retains the bounded
+fence rather than risking ownership creation during uncertain terminalization.
+
+Local queue tests assert the exact production Lua source, key count, and ARGV
+order while exercising deterministic fence, expiry/renewal, reused-worker, and
+heartbeat/reclaim interleavings. This Windows workstation has no real Redis or
+Lua runtime; release readiness therefore requires one real 211 Redis Lua smoke
+before any runtime mutation.
 
 Admission no longer performs Redis scans or reconciliation under its DB
 transaction/advisory lock. It remains the normal active-count check; worker

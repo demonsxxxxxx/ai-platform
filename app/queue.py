@@ -316,6 +316,8 @@ local quota_snapshot = {
   user_processing_saturated = user_processing_limit > 0 and user_processing >= user_processing_limit,
 }
 local meta = {
+  message_id = message_id,
+  raw = raw,
   attempts = attempts,
   leased_at = now,
   heartbeat_at = now,
@@ -463,7 +465,7 @@ local fence_ttl_ms = tonumber(ARGV[8])
 if redis.call("exists", fence_key) == 1 then
   return cjson.encode({status = "fenced"})
 end
-if scan_limit == nil or scan_limit < 1 or fence_ttl_ms == nil or fence_ttl_ms < 1 then
+if now == nil or worker_ttl == nil or scan_limit == nil or scan_limit < 1 or fence_ttl_ms == nil or fence_ttl_ms < 1 then
   return cjson.encode({status = "inconclusive"})
 end
 
@@ -488,6 +490,15 @@ local function list_has_run(list_key)
   return "absent"
 end
 
+local function processing_has_correlated_raw(expected_raw)
+  for _, processing_raw in ipairs(redis.call("lrange", processing_key, 0, -1)) do
+    if processing_raw == expected_raw then
+      return true
+    end
+  end
+  return false
+end
+
 local queued_state = list_has_run(queued_key)
 if queued_state ~= "absent" then
   return cjson.encode({status = queued_state})
@@ -507,6 +518,7 @@ local function metadata_state(hash_key, queued_metadata)
   end
   local items = redis.call("hgetall", hash_key)
   for index = 2, #items, 2 do
+    local metadata_message_id = tostring(items[index - 1] or "")
     local ok, metadata = pcall(cjson.decode, items[index])
     if not ok or type(metadata) ~= "table" then
       return "inconclusive"
@@ -520,11 +532,52 @@ local function metadata_state(hash_key, queued_metadata)
       if worker_id == "" then
         return "inconclusive"
       end
-      local heartbeat = tonumber(redis.call("hget", worker_heartbeat_key, worker_id) or "")
-      if heartbeat and now - heartbeat <= worker_ttl then
+      local last_activity = nil
+      for _, activity_field in ipairs({"heartbeat_at", "leased_at"}) do
+        if metadata[activity_field] ~= nil then
+          local activity = tonumber(metadata[activity_field])
+          if activity == nil then
+            return "inconclusive"
+          end
+          if activity > now then
+            return "inconclusive"
+          end
+          if last_activity == nil or activity > last_activity then
+            last_activity = activity
+          end
+        end
+      end
+      if last_activity == nil then
+        return "inconclusive"
+      end
+      local raw_worker_heartbeat = redis.call("hget", worker_heartbeat_key, worker_id)
+      local worker_active = false
+      if raw_worker_heartbeat then
+        local worker_heartbeat = tonumber(raw_worker_heartbeat)
+        if worker_heartbeat == nil then
+          return "inconclusive"
+        end
+        if worker_heartbeat > now then
+          return "inconclusive"
+        end
+        worker_active = now - worker_heartbeat <= worker_ttl
+      end
+      local metadata_fresh = now - last_activity <= worker_ttl
+      if metadata_fresh and worker_active then
+        local metadata_raw = metadata["raw"]
+        if type(metadata_raw) ~= "string" or metadata_raw == ""
+           or tostring(metadata["message_id"] or "") ~= metadata_message_id then
+          return "inconclusive"
+        end
+        local raw_ok, raw_payload = pcall(cjson.decode, metadata_raw)
+        if not raw_ok or type(raw_payload) ~= "table"
+           or tostring(raw_payload["tenant_id"] or "") ~= tenant_id
+           or tostring(raw_payload["run_id"] or "") ~= run_id
+           or not processing_has_correlated_raw(metadata_raw) then
+          return "inconclusive"
+        end
         return "owned"
       end
-      redis.call("hdel", hash_key, items[index - 1])
     end
   end
   return "absent"
@@ -554,6 +607,25 @@ if redis.call("get", KEYS[1]) ~= ARGV[1] then
   return 0
 end
 return redis.call("del", KEYS[1])
+"""
+
+
+RENEW_RECONCILIATION_FENCE_SCRIPT = """
+-- ai-platform:renew-run-reconciliation-fence:v1
+local fence_key = KEYS[1]
+local owner_token = ARGV[1]
+local fence_ttl_ms = tonumber(ARGV[2])
+
+if fence_ttl_ms == nil or fence_ttl_ms < 1 then
+  return cjson.encode({status = "invalid_ttl"})
+end
+if redis.call("get", fence_key) ~= owner_token then
+  return cjson.encode({status = "owner_lost"})
+end
+if not redis.call("set", fence_key, owner_token, "XX", "PX", fence_ttl_ms) then
+  return cjson.encode({status = "owner_lost"})
+end
+return cjson.encode({status = "renewed"})
 """
 
 
@@ -613,6 +685,34 @@ if retry_metadata_json ~= "" then
   redis.call("hset", retry_meta_key, message_id, retry_metadata_json)
 end
 return cjson.encode({status = "requeued"})
+"""
+
+
+DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT = """
+-- ai-platform:dead-letter-expired-lease-with-fence:v1
+local processing_key = KEYS[1]
+local processing_meta_key = KEYS[2]
+local retry_meta_key = KEYS[3]
+local dead_letter_key = KEYS[4]
+local fence_key = KEYS[5]
+
+if redis.call("exists", fence_key) == 1 then
+  return cjson.encode({status = "reconciliation_fenced"})
+end
+
+local raw = ARGV[1]
+local message_id = ARGV[2]
+local dead_letter_json = ARGV[3]
+local remove_processing_meta = ARGV[4]
+
+redis.call("lrem", processing_key, 1, raw)
+if remove_processing_meta == "1" then
+  redis.call("hdel", processing_meta_key, message_id)
+end
+redis.call("rpush", dead_letter_key, dead_letter_json)
+redis.call("hdel", retry_meta_key, message_id)
+
+return cjson.encode({status = "dead_lettered"})
 """
 
 
@@ -999,6 +1099,26 @@ async def release_run_reconciliation_fence(fence: RunReconciliationFence) -> boo
             fence.owner_token,
         )
         return bool(int(released or 0))
+    finally:
+        await redis.aclose()
+
+
+async def renew_run_reconciliation_fence(fence: RunReconciliationFence, *, ttl_seconds: int) -> bool:
+    """Extend a fence only when its opaque owner token still matches."""
+
+    bounded_ttl = max(int(ttl_seconds), 1)
+    redis = await get_redis()
+    try:
+        result = _decode_redis_script_result(
+            await redis.eval(
+                RENEW_RECONCILIATION_FENCE_SCRIPT,
+                1,
+                fence.fence_key,
+                fence.owner_token,
+                bounded_ttl * 1000,
+            )
+        )
+        return str(result.get("status") or "") == "renewed"
     finally:
         await redis.aclose()
 
@@ -1569,6 +1689,8 @@ async def _record_legacy_lease_with_fence(
     """Atomically record legacy lease ownership or yield to a reconciliation fence."""
 
     metadata = {
+        "message_id": message_id,
+        "raw": raw,
         "attempts": attempts,
         "leased_at": now,
         "heartbeat_at": now,
@@ -1642,6 +1764,50 @@ async def _requeue_run_with_fence(
         )
     )
     return str(result.get("status") or "") == "requeued"
+
+
+async def _dead_letter_expired_lease_with_fence(
+    redis: Redis,
+    keys: QueueKeys,
+    *,
+    raw: str,
+    message_id: str,
+    error_code: str,
+    error_message: str,
+    attempts: int,
+    worker_id: str | None,
+    remove_processing_meta: bool,
+) -> bool:
+    """Atomically dead-letter an expired lease unless its exact run is fenced."""
+
+    try:
+        payload = QueueRunPayload.model_validate_json(raw)
+    except ValidationError:
+        fence_key = f"{keys.reconciliation_fence_prefix}:invalid:{message_id}"
+    else:
+        fence_key = reconciliation_fence_key(tenant_id=payload.tenant_id, run_id=payload.run_id)
+    result = _decode_redis_script_result(
+        await redis.eval(
+            DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT,
+            5,
+            keys.processing,
+            keys.processing_meta,
+            keys.retry_meta,
+            keys.dead_letter,
+            fence_key,
+            raw,
+            message_id,
+            _dead_letter_json(
+                raw=raw,
+                error_code=error_code,
+                error_message=error_message,
+                attempts=attempts,
+                worker_id=worker_id,
+            ),
+            "1" if remove_processing_meta else "0",
+        )
+    )
+    return str(result.get("status") or "") == "dead_lettered"
 
 
 async def _remove_message_id_from_run_index(
@@ -2083,19 +2249,18 @@ async def reclaim_expired_leases(
                         retry_payload = {}
                         attempts = 1
                 if attempts >= max_attempts:
-                    await redis.lrem(keys.processing, 1, raw)
-                    await redis.rpush(
-                        keys.dead_letter,
-                        _dead_letter_json(
-                            raw=raw,
-                            error_code="lease_expired_max_attempts",
-                            error_message="Leased queue message exceeded max attempts",
-                            attempts=attempts,
-                            worker_id=retry_payload.get("worker_id"),
-                        ),
-                    )
-                    await redis.hdel(keys.retry_meta, message_id)
-                    dead_lettered += 1
+                    if await _dead_letter_expired_lease_with_fence(
+                        redis,
+                        keys,
+                        raw=raw,
+                        message_id=message_id,
+                        error_code="lease_expired_max_attempts",
+                        error_message="Leased queue message exceeded max attempts",
+                        attempts=attempts,
+                        worker_id=retry_payload.get("worker_id"),
+                        remove_processing_meta=False,
+                    ):
+                        dead_lettered += 1
                 else:
                     requeued = await _requeue_run_with_fence(
                         redis,
@@ -2120,20 +2285,18 @@ async def reclaim_expired_leases(
                 continue
             attempts = int(meta.get("attempts") or 0)
             if attempts >= max_attempts:
-                await redis.lrem(keys.processing, 1, raw)
-                await redis.hdel(keys.processing_meta, message_id)
-                await redis.rpush(
-                    keys.dead_letter,
-                    _dead_letter_json(
-                        raw=raw,
-                        error_code="lease_expired_max_attempts",
-                        error_message="Leased queue message exceeded max attempts",
-                        attempts=attempts,
-                        worker_id=meta.get("worker_id"),
-                    ),
-                )
-                await redis.hdel(keys.retry_meta, message_id)
-                dead_lettered += 1
+                if await _dead_letter_expired_lease_with_fence(
+                    redis,
+                    keys,
+                    raw=raw,
+                    message_id=message_id,
+                    error_code="lease_expired_max_attempts",
+                    error_message="Leased queue message exceeded max attempts",
+                    attempts=attempts,
+                    worker_id=meta.get("worker_id"),
+                    remove_processing_meta=True,
+                ):
+                    dead_lettered += 1
             else:
                 requeued = await _requeue_run_with_fence(
                     redis,

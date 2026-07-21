@@ -73,6 +73,9 @@ def default_sandbox_cleanup(monkeypatch):
     async def reconcile_stale_runs_for_worker(settings=None):
         return []
 
+    async def renew_run_reconciliation_fence(_fence, *, ttl_seconds):
+        return ttl_seconds > 0
+
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_sandbox_leases",
         cleanup_expired_sandbox_leases,
@@ -91,6 +94,11 @@ def default_sandbox_cleanup(monkeypatch):
     monkeypatch.setattr(
         "app.worker_main.reconcile_stale_runs_for_worker",
         reconcile_stale_runs_for_worker,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.queue.renew_run_reconciliation_fence",
+        renew_run_reconciliation_fence,
         raising=False,
     )
 
@@ -750,6 +758,130 @@ async def test_stale_run_db_error_retains_bounded_fence(monkeypatch):
         {"tenant_id": "tenant-a", "run_id": "run-db-error", "status": "db_unknown", "did_transition": False}
     ]
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_run_fence_renewal_loss_aborts_before_staging_a_terminal_intent(monkeypatch):
+    calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            calls.append("rollback" if exc_type is not None else "commit")
+            return False
+
+    class Settings:
+        stale_run_reconciliation_limit = 1
+        stale_run_reconciliation_seconds = 900
+        stale_run_reconciliation_fence_ttl_seconds = 30
+        queue_metadata_fallback_scan_limit = 50
+
+    async def list_candidates(_conn, **_kwargs):
+        return [{
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "run_id": "run-token-lost",
+            "status": "running",
+            "cancel_requested_at": None,
+            "stale_before": "2026-07-21T11:00:00Z",
+        }]
+
+    async def acquire(**_kwargs):
+        return worker_main.queue.RunReconciliationFence("tenant-a", "run-token-lost", "token", "fence")
+
+    async def renewal_lost(_fence, *, ttl_seconds):
+        calls.append(("renew", ttl_seconds))
+        return False
+
+    async def forbidden_stage(_conn, **_kwargs):
+        raise AssertionError("terminal intent must not stage after fence-token loss")
+
+    async def forbidden_release(_fence):
+        raise AssertionError("lost fence remains bounded until Redis TTL expiry")
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.reconcile_stale_runs_for_worker",
+        _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
+    monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire)
+    monkeypatch.setattr("app.worker_main.queue.renew_run_reconciliation_fence", renewal_lost)
+    monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", forbidden_stage)
+    monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", forbidden_release)
+
+    results = await worker_main.reconcile_stale_runs_for_worker(Settings())
+
+    assert results == [
+        {"tenant_id": "tenant-a", "run_id": "run-token-lost", "status": "fence_renewal_failed", "did_transition": False}
+    ]
+    assert calls == ["commit", ("renew", 30)]
+
+
+@pytest.mark.asyncio
+async def test_stale_run_fence_renews_through_stage_and_drain_transactions(monkeypatch):
+    renewal_calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Settings:
+        stale_run_reconciliation_limit = 1
+        stale_run_reconciliation_seconds = 900
+        stale_run_reconciliation_fence_ttl_seconds = 30
+        queue_metadata_fallback_scan_limit = 50
+
+    async def list_candidates(_conn, **_kwargs):
+        return [{
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "run_id": "run-renewed",
+            "status": "running",
+            "cancel_requested_at": None,
+            "stale_before": "2026-07-21T11:00:00Z",
+        }]
+
+    async def acquire(**_kwargs):
+        return worker_main.queue.RunReconciliationFence("tenant-a", "run-renewed", "token", "fence")
+
+    async def renew(_fence, *, ttl_seconds):
+        renewal_calls.append(ttl_seconds)
+        return True
+
+    async def stage(_conn, **_kwargs):
+        return {"run_id": "run-renewed"}
+
+    async def drain(**_kwargs):
+        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, False)
+
+    async def release(_fence):
+        return True
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.reconcile_stale_runs_for_worker",
+        _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
+    monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire)
+    monkeypatch.setattr("app.worker_main.queue.renew_run_reconciliation_fence", renew)
+    monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
+    monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release)
+
+    results = await worker_main.reconcile_stale_runs_for_worker(Settings())
+
+    assert results == [{"tenant_id": "tenant-a", "run_id": "run-renewed", "status": "failed", "did_transition": True}]
+    assert len(renewal_calls) >= 5
+    assert set(renewal_calls) == {30}
 
 
 @pytest.mark.asyncio
