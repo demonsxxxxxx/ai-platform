@@ -2748,6 +2748,8 @@ def test_multi_agent_workflow_separates_task_lifetimes_and_budgets_release_work(
     assert "### Disposable probes" in workflow
     assert "one-shot, read-only context-isolation task" in compact_workflow
     assert "subject is not limited to a fixed task list" in compact_workflow
+    assert "must not read or receive a real `.env`, secret, credential" in compact_workflow
+    assert "Use authorized redacted evidence instead" in compact_workflow
     assert "It receives no write lease" in compact_workflow
     assert "Do not turn or re-charter a disposable probe into a writer" in compact_workflow
     assert "### Persistent tasks" in workflow

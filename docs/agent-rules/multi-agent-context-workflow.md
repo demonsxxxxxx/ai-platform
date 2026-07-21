@@ -28,6 +28,8 @@ limited to a fixed task list.
   stop condition. Prefer a fresh context when the tool supports one.
 - It may gather, compare, summarize, or independently observe; it does not own
   implementation, workflow continuation, or the final decision.
+- It must not read or receive a real `.env`, secret, credential, or unredacted
+  sensitive runtime payload. Use authorized redacted evidence instead.
 - It receives no write lease, credential, GitHub or remote mutation authority,
   deployment authority, destructive-operation authority, or decisive high-risk
   review gate.
