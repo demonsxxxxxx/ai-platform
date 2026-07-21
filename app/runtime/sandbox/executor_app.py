@@ -1256,7 +1256,7 @@ def create_executor_app(
 
         executor_model_latency_ms = _elapsed_ms(started_at)
         response: dict[str, Any] = {
-            "status": "failed" if failed else "accepted",
+            "status": runner_status if not failed else "failed",
             "run_id": request.run_id,
             "executor_model_latency_ms": executor_model_latency_ms,
             "document_processing_latency_ms": document_processing_latency_ms,

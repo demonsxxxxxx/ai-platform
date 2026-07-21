@@ -393,7 +393,7 @@ def sandbox_writing_payload(**overrides):
     return payload(**overrides)
 
 
-def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="accepted", provider="docker"):
+def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="completed", provider="docker"):
     requests = []
 
     class FakeSandboxRuntime:
@@ -1460,7 +1460,7 @@ async def test_worker_threads_server_xlsx_contract_and_accepts_matching_runtime_
         assert requirement["expected_byte_count"] == len(raw)
         assert requirement["expected_sha256"] == hashlib.sha256(raw).hexdigest()
         return {
-            "status": "accepted",
+            "status": "completed",
             "message": "xlsx answer",
             "sdk_used": True,
             "attachment_parser_evidence": [_xlsx_parser_evidence()],
@@ -1706,10 +1706,10 @@ async def test_general_chat_explicit_skill_dispatch_keeps_prior_file_tools_and_t
         async def submit(self, request, event_sink=None):
             captured_requests.append(request)
             return types.SimpleNamespace(
-                status="accepted",
+                status="completed",
                 provider="docker",
                 executor_response={
-                    "status": "accepted",
+                    "status": "completed",
                     "message": "xlsx answer",
                     "sdk_used": True,
                     "attachment_parser_evidence": [_xlsx_parser_evidence()],
@@ -1862,12 +1862,12 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
         async def submit(self, request, event_sink=None):
             runtime_calls.append(request)
             return types.SimpleNamespace(
-                status="accepted",
+                status="completed",
                 provider="docker",
                 session_id=request.session_id,
                 run_id=request.run_id,
                 executor_response={
-                    "status": "accepted",
+                    "status": "completed",
                     "message": "sandbox completed",
                     "sdk_session_id": "sdk-session-heavy",
                     "sdk_usage": {"input_tokens": 3},
@@ -2125,7 +2125,7 @@ def test_worker_rejects_sandbox_success_without_required_xlsx_parser_evidence(tm
         types.SimpleNamespace(
             status="accepted",
             provider="docker",
-            executor_response={"status": "accepted", "message": "claimed success", "sdk_used": True},
+            executor_response={"status": "completed", "message": "claimed success", "sdk_used": True},
             timings={},
         ),
     )
@@ -2146,9 +2146,9 @@ def test_general_chat_with_explicit_skill_still_requires_exact_xlsx_parser_evide
         ),
         _xlsx_prepared_run(tmp_path),
         types.SimpleNamespace(
-            status="accepted",
+            status="completed",
             provider="docker",
-            executor_response={"status": "accepted", "message": "claimed success", "sdk_used": True},
+            executor_response={"status": "completed", "message": "claimed success", "sdk_used": True},
             timings={},
         ),
     )
@@ -2180,10 +2180,10 @@ def test_worker_accepts_only_exact_required_xlsx_parser_evidence(
         ),
         _xlsx_prepared_run(tmp_path),
         types.SimpleNamespace(
-            status="accepted",
+            status="completed",
             provider="docker",
             executor_response={
-                "status": "accepted",
+                "status": "completed",
                 "message": "xlsx answer",
                 "sdk_used": True,
                 "attachment_parser_evidence": [evidence],
@@ -2483,11 +2483,11 @@ async def test_general_chat_heavy_sandbox_request_carries_context_retrieval_scop
         async def submit(self, request, event_sink=None):
             runtime_calls.append(request)
             return types.SimpleNamespace(
-                status="accepted",
+                status="completed",
                 provider="docker",
                 session_id=request.session_id,
                 run_id=request.run_id,
-                executor_response={"status": "accepted", "message": "sandbox completed", "sdk_used": True},
+                executor_response={"status": "completed", "message": "sandbox completed", "sdk_used": True},
                 timings={"schema_version": "ai-platform.sandbox-latency-split.v1"},
             )
 
@@ -2698,7 +2698,7 @@ async def test_agent_run_prefers_sdk_reported_used_skills_over_inference(monkeyp
     install_sandbox_runtime(
         monkeypatch,
         executor_response={
-            "status": "accepted",
+            "status": "completed",
             "message": "reviewed with native skill telemetry",
             "sdk_used": True,
             "used_skills": ["qa-file-reviewer"],
@@ -3040,7 +3040,7 @@ async def test_general_chat_with_files_stays_on_sdk_path(monkeypatch, tmp_path):
     runtime_requests = install_sandbox_runtime(
         monkeypatch,
         executor_response={
-            "status": "accepted",
+            "status": "completed",
             "message": "hello from sdk",
             "sdk_used": True,
             "used_skills": [],
@@ -3098,12 +3098,12 @@ async def test_sandbox_required_general_chat_bridges_agent_event_to_keyword_work
                 )
             )
             return types.SimpleNamespace(
-                status="accepted",
+                status="completed",
                 provider="docker",
                 session_id=request.session_id,
                 run_id=request.run_id,
                 executor_response={
-                    "status": "accepted",
+                    "status": "completed",
                     "message": "sandbox completed",
                     "sdk_used": True,
                     "used_skills": [],

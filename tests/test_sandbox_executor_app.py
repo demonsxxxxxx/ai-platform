@@ -296,7 +296,7 @@ def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, 
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "accepted"
+    assert body["status"] == "completed"
     assert body["run_id"] == "run-a"
     assert isinstance(body["executor_model_latency_ms"], int)
     assert isinstance(body["document_processing_latency_ms"], int)
@@ -398,7 +398,7 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "accepted"
+    assert body["status"] == "completed"
     assert body["sdk_session_id"] == "sdk-session-a"
     assert body["sdk_usage"] == {"input_tokens": 2, "output_tokens": 3}
     assert isinstance(body["executor_first_token_latency_ms"], int)
@@ -478,7 +478,7 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "accepted"
+    assert body["status"] == "completed"
     assert body["sdk_session_id"] == "sdk-session-a"
     assert calls["cwd"] == Path(tmp_path)
     assert calls["skill_id"] == "general-chat"
@@ -538,7 +538,7 @@ shutil.copyfile(source, output / \"translated.docx\")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "accepted"
+    assert body["status"] == "completed"
     assert body["sdk_used"] is False
     assert body["executor_mode"] == "platform_controlled_runner"
     assert body["used_skills"] == ["baoyu-translate"]
@@ -616,7 +616,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
-    assert response.json()["status"] == "accepted"
+    assert response.json()["status"] == "completed"
     assert json.loads((workspace / "output" / "child-env.json").read_text(encoding="utf-8")) == {
         "ANTHROPIC_AUTH_TOKEN": None,
         "OPENAI_API_KEY": None,
@@ -652,7 +652,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
-    assert response.json()["status"] == "accepted"
+    assert response.json()["status"] == "completed"
     assert (workspace / "output" / "selected-input.txt").read_text(encoding="utf-8") == "z.docx"
 
 
@@ -711,7 +711,7 @@ def test_executor_runs_real_staged_baoyu_entrypoint_and_produces_translated_docx
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
-    assert response.json()["status"] == "accepted"
+    assert response.json()["status"] == "completed"
     output_docx = workspace / "output" / "source_translated.docx"
     assert output_docx.is_file()
     with zipfile.ZipFile(output_docx) as archive:
@@ -749,7 +749,7 @@ def test_executor_runs_real_staged_qa_entrypoint_with_minimal_environment(tmp_pa
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
-    assert response.json()["status"] == "accepted"
+    assert response.json()["status"] == "completed"
     output_docx = workspace / "output" / "source_reviewed.docx"
     assert output_docx.is_file()
     with zipfile.ZipFile(output_docx) as archive:
@@ -1075,7 +1075,7 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
-    assert response.json()["status"] == "accepted"
+    assert response.json()["status"] == "completed"
     assert captured["context_retrieval"] is not None
     assert (
         captured["context_retrieval"]._callback_url
@@ -1794,7 +1794,7 @@ def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
-    assert response.json()["status"] == "accepted"
+    assert response.json()["status"] == "completed"
     assert [item["status"] for item in callbacks] == ["running", "running"]
     assert callbacks[-1]["state_patch"]["stage"] == "executor_finished"
 
@@ -1885,7 +1885,7 @@ def test_executor_execute_accepts_supported_async_callable_forms(tmp_path, runne
     response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
-    assert response.json()["status"] == "accepted"
+    assert response.json()["status"] == "completed"
 
 
 def test_executor_execute_rejects_sync_wrapper_before_positive_deadline_control(tmp_path):
@@ -2099,7 +2099,7 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monk
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "accepted"
+    assert body["status"] == "completed"
     assert body["run_id"] == "run-a"
     assert body["callback_errors"] == ["running"]
     assert isinstance(body["executor_model_latency_ms"], int)
