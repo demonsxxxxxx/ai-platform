@@ -65,7 +65,7 @@ from app.storage import ObjectStorage
 from app.tool_policy import evaluate_tool_policy
 
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
-_SANDBOX_SUCCESS_TERMINAL_STATUSES = {"accepted", "completed", "succeeded"}
+_SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
 _REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
 _REQUIRED_DOCX_MAX_COMPRESSED_BYTES = 16 * 1024 * 1024
@@ -1256,6 +1256,33 @@ class ClaudeAgentWorkerAdapter:
             "sandbox_timings": sandbox_timings,
             "attachment_parser_evidence": parser_evidence if isinstance(parser_evidence, list) else [],
         }
+        if runtime_status == "accepted":
+            error_code = "executor_missing_structured_terminal"
+            message = "Sandbox executor returned without an authoritative terminal result"
+            return ExecutorResult(
+                status="failed",
+                adapter_version=self.adapter_version,
+                executor_type=self.executor_type,
+                executor_version=self.executor_version,
+                capabilities={**self.capabilities, "platform_skills": True},
+                result={
+                    "message": message,
+                    "error_code": error_code,
+                    "sdk_used": bool(executor_response.get("sdk_used")),
+                    "sdk_session_id": executor_response.get("sdk_session_id"),
+                    "sdk_error": error_code,
+                    "delegate_used": False,
+                    "worker_boundary": self.executor_type,
+                    "allowed_skills": prepared.allowed_skill_names,
+                    "staged_skills": prepared.staged_skill_names,
+                    "used_skills": used_skill_names,
+                },
+                artifacts=[],
+                executor_payload={
+                    **common_payload,
+                    "sdk_error": error_code,
+                },
+            )
         if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
             error_code = str(executor_response.get("error_code") or "")
             if not error_code and runtime_status in {"cancelled", "canceled"}:

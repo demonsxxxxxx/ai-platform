@@ -106,7 +106,24 @@ async def test_list_stale_run_candidates_requires_progress_staleness_and_no_acti
     assert "not exists ( select 1 from sandbox_leases" in conn.sql
     assert "sandbox_leases.status = 'active'" in conn.sql
     assert "for update of runs skip locked" not in conn.sql
-    assert conn.params == (900, 25)
+    assert conn.params == (900, 900, 25)
+
+
+@pytest.mark.asyncio
+async def test_list_cancel_requested_orphans_bypasses_general_staleness_but_keeps_live_owner_fences():
+    conn = SingleRowConnection(None)
+
+    await repositories.list_stale_run_reconciliation_candidates(
+        conn,
+        stale_after_seconds=900,
+        cancel_requested_after_seconds=5,
+        limit=25,
+    )
+
+    assert "cancel_requested_at <= clock_timestamp() - (%s * interval '1 second')" in conn.sql
+    assert "greatest( coalesce(latest_event.created_at" in conn.sql
+    assert "not exists ( select 1 from sandbox_leases" in conn.sql
+    assert conn.params == (5, 900, 25)
 
 
 @pytest.mark.asyncio
@@ -144,6 +161,7 @@ async def test_stage_stale_cancel_requested_run_uses_scoped_cas_and_existing_can
         run_id="run-a",
         expected_status="running",
         stale_before="2026-07-21T11:00:00Z",
+        cancel_requested_before="2026-07-21T11:07:58Z",
         terminal_status="cancelled",
         error_code=None,
         error_message=None,
@@ -158,7 +176,11 @@ async def test_stage_stale_cancel_requested_run_uses_scoped_cas_and_existing_can
     assert "not exists ( select 1 from sandbox_leases" in update_sql
     assert "greatest( coalesce((select max(created_at)" in update_sql
     assert update_params[4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
-    assert update_params[-1] == "2026-07-21T11:00:00Z"
+    assert update_params[-3:] == (
+        "2026-07-21T11:07:58Z",
+        "cancelled",
+        "2026-07-21T11:00:00Z",
+    )
     assert calls[1][0] == "event"
     assert calls[1][1]["event_type"] == "stale_run_reconciled"
     assert calls[1][1]["payload"]["result_status"] == "cancelled"
@@ -197,6 +219,7 @@ async def test_stage_stale_running_run_fails_explicitly_and_cas_loss_emits_nothi
         run_id="run-failed",
         expected_status="running",
         stale_before="2026-07-21T11:00:00Z",
+        cancel_requested_before=None,
         terminal_status="failed",
         error_code="stale_run_interrupted",
         error_message="Run interrupted because no live execution owner remains.",
@@ -215,6 +238,7 @@ async def test_stage_stale_running_run_fails_explicitly_and_cas_loss_emits_nothi
         run_id="run-lost",
         expected_status="running",
         stale_before="2026-07-21T11:00:00Z",
+        cancel_requested_before=None,
         terminal_status="failed",
         error_code="stale_run_interrupted",
         error_message="Run interrupted because no live execution owner remains.",

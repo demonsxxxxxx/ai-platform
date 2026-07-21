@@ -3787,16 +3787,26 @@ async def list_stale_run_reconciliation_candidates(
     conn: AsyncConnection,
     *,
     stale_after_seconds: int,
+    cancel_requested_after_seconds: int | None = None,
     limit: int,
 ) -> list[dict[str, Any]]:
     """List bounded active runs whose durable progress is stale and lease-free."""
 
     bounded_staleness = max(int(stale_after_seconds), 1)
+    bounded_cancel_staleness = max(
+        int(
+            bounded_staleness
+            if cancel_requested_after_seconds is None
+            else cancel_requested_after_seconds
+        ),
+        1,
+    )
     bounded_limit = max(1, min(int(limit), 50))
     cursor = await conn.execute(
         """
         select runs.tenant_id, runs.workspace_id, runs.user_id, runs.id as run_id,
                runs.status, runs.cancel_requested_at,
+               runs.cancel_requested_at as cancel_requested_before,
                greatest(
                  coalesce(latest_event.created_at, '-infinity'::timestamptz),
                  coalesce(runs.started_at, '-infinity'::timestamptz),
@@ -3813,12 +3823,18 @@ async def list_stale_run_reconciliation_candidates(
           limit 1
         ) as latest_event on true
         where runs.status in ('queued', 'running')
-          and greatest(
-                coalesce(latest_event.created_at, '-infinity'::timestamptz),
-                coalesce(runs.started_at, '-infinity'::timestamptz),
-                coalesce(runs.queued_at, '-infinity'::timestamptz),
-                runs.created_at
-              ) <= clock_timestamp() - (%s * interval '1 second')
+          and (
+            (runs.cancel_requested_at is not null
+             and runs.cancel_requested_at <= clock_timestamp() - (%s * interval '1 second'))
+            or
+            (runs.cancel_requested_at is null
+             and greatest(
+                   coalesce(latest_event.created_at, '-infinity'::timestamptz),
+                   coalesce(runs.started_at, '-infinity'::timestamptz),
+                   coalesce(runs.queued_at, '-infinity'::timestamptz),
+                   runs.created_at
+                 ) <= clock_timestamp() - (%s * interval '1 second'))
+          )
           and not exists (
             select 1 from sandbox_leases
             where sandbox_leases.tenant_id = runs.tenant_id
@@ -3828,7 +3844,7 @@ async def list_stale_run_reconciliation_candidates(
         order by stale_before asc, runs.tenant_id asc, runs.id asc
         limit %s
         """,
-        (bounded_staleness, bounded_limit),
+        (bounded_cancel_staleness, bounded_staleness, bounded_limit),
     )
     return list(await cursor.fetchall())
 
@@ -3842,6 +3858,7 @@ async def stage_stale_run_reconciliation(
     run_id: str,
     expected_status: str,
     stale_before: Any,
+    cancel_requested_before: Any | None = None,
     terminal_status: str,
     error_code: str | None,
     error_message: str | None,
@@ -3883,14 +3900,18 @@ async def stage_stale_run_reconciliation(
               and sandbox_leases.run_id = runs.id
               and sandbox_leases.status = 'active'
           )
-          and greatest(
-                coalesce((select max(created_at) from run_events
-                          where run_events.tenant_id = runs.tenant_id
-                            and run_events.run_id = runs.id), '-infinity'::timestamptz),
-                coalesce(started_at, '-infinity'::timestamptz),
-                coalesce(queued_at, '-infinity'::timestamptz),
-                created_at
-              ) <= %s::timestamptz
+          and (
+            (%s = 'cancelled' and cancel_requested_at <= %s::timestamptz)
+            or
+            (%s = 'failed' and greatest(
+                  coalesce((select max(created_at) from run_events
+                            where run_events.tenant_id = runs.tenant_id
+                              and run_events.run_id = runs.id), '-infinity'::timestamptz),
+                  coalesce(started_at, '-infinity'::timestamptz),
+                  coalesce(queued_at, '-infinity'::timestamptz),
+                  created_at
+                ) <= %s::timestamptz)
+          )
         returning id, trace_id, permission_terminalization_target
         """,
         (
@@ -3904,6 +3925,9 @@ async def stage_stale_run_reconciliation(
             run_id,
             expected_status,
             terminal_status,
+            terminal_status,
+            terminal_status,
+            cancel_requested_before,
             terminal_status,
             stale_before,
         ),

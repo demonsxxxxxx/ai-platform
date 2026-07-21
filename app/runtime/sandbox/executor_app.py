@@ -1005,12 +1005,19 @@ async def _default_executor_runner(
 
     used_sdk = bool(getattr(sdk_result, "used_sdk", False))
     error = getattr(sdk_result, "error", None)
+    received_structured_terminal = bool(
+        getattr(sdk_result, "received_structured_terminal", False)
+    )
+    if used_sdk and not error and not received_structured_terminal:
+        error = "claude_agent_sdk_missing_structured_terminal"
     response = {
         "status": "completed" if used_sdk and not error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
         "sdk_used": used_sdk,
+        "sdk_received_structured_terminal": received_structured_terminal,
+        "sdk_terminal_reason": getattr(sdk_result, "terminal_reason", None),
         "executor_mode": "claude_agent_sdk",
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
@@ -1200,8 +1207,8 @@ def create_executor_app(
                     }
         runner_events_open["value"] = False
 
-        runner_status = str(runner_result.get("status") or "completed")
-        failed = timed_out or runner_status == "failed"
+        runner_status = str(runner_result.get("status") or "").strip().lower()
+        failed = timed_out or runner_status not in {"completed", "succeeded"}
         positive_deadline_exceeded = timed_out and max_seconds is not None and max_seconds > 0
         error_code = (
             "executor_deadline_exceeded"
@@ -1249,7 +1256,7 @@ def create_executor_app(
 
         executor_model_latency_ms = _elapsed_ms(started_at)
         response: dict[str, Any] = {
-            "status": "failed" if failed else "accepted",
+            "status": runner_status if not failed else "failed",
             "run_id": request.run_id,
             "executor_model_latency_ms": executor_model_latency_ms,
             "document_processing_latency_ms": document_processing_latency_ms,
@@ -1268,6 +1275,8 @@ def create_executor_app(
             "sdk_session_id",
             "sdk_usage",
             "sdk_used",
+            "sdk_received_structured_terminal",
+            "sdk_terminal_reason",
             "executor_mode",
             "used_skills",
             "used_skills_source",
