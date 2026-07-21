@@ -63,7 +63,13 @@ export function isActiveRunStatus(value: unknown): boolean {
   if (typeof value !== "string") {
     return false;
   }
-  return ["pending", "queued", "running", "processing"].includes(
+  return [
+    "pending",
+    "queued",
+    "running",
+    "processing",
+    "cancel_requested",
+  ].includes(
     value.trim().toLowerCase(),
   );
 }

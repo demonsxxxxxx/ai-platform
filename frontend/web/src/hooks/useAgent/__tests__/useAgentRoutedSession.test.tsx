@@ -4136,6 +4136,179 @@ test("useAgent reconnects only the backend-selected active run after reload", as
   }
 });
 
+test("useAgent reloads a cancel-requested Skill run as pending without a submit POST or stream reconnect", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalFetch = dom.window.fetch;
+  let submitCalls = 0;
+  let streamCalls = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-cancel-requested",
+    agent_id: "general-agent",
+    created_at: "2026-07-21T00:00:00Z",
+    updated_at: "2026-07-21T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-cancel-requested",
+    events: [
+      {
+        id: "run-cancel-requested:user",
+        run_id: "run-cancel-requested",
+        event_type: "user:message",
+        timestamp: "2026-07-21T00:00:00Z",
+        data: { content: "运行这个 Skill" },
+      },
+      {
+        id: "run-cancel-requested:pending",
+        sequence: 7,
+        run_id: "run-cancel-requested",
+        event_type: "cancel_requested",
+        timestamp: "2026-07-21T00:00:02Z",
+        data: {
+          event_id: "run-cancel-requested:pending",
+          run_id: "run-cancel-requested",
+          event_type: "cancel_requested",
+          projection_version: "ai-platform.chat-public-projection.v1",
+          stage: "cancellation",
+          message: "正在取消",
+        },
+      },
+    ],
+  });
+  sessionApi.getStatus = async () => ({
+    session_id: "session-cancel-requested",
+    run_id: "run-cancel-requested",
+    status: "cancel_requested",
+    raw_status: "cancel_requested",
+  });
+  sessionApi.submitChat = (async () => {
+    submitCalls += 1;
+    throw new Error("reload must never resubmit");
+  }) as typeof sessionApi.submitChat;
+  dom.window.fetch = async () => {
+    streamCalls += 1;
+    throw new Error("cancel-requested reload must not reconnect SSE");
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-cancel-requested");
+    });
+    await settle(harness.act);
+
+    assert.equal(submitCalls, 0);
+    assert.equal(streamCalls, 0);
+    assert.equal(harness.hook.sessionId, "session-cancel-requested");
+    assert.equal(harness.hook.currentRunId, "run-cancel-requested");
+    assert.equal(harness.hook.isLoading, false);
+    const statusPart = harness.hook.messages
+      .flatMap((message) => message.parts || [])
+      .find(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_type === "cancel_requested",
+      );
+    assert.equal(statusPart?.type, "run_status");
+    assert.equal(statusPart?.message, "正在取消");
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.submitChat = originalSubmitChat;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent reloads a terminal cancelled Skill run without resubmitting or reopening SSE", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalFetch = dom.window.fetch;
+  let submitCalls = 0;
+  let streamCalls = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-cancelled-reload",
+    agent_id: "general-agent",
+    created_at: "2026-07-21T00:00:00Z",
+    updated_at: "2026-07-21T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-cancelled-reload",
+    events: [
+      {
+        id: "run-cancelled-reload:user",
+        run_id: "run-cancelled-reload",
+        event_type: "user:message",
+        timestamp: "2026-07-21T00:00:00Z",
+        data: { content: "取消这个 Skill" },
+      },
+      {
+        id: "run-cancelled-reload:terminal",
+        run_id: "run-cancelled-reload",
+        event_type: "run_cancelled",
+        timestamp: "2026-07-21T00:00:03Z",
+        data: { run_id: "run-cancelled-reload", status: "cancelled" },
+      },
+    ],
+  });
+  sessionApi.getStatus = async () => ({
+    session_id: "session-cancelled-reload",
+    run_id: "run-cancelled-reload",
+    status: "cancelled",
+    raw_status: "cancelled",
+  });
+  sessionApi.submitChat = (async () => {
+    submitCalls += 1;
+    throw new Error("reload must never resubmit");
+  }) as typeof sessionApi.submitChat;
+  dom.window.fetch = async () => {
+    streamCalls += 1;
+    throw new Error("terminal reload must not reopen SSE");
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-cancelled-reload");
+    });
+    await settle(harness.act);
+
+    assert.equal(submitCalls, 0);
+    assert.equal(streamCalls, 0);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.ok(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .some((part) => part.type === "cancelled"),
+    );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.submitChat = originalSubmitChat;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent reconciles a reload SSE interruption to its failed run status", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");

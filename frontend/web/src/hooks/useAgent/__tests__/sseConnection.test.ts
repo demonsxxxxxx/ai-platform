@@ -161,6 +161,62 @@ test("classifies only explicit server-sent terminal errors as application failur
   assert.equal(isTerminalSSEEvent("error", { error: "stream_timeout" }), false);
 });
 
+test("keeps a silent running heartbeat attached without projecting assistant content or resetting retries", async () => {
+  const messages = [
+    {
+      id: "assistant-heartbeat",
+      role: "assistant" as const,
+      content: "",
+      parts: [],
+      isStreaming: true,
+      timestamp: new Date(),
+    },
+  ];
+  const connectionStates: string[] = [];
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: null },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 2 },
+    messagesRef: { current: messages },
+    sessionIdRef: { current: "session-heartbeat" },
+    currentRunIdRef: { current: "run-heartbeat" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => connectionStates.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  } satisfies SSEConnectionContext;
+
+  await connectToSSE(
+    "session-heartbeat",
+    "run-heartbeat",
+    "assistant-heartbeat",
+    context,
+    false,
+    async (_input, init) => {
+      await init.onopen?.(new Response(null, { status: 200 }));
+      init.onmessage?.({
+        event: "heartbeat",
+        id: "run-heartbeat:heartbeat:1",
+        data: JSON.stringify({ run_id: "run-heartbeat", status: "running" }),
+      } as never);
+      assert.equal(context.retryCountRef.current, 2);
+      assert.equal(messages[0]?.content, "");
+      assert.deepEqual(messages[0]?.parts, []);
+      context.sessionIdRef.current = "session-replaced";
+      context.currentRunIdRef.current = "run-replaced";
+    },
+  );
+
+  assert.ok(connectionStates.includes("connected"));
+});
+
 test("uses raw_status as the authoritative compatibility status", async () => {
   const retryRef = { current: 0 };
   const cases = [
@@ -1394,6 +1450,123 @@ test("bounds replayed active run_event reconnects and converges unavailable once
   assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
   assert.equal(unavailableCalls, 1);
   assert.equal(context.reconnectTimeoutRef.current, null);
+
+  t.mock.timers.tick(60_000);
+  await flushAsync();
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
+  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.equal(unavailableCalls, 1);
+});
+
+test("bounds heartbeat-then-close reconnect loops without assistant text or new work", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let statusCalls = 0;
+  let connectCalls = 0;
+  let unavailableCalls = 0;
+  const messages = [
+    {
+      id: "assistant-heartbeat-loop",
+      role: "assistant" as const,
+      content: "",
+      timestamp: new Date(),
+      isStreaming: true,
+      parts: [],
+    },
+  ];
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-heartbeat-loop" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: { current: messages },
+    sessionIdRef: { current: "session-heartbeat-loop" },
+    currentRunIdRef: { current: "run-heartbeat-loop" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: {
+        sessionId: "session-heartbeat-loop",
+        runId: "run-heartbeat-loop",
+        sequence: null,
+      },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    isReconnectFromHistoryRef: { current: false },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunStatusUnavailable: () => {
+      unavailableCalls += 1;
+      return true;
+    },
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+  const flushAsync = async () => {
+    for (let index = 0; index < 20; index += 1) {
+      await Promise.resolve();
+    }
+  };
+
+  await reconnectSSE(context, {
+    reconnectDelay: () => 1_000,
+    getStatus: async () => {
+      statusCalls += 1;
+      return {
+        session_id: "session-heartbeat-loop",
+        run_id: "run-heartbeat-loop",
+        status: "running",
+      };
+    },
+    connect: async (sessionId, runId, messageId, reconnectContext) => {
+      connectCalls += 1;
+      await connectToSSE(
+        sessionId,
+        runId,
+        messageId,
+        reconnectContext,
+        false,
+        async (_input, init) => {
+          await init.onopen?.(new Response(null, { status: 200 }));
+          init.onmessage?.({
+            event: "heartbeat",
+            id: `run-heartbeat-loop:heartbeat:${connectCalls}`,
+            data: JSON.stringify({
+              run_id: "run-heartbeat-loop",
+              status: "running",
+            }),
+          } as never);
+          await init.onclose?.();
+        },
+      );
+    },
+  });
+
+  for (let attempt = 0; attempt < MAX_CONSECUTIVE_SSE_RECONNECTS; attempt += 1) {
+    t.mock.timers.tick(1_000);
+    await flushAsync();
+  }
+
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
+  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.equal(unavailableCalls, 1);
+  assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS);
+  assert.equal(context.reconnectTimeoutRef.current, null);
+  assert.deepEqual(messages, [
+    {
+      id: "assistant-heartbeat-loop",
+      role: "assistant",
+      content: "",
+      timestamp: messages[0]?.timestamp,
+      isStreaming: true,
+      parts: [],
+    },
+  ]);
 
   t.mock.timers.tick(60_000);
   await flushAsync();

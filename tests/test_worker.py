@@ -12,7 +12,12 @@ from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 
 import app.worker as worker_module
 from app import repositories as repository_module
-from app.executors.base import ArtifactManifest, ExecutorResult
+from app.executors.base import (
+    ArtifactManifest,
+    ExecutorResult,
+    RunExecutionOwner,
+    RunPayload,
+)
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.fake import FakeFailureAdapter, FakeSuccessAdapter
 from app.executors.registry import AdapterRegistry
@@ -52,6 +57,205 @@ def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
     ) == ("executor_failure", "ordinary executor failure")
     assert private_token not in str(worker_module._executor_exception_failure(native_error))
     assert private_path not in str(worker_module._executor_exception_failure(native_error))
+
+
+@pytest.mark.asyncio
+async def test_worker_submit_monitor_preserves_normal_terminal_result():
+    expected = FakeSuccessAdapter()
+    skill_version = "hash-general-chat"
+    payload = RunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        file_ids=[],
+        input={},
+        skill_version=skill_version,
+        release_decision=release_decision(skill_version),
+        skill_manifests=[primary_manifest("general-chat", skill_version)],
+    )
+    cancel_checks = 0
+
+    async def cancel_requested():
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return False
+
+    result = await worker_module._submit_run_until_cancelled(
+        expected,
+        payload,
+        event_sink=None,
+        cancel_requested=cancel_requested,
+        poll_interval_seconds=0.01,
+    )
+
+    assert result.status == "succeeded"
+    assert cancel_checks <= 1
+
+
+@pytest.mark.asyncio
+async def test_run_execution_owner_bounds_non_cooperative_stop_without_detaching_writer():
+    release_writer = asyncio.Event()
+    writer_stopped = asyncio.Event()
+
+    async def non_cooperative_writer():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release_writer.wait()
+            writer_stopped.set()
+            raise
+
+    owner = RunExecutionOwner("run-a")
+    owner.start(non_cooperative_writer())
+    await asyncio.sleep(0)
+
+    first = await owner.stop(reason="cancel_requested", timeout_seconds=0.01)
+
+    assert first.status == "timed_out"
+    assert first.quiescent is False
+    assert owner.done is False
+    assert writer_stopped.is_set() is False
+
+    release_writer.set()
+    second = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
+
+    assert second.status == "quiescent"
+    assert second.quiescent is True
+    assert owner.done is True
+    assert writer_stopped.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_run_execution_owner_reports_registered_stop_failure_until_retry_quiesces():
+    attempts = 0
+
+    async def live_writer():
+        await asyncio.Event().wait()
+
+    async def stop_remote(reason: str):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return False
+        return True
+
+    owner = RunExecutionOwner("run-a")
+    owner.start(live_writer())
+    owner.register_stop(stop_remote)
+    await asyncio.sleep(0)
+
+    first = await owner.stop(reason="cancel_requested", timeout_seconds=0.1)
+    second = await owner.stop(reason="cancel_requested", timeout_seconds=0.1)
+
+    assert first.status == "failed"
+    assert first.quiescent is False
+    assert second.status == "quiescent"
+    assert second.quiescent is True
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_run_execution_owner_bounds_non_cooperative_provider_stop_without_duplicate_attempts():
+    stop_started = asyncio.Event()
+    allow_stop = asyncio.Event()
+    attempts = 0
+
+    async def live_writer():
+        await asyncio.Event().wait()
+
+    async def non_cooperative_stop(reason: str):
+        nonlocal attempts
+        attempts += 1
+        stop_started.set()
+        try:
+            await allow_stop.wait()
+        except asyncio.CancelledError:
+            await allow_stop.wait()
+        return True
+
+    owner = RunExecutionOwner("run-a")
+    owner.start(live_writer())
+    owner.register_stop(non_cooperative_stop)
+
+    first = await asyncio.wait_for(
+        owner.stop(reason="cancel_requested", timeout_seconds=0.01),
+        timeout=0.1,
+    )
+    await stop_started.wait()
+    second = await asyncio.wait_for(
+        owner.stop(reason="cancel_requested", timeout_seconds=0.01),
+        timeout=0.1,
+    )
+
+    assert first.status == "timed_out"
+    assert second.status == "timed_out"
+    assert attempts == 1
+
+    allow_stop.set()
+    final = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
+
+    assert final.quiescent is True
+    assert owner.done is True
+
+
+@pytest.mark.asyncio
+async def test_worker_submit_monitor_emits_truthful_silent_progress_without_assistant_tokens():
+    finish = asyncio.Event()
+    events = []
+
+    class SilentAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            await finish.wait()
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="silent/1",
+                executor_type="silent",
+                executor_version="silent/1",
+                capabilities={"streaming": True},
+                result={"message": "done"},
+            )
+
+    async def event_sink(**event):
+        events.append(event)
+        finish.set()
+
+    async def cancel_requested():
+        return False
+
+    skill_version = "hash-general-chat"
+    payload = RunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        file_ids=[],
+        input={},
+        skill_version=skill_version,
+        release_decision=release_decision(skill_version),
+        skill_manifests=[primary_manifest("general-chat", skill_version)],
+    )
+
+    result = await worker_module._submit_run_until_cancelled(
+        SilentAdapter(),
+        payload,
+        event_sink=event_sink,
+        cancel_requested=cancel_requested,
+        poll_interval_seconds=0.005,
+        progress_interval_seconds=0.005,
+    )
+
+    assert result.status == "succeeded"
+    assert [event["event_type"] for event in events] == ["run_started"]
+    assert events[0]["payload"]["progress_kind"] == "active"
+    assert events[0]["payload"]["heartbeat"] is True
+    assert "delta" not in events[0]["payload"]
 
 
 @pytest.mark.parametrize(
@@ -221,6 +425,16 @@ def primary_manifest_version(skill_id: str, manifests: list[dict]) -> str:
     return ""
 
 
+def reviewed_docx_artifact() -> ArtifactManifest:
+    return ArtifactManifest(
+        artifact_type="reviewed_docx",
+        label="Reviewed Word",
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
+        size_bytes=1,
+    )
+
+
 @asynccontextmanager
 async def fake_transaction():
     yield object()
@@ -253,6 +467,39 @@ def default_cancel_not_requested(monkeypatch):
         return False
 
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested, raising=False)
+
+    async def complete_run(conn, **kwargs):
+        return True
+
+    async def fail_run(conn, **kwargs):
+        return ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    async def classify_success_commit_block(conn, **kwargs):
+        return "stale_terminal_state"
+
+    async def drain_run_tool_permission_terminalization(**kwargs):
+        return None
+
+    async def create_artifact(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run, raising=False)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run, raising=False)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact, raising=False)
+    monkeypatch.setattr(
+        "app.worker.repositories.classify_success_commit_block",
+        classify_success_commit_block,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker.drain_run_tool_permission_terminalization",
+        drain_run_tool_permission_terminalization,
+        raising=False,
+    )
 
     async def has_pending_tool_permission_requests(conn, *, tenant_id, run_id):
         return False
@@ -417,20 +664,32 @@ def default_cancel_not_requested(monkeypatch):
             return {
                 "tool_id": str(policy.get("tool_id") or policy.get("id") or tool_id),
                 "server_id": str(policy.get("server_id") or "default-server"),
-                "effective_status": str(policy.get("effective_status") or policy.get("status") or "disabled"),
+                "registry_status": str(policy.get("registry_status") or policy.get("status") or "active"),
+                "policy_status": str(policy.get("policy_status") or policy.get("status") or "active"),
+                "effective_status": str(policy.get("effective_status") or policy.get("status") or "active"),
                 "server_status": str(policy.get("server_status") or "active"),
                 "visible_to_user": bool(policy.get("visible_to_user", True)),
                 "write_capable": bool(policy.get("write_capable")),
                 "risk_level": str(policy.get("risk_level") or "low"),
+                "allowed_tools": ["query"],
+                "transport_type": "streamable_http",
+                "endpoint": "https://mcp.example.test/v1",
+                "auth_mode": "none",
             }
         return {
             "tool_id": tool_id,
             "server_id": "default-server",
+            "registry_status": "active",
+            "policy_status": "active",
             "effective_status": "active",
             "server_status": "active",
             "visible_to_user": True,
             "write_capable": False,
             "risk_level": "low",
+            "allowed_tools": ["query"],
+            "transport_type": "streamable_http",
+            "endpoint": "https://mcp.example.test/v1",
+            "auth_mode": "none",
         }
 
     async def append_audit_log(conn, **kwargs):
@@ -817,6 +1076,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
             "used_skills": [],
         }
         calls.append(("complete", result_json["executor"]["adapter_version"]))
+        return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -937,8 +1197,8 @@ async def test_worker_enforces_declared_required_artifact_types(
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
@@ -1313,6 +1573,7 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
                 executor_version="capture",
                 capabilities={"artifacts": False, "streaming": False, "tools": False},
                 result={"message": "done"},
+                artifacts=[reviewed_docx_artifact()],
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
@@ -1321,12 +1582,16 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
     async def append_event(conn, **kwargs):
         return None
 
+    async def create_artifact(conn, **kwargs):
+        return None
+
     async def complete_run(conn, **kwargs):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
@@ -1342,7 +1607,14 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
 @pytest.mark.asyncio
 async def test_worker_records_runtime_sandbox_lease_around_successful_executor_run(monkeypatch):
     calls = []
-    locked_run = locked_run_from_payload(base_payload(workspace_id="workspace-locked"))
+    locked_run = locked_run_from_payload(
+        base_payload(
+            workspace_id="workspace-locked",
+            file_ids=[],
+            skill_id="general-chat",
+            agent_id="general-agent",
+        )
+    )
     locked_run["trace_id"] = "trace-run-a"
 
     async def mark_run_running(conn, *, tenant_id, run_id):
@@ -1353,11 +1625,46 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
         calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload") or {}))
         return "evt-a"
 
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        return {
+            "id": kwargs["context_snapshot_id"],
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": [],
+            "included_file_ids": [],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "redaction_summary_json": {},
+            "payload_json": {
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+            },
+            "created_at": None,
+        }
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        return False
+
     async def create_artifact(conn, **kwargs):
         return None
 
     async def complete_run(conn, **kwargs):
         calls.append(("complete", kwargs["run_id"]))
+        return True
+
+    async def fail_run(conn, **kwargs):
+        raise AssertionError(
+            f"unexpected fail_run: {kwargs.get('error_code')} {kwargs.get('error_message')}"
+        )
 
     async def create_sandbox_lease(conn, **kwargs):
         calls.append(("lease_create", kwargs))
@@ -1370,14 +1677,25 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr(
+        "app.worker.repositories.get_context_snapshot_for_worker",
+        get_context_snapshot_for_worker,
+    )
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(
-        base_payload(workspace_id="workspace-locked"),
+        base_payload(
+            workspace_id="workspace-locked",
+            file_ids=[],
+            skill_id="general-chat",
+            agent_id="general-agent",
+        ),
         AdapterRegistry({"fake": FakeSuccessAdapter()}),
         worker_id="worker-a",
     )
@@ -1449,6 +1767,7 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
                 executor_version="capture/1",
                 capabilities={},
                 result={"message": "done"},
+                artifacts=[reviewed_docx_artifact()] if skill_id == "qa-file-reviewer" else [],
                 executor_payload={"sandbox_provider": "docker"},
             )
 
@@ -1491,6 +1810,7 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
 
     async def complete_run(conn, **kwargs):
         calls.append(("complete", kwargs["run_id"]))
+        return True
 
     async def fail_create_sandbox_lease(*args, **kwargs):
         raise AssertionError("sandbox-required ordinary runs must rely on SandboxRuntime leases, not worker placeholders")
@@ -1584,6 +1904,11 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message))
+        return ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
 
     async def create_sandbox_lease(conn, **kwargs):
         calls.append(("lease_create", kwargs["run_id"]))
@@ -1688,6 +2013,11 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message))
+        return ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
 
     async def create_sandbox_lease(conn, **kwargs):
         calls.append(("lease_create", kwargs["run_id"]))
@@ -2445,6 +2775,7 @@ async def test_worker_reconciliation_uses_repository_for_ordinary_run(monkeypatc
 
     async def complete_run(conn, *, tenant_id, run_id, result_json):
         calls.append(("complete", run_id))
+        return True
 
     async def reconcile(conn, **kwargs):
         calls.append(("reconcile", kwargs))
@@ -2458,7 +2789,24 @@ async def test_worker_reconciliation_uses_repository_for_ordinary_run(monkeypatc
     monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    child_input = {
+        "mode": "chat",
+        "multi_agent_dispatch": {
+            "parent_run_id": "run-parent",
+            "parent_step_id": "step-code",
+            "dispatch_id": "dispatch-code",
+            "step_key": "code",
+        },
+    }
+    outcome = await process_run_payload(
+        base_payload(
+            file_ids=[],
+            skill_id="general-chat",
+            agent_id="general-agent",
+            input=child_input,
+        ),
+        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+    )
 
     assert outcome.status == "succeeded"
     assert ("complete", "run-a") in calls
@@ -2650,6 +2998,7 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
                 executor_version="capture/1",
                 capabilities={},
                 result={"message": "done"},
+                artifacts=[reviewed_docx_artifact()],
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
@@ -2665,7 +3014,6 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -2795,7 +3143,6 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -2984,7 +3331,6 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -3078,7 +3424,6 @@ async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_on
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -3164,7 +3509,6 @@ async def test_worker_preserves_safe_top_level_legacy_context_source(monkeypatch
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -3281,7 +3625,6 @@ async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkey
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -3395,7 +3738,6 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -3501,6 +3843,7 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("identity-mismatched queue payload must not refresh context snapshot")
@@ -3555,6 +3898,7 @@ async def test_worker_rejects_missing_db_identity_fields_before_context_or_execu
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"]))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("missing DB identity must not refresh context snapshot")
@@ -3606,6 +3950,7 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("scope-invalid queued run must not refresh context snapshot")
@@ -3699,7 +4044,6 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -3747,6 +4091,7 @@ async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monk
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"]))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -3786,6 +4131,7 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
                     "allowed_skills": ["qa-file-reviewer"],
                     "staged_skills": ["qa-file-reviewer"],
                 },
+                artifacts=[reviewed_docx_artifact()],
                 executor_payload={
                     "used_skills": ["qa-file-reviewer"],
                     "used_skills_source": "executor_hook",
@@ -3823,7 +4169,7 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
 
     async def complete_run(conn, **kwargs):
         assert "skill_manifests" not in kwargs["result_json"]
-        return None
+        return True
 
     async def upsert_run_skill_snapshot(conn, **kwargs):
         snapshots.append(kwargs)
@@ -3832,7 +4178,6 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -3886,6 +4231,7 @@ async def test_worker_drops_executor_returned_snapshot_governance_without_payloa
                 executor_version="test-executor/1",
                 capabilities={"skills": True},
                 result={"message": "done"},
+                artifacts=[reviewed_docx_artifact()],
                 executor_payload={
                     "skill_manifests": [
                         {
@@ -3917,7 +4263,7 @@ async def test_worker_drops_executor_returned_snapshot_governance_without_payloa
         return "evt-a"
 
     async def complete_run(conn, **kwargs):
-        return None
+        return True
 
     async def upsert_run_skill_snapshot(conn, **kwargs):
         snapshots.append(kwargs)
@@ -3926,7 +4272,6 @@ async def test_worker_drops_executor_returned_snapshot_governance_without_payloa
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -3967,6 +4312,7 @@ async def test_worker_uses_payload_source_instead_of_executor_returned_source(mo
                 executor_version="test-executor/1",
                 capabilities={"skills": True},
                 result={"message": "done"},
+                artifacts=[reviewed_docx_artifact()],
                 executor_payload={
                     "skill_manifests": [
                         {
@@ -3993,7 +4339,7 @@ async def test_worker_uses_payload_source_instead_of_executor_returned_source(mo
         return "evt-a"
 
     async def complete_run(conn, **kwargs):
-        return None
+        return True
 
     async def upsert_run_skill_snapshot(conn, **kwargs):
         snapshots.append(kwargs)
@@ -4002,7 +4348,6 @@ async def test_worker_uses_payload_source_instead_of_executor_returned_source(mo
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -4048,6 +4393,7 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
                 executor_version="test-executor/1",
                 capabilities={"skills": True},
                 result={"message": "done"},
+                artifacts=[reviewed_docx_artifact()],
                 executor_payload={
                     "used_skills": ["qa-file-reviewer", "unlisted-skill"],
                     "used_skills_source": "executor_hook",
@@ -4081,7 +4427,7 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
         return "evt-a"
 
     async def complete_run(conn, **kwargs):
-        return None
+        return True
 
     async def upsert_run_skill_snapshot(conn, **kwargs):
         snapshots.append(kwargs)
@@ -4090,7 +4436,6 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -4120,6 +4465,7 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
                     "allowed_skills": ["qa-file-reviewer", "minimax-docx"],
                     "staged_skills": ["qa-file-reviewer", "minimax-docx"],
                 },
+                artifacts=[reviewed_docx_artifact()],
                 executor_payload={
                     "used_skills": ["qa-file-reviewer"],
                     "used_skills_source": "platform_controlled_runner",
@@ -4156,7 +4502,7 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
         return "evt-a"
 
     async def complete_run(conn, **kwargs):
-        return None
+        return True
 
     async def upsert_run_skill_snapshot(conn, **kwargs):
         snapshots.append(kwargs)
@@ -4165,7 +4511,6 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -4176,7 +4521,10 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
                     **primary_manifest("qa-file-reviewer", "hash-reviewer"),
                     "dependency_ids": ["minimax-docx"],
                 },
-                primary_manifest("minimax-docx", "hash-docx"),
+                {
+                    **primary_manifest("minimax-docx", "hash-docx"),
+                    "builtin_tool_identities": ["Bash", "Write"],
+                },
             ]
         ),
         AdapterRegistry({"fake": ControlledRunnerSkillAdapter()}),
@@ -4226,6 +4574,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
                         }
                     ],
                 },
+                artifacts=[reviewed_docx_artifact()],
                 executor_payload={"inferred_used_skills": ["qa-file-reviewer"]},
             )
 
@@ -4237,6 +4586,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
 
     async def complete_run(conn, *, tenant_id, run_id, result_json):
         completed["result_json"] = result_json
+        return True
 
     async def upsert_run_skill_snapshot(conn, **kwargs):
         snapshots.append(kwargs)
@@ -4245,7 +4595,6 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -4302,16 +4651,30 @@ async def test_worker_persists_g2_executor_contract_latency_and_token_placeholde
     async def complete_run(conn, **kwargs):
         result = kwargs["result_json"]
         calls.append(("complete", result["latency_ms"], result["token_counts"], result["cost"]))
+        return True
+
+    monotonic_values = iter([10.0])
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.time.monotonic", iter([10.0, 10.25]).__next__, raising=False)
+    monkeypatch.setattr(
+        "app.worker.time.monotonic",
+        lambda: next(monotonic_values, 10.25),
+        raising=False,
+    )
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": G2Adapter()}))
+    outcome = await process_run_payload(
+        base_payload(
+            file_ids=[],
+            skill_id="general-chat",
+            agent_id="general-agent",
+            context_snapshot={},
+        ),
+        AdapterRegistry({"fake": G2Adapter()}),
+    )
 
     assert outcome.status == "succeeded"
     assert ("payload_trace", "trace_run_a", "ai-platform.run-payload.v1") in calls
@@ -4365,16 +4728,25 @@ async def test_worker_persists_sdk_usage_as_run_observability(monkeypatch):
     async def complete_run(conn, **kwargs):
         result = kwargs["result_json"]
         calls.append(("complete", result["latency_ms"], result["token_counts"], result["cost"]))
+        return True
+
+    monotonic_values = iter([20.0])
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.time.monotonic", iter([20.0, 20.5]).__next__, raising=False)
+    monkeypatch.setattr(
+        "app.worker.time.monotonic",
+        lambda: next(monotonic_values, 20.5),
+        raising=False,
+    )
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": SdkUsageAdapter()}))
+    outcome = await process_run_payload(
+        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
+        AdapterRegistry({"fake": SdkUsageAdapter()}),
+    )
 
     assert outcome.status == "succeeded"
     assert ("complete", 500, {"input": 101, "output": 37, "total": 138}, {"estimated_cost_minor": 1}) in calls
@@ -4476,6 +4848,7 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -4520,6 +4893,7 @@ async def test_worker_uses_sdk_error_when_adapter_failure_message_is_generic(mon
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message, result_json))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -4547,7 +4921,7 @@ async def test_worker_records_non_secret_runtime_evidence(monkeypatch):
         events.append({"event_type": event_type, "stage": stage, "message": message, "payload": payload or {}})
 
     async def complete_run(conn, *, tenant_id, run_id, result_json):
-        return None
+        return True
 
     async def create_artifact(conn, **kwargs):
         return None
@@ -4822,6 +5196,7 @@ async def test_worker_stops_running_executor_after_cancel_requested_on_event_bou
 
     async def complete_run(conn, **kwargs):
         calls.append(("complete", kwargs["result_json"]))
+        return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -4841,6 +5216,211 @@ async def test_worker_stops_running_executor_after_cancel_requested_on_event_bou
 
 
 @pytest.mark.asyncio
+async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
+    calls = []
+    cancel_checks = 0
+
+    class SilentAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter", "started"))
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                calls.append(("adapter", "cancelled"))
+                raise
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return cancel_checks >= 3
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        calls.append(("cancel", result_json))
+        return ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="cancelled",
+            did_transition=True,
+        )
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+
+    async def complete_run(conn, **kwargs):
+        raise AssertionError("cancelled silent execution must not complete successfully")
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    original_submit_until_cancelled = worker_module._submit_run_until_cancelled
+
+    async def submit_until_cancelled(adapter, run_payload, *, event_sink, cancel_requested):
+        return await original_submit_until_cancelled(
+            adapter,
+            run_payload,
+            event_sink=event_sink,
+            cancel_requested=cancel_requested,
+            poll_interval_seconds=0.01,
+        )
+
+    monkeypatch.setattr("app.worker._submit_run_until_cancelled", submit_until_cancelled)
+
+    outcome = await asyncio.wait_for(
+        process_run_payload(base_payload(), AdapterRegistry({"fake": SilentAdapter()})),
+        timeout=1.0,
+    )
+
+    assert outcome.status == "cancelled"
+    assert ("adapter", "cancelled") in calls
+    assert any(item[0] == "cancel" for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_and_lease_release(monkeypatch):
+    calls = []
+    cancel_checks = 0
+    adapter_started = asyncio.Event()
+    allow_quiescence = asyncio.Event()
+    stop_waiting = asyncio.Event()
+
+    class NonCooperativeAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            adapter_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                stop_waiting.set()
+                await allow_quiescence.wait()
+                calls.append(("adapter", "quiescent"))
+                raise
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        locked = locked_run_from_payload(
+            base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent")
+        )
+        return locked
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return adapter_started.is_set() and cancel_checks >= 3
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        calls.append(("cancel", run_id))
+        return ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="cancelled",
+            did_transition=True,
+        )
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload") or {}))
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        return {
+            "id": kwargs["context_snapshot_id"],
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": [],
+            "included_file_ids": [],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "redaction_summary_json": {},
+            "payload_json": {
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+            },
+            "created_at": None,
+        }
+
+    async def create_sandbox_lease(conn, **kwargs):
+        return {"id": "lease-cancel-a", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_release", kwargs["reason"]))
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr(
+        "app.worker.repositories.get_context_snapshot_for_worker",
+        get_context_snapshot_for_worker,
+    )
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    original_submit_until_cancelled = worker_module._submit_run_until_cancelled
+
+    async def submit_until_cancelled(adapter, run_payload, *, event_sink, cancel_requested):
+        return await original_submit_until_cancelled(
+            adapter,
+            run_payload,
+            event_sink=event_sink,
+            cancel_requested=cancel_requested,
+            poll_interval_seconds=0.005,
+            stop_timeout_seconds=0.01,
+            progress_interval_seconds=60,
+        )
+
+    monkeypatch.setattr("app.worker._submit_run_until_cancelled", submit_until_cancelled)
+
+    task = asyncio.create_task(
+        process_run_payload(
+            base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
+            AdapterRegistry({"fake": NonCooperativeAdapter()}),
+        )
+    )
+    started_done, _ = await asyncio.wait(
+        {asyncio.create_task(adapter_started.wait()), task}, timeout=0.5
+    )
+    assert adapter_started.is_set(), (
+        task.exception() if task.done() and not task.cancelled() else calls
+    )
+    done, _ = await asyncio.wait({asyncio.create_task(stop_waiting.wait()), task}, timeout=0.5)
+    assert stop_waiting.is_set(), (
+        (
+            task.exception()
+            if task.done() and not task.cancelled() and task.exception() is not None
+            else task.result()
+            if task.done() and not task.cancelled()
+            else calls
+        )
+    )
+    await asyncio.sleep(0.03)
+
+    assert not any(item[0] in {"cancel", "lease_release"} for item in calls)
+    waiting_events = [
+        item for item in calls if item[0] == "event" and item[3].get("wait_reason") == "cancellation"
+    ]
+    assert waiting_events
+
+    allow_quiescence.set()
+    outcome = await asyncio.wait_for(task, timeout=0.5)
+
+    assert outcome.status == "cancelled"
+    assert calls.index(("adapter", "quiescent")) < calls.index(("cancel", "run-a"))
+    assert calls.index(("cancel", "run-a")) < calls.index(("lease_release", "run_cancelled"))
+
+
+@pytest.mark.asyncio
 async def test_worker_records_unknown_executor_as_failed(monkeypatch):
     calls = []
 
@@ -4849,6 +5429,7 @@ async def test_worker_records_unknown_executor_as_failed(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -4875,6 +5456,7 @@ async def test_worker_honors_explicit_empty_registry(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -4919,9 +5501,11 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
 
     async def complete_run(conn, *, tenant_id, run_id, result_json):
         calls.append(("complete", result_json["executor"]["adapter_version"]))
+        return True
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -4932,7 +5516,7 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
-        base_payload(executor_type="fake"),
+        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent", executor_type="fake"),
         FalsyRegistry(),
     )
 
@@ -4991,6 +5575,7 @@ async def test_worker_blocks_direct_runtime211_queue_payload(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, payload or {}))
@@ -5090,7 +5675,7 @@ async def test_worker_passes_user_id_to_executor_payload(monkeypatch):
         return "evt-a"
 
     async def complete_run(conn, **kwargs):
-        return None
+        return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -5099,7 +5684,12 @@ async def test_worker_passes_user_id_to_executor_payload(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
-        base_payload(user_id="user-a"),
+        base_payload(
+            user_id="user-a",
+            file_ids=[],
+            skill_id="general-chat",
+            agent_id="general-agent",
+        ),
         AdapterRegistry({"fake": IdentityAdapter()}),
     )
 
@@ -5369,6 +5959,7 @@ async def test_worker_includes_multi_agent_step_summary_in_success_result(monkey
 
     async def complete_run(conn, *, tenant_id, run_id, result_json):
         completed_result.update(result_json)
+        return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -5521,6 +6112,7 @@ async def test_worker_includes_multi_agent_step_summary_in_failed_result(monkeyp
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         failed_result.update(result_json or {})
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -5766,7 +6358,7 @@ async def test_worker_appends_user_visible_execution_timeline(monkeypatch):
         return None
 
     async def complete_run(conn, *, tenant_id, run_id, result_json):
-        return None
+        return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -5850,7 +6442,6 @@ async def test_worker_records_general_chat_token_events(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.fail_run", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
@@ -6051,7 +6642,7 @@ async def test_worker_audits_read_only_ragflow_tool_call(monkeypatch):
         return {"id": tool_id, "status": "active", "write_capable": False, "risk_level": "low"}
 
     async def fake_complete_run(conn, **kwargs):
-        return None
+        return True
 
     async def fake_upsert_run_skill_snapshot(conn, **kwargs):
         snapshots.append(kwargs)
@@ -6079,8 +6670,8 @@ async def test_worker_audits_read_only_ragflow_tool_call(monkeypatch):
     assert outcome.status == "succeeded"
     assert "mcp_tool_call_started" in events
     assert "mcp_tool_call_completed" in events
-    assert audits[0]["action"] == "mcp_tool_policy_allowed"
-    assert audits[0]["payload_json"]["auto_allowed"] is True
+    completion_audit = next(item for item in audits if item["action"] == "mcp_tool_call_completed")
+    assert completion_audit["payload_json"]["dataset_ids"] == ["dataset-a"]
     assert audits[0]["payload_json"]["risk_level"] == "low"
     assert audits[0]["payload_json"]["write_capable"] is False
     assert audits[1]["action"] == "mcp_tool_call_completed"
@@ -6293,6 +6884,7 @@ async def test_worker_does_not_mark_failed_ragflow_result_as_native_used(monkeyp
 
     async def fake_fail_run(conn, **kwargs):
         failures.append(kwargs)
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def fake_upsert_run_skill_snapshot(conn, **kwargs):
         snapshots.append(kwargs)

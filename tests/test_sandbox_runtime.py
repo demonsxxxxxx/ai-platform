@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 from contextlib import asynccontextmanager
@@ -9,6 +10,7 @@ from app.file_parser_contracts import build_attachment_preprocessing_contract
 from app.runtime.sandbox.container_provider import FakeContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, SandboxRuntimeRequest, StopResult
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime
 
 
@@ -905,3 +907,123 @@ async def test_runtime_keeps_persistent_container_after_dispatch_failure(tmp_pat
     assert len(statuses) == 1
     assert statuses[0].run_id == "run-a"
     assert statuses[0].status == "running"
+
+
+@pytest.mark.asyncio
+async def test_runtime_execution_owner_stops_persistent_provider_before_confirming_quiescence(tmp_path):
+    calls = []
+    executing = asyncio.Event()
+
+    class RecordingProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason: str):
+            calls.append(("stop", reason))
+            return await super().stop(lease, reason=reason)
+
+    async def execute(executor_url, task_request):
+        executing.set()
+        await asyncio.Event().wait()
+
+    async def record_lease(lease, request, workspace):
+        calls.append(("record", request.run_id))
+        return {"id": "lease-a"}
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        calls.append(("release", reason, lease_record_id))
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=RecordingProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=record_lease,
+        release_lease=release_lease,
+    )
+    owner = RunExecutionOwner("run-a")
+    owner.start(runtime.submit(request(sandbox_mode="persistent"), execution_owner=owner))
+    await asyncio.wait_for(executing.wait(), timeout=0.5)
+
+    stopped = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
+
+    assert stopped.quiescent is True
+    assert calls == [
+        ("record", "run-a"),
+        ("stop", "cancel_requested"),
+        ("release", "cancel_requested", "lease-a"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_execution_owner_does_not_release_lease_when_provider_stop_fails(tmp_path):
+    calls = []
+    executing = asyncio.Event()
+
+    class StopFailedProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason: str):
+            calls.append(("stop", reason))
+            if len(calls) == 1:
+                return StopResult(container_id=lease.container_id, status="failed", message="stop failed")
+            return await super().stop(lease, reason=reason)
+
+    async def execute(executor_url, task_request):
+        executing.set()
+        await asyncio.Event().wait()
+
+    async def record_lease(lease, request, workspace):
+        return {"id": "lease-a"}
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        calls.append(("release", reason, lease_record_id))
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StopFailedProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=record_lease,
+        release_lease=release_lease,
+    )
+    owner = RunExecutionOwner("run-a")
+    owner.start(runtime.submit(request(sandbox_mode="persistent"), execution_owner=owner))
+    await asyncio.wait_for(executing.wait(), timeout=0.5)
+
+    stopped = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
+
+    assert stopped.status == "failed"
+    assert stopped.quiescent is False
+    assert calls == [("stop", "cancel_requested")]
+    assert (await owner.stop(reason="test_cleanup", timeout_seconds=0.2)).quiescent is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_execution_owner_cancel_before_lease_established_releases_nothing(tmp_path):
+    create_started = asyncio.Event()
+    calls = []
+
+    class SlowCreateProvider(FakeContainerProvider):
+        async def create_or_reuse(self, request, workspace):
+            create_started.set()
+            await asyncio.Event().wait()
+
+        async def stop(self, lease, *, reason: str):
+            calls.append(("stop", reason))
+            return await super().stop(lease, reason=reason)
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        calls.append(("release", reason, lease_record_id))
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=SlowCreateProvider(executor_url="http://executor.test"),
+        execute_task=lambda *_args, **_kwargs: None,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=noop_lease,
+        release_lease=release_lease,
+    )
+    owner = RunExecutionOwner("run-a")
+    owner.start(runtime.submit(request(sandbox_mode="persistent"), execution_owner=owner))
+    await asyncio.wait_for(create_started.wait(), timeout=0.5)
+
+    stopped = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
+
+    assert stopped.quiescent is True
+    assert calls == []

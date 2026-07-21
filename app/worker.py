@@ -35,7 +35,7 @@ from app.context_builder import (
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, sanitize_context_manifest_payload
 from app.db import transaction
 from app.execution_boundary import decide_execution_boundary
-from app.executors.base import ExecutorResult, RunPayload
+from app.executors.base import ExecutorResult, RunExecutionOwner, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
@@ -65,6 +65,93 @@ class WorkerOutcome:
 
 class WorkerRunCancelled(asyncio.CancelledError):
     """Raised inside the worker when a running run observes a platform cancel request."""
+
+
+_RUN_CANCEL_POLL_INTERVAL_SECONDS = 1.0
+_RUN_STOP_ATTEMPT_TIMEOUT_SECONDS = 5.0
+_RUN_PROGRESS_INTERVAL_SECONDS = 15.0
+
+
+async def _submit_run_until_cancelled(
+    adapter: Any,
+    run_payload: RunPayload,
+    *,
+    event_sink: Any,
+    cancel_requested: Any,
+    poll_interval_seconds: float = _RUN_CANCEL_POLL_INTERVAL_SECONDS,
+    stop_timeout_seconds: float = _RUN_STOP_ATTEMPT_TIMEOUT_SECONDS,
+    progress_interval_seconds: float = _RUN_PROGRESS_INTERVAL_SECONDS,
+) -> ExecutorResult:
+    """Own one adapter until result or confirmed, bounded cancellation quiescence."""
+
+    owner = RunExecutionOwner(run_payload.run_id)
+    submit_task = owner.start_adapter(adapter, run_payload, event_sink=event_sink)
+    last_progress_at = time.monotonic()
+
+    async def stop_until_quiescent(reason: str) -> None:
+        attempt = 0
+        while True:
+            attempt += 1
+            stop_result = await owner.stop(
+                reason=reason,
+                timeout_seconds=stop_timeout_seconds,
+            )
+            if stop_result.quiescent:
+                return
+            try:
+                await event_sink(
+                    event_type="cancel_requested",
+                    stage="status",
+                    message="任务取消仍在等待执行器安全停止",
+                    payload={
+                        "progress_kind": "waiting",
+                        "wait_reason": "cancellation",
+                        "heartbeat": True,
+                        "stop_status": stop_result.status,
+                        "stop_attempt": attempt,
+                        "visible_to_user": True,
+                        "severity": "warning",
+                    },
+                )
+            except WorkerRunCancelled:
+                pass
+            await asyncio.sleep(max(float(poll_interval_seconds), 0.0))
+
+    try:
+        await asyncio.sleep(0)
+        if submit_task.done():
+            return submit_task.result()
+        while True:
+            if await cancel_requested():
+                await stop_until_quiescent("cancel_requested")
+                raise WorkerRunCancelled
+            done, _ = await asyncio.wait(
+                {submit_task},
+                timeout=max(float(poll_interval_seconds), 0.0),
+            )
+            if submit_task in done:
+                return submit_task.result()
+            now = time.monotonic()
+            if now - last_progress_at >= max(float(progress_interval_seconds), 0.0):
+                await event_sink(
+                    event_type="run_started",
+                    stage="status",
+                    message="任务仍在处理中",
+                    payload={
+                        "progress_kind": "active",
+                        "heartbeat": True,
+                        "visible_to_user": True,
+                        "severity": "info",
+                    },
+                )
+                last_progress_at = now
+    except BaseException as exc:
+        if isinstance(exc, WorkerRunCancelled) and owner.done:
+            raise
+        if not owner.done:
+            reason = "cancel_requested" if isinstance(exc, WorkerRunCancelled) else "worker_interrupted"
+            await stop_until_quiescent(reason)
+        raise
 
 
 class _WorkerSuccessCommitBlocked(Exception):
@@ -2408,8 +2495,22 @@ async def process_run_payload(
                 )
         if adapter is None:
             raise RuntimeError("executor_adapter_not_resolved")
+
+        async def cancel_requested() -> bool:
+            async with transaction() as conn:
+                return await repositories.is_cancel_requested(
+                    conn,
+                    tenant_id=run_payload.tenant_id,
+                    run_id=run_payload.run_id,
+                )
+
         started_at = time.monotonic()
-        result = await adapter.submit_run(run_payload, event_sink=event_sink)
+        result = await _submit_run_until_cancelled(
+            adapter,
+            run_payload,
+            event_sink=event_sink,
+            cancel_requested=cancel_requested,
+        )
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
     except WorkerRunCancelled:
