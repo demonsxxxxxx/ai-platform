@@ -276,6 +276,8 @@ def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, 
                 "session_id": "sdk-session-a",
                 "usage": {"input_tokens": 1, "output_tokens": 1},
                 "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
                 "used_skills": [],
                 "used_skills_source": "",
             },
@@ -304,6 +306,51 @@ def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, 
     assert callbacks[0][1]["progress"] == 5
     assert callbacks[1][1]["progress"] == 99
     assert callbacks[1][1]["state_patch"]["stage"] == "executor_finished"
+
+
+def test_executor_execute_fails_closed_after_final_delta_without_structured_terminal(tmp_path, monkeypatch):
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        await kwargs["on_text"]("completed delivery at outputs/delivery/result.md")
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "completed delivery at outputs/delivery/result.md",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 8},
+                "error": "claude_agent_sdk_missing_structured_terminal",
+                "received_structured_terminal": False,
+                "terminal_reason": None,
+                "used_skills": ["audit-finding-rca"],
+                "used_skills_source": "executor_hook",
+            },
+        )()
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return {"accepted": True}
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error_code"] == "claude_agent_sdk_missing_structured_terminal"
+    assert [item["status"] for item in callbacks] == ["running", "running", "running"]
+    assert callbacks[-1]["progress"] == 99
+    assert callbacks[-1]["state_patch"] == {
+        "stage": "executor_finished",
+        "error_code": "claude_agent_sdk_missing_structured_terminal",
+    }
 
 
 def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
@@ -394,6 +441,8 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
                 "session_id": "sdk-session-a",
                 "usage": {"input_tokens": 1, "output_tokens": 1},
                 "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
                 "used_skills": [],
                 "used_skills_source": "",
             },
@@ -926,6 +975,8 @@ async def test_executor_routes_uploaded_controlled_id_collision_to_sdk_native(mo
                 "session_id": "sdk-session-a",
                 "usage": {},
                 "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
                 "used_skills": ["qa-file-reviewer"],
                 "used_skills_source": "executor_hook",
             },
@@ -995,6 +1046,8 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
                 "session_id": "sdk-session-a",
                 "usage": {"input_tokens": 1, "output_tokens": 1},
                 "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
                 "used_skills": [],
                 "used_skills_source": "",
             },
@@ -1075,6 +1128,8 @@ async def test_default_executor_preparses_dimensionless_xlsx_and_forwards_typed_
                 "session_id": "sdk-session-a",
                 "usage": {},
                 "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
                 "used_skills": ["qa-rag-skill"],
                 "used_skills_source": "executor_hook",
             },
@@ -1176,6 +1231,8 @@ async def test_default_executor_keeps_duplicate_xlsx_basenames_bound_to_distinct
                 "session_id": "sdk-session-a",
                 "usage": {},
                 "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
                 "used_skills": ["qa-rag-skill"],
                 "used_skills_source": "executor_hook",
             },
@@ -2021,6 +2078,8 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monk
                 "session_id": "sdk-session-a",
                 "usage": {"input_tokens": 1, "output_tokens": 1},
                 "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
                 "used_skills": [],
                 "used_skills_source": "",
             },
@@ -2064,6 +2123,8 @@ def test_executor_finished_observation_marker_path_is_container_path(tmp_path, m
                 "session_id": "sdk-session-a",
                 "usage": {"input_tokens": 1, "output_tokens": 1},
                 "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
                 "used_skills": [],
                 "used_skills_source": "",
             },

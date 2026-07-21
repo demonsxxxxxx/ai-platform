@@ -23,6 +23,16 @@ The default adapter path owns the adapter task. `ClaudeAgentWorkerAdapter` uses 
 5. Success/failure/cancel terminal writes remain repository CAS operations. A success/cancel race is classified from durable run state; artifacts and assistant messages must not survive a lost success CAS transaction.
 6. While an adapter is silent, the worker periodically persists a truthful progress heartbeat through the existing run-event projection. It never invents assistant text. Existing assistant deltas and Skill/tool events continue to be persisted immediately and replayed by SSE.
 7. GET status/history and SSE reconnect read the same principal-scoped persisted run ID. They never create, copy, retry, resume, or enqueue a run.
+8. The sandbox executor response distinguishes authoritative completion from
+   transport acceptance. Claude SDK output is successful only after a
+   structured non-error terminal result; assistant deltas and delivery paths
+   remain progress. A missing structured terminal fails closed, and the worker
+   adapter rejects the legacy `accepted` response as terminal success.
+9. A durable cancel request uses a shorter bounded orphan-candidate window than
+   ordinary stale-run interruption. The existing atomic queue fence and scoped
+   repository CAS still prove absence of queue, processing, retry, worker, and
+   sandbox ownership immediately before cancellation terminalization. Fresh
+   non-cancelled progress keeps the ordinary staleness window.
 
 ## Verification
 

@@ -25,6 +25,7 @@ from app.worker import WorkerOutcome, process_run_payload
 
 _next_memory_cleanup_at = 0.0
 logger = logging.getLogger(__name__)
+_CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS = 5
 
 
 class ReconciliationFenceLost(RuntimeError):
@@ -287,12 +288,14 @@ async def reconcile_stale_runs_for_worker(
     settings = settings or get_settings()
     limit = int(settings.stale_run_reconciliation_limit)
     stale_after_seconds = int(settings.stale_run_reconciliation_seconds)
+    cancel_requested_after_seconds = _CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS
     scan_limit = int(settings.queue_metadata_fallback_scan_limit)
     fence_ttl_seconds = int(settings.stale_run_reconciliation_fence_ttl_seconds)
     async with transaction() as conn:
         candidates = await repositories.list_stale_run_reconciliation_candidates(
             conn,
             stale_after_seconds=stale_after_seconds,
+            cancel_requested_after_seconds=cancel_requested_after_seconds,
             limit=limit,
         )
 
@@ -340,6 +343,7 @@ async def reconcile_stale_runs_for_worker(
                             run_id=run_id,
                             expected_status=expected_status,
                             stale_before=candidate.get("stale_before"),
+                            cancel_requested_before=candidate.get("cancel_requested_before"),
                             terminal_status=terminal_status,
                             error_code=error_code,
                             error_message=error_message,

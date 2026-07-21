@@ -426,6 +426,7 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     class Settings:
         stale_run_reconciliation_limit = 4
         stale_run_reconciliation_seconds = 900
+        cancel_requested_orphan_reconciliation_seconds = 5
         queue_metadata_fallback_scan_limit = 500
         stale_run_reconciliation_fence_ttl_seconds = 300
 
@@ -437,10 +438,11 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
         "status": "running",
         "cancel_requested_at": "2026-07-21T11:07:58Z",
         "stale_before": "2026-07-21T11:00:00Z",
+        "cancel_requested_before": "2026-07-21T11:07:58Z",
     }
 
-    async def list_candidates(_conn, *, stale_after_seconds, limit):
-        calls.append(("list", stale_after_seconds, limit))
+    async def list_candidates(_conn, *, stale_after_seconds, cancel_requested_after_seconds, limit):
+        calls.append(("list", stale_after_seconds, cancel_requested_after_seconds, limit))
         return [candidate]
 
     fence = worker_main.queue.RunReconciliationFence("tenant-a", "run-cancel", "token", "fence")

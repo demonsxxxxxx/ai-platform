@@ -2319,7 +2319,7 @@ def test_sandbox_runtime_missing_provider_does_not_fallback_to_settings(monkeypa
     assert result.executor_payload["sandbox_provider"] == ""
 
 
-@pytest.mark.parametrize("runtime_status", ["error", "timeout", "future_unknown_status"])
+@pytest.mark.parametrize("runtime_status", ["accepted", "running", "error", "timeout", "future_unknown_status"])
 def test_sandbox_runtime_unknown_or_error_terminal_status_fails_closed(runtime_status, tmp_path):
     adapter = ClaudeAgentWorkerAdapter()
     prepared = PreparedSdkRun(
@@ -2344,7 +2344,11 @@ def test_sandbox_runtime_unknown_or_error_terminal_status_fails_closed(runtime_s
     )
 
     assert result.status == "failed"
-    assert result.result["error_code"] == "executor_reported_failure"
+    assert result.result["error_code"] == (
+        "executor_missing_structured_terminal"
+        if runtime_status == "accepted"
+        else "executor_reported_failure"
+    )
     assert result.executor_payload["runtime_terminal_status"] == runtime_status
 
 
