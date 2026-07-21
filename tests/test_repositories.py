@@ -110,25 +110,6 @@ async def test_list_stale_run_candidates_requires_progress_staleness_and_no_acti
 
 
 @pytest.mark.asyncio
-async def test_list_stale_user_run_candidates_is_tenant_user_scoped_and_bounded():
-    conn = SingleRowConnection(None)
-
-    await repositories.list_stale_user_run_reconciliation_candidates(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        stale_after_seconds=900,
-        limit=25,
-    )
-
-    assert "runs.tenant_id = %s" in conn.sql
-    assert "runs.user_id = %s" in conn.sql
-    assert "runs.status in ('queued', 'running')" in conn.sql
-    assert "sandbox_leases.status = 'active'" in conn.sql
-    assert conn.params == ("tenant-a", "user-a", 900, 10)
-
-
-@pytest.mark.asyncio
 async def test_stage_stale_cancel_requested_run_uses_scoped_cas_and_existing_cancel_contract(monkeypatch):
     calls = []
 

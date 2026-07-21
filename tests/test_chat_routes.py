@@ -22,7 +22,6 @@ from app.routes.chat import (
     chat_stream,
     create_chat_session,
     get_chat_submission,
-    enforce_user_active_run_limit,
     list_messages,
     list_sessions,
     retry_chat_submission_admission,
@@ -37,161 +36,6 @@ _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilit
 @asynccontextmanager
 async def fake_transaction():
     yield object()
-
-
-@pytest.mark.asyncio
-async def test_admission_reconciles_one_ownerless_stale_run_then_permits_new_run(monkeypatch):
-    calls = []
-
-    class AdmissionConnection:
-        async def execute(self, sql, params):
-            calls.append(("lock", "pg_advisory_xact_lock" in sql, params))
-            return object()
-
-    class LimitSettings:
-        max_active_runs_per_user = 1
-        stale_run_reconciliation_seconds = 900
-        queue_metadata_fallback_scan_limit = 50
-
-    attempts = 0
-
-    async def enforce(_conn, **kwargs):
-        nonlocal attempts
-        attempts += 1
-        calls.append(("admit", attempts, kwargs["tenant_id"], kwargs["user_id"], kwargs["limit"]))
-        if attempts == 1:
-            raise RepositoryConflictError("user_active_run_limit_exceeded")
-        return 0
-
-    async def candidates(_conn, **kwargs):
-        calls.append(("candidates", kwargs["tenant_id"], kwargs["user_id"], kwargs["limit"]))
-        return [{
-            "tenant_id": "tenant-a",
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "run_id": "run-stale",
-            "status": "running",
-            "cancel_requested_at": None,
-            "stale_before": "2026-07-21T11:00:00Z",
-        }]
-
-    async def no_owner(**kwargs):
-        calls.append(("queue_absent", kwargs["run_id"]))
-        return True
-
-    async def stage(_conn, **kwargs):
-        calls.append(("stage", kwargs["run_id"], kwargs["terminal_status"], kwargs["error_code"]))
-        return {"run_id": kwargs["run_id"]}
-
-    async def progress(_conn, **kwargs):
-        calls.append(("progress", kwargs["run_id"]))
-        return repository_module.ToolPermissionTerminalizationProgress(True, "failed", True, True)
-
-    monkeypatch.setattr("app.routes.chat.get_settings", lambda: LimitSettings())
-    monkeypatch.setattr("app.routes.chat.repositories.enforce_user_active_run_admission", enforce)
-    monkeypatch.setattr("app.routes.chat.repositories.list_stale_user_run_reconciliation_candidates", candidates)
-    monkeypatch.setattr("app.routes.chat.run_has_no_queue_owner", no_owner)
-    monkeypatch.setattr("app.routes.chat.repositories.stage_stale_run_reconciliation", stage)
-    monkeypatch.setattr("app.routes.chat.repositories.progress_run_tool_permission_terminalization", progress)
-
-    await enforce_user_active_run_limit(AdmissionConnection(), tenant_id="tenant-a", user_id="user-a")
-
-    assert calls == [
-        ("admit", 1, "tenant-a", "user-a", 1),
-        ("lock", True, ('{"tenant_id": "tenant-a", "user_id": "user-a"}',)),
-        ("candidates", "tenant-a", "user-a", 1),
-        ("queue_absent", "run-stale"),
-        ("queue_absent", "run-stale"),
-        ("stage", "run-stale", "failed", "stale_run_interrupted"),
-        ("progress", "run-stale"),
-        ("admit", 2, "tenant-a", "user-a", 1),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_admission_keeps_live_stale_candidate_blocking(monkeypatch):
-    class AdmissionConnection:
-        async def execute(self, _sql, _params):
-            return object()
-
-    class LimitSettings:
-        max_active_runs_per_user = 1
-        stale_run_reconciliation_seconds = 900
-        queue_metadata_fallback_scan_limit = 50
-
-    async def enforce(_conn, **_kwargs):
-        raise RepositoryConflictError("user_active_run_limit_exceeded")
-
-    async def candidates(_conn, **_kwargs):
-        return [{
-            "tenant_id": "tenant-a",
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "run_id": "run-live",
-            "status": "running",
-            "cancel_requested_at": None,
-            "stale_before": "2026-07-21T11:00:00Z",
-        }]
-
-    async def owner_present(**_kwargs):
-        return False
-
-    async def forbidden_stage(*_args, **_kwargs):
-        raise AssertionError("live owner must never be terminalized")
-
-    monkeypatch.setattr("app.routes.chat.get_settings", lambda: LimitSettings())
-    monkeypatch.setattr("app.routes.chat.repositories.enforce_user_active_run_admission", enforce)
-    monkeypatch.setattr("app.routes.chat.repositories.list_stale_user_run_reconciliation_candidates", candidates)
-    monkeypatch.setattr("app.routes.chat.run_has_no_queue_owner", owner_present)
-    monkeypatch.setattr("app.routes.chat.repositories.stage_stale_run_reconciliation", forbidden_stage)
-
-    with pytest.raises(RepositoryConflictError, match="user_active_run_limit_exceeded"):
-        await enforce_user_active_run_limit(AdmissionConnection(), tenant_id="tenant-a", user_id="user-a")
-
-
-@pytest.mark.asyncio
-async def test_admission_owner_race_between_checks_never_terminalizes(monkeypatch):
-    class AdmissionConnection:
-        async def execute(self, _sql, _params):
-            return object()
-
-    class LimitSettings:
-        max_active_runs_per_user = 1
-        stale_run_reconciliation_seconds = 900
-        queue_metadata_fallback_scan_limit = 50
-
-    async def enforce(_conn, **_kwargs):
-        raise RepositoryConflictError("user_active_run_limit_exceeded")
-
-    async def candidates(_conn, **_kwargs):
-        return [{
-            "tenant_id": "tenant-a",
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "run_id": "run-race",
-            "status": "running",
-            "cancel_requested_at": None,
-            "stale_before": "2026-07-21T11:00:00Z",
-        }]
-
-    owner_checks = [True, False]
-
-    async def owner_race(**_kwargs):
-        return owner_checks.pop(0)
-
-    async def forbidden_stage(*_args, **_kwargs):
-        raise AssertionError("owner appearing during admission recheck must win")
-
-    monkeypatch.setattr("app.routes.chat.get_settings", lambda: LimitSettings())
-    monkeypatch.setattr("app.routes.chat.repositories.enforce_user_active_run_admission", enforce)
-    monkeypatch.setattr("app.routes.chat.repositories.list_stale_user_run_reconciliation_candidates", candidates)
-    monkeypatch.setattr("app.routes.chat.run_has_no_queue_owner", owner_race)
-    monkeypatch.setattr("app.routes.chat.repositories.stage_stale_run_reconciliation", forbidden_stage)
-
-    with pytest.raises(RepositoryConflictError, match="user_active_run_limit_exceeded"):
-        await enforce_user_active_run_limit(AdmissionConnection(), tenant_id="tenant-a", user_id="user-a")
-
-    assert owner_checks == []
 
 
 @pytest.fixture
@@ -4064,33 +3908,15 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
         calls.append("create_session")
         raise AssertionError("session must not be created after admission rejection")
 
-    async def no_stale_candidates(conn, **kwargs):
-        calls.append(("candidates", kwargs["tenant_id"], kwargs["user_id"]))
-        return []
-
-    class AdmissionConnection:
-        async def execute(self, sql, params):
-            calls.append(("lock", "pg_advisory_xact_lock" in sql))
-            return object()
-
-    @asynccontextmanager
-    async def admission_transaction():
-        yield AdmissionConnection()
-
     class LimitSettings:
         max_active_runs_per_user = 3
 
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: LimitSettings())
-    monkeypatch.setattr("app.routes.chat.transaction", admission_transaction)
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(
         "app.routes.chat.repositories.enforce_user_active_run_admission",
         fake_enforce_user_active_run_admission,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.routes.chat.repositories.list_stale_user_run_reconciliation_candidates",
-        no_stale_candidates,
         raising=False,
     )
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_create_session)
@@ -4103,13 +3929,7 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "user_active_run_limit_exceeded"
-    assert calls == [
-        "resolve",
-        ("admit", "tenant-a", "user-limit", 3),
-        ("lock", True),
-        ("candidates", "tenant-a", "user-limit"),
-        ("admit", "tenant-a", "user-limit", 3),
-    ]
+    assert calls == ["resolve", ("admit", "tenant-a", "user-limit", 3)]
 
 
 @pytest.mark.asyncio

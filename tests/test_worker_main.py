@@ -419,6 +419,7 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
         stale_run_reconciliation_limit = 4
         stale_run_reconciliation_seconds = 900
         queue_metadata_fallback_scan_limit = 500
+        stale_run_reconciliation_fence_ttl_seconds = 300
 
     candidate = {
         "tenant_id": "tenant-a",
@@ -434,11 +435,15 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
         calls.append(("list", stale_after_seconds, limit))
         return [candidate]
 
-    queue_checks = [True, True]
+    fence = worker_main.queue.RunReconciliationFence("tenant-a", "run-cancel", "token", "fence")
 
-    async def queue_owner_absent(**kwargs):
-        calls.append(("queue_absent", kwargs["tenant_id"], kwargs["run_id"], kwargs["scan_limit"]))
-        return queue_checks.pop(0)
+    async def acquire_fence(**kwargs):
+        calls.append(("fence", kwargs["tenant_id"], kwargs["run_id"], kwargs["scan_limit"], kwargs["ttl_seconds"]))
+        return fence
+
+    async def release_fence(released):
+        calls.append(("release", released.owner_token))
+        return True
 
     async def stage(_conn, **kwargs):
         calls.append(("stage", kwargs["run_id"], kwargs["expected_status"], kwargs["terminal_status"]))
@@ -457,7 +462,8 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
         _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE,
     )
     monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
-    monkeypatch.setattr("app.worker_main.queue.run_has_no_queue_owner", queue_owner_absent)
+    monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire_fence)
+    monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release_fence)
     monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
@@ -467,10 +473,11 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     assert results == [
         {"tenant_id": "tenant-a", "run_id": "run-cancel", "status": "cancelled", "did_transition": True}
     ]
-    assert calls.count(("queue_absent", "tenant-a", "run-cancel", 500)) == 2
+    assert ("fence", "tenant-a", "run-cancel", 500, 300) in calls
     assert ("stage", "run-cancel", "running", "cancelled") in calls
     assert ("drain", "tenant-a", "run-cancel") in calls
     assert ("reconcile", "tenant-a", "run-cancel") in calls
+    assert ("release", "token") in calls
 
 
 @pytest.mark.asyncio
@@ -488,6 +495,7 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
         stale_run_reconciliation_limit = 4
         stale_run_reconciliation_seconds = 900
         queue_metadata_fallback_scan_limit = 500
+        stale_run_reconciliation_fence_ttl_seconds = 300
 
     candidates = [
         {
@@ -513,10 +521,14 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
     async def list_candidates(_conn, **_kwargs):
         return candidates
 
-    owner_checks = {"run-failed": [True, True], "run-owner-race": [True, False]}
+    async def acquire_fence(**kwargs):
+        if kwargs["run_id"] == "run-owner-race":
+            return None
+        return worker_main.queue.RunReconciliationFence("tenant-a", kwargs["run_id"], "token", "fence")
 
-    async def queue_owner_absent(**kwargs):
-        return owner_checks[kwargs["run_id"]].pop(0)
+    async def release_fence(_fence):
+        calls.append(("release",))
+        return True
 
     async def stage(_conn, **kwargs):
         calls.append(("stage", kwargs["run_id"], kwargs["terminal_status"], kwargs["error_code"]))
@@ -535,7 +547,8 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
         _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE,
     )
     monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
-    monkeypatch.setattr("app.worker_main.queue.run_has_no_queue_owner", queue_owner_absent)
+    monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire_fence)
+    monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release_fence)
     monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
@@ -550,6 +563,7 @@ async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owne
         ("stage", "run-failed", "failed", "stale_run_interrupted"),
         ("drain", "run-failed"),
         ("reconcile", "run-failed"),
+        ("release",),
     ]
 
 
@@ -568,6 +582,7 @@ async def test_stale_run_maintenance_cas_loss_is_a_noop(monkeypatch):
         stale_run_reconciliation_limit = 1
         stale_run_reconciliation_seconds = 900
         queue_metadata_fallback_scan_limit = 50
+        stale_run_reconciliation_fence_ttl_seconds = 300
 
     async def list_candidates(_conn, **_kwargs):
         return [{
@@ -580,7 +595,13 @@ async def test_stale_run_maintenance_cas_loss_is_a_noop(monkeypatch):
             "stale_before": "2026-07-21T11:00:00Z",
         }]
 
-    async def queue_owner_absent(**_kwargs):
+    fence = worker_main.queue.RunReconciliationFence("tenant-a", "run-cas-lost", "token", "fence")
+
+    async def acquire_fence(**_kwargs):
+        return fence
+
+    async def release_fence(released):
+        calls.append(("release", released.owner_token))
         return True
 
     async def stage(_conn, **kwargs):
@@ -596,7 +617,8 @@ async def test_stale_run_maintenance_cas_loss_is_a_noop(monkeypatch):
         _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE,
     )
     monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
-    monkeypatch.setattr("app.worker_main.queue.run_has_no_queue_owner", queue_owner_absent)
+    monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire_fence)
+    monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release_fence)
     monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", forbidden_drain)
 
@@ -605,7 +627,129 @@ async def test_stale_run_maintenance_cas_loss_is_a_noop(monkeypatch):
     assert results == [
         {"tenant_id": "tenant-a", "run_id": "run-cas-lost", "status": "cas_lost", "did_transition": False}
     ]
-    assert calls == [("stage", "run-cas-lost")]
+    assert calls == [("stage", "run-cas-lost"), ("release", "token")]
+
+
+@pytest.mark.asyncio
+async def test_stale_run_fence_is_held_until_db_commit_then_released(monkeypatch):
+    calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            calls.append("tx_enter")
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            calls.append("tx_commit" if exc_type is None else "tx_rollback")
+            return False
+
+    class Settings:
+        stale_run_reconciliation_limit = 1
+        stale_run_reconciliation_seconds = 900
+        stale_run_reconciliation_fence_ttl_seconds = 300
+        queue_metadata_fallback_scan_limit = 50
+
+    async def list_candidates(_conn, **_kwargs):
+        return [{
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "run_id": "run-order",
+            "status": "running",
+            "cancel_requested_at": None,
+            "stale_before": "2026-07-21T11:00:00Z",
+        }]
+
+    fence = worker_main.queue.RunReconciliationFence("tenant-a", "run-order", "token", "fence")
+
+    async def acquire(**_kwargs):
+        calls.append("fence_acquired")
+        return fence
+
+    async def stage(_conn, **_kwargs):
+        calls.append("db_stage")
+        return None
+
+    async def release(_fence):
+        calls.append("fence_released")
+        return True
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.reconcile_stale_runs_for_worker",
+        _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
+    monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire)
+    monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release)
+
+    await worker_main.reconcile_stale_runs_for_worker(Settings())
+
+    assert calls == [
+        "tx_enter",
+        "tx_commit",
+        "fence_acquired",
+        "tx_enter",
+        "db_stage",
+        "tx_commit",
+        "fence_released",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stale_run_db_error_retains_bounded_fence(monkeypatch):
+    calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Settings:
+        stale_run_reconciliation_limit = 1
+        stale_run_reconciliation_seconds = 900
+        stale_run_reconciliation_fence_ttl_seconds = 300
+        queue_metadata_fallback_scan_limit = 50
+
+    async def list_candidates(_conn, **_kwargs):
+        return [{
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "run_id": "run-db-error",
+            "status": "running",
+            "cancel_requested_at": None,
+            "stale_before": "2026-07-21T11:00:00Z",
+        }]
+
+    async def acquire(**_kwargs):
+        return worker_main.queue.RunReconciliationFence("tenant-a", "run-db-error", "token", "fence")
+
+    async def stage(_conn, **_kwargs):
+        raise RuntimeError("db uncertain")
+
+    async def forbidden_release(_fence):
+        calls.append("release")
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.reconcile_stale_runs_for_worker",
+        _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
+    monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire)
+    monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", forbidden_release)
+
+    results = await worker_main.reconcile_stale_runs_for_worker(Settings())
+
+    assert results == [
+        {"tenant_id": "tenant-a", "run_id": "run-db-error", "status": "db_unknown", "did_transition": False}
+    ]
+    assert calls == []
 
 
 @pytest.mark.asyncio

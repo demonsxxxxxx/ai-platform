@@ -190,21 +190,13 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
 async def reconcile_stale_runs_for_worker(
     settings: object | None = None,
 ) -> list[dict[str, object]]:
-    """Recover a bounded batch only after authoritative owner absence is proven twice."""
+    """Recover a bounded batch while one atomic queue fence excludes new owners."""
 
     settings = settings or get_settings()
-    limit = max(1, min(int(getattr(settings, "stale_run_reconciliation_limit", 20)), 50))
-    stale_after_seconds = max(
-        int(
-            getattr(
-                settings,
-                "stale_run_reconciliation_seconds",
-                getattr(settings, "queue_lease_visibility_timeout_seconds", 900),
-            )
-        ),
-        1,
-    )
-    scan_limit = max(int(getattr(settings, "queue_metadata_fallback_scan_limit", 500)), 1)
+    limit = int(settings.stale_run_reconciliation_limit)
+    stale_after_seconds = int(settings.stale_run_reconciliation_seconds)
+    scan_limit = int(settings.queue_metadata_fallback_scan_limit)
+    fence_ttl_seconds = int(settings.stale_run_reconciliation_fence_ttl_seconds)
     async with transaction() as conn:
         candidates = await repositories.list_stale_run_reconciliation_candidates(
             conn,
@@ -222,16 +214,17 @@ async def reconcile_stale_runs_for_worker(
         if not tenant_id or not workspace_id or not run_id or expected_status not in {"queued", "running"}:
             continue
         try:
-            no_owner = await queue.run_has_no_queue_owner(
+            fence = await queue.acquire_run_reconciliation_fence(
                 tenant_id=tenant_id,
                 run_id=run_id,
                 scan_limit=scan_limit,
+                ttl_seconds=fence_ttl_seconds,
             )
         except Exception:
-            logger.exception("Stale run queue ownership inspection failed", extra={"run_id": run_id})
+            logger.exception("Stale run queue fence acquisition failed", extra={"run_id": run_id})
             results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owner_unknown", "did_transition": False})
             continue
-        if not no_owner:
+        if fence is None:
             results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owned", "did_transition": False})
             continue
 
@@ -242,18 +235,9 @@ async def reconcile_stale_runs_for_worker(
             if terminal_status == "cancelled"
             else "Run interrupted because no live execution owner remains."
         )
-        async with transaction() as conn:
-            try:
-                no_owner = await queue.run_has_no_queue_owner(
-                    tenant_id=tenant_id,
-                    run_id=run_id,
-                    scan_limit=scan_limit,
-                )
-            except Exception:
-                logger.exception("Stale run queue ownership recheck failed", extra={"run_id": run_id})
-                no_owner = False
-            staged = (
-                await repositories.stage_stale_run_reconciliation(
+        try:
+            async with transaction() as conn:
+                staged = await repositories.stage_stale_run_reconciliation(
                     conn,
                     tenant_id=tenant_id,
                     workspace_id=workspace_id,
@@ -265,22 +249,26 @@ async def reconcile_stale_runs_for_worker(
                     error_code=error_code,
                     error_message=error_message,
                 )
-                if no_owner
-                else None
-            )
-        if not no_owner:
-            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owned", "did_transition": False})
+        except Exception:
+            logger.exception("Stale run DB reconciliation failed with fence retained", extra={"run_id": run_id})
+            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "db_unknown", "did_transition": False})
             continue
         if staged is None:
+            await queue.release_run_reconciliation_fence(fence)
             results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "cas_lost", "did_transition": False})
             continue
 
-        outcome = await drain_run_tool_permission_terminalization(
-            tenant_id=tenant_id,
-            run_id=run_id,
-            transaction_factory=transaction,
-            max_batches=4,
-        )
+        try:
+            outcome = await drain_run_tool_permission_terminalization(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                transaction_factory=transaction,
+                max_batches=4,
+            )
+        except Exception:
+            logger.exception("Stale run permission drain failed with fence retained", extra={"run_id": run_id})
+            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "drain_unknown", "did_transition": False})
+            continue
         if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
             await reconcile_terminalized_permission_run(
                 tenant_id=tenant_id,
@@ -288,6 +276,8 @@ async def reconcile_stale_runs_for_worker(
                 progress=outcome,
                 transaction_factory=transaction,
             )
+        if outcome is not None and outcome.completed and outcome.is_terminal():
+            await queue.release_run_reconciliation_fence(fence)
         results.append(
             {
                 "tenant_id": tenant_id,

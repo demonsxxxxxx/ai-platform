@@ -50,7 +50,6 @@ from app.queue import (
     enqueue_run_with_metadata,
     get_queue_insight,
     read_queue_admission,
-    run_has_no_queue_owner,
 )
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import get_settings
@@ -864,88 +863,6 @@ def _message_content(row: dict[str, object], principal: AuthPrincipal) -> str:
 
 async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -> None:
     limit = int(get_settings().max_active_runs_per_user)
-    try:
-        await repositories.enforce_user_active_run_admission(
-            conn,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            limit=limit,
-        )
-        return
-    except RepositoryConflictError as exc:
-        if str(exc) != "user_active_run_limit_exceeded":
-            raise
-
-    settings = get_settings()
-    lock_scope = repositories.dumps_json({"tenant_id": tenant_id, "user_id": user_id})
-    await conn.execute(
-        "select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))",
-        (lock_scope,),
-    )
-    candidates = await repositories.list_stale_user_run_reconciliation_candidates(
-        conn,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        stale_after_seconds=max(
-            int(
-                getattr(
-                    settings,
-                    "stale_run_reconciliation_seconds",
-                    getattr(settings, "queue_lease_visibility_timeout_seconds", 900),
-                )
-            ),
-            1,
-        ),
-        limit=max(1, min(limit, 10)),
-    )
-    scan_limit = max(int(getattr(settings, "queue_metadata_fallback_scan_limit", 500)), 1)
-    for candidate in candidates:
-        run_id = str(candidate.get("run_id") or "")
-        if not run_id:
-            continue
-        try:
-            no_owner = await run_has_no_queue_owner(
-                tenant_id=tenant_id,
-                run_id=run_id,
-                scan_limit=scan_limit,
-            )
-        except Exception:
-            no_owner = False
-        if not no_owner:
-            continue
-        try:
-            no_owner = await run_has_no_queue_owner(
-                tenant_id=tenant_id,
-                run_id=run_id,
-                scan_limit=scan_limit,
-            )
-        except Exception:
-            no_owner = False
-        if not no_owner:
-            continue
-        terminal_status = "cancelled" if candidate.get("cancel_requested_at") else "failed"
-        staged = await repositories.stage_stale_run_reconciliation(
-            conn,
-            tenant_id=tenant_id,
-            workspace_id=str(candidate.get("workspace_id") or ""),
-            user_id=user_id,
-            run_id=run_id,
-            expected_status=str(candidate.get("status") or ""),
-            stale_before=candidate.get("stale_before"),
-            terminal_status=terminal_status,
-            error_code=None if terminal_status == "cancelled" else "stale_run_interrupted",
-            error_message=(
-                None
-                if terminal_status == "cancelled"
-                else "Run interrupted because no live execution owner remains."
-            ),
-        )
-        if staged is not None:
-            await repositories.progress_run_tool_permission_terminalization(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-            )
     await repositories.enforce_user_active_run_admission(
         conn,
         tenant_id=tenant_id,

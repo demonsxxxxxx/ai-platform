@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     queue_metadata_fallback_scan_limit: int = Field(default=500)
     worker_heartbeat_ttl_seconds: float = Field(default=60.0)
     worker_maintenance_interval_seconds: float = Field(default=30.0)
+    stale_run_reconciliation_seconds: int = Field(default=900, ge=60, le=86400)
+    stale_run_reconciliation_limit: int = Field(default=20, ge=1, le=50)
+    stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     worker_concurrency: int = Field(default=1)
     memory_retention_worker_cleanup_enabled: bool = Field(default=True)
     memory_retention_worker_cleanup_interval_seconds: float = Field(default=300.0)
@@ -128,7 +131,6 @@ class Settings(BaseSettings):
     ragflow_timeout_seconds: float = Field(default=30.0)
     ragflow_top_k: int = Field(default=3)
     ragflow_similarity_threshold: float = Field(default=0.2)
-
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

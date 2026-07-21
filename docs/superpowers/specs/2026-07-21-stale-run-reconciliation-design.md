@@ -81,3 +81,34 @@ git diff --check
 
 No remote run creation, manual row mutation, admin cleanup, browser, SSH,
 Docker, deployment, or GitHub action is part of this implementation task.
+
+## Atomic fence repair
+
+The observation-only Redis checks are replaced by one queue-owned atomic
+reconciliation claim. A Lua operation scans the bounded authoritative queued,
+processing, queued-metadata, processing-metadata, retry-metadata, worker
+heartbeat, and exact-run index state and writes a run-scoped fence in the same
+Redis operation only when no live ownership exists. Any malformed or
+over-limit legacy state fails closed without a fence.
+
+The claim interface returns an opaque owner token. Its Redis key has a typed,
+bounded TTL; release is a compare-token-and-delete Lua operation, so another
+owner cannot release it. Enqueue, quota lease, and atomic retry/requeue scripts
+all receive the same exact-run fence key and refuse to create ownership while
+it exists. The legacy blocking lease is safe because Redis serializes its
+queued-to-processing list move against claim acquisition: either the claim
+sees queued/processing ownership and fails, or a prior fence prevents every
+producer from placing the item in the queue.
+
+Worker maintenance acquires the claim before opening the scoped DB
+transaction. It holds the fence through the DB CAS commit and bounded
+permission terminalization commits. It releases only after a known CAS loss
+or a known terminal result. An ambiguous DB/Redis failure or partial drain
+leaves the bounded fence to expire instead of risking ownership creation
+during an uncertain terminalization.
+
+Admission no longer performs Redis scans or reconciliation under its DB
+transaction/advisory lock. It remains the normal active-count check; worker
+startup and periodic maintenance own recovery. Typed settings define and
+validate candidate staleness, batch size, and fence TTL, including environment
+override behavior.

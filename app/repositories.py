@@ -3833,60 +3833,6 @@ async def list_stale_run_reconciliation_candidates(
     return list(await cursor.fetchall())
 
 
-async def list_stale_user_run_reconciliation_candidates(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-    stale_after_seconds: int,
-    limit: int,
-) -> list[dict[str, Any]]:
-    """List a bounded principal-scoped subset for one admission recovery attempt."""
-
-    bounded_staleness = max(int(stale_after_seconds), 1)
-    bounded_limit = max(1, min(int(limit), 10))
-    cursor = await conn.execute(
-        """
-        select runs.tenant_id, runs.workspace_id, runs.user_id, runs.id as run_id,
-               runs.status, runs.cancel_requested_at,
-               greatest(
-                 coalesce(latest_event.created_at, '-infinity'::timestamptz),
-                 coalesce(runs.started_at, '-infinity'::timestamptz),
-                 coalesce(runs.queued_at, '-infinity'::timestamptz),
-                 runs.created_at
-               ) as stale_before
-        from runs
-        left join lateral (
-          select run_events.created_at
-          from run_events
-          where run_events.tenant_id = runs.tenant_id
-            and run_events.run_id = runs.id
-          order by run_events.created_at desc, run_events.sequence desc
-          limit 1
-        ) as latest_event on true
-        where runs.tenant_id = %s
-          and runs.user_id = %s
-          and runs.status in ('queued', 'running')
-          and greatest(
-                coalesce(latest_event.created_at, '-infinity'::timestamptz),
-                coalesce(runs.started_at, '-infinity'::timestamptz),
-                coalesce(runs.queued_at, '-infinity'::timestamptz),
-                runs.created_at
-              ) <= clock_timestamp() - (%s * interval '1 second')
-          and not exists (
-            select 1 from sandbox_leases
-            where sandbox_leases.tenant_id = runs.tenant_id
-              and sandbox_leases.run_id = runs.id
-              and sandbox_leases.status = 'active'
-          )
-        order by stale_before asc, runs.id asc
-        limit %s
-        """,
-        (tenant_id, user_id, bounded_staleness, bounded_limit),
-    )
-    return list(await cursor.fetchall())
-
-
 async def stage_stale_run_reconciliation(
     conn: AsyncConnection,
     *,
