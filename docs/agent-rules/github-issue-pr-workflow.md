@@ -19,10 +19,9 @@ unrelated product PR.
 
 - The linked issue and PR are normally the plan, change description, and durable
   status record. Do not create a spec/plan/status trio by default.
-- Add a design when the change affects security, auth or authorization, tenant
-  isolation, schemas or public contracts, persistence, concurrency,
-  infrastructure, runtime/release behavior, or an unresolved cross-module
-  decision.
+- Create a separate design for security, auth or authorization, tenant isolation,
+  release, deployment, runtime, schemas or public contracts, persistence,
+  concurrency, infrastructure, or an unresolved cross-module decision.
 - Medium or long work may keep one concise phase status document when it improves
   handoff or verification clarity.
 - Record blockers and evidence on the issue or PR, not only in chat. Historical
