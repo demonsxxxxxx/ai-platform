@@ -216,12 +216,12 @@ export function LibreChatSidePanel({
   return (
     <aside
       data-librechat-side-panel
-      className="flex h-full min-h-0 flex-col gap-3 bg-[var(--theme-workbench-canvas)] p-3"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] px-4 py-3"
     >
       <section
         data-librechat-context-overview
         aria-labelledby="librechat-context-overview-label"
-        className={`${workbenchSurface.secondaryPanel} min-h-0 flex-1 overflow-y-auto p-3`}
+        className="min-h-0 flex-1 overflow-y-auto pr-1"
       >
         <h2
           id="librechat-context-overview-label"

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { TFunction } from "i18next";
 import {
   projectSafeBackendError,
+  translateChatAdmissionError,
   translateBackendError,
 } from "../backendErrors.ts";
 
@@ -22,6 +23,33 @@ test("translates shared backend error codes", () => {
     translateBackendError("File not found", t),
     "translated:backendErrors.fileNotFound",
   );
+});
+
+test("chat admission maps only the typed active-run 409 to actionable guidance", () => {
+  assert.equal(
+    translateChatAdmissionError(
+      {
+        status: 409,
+        code: "user_active_run_limit_exceeded",
+        message: "safe server projection",
+      },
+      t,
+    ),
+    "translated:chat.activeRunLimitExceeded",
+  );
+
+  for (const error of [
+    { status: 409, code: "auth_context_stale", message: "unauthorized" },
+    { status: 401, code: "unauthorized", message: "unauthorized" },
+    { message: "response lost after admission" },
+  ]) {
+    assert.equal(
+      translateChatAdmissionError(error, t),
+      error.status === 401 || error.code === "auth_context_stale"
+        ? "translated:backendErrors.unauthenticated"
+        : "translated:chat.requestFailed",
+    );
+  }
 });
 
 test("translates backend error patterns", () => {

@@ -196,6 +196,35 @@ function statusFallbackKey(status: number): string {
   return "chat.requestFailed";
 }
 
+export interface ChatAdmissionError {
+  status?: unknown;
+  code?: unknown;
+  message?: unknown;
+}
+
+/**
+ * Give the chat composer a specific recovery step only for the typed admission
+ * conflict it understands. Other HTTP conflicts retain the shared safe copy.
+ */
+export function translateChatAdmissionError(
+  error: ChatAdmissionError,
+  t: TFunction,
+): string {
+  if (
+    error.status === 409 &&
+    error.code === "user_active_run_limit_exceeded"
+  ) {
+    return t("chat.activeRunLimitExceeded", {
+      defaultValue:
+        "当前账户已有 3 个运行中的任务。请等待任务结束或取消旧任务后再发送。",
+    });
+  }
+  return translateBackendError(
+    typeof error.message === "string" ? error.message : "",
+    t,
+  );
+}
+
 /** Project untrusted backend detail to an allowlisted translation or safe status copy. */
 export function projectSafeBackendError(
   detail: unknown,

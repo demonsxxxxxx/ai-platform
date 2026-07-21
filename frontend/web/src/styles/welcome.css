@@ -18,6 +18,14 @@
   display: none;
 }
 
+.welcome-root.welcome-chat-start {
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+  padding-block-start: clamp(2rem, 14vh, 9rem);
+  padding-block-end: clamp(1.5rem, 7vh, 5rem);
+}
+
 /* ── Content layers ── */
 .welcome-greeting,
 .welcome-subtitle,
@@ -29,6 +37,7 @@
 .chat-start-surface {
   min-height: 0;
   margin: 0 auto;
+  gap: clamp(1.25rem, 3vh, 2rem);
 }
 
 /* ── Icon subtle pulse ── */
@@ -203,6 +212,11 @@
 
 @media (max-width: 639px) {
 
+  .welcome-root.welcome-chat-start {
+    padding-block-start: clamp(1.25rem, 7vh, 2.5rem);
+    padding-block-end: max(1rem, env(safe-area-inset-bottom));
+  }
+
 
 
 
@@ -218,13 +232,13 @@
     margin: 0 auto;
   }
 
-  /* Mobile keyboard open — keep centered layout, just compact spacing */
-  html[data-mobile-keyboard="true"] .welcome-root {
-    justify-content: center;
+  /* Mobile keyboard open — keep the composer in the first usable viewport. */
+  html[data-mobile-keyboard="true"] .welcome-root.welcome-chat-start {
+    justify-content: flex-start;
     gap: 0.25rem;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 0.5rem 0.75rem max(0.5rem, env(safe-area-inset-bottom));
+    padding: 0.75rem 0.75rem max(0.5rem, env(safe-area-inset-bottom));
   }
 
   /* Keep suggestions compact when the keyboard is open */
