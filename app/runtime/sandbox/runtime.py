@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from app import repositories
 from app.db import transaction
+from app.executors.base import RunExecutionOwner
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import ContainerProvider, create_container_provider
 from app.runtime.sandbox.contracts import (
@@ -226,6 +227,7 @@ class SandboxRuntime:
         self,
         request: SandboxRuntimeRequest,
         event_sink: EventSink | None = None,
+        execution_owner: RunExecutionOwner | None = None,
     ) -> SandboxRuntimeResult:
         total_started_at = time.monotonic()
         trusted_callback_target = self._trusted_callback_target()
@@ -241,6 +243,21 @@ class SandboxRuntime:
             if stop_result.status == "failed":
                 raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
             raise
+        externally_stopped = False
+
+        async def stop_owned_runtime(reason: str) -> bool:
+            nonlocal externally_stopped
+            if externally_stopped:
+                return True
+            stop_result = await self.provider.stop(lease, reason=reason)
+            if stop_result.status == "failed":
+                return False
+            await self._call_release_lease(lease, reason, lease_record_id)
+            externally_stopped = True
+            return True
+
+        if execution_owner is not None:
+            execution_owner.register_stop(stop_owned_runtime)
         try:
             await self._emit(event_sink, container_started_event(lease))
 
@@ -276,7 +293,7 @@ class SandboxRuntime:
             response = await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
         except BaseException as exc:
-            if request.sandbox_mode == "ephemeral":
+            if request.sandbox_mode == "ephemeral" and not externally_stopped:
                 reason = "dispatch_cancelled" if isinstance(exc, asyncio.CancelledError) else "dispatch_failed"
                 try:
                     await self._stop_and_release_ephemeral_lease(lease, reason=reason, lease_record_id=lease_record_id)
@@ -284,7 +301,7 @@ class SandboxRuntime:
                     raise cleanup_exc from exc
             raise
         sandbox_cleanup_latency_ms = 0
-        if request.sandbox_mode == "ephemeral":
+        if request.sandbox_mode == "ephemeral" and not externally_stopped:
             cleanup_started_at = time.monotonic()
             terminal_status = str(response.get("status") or "")
             release_reason = (
