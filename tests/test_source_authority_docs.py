@@ -233,9 +233,11 @@ def test_agent_rules_keep_main_session_authority_separate_from_subagents():
 
     assert "Standing phrases such as `主线程全部授权`, `主线程有权限操作`, or `执行`" in agents_text
     assert (
-        "do not grant sub-agents write, GitHub write, Docker, deployment, or remote runtime authority"
+        "do not grant disposable sub-agents write, GitHub, Docker, deployment, or remote authority"
         in compact_agents_text
     )
+    assert "do not waive the persistent release-owner contract" in compact_agents_text
+    assert "Broad standing authorization is not a break-glass grant" in compact_agents_text
     assert (
         "main-thread authorization is a direct-operation allowance, not a delegation allowance"
         in compact_workflow_text
@@ -1288,13 +1290,17 @@ def test_compose_forwards_public_skill_file_overlay_limit_to_api_and_worker():
 
 def test_agents_lock_211_runtime_verification_and_rebase_deploy_rules():
     agents_text = read(AGENTS)
+    runbook_text = read(ROOT / "docs/operations/211-release-operations-runbook.md")
     generator_text = read(ROOT / "scripts/generate_sandbox_runtime_evidence_211.py")
 
     assert "python3" in agents_text
     assert '--docker-cmd "sudo -n docker"' in agents_text
-    assert "--cancel-image ai-platform:local" in agents_text
-    assert "rebasing from the current/backup image" in agents_text
-    assert "compose with `--no-build`" in agents_text
+    assert "docs/operations/211-release-operations-runbook.md" in agents_text
+    assert "--cancel-image ai-platform:local" in runbook_text
+    assert "current or backup" in runbook_text
+    assert "recreate with `--no-build`" in runbook_text
+    assert "max depth exceeded" in runbook_text
+    assert "chmod +x /app/docker-entrypoint.sh" in runbook_text
     assert '"ai-platform:local"' in generator_text
     assert "--runtime-mode" in generator_text
     assert "platform" in generator_text
@@ -2782,20 +2788,61 @@ def test_multi_agent_workflow_separates_task_lifetimes_and_budgets_release_work(
 
     assert "## Goal-Level Repair Budget" in workflow
     assert "`repair_budget_total`" in workflow
-    assert "permits at most two repair generations" in compact_workflow
+    assert "Choose a finite goal-specific budget" in compact_workflow
+    assert "no permanent numeric default" in compact_workflow
     assert "does not reset the budget" in compact_workflow
     assert "`GOAL_REPAIR_BUDGET_EXHAUSTED`" in workflow
     assert "Only an explicit user decision may reset or increase" in compact_workflow
 
     assert "## Model And Reasoning Ceiling" in workflow
-    assert "reasoning effort no higher than `xhigh`" in compact_workflow
-    assert "`max` and `ultra` are forbidden" in compact_workflow
-    assert "Luna with `low` reasoning" in compact_workflow
+    assert "default reasoning ceiling" in compact_workflow
+    assert "`max` requires explicit user authorization" in compact_workflow
+    assert "disposable `default` agent role as Luna-low" in compact_workflow
     assert "At each new phase" in compact_workflow
     assert "Capacity is not a target" in compact_workflow
     assert "Luna-low probes are evidence compressors only" in compact_workflow
 
     assert "reasoning effort no higher than `xhigh`" in compact_agents
-    assert "Do not select `max` or `ultra`" in compact_agents
-    assert "Luna with `low` reasoning" in compact_agents
+    assert "`max` requires explicit user authorization" in compact_agents
+    assert "disposable `default` agent role as Luna-low" in compact_agents
     assert "Luna-low disposable sub-agents must not implement" in compact_agents
+
+
+def test_governance_docs_remove_stale_rules_without_weakening_release_invariants():
+    agents = read(AGENTS)
+    guardrails = read(GUARDRAILS)
+    github_workflow = read(GITHUB_WORKFLOW)
+    multi_agent_workflow = read(MULTI_AGENT_CONTEXT_WORKFLOW)
+    compact_multi_agent_workflow = " ".join(multi_agent_workflow.split())
+    runbook = read(ROOT / "docs/operations/211-release-operations-runbook.md")
+    history = read(
+        ROOT / "docs/agent-rules/history/github-sdk-diagnostic-examples.md"
+    )
+
+    assert "Frontend source is maintained in `frontend/web`" in agents
+    assert "Frontend source is maintained in `frontend/web`" in guardrails
+    assert "Move frontend source into this repository" not in agents
+    assert "Frontend source should move into this repository" not in guardrails
+    assert "#15/#16/#17" not in agents
+    assert "#15/#16/#17" not in guardrails
+
+    assert "actually observed on the PR count as CI merge gates" in github_workflow
+    assert "Until backend CI/CD is configured" not in github_workflow
+    assert "Historical examples are non-normative" in github_workflow
+    for pr in ("PR #165", "PR #168", "PR #169"):
+        assert pr not in github_workflow
+        assert pr in history
+
+    assert "preferred implementation of the release" in guardrails
+    assert "not an independent product-acceptance gate" in guardrails
+    assert "project-bound persistent release owner" in guardrails
+    assert "fetched-main ancestry" in guardrails
+    assert "one project-bound persistent release owner" in runbook
+    assert "one mutation lease" in runbook
+    assert "final source/runtime parity" in runbook
+
+    assert "Persistent worker tasks" in multi_agent_workflow
+    assert "Disposable explorer agents" in multi_agent_workflow
+    assert "No tool output found" in multi_agent_workflow
+    assert "orphan-call protocol error" in compact_multi_agent_workflow
+    assert "do not guess or replay" in compact_multi_agent_workflow

@@ -15,15 +15,21 @@ open, or close ordinary-user platform-level multi-run product exposure.
 - Keep the main agent context under a target ceiling of 120k tokens so the
   active working state stays clear.
 - Prefer summarized evidence over raw transcript accumulation.
+- If a turn fails with `No tool output found`, treat it as an orphan-call
+  protocol error unless a recorded request lacks its output. Stop that turn,
+  restore from the current checkpoint in a new turn, and do not guess or replay
+  the entire tool sequence.
 
 ## Role Model
 
 - Main agent: understands the user goal, decomposes work, chooses what can be
   delegated, keeps the critical path moving, reviews results, integrates
   changes, verifies outcomes, and reports to the user.
-- Worker or explorer agents: own narrow scopes such as one subsystem, one test
-  file, one code path, one review concern, or one independent implementation
-  slice.
+- Persistent worker tasks: own narrow implementation, complex test/review,
+  browser, automation, or release scopes under a project-bound worktree and
+  explicit lease.
+- Disposable explorer agents: own only short, one-shot, read-only search,
+  compression, evidence, or limited review scopes.
 - Summary or review agent: optional. Use only when there are many independent
   outputs or a high-risk result needs an extra review pass. The main agent still
   owns the final conclusion.
@@ -96,11 +102,12 @@ open, or close ordinary-user platform-level multi-run product exposure.
 
 ## Model And Reasoning Ceiling
 
-- The controller and every newly created, resumed, or re-chartered task must use
-  a reasoning effort no higher than `xhigh`. `max` and `ultra` are forbidden;
-  high-risk work changes the model/role pairing and verification depth, not this
-  ceiling.
-- Prefer Luna with `low` reasoning for simple disposable work that isolates
+- The default reasoning ceiling for the controller and every newly created,
+  resumed, or re-chartered task is `xhigh`. `max` requires explicit user
+  authorization for the exact task and a recorded reason; `ultra` is not a
+  routine project setting. A stricter current user instruction always wins.
+- When the delegation contract identifies the disposable `default` agent role
+  as Luna-low, prefer that role for simple disposable work that isolates
   broad or noisy context: cross-file search, large-log compression, failed-node
   baseline comparison, inventory/checklist extraction, module-state refresh,
   and peripheral evidence reduction.
@@ -151,8 +158,9 @@ open, or close ordinary-user platform-level multi-run product exposure.
 
 - Before the first implementation or release-controller fix, assign one stable
   `goal_id`, `repair_budget_total`, `repair_generation_used`, and
-  `repair_budget_remaining`. Unless the user sets another limit, a release goal
-  permits at most two repair generations after its initial candidate.
+  `repair_budget_remaining`. Choose a finite goal-specific budget from the
+  scope, risk, and verification cost; this workflow has no permanent numeric
+  default.
 - The budget belongs to the product or release goal, not to an Issue, PR,
   branch, task, controller epoch, or reviewer. Creating or renaming any of those
   does not reset the budget.

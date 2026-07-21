@@ -19,11 +19,11 @@ Use this sequence by default:
 
 ## CI/CD And Evidence Strategy
 
-Backend CI/CD is not currently a merge gate unless a concrete GitHub workflow
-exists for the changed path and is observed on the PR. Do not invent an
-implicit CI status, and do not wait for a nonexistent CI run.
+Only checks from concrete GitHub workflows applicable to the changed path and
+actually observed on the PR count as CI merge gates. Do not invent an implicit
+CI status, and do not wait for a nonexistent or inapplicable run.
 
-Until backend CI/CD is configured, choose durable GitHub evidence first:
+Use durable GitHub evidence alongside applicable CI:
 
 - Run the focused local verification required for the changed path.
 - Run independent review when the issue, gate, or risk level requires it.
@@ -135,13 +135,8 @@ Otherwise link the issue without auto-closing language.
   `gate closable`, and it carries no #164 or stage/gate closure claim
   unless the normal review, deployed-runtime, and issue-closure gates below also
   pass.
-  Recent evidence examples:
-  - PR #165 kept terminal run failures visible instead of hiding them behind
-    artifact ACL symptoms.
-  - PR #168 separated governed worker concurrency and sanitized public
-    `sdk_error` diagnostics.
-  - PR #169 tied the controlled runner fallback to proven empty Bash tool-input
-    loops while preserving ordinary SDK failure paths.
+  Historical examples are non-normative and live in
+  `docs/agent-rules/history/github-sdk-diagnostic-examples.md`.
 - When review is performed by sub-agents or other local assistants, record the
   result on GitHub before using it as review evidence. The comment should name
   the reviewer role, scope, findings, fixes or rejections, and verification

@@ -13,8 +13,8 @@ Use these sources together, in this order, before implementation work:
 4. `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`.
 5. This guardrails file.
 6. Current code, tests, and fresh 211 runtime evidence.
-7. GitHub issues #15/#16/#17 when the active goal names them as current
-   roadmap or workflow inputs.
+7. GitHub issues explicitly named by the active goal and confirmed current from
+   fresh GitHub state.
 
 If these sources disagree, stop broad implementation and narrow the work to
 source-authority repair first.
@@ -53,8 +53,7 @@ Long Task / Platform Multi-Run Orchestration / SDK Subagent expansion must wait
 until these gates have current code, focused tests, review, and 211 smoke
 evidence.
 
-Current P1/P2 gate sequencing from issues #15/#16/#17 is stricter than the old
-P0-only list:
+The current roadmap gate sequence is stricter than the old P0-only list:
 
 1. G0-G1 Source Authority / Security Baseline, including company AD/auth/session,
    RBAC, tenant/workspace/user isolation, redaction, repo-local deploy
@@ -109,9 +108,10 @@ source/version ownership as the current platform gates.
 - Do not mount Docker socket in the default compose file. Docker provider checks
   must use the sandbox compose overlay or a controlled runtime environment.
 - Do not add local-only frontend or compose assumptions that replace the
-  current 211 intranet entry. Frontend source should move into this repository
-  when that gate starts, but it must consume only ai-platform public/admin
-  projections and never executor private payload.
+  current 211 intranet entry. Frontend source is maintained in `frontend/web`;
+  its build and image provenance must remain traceable to the exact Git commit.
+  It must consume only ai-platform public/admin projections and never executor
+  private payload.
 - Do not copy, export, commit, or quote real `.env` files. Use committed
   `.env.example` templates and redacted runtime evidence only.
 - Keep root `.dockerignore` exclusions for real env files aligned with the
@@ -120,16 +120,22 @@ source/version ownership as the current platform gates.
 
 ## Review And Deployment Guardrails
 
-- Future 211 source rollout must use `tools/release_authority.py
-  deploy-main-commit` with an explicit full commit that was fetched from
-  authoritative `origin/main`. The build context must be the clean, versioned,
-  isolated Git checkout created by that command, never a local source archive,
-  hand-copied frontend dist, or dirty coordination checkout.
+- The standard 211 source rollout path is `tools/release_authority.py
+  deploy-main-commit` with an explicit full commit fetched from authoritative
+  `origin/main`. The tool is the preferred implementation of the release
+  invariants, not an independent product-acceptance gate.
+- If the standard tool cannot safely execute for a tool-specific reason, do not
+  silently bypass it. A break-glass release requires explicit user approval of
+  the exact fallback plan and one project-bound persistent release owner. The
+  fallback must prove the same fetched-main ancestry, clean isolated checkout,
+  immutable image provenance, single lease, rollback subject, and final parity.
+  Never use a local source archive, hand-copied frontend dist, or dirty
+  coordination checkout.
 - Git-native release preparation must fail closed when the commit is not
   reachable from fetched main, the versioned checkout is dirty, contains
   ignored worktree files, or is mismatched, an interrupted staging directory
   remains, a release path escapes through a symlink or traversal, or canonical
-  and compatibility image provenance labels disagree. A controller-owned
+  and compatibility image provenance labels disagree. A release-owner
   post-merge 211 rollout is still required before claiming `211 verified` or
   source-authority closure.
 - Goal-sized work and gate closures should follow

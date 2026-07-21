@@ -18,11 +18,10 @@ This file applies to the current `ai-platform` repository root.
 - Run `docker compose` validation, image builds, container restarts, and runtime smoke checks only on a Docker-capable environment, normally the 211 deployment host.
 - On the 211 host, invoke repository Python checks with `python3`; bare `python` is Python 2.7 there and will misreport modern type annotations as syntax errors.
 - On the 211 host, verifier scripts that need Docker must use `--docker-cmd "sudo -n docker"` because the login user cannot access `/var/run/docker.sock` directly.
-- On the 211 host, `sudo` does not preserve a leading shell environment assignment for compose overrides. When selecting an image for compose, use `sudo -n env AI_PLATFORM_IMAGE=<tag> docker compose ...`; do not rely on `AI_PLATFORM_IMAGE=<tag> sudo -n docker compose ...`, which falls back to the compose default image.
-- For 211 sandbox verifier cancel probes, prefer an already-local image such as `ai-platform:local` via `--cancel-image ai-platform:local`; do not depend on pulling `busybox` from Docker Hub during smoke checks.
-- The committed 211 compose file intentionally does not forward package-index variables as Docker build args. If a full compose build fails on package download and dependencies have not changed, rebuild `ai-platform:local` by rebasing from the current/backup image and copying only `pyproject.toml`, `app/`, `skills/`, and `docker-entrypoint.sh`, then run compose with `--no-build`.
-- If repeated 211 runtime-only rebases or compose recreation fail with Docker `max depth exceeded`, do not keep stacking images. Create a flat base from the current healthy container with `docker export` / `docker import`, build the runtime-only image from that flat base, then verify image labels, `/api/ai/health`, and the target smoke path before reporting deployment complete.
-- When a 211 runtime-only Dockerfile copies `docker-entrypoint.sh` from a git archive or Windows-prepared source snapshot, include `RUN chmod +x /app/docker-entrypoint.sh` before compose restart; otherwise API/worker can fail with entrypoint permission denied.
+- Keep operational recovery commands, runtime-only rebuild details, flat-base
+  recovery, Compose environment handling, and entrypoint permissions in
+  `docs/operations/211-release-operations-runbook.md`. This entry file keeps
+  only the host, source, secret, and verification boundaries.
 - When local pytest needs temporary files, use a workspace-local temp directory instead of the default Windows temp path if the default path has permission errors.
 - If pytest fails because a stale child under `.pytest-tmp/` is unreadable or cannot be removed, pass a fresh non-existing child path under `.pytest-tmp/`, such as `--basetemp .pytest-tmp\run-verify-211-<timestamp>`, and report the reason.
 - Always pass `--basetemp .pytest-tmp` to every local pytest invocation; never rely on the
@@ -47,11 +46,12 @@ This file applies to the current `ai-platform` repository root.
 - Treat `ai-platform-api` and `ai-platform-worker` as the target backend/worker containers.
 - Do not treat short-term execution notes, old local paths, or historical service layouts as product requirements.
 
-## Current Issue-Driven Priorities
+## Current Goal-Driven Priorities
 
-When the active goal names GitHub issues #15/#16/#17, treat them as current
-roadmap/workflow inputs together with the PRD, roadmap, guardrails, current
-code, and fresh 211 runtime evidence.
+Use only issues explicitly named by the active user goal and confirmed current
+from fresh GitHub state. Keep concrete issue numbers, owners, and transient
+priority ordering in the roadmap or Controller Current, not this durable entry
+file.
 
 Current priority is the company-internal Agent platform baseline, not Docker
 compose out-of-the-box delivery. Prioritize, in order:
@@ -69,8 +69,9 @@ compose out-of-the-box delivery. Prioritize, in order:
    loop, with frontend consuming only ai-platform public/admin projections.
 5. Long Task / Multi-Agent Runtime only after the earlier gates pass.
 
-Move frontend source into this repository and plan backend/worker/frontend
-multi-image delivery as future roadmap work. Do not make compose one-command
+Frontend source is maintained in `frontend/web`. Preserve traceability from the
+Git commit through the frontend build and image labels. Backend/worker/frontend
+multi-image delivery remains roadmap work. Do not make compose one-command
 startup or packaged delivery a current acceptance gate, and do not mount the
 Docker socket in the default stack.
 
@@ -101,10 +102,13 @@ required before making a status claim.
 - Do not require per-agent `model` or `reasoning_effort` fields for `spawn_agent`.
 - When the delegation tool exposes per-agent `model` or `reasoning_effort`
   fields, set them deliberately according to task complexity.
-- The controller and every new, resumed, or re-chartered task must use a
-  reasoning effort no higher than `xhigh`. Do not select `max` or `ultra`, even
-  for release, deployment, sandbox, security, or final-review work.
-- Actively consider Luna with `low` reasoning for simple, one-shot, read-only
+- Default the controller and every new, resumed, or re-chartered task to a
+  reasoning effort no higher than `xhigh`. `max` requires explicit user
+  authorization for the exact task and a recorded reason; do not use `ultra` as
+  a routine project setting. A current user instruction imposing a stricter cap
+  always wins.
+- When the tool contract exposes the disposable `default` agent role as
+  Luna-low, actively consider it for simple, one-shot, read-only
   context-isolation work such as wide search, log compression, baseline
   comparison, checklist extraction, state refresh, and peripheral evidence
   reduction. Use `fork_turns = "none"`, a self-contained prompt, and a ten-minute
@@ -122,21 +126,22 @@ required before making a status claim.
   available delegation path cannot expose or confirm those fields, record the
   review as inherited/default only; do not mark that explicit gate closed until
   the requirement is revised or a suitable review path is available.
-- Main-session authority and sub-agent restrictions are separate. When the
-  active user explicitly authorizes the current main thread, the main session
-  may perform repository writes, GitHub writes, 211 sync/deploy/restart, Docker
-  cleanup, and other high-risk operational work, provided the normal secret,
-  verification, source-authority, and deployment-cleanup rules in this file are
-  followed.
-- Sub-agent restrictions must not be read backward as main-thread restrictions.
-  If the active user authorizes the main thread with wording such as
-  `主线程全部授权`, `主线程有权限操作`, `执行`, or a concrete deploy/review/close
-  command, keep high-risk operational work in the main session and execute it
-  directly under the normal verification and cleanup rules.
+- Main-session authority and task ownership are separate. User authorization
+  permits an action but does not turn a disposable child into a writer or make
+  the controller the routine deployment executor.
+- Implementation, complex test/review generations, browser acceptance, and
+  release/deployment work use project-bound persistent tasks when the thread
+  path has the required permission posture. Every 211 mutation has one release
+  owner and one lease after readiness passes. The controller may perform only
+  the few decisive read-only preflight or final-parity checks.
 - Standing phrases such as `主线程全部授权`, `主线程有权限操作`, or `执行`
-  authorize the current main session to perform those direct operations for the
-  active task; they do not grant sub-agents write, GitHub write, Docker,
-  deployment, or remote runtime authority.
+  authorize the current main session for the active task; they do not grant
+  disposable sub-agents write, GitHub, Docker, deployment, or remote authority,
+  and they do not waive the persistent release-owner contract.
+- A direct controller mutation is break-glass only: the user must authorize the
+  exact mutation after the normal task path is unavailable, and the same single
+  lease, source, rollback, and parity invariants still apply. Broad standing
+  authorization is not a break-glass grant.
 - Do not delegate write, deployment, remote runtime, Docker, GitHub write, or
   long-running operational tasks to sub-agents unless the delegation path is
   confirmed to inherit the same filesystem, network, approval, and permission
