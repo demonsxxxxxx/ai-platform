@@ -15,14 +15,9 @@ This file applies to the current `ai-platform` repository root.
 - Do not run or require full-repository pytest by default. Full pytest is
   prohibited as a routine gate because it wastes time; run it only if the user
   explicitly requests it for a specific risk decision.
-- Run `docker compose` validation, image builds, container restarts, and runtime smoke checks only on a Docker-capable environment, normally the 211 deployment host.
-- On the 211 host, invoke repository Python checks with `python3`; bare `python` is Python 2.7 there and will misreport modern type annotations as syntax errors.
-- On the 211 host, verifier scripts that need Docker must use `--docker-cmd "sudo -n docker"` because the login user cannot access `/var/run/docker.sock` directly.
-- On the 211 host, `sudo` does not preserve a leading shell environment assignment for compose overrides. When selecting an image for compose, use `sudo -n env AI_PLATFORM_IMAGE=<tag> docker compose ...`; do not rely on `AI_PLATFORM_IMAGE=<tag> sudo -n docker compose ...`, which falls back to the compose default image.
-- For 211 sandbox verifier cancel probes, prefer an already-local image such as `ai-platform:local` via `--cancel-image ai-platform:local`; do not depend on pulling `busybox` from Docker Hub during smoke checks.
-- The committed 211 compose file intentionally does not forward package-index variables as Docker build args. If a full compose build fails on package download and dependencies have not changed, rebuild `ai-platform:local` by rebasing from the current/backup image and copying only `pyproject.toml`, `app/`, `skills/`, and `docker-entrypoint.sh`, then run compose with `--no-build`.
-- If repeated 211 runtime-only rebases or compose recreation fail with Docker `max depth exceeded`, do not keep stacking images. Create a flat base from the current healthy container with `docker export` / `docker import`, build the runtime-only image from that flat base, then verify image labels, `/api/ai/health`, and the target smoke path before reporting deployment complete.
-- When a 211 runtime-only Dockerfile copies `docker-entrypoint.sh` from a git archive or Windows-prepared source snapshot, include `RUN chmod +x /app/docker-entrypoint.sh` before compose restart; otherwise API/worker can fail with entrypoint permission denied.
+- Run Docker validation, builds, restarts, and runtime smoke only on a
+  Docker-capable environment. The authoritative 211 commands and recovery paths
+  live in `docs/operations/211-release-operations-runbook.md`.
 - When local pytest needs temporary files, use a workspace-local temp directory instead of the default Windows temp path if the default path has permission errors.
 - If pytest fails because a stale child under `.pytest-tmp/` is unreadable or cannot be removed, pass a fresh non-existing child path under `.pytest-tmp/`, such as `--basetemp .pytest-tmp\run-verify-211-<timestamp>`, and report the reason.
 - Always pass `--basetemp .pytest-tmp` to every local pytest invocation; never rely on the
@@ -31,48 +26,20 @@ This file applies to the current `ai-platform` repository root.
   The `.pytest-tmp/` directory is workspace-local, git-ignored, and owned entirely by pytest.
   Do not create top-level ad-hoc `--basetemp` variants (e.g. `.pytest-tmp-run-verify-211`);
   consolidate all temporary test artifacts under `.pytest-tmp/`.
-## Deploy Config Handling
-
-- Keep `deploy/ai-platform/.env.example` as the committed non-secret template.
-- Do not copy, export, commit, or quote a real `deploy/ai-platform/.env` file.
-- If deployment variables are needed, read them only from the target runtime environment and report redacted evidence.
-
 ## Source Of Truth
 
 - Use the current repository root as the local `ai-platform` source.
-- Use `docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md`, `docs/superpowers/specs/2026-06-11-ai-platform-tech-acceptance.md`, `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`, `docs/agent-rules/ai-platform-guardrails.md`, current code, and fresh 211 runtime evidence for ai-platform decisions.
-- Treat `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform` as the target 211 backend source path.
-- Treat `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform` as the target 211 repo-local deploy composition path after sync. If live container labels still point to `/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform`, report that as stale runtime evidence that must be reconciled before claiming G0 Source Authority closure.
-- Treat `http://10.56.0.211:18001/` as the current 211 frontend entry.
-- Treat `ai-platform-api` and `ai-platform-worker` as the target backend/worker containers.
+- Use the current PRD, technical acceptance, roadmap,
+  `docs/agent-rules/ai-platform-guardrails.md`, current code, and fresh runtime
+  evidence for ai-platform decisions. The guardrails file is the single source
+  for current 211 paths, services, and product/security boundaries.
 - Do not treat short-term execution notes, old local paths, or historical service layouts as product requirements.
 
-## Current Issue-Driven Priorities
-
-When the active goal names GitHub issues #15/#16/#17, treat them as current
-roadmap/workflow inputs together with the PRD, roadmap, guardrails, current
-code, and fresh 211 runtime evidence.
-
-Current priority is the company-internal Agent platform baseline, not Docker
-compose out-of-the-box delivery. Prioritize, in order:
-
-1. AD/company auth and session behavior, tenant/workspace/user isolation,
-   RBAC/redaction, and source-authority parity between local source, 211 source,
-   repo-local deploy composition, and runtime labels.
-2. Tenant-aware concurrency and fair scheduling: DB connection pool, per-tenant
-   and per-user quota/backpressure, bounded queue metadata, and tenant-aware
-   worker maintenance.
-3. Admin Runtime / Observability: queue depth, run status, sandbox lease state,
-   latency/token/cost/error/artifact/event metrics, worker heartbeat, dead
-   letters, and per-tenant throttling.
-4. Memory / Context management and Tool Permission / Agent Frontend V1 user
-   loop, with frontend consuming only ai-platform public/admin projections.
-5. Long Task / Multi-Agent Runtime only after the earlier gates pass.
-
-Move frontend source into this repository and plan backend/worker/frontend
-multi-image delivery as future roadmap work. Do not make compose one-command
-startup or packaged delivery a current acceptance gate, and do not mount the
-Docker socket in the default stack.
+Use only issues named by the active goal and confirmed from fresh GitHub state.
+Keep concrete issue numbers, owners, ordering, and current gate state in the
+roadmap or Controller Current rather than this durable entry file. Product
+priorities, frontend ownership, and runtime boundaries live in
+`docs/agent-rules/ai-platform-guardrails.md`.
 
 ## GitHub Issue And PR Workflow
 
@@ -81,77 +48,12 @@ work, gate closures, and newly discovered defects. Keep the detailed procedure
 in `docs/agent-rules/github-issue-pr-workflow.md` instead of expanding this
 entry file.
 
-For an ordinary implementation slice, the linked issue and PR are the plan and
-ongoing status record. Create a separate design only when the slice changes a
-schema or public contract, persistence, concurrency, infrastructure, or leaves
-an unresolved cross-module decision. Medium or long work may keep one concise
-Phase status document; do not create a spec/plan/status trio by default.
-Create a separate design for security, auth or authorization, tenant isolation,
-release or deployment, runtime, and other high-risk changes even when the slice
-is otherwise small.
-Historical evidence remains historical. Risk-proportionate machine evidence,
-including exact authorization and route checks plus the relevant smoke, remains
-required before making a status claim.
-
 ## Multi-Agent Delegation
 
-- Use `docs/agent-rules/multi-agent-context-workflow.md` for the working
-  pattern, including the main-agent 120k-token context target, sub-agent output
-  summarization, and context checkpoint rules.
-- Do not require per-agent `model` or `reasoning_effort` fields for `spawn_agent`.
-- When the delegation tool exposes per-agent `model` or `reasoning_effort`
-  fields, set them deliberately according to task complexity.
-- When the delegation tool does not expose those fields, use the tool's default
-  or inherited configuration and state that model-specific settings were not
-  externally asserted.
-- Do not claim that a model-specific or reasoning-specific review gate is
-  complete unless the model and reasoning level are directly configurable or
-  otherwise explicitly confirmed.
-- If a user or goal explicitly requires an explicit model/reasoning gate and the
-  available delegation path cannot expose or confirm those fields, record the
-  review as inherited/default only; do not mark that explicit gate closed until
-  the requirement is revised or a suitable review path is available.
-- Main-session authority and sub-agent restrictions are separate. When the
-  active user explicitly authorizes the current main thread, the main session
-  may perform repository writes, GitHub writes, 211 sync/deploy/restart, Docker
-  cleanup, and other high-risk operational work, provided the normal secret,
-  verification, source-authority, and deployment-cleanup rules in this file are
-  followed.
-- Sub-agent restrictions must not be read backward as main-thread restrictions.
-  If the active user authorizes the main thread with wording such as
-  `主线程全部授权`, `主线程有权限操作`, `执行`, or a concrete deploy/review/close
-  command, keep high-risk operational work in the main session and execute it
-  directly under the normal verification and cleanup rules.
-- Standing phrases such as `主线程全部授权`, `主线程有权限操作`, or `执行`
-  authorize the current main session to perform those direct operations for the
-  active task; they do not grant sub-agents write, GitHub write, Docker,
-  deployment, or remote runtime authority.
-- Do not delegate write, deployment, remote runtime, Docker, GitHub write, or
-  long-running operational tasks to sub-agents unless the delegation path is
-  confirmed to inherit the same filesystem, network, approval, and permission
-  posture as the main session. Keep those tasks in the main session when
-  inheritance cannot be proven.
-- Complex or high-risk coding should use multi-agent collaboration and review
-  when the active user request and available delegation path permit it.
-  Lightweight documentation, wording, and single-point fixes do not require
-  multi-agent review.
-
-## Verification Strategy
-
-Use layered verification during normal coding:
-
-- Small/local changes: run targeted tests for the touched module, contract, or
-  source-authority rule plus `git diff --check` when relevant.
-- Medium changes: run related module tests and key-path tests.
-- High-risk areas require elevated verification: auth/session, tenant
-  isolation, queue, worker maintenance, run lifecycle, sandbox, schema, shared
-  contracts, multi-agent runtime, frontend-backend auth/session contracts, and
-  211 deployment paths.
-- Before PR, deployment, merge, or stage-gate closure: run targeted tests for
-  the changed or affected modules plus the relevant integration or smoke checks,
-  then record evidence. Do not substitute full pytest for focused verification.
-- Do not claim tests, review, 211 smoke, or deployment passed unless the command
-  was actually run and the result was observed.
+`docs/agent-rules/multi-agent-context-workflow.md` is the single source for
+task lifetimes, ownership, authority, model ceilings, disposable probes,
+release readiness, repair budgets, and context checkpoints. Do not restate
+those rules here.
 
 ## Large Feature Workflow
 A change is treated as a **large feature** if it meets any of the following:
