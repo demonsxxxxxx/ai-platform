@@ -67,6 +67,45 @@ class WorkerRunCancelled(asyncio.CancelledError):
     """Raised inside the worker when a running run observes a platform cancel request."""
 
 
+_RUN_CANCEL_POLL_INTERVAL_SECONDS = 1.0
+
+
+async def _submit_run_until_cancelled(
+    adapter: Any,
+    run_payload: RunPayload,
+    *,
+    event_sink: Any,
+    cancel_requested: Any,
+    poll_interval_seconds: float = _RUN_CANCEL_POLL_INTERVAL_SECONDS,
+) -> ExecutorResult:
+    """Execute one adapter while independently observing durable cancellation."""
+
+    submit_task = asyncio.create_task(
+        adapter.submit_run(run_payload, event_sink=event_sink),
+        name=f"run-executor-{run_payload.run_id}",
+    )
+    try:
+        await asyncio.sleep(0)
+        if submit_task.done():
+            return submit_task.result()
+        while True:
+            if await cancel_requested():
+                submit_task.cancel()
+                await asyncio.gather(submit_task, return_exceptions=True)
+                raise WorkerRunCancelled
+            done, _ = await asyncio.wait(
+                {submit_task},
+                timeout=max(float(poll_interval_seconds), 0.0),
+            )
+            if submit_task in done:
+                return submit_task.result()
+    except BaseException:
+        if not submit_task.done():
+            submit_task.cancel()
+            await asyncio.gather(submit_task, return_exceptions=True)
+        raise
+
+
 class _WorkerSuccessCommitBlocked(Exception):
     """Abort success-visible writes when the final run transition loses its guard."""
 
@@ -2408,8 +2447,22 @@ async def process_run_payload(
                 )
         if adapter is None:
             raise RuntimeError("executor_adapter_not_resolved")
+
+        async def cancel_requested() -> bool:
+            async with transaction() as conn:
+                return await repositories.is_cancel_requested(
+                    conn,
+                    tenant_id=run_payload.tenant_id,
+                    run_id=run_payload.run_id,
+                )
+
         started_at = time.monotonic()
-        result = await adapter.submit_run(run_payload, event_sink=event_sink)
+        result = await _submit_run_until_cancelled(
+            adapter,
+            run_payload,
+            event_sink=event_sink,
+            cancel_requested=cancel_requested,
+        )
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
     except WorkerRunCancelled:

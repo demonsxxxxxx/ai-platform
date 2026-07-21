@@ -12,7 +12,7 @@ from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 
 import app.worker as worker_module
 from app import repositories as repository_module
-from app.executors.base import ArtifactManifest, ExecutorResult
+from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.fake import FakeFailureAdapter, FakeSuccessAdapter
 from app.executors.registry import AdapterRegistry
@@ -52,6 +52,43 @@ def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
     ) == ("executor_failure", "ordinary executor failure")
     assert private_token not in str(worker_module._executor_exception_failure(native_error))
     assert private_path not in str(worker_module._executor_exception_failure(native_error))
+
+
+@pytest.mark.asyncio
+async def test_worker_submit_monitor_preserves_normal_terminal_result():
+    expected = FakeSuccessAdapter()
+    skill_version = "hash-general-chat"
+    payload = RunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        file_ids=[],
+        input={},
+        skill_version=skill_version,
+        release_decision=release_decision(skill_version),
+        skill_manifests=[primary_manifest("general-chat", skill_version)],
+    )
+    cancel_checks = 0
+
+    async def cancel_requested():
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return False
+
+    result = await worker_module._submit_run_until_cancelled(
+        expected,
+        payload,
+        event_sink=None,
+        cancel_requested=cancel_requested,
+        poll_interval_seconds=0.01,
+    )
+
+    assert result.status == "succeeded"
+    assert cancel_checks <= 1
 
 
 @pytest.mark.parametrize(
@@ -817,6 +854,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
             "used_skills": [],
         }
         calls.append(("complete", result_json["executor"]["adapter_version"]))
+        return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -4838,6 +4876,73 @@ async def test_worker_stops_running_executor_after_cancel_requested_on_event_bou
     assert any(item[0] == "cancel" for item in calls)
     assert not any(item[0] == "complete" for item in calls)
     assert not any(item[0] == "event" and item[1] == "run_cancelled" for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
+    calls = []
+    cancel_checks = 0
+
+    class SilentAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter", "started"))
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                calls.append(("adapter", "cancelled"))
+                raise
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return cancel_checks >= 3
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        calls.append(("cancel", result_json))
+        return ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="cancelled",
+            did_transition=True,
+        )
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+
+    async def complete_run(conn, **kwargs):
+        raise AssertionError("cancelled silent execution must not complete successfully")
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    original_submit_until_cancelled = worker_module._submit_run_until_cancelled
+
+    async def submit_until_cancelled(adapter, run_payload, *, event_sink, cancel_requested):
+        return await original_submit_until_cancelled(
+            adapter,
+            run_payload,
+            event_sink=event_sink,
+            cancel_requested=cancel_requested,
+            poll_interval_seconds=0.01,
+        )
+
+    monkeypatch.setattr("app.worker._submit_run_until_cancelled", submit_until_cancelled)
+
+    outcome = await asyncio.wait_for(
+        process_run_payload(base_payload(), AdapterRegistry({"fake": SilentAdapter()})),
+        timeout=1.0,
+    )
+
+    assert outcome.status == "cancelled"
+    assert ("adapter", "cancelled") in calls
+    assert any(item[0] == "cancel" for item in calls)
 
 
 @pytest.mark.asyncio
