@@ -81,7 +81,10 @@ import {
   type SSEConnectionContext,
 } from "./useAgent/sseConnection";
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
-import { translateBackendError } from "../utils/backendErrors";
+import {
+  translateBackendError,
+  translateChatAdmissionError,
+} from "../utils/backendErrors";
 import { dispatchSessionTitleUpdated } from "../utils/sessionTitleEvents";
 import { ApiRequestError } from "../services/api/fetch";
 import {
@@ -114,6 +117,22 @@ function isProvenPrePersistenceChatRejection(error: unknown): boolean {
     error.status < 500 &&
     error.submissionDisposition === "rejected_before_persist"
   );
+}
+
+function formatChatSubmissionError(error: unknown): string {
+  if (error instanceof ApiRequestError) {
+    return translateChatAdmissionError(
+      {
+        status: error.status,
+        code: error.code,
+        message: error.message,
+      },
+      i18n.t.bind(i18n),
+    );
+  }
+  return error instanceof Error
+    ? translateBackendError(error.message, i18n.t.bind(i18n))
+    : i18n.t("chat.unknownError");
 }
 
 function parseChatSubmissionResolution(
@@ -2139,16 +2158,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             finishCurrentSubmission();
             return { status: "recoverable_error", code: recoverableCode };
           }
-          const errorMessage =
-            err instanceof Error
-              ? translateBackendError(err.message, i18n.t.bind(i18n))
-              : i18n.t("chat.unknownError");
+          const errorMessage = formatChatSubmissionError(err);
           setError(errorMessage);
-          toast.error(
-            i18n.t("chat.sendNotAcceptedRetry", {
-              defaultValue: "消息未发送，请重试。",
-            }),
-          );
+          toast.error(errorMessage);
         } else if (!admissionAccepted) {
           const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
             defaultValue: i18n.t("chat.requestFailed"),
@@ -2167,10 +2179,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           setError(statusUnavailable);
           toast.error(statusUnavailable);
         } else {
-          const errorMessage =
-            err instanceof Error
-              ? translateBackendError(err.message, i18n.t.bind(i18n))
-              : i18n.t("chat.unknownError");
+          const errorMessage = formatChatSubmissionError(err);
           setError(errorMessage);
           setMessages((prev) =>
             prev.map((m) =>

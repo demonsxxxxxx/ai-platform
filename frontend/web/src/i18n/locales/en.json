@@ -560,6 +560,7 @@
     "queued": "Queued (position {{position}})...",
     "rateLimited": "Too many requests, please try again later",
     "requestFailed": "Failed to load session",
+    "activeRunLimitExceeded": "This account already has 3 running tasks. Wait for them to finish or cancel an older task before sending.",
     "sendNotAcceptedRetry": "Your message was not sent. Please try again.",
     "runTerminal": {
       "failed": "The task could not be completed. Try again later or contact an administrator if the problem persists.",

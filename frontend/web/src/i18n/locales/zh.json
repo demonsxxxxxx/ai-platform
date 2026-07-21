@@ -560,6 +560,7 @@
     "queued": "排队中 (第 {{position}} 位)...",
     "rateLimited": "请求过于频繁，请稍后再试",
     "requestFailed": "加载会话失败",
+    "activeRunLimitExceeded": "当前账户已有 3 个运行中的任务。请等待任务结束或取消旧任务后再发送。",
     "sendNotAcceptedRetry": "消息未发送，请重试。",
     "runTerminal": {
       "failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",

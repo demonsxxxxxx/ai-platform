@@ -87,7 +87,6 @@ test("composer and right panel expose LibreChat-style regions without backend au
     /<section\b[^>]*aria-labelledby="librechat-context-overview-label"[^>]*>[\s\S]*?<h2\b[^>]*id="librechat-context-overview-label"[^>]*>[\s\S]*?workbench\.workspaceContext/,
   );
   assert.match(sidePanel, /section="run"/);
-  assert.doesNotMatch(sidePanel, /<button\b/);
   assert.doesNotMatch(sidePanel, /data-librechat-side-tab=/);
   assert.doesNotMatch(sidePanel, /role="tablist"|role="tab"/);
   assert.doesNotMatch(sidePanel, /activeTab|setActiveTab/);
@@ -105,4 +104,25 @@ test("composer and right panel expose LibreChat-style regions without backend au
     sidePanel + rightPanel + chatInput,
     /librechat-data-provider|useRecoilState|~\/Providers|~\/store/,
   );
+});
+
+test("empty chat keeps the first task prompt reachable and context uses one quiet divider", () => {
+  const welcome = read("src/components/chat/WelcomePage.tsx");
+  const welcomeCss = read("src/styles/welcome.css");
+  const surface = read("src/librechat-ui/surface.ts");
+  const sidePanel = read("src/librechat-ui/SidePanel.tsx");
+
+  assert.match(welcome, /welcome-chat-start/);
+  assert.match(welcome, /data-chat-start-surface/);
+  assert.match(welcomeCss, /\.welcome-root\.welcome-chat-start\s*\{[\s\S]*?justify-content:\s*flex-start/);
+  assert.match(welcomeCss, /padding-block-start:\s*clamp\(2rem, 14vh, 9rem\)/);
+  assert.match(welcomeCss, /@media \(max-width: 639px\)[\s\S]*?padding-block-start:\s*clamp\(1\.25rem, 7vh, 2\.5rem\)/);
+  assert.match(welcomeCss, /html\[data-mobile-keyboard="true"\] \.welcome-root\.welcome-chat-start[\s\S]*?justify-content:\s*flex-start/);
+  assert.doesNotMatch(welcomeCss, /\.welcome-root\.welcome-chat-start[\s\S]{0,300}h-screen|\.welcome-root\.welcome-chat-start[\s\S]{0,300}min-height:\s*100vh/);
+
+  assert.match(surface, /context:[\s\S]*?border-l border-\[var\(--theme-border\)\]/);
+  assert.match(surface, /context:[\s\S]*?min-w-0 w-full/);
+  assert.match(surface, /workspaceWithContext:[\s\S]*?minmax\(18rem,20rem\)/);
+  assert.doesNotMatch(sidePanel, /workbenchSurface\.secondaryPanel/);
+  assert.match(sidePanel, /className="min-h-0 flex-1 overflow-y-auto pr-1"/);
 });

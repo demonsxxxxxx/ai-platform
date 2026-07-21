@@ -995,6 +995,64 @@ test("useAgent permits a retry only after a typed pre-persistence rejection", as
   }
 });
 
+test("useAgent presents the typed active-run admission limit without relabeling other rejections", async () => {
+  const cases = [
+    {
+      name: "active run limit",
+      error: new ApiRequestError(
+        "safe admission projection",
+        409,
+        "user_active_run_limit_exceeded",
+        "rejected_before_persist",
+      ),
+      expected:
+        "当前账户已有 3 个运行中的任务。请等待任务结束或取消旧任务后再发送。",
+    },
+    {
+      name: "unrelated conflict",
+      error: new ApiRequestError(
+        "unauthorized",
+        409,
+        "auth_context_stale",
+        "rejected_before_persist",
+      ),
+      expected: "用户未认证",
+    },
+    {
+      name: "authentication rejection",
+      error: new ApiRequestError(
+        "unauthorized",
+        401,
+        "unauthorized",
+        "rejected_before_persist",
+      ),
+      expected: "用户未认证",
+    },
+  ];
+
+  for (const { name, error, expected } of cases) {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const originalSubmitChat = sessionApi.submitChat;
+    sessionApi.submitChat = (async () => {
+      throw error;
+    }) as typeof sessionApi.submitChat;
+
+    try {
+      await harness.act(async () => {
+        assert.deepEqual(await harness.hook.sendMessage(`准入错误：${name}`), {
+          status: "failed",
+        });
+      });
+      assert.equal(harness.hook.messages.length, 0);
+      assert.equal(harness.hook.error, expected);
+    } finally {
+      sessionApi.submitChat = originalSubmitChat;
+      await harness.cleanup();
+    }
+  }
+});
+
 test("useAgent retains an unknown submission and blocks an automatic duplicate", async () => {
   const unknownFailures: Array<{ name: string; error: Error }> = [
     { name: "network loss", error: new Error("response lost after acceptance") },

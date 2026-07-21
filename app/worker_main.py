@@ -27,6 +27,98 @@ _next_memory_cleanup_at = 0.0
 logger = logging.getLogger(__name__)
 
 
+class ReconciliationFenceLost(RuntimeError):
+    """The worker can no longer prove exclusive ownership of one stale run."""
+
+
+class _ReconciliationFenceGuard:
+    """Keep a reconciliation fence live for one bounded terminalization attempt."""
+
+    def __init__(self, fence: queue.RunReconciliationFence, *, ttl_seconds: int) -> None:
+        self._fence = fence
+        self._ttl_seconds = max(int(ttl_seconds), 1)
+        self._renew_interval_seconds = min(max(self._ttl_seconds / 3, 1.0), 10.0)
+        self._stop = asyncio.Event()
+        self._lost = False
+        self._renewal_task: asyncio.Task[None] | None = None
+
+    async def __aenter__(self) -> "_ReconciliationFenceGuard":
+        await self.ensure_live()
+        self._renewal_task = asyncio.create_task(self._renew_until_done())
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        self._stop.set()
+        if self._renewal_task is not None:
+            self._renewal_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._renewal_task
+        return False
+
+    async def _renew_once(self) -> bool:
+        if self._lost:
+            return False
+        try:
+            renewed = await queue.renew_run_reconciliation_fence(
+                self._fence,
+                ttl_seconds=self._ttl_seconds,
+            )
+        except Exception:
+            logger.exception(
+                "Stale run queue fence renewal failed",
+                extra={"run_id": self._fence.run_id},
+            )
+            self._lost = True
+            return False
+        if not renewed:
+            logger.warning(
+                "Stale run queue fence owner token lost",
+                extra={"run_id": self._fence.run_id},
+            )
+            self._lost = True
+        return renewed
+
+    async def _renew_until_done(self) -> None:
+        while True:
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self._renew_interval_seconds)
+                return
+            except TimeoutError:
+                if not await self._renew_once():
+                    return
+
+    async def ensure_live(self) -> None:
+        if not await self._renew_once():
+            raise ReconciliationFenceLost(self._fence.run_id)
+
+    async def release_if_live(self) -> bool:
+        if self._lost:
+            return False
+        try:
+            return await queue.release_run_reconciliation_fence(self._fence)
+        except Exception:
+            logger.exception(
+                "Stale run queue fence release failed",
+                extra={"run_id": self._fence.run_id},
+            )
+            return False
+
+
+def _fenced_transaction_factory(fence_guard: _ReconciliationFenceGuard):
+    """Require a current fence token before each durable transaction commits."""
+
+    @contextlib.asynccontextmanager
+    async def fenced_transaction():
+        await fence_guard.ensure_live()
+        async with transaction() as conn:
+            yield conn
+            # Raising here makes the surrounding transaction roll back rather
+            # than commit an intent or terminal transition after token loss.
+            await fence_guard.ensure_live()
+
+    return fenced_transaction
+
+
 def default_worker_id() -> str:
     return f"{socket.gethostname()}:{uuid.uuid4().hex[:12]}"
 
@@ -187,6 +279,134 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
     return progress
 
 
+async def reconcile_stale_runs_for_worker(
+    settings: object | None = None,
+) -> list[dict[str, object]]:
+    """Recover a bounded batch while one atomic queue fence excludes new owners."""
+
+    settings = settings or get_settings()
+    limit = int(settings.stale_run_reconciliation_limit)
+    stale_after_seconds = int(settings.stale_run_reconciliation_seconds)
+    scan_limit = int(settings.queue_metadata_fallback_scan_limit)
+    fence_ttl_seconds = int(settings.stale_run_reconciliation_fence_ttl_seconds)
+    async with transaction() as conn:
+        candidates = await repositories.list_stale_run_reconciliation_candidates(
+            conn,
+            stale_after_seconds=stale_after_seconds,
+            limit=limit,
+        )
+
+    results: list[dict[str, object]] = []
+    for candidate in candidates:
+        tenant_id = str(candidate.get("tenant_id") or "")
+        workspace_id = str(candidate.get("workspace_id") or "")
+        user_id = candidate.get("user_id")
+        run_id = str(candidate.get("run_id") or "")
+        expected_status = str(candidate.get("status") or "")
+        if not tenant_id or not workspace_id or not run_id or expected_status not in {"queued", "running"}:
+            continue
+        try:
+            fence = await queue.acquire_run_reconciliation_fence(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                scan_limit=scan_limit,
+                ttl_seconds=fence_ttl_seconds,
+            )
+        except Exception:
+            logger.exception("Stale run queue fence acquisition failed", extra={"run_id": run_id})
+            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owner_unknown", "did_transition": False})
+            continue
+        if fence is None:
+            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owned", "did_transition": False})
+            continue
+
+        terminal_status = "cancelled" if candidate.get("cancel_requested_at") else "failed"
+        error_code = None if terminal_status == "cancelled" else "stale_run_interrupted"
+        error_message = (
+            None
+            if terminal_status == "cancelled"
+            else "Run interrupted because no live execution owner remains."
+        )
+        try:
+            async with _ReconciliationFenceGuard(fence, ttl_seconds=fence_ttl_seconds) as fence_guard:
+                fenced_transaction = _fenced_transaction_factory(fence_guard)
+                try:
+                    async with fenced_transaction() as conn:
+                        staged = await repositories.stage_stale_run_reconciliation(
+                            conn,
+                            tenant_id=tenant_id,
+                            workspace_id=workspace_id,
+                            user_id=str(user_id) if user_id is not None else None,
+                            run_id=run_id,
+                            expected_status=expected_status,
+                            stale_before=candidate.get("stale_before"),
+                            terminal_status=terminal_status,
+                            error_code=error_code,
+                            error_message=error_message,
+                        )
+                except ReconciliationFenceLost:
+                    results.append(
+                        {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
+                    )
+                    continue
+                except Exception:
+                    logger.exception("Stale run DB reconciliation failed with fence retained", extra={"run_id": run_id})
+                    results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "db_unknown", "did_transition": False})
+                    continue
+                if staged is None:
+                    await fence_guard.release_if_live()
+                    results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "cas_lost", "did_transition": False})
+                    continue
+
+                try:
+                    await fence_guard.ensure_live()
+                    outcome = await drain_run_tool_permission_terminalization(
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        transaction_factory=fenced_transaction,
+                        max_batches=4,
+                    )
+                    await fence_guard.ensure_live()
+                    if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
+                        await fence_guard.ensure_live()
+                        await reconcile_terminalized_permission_run(
+                            tenant_id=tenant_id,
+                            run_id=run_id,
+                            progress=outcome,
+                            transaction_factory=fenced_transaction,
+                        )
+                        await fence_guard.ensure_live()
+                except ReconciliationFenceLost:
+                    results.append(
+                        {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
+                    )
+                    continue
+                except Exception:
+                    logger.exception("Stale run permission drain failed with fence retained", extra={"run_id": run_id})
+                    results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "drain_unknown", "did_transition": False})
+                    continue
+                if outcome is not None and outcome.completed and outcome.is_terminal():
+                    try:
+                        await fence_guard.ensure_live()
+                    except ReconciliationFenceLost:
+                        results.append(
+                            {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
+                        )
+                        continue
+                    await fence_guard.release_if_live()
+                results.append(
+                    {
+                        "tenant_id": tenant_id,
+                        "run_id": run_id,
+                        "status": outcome.status if outcome is not None else terminal_status,
+                        "did_transition": outcome.did_transition if outcome is not None else False,
+                    }
+                )
+        except ReconciliationFenceLost:
+            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False})
+    return results
+
+
 async def run_worker_maintenance(settings: object | None = None) -> None:
     settings = settings or get_settings()
     await cleanup_expired_sandbox_leases()
@@ -196,6 +416,7 @@ async def run_worker_maintenance(settings: object | None = None) -> None:
     await queue.reclaim_expired_leases(
         visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
     )
+    await reconcile_stale_runs_for_worker(settings)
 
 
 def _worker_maintenance_interval_seconds(settings: object) -> float:
