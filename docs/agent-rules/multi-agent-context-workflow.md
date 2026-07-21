@@ -70,6 +70,84 @@ open, or close ordinary-user platform-level multi-run product exposure.
 - Do not delegate tasks that are tightly coupled, require continuous cross-file
   design judgment, or would immediately block the main agent.
 
+## Disposable Subagents Versus Persistent Tasks
+
+- `spawn_agent` creates a disposable, one-shot subagent. Use it only for short,
+  bounded, read-only work such as cross-file search, log compression, an
+  evidence probe, or a limited independent review. Prefer `fork_turns = "none"`
+  and require a compact evidence packet.
+- A disposable subagent must not receive a code-write lease, GitHub mutation,
+  credential, 211 mutation, deployment, long-running monitor, or continuing
+  workflow ownership. Confirmed shared filesystem access does not convert it
+  into a persistent owner.
+- Use a persistent Codex task created through the thread API for implementation,
+  multi-generation or complex testing, PR/review lifecycle work, browser
+  acceptance, automation, release, deployment, or any task expected to survive
+  more than one bounded turn. Repository work must be project-bound and use an
+  independent clean worktree.
+- Never extend or re-charter a disposable subagent into a writer or release
+  owner. If its investigation discovers durable work, it returns the exact
+  subject, evidence, and proposed scope, then stops; the controller creates a
+  new persistent task after the relevant gate passes.
+- Every persistent-task dispatch must record: `project_binding_status`, task
+  lifetime, goal ID, role, controller epoch, worktree, branch, base/head SHA,
+  clean status, writable and forbidden paths, permissions, lease ID, next
+  event, evidence ceiling, and terminal/exit conditions.
+
+## Release Readiness Before Mutation
+
+- A release generation, project-bound release owner, or mutation lease may be
+  created only after a read-only gate records `RELEASE_READINESS_PASS` for the
+  exact release subject. The controller may run one decisive read-only preflight
+  and may use disposable probes to compress noisy evidence; it must not create
+  the release owner merely to discover whether the environment is ready.
+- The readiness record must prove all of the following for the same fresh
+  observation window:
+  - exact source commit, publisher commit, target runtime, and target host;
+  - an executable host-side test plan for every required POSIX contract, using
+    available pytest, an approved isolated offline wheelhouse/virtualenv, or an
+    explicitly approved equivalent harness;
+  - Docker and Compose capability, including the canonical daemon route;
+  - the exact release-authority directory plus key, state, journal, and lock
+    inventory and permissions;
+  - current per-service Compose ownership and recover/adopt compatibility;
+  - no active mutator and no release-lock holder;
+  - the exact runtime-only, relabel-only, or full-build plan, including why each
+    service needs mutation; and
+  - the current runtime subject and an executable rollback subject.
+- If any readiness item is missing, stale, or blocked, record
+  `RELEASE_READINESS_BLOCKED`, do not create a release owner or mutation lease,
+  and do not count a release generation. Resolve the blocker in a separately
+  authorized persistent task when code or durable environment work is required.
+- After readiness passes, create exactly one project-bound persistent release
+  task with an independent clean worktree and the full dispatch envelope. The
+  controller consumes its compact terminal packet and performs at most one
+  final parity check; it does not execute or continuously monitor the release.
+
+## Goal-Level Repair Budget
+
+- Before the first implementation or release-controller fix, assign one stable
+  `goal_id`, `repair_budget_total`, `repair_generation_used`, and
+  `repair_budget_remaining`. Unless the user sets another limit, a release goal
+  permits at most two repair generations after its initial candidate.
+- The budget belongs to the product or release goal, not to an Issue, PR,
+  branch, task, controller epoch, or reviewer. Creating or renaming any of those
+  does not reset the budget.
+- One repair generation begins when a persistent writer is authorized to change
+  the candidate after a blocking implementation, test, review, readiness, or
+  release result. Local edits, re-review, and a follow-up Issue for the same
+  blocker remain part of that generation until its fixed-SHA terminal result.
+- A read-only readiness failure with zero code or runtime mutation does not
+  consume a repair generation, but it closes the release gate until the blocker
+  is resolved. Authorizing a persistent task to change code or durable host
+  state consumes one generation before work starts.
+- When the budget is exhausted, record `GOAL_REPAIR_BUDGET_EXHAUSTED`, revoke all
+  implementation and release leases, and stop. A follow-up Issue may preserve
+  the blocker but must not authorize another implementation cycle. The
+  controller must give the user a decision packet containing the minimum
+  blocker, simplification options, risks, and one bounded verification plan.
+  Only an explicit user decision may reset or increase the same goal's budget.
+
 ## Context Budget
 
 - Target main-agent context: 120k tokens or less.

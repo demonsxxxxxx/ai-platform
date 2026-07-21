@@ -2749,3 +2749,38 @@ def test_skills_marketplace_public_api_documents_backed_file_overlay_contract():
     assert "skill_file_write_contract_not_backed" not in contract
     assert "skill_file_delete_contract_not_backed" not in contract
     assert "durable per-user skill file storage" not in contract
+
+
+def test_multi_agent_workflow_separates_task_lifetimes_and_budgets_release_work():
+    workflow = read(MULTI_AGENT_CONTEXT_WORKFLOW)
+    compact_workflow = " ".join(workflow.split())
+
+    assert "## Disposable Subagents Versus Persistent Tasks" in workflow
+    assert "`spawn_agent` creates a disposable, one-shot subagent" in compact_workflow
+    assert "must not receive a code-write lease" in compact_workflow
+    assert "persistent Codex task created through the thread API" in compact_workflow
+    assert "project-bound and use an independent clean worktree" in compact_workflow
+    assert (
+        "Never extend or re-charter a disposable subagent into a writer"
+        in compact_workflow
+    )
+
+    assert "## Release Readiness Before Mutation" in workflow
+    assert "`RELEASE_READINESS_PASS`" in workflow
+    assert (
+        "exact source commit, publisher commit, target runtime, and target host"
+        in compact_workflow
+    )
+    assert (
+        "current per-service Compose ownership and recover/adopt compatibility"
+        in compact_workflow
+    )
+    assert "`RELEASE_READINESS_BLOCKED`" in workflow
+    assert "do not count a release generation" in compact_workflow
+
+    assert "## Goal-Level Repair Budget" in workflow
+    assert "`repair_budget_total`" in workflow
+    assert "permits at most two repair generations" in compact_workflow
+    assert "does not reset the budget" in compact_workflow
+    assert "`GOAL_REPAIR_BUDGET_EXHAUSTED`" in workflow
+    assert "Only an explicit user decision may reset or increase" in compact_workflow
