@@ -95,6 +95,7 @@ const SIDE_EFFECT_EVENTS = new Set<string>([
   "queue_update",
   "approval_required",
   "skills:changed",
+  "heartbeat",
 ]);
 
 function runEventSequence(data: EventData): number | null {
@@ -313,6 +314,12 @@ export function handleStreamEvent(
           toast.success(i18n.t("chat.queueStart"), { duration: 2000 });
         });
       }
+      return true;
+    }
+
+    case "heartbeat": {
+      // Heartbeats have already passed the session/run/generation fence above.
+      // They are liveness signals, not assistant text or a fake progress card.
       return true;
     }
 

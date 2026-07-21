@@ -551,6 +551,51 @@ async def test_run_once_acknowledges_cancelled_message(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_once_does_not_ack_cancelled_message_before_execution_owner_finishes(monkeypatch):
+    calls = []
+    processing = asyncio.Event()
+    quiescent = asyncio.Event()
+
+    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
+        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a")
+
+    async def process_run_payload(payload, registry=None, worker_id=None):
+        processing.set()
+        await quiescent.wait()
+        return WorkerOutcome(status="cancelled", run_id=payload["run_id"])
+
+    async def ack_run(raw, message_id=None):
+        calls.append(("ack", raw, message_id))
+
+    async def fail_leased_run(*args, **kwargs):
+        calls.append(("fail",))
+
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
+    monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
+
+    task = asyncio.create_task(
+        run_once(
+            timeout_seconds=1,
+            worker_id="worker-a",
+            heartbeat_interval_seconds=60,
+            run_initial_maintenance=False,
+            run_background_maintenance=False,
+        )
+    )
+    await asyncio.wait_for(processing.wait(), timeout=0.5)
+
+    assert calls == []
+
+    quiescent.set()
+    outcome = await asyncio.wait_for(task, timeout=0.5)
+
+    assert outcome.status == "cancelled"
+    assert calls == [("ack", "raw-run", "msg-a")]
+
+
+@pytest.mark.asyncio
 async def test_run_once_dead_letters_process_exception(monkeypatch):
     calls = []
 

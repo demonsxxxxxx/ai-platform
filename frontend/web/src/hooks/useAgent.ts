@@ -1416,6 +1416,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           const isTaskRunning = Boolean(
             normalizedStatus && isActiveRunStatus(normalizedStatus),
           );
+          // A persisted cancel request keeps the run observable until the
+          // server publishes its terminal result, but it must never cause a
+          // page reload to reconnect an active generation. The next explicit
+          // history/status read is GET-only and remains the convergence path.
+          const isCancelRequested = normalizedStatus === "cancel_requested";
           const terminalStatus = terminalRunStatus(normalizedStatus);
           const statusUnavailable = statusResult?.kind === "unavailable";
           const activeHistoryRunId =
@@ -1548,7 +1553,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             currentRunIdRef.current = activeHistoryRunId;
           }
 
-          if (isTaskRunning && historyCurrentRunId && streamingMessageId) {
+          if (
+            isTaskRunning &&
+            !isCancelRequested &&
+            historyCurrentRunId &&
+            streamingMessageId
+          ) {
             isReconnectFromHistoryRef.current = false;
             const ctx = createSSEContext();
             connectToSSE(

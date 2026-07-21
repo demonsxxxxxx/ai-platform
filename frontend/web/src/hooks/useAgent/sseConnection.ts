@@ -273,6 +273,15 @@ function isAcceptedRunProgress(
   return !terminal && isSequencedPublicChatEvent(eventType, data as EventData);
 }
 
+/** A transport heartbeat confirms liveness only; it cannot create chat text. */
+function isRunHeartbeat(eventType: string, data: Record<string, unknown>): boolean {
+  return (
+    eventType === "heartbeat" &&
+    typeof data.status === "string" &&
+    data.status.trim().length > 0
+  );
+}
+
 export function getSSECloseAction({
   receivedTerminalEvent,
 }: {
@@ -421,6 +430,14 @@ export async function connectToSSE(
           // An old explicit frame cannot end this connection or suppress its
           // reconnect. It is not safe to rebind an explicit foreign run.
           if (sourceRunId && sourceRunId !== targetRunId) {
+            return;
+          }
+
+          // The status-stream heartbeat is intentionally not an assistant
+          // message event. It confirms liveness for this attached stream, but
+          // cannot erase this generation's cumulative reconnect budget: a
+          // heartbeat-then-close loop is not stable transport progress.
+          if (isRunHeartbeat(event.event, parsedData)) {
             return;
           }
 

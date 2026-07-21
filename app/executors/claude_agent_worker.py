@@ -2,6 +2,7 @@ import base64
 import binascii
 from dataclasses import dataclass, field
 import hashlib
+import inspect
 from pathlib import Path
 import posixpath
 import re
@@ -23,7 +24,13 @@ from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, available_cont
 from app.context_retrieval import ContextRetrieval, TransactionalContextRetrievalRepository
 from app.db import transaction
 from app.execution_boundary import decide_execution_boundary
-from app.executors.base import ArtifactManifest, ExecutorEventSink, ExecutorResult, RunPayload
+from app.executors.base import (
+    ArtifactManifest,
+    ExecutorEventSink,
+    ExecutorResult,
+    RunExecutionOwner,
+    RunPayload,
+)
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
@@ -291,6 +298,30 @@ def _payload_queue_wait_ms(payload: RunPayload) -> int:
     return max(parsed, 0)
 
 
+async def _submit_sandbox_runtime(
+    runtime: SandboxRuntime,
+    request: SandboxRuntimeRequest,
+    *,
+    event_sink: Any,
+    execution_owner: RunExecutionOwner | None,
+):
+    """Call the runtime seam compatibly while threading ownership when supported."""
+
+    try:
+        parameters = inspect.signature(runtime.submit).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    accepts_owner = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        or parameter.name == "execution_owner"
+        for parameter in parameters
+    )
+    kwargs = {"event_sink": event_sink}
+    if accepts_owner:
+        kwargs["execution_owner"] = execution_owner
+    return await runtime.submit(request, **kwargs)
+
+
 class PinnedSkillMismatch(ValueError):
     def __init__(self, message: str, *, actual_content_hash: str = "") -> None:
         super().__init__(message)
@@ -313,7 +344,12 @@ class ClaudeAgentWorkerAdapter:
         # runtime211 is not a dependency of ai-platform execution.
         self._delegate = delegate
 
-    async def submit_run(self, payload: RunPayload, event_sink: ExecutorEventSink | None = None) -> ExecutorResult:
+    async def submit_run(
+        self,
+        payload: RunPayload,
+        event_sink: ExecutorEventSink | None = None,
+        execution_owner: RunExecutionOwner | None = None,
+    ) -> ExecutorResult:
         decision = decide_execution_boundary(
             executor_type=self.executor_type,
             execution_mode=str(payload.input.get("execution_mode") or ""),
@@ -361,6 +397,7 @@ class ClaudeAgentWorkerAdapter:
             payload,
             event_sink=event_sink,
             sandbox_runtime=sandbox_runtime,
+            execution_owner=execution_owner,
         )
         if sdk_result is not None:
             return sdk_result
@@ -988,6 +1025,7 @@ class ClaudeAgentWorkerAdapter:
         *,
         event_sink: ExecutorEventSink | None = None,
         sandbox_runtime: SandboxRuntime | None = None,
+        execution_owner: RunExecutionOwner | None = None,
     ) -> ExecutorResult:
         settings = get_settings()
         context_pack = self._executor_context_pack(payload)
@@ -1059,7 +1097,12 @@ class ClaudeAgentWorkerAdapter:
             async def runtime_event_sink(agent_event):
                 await event_sink(**agent_event_to_executor_event(agent_event))
 
-        runtime_result = await runtime.submit(request, event_sink=runtime_event_sink)
+        runtime_result = await _submit_sandbox_runtime(
+            runtime,
+            request,
+            event_sink=runtime_event_sink,
+            execution_owner=execution_owner,
+        )
         return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
 
     def _sandbox_provider_required_result(
@@ -1283,6 +1326,7 @@ class ClaudeAgentWorkerAdapter:
         event_sink: ExecutorEventSink | None = None,
         *,
         sandbox_runtime: SandboxRuntime | None = None,
+        execution_owner: RunExecutionOwner | None = None,
     ) -> ExecutorResult | None:
         settings = get_settings()
         if not settings.claude_agent_sdk_enabled:
@@ -1314,6 +1358,7 @@ class ClaudeAgentWorkerAdapter:
                 prepared,
                 event_sink=event_sink,
                 sandbox_runtime=sandbox_runtime,
+                execution_owner=execution_owner,
             )
 
         sdk_result = await self._try_run_sdk(
