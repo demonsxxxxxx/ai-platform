@@ -187,6 +187,118 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
     return progress
 
 
+async def reconcile_stale_runs_for_worker(
+    settings: object | None = None,
+) -> list[dict[str, object]]:
+    """Recover a bounded batch only after authoritative owner absence is proven twice."""
+
+    settings = settings or get_settings()
+    limit = max(1, min(int(getattr(settings, "stale_run_reconciliation_limit", 20)), 50))
+    stale_after_seconds = max(
+        int(
+            getattr(
+                settings,
+                "stale_run_reconciliation_seconds",
+                getattr(settings, "queue_lease_visibility_timeout_seconds", 900),
+            )
+        ),
+        1,
+    )
+    scan_limit = max(int(getattr(settings, "queue_metadata_fallback_scan_limit", 500)), 1)
+    async with transaction() as conn:
+        candidates = await repositories.list_stale_run_reconciliation_candidates(
+            conn,
+            stale_after_seconds=stale_after_seconds,
+            limit=limit,
+        )
+
+    results: list[dict[str, object]] = []
+    for candidate in candidates:
+        tenant_id = str(candidate.get("tenant_id") or "")
+        workspace_id = str(candidate.get("workspace_id") or "")
+        user_id = candidate.get("user_id")
+        run_id = str(candidate.get("run_id") or "")
+        expected_status = str(candidate.get("status") or "")
+        if not tenant_id or not workspace_id or not run_id or expected_status not in {"queued", "running"}:
+            continue
+        try:
+            no_owner = await queue.run_has_no_queue_owner(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                scan_limit=scan_limit,
+            )
+        except Exception:
+            logger.exception("Stale run queue ownership inspection failed", extra={"run_id": run_id})
+            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owner_unknown", "did_transition": False})
+            continue
+        if not no_owner:
+            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owned", "did_transition": False})
+            continue
+
+        terminal_status = "cancelled" if candidate.get("cancel_requested_at") else "failed"
+        error_code = None if terminal_status == "cancelled" else "stale_run_interrupted"
+        error_message = (
+            None
+            if terminal_status == "cancelled"
+            else "Run interrupted because no live execution owner remains."
+        )
+        async with transaction() as conn:
+            try:
+                no_owner = await queue.run_has_no_queue_owner(
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    scan_limit=scan_limit,
+                )
+            except Exception:
+                logger.exception("Stale run queue ownership recheck failed", extra={"run_id": run_id})
+                no_owner = False
+            staged = (
+                await repositories.stage_stale_run_reconciliation(
+                    conn,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    user_id=str(user_id) if user_id is not None else None,
+                    run_id=run_id,
+                    expected_status=expected_status,
+                    stale_before=candidate.get("stale_before"),
+                    terminal_status=terminal_status,
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+                if no_owner
+                else None
+            )
+        if not no_owner:
+            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owned", "did_transition": False})
+            continue
+        if staged is None:
+            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "cas_lost", "did_transition": False})
+            continue
+
+        outcome = await drain_run_tool_permission_terminalization(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            transaction_factory=transaction,
+            max_batches=4,
+        )
+        if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
+            await reconcile_terminalized_permission_run(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                progress=outcome,
+                transaction_factory=transaction,
+            )
+        results.append(
+            {
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+                "status": outcome.status if outcome is not None else terminal_status,
+                "did_transition": outcome.did_transition if outcome is not None else False,
+            }
+        )
+    return results
+
+
 async def run_worker_maintenance(settings: object | None = None) -> None:
     settings = settings or get_settings()
     await cleanup_expired_sandbox_leases()
@@ -196,6 +308,7 @@ async def run_worker_maintenance(settings: object | None = None) -> None:
     await queue.reclaim_expired_leases(
         visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
     )
+    await reconcile_stale_runs_for_worker(settings)
 
 
 def _worker_maintenance_interval_seconds(settings: object) -> float:

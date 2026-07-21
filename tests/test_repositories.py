@@ -90,6 +90,159 @@ def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
     assert len(first) == 64
 
 
+@pytest.mark.asyncio
+async def test_list_stale_run_candidates_requires_progress_staleness_and_no_active_sandbox_lease():
+    conn = SingleRowConnection(None)
+
+    await repositories.list_stale_run_reconciliation_candidates(
+        conn,
+        stale_after_seconds=900,
+        limit=25,
+    )
+
+    assert "runs.status in ('queued', 'running')" in conn.sql
+    assert "greatest( coalesce(latest_event.created_at" in conn.sql
+    assert "<= clock_timestamp() - (%s * interval '1 second')" in conn.sql
+    assert "not exists ( select 1 from sandbox_leases" in conn.sql
+    assert "sandbox_leases.status = 'active'" in conn.sql
+    assert "for update of runs skip locked" not in conn.sql
+    assert conn.params == (900, 25)
+
+
+@pytest.mark.asyncio
+async def test_list_stale_user_run_candidates_is_tenant_user_scoped_and_bounded():
+    conn = SingleRowConnection(None)
+
+    await repositories.list_stale_user_run_reconciliation_candidates(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        stale_after_seconds=900,
+        limit=25,
+    )
+
+    assert "runs.tenant_id = %s" in conn.sql
+    assert "runs.user_id = %s" in conn.sql
+    assert "runs.status in ('queued', 'running')" in conn.sql
+    assert "sandbox_leases.status = 'active'" in conn.sql
+    assert conn.params == ("tenant-a", "user-a", 900, 10)
+
+
+@pytest.mark.asyncio
+async def test_stage_stale_cancel_requested_run_uses_scoped_cas_and_existing_cancel_contract(monkeypatch):
+    calls = []
+
+    class Connection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update runs set permission_terminalization_target"):
+                return SingleRowCursor(
+                    {
+                        "id": "run-a",
+                        "trace_id": "trace-a",
+                        "permission_terminalization_target": "cancelled",
+                    }
+                )
+            return SingleRowCursor(None)
+
+    async def append_event(_conn, **kwargs):
+        calls.append(("event", kwargs))
+
+    async def append_audit_log(_conn, **kwargs):
+        calls.append(("audit", kwargs))
+
+    monkeypatch.setattr(repositories, "append_event", append_event)
+    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
+
+    row = await repositories.stage_stale_run_reconciliation(
+        Connection(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        run_id="run-a",
+        expected_status="running",
+        stale_before="2026-07-21T11:00:00Z",
+        terminal_status="cancelled",
+        error_code=None,
+        error_message=None,
+    )
+
+    assert row == {"id": "run-a", "trace_id": "trace-a", "permission_terminalization_target": "cancelled"}
+    update_sql, update_params = calls[0]
+    assert "workspace_id = %s" in update_sql
+    assert "user_id is not distinct from %s" in update_sql
+    assert "status = %s" in update_sql
+    assert "cancel_requested_at is not null" in update_sql
+    assert "not exists ( select 1 from sandbox_leases" in update_sql
+    assert "greatest( coalesce((select max(created_at)" in update_sql
+    assert update_params[4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
+    assert update_params[-1] == "2026-07-21T11:00:00Z"
+    assert calls[1][0] == "event"
+    assert calls[1][1]["event_type"] == "stale_run_reconciled"
+    assert calls[1][1]["payload"]["result_status"] == "cancelled"
+    assert calls[2][0] == "audit"
+    assert calls[2][1]["action"] == "run.stale.reconcile"
+
+
+@pytest.mark.asyncio
+async def test_stage_stale_running_run_fails_explicitly_and_cas_loss_emits_nothing(monkeypatch):
+    calls = []
+
+    class Connection:
+        def __init__(self, row):
+            self.row = row
+
+        async def execute(self, sql, params):
+            calls.append(("sql", " ".join(sql.split()), params))
+            return SingleRowCursor(self.row)
+
+    async def append_event(_conn, **kwargs):
+        calls.append(("event", kwargs))
+
+    async def append_audit_log(_conn, **kwargs):
+        calls.append(("audit", kwargs))
+
+    monkeypatch.setattr(repositories, "append_event", append_event)
+    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
+
+    failed = await repositories.stage_stale_run_reconciliation(
+        Connection(
+            {"id": "run-failed", "trace_id": "trace-failed", "permission_terminalization_target": "failed"}
+        ),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        run_id="run-failed",
+        expected_status="running",
+        stale_before="2026-07-21T11:00:00Z",
+        terminal_status="failed",
+        error_code="stale_run_interrupted",
+        error_message="Run interrupted because no live execution owner remains.",
+    )
+
+    assert failed is not None
+    assert any(call[0] == "event" and call[1]["payload"]["error_code"] == "stale_run_interrupted" for call in calls)
+    assert any(call[0] == "audit" and call[1]["payload_json"]["result_status"] == "failed" for call in calls)
+
+    calls.clear()
+    lost = await repositories.stage_stale_run_reconciliation(
+        Connection(None),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        run_id="run-lost",
+        expected_status="running",
+        stale_before="2026-07-21T11:00:00Z",
+        terminal_status="failed",
+        error_code="stale_run_interrupted",
+        error_message="Run interrupted because no live execution owner remains.",
+    )
+
+    assert lost is None
+    assert [call[0] for call in calls] == ["sql"]
+
+
 class FakeCursor:
     async def fetchone(self):
         return {"count": 2, "id": "step-a"}

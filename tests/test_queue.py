@@ -184,6 +184,11 @@ class FakeRedis:
             return dict(self.run_index)
         return {}
 
+    async def hscan(self, key, cursor=0, count=None):
+        if int(cursor) != 0:
+            return 0, {}
+        return 0, await self.hgetall(key)
+
     async def hset(self, key, field, value):
         self.hset_calls.append((key, field, value))
         if key == queue.PROCESSING_META_KEY:
@@ -484,6 +489,107 @@ class FakeRedis:
 
 def payload_json():
     return queue_payload().model_dump_json()
+
+
+async def _async_value(value):
+    return value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_kind", ["queued", "processing", "queued_meta"])
+async def test_run_owner_absence_fails_closed_for_every_authoritative_queue_owner(monkeypatch, owner_kind):
+    payload = queue_payload(run_id="run-owner").model_dump_json()
+    message_id = queue.message_id_for_raw(payload)
+    fake = FakeRedis(
+        queued=[payload] if owner_kind == "queued" else [],
+        processing=[payload] if owner_kind == "processing" else [],
+    )
+    if owner_kind == "queued_meta":
+        fake.metadata_by_message_id[message_id] = json.dumps({"tenant_id": "tenant-a", "run_id": "run-owner"})
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
+
+    no_owner = await queue.run_has_no_queue_owner(tenant_id="tenant-a", run_id="run-owner", scan_limit=10)
+
+    assert no_owner is False
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_kind", ["processing_meta", "retry_meta"])
+async def test_run_owner_absence_keeps_fresh_worker_metadata_authoritative(monkeypatch, owner_kind):
+    payload = queue_payload(run_id="run-owner").model_dump_json()
+    message_id = queue.message_id_for_raw(payload)
+    metadata = json.dumps(
+        {"tenant_id": "tenant-a", "run_id": "run-owner", "worker_id": "worker-live"}
+    )
+    fake = FakeRedis(
+        meta={message_id: metadata} if owner_kind == "processing_meta" else {},
+        retry={message_id: metadata} if owner_kind == "retry_meta" else {},
+        workers={"worker-live": "100"},
+    )
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
+    monkeypatch.setattr("app.queue._now", lambda: 120.0)
+    monkeypatch.setattr(
+        "app.queue.get_settings",
+        lambda: type(
+            "Settings",
+            (),
+            {"worker_heartbeat_ttl_seconds": 60.0, "queue_key_prefix": queue.DEFAULT_QUEUE_KEY_PREFIX},
+        )(),
+    )
+
+    no_owner = await queue.run_has_no_queue_owner(tenant_id="tenant-a", run_id="run-owner", scan_limit=10)
+
+    assert no_owner is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_kind", ["processing_meta", "retry_meta"])
+async def test_run_owner_absence_ignores_expired_worker_metadata_only_after_bounded_proof(monkeypatch, owner_kind):
+    payload = queue_payload(run_id="run-owner").model_dump_json()
+    message_id = queue.message_id_for_raw(payload)
+    metadata = json.dumps(
+        {"tenant_id": "tenant-a", "run_id": "run-owner", "worker_id": "worker-dead"}
+    )
+    fake = FakeRedis(
+        meta={message_id: metadata} if owner_kind == "processing_meta" else {},
+        retry={message_id: metadata} if owner_kind == "retry_meta" else {},
+        workers={"worker-dead": "1"},
+    )
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
+    monkeypatch.setattr("app.queue._now", lambda: 120.0)
+    monkeypatch.setattr(
+        "app.queue.get_settings",
+        lambda: type(
+            "Settings",
+            (),
+            {"worker_heartbeat_ttl_seconds": 60.0, "queue_key_prefix": queue.DEFAULT_QUEUE_KEY_PREFIX},
+        )(),
+    )
+
+    no_owner = await queue.run_has_no_queue_owner(tenant_id="tenant-a", run_id="run-owner", scan_limit=10)
+
+    assert no_owner is True
+
+
+@pytest.mark.asyncio
+async def test_run_owner_absence_requires_complete_bounded_scan_and_rejects_malformed_payload(monkeypatch):
+    oversized = FakeRedis(lengths={queue.QUEUE_KEY: 11})
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(oversized))
+    assert await queue.run_has_no_queue_owner(tenant_id="tenant-a", run_id="run-a", scan_limit=10) is False
+
+    malformed = FakeRedis(queued=["not-json"])
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(malformed))
+    assert await queue.run_has_no_queue_owner(tenant_id="tenant-a", run_id="run-a", scan_limit=10) is False
+
+
+@pytest.mark.asyncio
+async def test_run_owner_absence_returns_true_only_after_all_queue_state_is_empty(monkeypatch):
+    fake = FakeRedis()
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
+
+    assert await queue.run_has_no_queue_owner(tenant_id="tenant-a", run_id="run-a", scan_limit=10) is True
+    assert fake.closed is True
 
 
 def test_queue_keys_follow_configured_prefix(monkeypatch):

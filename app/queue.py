@@ -665,6 +665,112 @@ async def read_queue_admission(payload: dict[str, Any]) -> QueueAdmissionMetadat
         await redis.aclose()
 
 
+async def run_has_no_queue_owner(
+    *,
+    tenant_id: str,
+    run_id: str,
+    scan_limit: int,
+) -> bool:
+    """Positively prove bounded absence of queued, leased, or retry ownership.
+
+    A partial scan, malformed ownership payload, or Redis failure is not proof
+    and therefore returns ``False`` (or propagates for the maintenance caller
+    to fail closed).
+    """
+
+    bounded_limit = max(int(scan_limit), 0)
+    if bounded_limit <= 0:
+        return False
+    keys = get_queue_keys()
+    redis = await get_redis()
+    try:
+        queued_depth = int(await redis.llen(keys.queued))
+        processing_depth = int(await redis.llen(keys.processing))
+        if queued_depth > bounded_limit or processing_depth > bounded_limit:
+            return False
+
+        queued_items = await redis.lrange(keys.queued, 0, bounded_limit - 1)
+        processing_items = await redis.lrange(keys.processing, 0, bounded_limit - 1)
+        for raw in [*queued_items, *processing_items]:
+            try:
+                payload = QueueRunPayload.model_validate_json(raw)
+            except Exception:
+                return False
+            if payload.tenant_id == tenant_id and payload.run_id == run_id:
+                return False
+
+        indexed_message_ids = _decode_run_index_message_ids(
+            await redis.hget(
+                keys.queued_run_index,
+                queued_run_index_field(tenant_id=tenant_id, run_id=run_id),
+            )
+        )
+        if indexed_message_ids:
+            return False
+
+        queued_metadata_cursor: int | str = 0
+        queued_metadata_count = 0
+        while True:
+            queued_metadata_cursor, queued_metadata_items = await redis.hscan(
+                keys.queued_meta,
+                cursor=queued_metadata_cursor,
+                count=min(bounded_limit, 100),
+            )
+            queued_metadata_count += len(queued_metadata_items)
+            if queued_metadata_count > bounded_limit:
+                return False
+            for raw_metadata in queued_metadata_items.values():
+                try:
+                    metadata = json.loads(raw_metadata)
+                except (TypeError, json.JSONDecodeError):
+                    return False
+                if not isinstance(metadata, dict):
+                    return False
+                if metadata.get("tenant_id") == tenant_id and metadata.get("run_id") == run_id:
+                    return False
+            if int(queued_metadata_cursor) == 0:
+                break
+
+        for metadata_key in (keys.processing_meta, keys.retry_meta):
+            metadata_cursor: int | str = 0
+            metadata_count = 0
+            while True:
+                metadata_cursor, metadata_items = await redis.hscan(
+                    metadata_key,
+                    cursor=metadata_cursor,
+                    count=min(bounded_limit, 100),
+                )
+                metadata_count += len(metadata_items)
+                if metadata_count > bounded_limit:
+                    return False
+                for raw_metadata in metadata_items.values():
+                    try:
+                        metadata = json.loads(raw_metadata)
+                    except (TypeError, json.JSONDecodeError):
+                        return False
+                    if not isinstance(metadata, dict):
+                        return False
+                    if metadata.get("tenant_id") != tenant_id or metadata.get("run_id") != run_id:
+                        continue
+                    worker_id = str(metadata.get("worker_id") or "")
+                    if not worker_id:
+                        return False
+                    worker_heartbeat = await redis.hget(keys.worker_heartbeat, worker_id)
+                    try:
+                        worker_active = _now() - float(worker_heartbeat) <= float(
+                            getattr(get_settings(), "worker_heartbeat_ttl_seconds", 60.0)
+                        )
+                    except (TypeError, ValueError):
+                        worker_active = False
+                    if worker_active:
+                        return False
+                if int(metadata_cursor) == 0:
+                    break
+        return True
+    finally:
+        await redis.aclose()
+
+
 async def remove_queued_run(*, tenant_id: str, run_id: str) -> int:
     keys = get_queue_keys()
     redis = await get_redis()

@@ -13,6 +13,7 @@ from app.worker_main import run_once
 
 _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER = worker_main.cleanup_expired_memory_records_for_worker
 _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE = worker_main.progress_pending_tool_permission_terminalizations_for_worker
+_ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE = worker_main.reconcile_stale_runs_for_worker
 
 
 def test_write_worker_runtime_heartbeat_records_process_commit(monkeypatch, tmp_path):
@@ -69,6 +70,9 @@ def default_sandbox_cleanup(monkeypatch):
     async def progress_pending_tool_permission_terminalizations_for_worker(settings=None):
         return []
 
+    async def reconcile_stale_runs_for_worker(settings=None):
+        return []
+
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_sandbox_leases",
         cleanup_expired_sandbox_leases,
@@ -82,6 +86,11 @@ def default_sandbox_cleanup(monkeypatch):
     monkeypatch.setattr(
         "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
         progress_pending_tool_permission_terminalizations_for_worker,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.reconcile_stale_runs_for_worker",
+        reconcile_stale_runs_for_worker,
         raising=False,
     )
 
@@ -100,6 +109,10 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
         calls.append(("permission_terminalization", settings.queue_lease_visibility_timeout_seconds))
         return [{"tenant_id": "tenant-a", "run_id": "run-a", "completed": False}]
 
+    async def reconcile_stale_runs_for_worker(settings):
+        calls.append(("stale_run_reconciliation", settings.queue_lease_visibility_timeout_seconds))
+        return []
+
     async def reclaim_expired_leases(**kwargs):
         calls.append(("reclaim", kwargs))
         return {"reclaimed": 0, "dead_lettered": 0}
@@ -113,6 +126,11 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
         progress_pending_tool_permission_terminalizations_for_worker,
         raising=False,
     )
+    monkeypatch.setattr(
+        "app.worker_main.reconcile_stale_runs_for_worker",
+        reconcile_stale_runs_for_worker,
+        raising=False,
+    )
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
 
     await worker_main.run_worker_maintenance(Settings())
@@ -121,6 +139,7 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
         ("permission_terminalization", 12),
         ("dispatch", 12),
         ("reclaim", {"visibility_timeout_seconds": 12}),
+        ("stale_run_reconciliation", 12),
     ]
 
 
@@ -381,6 +400,212 @@ async def test_permission_terminalization_maintenance_recovers_parent_rollup_aft
     await worker_main.progress_pending_tool_permission_terminalizations_for_worker(Settings())
 
     assert calls == [("tenant-a", "parent-a")]
+
+
+@pytest.mark.asyncio
+async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(monkeypatch):
+    calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            calls.append(("tx_enter",))
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            calls.append(("tx_exit", exc_type))
+            return False
+
+    class Settings:
+        stale_run_reconciliation_limit = 4
+        stale_run_reconciliation_seconds = 900
+        queue_metadata_fallback_scan_limit = 500
+
+    candidate = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "run_id": "run-cancel",
+        "status": "running",
+        "cancel_requested_at": "2026-07-21T11:07:58Z",
+        "stale_before": "2026-07-21T11:00:00Z",
+    }
+
+    async def list_candidates(_conn, *, stale_after_seconds, limit):
+        calls.append(("list", stale_after_seconds, limit))
+        return [candidate]
+
+    queue_checks = [True, True]
+
+    async def queue_owner_absent(**kwargs):
+        calls.append(("queue_absent", kwargs["tenant_id"], kwargs["run_id"], kwargs["scan_limit"]))
+        return queue_checks.pop(0)
+
+    async def stage(_conn, **kwargs):
+        calls.append(("stage", kwargs["run_id"], kwargs["expected_status"], kwargs["terminal_status"]))
+        return {"tenant_id": "tenant-a", "run_id": "run-cancel", "terminal_status": "cancelled"}
+
+    async def drain(**kwargs):
+        calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"]))
+        return repositories.ToolPermissionTerminalizationProgress(True, "cancelled", True, True)
+
+    async def reconcile(**kwargs):
+        calls.append(("reconcile", kwargs["tenant_id"], kwargs["run_id"]))
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.reconcile_stale_runs_for_worker",
+        _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
+    monkeypatch.setattr("app.worker_main.queue.run_has_no_queue_owner", queue_owner_absent)
+    monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
+    monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
+
+    results = await worker_main.reconcile_stale_runs_for_worker(Settings())
+
+    assert results == [
+        {"tenant_id": "tenant-a", "run_id": "run-cancel", "status": "cancelled", "did_transition": True}
+    ]
+    assert calls.count(("queue_absent", "tenant-a", "run-cancel", 500)) == 2
+    assert ("stage", "run-cancel", "running", "cancelled") in calls
+    assert ("drain", "tenant-a", "run-cancel") in calls
+    assert ("reconcile", "tenant-a", "run-cancel") in calls
+
+
+@pytest.mark.asyncio
+async def test_stale_run_maintenance_fails_interrupted_run_but_never_cleans_owner_race(monkeypatch):
+    calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Settings:
+        stale_run_reconciliation_limit = 4
+        stale_run_reconciliation_seconds = 900
+        queue_metadata_fallback_scan_limit = 500
+
+    candidates = [
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "run_id": "run-failed",
+            "status": "running",
+            "cancel_requested_at": None,
+            "stale_before": "2026-07-21T11:00:00Z",
+        },
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "run_id": "run-owner-race",
+            "status": "queued",
+            "cancel_requested_at": None,
+            "stale_before": "2026-07-21T11:00:00Z",
+        },
+    ]
+
+    async def list_candidates(_conn, **_kwargs):
+        return candidates
+
+    owner_checks = {"run-failed": [True, True], "run-owner-race": [True, False]}
+
+    async def queue_owner_absent(**kwargs):
+        return owner_checks[kwargs["run_id"]].pop(0)
+
+    async def stage(_conn, **kwargs):
+        calls.append(("stage", kwargs["run_id"], kwargs["terminal_status"], kwargs["error_code"]))
+        return {"tenant_id": kwargs["tenant_id"], "run_id": kwargs["run_id"], "terminal_status": "failed"}
+
+    async def drain(**kwargs):
+        calls.append(("drain", kwargs["run_id"]))
+        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+
+    async def reconcile(**kwargs):
+        calls.append(("reconcile", kwargs["run_id"]))
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.reconcile_stale_runs_for_worker",
+        _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
+    monkeypatch.setattr("app.worker_main.queue.run_has_no_queue_owner", queue_owner_absent)
+    monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
+    monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
+
+    results = await worker_main.reconcile_stale_runs_for_worker(Settings())
+
+    assert results == [
+        {"tenant_id": "tenant-a", "run_id": "run-failed", "status": "failed", "did_transition": True},
+        {"tenant_id": "tenant-a", "run_id": "run-owner-race", "status": "owned", "did_transition": False},
+    ]
+    assert calls == [
+        ("stage", "run-failed", "failed", "stale_run_interrupted"),
+        ("drain", "run-failed"),
+        ("reconcile", "run-failed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stale_run_maintenance_cas_loss_is_a_noop(monkeypatch):
+    calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Settings:
+        stale_run_reconciliation_limit = 1
+        stale_run_reconciliation_seconds = 900
+        queue_metadata_fallback_scan_limit = 50
+
+    async def list_candidates(_conn, **_kwargs):
+        return [{
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "run_id": "run-cas-lost",
+            "status": "running",
+            "cancel_requested_at": None,
+            "stale_before": "2026-07-21T11:00:00Z",
+        }]
+
+    async def queue_owner_absent(**_kwargs):
+        return True
+
+    async def stage(_conn, **kwargs):
+        calls.append(("stage", kwargs["run_id"]))
+        return None
+
+    async def forbidden_drain(**_kwargs):
+        raise AssertionError("a lost CAS must not drain or clean anything")
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.reconcile_stale_runs_for_worker",
+        _ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.list_stale_run_reconciliation_candidates", list_candidates)
+    monkeypatch.setattr("app.worker_main.queue.run_has_no_queue_owner", queue_owner_absent)
+    monkeypatch.setattr("app.worker_main.repositories.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", forbidden_drain)
+
+    results = await worker_main.reconcile_stale_runs_for_worker(Settings())
+
+    assert results == [
+        {"tenant_id": "tenant-a", "run_id": "run-cas-lost", "status": "cas_lost", "did_transition": False}
+    ]
+    assert calls == [("stage", "run-cas-lost")]
 
 
 @pytest.mark.asyncio
