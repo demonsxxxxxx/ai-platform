@@ -51,7 +51,7 @@ INSPECTION_AUTHORIZED_SKILLS = {
     "platform-controlled": "qa-file-reviewer",
     "sdk-native": "minimax-docx",
 }
-INSPECTION_WORKSPACE_BASE_NAME = "ai-platform-sandbox-verifier-211"
+INSPECTION_WORKSPACE_BASE_NAME = "ai-sv211"
 INSPECTION_ATTACKS = (
     "direct_write",
     "chmod",
@@ -339,55 +339,120 @@ def _directory_chain(path: Path, *, allow_missing_leaf: bool) -> dict[str, tuple
     return identities
 
 
+class _InspectionWorkspaceRoot:
+    def __init__(
+        self,
+        *,
+        path: Path,
+        temp_parent: Path,
+        device: int,
+        inode: int,
+        fd: int | None,
+        posix_owner_fd_proven: bool,
+    ) -> None:
+        self.path = path
+        self.temp_parent = temp_parent
+        self.device = device
+        self.inode = inode
+        self.fd = fd
+        self.posix_owner_fd_proven = posix_owner_fd_proven
+
+
+def _validate_posix_workspace_stat(node: os.stat_result, *, effective_uid: int) -> None:
+    if int(node.st_uid) != int(effective_uid):
+        raise ValueError("inspection workspace owner mismatch")
+    if stat.S_IMODE(node.st_mode) != 0o700:
+        raise ValueError("inspection workspace mode must be 0700")
+
+
+def _posix_directory_open_flags() -> int:
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+    if type(directory_flag) is not int or type(nofollow_flag) is not int:
+        raise ValueError("POSIX no-follow directory proof is unavailable")
+    return os.O_RDONLY | directory_flag | nofollow_flag | int(getattr(os, "O_CLOEXEC", 0))
+
+
+def _assert_retained_root_fd(root: _InspectionWorkspaceRoot) -> None:
+    if root.fd is None:
+        if root.posix_owner_fd_proven:
+            raise ValueError("inspection workspace retained fd is missing")
+        return
+    node = os.fstat(root.fd)
+    if (int(node.st_dev), int(node.st_ino)) != (root.device, root.inode):
+        raise ValueError("inspection workspace retained fd identity mismatch")
+
+
 def _prepare_inspection_workspace_root(
-    run_id: str,
     *,
-    verifier_base: str | Path | None = None,
-) -> tuple[Path, dict[str, tuple[int, int]]]:
-    if verifier_base is None:
-        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
-        base = temp_root / INSPECTION_WORKSPACE_BASE_NAME
-    else:
-        base = Path(verifier_base).absolute()
-        if not base.is_absolute():
-            raise ValueError("inspection verifier base must be absolute")
-    _directory_chain(base, allow_missing_leaf=True)
+    temp_parent: str | Path | None = None,
+) -> _InspectionWorkspaceRoot:
+    expected_parent = Path(temp_parent if temp_parent is not None else tempfile.gettempdir()).resolve(strict=True)
+    _directory_chain(expected_parent, allow_missing_leaf=False)
+    created = Path(
+        tempfile.mkdtemp(
+            prefix=f"{INSPECTION_WORKSPACE_BASE_NAME}-",
+            dir=str(expected_parent),
+        )
+    )
+    fd: int | None = None
     try:
-        base.mkdir(mode=0o700)
-    except FileExistsError:
-        pass
-    base_identities = _directory_chain(base, allow_missing_leaf=False)
-    run_root = base / run_id
-    try:
-        run_root.lstat()
-    except FileNotFoundError:
-        pass
-    else:
-        raise ValueError("inspection workspace run child already exists")
-    os.mkdir(run_root, mode=0o700)
-    identities = _directory_chain(run_root, allow_missing_leaf=False)
-    base_key = os.path.normcase(str(base.absolute()))
-    if identities.get(base_key) != base_identities.get(base_key):
-        raise ValueError("inspection verifier base changed during creation")
-    if run_root.resolve(strict=True).parent != base.resolve(strict=True):
-        raise ValueError("inspection workspace escaped verifier base")
-    return run_root, identities
+        node = created.lstat()
+        if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
+            raise ValueError("inspection workspace root is not a real directory")
+        if hasattr(created, "is_junction") and created.is_junction():
+            raise ValueError("inspection workspace root must not be a junction")
+        resolved = created.resolve(strict=True)
+        if resolved.parent != expected_parent or resolved != created.absolute():
+            raise ValueError("inspection workspace root escaped platform temp")
+        posix_proven = os.name == "posix"
+        if posix_proven:
+            get_effective_uid = getattr(os, "geteuid", None)
+            if not callable(get_effective_uid):
+                raise ValueError("POSIX effective owner proof is unavailable")
+            _validate_posix_workspace_stat(node, effective_uid=int(get_effective_uid()))
+            fd = os.open(created, _posix_directory_open_flags())
+        root = _InspectionWorkspaceRoot(
+            path=created,
+            temp_parent=expected_parent,
+            device=int(node.st_dev),
+            inode=int(node.st_ino),
+            fd=fd,
+            posix_owner_fd_proven=posix_proven,
+        )
+        _assert_retained_root_fd(root)
+        return root
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        raise
 
 
 def _revalidate_inspection_workspace(
-    run_root: Path,
-    identities: dict[str, tuple[int, int]],
+    root: _InspectionWorkspaceRoot,
     *,
     workspace: Any | None = None,
     staged_skill_name: str = "",
 ) -> None:
-    current = _directory_chain(run_root, allow_missing_leaf=False)
-    for key, expected in identities.items():
-        if current.get(key) != expected:
-            raise ValueError("inspection workspace identity changed")
+    node = root.path.lstat()
+    if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
+        raise ValueError("inspection workspace identity changed")
+    if hasattr(root.path, "is_junction") and root.path.is_junction():
+        raise ValueError("inspection workspace identity changed")
+    resolved = root.path.resolve(strict=True)
+    if resolved.parent != root.temp_parent or resolved != root.path.absolute():
+        raise ValueError("inspection workspace escaped platform temp")
+    if (int(node.st_dev), int(node.st_ino)) != (root.device, root.inode):
+        raise ValueError("inspection workspace path identity mismatch")
+    if root.posix_owner_fd_proven:
+        get_effective_uid = getattr(os, "geteuid", None)
+        if not callable(get_effective_uid):
+            raise ValueError("POSIX effective owner proof is unavailable")
+        _validate_posix_workspace_stat(node, effective_uid=int(get_effective_uid()))
+    _assert_retained_root_fd(root)
     if workspace is None:
         return
-    trusted_root = run_root.resolve(strict=True)
+    trusted_root = resolved
     paths = [
         Path(workspace.host_root),
         Path(workspace.workspace_host_path),
@@ -409,6 +474,12 @@ def _revalidate_inspection_workspace(
         except ValueError as exc:
             raise ValueError("inspection workspace lease escaped verifier root") from exc
         _directory_chain(path, allow_missing_leaf=False)
+
+
+def _close_inspection_workspace_root(root: _InspectionWorkspaceRoot) -> None:
+    if root.fd is not None:
+        os.close(root.fd)
+        root.fd = None
 
 
 def _inspection_profile_manifest(profile: str) -> dict[str, Any]:
@@ -1270,7 +1341,7 @@ def _run_skill_mount_inspection(
     *,
     _runtime_factory: Callable[..., tuple[Any, Any]] | None = None,
     _inspection_callback: Callable[..., Any] | None = None,
-    _workspace_base: str | Path | None = None,
+    _temp_parent: str | Path | None = None,
     _post_cleanup_enumerator: Callable[..., dict[str, int]] | None = None,
 ) -> int:
     profile = str(args.inspection_profile or "")
@@ -1288,6 +1359,7 @@ def _run_skill_mount_inspection(
     _write_inspection_checkpoint(args.evidence_file, evidence)
 
     original_settings: tuple[Any, Any, Any] | None = None
+    workspace_root_identity: _InspectionWorkspaceRoot | None = None
     exit_code = 1
     try:
         if profile not in INSPECTION_PROFILES:
@@ -1309,11 +1381,11 @@ def _run_skill_mount_inspection(
 
         catalog = _authoritative_inspection_catalog(profile)
         authorized_skill_name = str(catalog["authorized_skill_names"][0])
-        workspace_root, workspace_identities = _prepare_inspection_workspace_root(
-            evidence["run_id"],
-            verifier_base=_workspace_base,
+        workspace_root_identity = _prepare_inspection_workspace_root(
+            temp_parent=_temp_parent,
         )
-        _revalidate_inspection_workspace(workspace_root, workspace_identities)
+        workspace_root = workspace_root_identity.path
+        _revalidate_inspection_workspace(workspace_root_identity)
         settings = get_settings()
         original_settings = (
             settings.sandbox_container_provider,
@@ -1345,8 +1417,7 @@ def _run_skill_mount_inspection(
         )
         workspace = SandboxWorkspaceManager(root=workspace_root).prepare(request)
         _revalidate_inspection_workspace(
-            workspace_root,
-            workspace_identities,
+            workspace_root_identity,
             workspace=workspace,
         )
         staged_hash = _stage_inspection_skill(
@@ -1355,8 +1426,7 @@ def _run_skill_mount_inspection(
             files=dict(catalog["authorized_files"]),
         )
         _revalidate_inspection_workspace(
-            workspace_root,
-            workspace_identities,
+            workspace_root_identity,
             workspace=workspace,
             staged_skill_name=authorized_skill_name,
         )
@@ -1432,8 +1502,7 @@ def _run_skill_mount_inspection(
         callback_secret = uuid.uuid4().hex
         runtime_factory = _runtime_factory or _build_inspection_runtime
         _revalidate_inspection_workspace(
-            workspace_root,
-            workspace_identities,
+            workspace_root_identity,
             workspace=workspace,
             staged_skill_name=authorized_skill_name,
         )
@@ -1448,11 +1517,24 @@ def _run_skill_mount_inspection(
         captured["provider"] = provider
         evidence["stage"] = "provider_creation_started"
         _write_inspection_checkpoint(args.evidence_file, evidence)
+        _revalidate_inspection_workspace(
+            workspace_root_identity,
+            workspace=workspace,
+            staged_skill_name=authorized_skill_name,
+        )
         runtime_error: BaseException | None = None
         try:
             asyncio.run(runtime.submit(request))
         except BaseException as exc:
             runtime_error = exc
+        try:
+            _revalidate_inspection_workspace(
+                workspace_root_identity,
+                workspace=workspace,
+                staged_skill_name=authorized_skill_name,
+            )
+        except BaseException as exc:
+            raise _InspectionCleanupFailed("inspection workspace identity changed after cleanup") from exc
         evidence["cleanup"]["attempted"] = (
             evidence["provider_child_creation"].get("primary_observed") is True
         )
@@ -1544,7 +1626,11 @@ def _run_skill_mount_inspection(
             settings.sandbox_executor_image = original_settings[1]
             settings.sandbox_workspace_root = original_settings[2]
         evidence["finished_at"] = _utc_now()
-        _write_inspection_checkpoint(args.evidence_file, evidence)
+        try:
+            _write_inspection_checkpoint(args.evidence_file, evidence)
+        finally:
+            if workspace_root_identity is not None:
+                _close_inspection_workspace_root(workspace_root_identity)
 
     output = {
         "run_id": evidence["run_id"],

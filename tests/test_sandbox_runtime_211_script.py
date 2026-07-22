@@ -1,6 +1,8 @@
 import asyncio
 import importlib.util
 import json
+import os
+import stat
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -3971,14 +3973,10 @@ def inspection_args(generator, tmp_path, *, profile="platform-controlled", evide
 
 
 def run_inspection(generator, args, *, workspace_base=None, **kwargs):
-    base = workspace_base or (
-        Path.cwd()
-        / ".pytest-tmp"
-        / f"v{abs(hash(str(args.evidence_file))) % 100000000}"
-    )
+    base = workspace_base or (Path.cwd() / ".pytest-tmp")
     return generator._run_skill_mount_inspection(
         args,
-        _workspace_base=base,
+        _temp_parent=base,
         **kwargs,
     )
 
@@ -4386,51 +4384,20 @@ def test_authoritative_inspection_catalog_cannot_be_replaced_with_forged_subject
         generator._authoritative_inspection_catalog("sdk-native")
 
 
-def test_inspection_workspace_root_is_unique_no_follow_and_cannot_escape(tmp_path):
+def test_inspection_workspace_root_is_atomic_unpredictable_and_cli_root_is_ignored(tmp_path):
     generator = load_generator()
-    base = tmp_path / "verifier-base"
-    base.mkdir()
-    existing = base / "inspection-run-a"
-    existing.mkdir()
-    args = inspection_args(generator, tmp_path, evidence_name="existing-root.json")
-
-    exit_code = run_inspection(
-        generator,
-        args,
-        workspace_base=base,
-        _runtime_factory=lambda **kwargs: (_ for _ in ()).throw(AssertionError("factory must not run")),
-    )
-    evidence = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
-    assert exit_code == 1
-    assert evidence["failure_category"] == "invalid_configuration"
-
-    real_base = tmp_path / "real-base"
-    real_base.mkdir()
-    linked_base = tmp_path / "linked-base"
+    predictable = tmp_path / "ai-platform-sandbox-verifier-211"
+    predictable.mkdir(mode=0o777)
+    root = generator._prepare_inspection_workspace_root(temp_parent=tmp_path)
     try:
-        linked_base.symlink_to(real_base, target_is_directory=True)
-    except OSError:
-        pass
-    else:
-        with pytest.raises(ValueError, match="real directory|alias"):
-            generator._prepare_inspection_workspace_root("run-b", verifier_base=linked_base)
-
-    safe_base = tmp_path / "safe-base"
-    run_root, identities = generator._prepare_inspection_workspace_root("run-c", verifier_base=safe_base)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    escaped_workspace = type(
-        "Workspace",
-        (),
-        {
-            "host_root": str(outside),
-            "workspace_host_path": str(outside),
-            "inputs_host_path": str(outside),
-            "logs_host_path": str(outside),
-        },
-    )()
-    with pytest.raises(ValueError, match="escaped"):
-        generator._revalidate_inspection_workspace(run_root, identities, workspace=escaped_workspace)
+        assert root.path.parent == tmp_path.resolve()
+        assert root.path != predictable
+        assert root.path.name.startswith(f"{generator.INSPECTION_WORKSPACE_BASE_NAME}-")
+        generator._revalidate_inspection_workspace(root)
+        assert root.posix_owner_fd_proven is (os.name == "posix")
+        assert (root.fd is not None) is (os.name == "posix")
+    finally:
+        generator._close_inspection_workspace_root(root)
 
     selected_paths = []
     arbitrary_args = inspection_args(generator, tmp_path, evidence_name="arbitrary-cli-root.json")
@@ -4443,11 +4410,92 @@ def test_inspection_workspace_root_is_unique_no_follow_and_cannot_escape(tmp_pat
     assert run_inspection(
         generator,
         arbitrary_args,
-        workspace_base=Path.cwd() / ".pytest-tmp" / f"a{abs(hash(str(tmp_path))) % 1000000}",
+        workspace_base=Path.cwd() / ".pytest-tmp",
         _runtime_factory=fake_inspection_runtime_factory(),
         _inspection_callback=capture_workspace,
     ) == 0
-    assert selected_paths and not selected_paths[0].is_relative_to(Path("/etc"))
+    assert selected_paths
+    assert selected_paths[0].is_relative_to((Path.cwd() / ".pytest-tmp").resolve())
+    assert not selected_paths[0].is_relative_to(Path("/etc"))
+
+
+def test_posix_workspace_owner_mode_and_nofollow_flags_fail_closed(monkeypatch):
+    generator = load_generator()
+
+    def fake_stat(*, owner=101, mode=0o700):
+        return type("Stat", (), {"st_uid": owner, "st_mode": stat.S_IFDIR | mode})()
+
+    generator._validate_posix_workspace_stat(fake_stat(), effective_uid=101)
+    with pytest.raises(ValueError, match="owner mismatch"):
+        generator._validate_posix_workspace_stat(fake_stat(owner=102), effective_uid=101)
+    for insecure_mode in (0o750, 0o707):
+        with pytest.raises(ValueError, match="mode must be 0700"):
+            generator._validate_posix_workspace_stat(fake_stat(mode=insecure_mode), effective_uid=101)
+
+    monkeypatch.delattr(generator.os, "O_NOFOLLOW", raising=False)
+    with pytest.raises(ValueError, match="no-follow directory proof is unavailable"):
+        generator._posix_directory_open_flags()
+
+
+def test_retained_workspace_root_rejects_path_replacement_before_submit(tmp_path):
+    generator = load_generator()
+    args = inspection_args(generator, tmp_path, evidence_name="root-replaced.json")
+    submitted = []
+
+    class Runtime:
+        async def submit(self, request):
+            submitted.append(request)
+
+    def replacing_factory(*, workspace_root, **kwargs):
+        original = workspace_root.with_name(f"{workspace_root.name}-original")
+        workspace_root.rename(original)
+        workspace_root.mkdir(mode=0o700)
+        return Runtime(), object()
+
+    assert run_inspection(
+        generator,
+        args,
+        _runtime_factory=replacing_factory,
+    ) == 1
+    evidence = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
+    assert submitted == []
+    assert evidence["failure_category"] == "invalid_configuration"
+
+
+def test_retained_workspace_root_rejects_symlink_replacement(tmp_path):
+    generator = load_generator()
+    root = generator._prepare_inspection_workspace_root(temp_parent=tmp_path)
+    original = root.path.with_name(f"{root.path.name}-original")
+    root.path.rename(original)
+    try:
+        root.path.symlink_to(original, target_is_directory=True)
+    except OSError:
+        generator._close_inspection_workspace_root(root)
+        pytest.skip("directory symlinks are unavailable")
+    try:
+        with pytest.raises(ValueError, match="identity changed"):
+            generator._revalidate_inspection_workspace(root)
+    finally:
+        generator._close_inspection_workspace_root(root)
+
+
+def test_retained_workspace_root_rejects_fd_inode_mismatch(tmp_path, monkeypatch):
+    generator = load_generator()
+    root = generator._InspectionWorkspaceRoot(
+        path=tmp_path,
+        temp_parent=tmp_path.parent,
+        device=7,
+        inode=11,
+        fd=123,
+        posix_owner_fd_proven=True,
+    )
+    monkeypatch.setattr(
+        generator.os,
+        "fstat",
+        lambda fd: type("Stat", (), {"st_dev": 8, "st_ino": 11})(),
+    )
+    with pytest.raises(ValueError, match="retained fd identity mismatch"):
+        generator._assert_retained_root_fd(root)
 
 
 def test_inspection_rejects_unexpected_mount_delivery_cleanup_and_non_erofs_denials():
