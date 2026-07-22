@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
 import type { MessagePart } from "../../../types";
 import {
   mergeHydratedRunSegment,
@@ -506,6 +507,67 @@ test("reconstructMessagesFromEvents keeps public progress and partial output on 
   assert.equal(terminal.event_type, "model_service_unavailable");
   assert.match(terminal.message, /模型服务暂时不可用/);
   assert.doesNotMatch(JSON.stringify(messages), /unsafe token|\/home\/private/);
+});
+
+test("reconstructMessagesFromEvents keeps cancelled partial output visibly terminal", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "cancelled-partial",
+        sequence: 43,
+        event_type: "message:chunk",
+        run_id: "run-cancelled",
+        timestamp: "2026-07-15T01:00:00.500Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: "cancelled-partial",
+          sequence: 43,
+          run_id: "run-cancelled",
+          content: "已生成安全部分",
+        },
+      },
+      {
+        id: "run-cancelled:final",
+        event_type: "final_detail",
+        run_id: "run-cancelled",
+        timestamp: "2026-07-15T01:00:01.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          detail_kind: "cancelled",
+          detail_code: "run_cancelled",
+          message: "unsafe token at /home/private/runtime.log",
+        },
+      },
+      {
+        id: "run-cancelled:terminal:cancelled",
+        event_type: "done",
+        run_id: "run-cancelled",
+        timestamp: "2026-07-15T01:00:02.000Z",
+        data: { run_id: "run-cancelled", status: "cancelled" },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.content, "已生成安全部分");
+  assert.equal(messages[0]?.cancelled, true);
+  const visibleParts = getVisibleMessageParts(messages[0]?.parts || []);
+  assert.deepEqual(
+    visibleParts.map((part) => part.type),
+    ["text", "run_status"],
+  );
+  const terminal = visibleParts.at(-1);
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "run_cancelled");
+  assert.equal(terminal.severity, "warning");
+  assert.doesNotMatch(
+    JSON.stringify(messages),
+    /unsafe token|\/home\/private/,
+  );
 });
 
 test("reconstructMessagesFromEvents replays a production outer permission event through the compatibility envelope", () => {

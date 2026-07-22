@@ -216,12 +216,14 @@ const CHAT_PUBLIC_STATUS_EVENT_TYPES: ReadonlySet<string> = new Set([
   "error",
 ]);
 const MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS = 12;
+const ACTIONABLE_PUBLIC_STATUS_PATTERN =
+  /error|failed|failure|denied|blocked|forbidden|unauthori[sz]ed|cancel/i;
 
 interface PublicTerminalPresentation {
   detailKind: "failed" | "cancelled";
   message: string;
   stage: string;
-  severity: "info" | "error";
+  severity: "info" | "warning" | "error";
 }
 
 function publicTerminalPresentation(
@@ -282,7 +284,7 @@ function publicTerminalPresentation(
         defaultValue: "任务已取消。取消前已产生的公开内容仍会保留。",
       }),
       stage: "terminal",
-      severity: "info",
+      severity: "warning",
     },
   };
   return presentations[detailCode];
@@ -827,6 +829,18 @@ function upsertTodoPart(
     : [...parts, todoPart];
 }
 
+/** Only routine informational commentary may be compacted or evicted. */
+function isReplaceableInformationalCommentaryPart(
+  part: MessagePart,
+): part is RunStatusPart {
+  return (
+    part.type === "run_status" &&
+    part.severity === "info" &&
+    CHAT_PUBLIC_COMMENTARY_EVENT_TYPES.has(part.event_type) &&
+    !ACTIONABLE_PUBLIC_STATUS_PATTERN.test(part.event_type)
+  );
+}
+
 /** Replace an existing platform run event projection by event id. */
 function upsertRunStatusPart(
   parts: MessagePart[],
@@ -847,41 +861,35 @@ function upsertRunStatusPart(
     );
   }
   if (CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(runStatusPart.event_type)) {
-    let lastActivityIndex = -1;
+    let lastReplaceableIndex = -1;
     for (let index = parts.length - 1; index >= 0; index -= 1) {
       const part = parts[index];
-      if (
-        part.type === "run_status" &&
-        CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(part.event_type)
-      ) {
-        lastActivityIndex = index;
+      if (isReplaceableInformationalCommentaryPart(part)) {
+        lastReplaceableIndex = index;
         break;
       }
     }
-    const lastActivity =
-      lastActivityIndex >= 0 ? parts[lastActivityIndex] : undefined;
+    const lastReplaceable =
+      lastReplaceableIndex >= 0 ? parts[lastReplaceableIndex] : undefined;
     let nextParts = [...parts, runStatusPart];
     if (
-      lastActivity?.type === "run_status" &&
-      lastActivity.event_type === runStatusPart.event_type &&
-      lastActivity.stage === runStatusPart.stage &&
-      lastActivity.message === runStatusPart.message &&
-      lastActivity.severity === runStatusPart.severity
+      isReplaceableInformationalCommentaryPart(runStatusPart) &&
+      lastReplaceable?.type === "run_status" &&
+      lastReplaceable.event_type === runStatusPart.event_type &&
+      lastReplaceable.stage === runStatusPart.stage &&
+      lastReplaceable.message === runStatusPart.message
     ) {
       nextParts = parts.map((part, index) =>
-        index === lastActivityIndex ? runStatusPart : part,
+        index === lastReplaceableIndex ? runStatusPart : part,
       );
     }
-    const activityIndexes = nextParts.flatMap((part, index) =>
-      part.type === "run_status" &&
-      CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(part.event_type)
-        ? [index]
-        : [],
+    const replaceableIndexes = nextParts.flatMap((part, index) =>
+      isReplaceableInformationalCommentaryPart(part) ? [index] : [],
     );
     const overflow =
-      activityIndexes.length - MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS;
+      replaceableIndexes.length - MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS;
     if (overflow <= 0) return nextParts;
-    const removedIndexes = new Set(activityIndexes.slice(0, overflow));
+    const removedIndexes = new Set(replaceableIndexes.slice(0, overflow));
     return nextParts.filter((_part, index) => !removedIndexes.has(index));
   }
   return [...parts, runStatusPart];

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
 import type { MessagePart } from "../../../types";
 import { processMessageEvent } from "../eventProcessor.ts";
 import { isAssistantTextProjection } from "../types.ts";
@@ -103,7 +104,16 @@ test("marks a cancelled terminal while retaining safe partial output", () => {
 
   assert.equal(result.content, "已生成部分结果");
   assert.equal(result.cancelled, true);
-  assert.equal(result.parts.at(-1)?.type, "run_status");
+  const visibleParts = getVisibleMessageParts(result.parts);
+  assert.deepEqual(
+    visibleParts.map((part) => part.type),
+    ["text", "run_status"],
+  );
+  const terminal = visibleParts.at(-1);
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "run_cancelled");
+  assert.equal(terminal.severity, "warning");
   assert.doesNotMatch(JSON.stringify(result), /untrusted|\/home\/private/);
 });
 
@@ -496,6 +506,86 @@ test("keeps a bounded public activity timeline and compacts repeated heartbeats"
     lastRepeated?.type === "run_status" ? lastRepeated.event_id : null,
     "evt-15",
   );
+});
+
+test("caps only routine info commentary and never evicts actionable status", () => {
+  let parts: MessagePart[] = [];
+  for (const event of [
+    {
+      event_id: "evt-failed",
+      sequence: 1,
+      event_type: "agent_step_failed",
+      stage: "activity",
+      message: "当前计划步骤未完成，正在整理可操作错误",
+      severity: "error",
+    },
+    {
+      event_id: "evt-blocked",
+      sequence: 2,
+      event_type: "agent_step_blocked",
+      stage: "wait",
+      message: "当前计划步骤正在等待前置条件",
+      severity: "info",
+    },
+    {
+      event_id: "evt-warning",
+      sequence: 3,
+      event_type: "agent_step_started",
+      stage: "activity",
+      message: "当前步骤需要用户处理",
+      severity: "warning",
+    },
+  ]) {
+    parts = processMessageEvent(
+      "run_event",
+      {
+        projection_version: "ai-platform.chat-public-projection.v1",
+        ...event,
+      },
+      parts,
+      "",
+      [],
+      0,
+      [],
+      true,
+      "message-1",
+    ).parts;
+  }
+  for (let sequence = 4; sequence <= 17; sequence += 1) {
+    parts = processMessageEvent(
+      "run_event",
+      {
+        projection_version: "ai-platform.chat-public-projection.v1",
+        event_id: `evt-info-${sequence}`,
+        sequence,
+        event_type: sequence % 2 === 0 ? "agent_step_started" : "run_started",
+        stage: sequence % 2 === 0 ? "activity" : "execution",
+        message: `普通说明 ${sequence}`,
+        severity: "info",
+      },
+      parts,
+      "",
+      [],
+      0,
+      [],
+      true,
+      "message-1",
+    ).parts;
+  }
+
+  const statusParts = parts.filter((part) => part.type === "run_status");
+  const eventIds = statusParts.map((part) => part.event_id);
+  assert.equal(statusParts.length, 15);
+  assert.equal(
+    statusParts.filter((part) => part.severity === "info" && !part.event_type.includes("blocked"))
+      .length,
+    12,
+  );
+  assert.equal(eventIds.includes("evt-failed"), true);
+  assert.equal(eventIds.includes("evt-blocked"), true);
+  assert.equal(eventIds.includes("evt-warning"), true);
+  assert.equal(eventIds.includes("evt-info-4"), false);
+  assert.equal(eventIds.includes("evt-info-5"), false);
 });
 
 test("projects tool permission request run events into a confirmation part with allowlisted fields", () => {
