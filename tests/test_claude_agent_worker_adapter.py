@@ -90,6 +90,14 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             self.message = message
 
     async def query(prompt, options):
+        captured["pre_invocation_skill_write"] = await options.kwargs["can_use_tool"](
+            "Write",
+            {"file_path": ".claude/skills/qa-file-reviewer/SKILL.md", "content": "tampered"},
+        )
+        captured["pre_invocation_output_write"] = await options.kwargs["can_use_tool"](
+            "Write",
+            {"file_path": "outputs/delivery/report.txt", "content": "safe"},
+        )
         hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
         await hook(
             {
@@ -135,6 +143,11 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: settings)
     write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    write_skill(
+        tmp_path / ".claude" / "skills",
+        name="qa-file-reviewer",
+        description="Staged review instructions.",
+    )
     pinned_manifests = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
     builtin_subjects = worker_module._builtin_capability_subjects(
         payload=types.SimpleNamespace(skill_manifests=pinned_manifests),
@@ -165,13 +178,15 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
-        skill_id="qa-file-reviewer",
+        skill_id="general-chat",
         skills=["qa-file-reviewer"],
         tool_policy_subjects=subjects,
         execution_policy="sandbox_brokered",
     )
 
     assert result.error is None
+    assert result.used_skills == ["qa-file-reviewer"]
+    assert result.used_skills_source == "executor_hook"
     assert captured["permission_mode"] == "dontAsk"
     assert captured["tools"] == ["Bash", "Write", "Skill"]
     assert captured["allowed_tools"] == [
@@ -184,10 +199,15 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "corp:search": {"type": "http", "url": "https://mcp.example.test/v1"}
     }
     assert "on_tool_permission" not in captured
+    assert captured["pre_invocation_skill_write"].behavior == "deny"
+    assert captured["pre_invocation_output_write"].behavior == "allow"
 
     can_use = captured["can_use_tool"]
     assert (await can_use("Bash", {"command": "echo safe"})).behavior == "allow"
-    assert (await can_use("Write", {"file_path": "out.txt", "content": "safe"})).behavior == "allow"
+    assert (
+        await can_use("Write", {"file_path": "outputs/delivery/out.txt", "content": "safe"})
+    ).behavior == "allow"
+    assert (await can_use("Write", {"file_path": "out.txt", "content": "unsafe"})).behavior == "deny"
     assert (await can_use("Skill", {"skill": "qa-file-reviewer"})).behavior == "allow"
     assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
     assert (await can_use("mcp__corp:search__query", {"query": "safe"})).behavior == "allow"
