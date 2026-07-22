@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a redacted local Run Control evidence packet without contacting a runtime."""
+"""Validate one redacted local Run Control packet without opening evidence references."""
 
 from __future__ import annotations
 
@@ -18,8 +18,14 @@ REQUIRED_CASE_IDS = (
 RECORDED_STATUS = "evidence_recorded"
 NON_CLAIM_STATUSES = {"not_run", "blocked"}
 EVIDENCE_TYPES = {"source", "runtime", "browser"}
+MAX_PACKET_BYTES = 64 * 1024
+MAX_JSON_DEPTH = 12
 FULL_GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
-EVIDENCE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
+EVIDENCE_REF_PATTERNS = {
+    "source": re.compile(r"^evidence/source-[a-z0-9][a-z0-9-]{0,63}\.json$"),
+    "runtime": re.compile(r"^evidence/runtime-[a-z0-9][a-z0-9-]{0,63}\.json$"),
+    "browser": re.compile(r"^evidence/browser-[a-z0-9][a-z0-9-]{0,63}\.json$"),
+}
 SECRET_KEY_MARKERS = (
     "api_key",
     "authorization",
@@ -31,10 +37,21 @@ SECRET_KEY_MARKERS = (
 )
 SECRET_VALUE_PATTERNS = (
     re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
+    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b", re.IGNORECASE),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b", re.IGNORECASE),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{8,}\b", re.IGNORECASE),
     re.compile(r"\b(?:api[_ -]?key|client[_ -]?secret|password|token)\s*[:=]\s*\S+", re.IGNORECASE),
     re.compile(r"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----", re.IGNORECASE),
 )
+
+
+class PacketDecodeError(ValueError):
+    """Carry one fixed, redacted packet-decoding diagnostic code."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -47,6 +64,61 @@ def _as_list(value: Any) -> list[Any]:
     """Return a list only when a JSON value has array shape."""
 
     return value if isinstance(value, list) else []
+
+
+def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build one JSON object while rejecting a duplicate member at every depth."""
+
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise PacketDecodeError("packet_duplicate_member")
+        result[key] = value
+    return result
+
+
+def _validate_json_depth(value: Any, *, depth: int = 1) -> None:
+    """Reject excessively nested packets before schema and secret validation."""
+
+    if depth > MAX_JSON_DEPTH:
+        raise PacketDecodeError("packet_depth_exceeded")
+    if isinstance(value, dict):
+        for child in value.values():
+            _validate_json_depth(child, depth=depth + 1)
+    elif isinstance(value, list):
+        for child in value:
+            _validate_json_depth(child, depth=depth + 1)
+
+
+def decode_evidence_packet(raw_text: str) -> Any:
+    """Strictly decode bounded JSON with duplicate-member and depth protection."""
+
+    if len(raw_text.encode("utf-8")) > MAX_PACKET_BYTES:
+        raise PacketDecodeError("packet_size_exceeded")
+    try:
+        decoded = json.loads(raw_text, object_pairs_hook=_reject_duplicate_members)
+    except PacketDecodeError:
+        raise
+    except json.JSONDecodeError as exc:
+        raise PacketDecodeError("packet_not_valid_json") from exc
+    _validate_json_depth(decoded)
+    return decoded
+
+
+def _read_packet(packet_path: str) -> Any:
+    """Read only the explicitly supplied packet, bounded before JSON decoding."""
+
+    try:
+        with Path(packet_path).open("rb") as packet_file:
+            raw_bytes = packet_file.read(MAX_PACKET_BYTES + 1)
+    except OSError as exc:
+        raise PacketDecodeError("packet_not_valid_json") from exc
+    if len(raw_bytes) > MAX_PACKET_BYTES:
+        raise PacketDecodeError("packet_size_exceeded")
+    try:
+        return decode_evidence_packet(raw_bytes.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise PacketDecodeError("packet_not_valid_json") from exc
 
 
 def _contains_secret_like_material(value: Any) -> bool:
@@ -68,7 +140,7 @@ def _contains_secret_like_material(value: Any) -> bool:
 
 
 def _valid_evidence_refs(value: Any, *, claimed: bool) -> bool:
-    """Require three distinct, redacted evidence references for a recorded claim."""
+    """Require one canonical, type-matching relative name for each evidence type."""
 
     refs = _as_list(value)
     if not claimed:
@@ -84,14 +156,14 @@ def _valid_evidence_refs(value: Any, *, claimed: bool) -> bool:
         reference = entry.get("ref")
         if not isinstance(evidence_type, str) or evidence_type not in EVIDENCE_TYPES:
             return False
-        if not isinstance(reference, str) or EVIDENCE_REF_PATTERN.fullmatch(reference) is None:
+        if not isinstance(reference, str) or EVIDENCE_REF_PATTERNS[evidence_type].fullmatch(reference) is None:
             return False
         types.append(evidence_type)
     return set(types) == EVIDENCE_TYPES and len(types) == len(set(types))
 
 
 def validate_run_control_evidence_packet(packet: Any, *, expected_main_sha: str) -> list[str]:
-    """Return redacted schema error codes; an empty list is not runtime proof."""
+    """Return fixed schema error codes; an empty list is never runtime proof."""
 
     errors: list[str] = []
     if FULL_GIT_SHA_PATTERN.fullmatch(expected_main_sha) is None:
@@ -146,7 +218,7 @@ def validate_run_control_evidence_packet(packet: Any, *, expected_main_sha: str)
 
 
 def _result(errors: list[str]) -> dict[str, object]:
-    """Build the only CLI result shape, which never asserts runtime acceptance."""
+    """Build schema-only output without claiming runtime or browser acceptance."""
 
     return {
         "status": "schema_valid" if not errors else "schema_invalid",
@@ -163,9 +235,9 @@ def main() -> int:
     parser.add_argument("--expected-main-sha", required=True)
     args = parser.parse_args()
     try:
-        packet = json.loads(Path(args.packet).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        result = _result(["packet_not_valid_json"])
+        packet = _read_packet(args.packet)
+    except PacketDecodeError as exc:
+        result = _result([exc.code])
     else:
         result = _result(validate_run_control_evidence_packet(packet, expected_main_sha=args.expected_main_sha))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

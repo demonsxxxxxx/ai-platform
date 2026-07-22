@@ -9,11 +9,12 @@ acceptance.
 
 The only R1 helper is the pure-offline
 `tools/acceptance/run_control/validate_run_control_evidence_packet.py`.  It reads
-one local JSON file and validates a narrow, redacted schema against an explicitly
-supplied 40-character `main` SHA.  It has no network, credential, environment,
-process, write, or product-state behavior.  Its output is only `schema_valid` or
-`schema_invalid`; **schema validity is not runtime proof** and cannot generate,
-upgrade, or prove evidence.
+at most 64 KiB from one explicitly supplied local JSON packet, rejects duplicate
+JSON object members at every nesting level before schema validation, and rejects
+packets deeper than 12 levels.  It has no network, credential, environment,
+process, write, product-state, or evidence-reference probing behavior.  Its
+output is only `schema_valid` or `schema_invalid`; **schema validity is not
+runtime proof** and cannot generate, upgrade, or prove evidence.
 
 ## Authoritative local test nodes
 
@@ -63,10 +64,22 @@ The validator accepts only this redacted shape:
 }
 ```
 
-Each recorded claim needs distinct `source`, `runtime`, and `browser` reference
-types.  The validator rejects missing or duplicate cases, malformed SHA/status
-or references, mismatched subject SHA, secret-like material, and local-only
-evidence presented as a runtime/browser claim.
+Each recorded claim needs distinct `source`, `runtime`, and `browser` labels.
+Every label must use exactly one canonical type-matching relative name:
+
+| Type | Only accepted reference grammar |
+| --- | --- |
+| `source` | `^evidence/source-[a-z0-9][a-z0-9-]{0,63}\.json$` |
+| `runtime` | `^evidence/runtime-[a-z0-9][a-z0-9-]{0,63}\.json$` |
+| `browser` | `^evidence/browser-[a-z0-9][a-z0-9-]{0,63}\.json$` |
+
+The validator rejects duplicate or missing cases, malformed SHA/status, duplicate
+JSON members, secret-like material, and noncanonical references (including URLs,
+absolute paths, traversal, backslashes, extra directories/dots, underscores, and
+JWT/PAT-shaped values).  It validates only packet shape, cross-fields, type
+labels, and canonical names.  It does **not** establish a reference's existence,
+provenance, freshness, runtime/browser origin, principal, or deployed behavior;
+the presence of `runtime` or `browser` labels is not evidence of either.
 
 ## Deferred runtime and browser owner scope
 
