@@ -775,3 +775,86 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
     assert claude_agent_sdk_runner._native_tool_proxy_input(
         {"command": command, "timeout": 600_001}
     ) is None
+
+
+def test_staged_skill_paths_are_immutable_to_sdk_mutating_tools(tmp_path):
+    workspace = tmp_path / "workspace"
+    skill_file = workspace / ".claude" / "skills" / "native-skill" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("original", encoding="utf-8")
+    (workspace / "inputs").mkdir()
+    (workspace / "outputs" / "delivery").mkdir(parents=True)
+    (workspace / "output").mkdir()
+    subject = {"workspace_contract": "ai-platform.skill-workspace.v1"}
+
+    mutation_inputs = {
+        "Write": lambda path: {"file_path": path, "content": "tampered"},
+        "Edit": lambda path: {"file_path": path, "old_string": "original", "new_string": "tampered"},
+        "NotebookEdit": lambda path: {"notebook_path": path, "new_source": "tampered"},
+    }
+    staged_paths = (
+        ".claude/skills/native-skill/SKILL.md",
+        "./.claude/skills/native-skill/SKILL.md",
+        ".claude\\skills\\native-skill\\SKILL.md",
+        "outputs/delivery/../../.claude/skills/native-skill/SKILL.md",
+        "outputs\\delivery\\..\\..\\.claude\\skills\\native-skill\\SKILL.md",
+        str(skill_file),
+        skill_file.as_posix(),
+    )
+    for tool_name, tool_input in mutation_inputs.items():
+        for staged_path in staged_paths:
+            assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
+                subject,
+                tool_name,
+                tool_input(staged_path),
+                workspace_root=workspace,
+            )
+
+        assert claude_agent_sdk_runner._workspace_path_parameters_authorized(
+            subject,
+            tool_name,
+            tool_input(f"outputs/delivery/{tool_name.lower()}.txt"),
+            workspace_root=workspace,
+        )
+        assert claude_agent_sdk_runner._workspace_path_parameters_authorized(
+            subject,
+            tool_name,
+            tool_input(f"output/{tool_name.lower()}.txt"),
+            workspace_root=workspace,
+        )
+        for non_output_path in ("draft.txt", "inputs/source.docx", "outputs/not-delivery.txt"):
+            assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
+                subject,
+                tool_name,
+                tool_input(non_output_path),
+                workspace_root=workspace,
+            )
+
+    assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
+        {},
+        "Write",
+        {"file_path": ".claude/skills/native-skill/SKILL.md", "content": "tampered"},
+        workspace_root=workspace,
+    )
+
+    linked_skill = workspace / "outputs" / "delivery" / "staged-skill-link"
+    linked_output = workspace / ".claude" / "skills" / "output-link"
+    try:
+        linked_skill.symlink_to(skill_file.parent, target_is_directory=True)
+        linked_output.symlink_to(workspace / "outputs" / "delivery", target_is_directory=True)
+    except OSError:
+        return
+
+    for tool_name, tool_input in mutation_inputs.items():
+        assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
+            subject,
+            tool_name,
+            tool_input(f"outputs/delivery/staged-skill-link/{tool_name.lower()}.txt"),
+            workspace_root=workspace,
+        )
+        assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
+            subject,
+            tool_name,
+            tool_input(f".claude/skills/output-link/{tool_name.lower()}.txt"),
+            workspace_root=workspace,
+        )

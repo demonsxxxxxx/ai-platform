@@ -10,6 +10,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -64,6 +65,7 @@ def request(**overrides) -> SandboxRuntimeRequest:
 
 
 def workspace(**overrides) -> WorkspaceLease:
+    prepare_staged_skills = bool(overrides.pop("prepare_staged_skills", True))
     values = {
         "tenant_id": "tenant-a",
         "workspace_id": "workspace-a",
@@ -77,6 +79,14 @@ def workspace(**overrides) -> WorkspaceLease:
         "logs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/logs",
     }
     values.update(overrides)
+    if "workspace_host_path" in overrides and "host_root" not in overrides:
+        workspace_path = Path(values["workspace_host_path"])
+        values["host_root"] = str(workspace_path.parent)
+        values["inputs_host_path"] = str(workspace_path / "inputs")
+        values["logs_host_path"] = str(workspace_path.parent / "logs")
+    workspace_path = Path(values["workspace_host_path"])
+    if prepare_staged_skills and workspace_path.is_dir():
+        (workspace_path / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
     return WorkspaceLease(**values)
 
 
@@ -89,7 +99,8 @@ def native_tool_subjects() -> list[dict[str, Any]]:
             "declared": True,
             "active": True,
             "distributed": True,
-            "execution_strategy": "sdk_native",
+            "execution_strategy": "sdk_restricted",
+            "allowed_skill_names": ["native-review"],
         },
         {
             "identity": "Bash",
@@ -98,9 +109,42 @@ def native_tool_subjects() -> list[dict[str, Any]]:
             "declared": True,
             "active": True,
             "distributed": True,
+            "execution_strategy": "sdk_native",
             "command_isolation": "sibling-tool-sandbox-v1",
         },
     ]
+
+
+def trusted_skill_mount_stub(selected_workspace: WorkspaceLease) -> SimpleNamespace:
+    return SimpleNamespace(
+        host_path=Path(selected_workspace.workspace_host_path) / ".claude",
+        container_path=f"{selected_workspace.workspace_container_path.rstrip('/')}/.claude",
+        fingerprint="f" * 64,
+    )
+
+
+def test_skill_mount_and_native_bash_admission_are_independently_derived():
+    import app.runtime.sandbox.container_provider as container_provider
+
+    staged_skill = native_tool_subjects()[0]
+    native_bash = native_tool_subjects()[1]
+    controlled_bash = {
+        **native_bash,
+        "execution_strategy": "platform_controlled",
+        "command_isolation": "minimal-environment-v1",
+    }
+    cases = (
+        ("implicit_native_catalog", [staged_skill, native_bash], True, True),
+        ("implicit_platform_controlled_catalog", [staged_skill, controlled_bash], True, False),
+        ("staged_catalog_without_bash", [staged_skill], True, False),
+        ("native_bash_without_catalog", [native_bash], False, True),
+        ("no_catalog_no_bash", [], False, False),
+    )
+
+    for case, subjects, mount_required, native_required in cases:
+        runtime_request = request(tool_policy_subjects=subjects)
+        assert container_provider._staged_skill_mount_required(runtime_request) is mount_required, case
+        assert container_provider._native_tool_required(runtime_request) is native_required, case
 
 
 class FakeDockerContainer:
@@ -1836,6 +1880,12 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
     assert created["name"] == "executor-exec-run-a"
     assert created["labels"]["ai-platform.run_id"] == "run-a"
     assert created["volumes"][workspace().workspace_host_path]["bind"] == "/workspace"
+    assert created["volumes"] == {
+        workspace().workspace_host_path: {"bind": "/workspace", "mode": "rw"}
+    }
+    assert created["labels"]["ai-platform.skill_mount.required"] == "false"
+    assert "AI_PLATFORM_NATIVE_TOOL_TOKEN" not in created["environment"]
+    assert "AI_PLATFORM_NATIVE_TOOL_SOCKET" not in created["environment"]
     assert created["environment"]["AI_PLATFORM_SESSION_ID"] == "session-a"
     assert created["environment"]["APP_MODULE"] == "app.runtime.sandbox.executor_app:create_executor_app"
     assert created["environment"]["APP_PORT"] == "18000"
@@ -1845,32 +1895,235 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
 
 
 @pytest.mark.asyncio
+async def test_platform_controlled_implicit_catalog_mounts_claude_without_native_sidecar(tmp_path):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    staged_skill, native_bash = native_tool_subjects()
+    controlled_bash = {
+        **native_bash,
+        "execution_strategy": "platform_controlled",
+        "command_isolation": "minimal-environment-v1",
+    }
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    lease = await provider.create_or_reuse(
+        request(tool_policy_subjects=[staged_skill, controlled_bash]),
+        leased_workspace,
+    )
+
+    assert [created["name"] for created in fake.created] == ["executor-exec-run-a"]
+    executor = fake.containers_by_name[lease.container_name]
+    assert executor.volumes[str(workspace_path)] == {"bind": "/workspace", "mode": "rw"}
+    assert executor.volumes[str((workspace_path / ".claude").resolve())] == {
+        "bind": "/workspace/.claude",
+        "mode": "ro",
+    }
+    assert "AI_PLATFORM_NATIVE_TOOL_TOKEN" not in executor.environment
+    assert "AI_PLATFORM_NATIVE_TOOL_SOCKET" not in executor.environment
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_leaf", [".claude", ".claude/skills"])
+async def test_docker_provider_rejects_missing_staged_skill_directories_before_create(
+    tmp_path,
+    missing_leaf,
+):
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+    if missing_leaf != ".claude":
+        (workspace_path / ".claude").mkdir()
+    leased_workspace = workspace(
+        workspace_host_path=str(workspace_path),
+        prepare_staged_skills=False,
+    )
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    with pytest.raises(ContainerStartFailedError, match="staged Skill"):
+        await provider.create_or_reuse(
+            request(tool_policy_subjects=native_tool_subjects()[:1]),
+            leased_workspace,
+        )
+
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_escaped_staged_skill_workspace_before_create(
+    tmp_path,
+):
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    trusted_root = tmp_path / "trusted"
+    trusted_root.mkdir()
+    outside_workspace = tmp_path / "outside" / "workspace"
+    outside_workspace.mkdir(parents=True)
+    (outside_workspace / ".claude" / "skills").mkdir(parents=True)
+    leased_workspace = workspace(
+        host_root=str(trusted_root),
+        workspace_host_path=str(outside_workspace),
+        prepare_staged_skills=False,
+    )
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    with pytest.raises(ContainerStartFailedError, match="staged Skill workspace escapes"):
+        await provider.create_or_reuse(
+            request(tool_policy_subjects=native_tool_subjects()[:1]),
+            leased_workspace,
+        )
+
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("symlink_leaf", [".claude", ".claude/skills"])
+async def test_docker_provider_rejects_symlinked_staged_skill_directories_before_create(
+    tmp_path,
+    symlink_leaf,
+):
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    workspace_path = tmp_path / "run" / "workspace"
+    outside_claude = tmp_path / "outside-claude"
+    workspace_path.mkdir(parents=True)
+    (outside_claude / "skills").mkdir(parents=True)
+    if symlink_leaf == ".claude/skills":
+        (workspace_path / ".claude").mkdir()
+        symlink_target = outside_claude / "skills"
+    else:
+        symlink_target = outside_claude
+    try:
+        (workspace_path / symlink_leaf).symlink_to(symlink_target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable on this host")
+    leased_workspace = workspace(
+        workspace_host_path=str(workspace_path),
+        prepare_staged_skills=False,
+    )
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    with pytest.raises(ContainerStartFailedError, match="staged Skill"):
+        await provider.create_or_reuse(
+            request(tool_policy_subjects=native_tool_subjects()[:1]),
+            leased_workspace,
+        )
+
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_scrubs_settings_and_preserves_delivery_writes_before_read_only_mount(
+    tmp_path,
+):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    workspace_path = tmp_path / "run" / "workspace"
+    (workspace_path / ".claude" / "skills" / "review-skill").mkdir(parents=True)
+    (workspace_path / "outputs" / "delivery").mkdir(parents=True)
+    for setting_name in ("settings.json", "settings.local.json"):
+        (workspace_path / ".claude" / setting_name).write_text("stale", encoding="utf-8")
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    await provider.create_or_reuse(
+        request(tool_policy_subjects=native_tool_subjects()[:1]),
+        leased_workspace,
+    )
+
+    assert not (workspace_path / ".claude" / "settings.json").exists()
+    assert not (workspace_path / ".claude" / "settings.local.json").exists()
+    output_path = workspace_path / "outputs" / "delivery" / "report.txt"
+    output_path.write_text("deliverable", encoding="utf-8")
+    assert output_path.read_text(encoding="utf-8") == "deliverable"
+    created = fake.created[0]
+    assert created["volumes"][str(workspace_path)]["mode"] == "rw"
+    assert created["volumes"][str((workspace_path / ".claude").resolve())] == {
+        "bind": "/workspace/.claude",
+        "mode": "ro",
+    }
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_unscrubbable_project_settings_before_create(tmp_path):
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    workspace_path = tmp_path / "run" / "workspace"
+    (workspace_path / ".claude" / "skills").mkdir(parents=True)
+    (workspace_path / ".claude" / "settings.json").mkdir()
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    with pytest.raises(ContainerStartFailedError, match="settings path is invalid"):
+        await provider.create_or_reuse(
+            request(tool_policy_subjects=native_tool_subjects()[:1]),
+            leased_workspace,
+        )
+
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_cached_executor_after_staged_skill_inode_changes(tmp_path):
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    workspace_path = tmp_path / "run" / "workspace"
+    (workspace_path / ".claude" / "skills").mkdir(parents=True)
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    runtime_request = request(tool_policy_subjects=native_tool_subjects()[:1])
+
+    first_lease = await provider.create_or_reuse(runtime_request, leased_workspace)
+    first_container = fake.containers_by_name[first_lease.container_name]
+    (workspace_path / ".claude").rename(workspace_path / ".claude-old")
+    (workspace_path / ".claude" / "skills").mkdir(parents=True)
+
+    with pytest.raises(ContainerStartFailedError, match="cached lease runtime profile mismatch"):
+        await provider.create_or_reuse(runtime_request, leased_workspace)
+
+    assert first_container.removed is True
+    assert provider._leases == {}
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_maps_failed_native_reuse_health_to_admission_failure(tmp_path):
     from app.runtime.sandbox.container_provider import DockerContainerProvider, NativeToolAdmissionError
 
     workspace_path = tmp_path / "workspace"
     workspace_path.mkdir()
     leased_workspace = workspace(workspace_host_path=str(workspace_path))
-    native_subjects = [
-        {
-            "identity": "Skill",
-            "declared_identities": ["Skill"],
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "execution_strategy": "sdk_native",
-        },
-        {
-            "identity": "Bash",
-            "declared_identities": ["Bash"],
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "command_isolation": "sibling-tool-sandbox-v1",
-        },
-    ]
+    native_subjects = native_tool_subjects()
     fake = FakeDockerClient()
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
@@ -1882,6 +2135,8 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
         leased_workspace,
     )
 
+    assert native_subjects[0]["execution_strategy"] == "sdk_restricted"
+    assert native_subjects[0]["allowed_skill_names"] == ["native-review"]
     assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
     sidecar, executor = fake.created
     assert sidecar["network_mode"] == "none"
@@ -1894,6 +2149,27 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     assert sidecar["cap_drop"] == ["ALL"]
     assert "cap_add" not in sidecar
     assert sidecar["read_only"] is True
+    expected_skill_mount = {
+        "bind": "/workspace/.claude",
+        "mode": "ro",
+    }
+    assert sidecar["volumes"][str(workspace_path)] == {"bind": "/workspace", "mode": "rw"}
+    assert executor["volumes"][str(workspace_path)] == {"bind": "/workspace", "mode": "rw"}
+    assert sidecar["volumes"][str((workspace_path / ".claude").resolve())] == expected_skill_mount
+    assert executor["volumes"][str((workspace_path / ".claude").resolve())] == expected_skill_mount
+    mount_fingerprint = lease.labels["ai-platform.skill_mount.fingerprint"]
+    assert len(mount_fingerprint) == 64
+    assert sidecar["labels"]["ai-platform.skill_mount.fingerprint"] == mount_fingerprint
+    assert executor["labels"]["ai-platform.skill_mount.fingerprint"] == mount_fingerprint
+    kernel_attack_specs = {
+        "direct": "printf tampered > /workspace/.claude/skills/native-review/SKILL.md",
+        "chmod": "chmod u+w /workspace/.claude/skills/native-review/SKILL.md",
+        "rm": "rm -rf /workspace/.claude/skills/native-review",
+        "rename": "mv /workspace/.claude/skills/native-review /workspace/.claude/skills/replaced",
+        "symlink": "ln -s /workspace/outputs/delivery /workspace/.claude/skills/output-link",
+    }
+    assert set(kernel_attack_specs) == {"direct", "chmod", "rm", "rename", "symlink"}
+    assert all("/workspace/.claude" in command for command in kernel_attack_specs.values())
     assert sidecar["tmpfs"] == {
         "/tmp": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m",
         "/home/ai-platform": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=32m",
@@ -1992,6 +2268,7 @@ async def test_docker_provider_occupied_native_socket_preflight_has_zero_false_r
     from app.runtime.sandbox.container_provider import DockerContainerProvider, NativeToolAdmissionError
 
     workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
     leased_workspace = workspace(workspace_host_path=str(workspace_path))
     settings = container_provider.get_settings().model_copy(
         update={"sandbox_workspace_root": str(tmp_path.parent / "o")}
@@ -2152,7 +2429,7 @@ async def test_docker_provider_bounds_stuck_native_exec_await_and_cleans_sidecar
         with pytest.raises(NativeToolAdmissionError):
             await asyncio.wait_for(
                 provider._start_native_tool_container(
-                    request=request(),
+                    request=request(tool_policy_subjects=native_tool_subjects()),
                     workspace=workspace(workspace_host_path=str(workspace_path)),
                     token="t" * 32,
                     timeout_seconds=0.05,
@@ -2270,6 +2547,10 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
         "_prepare_native_tool_socket",
         lambda selected_workspace: provider._native_tool_socket_host_path(selected_workspace),
     )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.container_provider._prepare_trusted_skill_mount",
+        lambda _request, selected_workspace: trusted_skill_mount_stub(selected_workspace),
+    )
     native_subjects = native_tool_subjects()
 
     lease = await provider.create_or_reuse(
@@ -2357,6 +2638,11 @@ async def test_docker_provider_rejects_overlong_configured_socket_root_before_co
         update={"sandbox_workspace_root": _workspace_path_for_native_socket_bytes(211)}
     )
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        container_provider,
+        "_prepare_trusted_skill_mount",
+        lambda _request, selected_workspace: trusted_skill_mount_stub(selected_workspace),
+    )
     fake = FakeDockerClient()
     provider = DockerContainerProvider(docker_client_factory=lambda: fake)
     native_subjects = native_tool_subjects()
@@ -2443,6 +2729,10 @@ async def test_docker_provider_native_exec_failure_times_out_and_sanitizes_all_p
         provider,
         "_prepare_native_tool_socket",
         lambda selected_workspace: provider._native_tool_socket_host_path(selected_workspace),
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.container_provider._prepare_trusted_skill_mount",
+        lambda _request, selected_workspace: trusted_skill_mount_stub(selected_workspace),
     )
 
     async def bounded_timeout(container, _timeout_seconds):
@@ -2767,6 +3057,67 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
         }
         for key in lease.labels
     )
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_skill_bash_run_uses_nested_read_only_claude_mount(
+    monkeypatch,
+    tmp_path,
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+
+    await opensandbox_provider().create_or_reuse(
+        request(tool_policy_subjects=native_tool_subjects()),
+        leased_workspace,
+    )
+
+    volumes = FakeOpenSandbox.created[0]["volumes"]
+    assert [(volume.host.path, volume.mount_path, volume.read_only) for volume in volumes] == [
+        (str(workspace_path), "/workspace", False),
+        (str((workspace_path / ".claude").resolve()), "/workspace/.claude", True),
+    ]
+    assert FakeOpenSandbox.created[0]["metadata"]["ai-platform.skill_mount.required"] == "true"
+    assert len(FakeOpenSandbox.created[0]["metadata"]["ai-platform.skill_mount.fingerprint"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_skill_bash_run_fails_closed_without_read_only_volume_support(
+    monkeypatch,
+    tmp_path,
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+
+    class VolumeWithoutReadOnly:
+        def __init__(self, *, name, host, mountPath):
+            self.name = name
+            self.host = host
+            self.mount_path = mountPath
+
+    provider = opensandbox_provider()
+    provider._volume_class = VolumeWithoutReadOnly
+
+    with pytest.raises(
+        container_provider.ContainerStartFailedError,
+        match="read-only staged Skill mount is unavailable",
+    ):
+        await provider.create_or_reuse(
+            request(tool_policy_subjects=native_tool_subjects()),
+            leased_workspace,
+        )
+
+    assert FakeOpenSandbox.created == []
 
 
 @pytest.mark.asyncio

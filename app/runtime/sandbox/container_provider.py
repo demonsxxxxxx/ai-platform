@@ -42,7 +42,7 @@ from app.runtime.sandbox.executor_client import (
     prepare_executor_http_request,
 )
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
-from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION, SDK_NATIVE
+from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
 
 
 class SandboxRuntimeError(RuntimeError):
@@ -311,6 +311,7 @@ def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> boo
             str(key).startswith("ai-platform.egress.")
             or str(key).startswith("ai-platform.executor.")
             or str(key).startswith("ai-platform.external_egress.")
+            or str(key).startswith("ai-platform.skill_mount.")
             or str(key) == "ai-platform.runtime_subject"
         ) and str(labels.get(key) or "") != expected:
             return False
@@ -413,6 +414,14 @@ _NATIVE_TOOL_HEALTH_PROBE_COMMAND = (
 _NATIVE_TOOL_HEALTH_PROBE_TIMEOUT_SECONDS = 3.0
 _NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS = 0.01
 _NATIVE_TOOL_ADMISSION_PHASE = "authenticated_container_uds_health"
+_CLAUDE_PROJECT_SETTING_NAMES = ("settings.json", "settings.local.json")
+
+
+@dataclass(frozen=True)
+class _TrustedSkillMount:
+    host_path: Path
+    container_path: str
+    fingerprint: str
 
 
 def _tool_policy_subject_authorized(subject: dict[str, Any], identity: str) -> bool:
@@ -429,20 +438,136 @@ def _tool_policy_subject_authorized(subject: dict[str, Any], identity: str) -> b
     )
 
 
-def _native_tool_required(request: SandboxRuntimeRequest) -> bool:
-    skill_native = any(
+def _staged_skill_mount_required(request: SandboxRuntimeRequest) -> bool:
+    return any(
         _tool_policy_subject_authorized(subject, "Skill")
-        and str(subject.get("execution_strategy") or "") == SDK_NATIVE
+        and isinstance(subject.get("allowed_skill_names"), list)
+        and any(isinstance(name, str) and name for name in subject["allowed_skill_names"])
         for subject in request.tool_policy_subjects
         if isinstance(subject, dict)
     )
-    bash_isolated = any(
+
+
+def _native_tool_required(request: SandboxRuntimeRequest) -> bool:
+    return any(
         _tool_policy_subject_authorized(subject, "Bash")
         and str(subject.get("command_isolation") or "") == NATIVE_COMMAND_ISOLATION
         for subject in request.tool_policy_subjects
         if isinstance(subject, dict)
     )
-    return skill_native and bash_isolated
+
+
+def _real_directory(path: Path, *, error: str) -> tuple[Path, os.stat_result]:
+    try:
+        node = path.lstat()
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ContainerStartFailedError(error) from exc
+    if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
+        raise ContainerStartFailedError(error)
+    return resolved, node
+
+
+def _scrub_host_project_settings(claude_dir: Path) -> None:
+    for name in _CLAUDE_PROJECT_SETTING_NAMES:
+        setting = claude_dir / name
+        try:
+            node = setting.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ContainerStartFailedError("staged Skill settings cannot be inspected") from exc
+        if not (stat.S_ISREG(node.st_mode) or stat.S_ISLNK(node.st_mode)):
+            raise ContainerStartFailedError("staged Skill settings path is invalid")
+        try:
+            setting.unlink()
+        except OSError as exc:
+            raise ContainerStartFailedError("staged Skill settings cannot be scrubbed") from exc
+        try:
+            setting.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ContainerStartFailedError("staged Skill settings cannot be validated") from exc
+        raise ContainerStartFailedError("staged Skill settings cannot be scrubbed")
+
+
+def _prepare_trusted_skill_mount(
+    request: SandboxRuntimeRequest,
+    workspace: WorkspaceLease,
+) -> _TrustedSkillMount | None:
+    """Derive, scrub, and validate the staged Skill mount only from the trusted lease."""
+
+    if not _staged_skill_mount_required(request):
+        return None
+    workspace_path = Path(workspace.workspace_host_path)
+    workspace_root, workspace_node = _real_directory(
+        workspace_path,
+        error="staged Skill workspace is invalid",
+    )
+    try:
+        trusted_host_root = Path(workspace.host_root).resolve(strict=True)
+        workspace_root.relative_to(trusted_host_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ContainerStartFailedError("staged Skill workspace escapes trusted run root") from exc
+
+    claude_path = workspace_path / ".claude"
+    claude_root, claude_node = _real_directory(
+        claude_path,
+        error="staged Skill .claude directory is invalid",
+    )
+    skills_root, skills_node = _real_directory(
+        claude_path / "skills",
+        error="staged Skill directory is invalid",
+    )
+    try:
+        claude_root.relative_to(workspace_root)
+        skills_root.relative_to(claude_root)
+    except ValueError as exc:
+        raise ContainerStartFailedError("staged Skill directory escapes trusted workspace") from exc
+
+    _scrub_host_project_settings(claude_path)
+    final_claude_root, final_claude_node = _real_directory(
+        claude_path,
+        error="staged Skill .claude directory changed during validation",
+    )
+    final_skills_root, final_skills_node = _real_directory(
+        claude_path / "skills",
+        error="staged Skill directory changed during validation",
+    )
+    if (
+        final_claude_root != claude_root
+        or final_skills_root != skills_root
+        or (final_claude_node.st_dev, final_claude_node.st_ino)
+        != (claude_node.st_dev, claude_node.st_ino)
+        or (final_skills_node.st_dev, final_skills_node.st_ino)
+        != (skills_node.st_dev, skills_node.st_ino)
+    ):
+        raise ContainerStartFailedError("staged Skill directory changed during validation")
+
+    fingerprint_payload = "\0".join(
+        str(value)
+        for value in (
+            workspace_node.st_dev,
+            workspace_node.st_ino,
+            claude_node.st_dev,
+            claude_node.st_ino,
+            skills_node.st_dev,
+            skills_node.st_ino,
+        )
+    )
+    return _TrustedSkillMount(
+        host_path=claude_root,
+        container_path=f"{workspace.workspace_container_path.rstrip('/')}/.claude",
+        fingerprint=hashlib.sha256(fingerprint_payload.encode("ascii")).hexdigest(),
+    )
+
+
+def _skill_mount_labels(skill_mount: _TrustedSkillMount | None) -> dict[str, str]:
+    return {
+        "ai-platform.skill_mount.required": _env_bool(skill_mount is not None),
+        "ai-platform.skill_mount.fingerprint": skill_mount.fingerprint if skill_mount is not None else "",
+    }
 
 
 def _native_tool_container_name(run_id: str) -> str:
@@ -489,6 +614,7 @@ def _native_tool_admission_evidence(
 def _native_tool_labels(
     request: SandboxRuntimeRequest,
     workspace: WorkspaceLease,
+    skill_mount: _TrustedSkillMount | None,
 ) -> dict[str, str]:
     return {
         "ai-platform.owner": _NATIVE_TOOL_OWNER,
@@ -501,6 +627,7 @@ def _native_tool_labels(
         "ai-platform.sandbox_mode": request.sandbox_mode,
         "ai-platform.browser_enabled": "true" if request.browser_enabled else "false",
         **_native_tool_admission_evidence(workspace),
+        **_skill_mount_labels(skill_mount),
     }
 
 
@@ -1150,6 +1277,7 @@ def _opensandbox_labels(
     settings: Any,
     request: SandboxRuntimeRequest,
     capability: OpenSandboxExternalEgressCapability,
+    skill_mount: _TrustedSkillMount | None,
 ) -> dict[str, str]:
     labels = _platform_metadata(request)
     labels["ai-platform.provider_backend"] = "opensandbox"
@@ -1157,6 +1285,7 @@ def _opensandbox_labels(
     labels["ai-platform.executor.requested_image_digest"] = capability.requested_image_digest
     labels.update(_executor_identity_labels())
     labels.update(capability.lease_labels())
+    labels.update(_skill_mount_labels(skill_mount))
     return labels
 
 
@@ -1189,20 +1318,36 @@ def _opensandbox_network_policy(settings: Any, network_policy_class: Any, networ
 def _opensandbox_volumes(
     settings: Any,
     workspace: WorkspaceLease,
+    skill_mount: _TrustedSkillMount | None,
     *,
     host_class: Any,
     volume_class: Any,
 ) -> list[Any]:
     if getattr(settings, "opensandbox_workspace_mount_enabled", True) is not True:
+        if skill_mount is not None:
+            raise ContainerStartFailedError("OpenSandbox staged Skill mount requires workspace mounting")
         return []
-    return [
-        volume_class(
-            name="ai-platform-workspace",
-            host=host_class(path=workspace.workspace_host_path),
-            mountPath=workspace.workspace_container_path,
-            readOnly=False,
-        )
-    ]
+    try:
+        volumes = [
+            volume_class(
+                name="ai-platform-workspace",
+                host=host_class(path=workspace.workspace_host_path),
+                mountPath=workspace.workspace_container_path,
+                readOnly=False,
+            )
+        ]
+        if skill_mount is not None:
+            volumes.append(
+                volume_class(
+                    name="ai-platform-claude-skills",
+                    host=host_class(path=str(skill_mount.host_path)),
+                    mountPath=skill_mount.container_path,
+                    readOnly=True,
+                )
+            )
+    except (TypeError, ValueError) as exc:
+        raise ContainerStartFailedError("OpenSandbox read-only staged Skill mount is unavailable") from exc
+    return volumes
 
 
 def _opensandbox_connection_config(settings: Any, connection_config_class: Any) -> Any:
@@ -1845,6 +1990,13 @@ class DockerContainerProvider:
                 return False
         if tool is None or getattr(tool, "status", "running") not in {"created", "running"}:
             return False
+        tool_labels = _container_labels(tool)
+        if any(
+            tool_labels.get(key) != value
+            for key, value in lease.labels.items()
+            if key.startswith("ai-platform.skill_mount.")
+        ):
+            return False
         executor_token = _container_environment(executor).get("AI_PLATFORM_NATIVE_TOOL_TOKEN", "")
         tool_token = _container_environment(tool).get("AI_PLATFORM_NATIVE_TOOL_TOKEN", "")
         if not executor_token or not hmac.compare_digest(executor_token, tool_token):
@@ -1883,12 +2035,14 @@ class DockerContainerProvider:
         workspace: WorkspaceLease,
         token: str,
         timeout_seconds: float,
+        skill_mount: _TrustedSkillMount | None = None,
     ) -> Any:
         client = self._get_client()
         container = None
         socket_path: Path | None = None
         socket_prepared = False
         try:
+            trusted_skill_mount = skill_mount or _prepare_trusted_skill_mount(request, workspace)
             socket_path = self._prepare_native_tool_socket(workspace)
             socket_prepared = True
             existing_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
@@ -1898,12 +2052,22 @@ class DockerContainerProvider:
                 image=get_settings().sandbox_executor_image,
                 name=_native_tool_container_name(request.run_id),
                 detach=True,
-                labels=_native_tool_labels(request, workspace),
+                labels=_native_tool_labels(request, workspace, trusted_skill_mount),
                 volumes={
                     workspace.workspace_host_path: {
                         "bind": workspace.workspace_container_path,
                         "mode": "rw",
                     },
+                    **(
+                        {
+                            str(trusted_skill_mount.host_path): {
+                                "bind": trusted_skill_mount.container_path,
+                                "mode": "ro",
+                            }
+                        }
+                        if trusted_skill_mount is not None
+                        else {}
+                    ),
                     str(socket_path.parent): {
                         "bind": f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform",
                         "mode": "rw",
@@ -2039,6 +2203,8 @@ class DockerContainerProvider:
         workspace: WorkspaceLease,
     ) -> ContainerLease:
         settings = get_settings()
+        skill_mount = _prepare_trusted_skill_mount(request, workspace)
+        skill_mount_labels = _skill_mount_labels(skill_mount)
         endpoint = _resolve_executor_published_endpoint(settings.sandbox_executor_published_host)
         client = self._get_client()
         container_id = f"exec-{request.run_id}"
@@ -2073,7 +2239,10 @@ class DockerContainerProvider:
                     self._leases[existing.container_id] = existing
                     raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
                 raise ContainerStartFailedError("cached lease scope mismatch")
-            if existing_native_tool_required != native_tool_required:
+            if (
+                existing_native_tool_required != native_tool_required
+                or any(existing.labels.get(key) != value for key, value in skill_mount_labels.items())
+            ):
                 native_removed = self._remove_owned_native_tool_container(existing)
                 primary_removed = self._remove_owned_cached_container(existing)
                 socket_removed = (
@@ -2089,6 +2258,7 @@ class DockerContainerProvider:
         if existing is not None:
             existing.labels.update(expected_egress_labels)
             existing.labels.update(native_tool_admission_evidence)
+            existing.labels.update(skill_mount_labels)
             recovered_existing = await self._reuse_existing_container(
                 existing,
                 settings.sandbox_container_start_timeout_seconds,
@@ -2122,6 +2292,7 @@ class DockerContainerProvider:
         bootstrap_lease.labels.update(expected_egress_labels)
         bootstrap_lease.labels["ai-platform.native_tool_required"] = _env_bool(native_tool_required)
         bootstrap_lease.labels.update(native_tool_admission_evidence)
+        bootstrap_lease.labels.update(skill_mount_labels)
         recovered = await self._reuse_existing_container(
             bootstrap_lease,
             settings.sandbox_container_start_timeout_seconds,
@@ -2149,6 +2320,7 @@ class DockerContainerProvider:
                     workspace=workspace,
                     token=native_tool_token,
                     timeout_seconds=settings.sandbox_container_start_timeout_seconds,
+                    skill_mount=skill_mount,
                 )
             container = client.containers.create(
                 image=settings.sandbox_executor_image,
@@ -2160,6 +2332,16 @@ class DockerContainerProvider:
                         "bind": workspace.workspace_container_path,
                         "mode": "rw",
                     },
+                    **(
+                        {
+                            str(skill_mount.host_path): {
+                                "bind": skill_mount.container_path,
+                                "mode": "ro",
+                            }
+                        }
+                        if skill_mount is not None
+                        else {}
+                    ),
                     **(
                         {
                             str(self._native_tool_socket_host_path(workspace).parent): {
@@ -2666,6 +2848,7 @@ class OpenSandboxContainerProvider:
     ) -> ContainerLease:
         settings = get_settings()
         self._ensure_symbols()
+        skill_mount = _prepare_trusted_skill_mount(request, workspace)
         try:
             capability = await _admit_opensandbox_external_egress_capability(
                 settings=settings,
@@ -2692,7 +2875,9 @@ class OpenSandboxContainerProvider:
                     workspace,
                     executor_url=cached.executor_url,
                 )
-                expected_lease.labels.update(_opensandbox_labels(settings, request, capability))
+                expected_lease.labels.update(
+                    _opensandbox_labels(settings, request, capability, skill_mount)
+                )
                 remote_status = _opensandbox_status_from_info(info)
                 if (
                     remote_status is None
@@ -2759,7 +2944,7 @@ class OpenSandboxContainerProvider:
 
         started_at = self._monotonic()
         connection_config = self._connection_config(settings)
-        metadata = _opensandbox_labels(settings, request, capability)
+        metadata = _opensandbox_labels(settings, request, capability, skill_mount)
         executor_auth_token = _generate_executor_auth_token()
         environment = _executor_environment(
             request,
@@ -2781,6 +2966,7 @@ class OpenSandboxContainerProvider:
             "volumes": _opensandbox_volumes(
                 settings,
                 workspace,
+                skill_mount,
                 host_class=self._host_class,
                 volume_class=self._volume_class,
             ),

@@ -367,6 +367,48 @@ def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile
     assert by_identity["Skill"]["allowed_skill_names"] == ["native-review"]
 
 
+def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission():
+    primary = primary_manifest("general-chat", "hash-general")
+    catalog_profile = resolve_skill_execution_profile(
+        skill_id="minimax-docx",
+        source_kind="builtin",
+        lifecycle_status="released",
+    )
+    catalog_manifest = primary_manifest("minimax-docx", "hash-minimax")
+    catalog_manifest.update(
+        {
+            "lifecycle_status": "released",
+            "execution_profile": catalog_profile,
+            "builtin_tool_identities": catalog_profile["builtin_tool_identities"],
+        }
+    )
+    payload = parse_queue_payload(
+        base_payload(
+            skill_id="general-chat",
+            skill_version="hash-general",
+            skill_manifests=[primary],
+        )
+    )
+
+    subjects = worker_module._builtin_capability_subjects(
+        payload=payload,
+        run_identity={"skill_id": "general-chat"},
+        skill={"skill_id": "general-chat", "skill_status": "active"},
+        skill_decision=types.SimpleNamespace(usable=True),
+        authorized_skill_manifests=[catalog_manifest],
+        authorized_skill_names=["minimax-docx"],
+    )
+    by_identity = {subject["identity"]: subject for subject in subjects}
+    runtime_request = types.SimpleNamespace(tool_policy_subjects=subjects)
+
+    assert by_identity["Skill"]["execution_strategy"] == "sdk_restricted"
+    assert by_identity["Skill"]["allowed_skill_names"] == ["minimax-docx"]
+    assert by_identity["Bash"]["execution_strategy"] == "sdk_native"
+    assert by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
+    assert container_provider._staged_skill_mount_required(runtime_request)
+    assert container_provider._native_tool_required(runtime_request)
+
+
 def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
     manifest = primary_manifest("native-review", "hash-native")
     manifest["source"] = {"kind": "uploaded"}
@@ -708,6 +750,37 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log, raising=False)
+
+    class _DefaultCatalogSnapshot:
+        def __init__(self, skill_id):
+            self.available_skill_ids = (skill_id,)
+            self._skill_id = skill_id
+
+        def entry(self, skill_id):
+            if skill_id != self._skill_id:
+                return None
+            return types.SimpleNamespace(available=True)
+
+    class _DefaultCatalogResolution:
+        def __init__(self, skill_id, manifests):
+            self.snapshot = _DefaultCatalogSnapshot(skill_id)
+            self.manifests = list(manifests)
+
+        def runtime_input_updates(self):
+            return {}
+
+    async def resolve_authorized_skill_catalog(*_args, **kwargs):
+        binding = kwargs["binding"]
+        return _DefaultCatalogResolution(
+            binding.selected_skill_id,
+            kwargs.get("pinned_manifests") or [],
+        )
+
+    monkeypatch.setattr(
+        "app.worker.resolve_authorized_skill_catalog",
+        resolve_authorized_skill_catalog,
+        raising=False,
+    )
 
 
 @pytest.mark.asyncio

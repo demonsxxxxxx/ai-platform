@@ -39,6 +39,14 @@ from app.executors.base import ExecutorResult, RunExecutionOwner, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
+from app.skills.catalog import (
+    AuthorizedSkillCatalogBinding,
+    AuthorizedSkillCatalogError,
+    AuthorizedSkillCatalogResolution,
+    RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY,
+    RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY,
+    resolve_authorized_skill_catalog,
+)
 from app.skills.execution_profiles import canonical_skill_execution_profile
 from app.settings import get_settings
 from app.tool_policy import evaluate_tool_policy
@@ -1173,7 +1181,7 @@ _BUILTIN_CAPABILITY_PARAMETERS = {
 
 
 def _declared_builtin_tool_identities(manifest: dict[str, Any] | None) -> set[str]:
-    """Read only the primary pinned Skill's server-built tool declarations."""
+    """Read one pinned Skill's server-built tool declarations."""
 
     if not isinstance(manifest, dict):
         return set()
@@ -1186,18 +1194,13 @@ def _builtin_capability_subjects(
     run_identity: dict[str, str],
     skill: dict[str, Any],
     skill_decision: CapabilityAccessDecision,
+    authorized_skill_manifests: list[dict[str, Any]] | None = None,
+    authorized_skill_names: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     active = str(skill.get("skill_status") or "disabled") == "active"
     distributed = skill_decision.usable
     subjects: list[dict[str, Any]] = []
-    primary_skill_pinned = any(
-        isinstance(manifest, dict)
-        and str(manifest.get("skill_id") or "") == run_identity["skill_id"]
-        and isinstance(manifest.get("source"), dict)
-        and manifest["source"].get("kind") in {"builtin", "uploaded"}
-        for manifest in payload.skill_manifests
-    )
-    primary_manifest = next(
+    payload_primary_manifest = next(
         (
             manifest
             for manifest in payload.skill_manifests
@@ -1206,21 +1209,56 @@ def _builtin_capability_subjects(
         ),
         None,
     )
-    execution_profile = (
+    manifests_by_id = {
+        str(manifest.get("skill_id") or ""): manifest
+        for manifest in [payload_primary_manifest, *(authorized_skill_manifests or [])]
+        if isinstance(manifest, dict) and str(manifest.get("skill_id") or "")
+    }
+    if authorized_skill_names is None:
+        primary_manifest = manifests_by_id.get(run_identity["skill_id"])
+        authorized_skill_names = (
+            [run_identity["skill_id"]]
+            if isinstance(primary_manifest, dict)
+            and isinstance(primary_manifest.get("source"), dict)
+            and primary_manifest["source"].get("kind") in {"builtin", "uploaded"}
+            else []
+        )
+    primary_manifest = manifests_by_id.get(run_identity["skill_id"])
+    primary_identities = _declared_builtin_tool_identities(primary_manifest)
+    primary_execution_profile = (
         canonical_skill_execution_profile(primary_manifest)
         if isinstance(primary_manifest, dict)
         else None
     )
-    identities = _declared_builtin_tool_identities(primary_manifest)
-    if primary_skill_pinned:
+    profiles_by_identity: dict[str, list[dict[str, Any]]] = {}
+    identities: set[str] = set()
+    for manifest in manifests_by_id.values():
+        execution_profile = canonical_skill_execution_profile(manifest)
+        for identity in _declared_builtin_tool_identities(manifest):
+            identities.add(identity)
+            profiles_by_identity.setdefault(identity, []).append(execution_profile)
+    if authorized_skill_names:
         identities.add("Skill")
     for identity in sorted(identities):
         keys, required_keys = _BUILTIN_CAPABILITY_PARAMETERS[identity]
+        identity_profiles = profiles_by_identity.get(identity, [])
+        execution_profile = (
+            primary_execution_profile
+            if identity == "Skill" or identity in primary_identities
+            else next(
+                (
+                    profile
+                    for profile in identity_profiles
+                    if str(profile.get("command_isolation") or "") == "sibling-tool-sandbox-v1"
+                ),
+                identity_profiles[0] if identity_profiles else None,
+            )
+        )
         subjects.append(
             {
                 "identity": identity,
                 "declared_identities": [identity],
-                "registered": bool(skill),
+                "registered": True,
                 "declared": True,
                 "active": active,
                 "distributed": distributed,
@@ -1231,7 +1269,7 @@ def _builtin_capability_subjects(
                 "write_capable": identity not in {"Read", "Glob", "LS", "Skill"},
                 "allowed_parameter_keys": keys,
                 "required_parameter_keys": required_keys,
-                "allowed_skill_names": [run_identity["skill_id"]] if identity == "Skill" else [],
+                "allowed_skill_names": list(authorized_skill_names) if identity == "Skill" else [],
                 "execution_strategy": str((execution_profile or {}).get("strategy") or "sdk_restricted"),
                 "command_isolation": str((execution_profile or {}).get("command_isolation") or "none"),
                 "workspace_contract": str((execution_profile or {}).get("workspace_contract") or ""),
@@ -1342,6 +1380,32 @@ def _payload_with_authorized_mcp_registration(
     return payload.model_copy(update={"input": rebuilt_input})
 
 
+def _authorized_skill_catalog_binding(
+    run_identity: dict[str, str],
+) -> AuthorizedSkillCatalogBinding:
+    return AuthorizedSkillCatalogBinding(
+        tenant_id=run_identity["tenant_id"],
+        workspace_id=run_identity["workspace_id"],
+        user_id=run_identity["user_id"],
+        session_id=run_identity["session_id"],
+        run_id=run_identity["run_id"],
+        agent_id=run_identity["agent_id"],
+        selected_skill_id=run_identity["skill_id"],
+    )
+
+
+def _payload_with_authorized_skill_catalog(
+    payload: QueueRunPayload,
+    *,
+    resolution: AuthorizedSkillCatalogResolution,
+) -> QueueRunPayload:
+    rebuilt_input = dict(payload.input)
+    rebuilt_input.pop(RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY, None)
+    rebuilt_input.pop(RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY, None)
+    rebuilt_input.update(resolution.runtime_input_updates())
+    return payload.model_copy(update={"input": rebuilt_input})
+
+
 async def _reauthorize_worker_capabilities(
     conn,
     *,
@@ -1425,6 +1489,39 @@ async def _reauthorize_worker_capabilities(
     if not skill_decision.usable:
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), skill_record)
 
+    authorized_skill_catalog: AuthorizedSkillCatalogResolution | None = None
+    if payload.executor_type == "claude-agent-worker":
+        try:
+            authorized_skill_catalog = await resolve_authorized_skill_catalog(
+                conn,
+                binding=_authorized_skill_catalog_binding(run_identity),
+                department_id=principal.department_id,
+                roles=principal.roles,
+                permissions=principal.permissions,
+                pinned_manifests=payload.skill_manifests,
+            )
+        except (AuthorizedSkillCatalogError, repositories.RepositoryConflictError):
+            denial = _worker_capability_record(
+                "skill",
+                run_identity["skill_id"],
+                _denied_capability_decision("authorized_skill_catalog_unavailable"),
+            )
+            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+        selected_catalog_entry = authorized_skill_catalog.snapshot.entry(run_identity["skill_id"])
+        if run_identity["skill_id"] != "general-chat" and (
+            selected_catalog_entry is None or not selected_catalog_entry.available
+        ):
+            denial = _worker_capability_record(
+                "skill",
+                run_identity["skill_id"],
+                _denied_capability_decision("selected_skill_catalog_unavailable"),
+            )
+            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+        payload = _payload_with_authorized_skill_catalog(
+            payload,
+            resolution=authorized_skill_catalog,
+        )
+
     try:
         requested_tool_ids = repositories.run_mcp_tool_ids_for_skill(skill, payload.input)
         for tool_id in pinned_mcp_tool_ids or []:
@@ -1444,6 +1541,16 @@ async def _reauthorize_worker_capabilities(
         run_identity=run_identity,
         skill=skill,
         skill_decision=skill_decision,
+        authorized_skill_manifests=(
+            authorized_skill_catalog.manifests
+            if authorized_skill_catalog is not None
+            else []
+        ),
+        authorized_skill_names=(
+            list(authorized_skill_catalog.snapshot.available_skill_ids)
+            if authorized_skill_catalog is not None
+            else [run_identity["skill_id"]]
+        ),
     )
     tool_policy_audits: list[_WorkerToolPolicyAudit] = []
     for tool_id in requested_tool_ids:

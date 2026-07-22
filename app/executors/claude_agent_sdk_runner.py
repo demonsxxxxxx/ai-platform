@@ -22,6 +22,10 @@ from app.control_plane_contracts import sanitize_public_payload
 from app.file_parser_contracts import ParsedAttachmentContext
 from app.public_context_keys import safe_public_context_pack_version
 from app.settings import get_settings
+from app.skills.catalog import (
+    AuthorizedSkillCatalogSnapshot,
+    render_authorized_skill_catalog_prompt,
+)
 from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION, SKILL_WORKSPACE_CONTRACT_VERSION
 from app.tool_policy import evaluate_tool_policy
 
@@ -431,6 +435,7 @@ def build_skill_prompt(
     user_message: str,
     file_names: list[str],
     context_pack: dict[str, Any] | None = None,
+    authorized_skill_catalog: AuthorizedSkillCatalogSnapshot | None = None,
 ) -> str:
     bounded_user_message = truncate_utf8_text(user_message, max_bytes=_MAX_CURRENT_PROMPT_BYTES)
     file_lines: list[str] = []
@@ -451,6 +456,7 @@ def build_skill_prompt(
         "If a staged Skill matches the task, use that Skill's instructions. "
         "Use inputs/ for attachments and save user-deliverable files under outputs/delivery/. "
         "Return a concise execution summary."
+        f"{render_authorized_skill_catalog_prompt(authorized_skill_catalog)}"
         f"{_context_pack_prompt_section(context_pack)}"
     )
 
@@ -970,8 +976,11 @@ def _parameters_match_subject(subject: dict[str, Any], tool_name: str, tool_inpu
 _WORKSPACE_PATH_PARAMETER = {
     "Read": "file_path",
     "LS": "path",
+}
+_WORKSPACE_MUTATING_PATH_PARAMETER = {
     "Write": "file_path",
     "Edit": "file_path",
+    "NotebookEdit": "notebook_path",
 }
 _WORKSPACE_INTERNAL_ROOTS = frozenset(
     {".ai-platform", ".claude-config", ".home", ".pins", ".tmp"}
@@ -991,20 +1000,28 @@ def _workspace_path_parameters_authorized(
     *,
     workspace_root: Path,
 ) -> bool:
-    if str(subject.get("workspace_contract") or "") != SKILL_WORKSPACE_CONTRACT_VERSION:
+    mutating_key = _WORKSPACE_MUTATING_PATH_PARAMETER.get(tool_name)
+    if (
+        str(subject.get("workspace_contract") or "") != SKILL_WORKSPACE_CONTRACT_VERSION
+        and mutating_key is None
+    ):
         return True
 
-    def path_authorized(raw: object) -> bool:
+    def normalized_relatives(raw: object) -> tuple[Path, Path] | None:
         if not isinstance(raw, str) or not raw or "\x00" in raw:
-            return False
+            return None
         try:
             root = workspace_root.resolve(strict=True)
-            candidate = Path(raw)
+            candidate = Path(raw.replace("\\", os.sep).replace("/", os.sep))
             if not candidate.is_absolute():
                 candidate = root / candidate
-            relative = candidate.resolve(strict=False).relative_to(root)
+            lexical_relative = Path(os.path.abspath(candidate)).relative_to(root)
+            resolved_relative = candidate.resolve(strict=False).relative_to(root)
         except (OSError, RuntimeError, ValueError):
-            return False
+            return None
+        return lexical_relative, resolved_relative
+
+    def readable_path_parts_authorized(relative: Path) -> bool:
         if not relative.parts:
             return True
         lowered = tuple(part.lower() for part in relative.parts)
@@ -1013,6 +1030,23 @@ def _workspace_path_parameters_authorized(
         if lowered[0] == ".claude":
             return len(lowered) >= 2 and lowered[1] == "skills"
         return True
+
+    def writable_path_parts_authorized(relative: Path) -> bool:
+        lowered = tuple(part.lower() for part in relative.parts)
+        if len(lowered) >= 2 and lowered[0] == "output":
+            return True
+        return (
+            len(lowered) >= 3
+            and lowered[0] == "outputs"
+            and "delivery" in lowered[1:-1]
+        )
+
+    def path_authorized(raw: object, *, mutating: bool = False) -> bool:
+        relatives = normalized_relatives(raw)
+        if relatives is None:
+            return False
+        authorize = writable_path_parts_authorized if mutating else readable_path_parts_authorized
+        return all(authorize(relative) for relative in relatives)
 
     def glob_pattern_authorized(raw: object, *, search_path: object) -> bool:
         if not path_authorized(raw):
@@ -1060,6 +1094,8 @@ def _workspace_path_parameters_authorized(
             tool_input.get("pattern"),
             search_path=search_path,
         )
+    if mutating_key is not None:
+        return path_authorized(tool_input.get(mutating_key), mutating=True)
     key = _WORKSPACE_PATH_PARAMETER.get(tool_name)
     if key is None:
         return True
