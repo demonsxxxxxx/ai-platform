@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import errno
 import hashlib
 import hmac
@@ -24,6 +25,7 @@ import sys
 import threading
 import time
 import textwrap
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -45,6 +47,11 @@ BOOTSTRAP_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.bootstrap-e
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
 INSPECTION_PROFILES = ("platform-controlled", "sdk-native")
+INSPECTION_AUTHORIZED_SKILLS = {
+    "platform-controlled": "qa-file-reviewer",
+    "sdk-native": "minimax-docx",
+}
+INSPECTION_WORKSPACE_BASE_NAME = "ai-platform-sandbox-verifier-211"
 INSPECTION_ATTACKS = (
     "direct_write",
     "chmod",
@@ -250,6 +257,10 @@ class _InspectionCheckFailed(RuntimeError):
     """Keep failed live checks inside the runtime cleanup path."""
 
 
+class _InspectionCleanupFailed(RuntimeError):
+    """Report that owned runtime cleanup could not be proved by exact enumeration."""
+
+
 def _atomic_write_json(path_value: str | Path, payload: dict[str, Any]) -> None:
     path = Path(path_value)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,19 +309,106 @@ def _safe_image_reference(value: object) -> str:
     return image
 
 
-def _trusted_inspection_workspace_root(value: object) -> Path:
-    raw = str(value or "").strip()
-    if not raw or "\x00" in raw:
-        raise ValueError("invalid inspection workspace root")
-    root = Path(raw)
-    if not root.is_absolute():
-        raise ValueError("inspection workspace root must be absolute")
-    resolved = root.resolve(strict=False)
-    if resolved == Path(resolved.anchor) or resolved == REPO_ROOT.resolve():
-        raise ValueError("inspection workspace root is not isolated")
-    if root.is_symlink():
-        raise ValueError("inspection workspace root must not be a symlink")
-    return resolved
+def _path_identity(path: Path) -> tuple[int, int]:
+    node = path.lstat()
+    if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
+        raise ValueError("inspection workspace path is not a real directory")
+    if hasattr(path, "is_junction") and path.is_junction():
+        raise ValueError("inspection workspace path must not be a junction")
+    resolved = path.resolve(strict=True)
+    if os.path.normcase(str(resolved)) != os.path.normcase(str(path.absolute())):
+        raise ValueError("inspection workspace path resolves through an alias")
+    return int(node.st_dev), int(node.st_ino)
+
+
+def _directory_chain(path: Path, *, allow_missing_leaf: bool) -> dict[str, tuple[int, int]]:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    identities: dict[str, tuple[int, int]] = {}
+    if absolute.anchor:
+        identities[os.path.normcase(str(current))] = _path_identity(current)
+    parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in parts:
+        current /= part
+        try:
+            identities[os.path.normcase(str(current))] = _path_identity(current)
+        except FileNotFoundError:
+            if allow_missing_leaf:
+                break
+            raise ValueError("inspection workspace path is missing") from None
+    return identities
+
+
+def _prepare_inspection_workspace_root(
+    run_id: str,
+    *,
+    verifier_base: str | Path | None = None,
+) -> tuple[Path, dict[str, tuple[int, int]]]:
+    if verifier_base is None:
+        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        base = temp_root / INSPECTION_WORKSPACE_BASE_NAME
+    else:
+        base = Path(verifier_base).absolute()
+        if not base.is_absolute():
+            raise ValueError("inspection verifier base must be absolute")
+    _directory_chain(base, allow_missing_leaf=True)
+    try:
+        base.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    base_identities = _directory_chain(base, allow_missing_leaf=False)
+    run_root = base / run_id
+    try:
+        run_root.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ValueError("inspection workspace run child already exists")
+    os.mkdir(run_root, mode=0o700)
+    identities = _directory_chain(run_root, allow_missing_leaf=False)
+    base_key = os.path.normcase(str(base.absolute()))
+    if identities.get(base_key) != base_identities.get(base_key):
+        raise ValueError("inspection verifier base changed during creation")
+    if run_root.resolve(strict=True).parent != base.resolve(strict=True):
+        raise ValueError("inspection workspace escaped verifier base")
+    return run_root, identities
+
+
+def _revalidate_inspection_workspace(
+    run_root: Path,
+    identities: dict[str, tuple[int, int]],
+    *,
+    workspace: Any | None = None,
+    staged_skill_name: str = "",
+) -> None:
+    current = _directory_chain(run_root, allow_missing_leaf=False)
+    for key, expected in identities.items():
+        if current.get(key) != expected:
+            raise ValueError("inspection workspace identity changed")
+    if workspace is None:
+        return
+    trusted_root = run_root.resolve(strict=True)
+    paths = [
+        Path(workspace.host_root),
+        Path(workspace.workspace_host_path),
+        Path(workspace.inputs_host_path),
+        Path(workspace.logs_host_path),
+    ]
+    if staged_skill_name:
+        paths.extend(
+            [
+                Path(workspace.workspace_host_path) / ".claude",
+                Path(workspace.workspace_host_path) / ".claude" / "skills",
+                Path(workspace.workspace_host_path) / ".claude" / "skills" / staged_skill_name,
+            ]
+        )
+    for path in paths:
+        resolved = path.resolve(strict=True)
+        try:
+            resolved.relative_to(trusted_root)
+        except ValueError as exc:
+            raise ValueError("inspection workspace lease escaped verifier root") from exc
+        _directory_chain(path, allow_missing_leaf=False)
 
 
 def _inspection_profile_manifest(profile: str) -> dict[str, Any]:
@@ -319,22 +417,32 @@ def _inspection_profile_manifest(profile: str) -> dict[str, Any]:
         "selected": profile if profile in INSPECTION_PROFILES else "invalid",
         "catalog": "implicit",
         "primary_skill": "general-chat",
+        "authorized_implicit_skill": INSPECTION_AUTHORIZED_SKILLS.get(profile, ""),
         "primary_execution_strategy": "sdk_restricted",
         "authorized_skill_count": 1,
         "native_sidecar_expected": native_expected,
+        "authorization_basis": "deterministic_verifier_fixture",
+        "production_authorization_proven": False,
     }
 
 
 def _inspection_check_defaults(profile: str) -> dict[str, bool]:
     names = [
         "implicit_catalog_fixed",
+        "authoritative_catalog_aggregation",
+        "authoritative_allowed_names_exact",
+        "authoritative_declared_builtins_exact",
+        "production_authorization_not_claimed",
         "authorized_skill_names_nonempty",
         "trusted_workspace_lease",
         "primary_provider_child_observed",
         "workspace_rw",
         "claude_nested_ro",
         "claude_nested_under_workspace",
+        "workspace_mount_topology_exact",
+        "no_unexpected_workspace_submounts",
         "delivery_link_created",
+        "delivery_link_cleanup_succeeded",
         "staged_skill_hash_matches",
         "skill_hash_unchanged",
         "outputs_write_succeeded",
@@ -349,9 +457,15 @@ def _inspection_check_defaults(profile: str) -> dict[str, bool]:
             "native_sidecar_socket_paired",
             "native_sidecar_admission_paired",
             "native_sidecar_authenticated_health",
+            "primary_native_socket_present",
+            "primary_native_authenticated_health",
         ]
         if profile == "sdk-native"
-        else ["native_sidecar_absent", "primary_native_credentials_absent"]
+        else [
+            "native_sidecar_absent",
+            "primary_native_credentials_absent",
+            "primary_native_socket_absent",
+        ]
     )
     return {name: False for name in names}
 
@@ -369,6 +483,13 @@ def _new_inspection_evidence(
         "case": "staged-skill-mount-inspection",
         "run_id": _safe_run_id(run_id),
         "profile": _inspection_profile_manifest(profile),
+        "authorization": {
+            "basis": "deterministic_verifier_fixture",
+            "production_authorization_proven": False,
+            "admin_bypass_claimed": False,
+            "tenant_distribution_proven": False,
+            "release_distribution_proven": False,
+        },
         "source_sha": source_sha,
         "target_image": target_image,
         "started_at": started_at,
@@ -395,10 +516,14 @@ def _new_inspection_evidence(
             "attacks_blocked": 0,
         },
         "mountinfo": [],
+        "attack_errno_categories": {attack: "not_run" for attack in INSPECTION_ATTACKS},
         "cleanup": {
             "attempted": False,
             "provider_stop_confirmed": False,
             "lease_release_observed": False,
+            "post_cleanup_query_succeeded": False,
+            "post_cleanup_primary_count": None,
+            "post_cleanup_native_sidecar_count": None,
             "result": "pending",
         },
         "redaction": {
@@ -447,55 +572,162 @@ def _write_bootstrap_error(evidence_path: str | Path, *, failure_category: str, 
     _atomic_write_json(evidence_path, payload)
 
 
-def _inspection_tool_policy_subjects(profile: str) -> list[dict[str, Any]]:
-    from app.skills.execution_profiles import (
-        NATIVE_COMMAND_ISOLATION,
-        SDK_NATIVE,
-        SDK_RESTRICTED,
-        SKILL_WORKSPACE_CONTRACT_VERSION,
-    )
+def _inspection_skill_files(skill_name: str) -> dict[str, str]:
+    return {
+        "SKILL.md": (
+            "---\n"
+            f"name: {skill_name}\n"
+            "description: Deterministic verifier Skill for the 211 staged mount inspection.\n"
+            "---\n\n"
+            "Return the fixed verifier result without loading external data.\n"
+        ),
+        "chmod-target.txt": "chmod target\n",
+        "rm-target.txt": "rm target\n",
+        "mv-source.txt": "mv target\n",
+    }
 
-    skill_subject = {
-        "identity": "Skill",
-        "declared_identities": ["Skill"],
-        "registered": True,
-        "declared": True,
-        "active": True,
-        "distributed": True,
-        "identity_authorized": True,
-        "object_authorized": True,
-        "parameters_authorized": True,
-        "risk_level": "low",
-        "write_capable": False,
-        "allowed_parameter_keys": ["skill"],
-        "required_parameter_keys": ["skill"],
-        "allowed_skill_names": ["general-chat"],
-        "execution_strategy": SDK_RESTRICTED,
-        "command_isolation": "none",
-        "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
+
+def _deterministic_skill_hash(files: dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    for relative_path, content in sorted(files.items()):
+        encoded_path = relative_path.encode("utf-8")
+        encoded_content = content.encode("utf-8")
+        digest.update(len(encoded_path).to_bytes(8, "big"))
+        digest.update(encoded_path)
+        digest.update(len(encoded_content).to_bytes(8, "big"))
+        digest.update(encoded_content)
+    return digest.hexdigest()
+
+
+def _inspection_pinned_manifest(skill_id: str, *, files: dict[str, str]) -> dict[str, Any]:
+    from app.skills.execution_profiles import resolve_skill_execution_profile
+
+    version = _deterministic_skill_hash(files)
+    execution_profile = resolve_skill_execution_profile(
+        skill_id=skill_id,
+        source_kind="builtin",
+        lifecycle_status="released",
+    )
+    return {
+        "skill_id": skill_id,
+        "version": version,
+        "content_hash": version,
+        "source": {"kind": "builtin", "asset_dir": skill_id},
+        "files": [
+            {
+                "relative_path": relative_path,
+                "content_base64": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+                "size_bytes": len(content.encode("utf-8")),
+            }
+            for relative_path, content in sorted(files.items())
+        ],
+        "dependency_ids": [],
+        "lifecycle_status": "released",
+        "execution_profile": execution_profile,
+        "builtin_tool_identities": list(execution_profile["builtin_tool_identities"]),
+        "mcp_tool_ids": [],
+        "allowed": True,
+        "staged": False,
+        "used": False,
     }
-    if profile == "platform-controlled":
-        return [skill_subject]
-    bash_subject = {
-        "identity": "Bash",
-        "declared_identities": ["Bash"],
-        "registered": True,
-        "declared": True,
-        "active": True,
-        "distributed": True,
-        "identity_authorized": True,
-        "object_authorized": True,
-        "parameters_authorized": True,
-        "risk_level": "high",
-        "write_capable": True,
-        "allowed_parameter_keys": ["command"],
-        "required_parameter_keys": ["command"],
-        "allowed_skill_names": [],
-        "execution_strategy": SDK_NATIVE,
-        "command_isolation": NATIVE_COMMAND_ISOLATION,
-        "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
+
+
+def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
+    from app.capability_distribution import CapabilityAccessDecision
+    from app.models import QueueRunPayload
+    from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
+    from app.worker import _builtin_capability_subjects
+
+    authorized_skill = INSPECTION_AUTHORIZED_SKILLS.get(profile)
+    if not authorized_skill:
+        raise ValueError("unsupported inspection profile")
+    primary_files = _inspection_skill_files("general-chat")
+    authorized_files = _inspection_skill_files(authorized_skill)
+    primary_manifest = _inspection_pinned_manifest("general-chat", files=primary_files)
+    authorized_manifest = _inspection_pinned_manifest(authorized_skill, files=authorized_files)
+    primary_version = str(primary_manifest["content_hash"])
+    payload = QueueRunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="catalog-session",
+        run_id="catalog-run",
+        agent_id="sandbox-runtime-verifier",
+        skill_id="general-chat",
+        file_ids=[],
+        input={},
+        executor_type="embedded-poco",
+        skill_version=primary_version,
+        release_decision={
+            "schema_version": RELEASE_DECISION_SCHEMA_VERSION,
+            "policy_active": False,
+            "selected_version": primary_version,
+            "selected_track": "manifest_pin",
+        },
+        skill_manifests=[primary_manifest],
+    )
+    decision = CapabilityAccessDecision(
+        visible=True,
+        usable=True,
+        manageable=False,
+        admin_bypass=False,
+        decision_reason="deterministic_verifier_fixture",
+    )
+    subjects = _builtin_capability_subjects(
+        payload=payload,
+        run_identity={"skill_id": "general-chat"},
+        skill={"skill_id": "general-chat", "skill_status": "active"},
+        skill_decision=decision,
+        authorized_skill_manifests=[authorized_manifest],
+        authorized_skill_names=[authorized_skill],
+    )
+    by_identity = {
+        str(subject.get("identity") or ""): subject
+        for subject in subjects
+        if isinstance(subject, dict)
     }
-    return [skill_subject, bash_subject]
+    authorized_profile = authorized_manifest["execution_profile"]
+    declared_builtins = list(authorized_profile["builtin_tool_identities"])
+    expected_identities = {"Skill", *declared_builtins}
+    if set(by_identity) != expected_identities or len(subjects) != len(by_identity):
+        raise _InspectionCheckFailed("authoritative catalog subject aggregation mismatch")
+    skill_subject = by_identity.get("Skill", {})
+    if (
+        skill_subject.get("allowed_skill_names") != [authorized_skill]
+        or skill_subject.get("execution_strategy") != "sdk_restricted"
+        or any(subject.get("declared_identities") != [identity] for identity, subject in by_identity.items())
+        or any(
+            subject.get(key) is not True
+            for subject in subjects
+            for key in ("registered", "declared", "active", "distributed", "identity_authorized")
+        )
+    ):
+        raise _InspectionCheckFailed("authoritative catalog Skill subject mismatch")
+    for identity in declared_builtins:
+        subject = by_identity.get(identity, {})
+        if (
+            subject.get("execution_strategy") != authorized_profile["strategy"]
+            or subject.get("command_isolation") != authorized_profile["command_isolation"]
+            or subject.get("workspace_contract") != authorized_profile["workspace_contract"]
+        ):
+            raise _InspectionCheckFailed("authoritative catalog builtin subject mismatch")
+    expected_strategy = "platform_controlled" if profile == "platform-controlled" else "sdk_native"
+    expected_isolation = "minimal-environment-v1" if profile == "platform-controlled" else "sibling-tool-sandbox-v1"
+    if (
+        authorized_profile["strategy"] != expected_strategy
+        or authorized_profile["command_isolation"] != expected_isolation
+        or decision.admin_bypass
+    ):
+        raise _InspectionCheckFailed("authoritative catalog execution profile mismatch")
+    return {
+        "subjects": subjects,
+        "primary_manifest": primary_manifest,
+        "authorized_manifest": authorized_manifest,
+        "authorized_skill_names": [authorized_skill],
+        "declared_builtin_identities": declared_builtins,
+        "authorized_files": authorized_files,
+        "authorization_basis": decision.decision_reason,
+    }
 
 
 _SKILL_MOUNT_INSPECTION_CODE = textwrap.dedent(
@@ -509,10 +741,17 @@ _SKILL_MOUNT_INSPECTION_CODE = textwrap.dedent(
 
     workspace = Path("/workspace")
     claude = workspace / ".claude"
-    skill = claude / "skills" / "general-chat"
+    staged_skills = [item for item in (claude / "skills").iterdir() if item.is_dir()]
+    if len(staged_skills) != 1:
+        raise RuntimeError("expected exactly one staged Skill")
+    skill = staged_skills[0]
     outputs = workspace / "outputs"
     delivery = outputs / "delivery"
-    kernel_denials = {errno.EROFS, errno.EACCES, errno.EPERM}
+    errno_categories = {
+        errno.EROFS: "erofs",
+        errno.EACCES: "eacces",
+        errno.EPERM: "eperm",
+    }
 
     def tree_hash(root):
         digest = hashlib.sha256()
@@ -533,8 +772,9 @@ _SKILL_MOUNT_INSPECTION_CODE = textwrap.dedent(
         try:
             operation()
         except OSError as exc:
-            return exc.errno in kernel_denials
-        return False
+            category = errno_categories.get(exc.errno, "other")
+            return {"blocked": exc.errno == errno.EROFS, "errno_category": category}
+        return {"blocked": False, "errno_category": "none"}
 
     def decode_mount_path(value):
         return re.sub(
@@ -549,7 +789,7 @@ _SKILL_MOUNT_INSPECTION_CODE = textwrap.dedent(
         if len(fields) < 10 or "-" not in fields:
             continue
         mount_point = decode_mount_path(fields[4])
-        if mount_point not in {"/workspace", "/workspace/.claude"}:
+        if mount_point != "/workspace" and not mount_point.startswith("/workspace/"):
             continue
         separator = fields.index("-")
         options = set(fields[5].split(","))
@@ -582,6 +822,7 @@ _SKILL_MOUNT_INSPECTION_CODE = textwrap.dedent(
     except FileNotFoundError:
         pass
     delivery_link_created = False
+    delivery_link_cleanup_succeeded = False
     try:
         os.symlink(skill / "SKILL.md", delivery_link)
         delivery_link_created = True
@@ -593,8 +834,9 @@ _SKILL_MOUNT_INSPECTION_CODE = textwrap.dedent(
     finally:
         try:
             delivery_link.unlink()
+            delivery_link_cleanup_succeeded = True
         except OSError:
-            pass
+            delivery_link_cleanup_succeeded = False
 
     output_probe = outputs / "inspection-output.txt"
     delivery_probe = delivery / "inspection-delivery.txt"
@@ -614,6 +856,7 @@ _SKILL_MOUNT_INSPECTION_CODE = textwrap.dedent(
                 },
                 "attacks": attacks,
                 "delivery_link_created": delivery_link_created,
+                "delivery_link_cleanup_succeeded": delivery_link_cleanup_succeeded,
                 "hashes": {"skill_before": skill_before, "skill_after": skill_after},
                 "writes": {
                     "outputs": output_probe.read_text(encoding="utf-8") == "output-ok\n",
@@ -671,6 +914,15 @@ def _docker_exec_result_payload(result: Any) -> dict[str, Any]:
     return payload
 
 
+def _docker_exec_exit_code(result: Any) -> int:
+    exit_code = getattr(result, "exit_code", None)
+    if exit_code is None and isinstance(result, tuple) and len(result) == 2:
+        exit_code = result[0]
+    if type(exit_code) is not int:
+        raise _InspectionCheckFailed("fixed inspection command status is invalid")
+    return exit_code
+
+
 def _matching_provider_child_count(client: Any, *, run_id: str, owner: str) -> int:
     containers = client.containers.list(
         all=True,
@@ -681,7 +933,25 @@ def _matching_provider_child_count(client: Any, *, run_id: str, owner: str) -> i
             ]
         },
     )
-    return len(containers) if isinstance(containers, list) else 0
+    if not isinstance(containers, list):
+        raise _InspectionCheckFailed("provider child enumeration is invalid")
+    return len(containers)
+
+
+def _post_cleanup_provider_children(provider: Any, *, run_id: str) -> dict[str, int]:
+    client = provider._get_client()
+    return {
+        "primary_count": _matching_provider_child_count(
+            client,
+            run_id=run_id,
+            owner="sandbox-runtime",
+        ),
+        "native_sidecar_count": _matching_provider_child_count(
+            client,
+            run_id=run_id,
+            owner="sandbox-native-tool",
+        ),
+    }
 
 
 async def _inspect_live_skill_mount(
@@ -714,6 +984,9 @@ async def _inspect_live_skill_mount(
         owner="sandbox-native-tool",
     )
     expected_socket = "/workspace/.ai-platform/native-tool.sock"
+    primary_socket_exit = _docker_exec_exit_code(
+        await asyncio.to_thread(primary.exec_run, ["test", "-S", expected_socket])
+    )
     sidecar = provider._owned_native_tool_container(lease)
     sidecar_evidence = {
         "expected": profile == "sdk-native",
@@ -725,6 +998,9 @@ async def _inspect_live_skill_mount(
         "socket_paired": False,
         "admission_paired": False,
         "authenticated_health_probe": False,
+        "primary_socket_present": primary_socket_exit == 0,
+        "primary_socket_absent": primary_socket_exit == 1,
+        "primary_authenticated_health": False,
     }
     if sidecar is not None:
         if hasattr(sidecar, "reload"):
@@ -738,25 +1014,30 @@ async def _inspect_live_skill_mount(
             and sidecar_token
             and hmac.compare_digest(primary_token, sidecar_token)
         )
-        socket_path = provider._native_tool_socket_host_path(workspace)
-        try:
-            socket_present = stat.S_ISSOCK(socket_path.lstat().st_mode)
-        except OSError:
-            socket_present = False
+        primary_health_exit = _docker_exec_exit_code(
+            await asyncio.to_thread(
+                primary.exec_run,
+                ["python", "-m", "app.runtime.sandbox.native_tool_health_probe"],
+            )
+        )
+        sidecar_evidence["primary_authenticated_health"] = primary_health_exit == 0
         sidecar_evidence["socket_paired"] = bool(
             primary_environment.get("AI_PLATFORM_NATIVE_TOOL_SOCKET") == expected_socket
             and sidecar_environment.get("AI_PLATFORM_NATIVE_TOOL_SOCKET") == expected_socket
-            and socket_present
+            and sidecar_evidence["primary_socket_present"] is True
         )
         admission_phase = "authenticated_container_uds_health"
-        host_socket_bytes = str(len(os.fsencode(str(socket_path))))
         container_socket_bytes = str(len(expected_socket.encode("utf-8")))
+        lease_host_socket_bytes = str(lease.labels.get("ai-platform.native_tool_host_socket_path_bytes") or "")
+        sidecar_host_socket_bytes = str(
+            sidecar_labels.get("ai-platform.native_tool_host_socket_path_bytes") or ""
+        )
         sidecar_evidence["admission_paired"] = bool(
             lease.labels.get("ai-platform.native_tool_required") == "true"
             and lease.labels.get("ai-platform.native_tool_admission_phase") == admission_phase
             and sidecar_labels.get("ai-platform.native_tool_admission_phase") == admission_phase
-            and lease.labels.get("ai-platform.native_tool_host_socket_path_bytes") == host_socket_bytes
-            and sidecar_labels.get("ai-platform.native_tool_host_socket_path_bytes") == host_socket_bytes
+            and lease_host_socket_bytes.isdigit()
+            and lease_host_socket_bytes == sidecar_host_socket_bytes
             and lease.labels.get("ai-platform.native_tool_container_socket_path_bytes") == container_socket_bytes
             and sidecar_labels.get("ai-platform.native_tool_container_socket_path_bytes") == container_socket_bytes
             and sidecar_labels.get("ai-platform.run_id") == lease.run_id
@@ -774,24 +1055,19 @@ async def _inspect_live_skill_mount(
     return payload
 
 
-def _stage_inspection_skill(workspace: Any) -> str:
+def _stage_inspection_skill(
+    workspace: Any,
+    *,
+    skill_name: str,
+    files: dict[str, str],
+) -> str:
     from app.skills.registry import BuiltinSkill, skill_content_hash
     from app.skills.stager import SkillStager
 
-    source = Path(workspace.host_root) / "runtime" / "verifier-skill-source" / "general-chat"
+    if skill_name not in INSPECTION_AUTHORIZED_SKILLS.values() or files != _inspection_skill_files(skill_name):
+        raise ValueError("inspection Skill fixture is not authoritative")
+    source = Path(workspace.host_root) / "runtime" / "verifier-skill-source" / skill_name
     source.mkdir(parents=True, exist_ok=True)
-    files = {
-        "SKILL.md": (
-            "---\n"
-            "name: general-chat\n"
-            "description: Deterministic verifier Skill for the 211 staged mount inspection.\n"
-            "---\n\n"
-            "Return the fixed verifier result without loading external data.\n"
-        ),
-        "chmod-target.txt": "chmod target\n",
-        "rm-target.txt": "rm target\n",
-        "mv-source.txt": "mv target\n",
-    }
     existing = {item.name for item in source.iterdir()}
     if existing - set(files):
         raise ValueError("verifier Skill source is not isolated")
@@ -805,7 +1081,7 @@ def _stage_inspection_skill(workspace: Any) -> str:
         workspace=workspace.workspace_host_path,
         skills=[
             BuiltinSkill(
-                name="general-chat",
+                name=skill_name,
                 description="Deterministic verifier Skill for the 211 staged mount inspection.",
                 path=source,
                 version=version,
@@ -814,10 +1090,16 @@ def _stage_inspection_skill(workspace: Any) -> str:
             )
         ],
     )
-    if staged != ["general-chat"]:
+    if staged != [skill_name]:
         raise _InspectionCheckFailed("verifier Skill staging failed")
-    staged_root = Path(workspace.workspace_host_path) / ".claude" / "skills" / "general-chat"
-    return skill_content_hash(staged_root)
+    staged_root = Path(workspace.workspace_host_path) / ".claude" / "skills" / skill_name
+    staged_hash = skill_content_hash(staged_root)
+    if staged_hash != _deterministic_skill_hash(files):
+        raise _InspectionCheckFailed("staged Skill differs from pinned manifest")
+    staged_names = sorted(item.name for item in staged_root.parent.iterdir() if item.is_dir())
+    if staged_names != [skill_name]:
+        raise _InspectionCheckFailed("staged Skill registry contains unexpected entries")
+    return staged_hash
 
 
 def _build_inspection_runtime(
@@ -870,7 +1152,10 @@ def _inspection_result_projection(
                 continue
             mount_point = str(item.get("mount_point") or "")
             mode = str(item.get("mode") or "")
-            if mount_point in {"/workspace", "/workspace/.claude"} and mode in {"rw", "ro"}:
+            if (
+                (mount_point == "/workspace" or mount_point.startswith("/workspace/"))
+                and mode in {"rw", "ro"}
+            ):
                 safe_mountinfo.append({"mount_point": mount_point, "mode": mode})
     skill_before = str(hashes.get("skill_before") or "")
     skill_after = str(hashes.get("skill_after") or "")
@@ -878,22 +1163,44 @@ def _inspection_result_projection(
     sidecar_count = provider_children.get("native_sidecar_count")
     primary_count = int(primary_count) if type(primary_count) is int and primary_count >= 0 else 0
     sidecar_count = int(sidecar_count) if type(sidecar_count) is int and sidecar_count >= 0 else 0
+    observed_mounts = {item["mount_point"]: item["mode"] for item in safe_mountinfo}
+    expected_mounts = {
+        "/workspace": "rw",
+        "/workspace/.claude": "ro",
+        **({"/workspace/.ai-platform": "rw"} if profile == "sdk-native" else {}),
+    }
+    topology_exact = len(observed_mounts) == len(safe_mountinfo) and observed_mounts == expected_mounts
+    attack_categories: dict[str, str] = {}
     checks: dict[str, bool] = {
         "implicit_catalog_fixed": True,
+        "authoritative_catalog_aggregation": True,
+        "authoritative_allowed_names_exact": True,
+        "authoritative_declared_builtins_exact": True,
+        "production_authorization_not_claimed": True,
         "authorized_skill_names_nonempty": True,
         "trusted_workspace_lease": True,
         "primary_provider_child_observed": primary_count == 1,
         "workspace_rw": mounts.get("workspace_rw") is True,
         "claude_nested_ro": mounts.get("claude_nested_ro") is True,
         "claude_nested_under_workspace": mounts.get("claude_nested_under_workspace") is True,
+        "workspace_mount_topology_exact": topology_exact,
+        "no_unexpected_workspace_submounts": topology_exact,
         "delivery_link_created": result.get("delivery_link_created") is True,
+        "delivery_link_cleanup_succeeded": result.get("delivery_link_cleanup_succeeded") is True,
         "staged_skill_hash_matches": bool(staged_hash and skill_before == staged_hash),
         "skill_hash_unchanged": bool(skill_before and skill_before == skill_after),
         "outputs_write_succeeded": writes.get("outputs") is True,
         "delivery_write_succeeded": writes.get("delivery") is True,
     }
     for attack in INSPECTION_ATTACKS:
-        checks[f"attack_{attack}_kernel_blocked"] = attacks.get(attack) is True
+        attack_result = attacks.get(attack) if isinstance(attacks.get(attack), dict) else {}
+        category = str(attack_result.get("errno_category") or "other")
+        if category not in {"erofs", "eacces", "eperm", "other", "none"}:
+            category = "other"
+        attack_categories[attack] = category
+        checks[f"attack_{attack}_kernel_blocked"] = (
+            attack_result.get("blocked") is True and category == "erofs"
+        )
     native_expected = profile == "sdk-native"
     checks["native_sidecar_expectation_matches_profile"] = native_tool_required is native_expected
     if native_expected:
@@ -904,6 +1211,8 @@ def _inspection_result_projection(
                 "native_sidecar_socket_paired": sidecar.get("socket_paired") is True,
                 "native_sidecar_admission_paired": sidecar.get("admission_paired") is True,
                 "native_sidecar_authenticated_health": sidecar.get("authenticated_health_probe") is True,
+                "primary_native_socket_present": sidecar.get("primary_socket_present") is True,
+                "primary_native_authenticated_health": sidecar.get("primary_authenticated_health") is True,
             }
         )
     else:
@@ -911,6 +1220,7 @@ def _inspection_result_projection(
             {
                 "native_sidecar_absent": sidecar.get("absent") is True and sidecar_count == 0,
                 "primary_native_credentials_absent": sidecar.get("primary_native_credentials_absent") is True,
+                "primary_native_socket_absent": sidecar.get("primary_socket_absent") is True,
             }
         )
     return {
@@ -923,8 +1233,14 @@ def _inspection_result_projection(
         "counts": {
             "mount_entries": len(safe_mountinfo),
             "attacks_attempted": len(INSPECTION_ATTACKS),
-            "attacks_blocked": sum(attacks.get(attack) is True for attack in INSPECTION_ATTACKS),
+            "attacks_blocked": sum(
+                isinstance(attacks.get(attack), dict)
+                and attacks[attack].get("blocked") is True
+                and attacks[attack].get("errno_category") == "erofs"
+                for attack in INSPECTION_ATTACKS
+            ),
         },
+        "attack_errno_categories": attack_categories,
         "mountinfo": safe_mountinfo,
         "provider_children": {
             "primary_count": primary_count,
@@ -954,6 +1270,8 @@ def _run_skill_mount_inspection(
     *,
     _runtime_factory: Callable[..., tuple[Any, Any]] | None = None,
     _inspection_callback: Callable[..., Any] | None = None,
+    _workspace_base: str | Path | None = None,
+    _post_cleanup_enumerator: Callable[..., dict[str, int]] | None = None,
 ) -> int:
     profile = str(args.inspection_profile or "")
     source_sha, source_sha_valid = _selected_source_sha(args.source_sha)
@@ -977,7 +1295,6 @@ def _run_skill_mount_inspection(
         if not source_sha_valid:
             raise ValueError("invalid source sha")
         target_image = _safe_image_reference(args.sandbox_executor_image)
-        workspace_root = _trusted_inspection_workspace_root(args.workspace_root)
         if str(args.run_id or "") != _safe_run_id(str(args.run_id or "")):
             raise ValueError("invalid inspection run id")
         if args.sandbox_provider != "docker":
@@ -990,6 +1307,13 @@ def _run_skill_mount_inspection(
         from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
         from app.settings import get_settings
 
+        catalog = _authoritative_inspection_catalog(profile)
+        authorized_skill_name = str(catalog["authorized_skill_names"][0])
+        workspace_root, workspace_identities = _prepare_inspection_workspace_root(
+            evidence["run_id"],
+            verifier_base=_workspace_base,
+        )
+        _revalidate_inspection_workspace(workspace_root, workspace_identities)
         settings = get_settings()
         original_settings = (
             settings.sandbox_container_provider,
@@ -1006,9 +1330,9 @@ def _run_skill_mount_inspection(
             session_id=f"session-{evidence['run_id']}",
             run_id=evidence["run_id"],
             agent_id="sandbox-runtime-verifier",
-            skill_ids=["general-chat"],
+            skill_ids=["general-chat", authorized_skill_name],
             mcp_tool_ids=[],
-            tool_policy_subjects=_inspection_tool_policy_subjects(profile),
+            tool_policy_subjects=list(catalog["subjects"]),
             input_message="ai-platform staged Skill mount inspection",
             file_ids=[],
             sandbox_mode="ephemeral",
@@ -1020,7 +1344,22 @@ def _run_skill_mount_inspection(
             callback_token_id=f"cbt-{evidence['run_id']}",
         )
         workspace = SandboxWorkspaceManager(root=workspace_root).prepare(request)
-        staged_hash = _stage_inspection_skill(workspace)
+        _revalidate_inspection_workspace(
+            workspace_root,
+            workspace_identities,
+            workspace=workspace,
+        )
+        staged_hash = _stage_inspection_skill(
+            workspace,
+            skill_name=authorized_skill_name,
+            files=dict(catalog["authorized_files"]),
+        )
+        _revalidate_inspection_workspace(
+            workspace_root,
+            workspace_identities,
+            workspace=workspace,
+            staged_skill_name=authorized_skill_name,
+        )
         evidence["hashes"]["staged_skill"] = staged_hash
         evidence["stage"] = "skill_staged"
         _write_inspection_checkpoint(args.evidence_file, evidence)
@@ -1041,13 +1380,11 @@ def _run_skill_mount_inspection(
         async def release_lease(_lease: Any, _reason: str, _lease_record_id: str | None = None) -> None:
             evidence["cleanup"].update(
                 {
-                    "attempted": True,
-                    "provider_stop_confirmed": True,
                     "lease_release_observed": True,
-                    "result": "confirmed",
+                    "result": "release_callback_observed",
                 }
             )
-            evidence["stage"] = "cleanup_confirmed"
+            evidence["stage"] = "release_callback_observed"
             _write_inspection_checkpoint(args.evidence_file, evidence)
 
         async def execute_inspection(
@@ -1084,6 +1421,7 @@ def _run_skill_mount_inspection(
             evidence["hashes"] = projection["hashes"]
             evidence["counts"] = projection["counts"]
             evidence["mountinfo"] = projection["mountinfo"]
+            evidence["attack_errno_categories"] = projection["attack_errno_categories"]
             evidence["provider_child_creation"].update(projection["provider_children"])
             evidence["stage"] = "inspection_complete"
             _write_inspection_checkpoint(args.evidence_file, evidence)
@@ -1093,6 +1431,12 @@ def _run_skill_mount_inspection(
 
         callback_secret = uuid.uuid4().hex
         runtime_factory = _runtime_factory or _build_inspection_runtime
+        _revalidate_inspection_workspace(
+            workspace_root,
+            workspace_identities,
+            workspace=workspace,
+            staged_skill_name=authorized_skill_name,
+        )
         runtime, provider = runtime_factory(
             workspace_root=workspace_root,
             workspace=workspace,
@@ -1104,9 +1448,76 @@ def _run_skill_mount_inspection(
         captured["provider"] = provider
         evidence["stage"] = "provider_creation_started"
         _write_inspection_checkpoint(args.evidence_file, evidence)
-        asyncio.run(runtime.submit(request))
-        if evidence["cleanup"].get("provider_stop_confirmed") is not True:
-            raise _InspectionCheckFailed("provider cleanup was not confirmed")
+        runtime_error: BaseException | None = None
+        try:
+            asyncio.run(runtime.submit(request))
+        except BaseException as exc:
+            runtime_error = exc
+        evidence["cleanup"]["attempted"] = (
+            evidence["provider_child_creation"].get("primary_observed") is True
+        )
+        enumerator = _post_cleanup_enumerator or _post_cleanup_provider_children
+        try:
+            post_cleanup = enumerator(provider=provider, run_id=evidence["run_id"])
+            primary_count = post_cleanup.get("primary_count")
+            native_count = post_cleanup.get("native_sidecar_count")
+            if (
+                type(primary_count) is not int
+                or primary_count < 0
+                or type(native_count) is not int
+                or native_count < 0
+            ):
+                raise _InspectionCleanupFailed("post-cleanup enumeration is invalid")
+        except BaseException as exc:
+            evidence["cleanup"].update(
+                {
+                    "post_cleanup_query_succeeded": False,
+                    "provider_stop_confirmed": False,
+                    "result": "enumeration_failed",
+                }
+            )
+            evidence["stage"] = "cleanup_unconfirmed"
+            _write_inspection_checkpoint(args.evidence_file, evidence)
+            raise _InspectionCleanupFailed("post-cleanup enumeration failed") from exc
+        evidence["cleanup"].update(
+            {
+                "post_cleanup_query_succeeded": True,
+                "post_cleanup_primary_count": primary_count,
+                "post_cleanup_native_sidecar_count": native_count,
+            }
+        )
+        cleanup_runtime_error = runtime_error is not None and _inspection_failure_category(
+            runtime_error,
+            primary_observed=evidence["provider_child_creation"].get("primary_observed") is True,
+        ) == "cleanup_failure"
+        no_owned_children = primary_count == 0 and native_count == 0
+        primary_observed = evidence["provider_child_creation"].get("primary_observed") is True
+        cleanup_confirmed = (
+            primary_observed
+            and no_owned_children
+            and not cleanup_runtime_error
+            and evidence["cleanup"].get("lease_release_observed") is True
+        )
+        evidence["cleanup"]["provider_stop_confirmed"] = cleanup_confirmed
+        evidence["cleanup"]["result"] = (
+            "confirmed"
+            if cleanup_confirmed
+            else "not_required"
+            if not primary_observed and no_owned_children and not cleanup_runtime_error
+            else "owned_children_remain"
+            if not no_owned_children
+            else "runtime_cleanup_failed"
+        )
+        evidence["stage"] = "cleanup_confirmed" if cleanup_confirmed else "cleanup_unconfirmed"
+        _write_inspection_checkpoint(args.evidence_file, evidence)
+        if not no_owned_children:
+            raise _InspectionCleanupFailed("owned provider children remain after cleanup") from runtime_error
+        if cleanup_runtime_error:
+            raise runtime_error
+        if primary_observed and not cleanup_confirmed:
+            raise _InspectionCleanupFailed("provider cleanup was not confirmed") from runtime_error
+        if runtime_error is not None:
+            raise runtime_error
         evidence["stage"] = "completed"
         evidence["exit_code"] = 0
         evidence["failure_category"] = ""
@@ -1118,13 +1529,9 @@ def _run_skill_mount_inspection(
         evidence["stage"] = "cancelled" if category == "cancelled" else "failed"
         evidence["cleanup"]["attempted"] = primary_observed
         if category == "cleanup_failure":
-            evidence["cleanup"].update(
-                {
-                    "provider_stop_confirmed": False,
-                    "lease_release_observed": False,
-                    "result": "failed",
-                }
-            )
+            evidence["cleanup"]["provider_stop_confirmed"] = False
+            if evidence["cleanup"].get("result") in {"pending", "confirmed", "release_callback_observed"}:
+                evidence["cleanup"]["result"] = "runtime_cleanup_failed"
         elif primary_observed and evidence["cleanup"].get("provider_stop_confirmed") is not True:
             evidence["cleanup"]["result"] = "not_confirmed"
         elif not primary_observed:
