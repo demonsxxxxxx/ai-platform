@@ -1686,6 +1686,64 @@ def test_public_skill_overlay_keeps_fallback_skill_md_when_snapshot_has_no_files
     assert "# qa-file-reviewer" in fallback_response.json()["content"]
 
 
+def test_marketplace_projection_module_preserves_file_overlay_filter_and_tag_contracts():
+    from fastapi import HTTPException
+    from app.skills import marketplace_projection
+
+    row = {
+        "skill_id": "qa-file-reviewer",
+        "name": "QA Word Review",
+        "description": "Review Word documents.",
+        "source": {
+            "tags": " document, review ,document ",
+            "files": [
+                {
+                    "relative_path": "references/guide.md",
+                    "content_base64": base64.b64encode(b"snapshot guide").decode("ascii"),
+                    "size_bytes": 14,
+                }
+            ],
+        },
+        "user_file_overlays": [
+            {
+                "file_path": "references/guide.md",
+                "content_base64": base64.b64encode(b"user guide").decode("ascii"),
+                "size_bytes": 10,
+                "status": "active",
+            },
+            {
+                "file_path": "notes.md",
+                "content_base64": base64.b64encode(b"notes").decode("ascii"),
+                "size_bytes": 5,
+                "status": "active",
+            },
+        ],
+    }
+
+    files = marketplace_projection.project_skill_files(row)
+
+    assert [(item.path, item.content) for item in files] == [
+        ("notes.md", b"notes"),
+        ("references/guide.md", b"user guide"),
+    ]
+    assert marketplace_projection.marketplace_tags(row) == ["document", "review"]
+    assert marketplace_projection.filter_marketplace_rows(
+        [row], query="word", tags=["REVIEW"]
+    ) == [row]
+    assert marketplace_projection.available_marketplace_tags([row]) == ["document", "review"]
+
+    with pytest.raises(HTTPException, match="skill_file_path_escape"):
+        marketplace_projection.normalize_skill_file_path("../secret.md")
+    with pytest.raises(HTTPException, match="skill_file_snapshot_invalid"):
+        marketplace_projection.project_skill_files(
+            {
+                "source": {
+                    "files": [{"relative_path": "SKILL.md", "content_base64": "not-base64"}]
+                }
+            }
+        )
+
+
 def test_public_skill_file_write_rejects_oversized_overlay_before_persistence(monkeypatch):
     calls = install_route_fakes(monkeypatch)
     from app.routes import skills_marketplace
