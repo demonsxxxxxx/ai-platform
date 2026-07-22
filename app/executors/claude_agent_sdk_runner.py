@@ -53,6 +53,9 @@ _SDK_BROKERED_BUILTIN_TOOLS = (
     "WebFetch",
     "WebSearch",
 )
+_SDK_SELECTED_SKILL_NOT_INVOKED = "claude_agent_sdk_selected_skill_not_invoked"
+_SDK_SELECTED_SKILL_HOOK_FAILED = "claude_agent_sdk_selected_skill_hook_failed"
+_SDK_SELECTED_SKILL_NOT_AUTHORIZED = "claude_agent_sdk_selected_skill_not_authorized"
 _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_session_messages",
     "read_context_file",
@@ -215,10 +218,17 @@ def _safe_disallowed_tools(value: object, *, full_access: bool = False) -> list[
     return disallowed
 
 
-def _sdk_tools_for_mode(*, full_access: bool = False) -> list[str]:
-    if full_access:
-        return list(_SDK_AVAILABLE_TOOLS)
-    return list(_SDK_BASE_AVAILABLE_TOOLS)
+def _sdk_tools_for_mode(*, full_access: bool = False, include_skill: bool = False) -> list[str]:
+    tools = list(_SDK_AVAILABLE_TOOLS if full_access else _SDK_BASE_AVAILABLE_TOOLS)
+    if include_skill and "Skill" not in tools:
+        tools.append("Skill")
+    return tools
+
+
+def _sdk_skill_allow_patterns(skill_names: set[str]) -> list[str]:
+    """Return exact Claude SDK permission patterns for staged, authorized Skills."""
+
+    return [f"Skill({name})" for name in sorted(skill_names)]
 
 
 def _sdk_permission_type(sdk: object, name: str):
@@ -1138,11 +1148,17 @@ async def run_claude_agent_sdk(
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
     configured_skills = skills if skills is not None else (_split_csv(settings.claude_agent_sdk_skills) or [skill_id])
+    selected_sdk_skill = (
+        skill_id
+        if skill_id != "general-chat" and skill_id in configured_skills
+        else None
+    )
     try:
         attachment_data_message = _attachment_context_data_message(attachment_contexts)
     except (TypeError, ValueError):
         return ClaudeAgentSdkRunResult(used_sdk=True, error="attachment_context_invalid")
     used_skill_names: list[str] = []
+    failed_skill_names: list[str] = []
     sandbox_brokered = execution_policy == "sandbox_brokered"
     authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
     requested_internal_context_tools = [
@@ -1175,12 +1191,28 @@ async def run_claude_agent_sdk(
             if isinstance(name, str) and name in set(configured_skills)
         }
         configured_skills = [name for name in configured_skills if name in allowed_skill_names]
-        allowed_tools = list(authorized_subjects)
+        allowed_tools = [
+            pattern
+            for identity in authorized_subjects
+            for pattern in (
+                _sdk_skill_allow_patterns(allowed_skill_names)
+                if identity == "Skill"
+                else [identity]
+            )
+        ]
     else:
         allowed_skill_names = set(configured_skills)
-        allowed_tools = _safe_allowed_tools(
-            getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
-            full_access=full_access,
+        allowed_tools = [
+            *_safe_allowed_tools(
+                getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
+                full_access=full_access,
+            ),
+            *_sdk_skill_allow_patterns(allowed_skill_names),
+        ]
+    if selected_sdk_skill is not None and selected_sdk_skill not in allowed_skill_names:
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True,
+            error=_SDK_SELECTED_SKILL_NOT_AUTHORIZED,
         )
     context_registration_error = ""
     try:
@@ -1250,6 +1282,13 @@ async def run_claude_agent_sdk(
         used_skill_names.append(skill_name)
         if on_skill_use:
             await on_skill_use(skill_name, metadata)
+
+    def selected_skill_hook_error() -> str | None:
+        if selected_sdk_skill is None or selected_sdk_skill in used_skill_names:
+            return None
+        if selected_sdk_skill in failed_skill_names:
+            return _SDK_SELECTED_SKILL_HOOK_FAILED
+        return _SDK_SELECTED_SKILL_NOT_INVOKED
 
     declared_tool_identities = (
         set(authorized_subjects) | set(internal_context_subjects)
@@ -1393,6 +1432,16 @@ async def run_claude_agent_sdk(
             )
         return {}
 
+    async def record_failed_skill_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
+        if not isinstance(hook_input, dict):
+            return {}
+        if str(hook_input.get("tool_name") or "").lower() != "skill":
+            return {}
+        for skill_name in _extract_skill_names_from_tool_input(hook_input.get("tool_input"), allowed_skill_names):
+            if skill_name not in failed_skill_names:
+                failed_skill_names.append(skill_name)
+        return {}
+
     try:
         _scrub_project_setting_files(cwd)
     except OSError as exc:
@@ -1411,12 +1460,17 @@ async def run_claude_agent_sdk(
         if configured_skills:
             skill_hook = HookMatcher(matcher="Skill", hooks=[record_skill_tool_use])
             hooks["PostToolUse"] = [skill_hook]
-            hooks["PostToolUseFailure"] = [skill_hook]
+            hooks["PostToolUseFailure"] = [
+                HookMatcher(matcher="Skill", hooks=[record_failed_skill_tool_use])
+            ]
 
     sdk_tools = (
-        [identity for identity in allowed_tools if not identity.startswith("mcp__")]
+        [identity for identity in authorized_subjects if not identity.startswith("mcp__")]
         if sandbox_brokered
-        else _sdk_tools_for_mode(full_access=full_access)
+        else _sdk_tools_for_mode(
+            full_access=full_access,
+            include_skill=bool(allowed_skill_names),
+        )
     )
     options = ClaudeAgentOptions(
         cwd=str(cwd),
@@ -1469,7 +1523,12 @@ async def run_claude_agent_sdk(
                         message="\n".join(texts).strip(),
                         session_id=result_session_id,
                         usage=usage,
-                        error="; ".join(message.errors or []) or message.stop_reason or "claude_agent_sdk_error",
+                        error=(
+                            selected_skill_hook_error()
+                            or "; ".join(message.errors or [])
+                            or message.stop_reason
+                            or "claude_agent_sdk_error"
+                        ),
                         used_skills=list(used_skill_names),
                         used_skills_source="executor_hook" if used_skill_names else "",
                     )
@@ -1478,12 +1537,17 @@ async def run_claude_agent_sdk(
                 terminal_reason = (
                     str(stop_reason).strip() if isinstance(stop_reason, str) and stop_reason.strip() else None
                 )
+        terminal_error = (
+            selected_skill_hook_error()
+            if received_structured_terminal
+            else "claude_agent_sdk_missing_structured_terminal"
+        )
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             message="\n".join(texts).strip(),
             session_id=result_session_id,
             usage=usage,
-            error=None if received_structured_terminal else "claude_agent_sdk_missing_structured_terminal",
+            error=terminal_error,
             terminal_reason=terminal_reason,
             received_structured_terminal=received_structured_terminal,
             used_skills=list(used_skill_names),

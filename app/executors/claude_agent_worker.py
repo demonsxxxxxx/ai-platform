@@ -64,8 +64,12 @@ from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
 from app.tool_policy import evaluate_tool_policy
 
-NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
+_SELECTED_SKILL_INVOCATION_ERRORS = {
+    "claude_agent_sdk_selected_skill_not_invoked",
+    "claude_agent_sdk_selected_skill_hook_failed",
+    "claude_agent_sdk_selected_skill_not_authorized",
+}
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
 _REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
 _REQUIRED_DOCX_MAX_COMPRESSED_BYTES = 16 * 1024 * 1024
@@ -460,6 +464,8 @@ class ClaudeAgentWorkerAdapter:
         if sdk_result is None:
             return "claude_agent_sdk_disabled"
         error_text = str(getattr(sdk_result, "error", "") or "")
+        if error_text in _SELECTED_SKILL_INVOCATION_ERRORS:
+            return error_text
         if error_text == "claude_agent_sdk_missing_structured_terminal":
             return "claude_agent_sdk_missing_structured_terminal"
         if error_text.startswith("claude_agent_sdk_unavailable"):
@@ -469,6 +475,11 @@ class ClaudeAgentWorkerAdapter:
         if error_text == "claude_agent_sdk_disabled":
             return "claude_agent_sdk_disabled"
         return "claude_agent_sdk_required"
+
+    def _sdk_failure_message(self, sdk_result) -> str:
+        if self._sdk_failure_code(sdk_result) in _SELECTED_SKILL_INVOCATION_ERRORS:
+            return "The selected capability did not complete its required Skill execution. Please retry."
+        return str(getattr(sdk_result, "message", "") or "Claude Agent SDK execution failed")
 
     def _sdk_completed_normally(self, sdk_result) -> bool:
         return bool(
@@ -1256,6 +1267,36 @@ class ClaudeAgentWorkerAdapter:
             "sandbox_timings": sandbox_timings,
             "attachment_parser_evidence": parser_evidence if isinstance(parser_evidence, list) else [],
         }
+        selected_skill_error = _selected_skill_invocation_error(
+            payload,
+            prepared.staged_skill_names,
+            used_skill_names,
+        )
+        if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_skill_error is not None:
+            return ExecutorResult(
+                status="failed",
+                adapter_version=self.adapter_version,
+                executor_type=self.executor_type,
+                executor_version=self.executor_version,
+                capabilities={**self.capabilities, "platform_skills": True},
+                result={
+                    "message": "The selected capability did not complete its required Skill execution. Please retry.",
+                    "error_code": selected_skill_error,
+                    "sdk_used": bool(executor_response.get("sdk_used")),
+                    "sdk_session_id": executor_response.get("sdk_session_id"),
+                    "sdk_error": selected_skill_error,
+                    "delegate_used": False,
+                    "worker_boundary": self.executor_type,
+                    "allowed_skills": prepared.allowed_skill_names,
+                    "staged_skills": prepared.staged_skill_names,
+                    "used_skills": used_skill_names,
+                },
+                artifacts=[],
+                executor_payload={
+                    **common_payload,
+                    "sdk_error": selected_skill_error,
+                },
+            )
         if runtime_status == "accepted":
             error_code = "executor_missing_structured_terminal"
             message = "Sandbox executor returned without an authoritative terminal result"
@@ -1406,6 +1447,48 @@ class ClaudeAgentWorkerAdapter:
                 used_skill_names=used_skill_names,
                 pins=prepared.pinned_manifests,
             )
+            selected_skill_error = _selected_skill_invocation_error(
+                payload,
+                prepared.staged_skill_names,
+                used_skill_names,
+            )
+            if selected_skill_error is not None:
+                return ExecutorResult(
+                    status="failed",
+                    adapter_version=self.adapter_version,
+                    executor_type=self.executor_type,
+                    executor_version=self.executor_version,
+                    capabilities={**self.capabilities, "platform_skills": True},
+                    result={
+                        "message": "The selected capability did not complete its required Skill execution. Please retry.",
+                        "error_code": selected_skill_error,
+                        "sdk_used": True,
+                        "sdk_session_id": sdk_result.session_id,
+                        "sdk_error": selected_skill_error,
+                        "delegate_used": False,
+                        "worker_boundary": self.executor_type,
+                        "allowed_skills": prepared.allowed_skill_names,
+                        "staged_skills": prepared.staged_skill_names,
+                        "used_skills": used_skill_names,
+                    },
+                    artifacts=[],
+                    executor_payload={
+                        "sdk_used": True,
+                        "sdk_session_id": sdk_result.session_id,
+                        "sdk_usage": sdk_result.usage,
+                        "sdk_terminal_reason": self._sdk_terminal_reason(sdk_result),
+                        "sdk_error": selected_skill_error,
+                        "delegate_used": False,
+                        "worker_boundary": self.executor_type,
+                        "allowed_skills": prepared.allowed_skill_names,
+                        "staged_skills": prepared.staged_skill_names,
+                        "used_skills": used_skill_names,
+                        "used_skills_source": used_skills_source,
+                        "inferred_used_skills": inferred_used_skill_names,
+                        "skill_manifests": skill_manifests,
+                        "required_artifact_types": list(_required_artifact_types(payload)),
+                    },
+                )
             return ExecutorResult(
                 status="succeeded",
                 adapter_version=self.adapter_version,
@@ -1456,7 +1539,7 @@ class ClaudeAgentWorkerAdapter:
             executor_version=self.executor_version,
             capabilities={**self.capabilities, "platform_skills": True},
             result={
-                "message": sdk_result.message if sdk_result else "Claude Agent SDK execution failed",
+                "message": self._sdk_failure_message(sdk_result) if sdk_result else "Claude Agent SDK execution failed",
                 "error_code": self._sdk_failure_code(sdk_result),
                 "sdk_used": bool(sdk_result and sdk_result.used_sdk),
                 "sdk_error": sdk_result.error if sdk_result else "claude_agent_sdk_required",
@@ -1879,6 +1962,8 @@ def _prepare_run_workspace(workspace_root: str | Path, workspace: Path) -> None:
 
 
 def _sdk_used_skill_names(sdk_result: object, staged_skill_names: list[str]) -> list[str]:
+    if str(getattr(sdk_result, "used_skills_source", "") or "").strip() != "executor_hook":
+        return []
     raw = getattr(sdk_result, "used_skills", None)
     if not isinstance(raw, list):
         return []
@@ -1890,6 +1975,20 @@ def _sdk_used_skill_names(sdk_result: object, staged_skill_names: list[str]) -> 
             continue
         used.append(skill_name)
     return used
+
+
+def _selected_skill_invocation_error(
+    payload: RunPayload,
+    staged_skill_names: list[str],
+    used_skill_names: list[str],
+) -> str | None:
+    """Require hook-backed proof before a selected non-general Skill can succeed."""
+
+    if payload.skill_id == "general-chat" or payload.skill_id not in set(staged_skill_names):
+        return None
+    if payload.skill_id in used_skill_names:
+        return None
+    return "claude_agent_sdk_selected_skill_not_invoked"
 
 
 def _sdk_used_skills_source(sdk_result: object | None, used_skill_names: list[str]) -> str:

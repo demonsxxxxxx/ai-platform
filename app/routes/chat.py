@@ -1049,6 +1049,7 @@ async def chat_stream(
                     display_name=principal.display_name,
                 )
             continuation_session = None
+            preserve_continuation_skill = False
             if request.session_id:
                 continuation_session = await repositories.get_authorized_session(
                     conn,
@@ -1075,7 +1076,7 @@ async def chat_stream(
                 # or switch the session to another agent.
                 requested_agent_id = str(continuation_session["agent_id"])
                 if request.selected_skill is None and request.skill_id is None:
-                    requested_skill_id = None
+                    preserve_continuation_skill = True
 
             if submission_id is not None and request_fingerprint is not None:
                 claimed_submission, created_submission = await repositories.claim_chat_submission(
@@ -1095,6 +1096,19 @@ async def chat_stream(
                     if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
                         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
                     return _chat_stream_response_from_submission(claimed_submission)
+
+            if preserve_continuation_skill:
+                prior_runs = await repositories.list_authorized_session_runs(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    session_id=request.session_id,
+                    limit=1,
+                )
+                prior_skill_id = str(
+                    _row_value(prior_runs[0] if prior_runs else {}, "skill_id") or ""
+                ).strip()
+                requested_skill_id = prior_skill_id or None
 
             explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
             is_terminal_implicit_decision = False

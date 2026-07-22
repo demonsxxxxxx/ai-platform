@@ -139,6 +139,18 @@ function isResumableStatus(value: string | null): boolean {
   return value !== null && ["failed", "cancelled"].includes(value);
 }
 
+function isTerminalPlaybackStatus(value: string | null): boolean {
+  return value !== null && [
+    "completed",
+    "succeeded",
+    "failed",
+    "error",
+    "cancelled",
+    "canceled",
+    "rejected",
+  ].includes(value);
+}
+
 function isDefinitiveMutationRejection(error: ApiRequestError): boolean {
   // Only a server-confirmed authorization or precondition failure proves that
   // retry/resume did not create a child. Timeouts, throttling and every 5xx
@@ -326,8 +338,13 @@ export class RunControlLifecycle {
     const readiness =
       readinessResult.status === "fulfilled" ? readinessResult.value : null;
     const unavailable = playback === null && readiness === null;
+    const playbackIsTerminal = isTerminalPlaybackStatus(
+      normalizedStatus(playback?.run?.status),
+    );
     expectedOwner.phase =
-      preservedPhase ?? (unavailable ? "read_error" : "ready");
+      playbackIsTerminal
+        ? "ready"
+        : (preservedPhase ?? (unavailable ? "read_error" : "ready"));
     this.publishForOwner(expectedOwner, {
       phase: expectedOwner.phase,
       playback: playback ?? this.snapshot.playback,
