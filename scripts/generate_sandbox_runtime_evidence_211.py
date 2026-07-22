@@ -10,14 +10,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import errno
+import hashlib
+import hmac
+import inspect
 import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import threading
 import time
+import textwrap
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,17 +39,29 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.model_catalog import build_model_catalog, resolve_model_selection
-from app.control_plane_contracts import standard_trace_id
-from app.runtime.sandbox.callback_tokens import derive_callback_token
-from app.sandbox_hardening_contract import safe_bounded_error_projection
-
-
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
 EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
+INSPECTION_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-skill-mount-inspection-211.v1"
+BOOTSTRAP_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.bootstrap-error.v1"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
+INSPECTION_PROFILES = ("platform-controlled", "sdk-native")
+INSPECTION_AUTHORIZED_SKILLS = {
+    "platform-controlled": "qa-file-reviewer",
+    "sdk-native": "minimax-docx",
+}
+INSPECTION_WORKSPACE_BASE_NAME = "ai-sv211"
+INSPECTION_ATTACKS = (
+    "direct_write",
+    "chmod",
+    "rm",
+    "mv",
+    "symlink",
+    "delivery_link_mutation",
+)
+SOURCE_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
+IMAGE_REFERENCE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}")
 PLATFORM_DEADLINE_PROBE_SECONDS = 2.0
 NON_EXPANSION_INVARIANTS = {
     "ordinary_user_high_risk_sandbox_allowed": False,
@@ -181,6 +201,8 @@ def _safe_run_id(value: str) -> str:
 
 
 def _configured_platform_runtime_model(settings: object) -> str:
+    from app.model_catalog import build_model_catalog, resolve_model_selection
+
     configured_default = str(getattr(settings, "default_model_id", "") or "").strip()
     if configured_default:
         try:
@@ -229,6 +251,1401 @@ def _redact(text: object) -> str:
 
 def redact_for_output(text: object) -> str:
     return _redact(text)
+
+
+class _InspectionCheckFailed(RuntimeError):
+    """Keep failed live checks inside the runtime cleanup path."""
+
+
+class _InspectionCleanupFailed(RuntimeError):
+    """Report that owned runtime cleanup could not be proved by exact enumeration."""
+
+
+def _atomic_write_json(path_value: str | Path, payload: dict[str, Any]) -> None:
+    path = Path(path_value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    serialized = json.dumps(payload, ensure_ascii=True, indent=2) + "\n"
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _script_source_sha() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _selected_source_sha(value: object) -> tuple[str, bool]:
+    raw = str(value or "").strip()
+    if not raw:
+        return _script_source_sha(), True
+    if SOURCE_SHA_PATTERN.fullmatch(raw) is None:
+        return _script_source_sha(), False
+    return raw.lower(), True
+
+
+def _safe_image_reference(value: object) -> str:
+    image = str(value or "").strip()
+    if (
+        not image
+        or IMAGE_REFERENCE_PATTERN.fullmatch(image) is None
+        or image.startswith(("-", ".", "/"))
+        or "//" in image
+        or ".." in image.split("/")
+    ):
+        raise ValueError("invalid sandbox executor image")
+    if "@" in image:
+        image_name, separator, digest = image.rpartition("@")
+        if not image_name or separator != "@" or re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest) is None:
+            raise ValueError("invalid sandbox executor image digest")
+    return image
+
+
+def _path_identity(path: Path) -> tuple[int, int]:
+    node = path.lstat()
+    if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
+        raise ValueError("inspection workspace path is not a real directory")
+    if hasattr(path, "is_junction") and path.is_junction():
+        raise ValueError("inspection workspace path must not be a junction")
+    resolved = path.resolve(strict=True)
+    if os.path.normcase(str(resolved)) != os.path.normcase(str(path.absolute())):
+        raise ValueError("inspection workspace path resolves through an alias")
+    return int(node.st_dev), int(node.st_ino)
+
+
+def _directory_chain(path: Path, *, allow_missing_leaf: bool) -> dict[str, tuple[int, int]]:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    identities: dict[str, tuple[int, int]] = {}
+    if absolute.anchor:
+        identities[os.path.normcase(str(current))] = _path_identity(current)
+    parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in parts:
+        current /= part
+        try:
+            identities[os.path.normcase(str(current))] = _path_identity(current)
+        except FileNotFoundError:
+            if allow_missing_leaf:
+                break
+            raise ValueError("inspection workspace path is missing") from None
+    return identities
+
+
+class _InspectionWorkspaceRoot:
+    def __init__(
+        self,
+        *,
+        path: Path,
+        temp_parent: Path,
+        device: int,
+        inode: int,
+        fd: int | None,
+        posix_owner_fd_proven: bool,
+    ) -> None:
+        self.path = path
+        self.temp_parent = temp_parent
+        self.device = device
+        self.inode = inode
+        self.fd = fd
+        self.posix_owner_fd_proven = posix_owner_fd_proven
+
+
+def _validate_posix_workspace_stat(node: os.stat_result, *, effective_uid: int) -> None:
+    if int(node.st_uid) != int(effective_uid):
+        raise ValueError("inspection workspace owner mismatch")
+    if stat.S_IMODE(node.st_mode) != 0o700:
+        raise ValueError("inspection workspace mode must be 0700")
+
+
+def _posix_directory_open_flags() -> int:
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+    if type(directory_flag) is not int or type(nofollow_flag) is not int:
+        raise ValueError("POSIX no-follow directory proof is unavailable")
+    return os.O_RDONLY | directory_flag | nofollow_flag | int(getattr(os, "O_CLOEXEC", 0))
+
+
+def _assert_retained_root_fd(root: _InspectionWorkspaceRoot) -> None:
+    if root.fd is None:
+        if root.posix_owner_fd_proven:
+            raise ValueError("inspection workspace retained fd is missing")
+        return
+    node = os.fstat(root.fd)
+    if (int(node.st_dev), int(node.st_ino)) != (root.device, root.inode):
+        raise ValueError("inspection workspace retained fd identity mismatch")
+
+
+def _prepare_inspection_workspace_root(
+    *,
+    temp_parent: str | Path | None = None,
+) -> _InspectionWorkspaceRoot:
+    expected_parent = Path(temp_parent if temp_parent is not None else tempfile.gettempdir()).resolve(strict=True)
+    _directory_chain(expected_parent, allow_missing_leaf=False)
+    created = Path(
+        tempfile.mkdtemp(
+            prefix=f"{INSPECTION_WORKSPACE_BASE_NAME}-",
+            dir=str(expected_parent),
+        )
+    )
+    fd: int | None = None
+    try:
+        node = created.lstat()
+        if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
+            raise ValueError("inspection workspace root is not a real directory")
+        if hasattr(created, "is_junction") and created.is_junction():
+            raise ValueError("inspection workspace root must not be a junction")
+        resolved = created.resolve(strict=True)
+        if resolved.parent != expected_parent or resolved != created.absolute():
+            raise ValueError("inspection workspace root escaped platform temp")
+        posix_proven = os.name == "posix"
+        if posix_proven:
+            get_effective_uid = getattr(os, "geteuid", None)
+            if not callable(get_effective_uid):
+                raise ValueError("POSIX effective owner proof is unavailable")
+            _validate_posix_workspace_stat(node, effective_uid=int(get_effective_uid()))
+            fd = os.open(created, _posix_directory_open_flags())
+        root = _InspectionWorkspaceRoot(
+            path=created,
+            temp_parent=expected_parent,
+            device=int(node.st_dev),
+            inode=int(node.st_ino),
+            fd=fd,
+            posix_owner_fd_proven=posix_proven,
+        )
+        _assert_retained_root_fd(root)
+        return root
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        raise
+
+
+def _revalidate_inspection_workspace(
+    root: _InspectionWorkspaceRoot,
+    *,
+    workspace: Any | None = None,
+    staged_skill_name: str = "",
+) -> None:
+    node = root.path.lstat()
+    if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
+        raise ValueError("inspection workspace identity changed")
+    if hasattr(root.path, "is_junction") and root.path.is_junction():
+        raise ValueError("inspection workspace identity changed")
+    resolved = root.path.resolve(strict=True)
+    if resolved.parent != root.temp_parent or resolved != root.path.absolute():
+        raise ValueError("inspection workspace escaped platform temp")
+    if (int(node.st_dev), int(node.st_ino)) != (root.device, root.inode):
+        raise ValueError("inspection workspace path identity mismatch")
+    if root.posix_owner_fd_proven:
+        get_effective_uid = getattr(os, "geteuid", None)
+        if not callable(get_effective_uid):
+            raise ValueError("POSIX effective owner proof is unavailable")
+        _validate_posix_workspace_stat(node, effective_uid=int(get_effective_uid()))
+    _assert_retained_root_fd(root)
+    if workspace is None:
+        return
+    trusted_root = resolved
+    paths = [
+        Path(workspace.host_root),
+        Path(workspace.workspace_host_path),
+        Path(workspace.inputs_host_path),
+        Path(workspace.logs_host_path),
+    ]
+    if staged_skill_name:
+        paths.extend(
+            [
+                Path(workspace.workspace_host_path) / ".claude",
+                Path(workspace.workspace_host_path) / ".claude" / "skills",
+                Path(workspace.workspace_host_path) / ".claude" / "skills" / staged_skill_name,
+            ]
+        )
+    for path in paths:
+        resolved = path.resolve(strict=True)
+        try:
+            resolved.relative_to(trusted_root)
+        except ValueError as exc:
+            raise ValueError("inspection workspace lease escaped verifier root") from exc
+        _directory_chain(path, allow_missing_leaf=False)
+
+
+def _close_inspection_workspace_root(root: _InspectionWorkspaceRoot) -> None:
+    if root.fd is not None:
+        os.close(root.fd)
+        root.fd = None
+
+
+def _inspection_profile_manifest(profile: str) -> dict[str, Any]:
+    native_expected = profile == "sdk-native"
+    return {
+        "selected": profile if profile in INSPECTION_PROFILES else "invalid",
+        "catalog": "implicit",
+        "primary_skill": "general-chat",
+        "authorized_implicit_skill": INSPECTION_AUTHORIZED_SKILLS.get(profile, ""),
+        "primary_execution_strategy": "sdk_restricted",
+        "authorized_skill_count": 1,
+        "native_sidecar_expected": native_expected,
+        "authorization_basis": "deterministic_verifier_fixture",
+        "production_authorization_proven": False,
+    }
+
+
+def _inspection_check_defaults(profile: str) -> dict[str, bool]:
+    names = [
+        "implicit_catalog_fixed",
+        "authoritative_catalog_aggregation",
+        "authoritative_allowed_names_exact",
+        "authoritative_declared_builtins_exact",
+        "production_authorization_not_claimed",
+        "authorized_skill_names_nonempty",
+        "trusted_workspace_lease",
+        "primary_provider_child_observed",
+        "workspace_rw",
+        "claude_nested_ro",
+        "claude_nested_under_workspace",
+        "workspace_mount_topology_exact",
+        "no_unexpected_workspace_submounts",
+        "delivery_link_created",
+        "delivery_link_cleanup_succeeded",
+        "staged_skill_hash_matches",
+        "skill_hash_unchanged",
+        "outputs_write_succeeded",
+        "delivery_write_succeeded",
+        "native_sidecar_expectation_matches_profile",
+        *(f"attack_{attack}_kernel_blocked" for attack in INSPECTION_ATTACKS),
+    ]
+    names.extend(
+        [
+            "native_sidecar_present",
+            "native_sidecar_token_paired",
+            "native_sidecar_socket_paired",
+            "native_sidecar_admission_paired",
+            "native_sidecar_authenticated_health",
+            "primary_native_socket_present",
+            "primary_native_authenticated_health",
+        ]
+        if profile == "sdk-native"
+        else [
+            "native_sidecar_absent",
+            "primary_native_credentials_absent",
+            "primary_native_socket_absent",
+        ]
+    )
+    return {name: False for name in names}
+
+
+def _new_inspection_evidence(
+    *,
+    run_id: str,
+    profile: str,
+    source_sha: str,
+    target_image: str,
+) -> dict[str, Any]:
+    started_at = _utc_now()
+    return {
+        "schema_version": INSPECTION_EVIDENCE_SCHEMA_VERSION,
+        "case": "staged-skill-mount-inspection",
+        "run_id": _safe_run_id(run_id),
+        "profile": _inspection_profile_manifest(profile),
+        "authorization": {
+            "basis": "deterministic_verifier_fixture",
+            "production_authorization_proven": False,
+            "admin_bypass_claimed": False,
+            "tenant_distribution_proven": False,
+            "release_distribution_proven": False,
+        },
+        "source_sha": source_sha,
+        "target_image": target_image,
+        "started_at": started_at,
+        "updated_at": started_at,
+        "finished_at": "",
+        "stage": "manifest_checkpoint",
+        "exit_code": None,
+        "failure_category": "",
+        "provider_child_creation": {
+            "primary_observed": False,
+            "native_sidecar_required": profile == "sdk-native",
+            "primary_count": 0,
+            "native_sidecar_count": 0,
+        },
+        "checks": _inspection_check_defaults(profile),
+        "hashes": {
+            "staged_skill": "",
+            "skill_before": "",
+            "skill_after": "",
+        },
+        "counts": {
+            "mount_entries": 0,
+            "attacks_attempted": 0,
+            "attacks_blocked": 0,
+        },
+        "mountinfo": [],
+        "attack_errno_categories": {attack: "not_run" for attack in INSPECTION_ATTACKS},
+        "cleanup": {
+            "attempted": False,
+            "provider_stop_confirmed": False,
+            "lease_release_observed": False,
+            "post_cleanup_query_succeeded": False,
+            "post_cleanup_primary_count": None,
+            "post_cleanup_native_sidecar_count": None,
+            "result": "pending",
+        },
+        "redaction": {
+            "host_paths_absent": True,
+            "container_ids_absent": True,
+            "secrets_absent": True,
+        },
+    }
+
+
+def _write_inspection_checkpoint(evidence_path: str | Path, evidence: dict[str, Any]) -> None:
+    evidence["updated_at"] = _utc_now()
+    _atomic_write_json(evidence_path, evidence)
+
+
+def _safe_evidence_file_from_argv(argv: list[str]) -> str | None:
+    values: list[str] = []
+    for index, item in enumerate(argv):
+        if item == "--evidence-file":
+            if index + 1 >= len(argv) or argv[index + 1].startswith("--"):
+                return None
+            values.append(argv[index + 1])
+        elif item.startswith("--evidence-file="):
+            values.append(item.partition("=")[2])
+    if not values:
+        values.append(os.environ.get("AI_PLATFORM_SANDBOX_EVIDENCE", "/tmp/ai-platform-sandbox-runtime-evidence.json"))
+    if len(set(values)) != 1 or not values[0] or "\x00" in values[0]:
+        return None
+    return values[0]
+
+
+def _write_bootstrap_error(evidence_path: str | Path, *, failure_category: str, exit_code: int) -> None:
+    now = _utc_now()
+    payload = {
+        "schema_version": BOOTSTRAP_EVIDENCE_SCHEMA_VERSION,
+        "stage": "bootstrap_error",
+        "failure_category": failure_category,
+        "exit_code": int(exit_code),
+        "generated_at": now,
+        "redaction": {
+            "host_paths_absent": True,
+            "container_ids_absent": True,
+            "secrets_absent": True,
+        },
+    }
+    _atomic_write_json(evidence_path, payload)
+
+
+def _inspection_skill_files(skill_name: str) -> dict[str, str]:
+    return {
+        "SKILL.md": (
+            "---\n"
+            f"name: {skill_name}\n"
+            "description: Deterministic verifier Skill for the 211 staged mount inspection.\n"
+            "---\n\n"
+            "Return the fixed verifier result without loading external data.\n"
+        ),
+        "chmod-target.txt": "chmod target\n",
+        "rm-target.txt": "rm target\n",
+        "mv-source.txt": "mv target\n",
+    }
+
+
+def _deterministic_skill_hash(files: dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    for relative_path, content in sorted(files.items()):
+        encoded_path = relative_path.encode("utf-8")
+        encoded_content = content.encode("utf-8")
+        digest.update(len(encoded_path).to_bytes(8, "big"))
+        digest.update(encoded_path)
+        digest.update(len(encoded_content).to_bytes(8, "big"))
+        digest.update(encoded_content)
+    return digest.hexdigest()
+
+
+def _inspection_pinned_manifest(skill_id: str, *, files: dict[str, str]) -> dict[str, Any]:
+    from app.skills.execution_profiles import resolve_skill_execution_profile
+
+    version = _deterministic_skill_hash(files)
+    execution_profile = resolve_skill_execution_profile(
+        skill_id=skill_id,
+        source_kind="builtin",
+        lifecycle_status="released",
+    )
+    return {
+        "skill_id": skill_id,
+        "version": version,
+        "content_hash": version,
+        "source": {"kind": "builtin", "asset_dir": skill_id},
+        "files": [
+            {
+                "relative_path": relative_path,
+                "content_base64": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+                "size_bytes": len(content.encode("utf-8")),
+            }
+            for relative_path, content in sorted(files.items())
+        ],
+        "dependency_ids": [],
+        "lifecycle_status": "released",
+        "execution_profile": execution_profile,
+        "builtin_tool_identities": list(execution_profile["builtin_tool_identities"]),
+        "mcp_tool_ids": [],
+        "allowed": True,
+        "staged": False,
+        "used": False,
+    }
+
+
+def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
+    from app.capability_distribution import CapabilityAccessDecision
+    from app.models import QueueRunPayload
+    from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
+    from app.worker import _builtin_capability_subjects
+
+    authorized_skill = INSPECTION_AUTHORIZED_SKILLS.get(profile)
+    if not authorized_skill:
+        raise ValueError("unsupported inspection profile")
+    primary_files = _inspection_skill_files("general-chat")
+    authorized_files = _inspection_skill_files(authorized_skill)
+    primary_manifest = _inspection_pinned_manifest("general-chat", files=primary_files)
+    authorized_manifest = _inspection_pinned_manifest(authorized_skill, files=authorized_files)
+    primary_version = str(primary_manifest["content_hash"])
+    payload = QueueRunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="catalog-session",
+        run_id="catalog-run",
+        agent_id="sandbox-runtime-verifier",
+        skill_id="general-chat",
+        file_ids=[],
+        input={},
+        executor_type="embedded-poco",
+        skill_version=primary_version,
+        release_decision={
+            "schema_version": RELEASE_DECISION_SCHEMA_VERSION,
+            "policy_active": False,
+            "selected_version": primary_version,
+            "selected_track": "manifest_pin",
+        },
+        skill_manifests=[primary_manifest],
+    )
+    decision = CapabilityAccessDecision(
+        visible=True,
+        usable=True,
+        manageable=False,
+        admin_bypass=False,
+        decision_reason="deterministic_verifier_fixture",
+    )
+    subjects = _builtin_capability_subjects(
+        payload=payload,
+        run_identity={"skill_id": "general-chat"},
+        skill={"skill_id": "general-chat", "skill_status": "active"},
+        skill_decision=decision,
+        authorized_skill_manifests=[authorized_manifest],
+        authorized_skill_names=[authorized_skill],
+    )
+    by_identity = {
+        str(subject.get("identity") or ""): subject
+        for subject in subjects
+        if isinstance(subject, dict)
+    }
+    authorized_profile = authorized_manifest["execution_profile"]
+    declared_builtins = list(authorized_profile["builtin_tool_identities"])
+    expected_identities = {"Skill", *declared_builtins}
+    if set(by_identity) != expected_identities or len(subjects) != len(by_identity):
+        raise _InspectionCheckFailed("authoritative catalog subject aggregation mismatch")
+    skill_subject = by_identity.get("Skill", {})
+    if (
+        skill_subject.get("allowed_skill_names") != [authorized_skill]
+        or skill_subject.get("execution_strategy") != "sdk_restricted"
+        or any(subject.get("declared_identities") != [identity] for identity, subject in by_identity.items())
+        or any(
+            subject.get(key) is not True
+            for subject in subjects
+            for key in ("registered", "declared", "active", "distributed", "identity_authorized")
+        )
+    ):
+        raise _InspectionCheckFailed("authoritative catalog Skill subject mismatch")
+    for identity in declared_builtins:
+        subject = by_identity.get(identity, {})
+        if (
+            subject.get("execution_strategy") != authorized_profile["strategy"]
+            or subject.get("command_isolation") != authorized_profile["command_isolation"]
+            or subject.get("workspace_contract") != authorized_profile["workspace_contract"]
+        ):
+            raise _InspectionCheckFailed("authoritative catalog builtin subject mismatch")
+    expected_strategy = "platform_controlled" if profile == "platform-controlled" else "sdk_native"
+    expected_isolation = "minimal-environment-v1" if profile == "platform-controlled" else "sibling-tool-sandbox-v1"
+    if (
+        authorized_profile["strategy"] != expected_strategy
+        or authorized_profile["command_isolation"] != expected_isolation
+        or decision.admin_bypass
+    ):
+        raise _InspectionCheckFailed("authoritative catalog execution profile mismatch")
+    return {
+        "subjects": subjects,
+        "primary_manifest": primary_manifest,
+        "authorized_manifest": authorized_manifest,
+        "authorized_skill_names": [authorized_skill],
+        "declared_builtin_identities": declared_builtins,
+        "authorized_files": authorized_files,
+        "authorization_basis": decision.decision_reason,
+    }
+
+
+_SKILL_MOUNT_INSPECTION_CODE = textwrap.dedent(
+    r"""
+    import errno
+    import hashlib
+    import json
+    import os
+    import re
+    from pathlib import Path
+
+    workspace = Path("/workspace")
+    claude = workspace / ".claude"
+    staged_skills = [item for item in (claude / "skills").iterdir() if item.is_dir()]
+    if len(staged_skills) != 1:
+        raise RuntimeError("expected exactly one staged Skill")
+    skill = staged_skills[0]
+    outputs = workspace / "outputs"
+    delivery = outputs / "delivery"
+    errno_categories = {
+        errno.EROFS: "erofs",
+        errno.EACCES: "eacces",
+        errno.EPERM: "eperm",
+    }
+
+    def tree_hash(root):
+        digest = hashlib.sha256()
+        items = [item for item in root.rglob("*") if item.is_file() or item.is_symlink()]
+        for item in sorted(items, key=lambda path: path.relative_to(root).as_posix()):
+            relative = item.relative_to(root).as_posix().encode("utf-8")
+            if item.is_symlink():
+                content = b"symlink\0" + os.readlink(item).encode("utf-8")
+            else:
+                content = item.read_bytes()
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
+        return digest.hexdigest()
+
+    def kernel_blocked(operation):
+        try:
+            operation()
+        except OSError as exc:
+            category = errno_categories.get(exc.errno, "other")
+            return {"blocked": exc.errno == errno.EROFS, "errno_category": category}
+        return {"blocked": False, "errno_category": "none"}
+
+    def decode_mount_path(value):
+        return re.sub(
+            r"\\([0-7]{3})",
+            lambda match: chr(int(match.group(1), 8)),
+            value,
+        )
+
+    mountinfo = []
+    for raw_line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
+        fields = raw_line.split()
+        if len(fields) < 10 or "-" not in fields:
+            continue
+        mount_point = decode_mount_path(fields[4])
+        if mount_point != "/workspace" and not mount_point.startswith("/workspace/"):
+            continue
+        separator = fields.index("-")
+        options = set(fields[5].split(","))
+        if len(fields) > separator + 3:
+            options.update(fields[separator + 3].split(","))
+        mountinfo.append(
+            {
+                "mount_point": mount_point,
+                "mode": "ro" if "ro" in options else "rw" if "rw" in options else "unknown",
+            }
+        )
+
+    skill_before = tree_hash(skill)
+    attacks = {
+        "direct_write": kernel_blocked(
+            lambda: (skill / "SKILL.md").open("a", encoding="utf-8").write("mutation")
+        ),
+        "chmod": kernel_blocked(lambda: os.chmod(skill / "chmod-target.txt", 0o777)),
+        "rm": kernel_blocked(lambda: os.unlink(skill / "rm-target.txt")),
+        "mv": kernel_blocked(lambda: os.rename(skill / "mv-source.txt", skill / "mv-target.txt")),
+        "symlink": kernel_blocked(
+            lambda: os.symlink(skill / "SKILL.md", skill / "unexpected-link")
+        ),
+    }
+
+    delivery.mkdir(parents=True, exist_ok=True)
+    delivery_link = delivery / "skill-delivery-link"
+    try:
+        delivery_link.unlink()
+    except FileNotFoundError:
+        pass
+    delivery_link_created = False
+    delivery_link_cleanup_succeeded = False
+    try:
+        os.symlink(skill / "SKILL.md", delivery_link)
+        delivery_link_created = True
+        attacks["delivery_link_mutation"] = kernel_blocked(
+            lambda: delivery_link.open("a", encoding="utf-8").write("mutation")
+        )
+    except OSError:
+        attacks["delivery_link_mutation"] = False
+    finally:
+        try:
+            delivery_link.unlink()
+            delivery_link_cleanup_succeeded = True
+        except OSError:
+            delivery_link_cleanup_succeeded = False
+
+    output_probe = outputs / "inspection-output.txt"
+    delivery_probe = delivery / "inspection-delivery.txt"
+    output_probe.write_text("output-ok\n", encoding="utf-8")
+    delivery_probe.write_text("delivery-ok\n", encoding="utf-8")
+    skill_after = tree_hash(skill)
+    workspace_modes = [item["mode"] for item in mountinfo if item["mount_point"] == "/workspace"]
+    claude_modes = [item["mode"] for item in mountinfo if item["mount_point"] == "/workspace/.claude"]
+    print(
+        json.dumps(
+            {
+                "mountinfo": mountinfo,
+                "mounts": {
+                    "workspace_rw": workspace_modes == ["rw"],
+                    "claude_nested_ro": claude_modes == ["ro"],
+                    "claude_nested_under_workspace": bool(workspace_modes and claude_modes),
+                },
+                "attacks": attacks,
+                "delivery_link_created": delivery_link_created,
+                "delivery_link_cleanup_succeeded": delivery_link_cleanup_succeeded,
+                "hashes": {"skill_before": skill_before, "skill_after": skill_after},
+                "writes": {
+                    "outputs": output_probe.read_text(encoding="utf-8") == "output-ok\n",
+                    "delivery": delivery_probe.read_text(encoding="utf-8") == "delivery-ok\n",
+                },
+            },
+            sort_keys=True,
+        )
+    )
+    """
+).strip()
+
+
+def _container_environment_projection(container: Any) -> dict[str, str]:
+    attrs = getattr(container, "attrs", {})
+    config = attrs.get("Config") if isinstance(attrs, dict) else None
+    raw_environment = config.get("Env") if isinstance(config, dict) else None
+    projected: dict[str, str] = {}
+    for item in raw_environment if isinstance(raw_environment, list) else []:
+        if not isinstance(item, str) or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        projected[key] = value
+    return projected
+
+
+def _container_label_projection(container: Any) -> dict[str, str]:
+    attrs = getattr(container, "attrs", {})
+    config = attrs.get("Config") if isinstance(attrs, dict) else None
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    return {str(key): str(value) for key, value in labels.items()} if isinstance(labels, dict) else {}
+
+
+def _docker_exec_result_payload(result: Any) -> dict[str, Any]:
+    exit_code = getattr(result, "exit_code", None)
+    output = getattr(result, "output", None)
+    if exit_code is None and isinstance(result, tuple) and len(result) == 2:
+        exit_code, output = result
+    if type(exit_code) is not int or exit_code != 0:
+        raise _InspectionCheckFailed("fixed inspection command failed")
+    if isinstance(output, bytes):
+        output_text = output.decode("utf-8", errors="strict")
+    elif isinstance(output, str):
+        output_text = output
+    else:
+        raise _InspectionCheckFailed("fixed inspection output is invalid")
+    if len(output_text.encode("utf-8")) > 65536:
+        raise _InspectionCheckFailed("fixed inspection output is too large")
+    try:
+        payload = json.loads(output_text)
+    except json.JSONDecodeError as exc:
+        raise _InspectionCheckFailed("fixed inspection output is invalid") from exc
+    if not isinstance(payload, dict):
+        raise _InspectionCheckFailed("fixed inspection output is invalid")
+    return payload
+
+
+def _docker_exec_exit_code(result: Any) -> int:
+    exit_code = getattr(result, "exit_code", None)
+    if exit_code is None and isinstance(result, tuple) and len(result) == 2:
+        exit_code = result[0]
+    if type(exit_code) is not int:
+        raise _InspectionCheckFailed("fixed inspection command status is invalid")
+    return exit_code
+
+
+def _matching_provider_child_count(client: Any, *, run_id: str, owner: str) -> int:
+    containers = client.containers.list(
+        all=True,
+        filters={
+            "label": [
+                f"ai-platform.run_id={run_id}",
+                f"ai-platform.owner={owner}",
+            ]
+        },
+    )
+    if not isinstance(containers, list):
+        raise _InspectionCheckFailed("provider child enumeration is invalid")
+    return len(containers)
+
+
+def _post_cleanup_provider_children(provider: Any, *, run_id: str) -> dict[str, int]:
+    client = provider._get_client()
+    return {
+        "primary_count": _matching_provider_child_count(
+            client,
+            run_id=run_id,
+            owner="sandbox-runtime",
+        ),
+        "native_sidecar_count": _matching_provider_child_count(
+            client,
+            run_id=run_id,
+            owner="sandbox-native-tool",
+        ),
+    }
+
+
+async def _inspect_live_skill_mount(
+    *,
+    provider: Any,
+    lease: Any,
+    workspace: Any,
+    profile: str,
+) -> dict[str, Any]:
+    """Inspect one owned live runtime pair with a fixed, non-general shell payload."""
+
+    client = provider._get_client()
+    primary = client.containers.get(lease.container_name)
+    if hasattr(primary, "reload"):
+        primary.reload()
+    raw_result = await asyncio.to_thread(
+        primary.exec_run,
+        ["python", "-c", _SKILL_MOUNT_INSPECTION_CODE],
+    )
+    payload = _docker_exec_result_payload(raw_result)
+    primary_environment = _container_environment_projection(primary)
+    primary_count = _matching_provider_child_count(
+        client,
+        run_id=lease.run_id,
+        owner="sandbox-runtime",
+    )
+    sidecar_count = _matching_provider_child_count(
+        client,
+        run_id=lease.run_id,
+        owner="sandbox-native-tool",
+    )
+    expected_socket = "/workspace/.ai-platform/native-tool.sock"
+    primary_socket_exit = _docker_exec_exit_code(
+        await asyncio.to_thread(primary.exec_run, ["test", "-S", expected_socket])
+    )
+    sidecar = provider._owned_native_tool_container(lease)
+    sidecar_evidence = {
+        "expected": profile == "sdk-native",
+        "present": sidecar is not None,
+        "absent": sidecar is None,
+        "primary_native_credentials_absent": not primary_environment.get("AI_PLATFORM_NATIVE_TOOL_TOKEN")
+        and not primary_environment.get("AI_PLATFORM_NATIVE_TOOL_SOCKET"),
+        "token_paired": False,
+        "socket_paired": False,
+        "admission_paired": False,
+        "authenticated_health_probe": False,
+        "primary_socket_present": primary_socket_exit == 0,
+        "primary_socket_absent": primary_socket_exit == 1,
+        "primary_authenticated_health": False,
+    }
+    if sidecar is not None:
+        if hasattr(sidecar, "reload"):
+            sidecar.reload()
+        sidecar_environment = _container_environment_projection(sidecar)
+        sidecar_labels = _container_label_projection(sidecar)
+        primary_token = primary_environment.get("AI_PLATFORM_NATIVE_TOOL_TOKEN", "")
+        sidecar_token = sidecar_environment.get("AI_PLATFORM_NATIVE_TOOL_TOKEN", "")
+        sidecar_evidence["token_paired"] = bool(
+            primary_token
+            and sidecar_token
+            and hmac.compare_digest(primary_token, sidecar_token)
+        )
+        primary_health_exit = _docker_exec_exit_code(
+            await asyncio.to_thread(
+                primary.exec_run,
+                ["python", "-m", "app.runtime.sandbox.native_tool_health_probe"],
+            )
+        )
+        sidecar_evidence["primary_authenticated_health"] = primary_health_exit == 0
+        sidecar_evidence["socket_paired"] = bool(
+            primary_environment.get("AI_PLATFORM_NATIVE_TOOL_SOCKET") == expected_socket
+            and sidecar_environment.get("AI_PLATFORM_NATIVE_TOOL_SOCKET") == expected_socket
+            and sidecar_evidence["primary_socket_present"] is True
+        )
+        admission_phase = "authenticated_container_uds_health"
+        container_socket_bytes = str(len(expected_socket.encode("utf-8")))
+        lease_host_socket_bytes = str(lease.labels.get("ai-platform.native_tool_host_socket_path_bytes") or "")
+        sidecar_host_socket_bytes = str(
+            sidecar_labels.get("ai-platform.native_tool_host_socket_path_bytes") or ""
+        )
+        sidecar_evidence["admission_paired"] = bool(
+            lease.labels.get("ai-platform.native_tool_required") == "true"
+            and lease.labels.get("ai-platform.native_tool_admission_phase") == admission_phase
+            and sidecar_labels.get("ai-platform.native_tool_admission_phase") == admission_phase
+            and lease_host_socket_bytes.isdigit()
+            and lease_host_socket_bytes == sidecar_host_socket_bytes
+            and lease.labels.get("ai-platform.native_tool_container_socket_path_bytes") == container_socket_bytes
+            and sidecar_labels.get("ai-platform.native_tool_container_socket_path_bytes") == container_socket_bytes
+            and sidecar_labels.get("ai-platform.run_id") == lease.run_id
+        )
+        native_probe = getattr(provider, "_native_tool_probe", None)
+        if callable(native_probe):
+            sidecar_evidence["authenticated_health_probe"] = bool(
+                await asyncio.to_thread(native_probe, sidecar)
+            )
+    payload["provider_children"] = {
+        "primary_count": primary_count,
+        "native_sidecar_count": sidecar_count,
+    }
+    payload["sidecar"] = sidecar_evidence
+    return payload
+
+
+def _stage_inspection_skill(
+    workspace: Any,
+    *,
+    skill_name: str,
+    files: dict[str, str],
+) -> str:
+    from app.skills.registry import BuiltinSkill, skill_content_hash
+    from app.skills.stager import SkillStager
+
+    if skill_name not in INSPECTION_AUTHORIZED_SKILLS.values() or files != _inspection_skill_files(skill_name):
+        raise ValueError("inspection Skill fixture is not authoritative")
+    source = Path(workspace.host_root) / "runtime" / "verifier-skill-source" / skill_name
+    source.mkdir(parents=True, exist_ok=True)
+    existing = {item.name for item in source.iterdir()}
+    if existing - set(files):
+        raise ValueError("verifier Skill source is not isolated")
+    for name, content in files.items():
+        path = source / name
+        if path.exists() and (path.is_symlink() or not path.is_file()):
+            raise ValueError("verifier Skill source is invalid")
+        path.write_text(content, encoding="utf-8", newline="\n")
+    version = skill_content_hash(source)
+    staged = SkillStager().stage_skills(
+        workspace=workspace.workspace_host_path,
+        skills=[
+            BuiltinSkill(
+                name=skill_name,
+                description="Deterministic verifier Skill for the 211 staged mount inspection.",
+                path=source,
+                version=version,
+                source={"kind": "verifier", "version": version},
+                entry={"kind": "filesystem"},
+            )
+        ],
+    )
+    if staged != [skill_name]:
+        raise _InspectionCheckFailed("verifier Skill staging failed")
+    staged_root = Path(workspace.workspace_host_path) / ".claude" / "skills" / skill_name
+    staged_hash = skill_content_hash(staged_root)
+    if staged_hash != _deterministic_skill_hash(files):
+        raise _InspectionCheckFailed("staged Skill differs from pinned manifest")
+    staged_names = sorted(item.name for item in staged_root.parent.iterdir() if item.is_dir())
+    if staged_names != [skill_name]:
+        raise _InspectionCheckFailed("staged Skill registry contains unexpected entries")
+    return staged_hash
+
+
+def _build_inspection_runtime(
+    *,
+    workspace_root: str | Path,
+    workspace: Any,
+    execute_task: Callable[..., Any],
+    record_lease: Callable[..., Any],
+    release_lease: Callable[..., Any],
+    callback_token_resolver: Callable[[str], str],
+) -> tuple[Any, Any]:
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+    from app.runtime.sandbox.runtime import SandboxRuntime
+
+    provider = DockerContainerProvider()
+    runtime = SandboxRuntime(
+        workspace_root=workspace_root,
+        provider=provider,
+        execute_task=execute_task,
+        callback_token_resolver=callback_token_resolver,
+        record_lease=record_lease,
+        release_lease=release_lease,
+    )
+    return runtime, provider
+
+
+def _inspection_result_projection(
+    raw: object,
+    *,
+    profile: str,
+    staged_hash: str,
+    native_tool_required: bool,
+) -> dict[str, Any]:
+    result = raw if isinstance(raw, dict) else {}
+    mounts = result.get("mounts") if isinstance(result.get("mounts"), dict) else {}
+    attacks = result.get("attacks") if isinstance(result.get("attacks"), dict) else {}
+    hashes = result.get("hashes") if isinstance(result.get("hashes"), dict) else {}
+    writes = result.get("writes") if isinstance(result.get("writes"), dict) else {}
+    sidecar = result.get("sidecar") if isinstance(result.get("sidecar"), dict) else {}
+    provider_children = (
+        result.get("provider_children")
+        if isinstance(result.get("provider_children"), dict)
+        else {}
+    )
+    safe_mountinfo: list[dict[str, str]] = []
+    raw_mountinfo = result.get("mountinfo")
+    if isinstance(raw_mountinfo, list):
+        for item in raw_mountinfo:
+            if not isinstance(item, dict):
+                continue
+            mount_point = str(item.get("mount_point") or "")
+            mode = str(item.get("mode") or "")
+            if (
+                (mount_point == "/workspace" or mount_point.startswith("/workspace/"))
+                and mode in {"rw", "ro"}
+            ):
+                safe_mountinfo.append({"mount_point": mount_point, "mode": mode})
+    skill_before = str(hashes.get("skill_before") or "")
+    skill_after = str(hashes.get("skill_after") or "")
+    primary_count = provider_children.get("primary_count")
+    sidecar_count = provider_children.get("native_sidecar_count")
+    primary_count = int(primary_count) if type(primary_count) is int and primary_count >= 0 else 0
+    sidecar_count = int(sidecar_count) if type(sidecar_count) is int and sidecar_count >= 0 else 0
+    observed_mounts = {item["mount_point"]: item["mode"] for item in safe_mountinfo}
+    expected_mounts = {
+        "/workspace": "rw",
+        "/workspace/.claude": "ro",
+        **({"/workspace/.ai-platform": "rw"} if profile == "sdk-native" else {}),
+    }
+    topology_exact = len(observed_mounts) == len(safe_mountinfo) and observed_mounts == expected_mounts
+    attack_categories: dict[str, str] = {}
+    checks: dict[str, bool] = {
+        "implicit_catalog_fixed": True,
+        "authoritative_catalog_aggregation": True,
+        "authoritative_allowed_names_exact": True,
+        "authoritative_declared_builtins_exact": True,
+        "production_authorization_not_claimed": True,
+        "authorized_skill_names_nonempty": True,
+        "trusted_workspace_lease": True,
+        "primary_provider_child_observed": primary_count == 1,
+        "workspace_rw": mounts.get("workspace_rw") is True,
+        "claude_nested_ro": mounts.get("claude_nested_ro") is True,
+        "claude_nested_under_workspace": mounts.get("claude_nested_under_workspace") is True,
+        "workspace_mount_topology_exact": topology_exact,
+        "no_unexpected_workspace_submounts": topology_exact,
+        "delivery_link_created": result.get("delivery_link_created") is True,
+        "delivery_link_cleanup_succeeded": result.get("delivery_link_cleanup_succeeded") is True,
+        "staged_skill_hash_matches": bool(staged_hash and skill_before == staged_hash),
+        "skill_hash_unchanged": bool(skill_before and skill_before == skill_after),
+        "outputs_write_succeeded": writes.get("outputs") is True,
+        "delivery_write_succeeded": writes.get("delivery") is True,
+    }
+    for attack in INSPECTION_ATTACKS:
+        attack_result = attacks.get(attack) if isinstance(attacks.get(attack), dict) else {}
+        category = str(attack_result.get("errno_category") or "other")
+        if category not in {"erofs", "eacces", "eperm", "other", "none"}:
+            category = "other"
+        attack_categories[attack] = category
+        checks[f"attack_{attack}_kernel_blocked"] = (
+            attack_result.get("blocked") is True and category == "erofs"
+        )
+    native_expected = profile == "sdk-native"
+    checks["native_sidecar_expectation_matches_profile"] = native_tool_required is native_expected
+    if native_expected:
+        checks.update(
+            {
+                "native_sidecar_present": sidecar.get("present") is True and sidecar_count == 1,
+                "native_sidecar_token_paired": sidecar.get("token_paired") is True,
+                "native_sidecar_socket_paired": sidecar.get("socket_paired") is True,
+                "native_sidecar_admission_paired": sidecar.get("admission_paired") is True,
+                "native_sidecar_authenticated_health": sidecar.get("authenticated_health_probe") is True,
+                "primary_native_socket_present": sidecar.get("primary_socket_present") is True,
+                "primary_native_authenticated_health": sidecar.get("primary_authenticated_health") is True,
+            }
+        )
+    else:
+        checks.update(
+            {
+                "native_sidecar_absent": sidecar.get("absent") is True and sidecar_count == 0,
+                "primary_native_credentials_absent": sidecar.get("primary_native_credentials_absent") is True,
+                "primary_native_socket_absent": sidecar.get("primary_socket_absent") is True,
+            }
+        )
+    return {
+        "checks": checks,
+        "hashes": {
+            "staged_skill": staged_hash,
+            "skill_before": skill_before if SOURCE_SHA_PATTERN.fullmatch(skill_before) else "",
+            "skill_after": skill_after if SOURCE_SHA_PATTERN.fullmatch(skill_after) else "",
+        },
+        "counts": {
+            "mount_entries": len(safe_mountinfo),
+            "attacks_attempted": len(INSPECTION_ATTACKS),
+            "attacks_blocked": sum(
+                isinstance(attacks.get(attack), dict)
+                and attacks[attack].get("blocked") is True
+                and attacks[attack].get("errno_category") == "erofs"
+                for attack in INSPECTION_ATTACKS
+            ),
+        },
+        "attack_errno_categories": attack_categories,
+        "mountinfo": safe_mountinfo,
+        "provider_children": {
+            "primary_count": primary_count,
+            "native_sidecar_count": sidecar_count,
+        },
+        "passed": all(checks.values()),
+    }
+
+
+def _inspection_failure_category(exc: BaseException, *, primary_observed: bool) -> str:
+    name = type(exc).__name__
+    if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
+        return "cancelled"
+    if isinstance(exc, ImportError):
+        return "dependency_import_failure"
+    if name == "SandboxRuntimeCleanupError" or "Cleanup" in name:
+        return "cleanup_failure"
+    if isinstance(exc, _InspectionCheckFailed):
+        return "inspection_checks_failed"
+    if isinstance(exc, ValueError) and not primary_observed:
+        return "invalid_configuration"
+    return "inspection_failure" if primary_observed else "provider_create_failure"
+
+
+def _run_skill_mount_inspection(
+    args: argparse.Namespace,
+    *,
+    _runtime_factory: Callable[..., tuple[Any, Any]] | None = None,
+    _inspection_callback: Callable[..., Any] | None = None,
+    _temp_parent: str | Path | None = None,
+    _post_cleanup_enumerator: Callable[..., dict[str, int]] | None = None,
+) -> int:
+    profile = str(args.inspection_profile or "")
+    source_sha, source_sha_valid = _selected_source_sha(args.source_sha)
+    try:
+        manifest_image = _safe_image_reference(args.sandbox_executor_image)
+    except ValueError:
+        manifest_image = "[invalid]"
+    evidence = _new_inspection_evidence(
+        run_id=str(args.run_id or ""),
+        profile=profile,
+        source_sha=source_sha,
+        target_image=manifest_image,
+    )
+    _write_inspection_checkpoint(args.evidence_file, evidence)
+
+    original_settings: tuple[Any, Any, Any] | None = None
+    workspace_root_identity: _InspectionWorkspaceRoot | None = None
+    exit_code = 1
+    try:
+        if profile not in INSPECTION_PROFILES:
+            raise ValueError("unsupported inspection profile")
+        if not source_sha_valid:
+            raise ValueError("invalid source sha")
+        target_image = _safe_image_reference(args.sandbox_executor_image)
+        if str(args.run_id or "") != _safe_run_id(str(args.run_id or "")):
+            raise ValueError("invalid inspection run id")
+        if args.sandbox_provider != "docker":
+            raise ValueError("inspection requires the Docker provider")
+        if args.skip_live_submit or args.generate_runtime_probe_results_file or args.runtime_probe_results_file:
+            raise ValueError("inspection flags are incompatible")
+
+        from app.control_plane_contracts import standard_trace_id
+        from app.runtime.sandbox.contracts import SandboxRuntimeRequest
+        from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
+        from app.settings import get_settings
+
+        catalog = _authoritative_inspection_catalog(profile)
+        authorized_skill_name = str(catalog["authorized_skill_names"][0])
+        workspace_root_identity = _prepare_inspection_workspace_root(
+            temp_parent=_temp_parent,
+        )
+        workspace_root = workspace_root_identity.path
+        _revalidate_inspection_workspace(workspace_root_identity)
+        settings = get_settings()
+        original_settings = (
+            settings.sandbox_container_provider,
+            settings.sandbox_executor_image,
+            settings.sandbox_workspace_root,
+        )
+        settings.sandbox_container_provider = "docker"
+        settings.sandbox_executor_image = target_image
+        settings.sandbox_workspace_root = str(workspace_root)
+        request = SandboxRuntimeRequest(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id=f"session-{evidence['run_id']}",
+            run_id=evidence["run_id"],
+            agent_id="sandbox-runtime-verifier",
+            skill_ids=["general-chat", authorized_skill_name],
+            mcp_tool_ids=[],
+            tool_policy_subjects=list(catalog["subjects"]),
+            input_message="ai-platform staged Skill mount inspection",
+            file_ids=[],
+            sandbox_mode="ephemeral",
+            browser_enabled=False,
+            model=_configured_platform_runtime_model(settings),
+            resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
+            trace_id=standard_trace_id(evidence["run_id"]),
+            callback_url="http://127.0.0.1:8000/api/ai/runtime/callbacks/executor",
+            callback_token_id=f"cbt-{evidence['run_id']}",
+        )
+        workspace = SandboxWorkspaceManager(root=workspace_root).prepare(request)
+        _revalidate_inspection_workspace(
+            workspace_root_identity,
+            workspace=workspace,
+        )
+        staged_hash = _stage_inspection_skill(
+            workspace,
+            skill_name=authorized_skill_name,
+            files=dict(catalog["authorized_files"]),
+        )
+        _revalidate_inspection_workspace(
+            workspace_root_identity,
+            workspace=workspace,
+            staged_skill_name=authorized_skill_name,
+        )
+        evidence["hashes"]["staged_skill"] = staged_hash
+        evidence["stage"] = "skill_staged"
+        _write_inspection_checkpoint(args.evidence_file, evidence)
+
+        captured: dict[str, Any] = {"lease": None, "workspace": None, "provider": None}
+
+        async def record_lease(lease: Any, _request: Any, trusted_workspace: Any) -> str:
+            captured["lease"] = lease
+            captured["workspace"] = trusted_workspace
+            evidence["provider_child_creation"]["primary_observed"] = True
+            evidence["provider_child_creation"]["native_sidecar_required"] = (
+                str(lease.labels.get("ai-platform.native_tool_required") or "") == "true"
+            )
+            evidence["stage"] = "provider_created"
+            _write_inspection_checkpoint(args.evidence_file, evidence)
+            return f"lease-{evidence['run_id']}"
+
+        async def release_lease(_lease: Any, _reason: str, _lease_record_id: str | None = None) -> None:
+            evidence["cleanup"].update(
+                {
+                    "lease_release_observed": True,
+                    "result": "release_callback_observed",
+                }
+            )
+            evidence["stage"] = "release_callback_observed"
+            _write_inspection_checkpoint(args.evidence_file, evidence)
+
+        async def execute_inspection(
+            _executor_url: str,
+            _task_request: Any,
+            executor_headers: dict[str, str] | None = None,
+        ) -> dict[str, Any]:
+            del executor_headers
+            lease = captured.get("lease")
+            trusted_workspace = captured.get("workspace")
+            provider = captured.get("provider")
+            if lease is None or trusted_workspace is None or provider is None:
+                raise _InspectionCheckFailed("trusted inspection context missing")
+            evidence["stage"] = "inspection_running"
+            _write_inspection_checkpoint(args.evidence_file, evidence)
+            callback = _inspection_callback or _inspect_live_skill_mount
+            raw = callback(
+                provider=provider,
+                lease=lease,
+                workspace=trusted_workspace,
+                profile=profile,
+            )
+            if inspect.isawaitable(raw):
+                raw = await raw
+            projection = _inspection_result_projection(
+                raw,
+                profile=profile,
+                staged_hash=staged_hash,
+                native_tool_required=(
+                    str(lease.labels.get("ai-platform.native_tool_required") or "") == "true"
+                ),
+            )
+            evidence["checks"] = projection["checks"]
+            evidence["hashes"] = projection["hashes"]
+            evidence["counts"] = projection["counts"]
+            evidence["mountinfo"] = projection["mountinfo"]
+            evidence["attack_errno_categories"] = projection["attack_errno_categories"]
+            evidence["provider_child_creation"].update(projection["provider_children"])
+            evidence["stage"] = "inspection_complete"
+            _write_inspection_checkpoint(args.evidence_file, evidence)
+            if projection["passed"] is not True:
+                raise _InspectionCheckFailed("one or more fixed inspection checks failed")
+            return {"status": "completed", "run_id": evidence["run_id"]}
+
+        callback_secret = uuid.uuid4().hex
+        runtime_factory = _runtime_factory or _build_inspection_runtime
+        _revalidate_inspection_workspace(
+            workspace_root_identity,
+            workspace=workspace,
+            staged_skill_name=authorized_skill_name,
+        )
+        runtime, provider = runtime_factory(
+            workspace_root=workspace_root,
+            workspace=workspace,
+            execute_task=execute_inspection,
+            record_lease=record_lease,
+            release_lease=release_lease,
+            callback_token_resolver=lambda _token_id: callback_secret,
+        )
+        captured["provider"] = provider
+        evidence["stage"] = "provider_creation_started"
+        _write_inspection_checkpoint(args.evidence_file, evidence)
+        _revalidate_inspection_workspace(
+            workspace_root_identity,
+            workspace=workspace,
+            staged_skill_name=authorized_skill_name,
+        )
+        runtime_error: BaseException | None = None
+        try:
+            asyncio.run(runtime.submit(request))
+        except BaseException as exc:
+            runtime_error = exc
+        try:
+            _revalidate_inspection_workspace(
+                workspace_root_identity,
+                workspace=workspace,
+                staged_skill_name=authorized_skill_name,
+            )
+        except BaseException as exc:
+            raise _InspectionCleanupFailed("inspection workspace identity changed after cleanup") from exc
+        evidence["cleanup"]["attempted"] = (
+            evidence["provider_child_creation"].get("primary_observed") is True
+        )
+        enumerator = _post_cleanup_enumerator or _post_cleanup_provider_children
+        try:
+            post_cleanup = enumerator(provider=provider, run_id=evidence["run_id"])
+            primary_count = post_cleanup.get("primary_count")
+            native_count = post_cleanup.get("native_sidecar_count")
+            if (
+                type(primary_count) is not int
+                or primary_count < 0
+                or type(native_count) is not int
+                or native_count < 0
+            ):
+                raise _InspectionCleanupFailed("post-cleanup enumeration is invalid")
+        except BaseException as exc:
+            evidence["cleanup"].update(
+                {
+                    "post_cleanup_query_succeeded": False,
+                    "provider_stop_confirmed": False,
+                    "result": "enumeration_failed",
+                }
+            )
+            evidence["stage"] = "cleanup_unconfirmed"
+            _write_inspection_checkpoint(args.evidence_file, evidence)
+            raise _InspectionCleanupFailed("post-cleanup enumeration failed") from exc
+        evidence["cleanup"].update(
+            {
+                "post_cleanup_query_succeeded": True,
+                "post_cleanup_primary_count": primary_count,
+                "post_cleanup_native_sidecar_count": native_count,
+            }
+        )
+        cleanup_runtime_error = runtime_error is not None and _inspection_failure_category(
+            runtime_error,
+            primary_observed=evidence["provider_child_creation"].get("primary_observed") is True,
+        ) == "cleanup_failure"
+        no_owned_children = primary_count == 0 and native_count == 0
+        primary_observed = evidence["provider_child_creation"].get("primary_observed") is True
+        cleanup_confirmed = (
+            primary_observed
+            and no_owned_children
+            and not cleanup_runtime_error
+            and evidence["cleanup"].get("lease_release_observed") is True
+        )
+        evidence["cleanup"]["provider_stop_confirmed"] = cleanup_confirmed
+        evidence["cleanup"]["result"] = (
+            "confirmed"
+            if cleanup_confirmed
+            else "not_required"
+            if not primary_observed and no_owned_children and not cleanup_runtime_error
+            else "owned_children_remain"
+            if not no_owned_children
+            else "runtime_cleanup_failed"
+        )
+        evidence["stage"] = "cleanup_confirmed" if cleanup_confirmed else "cleanup_unconfirmed"
+        _write_inspection_checkpoint(args.evidence_file, evidence)
+        if not no_owned_children:
+            raise _InspectionCleanupFailed("owned provider children remain after cleanup") from runtime_error
+        if cleanup_runtime_error:
+            raise runtime_error
+        if primary_observed and not cleanup_confirmed:
+            raise _InspectionCleanupFailed("provider cleanup was not confirmed") from runtime_error
+        if runtime_error is not None:
+            raise runtime_error
+        evidence["stage"] = "completed"
+        evidence["exit_code"] = 0
+        evidence["failure_category"] = ""
+        exit_code = 0
+    except BaseException as exc:
+        primary_observed = evidence["provider_child_creation"].get("primary_observed") is True
+        category = _inspection_failure_category(exc, primary_observed=primary_observed)
+        evidence["failure_category"] = category
+        evidence["stage"] = "cancelled" if category == "cancelled" else "failed"
+        evidence["cleanup"]["attempted"] = primary_observed
+        if category == "cleanup_failure":
+            evidence["cleanup"]["provider_stop_confirmed"] = False
+            if evidence["cleanup"].get("result") in {"pending", "confirmed", "release_callback_observed"}:
+                evidence["cleanup"]["result"] = "runtime_cleanup_failed"
+        elif primary_observed and evidence["cleanup"].get("provider_stop_confirmed") is not True:
+            evidence["cleanup"]["result"] = "not_confirmed"
+        elif not primary_observed:
+            evidence["cleanup"]["result"] = "not_required"
+        exit_code = 130 if category == "cancelled" else 1
+        evidence["exit_code"] = exit_code
+    finally:
+        if original_settings is not None:
+            settings.sandbox_container_provider = original_settings[0]
+            settings.sandbox_executor_image = original_settings[1]
+            settings.sandbox_workspace_root = original_settings[2]
+        evidence["finished_at"] = _utc_now()
+        try:
+            _write_inspection_checkpoint(args.evidence_file, evidence)
+        finally:
+            if workspace_root_identity is not None:
+                _close_inspection_workspace_root(workspace_root_identity)
+
+    output = {
+        "run_id": evidence["run_id"],
+        "evidence_file": "[redacted-path]",
+        "inspection_profile": profile,
+        "stage": evidence["stage"],
+        "failure_category": evidence["failure_category"],
+    }
+    if args.json_output:
+        print(json.dumps(output, ensure_ascii=True, indent=2))
+    else:
+        print("PASSED: staged Skill mount inspection" if exit_code == 0 else "FAILED: staged Skill mount inspection")
+        if evidence["failure_category"]:
+            print(f"- {evidence['failure_category']}")
+    return exit_code
 
 
 def load_runtime_probe_results(path: str | Path, *, run_id: str) -> dict[str, Any]:
@@ -292,6 +1709,8 @@ class EvidenceRecorder:
         self._lock = threading.Lock()
 
     def record_callback(self, payload: dict[str, object], token: str) -> bool:
+        from app.sandbox_hardening_contract import safe_bounded_error_projection
+
         if token != self._callback_token:
             return False
         if payload.get("run_id") != self.run_id:
@@ -346,9 +1765,7 @@ class EvidenceRecorder:
         return payload
 
     def write(self, evidence_path: str | Path) -> None:
-        path = Path(evidence_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), ensure_ascii=True, indent=2), encoding="utf-8")
+        _atomic_write_json(evidence_path, self.to_dict())
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
@@ -416,6 +1833,8 @@ def _callback_token_id_for_url(callback_url: str, run_id: str) -> str:
 
 def _callback_token_for_url(callback_url: str, token_id: str, callback_token: str) -> str:
     if _is_platform_callback_endpoint(callback_url):
+        from app.runtime.sandbox.callback_tokens import derive_callback_token
+
         return derive_callback_token(callback_token, token_id)
     return callback_token
 
@@ -1156,6 +2575,7 @@ def run_platform_runtime_probe(
     }
 
     async def probe() -> object:
+        from app.control_plane_contracts import standard_trace_id
         from app.runtime.sandbox.contracts import SandboxRuntimeRequest
         from app.runtime.sandbox.runtime import SandboxRuntime
         from app.settings import get_settings
@@ -1566,6 +2986,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--sandbox-executor-image",
         default=os.environ.get("AI_PLATFORM_SANDBOX_EXECUTOR_IMAGE", os.environ.get("SANDBOX_EXECUTOR_IMAGE", "")),
     )
+    parser.add_argument(
+        "--inspection-profile",
+        choices=list(INSPECTION_PROFILES),
+        default="",
+        help=(
+            "Run the fixed staged-Skill mount inspection with either the implicit platform-controlled "
+            "catalog or the implicit sdk-native catalog plus governed Bash."
+        ),
+    )
+    parser.add_argument(
+        "--source-sha",
+        default=os.environ.get("AI_PLATFORM_SANDBOX_SOURCE_SHA", ""),
+        help="Deployed source SHA; when omitted the verifier script SHA-256 is recorded.",
+    )
     parser.add_argument("--callback-host", default=os.environ.get("AI_PLATFORM_CALLBACK_HOST"))
     parser.add_argument("--callback-public-url", default=os.environ.get("AI_PLATFORM_CALLBACK_PUBLIC_URL"))
     parser.add_argument("--callback-port", type=int, default=int(os.environ.get("AI_PLATFORM_CALLBACK_PORT", "0")))
@@ -1615,6 +3049,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.inspection_profile:
+        return _run_skill_mount_inspection(args)
     docker_cmd = tuple(part for part in args.docker_cmd.split(" ") if part)
     recorder = EvidenceRecorder(
         run_id=args.run_id,
@@ -1763,5 +3199,36 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if success else 1
 
 
+def _entrypoint(argv: list[str]) -> int:
+    evidence_path = _safe_evidence_file_from_argv(argv)
+    try:
+        return main(argv)
+    except SystemExit as exc:
+        code = exc.code if type(exc.code) is int else 1
+        if code != 0 and evidence_path is not None:
+            _write_bootstrap_error(
+                evidence_path,
+                failure_category="argument_error",
+                exit_code=code,
+            )
+        return code
+    except BaseException as exc:
+        code = 130 if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)) else 1
+        if evidence_path is not None:
+            _write_bootstrap_error(
+                evidence_path,
+                failure_category=(
+                    "cancelled"
+                    if code == 130
+                    else "dependency_import_failure"
+                    if isinstance(exc, ImportError)
+                    else "bootstrap_failure"
+                ),
+                exit_code=code,
+            )
+        print("FAILED: sandbox runtime evidence bootstrap", file=sys.stderr)
+        return code
+
+
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(_entrypoint(sys.argv[1:]))
