@@ -863,7 +863,7 @@ def _message_content(row: dict[str, object], principal: AuthPrincipal) -> str:
 
 async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -> None:
     limit = int(get_settings().max_active_runs_per_user)
-    await repositories.enforce_user_active_run_admission(
+    await repositories.enforce_user_active_run_admission_under_lock(
         conn,
         tenant_id=tenant_id,
         user_id=user_id,
@@ -1099,10 +1099,11 @@ async def chat_stream(
                         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
                     return _chat_stream_response_from_submission(claimed_submission)
 
-            # One order for explicit and implicit chat creation: the user
-            # admission advisory lock precedes any exact continuation-session
-            # row lock, prior-Skill read and generation allocation/create_run.
-            await enforce_user_active_run_limit(
+            # One order for explicit and implicit chat creation: acquire the
+            # user admission advisory before any exact continuation-session row
+            # lock. The limit count is deliberately checked only after the
+            # established intent/capability/parameter errors below.
+            await repositories.acquire_user_active_run_admission_lock(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1269,6 +1270,11 @@ async def chat_stream(
                 )
             if "docx" in (skill.get("input_modes") or []) and not resolved_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
+            await enforce_user_active_run_limit(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+            )
             release_decision = resolve_rollout_skill_decision(
                 skill,
                 tenant_id=principal.tenant_id,

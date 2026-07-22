@@ -3936,6 +3936,10 @@ async def test_run_control_operation_lock_scope_precedes_any_mapping_query():
     assert "source.user_id = %s" in mapping_sql
     assert "child.user_id = %s" in mapping_sql
     assert "child.copied_from_run_id = source.id" in mapping_sql
+    assert "child.workspace_id" in mapping_sql
+    assert "child.agent_id" in mapping_sql
+    assert "child.skill_id" in mapping_sql
+    assert "child.input_json" in mapping_sql
     assert mapping_params.count("tenant-a") >= 1
     assert mapping_params.count("user-a") == 2
     assert "run-source" in mapping_params

@@ -283,6 +283,7 @@ export interface RunControlChildResponse {
   run_id: string;
   session_id: string;
   status: string;
+  queue_admission?: "admitted";
   queue_position?: number;
   queue_insight?: unknown;
 }
@@ -295,6 +296,7 @@ export interface RunControlOperationResponse {
   run_id: string | null;
   session_id: string | null;
   status: string;
+  queue_admission?: "admitted" | "pending" | "settled" | "unknown" | null;
 }
 
 /** Build the single supported Chat submission endpoint. */

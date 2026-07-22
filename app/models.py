@@ -187,6 +187,7 @@ class RunControlMutationResponse(RunControlResponse):
     source_run_id: str
     action: Literal["retry", "resume"]
     operation_id: UUID
+    queue_admission: Literal["admitted"] = "admitted"
 
 
 class RunControlOperationResponse(BaseModel):
@@ -200,6 +201,7 @@ class RunControlOperationResponse(BaseModel):
     run_id: str | None = None
     session_id: str | None = None
     status: str
+    queue_admission: Literal["admitted", "pending", "settled", "unknown"] | None = None
 
 
 class MultiAgentDispatchClaimRequest(BaseModel):

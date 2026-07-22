@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app import repositories as repository_module
 from app.main import create_app
 from app.models import QueueRunPayload
+from app.queue import QueueAdmissionMetadata
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError, ToolPermissionTerminalizationProgress
 
 
@@ -783,6 +784,14 @@ def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creati
             "operation_id": kwargs["operation_id"],
             "run_id": kwargs["child_run_id"],
             "session_id": "session-parent",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {
+                "input": {"message": "idempotent"},
+                **replay_provenance("general-chat"),
+            },
             "status": "queued",
         }
         return "evt-operation"
@@ -790,6 +799,14 @@ def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creati
     async def enqueue(payload):
         calls.append(("enqueue", payload["run_id"]))
         return 1
+
+    async def read_admission(payload):
+        calls.append(("read_admission", payload["run_id"]))
+        return QueueAdmissionMetadata(
+            queue_position=1,
+            queue_admission_ordinal=1,
+            message_id="same-message",
+        )
 
     async def queue_insight(tenant_id, **_kwargs):
         return {"tenant_id": tenant_id}
@@ -803,6 +820,7 @@ def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creati
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
     monkeypatch.setattr(repository_module, "record_run_control_operation", record, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission, raising=False)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
     client = TestClient(create_app())
 
@@ -824,6 +842,253 @@ def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creati
         ("enqueue", "run-child-once"),
         ("operation_lock", "retry", RUN_CONTROL_OPERATION_ID),
         ("resolve", "retry", RUN_CONTROL_OPERATION_ID),
+        ("read_admission", "run-child-once"),
+    ]
+
+
+def test_existing_retry_operation_recovers_missing_queue_admission_without_duplicate_child(monkeypatch):
+    calls: list[object] = []
+    mapping = {
+        "source_run_id": "run-parent",
+        "action": "retry",
+        "operation_id": RUN_CONTROL_OPERATION_ID,
+        "run_id": "run-child-once",
+        "session_id": "session-parent",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "input_json": {
+            "input": {"message": "same immutable input"},
+            **replay_provenance("general-chat"),
+        },
+        "status": "queued",
+    }
+
+    async def acquire_lock(conn, **kwargs):
+        calls.append(("operation_lock", kwargs["operation_id"]))
+
+    async def resolve_operation(conn, **kwargs):
+        calls.append(("resolve", kwargs["operation_id"]))
+        return mapping
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("existing mapping must not admit or create another child")
+
+    async def read_admission(payload):
+        calls.append(("read", payload["run_id"], payload["input"]["message"]))
+        return None
+
+    async def enqueue(payload):
+        calls.append(("enqueue", payload["run_id"], payload["input"]["message"]))
+        return 4
+
+    async def queue_insight(tenant_id, **_kwargs):
+        return {"tenant_id": tenant_id}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
+    monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
+    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", forbidden, raising=False)
+    monkeypatch.setattr(repository_module, "retry_run_as_new_task", forbidden, raising=False)
+    monkeypatch.setattr(repository_module, "record_run_control_operation", forbidden, raising=False)
+    monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
+    client = TestClient(create_app())
+
+    response = client.post(run_control_url("run-parent", "retry"), headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "run-child-once"
+    assert response.json()["queue_admission"] == "admitted"
+    assert calls == [
+        ("operation_lock", RUN_CONTROL_OPERATION_ID),
+        ("resolve", RUN_CONTROL_OPERATION_ID),
+        ("read", "run-child-once", "same immutable input"),
+        ("enqueue", "run-child-once", "same immutable input"),
+    ]
+
+
+def test_retry_ambiguous_enqueue_uses_readback_and_returns_same_child(monkeypatch):
+    calls: list[object] = []
+    mapping: dict[str, object] | None = None
+
+    async def acquire_lock(conn, **kwargs):
+        calls.append("operation_lock")
+
+    async def resolve_operation(conn, **kwargs):
+        calls.append("resolve")
+        return mapping
+
+    async def admit(conn, **kwargs):
+        calls.append("admit")
+        return 0
+
+    async def retry(conn, **kwargs):
+        calls.append("retry")
+        return {
+            "run_id": "run-child-ambiguous",
+            "session_id": "session-parent",
+            "workspace_id": "workspace-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+        }
+
+    async def prepare(conn, **kwargs):
+        calls.append("prepare")
+        return {
+            "tenant_id": "default",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-parent",
+            "run_id": "run-child-ambiguous",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input": {"message": "immutable"},
+        }
+
+    async def record(conn, **kwargs):
+        nonlocal mapping
+        calls.append("record")
+        mapping = {
+            "source_run_id": "run-parent",
+            "action": "retry",
+            "operation_id": RUN_CONTROL_OPERATION_ID,
+            "run_id": "run-child-ambiguous",
+            "session_id": "session-parent",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {"input": {"message": "immutable"}},
+            "status": "queued",
+        }
+
+    async def enqueue(payload):
+        calls.append("enqueue_ambiguous")
+        raise TimeoutError("reply lost after redis commit")
+
+    async def read_admission(payload):
+        calls.append("readback")
+        return QueueAdmissionMetadata(
+            queue_position=2,
+            queue_admission_ordinal=9,
+            message_id="opaque-message-id",
+        )
+
+    async def queue_insight(tenant_id, **_kwargs):
+        return {"tenant_id": tenant_id}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
+    monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
+    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", admit, raising=False)
+    monkeypatch.setattr(repository_module, "retry_run_as_new_task", retry, raising=False)
+    monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
+    monkeypatch.setattr(repository_module, "record_run_control_operation", record, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission, raising=False)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
+    client = TestClient(create_app())
+
+    response = client.post(run_control_url("run-parent", "retry"), headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "run-child-ambiguous"
+    assert response.json()["queue_position"] == 2
+    assert response.json()["queue_admission"] == "admitted"
+    assert calls == [
+        "operation_lock",
+        "resolve",
+        "admit",
+        "retry",
+        "prepare",
+        "record",
+        "enqueue_ambiguous",
+        "readback",
+    ]
+
+
+def test_retry_same_operation_recovers_after_unconfirmed_enqueue_without_recreating_child(monkeypatch):
+    calls: list[object] = []
+    mapping = {
+        "source_run_id": "run-parent",
+        "action": "retry",
+        "operation_id": RUN_CONTROL_OPERATION_ID,
+        "run_id": "run-child-recoverable",
+        "session_id": "session-parent",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "input_json": {
+            "input": {"message": "recover me"},
+            **replay_provenance("general-chat"),
+        },
+        "status": "queued",
+    }
+    enqueue_attempts = 0
+
+    async def acquire_lock(conn, **kwargs):
+        calls.append(("operation_lock", kwargs["operation_id"]))
+
+    async def resolve_operation(conn, **kwargs):
+        calls.append(("resolve", kwargs["operation_id"]))
+        return mapping
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("same operation recovery must not admit, create, record, or compensate")
+
+    async def read_admission(payload):
+        calls.append(("read", payload["run_id"]))
+        return None
+
+    async def enqueue(payload):
+        nonlocal enqueue_attempts
+        enqueue_attempts += 1
+        calls.append(("enqueue", enqueue_attempts, payload["run_id"]))
+        if enqueue_attempts == 1:
+            raise TimeoutError("redis outcome still unknown")
+        return 5
+
+    async def queue_insight(tenant_id, **_kwargs):
+        return {"tenant_id": tenant_id}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
+    monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
+    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", forbidden, raising=False)
+    monkeypatch.setattr(repository_module, "retry_run_as_new_task", forbidden, raising=False)
+    monkeypatch.setattr(repository_module, "record_run_control_operation", forbidden, raising=False)
+    monkeypatch.setattr("app.routes.runs._compensate_enqueue_failure", forbidden)
+    monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
+    client = TestClient(create_app())
+
+    first = client.post(run_control_url("run-parent", "retry"), headers=headers())
+    second = client.post(run_control_url("run-parent", "retry"), headers=headers())
+
+    assert first.status_code == 503
+    assert first.json()["detail"] == "queue_admission_unconfirmed"
+    assert second.status_code == 200
+    assert second.json()["run_id"] == "run-child-recoverable"
+    assert second.json()["queue_admission"] == "admitted"
+    assert enqueue_attempts == 2
+    assert calls == [
+        ("operation_lock", RUN_CONTROL_OPERATION_ID),
+        ("resolve", RUN_CONTROL_OPERATION_ID),
+        ("read", "run-child-recoverable"),
+        ("enqueue", 1, "run-child-recoverable"),
+        ("read", "run-child-recoverable"),
+        ("operation_lock", RUN_CONTROL_OPERATION_ID),
+        ("resolve", RUN_CONTROL_OPERATION_ID),
+        ("read", "run-child-recoverable"),
+        ("enqueue", 2, "run-child-recoverable"),
     ]
 
 
@@ -862,6 +1127,7 @@ def test_run_control_operation_get_linearizes_before_authorized_absence(monkeypa
         "run_id": None,
         "session_id": None,
         "status": "absent",
+        "queue_admission": None,
     }
     assert calls == [
         ("operation_lock", "resume", RUN_CONTROL_OPERATION_ID),
@@ -870,17 +1136,98 @@ def test_run_control_operation_get_linearizes_before_authorized_absence(monkeypa
     ]
 
 
-def test_retry_requires_a_canonical_uuid4_operation_id(monkeypatch):
+def test_run_control_operation_get_reports_safe_pending_queue_admission(monkeypatch):
+    operation = {
+        "source_run_id": "run-parent",
+        "action": "resume",
+        "operation_id": RUN_CONTROL_OPERATION_ID,
+        "run_id": "run-child-pending",
+        "session_id": "session-parent",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "input_json": {
+            "input": {"private": "must-not-be-public"},
+            **replay_provenance("general-chat"),
+        },
+        "status": "queued",
+    }
+
+    async def noop_lock(conn, **kwargs):
+        return None
+
+    async def authorized_source(conn, **kwargs):
+        return {"id": kwargs["run_id"], "status": "failed"}
+
+    async def resolve_operation(conn, **kwargs):
+        return operation
+
+    async def absent_admission(payload):
+        assert payload["input"] == {"private": "must-not-be-public"}
+        return None
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", noop_lock, raising=False)
+    monkeypatch.setattr(repository_module, "get_authorized_run", authorized_source)
+    monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
+    monkeypatch.setattr("app.routes.runs.read_queue_admission", absent_admission, raising=False)
     client = TestClient(create_app())
 
-    missing = client.post("/api/ai/runs/run-parent/retry", headers=headers())
+    response = client.get(
+        f"/api/ai/runs/run-parent/control-operations/resume/{RUN_CONTROL_OPERATION_ID}",
+        headers=headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "source_run_id": "run-parent",
+        "action": "resume",
+        "operation_id": RUN_CONTROL_OPERATION_ID,
+        "run_id": "run-child-pending",
+        "session_id": "session-parent",
+        "status": "queued",
+        "queue_admission": "pending",
+    }
+    assert "private" not in response.text
+
+
+def test_retry_and_resume_generate_uuid4_when_operation_id_is_omitted_but_reject_non_uuid4(monkeypatch):
+    observed: list[object] = []
+
+    async def mutate(**kwargs):
+        observed.append(kwargs["operation_id"])
+        return {
+            "source_run_id": kwargs["run_id"],
+            "run_id": "run-child-generated-id",
+            "session_id": "session-parent",
+            "status": "queued",
+            "action": kwargs["action"],
+            "operation_id": kwargs["operation_id"],
+            "queue_admission": "admitted",
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs._mutate_run_control_child", mutate)
+    client = TestClient(create_app())
+
+    missing_retry = client.post("/api/ai/runs/run-parent/retry", headers=headers())
+    missing_resume = client.post("/api/ai/runs/run-parent/resume", headers=headers())
     uuid1 = client.post(
         run_control_url("run-parent", "retry", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
         headers=headers(),
     )
 
-    assert missing.status_code == 422
+    assert missing_retry.status_code == 200
+    assert missing_resume.status_code == 200
+    assert missing_retry.json()["run_id"] == "run-child-generated-id"
+    assert missing_resume.json()["run_id"] == "run-child-generated-id"
+    assert len(observed) == 2
+    assert all(getattr(operation_id, "version", None) == 4 for operation_id in observed)
+    assert observed[0] != observed[1]
+    assert missing_retry.json()["operation_id"] == str(observed[0])
+    assert missing_resume.json()["operation_id"] == str(observed[1])
     assert uuid1.status_code == 422
 
 
@@ -1138,6 +1485,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         "status": "queued",
         "action": "resume",
         "operation_id": RUN_CONTROL_OPERATION_ID,
+        "queue_admission": "admitted",
         "queue_position": 2,
         "queue_insight": {"tenant_id": "default", "reason": "workers_busy"},
     }

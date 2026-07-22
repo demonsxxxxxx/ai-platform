@@ -3773,11 +3773,46 @@ async def enforce_user_active_run_admission(
     limit = int(limit)
     if limit <= 0:
         return 0
+    await acquire_user_active_run_admission_lock(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+    )
+    return await enforce_user_active_run_admission_under_lock(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        limit=limit,
+    )
+
+
+async def acquire_user_active_run_admission_lock(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """Acquire the transaction-scoped per-user run-admission serialization lock."""
+
     lock_scope = dumps_json({"tenant_id": tenant_id, "user_id": user_id})
     await conn.execute(
         "select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))",
         (lock_scope,),
     )
+
+
+async def enforce_user_active_run_admission_under_lock(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    limit: int,
+) -> int:
+    """Check the active-run limit after the caller acquired its user lock."""
+
+    limit = int(limit)
+    if limit <= 0:
+        return 0
     active_count = await count_active_runs_for_user(conn, tenant_id=tenant_id, user_id=user_id)
     if active_count >= limit:
         raise RepositoryConflictError("user_active_run_limit_exceeded")
@@ -3851,7 +3886,12 @@ async def get_run_control_operation(
                operation.payload_json->>'operation_id' as operation_id,
                child.id as run_id,
                child.session_id,
-               child.status
+               child.status,
+               child.workspace_id,
+               child.user_id,
+               child.agent_id,
+               child.skill_id,
+               child.input_json
         from run_events operation
         join runs source
           on source.tenant_id = operation.tenant_id

@@ -357,3 +357,123 @@ test("RunControlLifecycle reload resolves the persisted operation without inferr
     restoreStorage();
   }
 });
+
+test("RunControlLifecycle executes retry when sessionStorage is unavailable", async () => {
+  const restoreStorage = installSessionStorage(null as unknown as Storage);
+  const lifecycle = new RunControlLifecycle();
+  const originalRetry = sessionApi.retryRun;
+  const operationIds: string[] = [];
+  sessionApi.retryRun = (async (_runId, operationId) => {
+    operationIds.push(operationId);
+    return {
+      source_run_id: "run-a",
+      action: "retry",
+      operation_id: operationId,
+      run_id: "run-memory-fallback",
+      session_id: "session-a",
+      status: "queued",
+      queue_admission: "admitted",
+    };
+  }) as typeof sessionApi.retryRun;
+  lifecycle.configure({
+    adoptRunControlChild: async () => "adopted",
+    reconnectRunControlOwner: async () => {},
+  });
+  lifecycle.bindParent(parent());
+
+  try {
+    await lifecycle.retry();
+    assert.equal(operationIds.length, 1);
+    assert.equal(lifecycle.getSnapshot().child?.runId, "run-memory-fallback");
+    assert.notEqual(lifecycle.getSnapshot().phase, "rejected");
+  } finally {
+    sessionApi.retryRun = originalRetry;
+    restoreStorage();
+  }
+});
+
+test("RunControlLifecycle executes resume when sessionStorage throws", async () => {
+  const throwingStorage = new MemoryStorage();
+  throwingStorage.setItem = () => {
+    throw new DOMException("blocked", "SecurityError");
+  };
+  const restoreStorage = installSessionStorage(throwingStorage);
+  const lifecycle = new RunControlLifecycle();
+  const originalResume = sessionApi.resumeRun;
+  let mutations = 0;
+  sessionApi.resumeRun = (async (_runId, operationId) => {
+    mutations += 1;
+    return {
+      source_run_id: "run-a",
+      action: "resume",
+      operation_id: operationId,
+      run_id: "run-storage-throws",
+      session_id: "session-a",
+      status: "queued",
+      queue_admission: "admitted",
+    };
+  }) as typeof sessionApi.resumeRun;
+  lifecycle.configure({
+    adoptRunControlChild: async () => "adopted",
+    reconnectRunControlOwner: async () => {},
+  });
+  lifecycle.bindParent(parent());
+
+  try {
+    await lifecycle.resume();
+    assert.equal(mutations, 1);
+    assert.equal(lifecycle.getSnapshot().child?.runId, "run-storage-throws");
+  } finally {
+    sessionApi.resumeRun = originalResume;
+    restoreStorage();
+  }
+});
+
+test("RunControlLifecycle replays the same id when resolver finds a child pending queue admission", async () => {
+  const storage = new MemoryStorage();
+  const restoreStorage = installSessionStorage(storage);
+  const lifecycle = new RunControlLifecycle();
+  const originalRetry = sessionApi.retryRun;
+  const originalResolve = sessionApi.resolveRunControlOperation;
+  const operationIds: string[] = [];
+  let mutationCount = 0;
+  sessionApi.retryRun = (async (_runId, operationId) => {
+    mutationCount += 1;
+    operationIds.push(operationId);
+    if (mutationCount === 1) throw new TypeError("response lost before enqueue confirmation");
+    return {
+      source_run_id: "run-a",
+      action: "retry",
+      operation_id: operationId,
+      run_id: "run-queue-recovered",
+      session_id: "session-a",
+      status: "queued",
+      queue_admission: "admitted",
+    };
+  }) as typeof sessionApi.retryRun;
+  sessionApi.resolveRunControlOperation = (async (_runId, action, operationId) => ({
+    source_run_id: "run-a",
+    action,
+    operation_id: operationId,
+    run_id: "run-queue-recovered",
+    session_id: "session-a",
+    status: "queued",
+    queue_admission: "pending",
+  })) as typeof sessionApi.resolveRunControlOperation;
+  lifecycle.configure({
+    adoptRunControlChild: async () => "adopted",
+    reconnectRunControlOwner: async () => {},
+  });
+  lifecycle.bindParent(parent());
+
+  try {
+    await lifecycle.retry();
+    assert.equal(mutationCount, 2);
+    assert.equal(operationIds[0], operationIds[1]);
+    assert.equal(lifecycle.getSnapshot().child?.runId, "run-queue-recovered");
+  } finally {
+    sessionApi.retryRun = originalRetry;
+    sessionApi.resolveRunControlOperation = originalResolve;
+    restoreStorage();
+  }
+});

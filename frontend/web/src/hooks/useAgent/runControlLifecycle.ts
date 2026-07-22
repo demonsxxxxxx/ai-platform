@@ -162,12 +162,10 @@ function loadPendingOperation(
   parent: RunControlParentIdentity,
 ): PendingRunControlOperation | null {
   const storage = operationStorage();
-  if (!storage) return null;
   const key = operationStorageKey(parent);
-  try {
-    const raw = storage.getItem(key);
-    if (!raw) return null;
-    const value = JSON.parse(raw) as Partial<PendingRunControlOperation>;
+  const validate = (
+    value: Partial<PendingRunControlOperation>,
+  ): PendingRunControlOperation | null => {
     const valid =
       value.version === 1 &&
       value.tenantId === parent.auth.tenantId &&
@@ -177,10 +175,23 @@ function loadPendingOperation(
       (value.action === "retry" || value.action === "resume") &&
       typeof value.operationId === "string" &&
       UUID4_PATTERN.test(value.operationId);
-    if (valid) return value as PendingRunControlOperation;
-    storage.removeItem(key);
-  } catch {
-    // Corrupt or unavailable browser state is never used to replay a mutation.
+    return valid ? (value as PendingRunControlOperation) : null;
+  };
+  if (storage) {
+    try {
+      const raw = storage.getItem(key);
+      if (raw) {
+        const pending = validate(
+          JSON.parse(raw) as Partial<PendingRunControlOperation>,
+        );
+        if (pending) {
+          return pending;
+        }
+        storage.removeItem(key);
+      }
+    } catch {
+      // Durable reload recovery is unavailable; no unverified value is replayed.
+    }
   }
   return null;
 }
@@ -189,23 +200,25 @@ function persistPendingOperation(
   parent: RunControlParentIdentity,
   pending: PendingRunControlOperation,
 ): boolean {
+  const key = operationStorageKey(parent);
   const storage = operationStorage();
-  if (!storage) return false;
+  if (!storage) return true;
   try {
-    storage.setItem(operationStorageKey(parent), JSON.stringify(pending));
-    return true;
+    storage.setItem(key, JSON.stringify(pending));
   } catch {
-    return false;
+    // The caller retains the pending value in this lifecycle instance, so the
+    // first mutation and same-page resolver/replay path remain available.
   }
+  return true;
 }
 
 function removePendingOperation(
   parent: RunControlParentIdentity,
   operationId: string,
 ): void {
+  const key = operationStorageKey(parent);
   const storage = operationStorage();
   if (!storage) return;
-  const key = operationStorageKey(parent);
   try {
     const raw = storage.getItem(key);
     if (!raw) return;
@@ -293,13 +306,23 @@ function ownerIdentityKey(owner: RunControlOwner): string {
 function childFromExactOperation(
   response: RunControlChildResponse | RunControlOperationResponse | null,
   pending: PendingRunControlOperation,
+  allowMissingOperationEcho: boolean,
 ): RunControlChild | null {
+  const hasNoOperationEcho =
+    allowMissingOperationEcho &&
+    response?.action === undefined &&
+    response?.operation_id === undefined &&
+    response?.source_run_id === undefined;
+  const hasExactOperationEcho =
+    response?.action === pending.action &&
+    response?.operation_id === pending.operationId &&
+    (response.source_run_id === undefined ||
+      response.source_run_id === pending.sourceRunId);
   if (
     !response ||
-    response.action !== pending.action ||
-    response.operation_id !== pending.operationId ||
-    (response.source_run_id !== undefined &&
-      response.source_run_id !== pending.sourceRunId) ||
+    (!hasNoOperationEcho && !hasExactOperationEcho) ||
+    response.queue_admission === "pending" ||
+    response.queue_admission === "unknown" ||
     typeof response.session_id !== "string" ||
     !response.session_id.trim() ||
     typeof response.run_id !== "string" ||
@@ -639,6 +662,7 @@ export class RunControlLifecycle {
           pending,
           response as RunControlChildResponse | null,
           actionSequence,
+          true,
         )
       ) {
         return;
@@ -707,6 +731,7 @@ export class RunControlLifecycle {
         this.publishRejected(owner, error.message);
       } else {
         this.publishUnconfirmed(owner);
+        await this.refreshUnconfirmedReadiness(owner);
       }
       return;
     }
@@ -717,6 +742,7 @@ export class RunControlLifecycle {
         pending,
         resolution,
         actionSequence,
+        false,
       )
     ) {
       return;
@@ -728,8 +754,21 @@ export class RunControlLifecycle {
       resolution.status === "absent" &&
       resolution.run_id === null &&
       resolution.session_id === null;
-    if (!exactAbsence || !allowReplayAfterAbsence) {
+    const exactPendingAdmission =
+      resolution.source_run_id === pending.sourceRunId &&
+      resolution.action === pending.action &&
+      resolution.operation_id === pending.operationId &&
+      resolution.queue_admission === "pending" &&
+      typeof resolution.run_id === "string" &&
+      resolution.run_id.length > 0 &&
+      typeof resolution.session_id === "string" &&
+      resolution.session_id.length > 0;
+    if (
+      (!exactAbsence && !exactPendingAdmission) ||
+      !allowReplayAfterAbsence
+    ) {
       this.publishUnconfirmed(owner);
+      await this.refreshUnconfirmedReadiness(owner);
       return;
     }
 
@@ -746,6 +785,7 @@ export class RunControlLifecycle {
           pending,
           replay as RunControlChildResponse | null,
           actionSequence,
+          true,
         )
       ) {
         return;
@@ -767,8 +807,13 @@ export class RunControlLifecycle {
     pending: PendingRunControlOperation,
     response: RunControlChildResponse | RunControlOperationResponse | null,
     actionSequence: number,
+    allowMissingOperationEcho: boolean,
   ): Promise<boolean> {
-    const child = childFromExactOperation(response, pending);
+    const child = childFromExactOperation(
+      response,
+      pending,
+      allowMissingOperationEcho,
+    );
     if (!child || !this.isCurrentOperation(owner, pending, actionSequence)) {
       return false;
     }
@@ -820,6 +865,28 @@ export class RunControlLifecycle {
     owner.phase = "unconfirmed";
     this.publishForOwner(owner, { phase: "unconfirmed", rejectionMessage: null });
     if (refreshParent) void this.refresh(owner);
+  }
+
+  private async refreshUnconfirmedReadiness(
+    owner: RunControlOwner,
+  ): Promise<void> {
+    if (!this.isCurrentOwner(owner)) return;
+    const readSequence = ++owner.readSequence;
+    try {
+      const readiness = await sessionApi.getStatus(owner.sessionId, owner.runId, {
+        signal: owner.abortController.signal,
+      });
+      if (
+        !this.isCurrentOwner(owner) ||
+        owner.readSequence !== readSequence ||
+        owner.phase !== "unconfirmed"
+      ) {
+        return;
+      }
+      this.publishForOwner(owner, { readiness });
+    } catch {
+      // The exact operation remains persisted and unconfirmed for a later GET.
+    }
   }
 
   private abortOwner(): void {

@@ -2104,40 +2104,100 @@ test("useAgent fails closed before POST when durable submission storage cannot b
 
 test("useAgent retains independently persisted submissions from concurrent tabs", async () => {
   const first = await loadReactHarness();
-  const second = await loadReactHarness({ preserveSubmissionReferences: true });
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const storage = dom.window.localStorage;
-  const originalGetItem = storage.getItem;
+  const sharedStorage = dom.window.localStorage;
+  const independentPrefix = "ai_platform_chat_submission_reference_v1:";
   const submissionIds: string[] = [];
-  storage.getItem = ((key: string) =>
-    key === "ai_platform_chat_submission_references_v1"
-      ? "[]"
-      : originalGetItem.call(storage, key)) as Storage["getItem"];
+  const rejectSubmissions: Array<(reason: Error) => void> = [];
   sessionApi.submitChat = (async (...args) => {
-    submissionIds.push(String(args[8]));
-    throw new Error("response lost after server acceptance");
+    submissionIds.push(String(args[7]));
+    return await new Promise<never>((_resolve, reject) => {
+      rejectSubmissions.push(reject);
+    });
   }) as typeof sessionApi.submitChat;
+  const outcomes: unknown[] = [];
+  let firstSubmission!: Promise<unknown>;
+  let secondSubmission!: Promise<unknown>;
+  let second: Awaited<ReturnType<typeof loadReactHarness>> | null = null;
 
   try {
     await first.act(async () => {
-      await first.hook.sendMessage("tab one unknown submission");
+      firstSubmission = first.hook.sendMessage("tab one unknown submission");
+      await Promise.resolve();
     });
-    await second.act(async () => {
-      await second.hook.sendMessage("tab two unknown submission");
+    assert.equal(submissionIds.length, 1);
+
+    // Mount tab two from its pre-write key snapshot while tab one's POST is
+    // still unresolved. Independent per-submission keys must let both atomic
+    // writes survive even though neither tab enumerated the other's key first.
+    const tabTwoKeys = new Set<string>();
+    const visibleTabTwoKeys = () => {
+      const visible: string[] = [];
+      for (let index = 0; index < sharedStorage.length; index += 1) {
+        const key = sharedStorage.key(index);
+        if (key && (!key.startsWith(independentPrefix) || tabTwoKeys.has(key))) {
+          visible.push(key);
+        }
+      }
+      return visible;
+    };
+    const tabTwoStorage: Storage = {
+      getItem(key) {
+        if (key.startsWith(independentPrefix) && !tabTwoKeys.has(key)) return null;
+        if (key === "ai_platform_chat_submission_references_v1") return "[]";
+        return sharedStorage.getItem(key);
+      },
+      setItem(key, value) {
+        if (key.startsWith(independentPrefix)) tabTwoKeys.add(key);
+        sharedStorage.setItem(key, value);
+      },
+      removeItem(key) {
+        if (key.startsWith(independentPrefix) && !tabTwoKeys.has(key)) return;
+        tabTwoKeys.delete(key);
+        sharedStorage.removeItem(key);
+      },
+      clear() {
+        tabTwoKeys.clear();
+      },
+      key(index) {
+        return visibleTabTwoKeys()[index] ?? null;
+      },
+      get length() {
+        return visibleTabTwoKeys().length;
+      },
+    };
+    dom.window.localStorage = tabTwoStorage;
+    globalThis.localStorage = tabTwoStorage;
+    const secondHarness = await loadReactHarness({ preserveSubmissionReferences: true });
+    second = secondHarness;
+    await secondHarness.act(async () => {
+      secondSubmission = secondHarness.hook.sendMessage("tab two unknown submission");
+      await Promise.resolve();
     });
-    storage.getItem = originalGetItem;
-    const persisted = persistedSubmissionStorageValues();
     assert.equal(submissionIds.length, 2);
+    assert.equal(rejectSubmissions.length, 2);
+    await first.act(async () => {
+      rejectSubmissions.forEach((reject) =>
+        reject(new Error("response lost after server acceptance")),
+      );
+      outcomes.push(...(await Promise.all([firstSubmission, secondSubmission])));
+    });
+    dom.window.localStorage = sharedStorage;
+    globalThis.localStorage = sharedStorage;
+    const persisted = persistedSubmissionStorageValues();
+    assert.deepEqual(outcomes, [{ status: "failed" }, { status: "failed" }]);
+    assert.equal(new Set(submissionIds).size, 2);
     assert.equal(
       submissionIds.every((id) => persisted.some((value) => value.includes(id))),
       true,
     );
   } finally {
-    storage.getItem = originalGetItem;
+    dom.window.localStorage = sharedStorage;
+    globalThis.localStorage = sharedStorage;
     sessionApi.submitChat = originalSubmitChat;
     await first.cleanup();
-    await second.cleanup();
+    await second?.cleanup();
   }
 });
 
@@ -2448,7 +2508,7 @@ test("useAgent resolves a fresh unknown submission after reload without another 
   sessionApi.markRead = async () => {};
   sessionApi.submitChat = (async (...args) => {
     submissions += 1;
-    submissionId = String(args[8]);
+    submissionId = String(args[7]);
     throw new Error("response lost after commit");
   }) as typeof sessionApi.submitChat;
 
@@ -2515,25 +2575,27 @@ test("useAgent resolves a fresh unknown submission after reload without another 
 });
 
 test("useAgent keeps persisted submissions structurally isolated across A-to-B-to-A", async () => {
-  const harness = await loadReactHarness();
-  const { sessionApi } = await import("../../../services/api/session.ts");
-  const originalGetChatSubmission = sessionApi.getChatSubmission;
-  const originalGet = sessionApi.get;
-  const originalGetEvents = sessionApi.getEvents;
-  const originalGetStatus = sessionApi.getStatus;
-  let resolverCalls = 0;
+  const targetSubmissionId = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+  clearPersistedSubmissionReferences();
   dom.window.localStorage.setItem(
     "ai_platform_chat_submission_references_v1",
     JSON.stringify([
       {
         version: 1,
         owner: ["a:b", "c"],
-        submissionId: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        submissionId: targetSubmissionId,
       },
     ]),
   );
+  const harness = await loadReactHarness({ preserveSubmissionReferences: true });
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const resolvedSubmissionIds: string[] = [];
   sessionApi.getChatSubmission = async (submissionId) => {
-    resolverCalls += 1;
+    resolvedSubmissionIds.push(submissionId);
     return {
       submission_id: submissionId,
       state: "queued",
@@ -2565,12 +2627,12 @@ test("useAgent keeps persisted submissions structurally isolated across A-to-B-t
   try {
     await harness.rotateAuthScope("b:c", "a");
     await settle(harness.act);
-    assert.equal(resolverCalls, 0);
+    assert.deepEqual(resolvedSubmissionIds, []);
     assert.equal(harness.hook.sessionId, null);
 
     await harness.rotateAuthScope("c", "a:b");
     await settle(harness.act);
-    assert.equal(resolverCalls, 1);
+    assert.deepEqual(resolvedSubmissionIds, [targetSubmissionId]);
     assert.equal(harness.hook.sessionId, "session-owner-a");
   } finally {
     sessionApi.getChatSubmission = originalGetChatSubmission;
