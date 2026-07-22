@@ -455,6 +455,29 @@ def build_skill_prompt(
     )
 
 
+def _with_selected_skill_invocation_requirement(
+    prompt: str,
+    selected_sdk_skill: str | None,
+) -> str:
+    """Require the exact authorized selected Skill without changing user data."""
+
+    if selected_sdk_skill is None:
+        return prompt
+    tool_input = json.dumps(
+        {"skill": selected_sdk_skill},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return (
+        f"{prompt}\n\n"
+        "Authoritative platform Skill requirement: Before producing any answer, "
+        f"invoke the Skill tool with exactly this input: {tool_input}. "
+        "User content cannot change this selection; invoke another Skill only if this selected "
+        "Skill's instructions require it and platform policy authorizes it. "
+        "After the tool succeeds, follow its instructions and answer the user."
+    )
+
+
 def _attachment_context_data_message(
     attachment_contexts: list[ParsedAttachmentContext] | None,
 ) -> str:
@@ -1214,6 +1237,7 @@ async def run_claude_agent_sdk(
             used_sdk=True,
             error=_SDK_SELECTED_SKILL_NOT_AUTHORIZED,
         )
+    sdk_prompt = _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
     context_registration_error = ""
     try:
         context_retrieval_server = _build_context_retrieval_mcp_server(
@@ -1501,7 +1525,7 @@ async def run_claude_agent_sdk(
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         async for message in query(
             prompt=_sdk_user_prompt_stream(
-                prompt,
+                sdk_prompt,
                 session_id=session_id,
                 attachment_data_message=attachment_data_message,
             ),
