@@ -709,6 +709,37 @@ def default_cancel_not_requested(monkeypatch):
     )
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log, raising=False)
 
+    class _DefaultCatalogSnapshot:
+        def __init__(self, skill_id):
+            self.available_skill_ids = (skill_id,)
+            self._skill_id = skill_id
+
+        def entry(self, skill_id):
+            if skill_id != self._skill_id:
+                return None
+            return types.SimpleNamespace(available=True)
+
+    class _DefaultCatalogResolution:
+        def __init__(self, skill_id, manifests):
+            self.snapshot = _DefaultCatalogSnapshot(skill_id)
+            self.manifests = list(manifests)
+
+        def runtime_input_updates(self):
+            return {}
+
+    async def resolve_authorized_skill_catalog(*_args, **kwargs):
+        binding = kwargs["binding"]
+        return _DefaultCatalogResolution(
+            binding.selected_skill_id,
+            kwargs.get("pinned_manifests") or [],
+        )
+
+    monkeypatch.setattr(
+        "app.worker.resolve_authorized_skill_catalog",
+        resolve_authorized_skill_catalog,
+        raising=False,
+    )
+
 
 @pytest.mark.asyncio
 async def test_reused_step_event_clears_checkpoint_reuse_pending(monkeypatch):

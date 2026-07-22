@@ -60,6 +60,12 @@ from app.session_continuity import sdk_session_id_for_run
 from app.skills.pinning import MAX_SKILL_SNAPSHOT_FILE_BYTES, MAX_SKILL_SNAPSHOT_TOTAL_BYTES
 from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry, skill_content_hash
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
+from app.skills.catalog import (
+    AuthorizedSkillCatalogBinding,
+    AuthorizedSkillCatalogError,
+    AuthorizedSkillCatalogResolution,
+    load_runtime_authorized_skill_catalog,
+)
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
 from app.tool_policy import evaluate_tool_policy
@@ -210,7 +216,48 @@ def _context_manifest_from_pack(context_pack: dict[str, Any]) -> dict[str, Any] 
 
 
 def _runtime_request_skill_ids(payload: RunPayload, prepared: PreparedSdkRun) -> list[str]:
-    return list(prepared.staged_skill_names) or [payload.skill_id]
+    return list(dict.fromkeys([payload.skill_id, *prepared.staged_skill_names]))
+
+
+def _authorized_skill_catalog_binding(payload: RunPayload) -> AuthorizedSkillCatalogBinding:
+    return AuthorizedSkillCatalogBinding(
+        tenant_id=payload.tenant_id,
+        workspace_id=payload.workspace_id,
+        user_id=payload.user_id,
+        session_id=payload.session_id,
+        run_id=payload.run_id,
+        agent_id=payload.agent_id,
+        selected_skill_id=payload.skill_id,
+    )
+
+
+def _runtime_authorized_skill_catalog(
+    payload: RunPayload,
+) -> AuthorizedSkillCatalogResolution | None:
+    return load_runtime_authorized_skill_catalog(
+        payload.input,
+        expected_binding=_authorized_skill_catalog_binding(payload),
+    )
+
+
+def _merged_pinned_skill_manifests(
+    payload: RunPayload,
+    catalog: AuthorizedSkillCatalogResolution | None,
+) -> dict[str, dict[str, Any]]:
+    pinned = _pinned_skill_manifests(payload)
+    if catalog is None:
+        return pinned
+    for manifest in catalog.manifests:
+        skill_id = str(manifest.get("skill_id") or "")
+        existing = pinned.get(skill_id)
+        if existing is not None:
+            existing_version = str(existing.get("content_hash") or existing.get("version") or "")
+            runtime_version = str(manifest.get("content_hash") or manifest.get("version") or "")
+            if existing_version != runtime_version:
+                raise AuthorizedSkillCatalogError("authorized_skill_catalog_pin_mismatch")
+            continue
+        pinned[skill_id] = manifest
+    return pinned
 
 
 def _attachment_preprocessing_contract(
@@ -881,6 +928,36 @@ class ClaudeAgentWorkerAdapter:
             agent_id=payload.agent_id,
         )
 
+    def _authorized_skill_catalog_failure_result(self, error_code: str) -> ExecutorResult:
+        return ExecutorResult(
+            status="failed",
+            adapter_version=self.adapter_version,
+            executor_type=self.executor_type,
+            executor_version=self.executor_version,
+            capabilities={**self.capabilities, "platform_skills": True},
+            result={
+                "message": "Authorized Skill catalog validation failed. Please retry.",
+                "error_code": error_code,
+                "sdk_used": False,
+                "sdk_error": error_code,
+                "delegate_used": False,
+                "worker_boundary": self.executor_type,
+                "allowed_skills": [],
+                "staged_skills": [],
+                "used_skills": [],
+            },
+            artifacts=[],
+            executor_payload={
+                "sdk_used": False,
+                "sdk_error": error_code,
+                "delegate_used": False,
+                "worker_boundary": self.executor_type,
+                "allowed_skills": [],
+                "staged_skills": [],
+                "used_skills": [],
+            },
+        )
+
     async def _prepare_sdk_run(
         self,
         payload: RunPayload,
@@ -926,10 +1003,24 @@ class ClaudeAgentWorkerAdapter:
             else list(file_names)
         )
 
-        skills = BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills()
-        pinned_manifests = _pinned_skill_manifests(payload)
+        try:
+            authorized_catalog = _runtime_authorized_skill_catalog(payload)
+            pinned_manifests = _merged_pinned_skill_manifests(payload, authorized_catalog)
+        except AuthorizedSkillCatalogError:
+            return None, self._authorized_skill_catalog_failure_result(
+                "authorized_skill_catalog_invalid"
+            )
+        skills = (
+            []
+            if authorized_catalog is not None
+            else BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills()
+        )
         available_names = list(dict.fromkeys([skill.name for skill in skills] + list(pinned_manifests)))
-        allowed_skill_names = _allowed_skill_names(payload, available_names)
+        allowed_skill_names = _allowed_skill_names(
+            payload,
+            available_names,
+            authorized_catalog=authorized_catalog,
+        )
         selected_skills, pin_mismatches = _select_pinned_skills(
             skills,
             allowed_skill_names,
@@ -1012,6 +1103,9 @@ class ClaudeAgentWorkerAdapter:
             user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
             file_names=file_names,
             context_pack=prompt_context_pack,
+            authorized_skill_catalog=(
+                authorized_catalog.snapshot if authorized_catalog is not None else None
+            ),
         )
         return (
             PreparedSdkRun(
@@ -1612,12 +1706,26 @@ class ClaudeAgentWorkerAdapter:
                 attachment_metadata,
                 allow_file_content_tools=_requires_typed_attachment_preprocessing(payload),
             )
-        prompt = prompt or build_skill_prompt(
-            skill_id=payload.skill_id,
-            user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
-            file_names=file_names,
-            context_pack=context_pack,
-        )
+        if not prompt:
+            try:
+                authorized_catalog = _runtime_authorized_skill_catalog(payload)
+            except AuthorizedSkillCatalogError as exc:
+                return type("SdkFailed", (), {
+                    "used_sdk": False,
+                    "message": "",
+                    "session_id": None,
+                    "usage": {},
+                    "error": f"authorized_skill_catalog_invalid: {exc}",
+                })()
+            prompt = build_skill_prompt(
+                skill_id=payload.skill_id,
+                user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
+                file_names=file_names,
+                context_pack=context_pack,
+                authorized_skill_catalog=(
+                    authorized_catalog.snapshot if authorized_catalog is not None else None
+                ),
+            )
         context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack)
 
         async def on_text(delta: str) -> None:
@@ -1891,8 +1999,19 @@ def _string_list(value: object) -> list[str]:
     return [str(item) for item in value]
 
 
-def _allowed_skill_names(payload: RunPayload, available_names: list[str]) -> list[str]:
+def _allowed_skill_names(
+    payload: RunPayload,
+    available_names: list[str],
+    *,
+    authorized_catalog: AuthorizedSkillCatalogResolution | None = None,
+) -> list[str]:
     available = set(available_names)
+    if authorized_catalog is not None:
+        return [
+            skill_id
+            for skill_id in authorized_catalog.snapshot.available_skill_ids
+            if skill_id in available
+        ]
     requested = _string_list(payload.input.get("skill_ids"))
     if payload.skill_id and payload.skill_id in available:
         requested.insert(0, payload.skill_id)

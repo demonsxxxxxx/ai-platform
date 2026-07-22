@@ -22,6 +22,10 @@ from app.control_plane_contracts import sanitize_public_payload
 from app.file_parser_contracts import ParsedAttachmentContext
 from app.public_context_keys import safe_public_context_pack_version
 from app.settings import get_settings
+from app.skills.catalog import (
+    AuthorizedSkillCatalogSnapshot,
+    render_authorized_skill_catalog_prompt,
+)
 from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION, SKILL_WORKSPACE_CONTRACT_VERSION
 from app.tool_policy import evaluate_tool_policy
 
@@ -431,6 +435,7 @@ def build_skill_prompt(
     user_message: str,
     file_names: list[str],
     context_pack: dict[str, Any] | None = None,
+    authorized_skill_catalog: AuthorizedSkillCatalogSnapshot | None = None,
 ) -> str:
     bounded_user_message = truncate_utf8_text(user_message, max_bytes=_MAX_CURRENT_PROMPT_BYTES)
     file_lines: list[str] = []
@@ -451,6 +456,7 @@ def build_skill_prompt(
         "If a staged Skill matches the task, use that Skill's instructions. "
         "Use inputs/ for attachments and save user-deliverable files under outputs/delivery/. "
         "Return a concise execution summary."
+        f"{render_authorized_skill_catalog_prompt(authorized_skill_catalog)}"
         f"{_context_pack_prompt_section(context_pack)}"
     )
 
