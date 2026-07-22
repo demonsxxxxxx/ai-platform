@@ -666,8 +666,8 @@ def test_lambchat_sse_stream_replays_run_events_and_artifact_cards(monkeypatch):
 
     assert response.status_code == 200
     assert "event: run_event" in response.text
-    assert '"event_type": "tool_denied"' in response.text
-    assert "工具调用被阻止" in response.text
+    assert '"event_type": "agent_step_blocked"' in response.text
+    assert "当前处理步骤未获授权，正在等待权限调整" in response.text
     assert "tool permission required" not in response.text
     assert "event: artifact_card" in response.text
     assert '"artifact_id": "art-reviewed"' in response.text
@@ -1434,6 +1434,44 @@ def test_lambchat_sse_stream_projects_only_safe_versioned_chat_progress(monkeypa
                     "raw_sdk_event": {"type": "content_block_delta"},
                 },
             },
+            {
+                **base,
+                "id": "evt-heartbeat",
+                "sequence": 10,
+                "event_type": "run_started",
+                "stage": "status",
+                "message": "raw worker heartbeat /var/lib/private",
+                "payload_json": {
+                    "heartbeat": True,
+                    "progress_kind": "active",
+                    "worker_id": "worker-private",
+                    "visible_to_user": True,
+                },
+            },
+            {
+                **base,
+                "id": "evt-tool-delta",
+                "sequence": 11,
+                "event_type": "tool_call_delta",
+                "stage": "tool",
+                "message": "raw command activity",
+                "payload_json": {
+                    "current_step": "read /var/lib/private",
+                    "visible_to_user": True,
+                },
+            },
+            {
+                **base,
+                "id": "evt-checkpoint",
+                "sequence": 12,
+                "event_type": "checkpoint_created",
+                "stage": "checkpoint",
+                "message": "stored tenants/default/private/checkpoint",
+                "payload_json": {
+                    "storage_key": "tenants/default/private/checkpoint",
+                    "visible_to_user": True,
+                },
+            },
         ]
 
     async def empty_artifacts(conn, *, tenant_id, run_id):
@@ -1478,9 +1516,9 @@ def test_lambchat_sse_stream_projects_only_safe_versioned_chat_progress(monkeypa
     assert '"queue_position": 3' not in response.text
     assert "internal queue source" not in response.text
     assert '"event_type": "run_started"' in response.text
-    assert '"event_type": "tool_call_started"' in response.text
-    assert "任务已开始处理" in response.text
-    assert "正在执行受控步骤" in response.text
+    assert '"event_type": "agent_step_started"' in response.text
+    assert "已完成请求准备，正在进入受控执行阶段" in response.text
+    assert "正在处理数据并准备结果" in response.text
     assert "worker-alpha" not in response.text
     assert "private chain of thought" not in response.text
     assert "/var/lib/private" not in response.text
@@ -1495,6 +1533,20 @@ def test_lambchat_sse_stream_projects_only_safe_versioned_chat_progress(monkeypa
     assert "message fallback must stay hidden" not in response.text
     assert "evt-extra-fields" not in response.text
     assert "delta with untrusted extras" not in response.text
+    assert '"kind": "run"' in response.text
+    assert '"category": "execution"' in response.text
+    assert '"kind": "activity"' in response.text
+    assert '"category": "processing"' in response.text
+    assert '"status": "running"' in response.text
+    assert "任务仍在处理中" in response.text
+    assert "正在处理数据并准备结果" in response.text
+    assert '"name": "Bash"' not in response.text
+    assert "Bash" not in response.text
+    assert "已保存阶段性进度" in response.text
+    assert "worker-private" not in response.text
+    assert "raw command activity" not in response.text
+    assert "current_step" not in response.text
+    assert "stored tenants/default" not in response.text
 
 
 @pytest.mark.parametrize(
@@ -1680,6 +1732,133 @@ def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monk
         "run_id": "run_a",
         "content": "partial",
     }
+
+
+@pytest.mark.parametrize(
+    ("status", "error_code", "detail_kind", "detail_code"),
+    [
+        ("failed", "claude_agent_sdk_runtime_error", "failed", "model_service_unavailable"),
+        ("canceled", None, "cancelled", "run_cancelled"),
+    ],
+)
+def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
+    status,
+    error_code,
+    detail_kind,
+    detail_code,
+):
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+    run = {
+        "id": "run-terminal-partial",
+        "trace_id": "trace-terminal-partial",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": status,
+        "result_json": {},
+        "error_code": error_code,
+        "error_message": "private token at /home/private/runtime.log",
+        "finished_at": "2026-07-22T01:02:03Z",
+    }
+    base = {
+        "trace_id": "trace-terminal-partial",
+        "schema_version": "ai-platform.event-envelope.v1",
+        "severity": "info",
+        "visible_to_user": True,
+        "error_code": None,
+        "created_at": "2026-07-22T01:02:00Z",
+    }
+    run_events = [
+        {
+            **base,
+            "id": "evt-started",
+            "sequence": 1,
+            "event_type": "worker_started",
+            "stage": "worker",
+            "message": "worker at /home/private/runtime",
+            "payload_json": {"worker_id": "worker-private", "visible_to_user": True},
+        },
+        {
+            **base,
+            "id": "evt-tool-progress",
+            "sequence": 2,
+            "event_type": "tool_call_delta",
+            "stage": "tool",
+            "message": "raw command activity",
+            "payload_json": {
+                "current_step": "read /home/private/input.txt",
+                "visible_to_user": True,
+            },
+        },
+        {
+            **base,
+            "id": "evt-safe-delta",
+            "sequence": 3,
+            "event_type": "assistant_delta",
+            "stage": "answer",
+            "message": "",
+            "payload_json": {
+                "delta": "已完成公开部分；",
+                "source": "worker_answer_delta_v1",
+                "visible_to_user": True,
+                "severity": "info",
+            },
+        },
+        {
+            **base,
+            "id": "evt-private-delta",
+            "sequence": 4,
+            "event_type": "assistant_delta",
+            "stage": "answer",
+            "message": "",
+            "payload_json": {
+                "delta": "secret token at /home/private/result.txt",
+                "source": "worker_answer_delta_v1",
+                "visible_to_user": True,
+                "severity": "info",
+            },
+        },
+        {
+            **base,
+            "id": "evt-thinking",
+            "sequence": 5,
+            "event_type": "thinking",
+            "stage": "sdk",
+            "message": "private chain of thought",
+            "payload_json": {"visible_to_user": True},
+        },
+    ]
+
+    records = _compatibility_events_for_run(run, run_events, [], principal)
+    history = [record.history_event for record in records]
+
+    assert [event["event_type"] for event in history] == [
+        "run_started",
+        "agent_step_started",
+        "message:chunk",
+        "final_detail",
+        "done",
+    ]
+    assert history[2]["data"]["content"] == "已完成公开部分；"
+    assert history[3]["data"]["detail_kind"] == detail_kind
+    assert history[3]["data"]["detail_code"] == detail_code
+    assert history[-1]["data"]["status"] == (
+        "cancelled" if status == "canceled" else status
+    )
+    serialized = str(history)
+    assert "正在处理数据并准备结果" in serialized
+    assert "private chain of thought" not in serialized
+    assert "secret token" not in serialized
+    assert "/home/private" not in serialized
+    assert "worker-private" not in serialized
+    assert "current_step" not in serialized
 
 
 def test_lambchat_sse_stream_cannot_read_cross_tenant_run_events(monkeypatch):
@@ -1899,6 +2078,7 @@ def test_lambchat_sse_stream_redacts_runtime_private_error(monkeypatch):
     assert "event: final_detail" in response.text
     assert '"detail_kind": "failed"' in response.text
     assert '"detail_code": "run_failed"' in response.text
+    assert "任务未能完成。请稍后重试；如问题持续，请联系管理员。" in response.text
     assert "event: error" not in response.text
 
 
@@ -1923,6 +2103,10 @@ def test_lambchat_sse_stream_terminates_cancelled_run(monkeypatch):
 
     assert response.status_code == 200
     assert 'event: done' in response.text
+    assert 'event: final_detail' in response.text
+    assert '"detail_kind": "cancelled"' in response.text
+    assert '"detail_code": "run_cancelled"' in response.text
+    assert "取消前已产生的公开内容仍会保留" in response.text
     assert '"status": "cancelled"' in response.text
     assert '"status": "canceled"' not in response.text
 
@@ -2303,7 +2487,8 @@ def test_lambchat_session_runs_redacts_runtime_private_error(monkeypatch):
 
     assert response.status_code == 200
     payload = response.json()["runs"][0]
-    assert payload["error"] == "run_failed"
+    assert payload["error"] == "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
+    assert payload["error_code"] == "run_failed"
     assert "runtime211" not in str(payload)
     assert "/var/lib/ai-platform" not in str(payload)
 
@@ -2413,13 +2598,13 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
         "run_id": "run_a",
         "event_type": "capability_selected",
         "stage": "planning",
-        "message": "已选择处理能力",
+        "message": "已加载授权处理能力，下一步将按所选流程分析请求",
         "severity": "info",
         "progress_kind": "completed",
         "wait_reason": None,
         "payload": {"capability_id": "document_review"},
         "created_at": None,
-        "content": "已选择处理能力",
+        "content": "已加载授权处理能力，下一步将按所选流程分析请求",
         "status": "planning",
     }
     assert "skill_id" not in str(event)
@@ -2584,8 +2769,10 @@ def test_lambchat_failed_run_projects_only_safe_native_skill_sandbox_stage(monke
     )
     assert final_detail["data"] == {
         "run_id": "run-native-failed",
+        "projection_version": "ai-platform.chat-public-projection.v1",
         "detail_kind": "failed",
         "detail_code": "skill_sandbox_admission_failed",
+        "message": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
     }
     assert "native_tool_admission_failed" not in response.text
     assert "/home/private/workspace" not in response.text
@@ -3092,8 +3279,10 @@ def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch)
     assert event["type"] == "final_detail"
     assert event["payload"] == {
         "run_id": "run_a",
+        "projection_version": "ai-platform.chat-public-projection.v1",
         "detail_kind": "failed",
         "detail_code": "run_failed",
+        "message": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
     }
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(event)
     assert "/var/lib/ai-platform" not in str(event)
@@ -3202,8 +3391,10 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
     final = events[event_types.index("final_detail")]
     assert final["payload"] == {
         "run_id": "run_a",
+        "projection_version": "ai-platform.chat-public-projection.v1",
         "detail_kind": "failed",
         "detail_code": "run_failed",
+        "message": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
     }
     assert final["data"]["run_id"] == "run_a"
     assert "Executor failed" not in str(final)
@@ -3273,8 +3464,8 @@ def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch
 
     assert response.status_code == 200
     event = response.json()["events"][0]
-    assert event["payload"] == {}
-    assert event["data"]["error"] == "run_failed"
+    assert event["payload"] == {"detail_code": "run_failed"}
+    assert event["data"]["error"] == "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
     assert "runtime211" not in str(event)
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(event)
     assert "/var/lib/ai-platform" not in str(event)

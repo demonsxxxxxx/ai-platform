@@ -203,6 +203,93 @@ function safeEventError(error: unknown): string | undefined {
   return translateBackendError(error, i18n.t.bind(i18n));
 }
 
+const CHAT_PUBLIC_COMMENTARY_EVENT_TYPES: ReadonlySet<string> = new Set(
+  [...CHAT_PUBLIC_PROGRESS_EVENT_TYPES].filter(
+    (eventType) =>
+      eventType !== "tool_call_started" &&
+      eventType !== "tool_call_completed" &&
+      eventType !== "tool_denied",
+  ),
+);
+const CHAT_PUBLIC_STATUS_EVENT_TYPES: ReadonlySet<string> = new Set([
+  ...CHAT_PUBLIC_COMMENTARY_EVENT_TYPES,
+  "error",
+]);
+const MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS = 12;
+const ACTIONABLE_PUBLIC_STATUS_PATTERN =
+  /error|failed|failure|denied|blocked|forbidden|unauthori[sz]ed|cancel/i;
+
+interface PublicTerminalPresentation {
+  detailKind: "failed" | "cancelled";
+  message: string;
+  stage: string;
+  severity: "info" | "warning" | "error";
+}
+
+function publicTerminalPresentation(
+  detailCode: string,
+): PublicTerminalPresentation | undefined {
+  const failed = (
+    message: string,
+    stage = "terminal",
+  ): PublicTerminalPresentation => ({
+    detailKind: "failed",
+    message,
+    stage,
+    severity: "error",
+  });
+  const presentations: Record<string, PublicTerminalPresentation> = {
+    run_failed: failed(i18n.t("chat.runTerminal.failed")),
+    run_timeout: failed(
+      i18n.t("chat.runTerminal.runTimeout", {
+        defaultValue: "任务执行超时。请缩小任务范围后重试。",
+      }),
+    ),
+    model_service_unavailable: failed(
+      i18n.t("chat.runTerminal.modelServiceUnavailable", {
+        defaultValue:
+          "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+      }),
+    ),
+    execution_service_unavailable: failed(
+      i18n.t("chat.runTerminal.executionServiceUnavailable", {
+        defaultValue:
+          "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+      }),
+    ),
+    dependent_service_unavailable: failed(
+      i18n.t("chat.runTerminal.dependentServiceUnavailable", {
+        defaultValue: "任务依赖的服务暂时不可用。请稍后重试。",
+      }),
+    ),
+    capability_not_authorized: failed(
+      i18n.t("chat.runTerminal.capabilityNotAuthorized", {
+        defaultValue: "当前账号不能使用所选能力。请重新选择或联系管理员。",
+      }),
+      "policy",
+    ),
+    tool_permission_denied: failed(
+      i18n.t("chat.runTerminal.toolPermissionDenied", {
+        defaultValue: "任务所需工具未获授权。请调整请求或联系管理员。",
+      }),
+      "policy",
+    ),
+    skill_sandbox_admission_failed: failed(
+      i18n.t("chat.runTerminal.skillSandboxAdmissionFailed"),
+      "skill_sandbox_admission",
+    ),
+    run_cancelled: {
+      detailKind: "cancelled",
+      message: i18n.t("chat.runTerminal.cancelledWithPartial", {
+        defaultValue: "任务已取消。取消前已产生的公开内容仍会保留。",
+      }),
+      stage: "terminal",
+      severity: "warning",
+    },
+  };
+  return presentations[detailCode];
+}
+
 /**
  * Unified message event processor.
  */
@@ -364,29 +451,29 @@ export function processMessageEvent(
     // ---- Controlled terminal detail ----
 
     case "final_detail": {
-      // This is deliberately not the generic `error` SSE envelope.  The
-      // backend may only send a code-only failed detail; unknown detail
-      // shapes fail closed instead of exposing executor text.
-      if (
-        data.detail_kind !== "failed" ||
-        !["run_failed", "skill_sandbox_admission_failed"].includes(
-          data.detail_code || "",
-        )
-      ) {
-        break;
-      }
-      result.content = i18n.t("chat.runTerminal.failed");
-      if (data.detail_code === "skill_sandbox_admission_failed") {
-        result.parts = upsertRunStatusPart(parts, {
-          type: "run_status",
-          event_id: `failure-stage:${data.run_id || messageId}`,
-          event_type: "skill_sandbox_admission_failed",
-          stage: "skill_sandbox_admission",
-          message: i18n.t("chat.runTerminal.skillSandboxAdmissionFailed"),
-          severity: "error",
-          created_at: data.timestamp,
-        });
-      }
+      // Terminal detail is a fixed-code presentation contract. Never render
+      // the backend-provided message itself: an unknown code or mismatched kind
+      // fails closed, and useful partial assistant text remains intact.
+      const detailCode = data.detail_code || "";
+      const terminal = publicTerminalPresentation(detailCode);
+      if (!terminal || data.detail_kind !== terminal.detailKind) break;
+      const partialContent =
+        content ||
+        parts
+          .filter((part) => part.type === "text" && !part.depth)
+          .map((part) => (part.type === "text" ? part.content : ""))
+          .join("");
+      result.content = partialContent || terminal.message;
+      result.cancelled = terminal.detailKind === "cancelled";
+      result.parts = upsertRunStatusPart(parts, {
+        type: "run_status",
+        event_id: `terminal-detail:${data.run_id || messageId || detailCode}`,
+        event_type: detailCode,
+        stage: terminal.stage,
+        message: terminal.message,
+        severity: terminal.severity,
+        created_at: data.timestamp,
+      });
       break;
     }
 
@@ -742,6 +829,18 @@ function upsertTodoPart(
     : [...parts, todoPart];
 }
 
+/** Only routine informational commentary may be compacted or evicted. */
+function isReplaceableInformationalCommentaryPart(
+  part: MessagePart,
+): part is RunStatusPart {
+  return (
+    part.type === "run_status" &&
+    part.severity === "info" &&
+    CHAT_PUBLIC_COMMENTARY_EVENT_TYPES.has(part.event_type) &&
+    !ACTIONABLE_PUBLIC_STATUS_PATTERN.test(part.event_type)
+  );
+}
+
 /** Replace an existing platform run event projection by event id. */
 function upsertRunStatusPart(
   parts: MessagePart[],
@@ -762,18 +861,36 @@ function upsertRunStatusPart(
     );
   }
   if (CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(runStatusPart.event_type)) {
-    let replaced = false;
-    const nextParts = parts.flatMap((part): MessagePart[] => {
-      const replaceable =
-        part.type === "run_status" &&
-        part.severity === "info" &&
-        CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(part.event_type);
-      if (!replaceable) return [part];
-      if (replaced) return [];
-      replaced = true;
-      return [runStatusPart];
-    });
-    return replaced ? nextParts : [...nextParts, runStatusPart];
+    let lastReplaceableIndex = -1;
+    for (let index = parts.length - 1; index >= 0; index -= 1) {
+      const part = parts[index];
+      if (isReplaceableInformationalCommentaryPart(part)) {
+        lastReplaceableIndex = index;
+        break;
+      }
+    }
+    const lastReplaceable =
+      lastReplaceableIndex >= 0 ? parts[lastReplaceableIndex] : undefined;
+    let nextParts = [...parts, runStatusPart];
+    if (
+      isReplaceableInformationalCommentaryPart(runStatusPart) &&
+      lastReplaceable?.type === "run_status" &&
+      lastReplaceable.event_type === runStatusPart.event_type &&
+      lastReplaceable.stage === runStatusPart.stage &&
+      lastReplaceable.message === runStatusPart.message
+    ) {
+      nextParts = parts.map((part, index) =>
+        index === lastReplaceableIndex ? runStatusPart : part,
+      );
+    }
+    const replaceableIndexes = nextParts.flatMap((part, index) =>
+      isReplaceableInformationalCommentaryPart(part) ? [index] : [],
+    );
+    const overflow =
+      replaceableIndexes.length - MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS;
+    if (overflow <= 0) return nextParts;
+    const removedIndexes = new Set(replaceableIndexes.slice(0, overflow));
+    return nextParts.filter((_part, index) => !removedIndexes.has(index));
   }
   return [...parts, runStatusPart];
 }
@@ -783,21 +900,10 @@ function shouldProjectRunStatus(data: EventData): boolean {
   if (payload.visible_to_user === false || payload.visibleToUser === false) {
     return false;
   }
-  if (data.severity === "error" || data.severity === "warning") {
-    return true;
-  }
   const eventType = String(data.event_type || data.type || "").toLowerCase();
-  if (
-    data.projection_version === CHAT_PUBLIC_PROJECTION_VERSION &&
-    CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(eventType)
-  ) {
-    return true;
-  }
   return (
-    eventType.includes("error") ||
-    eventType.includes("failed") ||
-    eventType.includes("denied") ||
-    eventType.includes("blocked")
+    data.projection_version === CHAT_PUBLIC_PROJECTION_VERSION &&
+    CHAT_PUBLIC_STATUS_EVENT_TYPES.has(eventType)
   );
 }
 

@@ -2,7 +2,9 @@ from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
 
+from app.auth import AuthPrincipal
 from app.main import create_app
+from app.run_projection import public_terminal_detail, run_event_response
 from app.settings import Settings
 
 
@@ -129,6 +131,63 @@ def step_row():
 
 async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
     return []
+
+
+def test_public_terminal_detail_maps_only_fixed_actionable_categories():
+    assert public_terminal_detail("failed", "claude_agent_sdk_runtime_error") == {
+        "detail_kind": "failed",
+        "detail_code": "model_service_unavailable",
+        "message": "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+    }
+    assert public_terminal_detail("failed", "executor_deadline_exceeded") == {
+        "detail_kind": "failed",
+        "detail_code": "run_timeout",
+        "message": "任务执行超时。请缩小任务范围后重试。",
+    }
+    assert public_terminal_detail("failed", "secret_token_at_/home/private") == {
+        "detail_kind": "failed",
+        "detail_code": "run_failed",
+        "message": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
+    }
+    assert public_terminal_detail("canceled") == {
+        "detail_kind": "cancelled",
+        "detail_code": "run_cancelled",
+        "message": "任务已取消。取消前已产生的公开内容仍会保留。",
+    }
+    assert public_terminal_detail("succeeded", "claude_agent_sdk_runtime_error") is None
+
+
+def test_run_event_response_projects_fixed_public_terminal_code_and_message():
+    row = event_row(
+        event_id="evt-error",
+        sequence=9,
+        event_type="error",
+        stage="executor",
+        payload={
+            "visible_to_user": True,
+            "private_payload": {"token": "secret"},
+            "runtime_path": "/home/private/runtime.log",
+        },
+        message="API token failed at /home/private/runtime.log",
+    )
+    row["severity"] = "error"
+    row["error_code"] = "claude_agent_sdk_runtime_error"
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="tenant-a",
+        roles=["user"],
+    )
+
+    projected = run_event_response("run-a", row, principal=principal)
+
+    assert projected["error_code"] == "model_service_unavailable"
+    assert projected["message"] == "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
+    assert projected["payload"] == {"visible_to_user": True}
+    serialized = str(projected)
+    assert "claude_agent_sdk_runtime_error" not in serialized
+    assert "secret" not in serialized
+    assert "/home/private" not in serialized
 
 
 def test_run_events_route_supports_sequence_replay_cursor(monkeypatch):

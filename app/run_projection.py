@@ -49,6 +49,57 @@ def public_text_or_fallback(value: object, fallback: object = "") -> str:
     return fallback_text or ""
 
 
+PUBLIC_TERMINAL_DETAIL_MESSAGES = {
+    "run_failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
+    "run_timeout": "任务执行超时。请缩小任务范围后重试。",
+    "model_service_unavailable": "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+    "execution_service_unavailable": "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+    "dependent_service_unavailable": "任务依赖的服务暂时不可用。请稍后重试。",
+    "capability_not_authorized": "当前账号不能使用所选能力。请重新选择或联系管理员。",
+    "tool_permission_denied": "任务所需工具未获授权。请调整请求或联系管理员。",
+    "skill_sandbox_admission_failed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
+    "run_cancelled": "任务已取消。取消前已产生的公开内容仍会保留。",
+}
+
+PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
+    "native_tool_admission_failed": "skill_sandbox_admission_failed",
+    "executor_deadline_exceeded": "run_timeout",
+    "executor_cleanup_timeout": "run_timeout",
+    "claude_agent_sdk_runtime_error": "model_service_unavailable",
+    "claude_agent_sdk_disabled": "execution_service_unavailable",
+    "claude_agent_sdk_import_failed": "execution_service_unavailable",
+    "claude_agent_sdk_unavailable": "execution_service_unavailable",
+    "docker_unavailable": "execution_service_unavailable",
+    "executor_health_timeout": "execution_service_unavailable",
+    "executor_runner_failed": "execution_service_unavailable",
+    "ragflow_api_error": "dependent_service_unavailable",
+    "capability_not_authorized": "capability_not_authorized",
+    "model_not_allowed": "capability_not_authorized",
+    "tool_denied": "tool_permission_denied",
+    "mcp_tool_denied": "tool_permission_denied",
+    "tool_permission_denied": "tool_permission_denied",
+}
+
+
+def public_terminal_detail(status: object, error_code: object = None) -> dict[str, str] | None:
+    """Return one fixed public terminal code/message without using executor detail."""
+    normalized_status = normalize_run_status(str(status or ""))
+    if normalized_status == "cancelled":
+        detail_code = "run_cancelled"
+        detail_kind = "cancelled"
+    elif normalized_status == "failed":
+        raw_error_code = str(error_code or "").strip()
+        detail_code = PUBLIC_TERMINAL_ERROR_CODE_ALIASES.get(raw_error_code, "run_failed")
+        detail_kind = "failed"
+    else:
+        return None
+    return {
+        "detail_kind": detail_kind,
+        "detail_code": detail_code,
+        "message": PUBLIC_TERMINAL_DETAIL_MESSAGES[detail_code],
+    }
+
+
 def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None) -> dict[str, object]:
     artifact_id = str(row["id"])
     artifact_type = str(row["artifact_type"])
@@ -178,7 +229,18 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
     sanitized_error_code = sanitize_public_text(row.get("error_code"))
     error_code = sanitized_error_code or (None if not row.get("error_code") else "run_failed")
     if principal is not None and not is_ai_admin(principal):
-        error_code = sanitized_error_code or ("run_failed" if error_code else None)
+        terminal_detail = None
+        if raw_event_type in {"error", "run_failed"} or row.get("error_code"):
+            terminal_detail = public_terminal_detail("failed", row.get("error_code"))
+        elif raw_event_type in {"run_cancelled", "run_canceled"}:
+            terminal_detail = public_terminal_detail("cancelled")
+        if terminal_detail is not None:
+            message = terminal_detail["message"]
+            error_code = (
+                terminal_detail["detail_code"]
+                if terminal_detail["detail_kind"] == "failed"
+                else None
+            )
     return {
         "id": str(row["id"]),
         "schema_version": required_schema_version(

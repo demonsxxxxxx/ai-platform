@@ -514,11 +514,12 @@ test("streams ai-platform run event and artifact card into message parts", () =>
     {
       event: "run_event",
       data: JSON.stringify({
+        projection_version: "ai-platform.chat-public-projection.v1",
         event_id: "evt-tool",
         sequence: 4,
-        event_type: "tool_denied",
-        stage: "policy",
-        message: "tool permission required",
+        event_type: "agent_step_blocked",
+        stage: "wait",
+        message: "当前处理步骤未获授权，正在等待权限调整",
         severity: "warning",
       }),
     } as StreamEvent,
