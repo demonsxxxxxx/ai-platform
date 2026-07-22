@@ -345,11 +345,20 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
             False,
         )
 
+    async def forbidden_admission(*_args, **_kwargs):
+        raise AssertionError("duplicate submission must return before taking the user admission lock")
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission, raising=False)
     monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal, raising=False)
     monkeypatch.setattr(repository_module, "get_authorized_session", owned_session, raising=False)
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission, raising=False)
+    monkeypatch.setattr(
+        repository_module,
+        "enforce_user_active_run_admission",
+        forbidden_admission,
+        raising=False,
+    )
 
     response = await chat_stream(request, principal=principal())
 
@@ -1136,6 +1145,12 @@ class PolicyBuiltinRegistry:
 
 @pytest.fixture(autouse=True)
 def default_active_run_count(monkeypatch):
+    async def fake_acquire_user_active_run_admission_lock(conn, *, tenant_id, user_id):
+        return None
+
+    async def fake_enforce_user_active_run_admission_under_lock(conn, *, tenant_id, user_id, limit):
+        return 0
+
     async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
         return 0
 
@@ -1151,6 +1166,16 @@ def default_active_run_count(monkeypatch):
     monkeypatch.setattr(
         "app.routes.chat.repositories.enforce_user_active_run_admission",
         fake_enforce_user_active_run_admission,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        fake_acquire_user_active_run_admission_lock,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.enforce_user_active_run_admission_under_lock",
+        fake_enforce_user_active_run_admission_under_lock,
         raising=False,
     )
     monkeypatch.setattr("app.routes.chat.get_queue_insight", fake_get_queue_insight, raising=False)
@@ -3073,14 +3098,42 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
         )
         return kwargs["session_id"]
 
-    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_session(
+        conn,
+        *,
+        tenant_id,
+        user_id,
+        session_id,
+        workspace_id=None,
+        for_update=False,
+    ):
         assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "ses_routed")
-        return {"id": session_id, "agent_id": "baoyu-translate", "workspace_id": "workspace-routed"}
+        calls.append(("session_lookup", workspace_id, for_update))
+        return {"id": session_id, "agent_id": "general-agent", "workspace_id": "workspace-routed"}
+
+    async def fake_list_authorized_session_runs(
+        conn,
+        *,
+        tenant_id,
+        user_id,
+        session_id,
+        workspace_id=None,
+        limit=20,
+    ):
+        calls.append(("continuation_runs", tenant_id, user_id, session_id, workspace_id, limit))
+        return [{"agent_id": "general-agent", "skill_id": "baoyu-translate"}]
 
     async def fake_create_run(conn, **kwargs):
         run_id = next(run_ids)
         calls.append(
-            ("run", kwargs["session_id"], kwargs["agent_id"], kwargs["workspace_id"], run_id)
+            (
+                "run",
+                kwargs["session_id"],
+                kwargs["agent_id"],
+                kwargs["skill_id"],
+                kwargs["workspace_id"],
+                run_id,
+            )
         )
         return run_id
 
@@ -3094,13 +3147,25 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
         calls.append(("files", kwargs["workspace_id"]))
 
     async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["session_id"], payload["agent_id"], payload["workspace_id"]))
+        calls.append(
+            (
+                "queue",
+                payload["session_id"],
+                payload["agent_id"],
+                payload["skill_id"],
+                payload["workspace_id"],
+            )
+        )
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
     monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
     monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace_belongs_to_tenant", fake_workspace)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
@@ -3157,14 +3222,80 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
         ("workspace", "default"),
         ("files", "default"),
         ("session", "ses_routed", "baoyu-translate", "default"),
-        ("run", "ses_routed", "baoyu-translate", "default", "run_routed_first"),
-        ("queue", "ses_routed", "baoyu-translate", "default"),
-        ("resolve", "baoyu-translate", "baoyu-translate"),
+        ("run", "ses_routed", "baoyu-translate", "baoyu-translate", "default", "run_routed_first"),
+        ("queue", "ses_routed", "baoyu-translate", "baoyu-translate", "default"),
+        ("session_lookup", None, False),
+        ("session_lookup", "workspace-routed", True),
+        ("continuation_runs", "tenant-a", "user-a", "ses_routed", "workspace-routed", 1),
+        ("resolve", "general-agent", "baoyu-translate"),
         ("workspace", "workspace-routed"),
         ("files", "workspace-routed"),
-        ("session", "ses_routed", "baoyu-translate", "workspace-routed"),
-        ("run", "ses_routed", "baoyu-translate", "workspace-routed", "run_routed_second"),
-        ("queue", "ses_routed", "baoyu-translate", "workspace-routed"),
+        ("session", "ses_routed", "general-agent", "workspace-routed"),
+        ("run", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", "run_routed_second"),
+        ("queue", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_principal(monkeypatch):
+    calls = []
+    session_locks = []
+
+    async def owned_session(conn, *, tenant_id, user_id, session_id, workspace_id=None, for_update=False):
+        assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "ses_locked")
+        session_locks.append((workspace_id, for_update))
+        if for_update:
+            calls.append(("session_lock", tenant_id, workspace_id, user_id, session_id))
+        return {"id": session_id, "agent_id": "general-agent", "workspace_id": "workspace-owned"}
+
+    async def admission_lock(conn, *, tenant_id, user_id):
+        calls.append(("admission_lock", tenant_id, user_id))
+
+    async def forbidden_limit_check(*_args, **_kwargs):
+        raise AssertionError("capability denial must precede active-run limit rejection")
+
+    async def prior_runs(conn, *, tenant_id, user_id, session_id, workspace_id=None, limit=20):
+        calls.append(("prior_runs", tenant_id, user_id, session_id, workspace_id, limit))
+        return [{"agent_id": "general-agent", "skill_id": "audit-finding-rca"}]
+
+    async def deny_preserved_skill(conn, **kwargs):
+        calls.append(("authorize", kwargs["tenant_id"], kwargs["agent_id"], kwargs["skill_id"]))
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        admission_lock,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.enforce_user_active_run_admission_under_lock",
+        forbidden_limit_check,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.chat.repositories.list_authorized_session_runs", prior_runs)
+    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", deny_preserved_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.append_capability_authorization_denial_audit", noop)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(message="继续查看这批审计发现", session_id="ses_locked"),
+            agent_id="general-agent",
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert session_locks == [(None, False), ("workspace-owned", True)]
+    assert calls == [
+        ("admission_lock", "tenant-a", "user-a"),
+        ("session_lock", "tenant-a", "workspace-owned", "user-a", "ses_locked"),
+        ("prior_runs", "tenant-a", "user-a", "ses_locked", "workspace-owned", 1),
+        ("authorize", "tenant-a", "general-agent", "audit-finding-rca"),
     ]
 
 
@@ -3174,8 +3305,8 @@ async def test_chat_stream_rejects_a_rotated_principal_stale_session_before_capa
 
     checked = []
 
-    async def no_owned_session(conn, *, tenant_id, user_id, session_id):
-        checked.append((tenant_id, user_id, session_id))
+    async def no_owned_session(conn, *, tenant_id, user_id, session_id, workspace_id=None, for_update=False):
+        checked.append((tenant_id, user_id, session_id, workspace_id, for_update))
         return None
 
     async def forbidden_after_ownership_check(*_args, **_kwargs):
@@ -3207,7 +3338,7 @@ async def test_chat_stream_rejects_a_rotated_principal_stale_session_before_capa
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "session_not_found"
-    assert checked == [("tenant-b", "ordinary-user-b", "ses_previous_principal")]
+    assert checked == [("tenant-b", "ordinary-user-b", "ses_previous_principal", None, False)]
 
 
 @pytest.mark.asyncio
@@ -3216,8 +3347,8 @@ async def test_chat_stream_rejects_a_continuation_workspace_mismatch_before_rout
 
     calls = []
 
-    async def owned_session(conn, *, tenant_id, user_id, session_id):
-        calls.append(("session", tenant_id, user_id, session_id))
+    async def owned_session(conn, *, tenant_id, user_id, session_id, workspace_id=None, for_update=False):
+        calls.append(("session", tenant_id, user_id, session_id, workspace_id, for_update))
         return {
             "id": session_id,
             "agent_id": "general-agent",
@@ -3227,8 +3358,15 @@ async def test_chat_stream_rejects_a_continuation_workspace_mismatch_before_rout
     async def forbidden_after_workspace_check(*_args, **_kwargs):
         raise AssertionError("workspace mismatch must fail before routing or persistence")
 
+    async def forbidden_prior_skill_lookup(*_args, **_kwargs):
+        raise AssertionError("workspace mismatch must not inspect another workspace's prior Skill")
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.list_authorized_session_runs",
+        forbidden_prior_skill_lookup,
+    )
     monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", forbidden_after_workspace_check)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", forbidden_after_workspace_check)
 
@@ -3245,7 +3383,7 @@ async def test_chat_stream_rejects_a_continuation_workspace_mismatch_before_rout
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "session_workspace_mismatch"
-    assert calls == [("session", "tenant-a", "user-a", "ses_owned")]
+    assert calls == [("session", "tenant-a", "user-a", "ses_owned", None, False)]
 
 
 @pytest.mark.asyncio
@@ -3416,6 +3554,12 @@ async def test_lambchat_word_translate_attachment_routes_from_general_agent(monk
 async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creating_run(monkeypatch):
     calls = []
 
+    async def admission_lock(conn, *, tenant_id, user_id):
+        calls.append(("admission_lock", tenant_id, user_id))
+
+    async def forbidden_limit_check(*_args, **_kwargs):
+        raise AssertionError("needs_confirmation must precede active-run limit rejection")
+
     async def fail_resolve_agent_skill(*args, **kwargs):
         calls.append("resolve")
         raise AssertionError("ambiguous request must not resolve skill")
@@ -3440,6 +3584,16 @@ async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creati
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
     monkeypatch.setattr(
+        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        admission_lock,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.enforce_user_active_run_admission_under_lock",
+        forbidden_limit_check,
+        raising=False,
+    )
+    monkeypatch.setattr(
         "app.routes.chat.repositories.list_principal_lambchat_agents",
         all_principal_agents,
         raising=False,
@@ -3460,7 +3614,7 @@ async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creati
         "document_translation",
         "general_chat",
     ]
-    assert calls == []
+    assert calls == [("admission_lock", "tenant-a", "user-a")]
 
 
 @pytest.mark.asyncio
@@ -3900,7 +4054,10 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
         calls.append("resolve")
         return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
 
-    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+    async def fake_acquire_user_active_run_admission_lock(conn, *, tenant_id, user_id):
+        calls.append(("lock", tenant_id, user_id))
+
+    async def fake_enforce_user_active_run_admission_under_lock(conn, *, tenant_id, user_id, limit):
         calls.append(("admit", tenant_id, user_id, limit))
         raise RepositoryConflictError("user_active_run_limit_exceeded")
 
@@ -3915,8 +4072,13 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.enforce_user_active_run_admission",
-        fake_enforce_user_active_run_admission,
+        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        fake_acquire_user_active_run_admission_lock,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.enforce_user_active_run_admission_under_lock",
+        fake_enforce_user_active_run_admission_under_lock,
         raising=False,
     )
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_create_session)
@@ -3929,7 +4091,11 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "user_active_run_limit_exceeded"
-    assert calls == ["resolve", ("admit", "tenant-a", "user-limit", 3)]
+    assert calls == [
+        ("lock", "tenant-a", "user-limit"),
+        "resolve",
+        ("admit", "tenant-a", "user-limit", 3),
+    ]
 
 
 @pytest.mark.asyncio

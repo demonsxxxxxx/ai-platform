@@ -1,10 +1,12 @@
 import asyncio
 import json
 import re
-from typing import Any
+from typing import Any, Literal
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
+from pydantic import UUID4
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles, require_principal
@@ -20,6 +22,8 @@ from app.models import (
     MultiAgentDispatchHandoffResponse,
     MultiAgentDispatchTickResponse,
     QueueRunPayload,
+    RunControlMutationResponse,
+    RunControlOperationResponse,
     RunControlResponse,
     RunResponse,
 )
@@ -39,7 +43,15 @@ from app.projection_redaction import (
     redact_raw_skill_references,
     sanitize_user_control_input,
 )
-from app.queue import enqueue_run, get_queue_insight, get_run_queue_position, remove_queued_run
+from app.queue import (
+    QueueAdmissionMetadata,
+    QueueAdmissionRejected,
+    enqueue_run,
+    get_queue_insight,
+    get_run_queue_position,
+    read_queue_admission,
+    remove_queued_run,
+)
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.run_projection import (
     artifact_card,
@@ -1194,82 +1206,148 @@ async def copy_run(
     )
 
 
-@router.post("/runs/{run_id}/retry", response_model=RunControlResponse)
-async def retry_run(
-    run_id: str,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> RunControlResponse:
-    _validate_principal_user_id_for_route(principal)
-    try:
-        async with transaction() as conn:
-            await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
-            copied = await repositories.retry_run_as_new_task(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                run_id=run_id,
-            )
-            if copied is not None:
-                queue_payload = await prepare_copied_run_for_queue(
-                    conn,
-                    copied=copied,
-                    principal=principal,
-                    source="retry_run",
-                    authorized_source_run_id=run_id,
-                )
-    except repositories.RepositoryAuthorizationError as exc:
-        await _audit_capability_denial(principal, exc, source="retry_run")
-        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
-    except SkillVersionMaterializationError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except RepositoryNotFoundError as exc:
-        _raise_if_capability_revoked(exc)
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RepositoryConflictError as exc:
-        _raise_if_capability_revoked(exc)
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if copied is None:
-        raise HTTPException(status_code=404, detail="run_not_found")
-    try:
-        queue_position = await enqueue_run(queue_payload)
-    except Exception as exc:
-        await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
-        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
-    return RunControlResponse(
-        run_id=copied["run_id"],
-        session_id=copied["session_id"],
-        status="queued",
-        queue_position=queue_position,
-        queue_insight=await queue_insight_for_status("queued", principal.tenant_id, user_id=principal.user_id),
+def _run_control_queue_payload(
+    operation: dict[str, Any],
+    *,
+    principal: AuthPrincipal,
+) -> dict[str, Any]:
+    """Rebuild the exact immutable queue payload stored on a committed child."""
+
+    snapshot = repositories.copied_run_execution_snapshot(operation.get("input_json"))
+    return _validate_queue_payload_for_enqueue(
+        {
+            "tenant_id": principal.tenant_id,
+            "workspace_id": operation["workspace_id"],
+            "user_id": operation["user_id"],
+            "session_id": operation["session_id"],
+            "run_id": operation["run_id"],
+            "agent_id": operation["agent_id"],
+            "skill_id": operation["skill_id"],
+            **snapshot,
+        }
     )
 
 
-@router.post("/runs/{run_id}/resume", response_model=RunControlResponse)
-async def resume_run(
+async def _ensure_run_control_queue_admission(
+    queue_payload: dict[str, Any],
+    *,
+    check_existing: bool,
+) -> QueueAdmissionMetadata:
+    """Recover or idempotently admit one immutable committed control child."""
+
+    if check_existing:
+        try:
+            existing = await read_queue_admission(queue_payload)
+        except QueueAdmissionRejected as exc:
+            raise HTTPException(status_code=503, detail="queue_admission_recovery_failed") from exc
+        except Exception:
+            existing = None
+        if existing is not None:
+            return existing
+
+    try:
+        queue_position = await enqueue_run(queue_payload)
+        return QueueAdmissionMetadata(
+            queue_position=queue_position,
+            queue_admission_ordinal=0,
+            message_id="",
+            source="idempotent_enqueue",
+        )
+    except Exception as enqueue_error:
+        try:
+            recovered = await read_queue_admission(queue_payload)
+        except Exception:
+            recovered = None
+        if recovered is not None:
+            return recovered
+        # The DB mapping and immutable queued child remain authoritative. A
+        # same-operation replay can safely retry the deterministic Redis admit.
+        raise HTTPException(status_code=503, detail="queue_admission_unconfirmed") from enqueue_error
+
+
+async def _run_control_queue_admission_state(
+    operation: dict[str, Any],
+    *,
+    principal: AuthPrincipal,
+) -> Literal["admitted", "pending", "settled", "unknown"]:
+    status = str(operation.get("status") or "").strip().lower()
+    if status not in {"pending", "queued"}:
+        return "settled"
+    try:
+        payload = _run_control_queue_payload(operation, principal=principal)
+        admission = await read_queue_admission(payload)
+    except Exception:
+        return "unknown"
+    return "admitted" if admission is not None else "pending"
+
+
+async def _mutate_run_control_child(
+    *,
     run_id: str,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> RunControlResponse:
-    """Queue a platform-controlled resume run for an authorized checkpointed source."""
-    _validate_principal_user_id_for_route(principal)
+    action: Literal["retry", "resume"],
+    operation_id: UUID4,
+    principal: AuthPrincipal,
+) -> RunControlMutationResponse:
+    normalized_operation_id = str(operation_id)
+    created = False
+    queue_payload: dict[str, Any] | None = None
+    copied: dict[str, Any] | None = None
     try:
         async with transaction() as conn:
-            await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
-            copied = await repositories.resume_run_as_new_task(
+            # Global order: operation advisory -> user admission advisory ->
+            # source-run row. The resolver takes the same first lock.
+            await repositories.acquire_run_control_operation_lock(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
-                run_id=run_id,
+                source_run_id=run_id,
+                action=action,
+                operation_id=normalized_operation_id,
             )
-            if copied is not None:
-                queue_payload = await prepare_copied_run_for_queue(
+            copied = await repositories.get_run_control_operation(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                source_run_id=run_id,
+                action=action,
+                operation_id=normalized_operation_id,
+            )
+            if copied is None:
+                await enforce_user_active_run_limit(
                     conn,
-                    copied=copied,
-                    principal=principal,
-                    source="resume_run",
-                    authorized_source_run_id=run_id,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
                 )
+                mutation = (
+                    repositories.retry_run_as_new_task
+                    if action == "retry"
+                    else repositories.resume_run_as_new_task
+                )
+                copied = await mutation(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    run_id=run_id,
+                )
+                if copied is not None:
+                    queue_payload = await prepare_copied_run_for_queue(
+                        conn,
+                        copied=copied,
+                        principal=principal,
+                        source=f"{action}_run",
+                        authorized_source_run_id=run_id,
+                    )
+                    await repositories.record_run_control_operation(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        source_run_id=run_id,
+                        child_run_id=str(copied["run_id"]),
+                        action=action,
+                        operation_id=normalized_operation_id,
+                    )
+                    created = True
     except repositories.RepositoryAuthorizationError as exc:
-        await _audit_capability_denial(principal, exc, source="resume_run")
+        await _audit_capability_denial(principal, exc, source=f"{action}_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1281,17 +1359,127 @@ async def resume_run(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
-    try:
-        queue_position = await enqueue_run(queue_payload)
-    except Exception as exc:
-        await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
-        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
-    return RunControlResponse(
+    status = str(copied.get("status") or "queued")
+    queue_position: int | None = None
+    if status == "queued":
+        if queue_payload is None:
+            queue_payload = _run_control_queue_payload(copied, principal=principal)
+        admission = await _ensure_run_control_queue_admission(
+            queue_payload,
+            check_existing=not created,
+        )
+        queue_position = admission.queue_position
+    return RunControlMutationResponse(
+        source_run_id=run_id,
         run_id=copied["run_id"],
         session_id=copied["session_id"],
-        status="queued",
+        status=status,
+        action=action,
+        operation_id=operation_id,
+        queue_admission="admitted",
         queue_position=queue_position,
-        queue_insight=await queue_insight_for_status("queued", principal.tenant_id, user_id=principal.user_id),
+        queue_insight=(
+            await queue_insight_for_status(status, principal.tenant_id, user_id=principal.user_id)
+            if status == "queued"
+            else None
+        ),
+    )
+
+
+@router.post("/runs/{run_id}/retry", response_model=RunControlMutationResponse)
+async def retry_run(
+    run_id: str,
+    operation_id: UUID4 | None = None,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> RunControlMutationResponse:
+    """Queue or resolve one idempotent retry operation."""
+
+    _validate_principal_user_id_for_route(principal)
+    return await _mutate_run_control_child(
+        run_id=run_id,
+        action="retry",
+        operation_id=operation_id or uuid4(),
+        principal=principal,
+    )
+
+
+@router.post("/runs/{run_id}/resume", response_model=RunControlMutationResponse)
+async def resume_run(
+    run_id: str,
+    operation_id: UUID4 | None = None,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> RunControlMutationResponse:
+    """Queue or resolve one idempotent checkpoint-resume operation."""
+
+    _validate_principal_user_id_for_route(principal)
+    return await _mutate_run_control_child(
+        run_id=run_id,
+        action="resume",
+        operation_id=operation_id or uuid4(),
+        principal=principal,
+    )
+
+
+@router.get(
+    "/runs/{run_id}/control-operations/{action}/{operation_id}",
+    response_model=RunControlOperationResponse,
+)
+async def get_run_control_operation(
+    run_id: str,
+    action: Literal["retry", "resume"],
+    operation_id: UUID4,
+    response: Response,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> RunControlOperationResponse:
+    """Resolve one exact operation after linearizing with its concurrent mutation."""
+
+    _validate_principal_user_id_for_route(principal)
+    response.headers["Cache-Control"] = "private, no-store"
+    normalized_operation_id = str(operation_id)
+    async with transaction() as conn:
+        await repositories.acquire_run_control_operation_lock(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            source_run_id=run_id,
+            action=action,
+            operation_id=normalized_operation_id,
+        )
+        source = await repositories.get_authorized_run(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+        )
+        if source is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        operation = await repositories.get_run_control_operation(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            source_run_id=run_id,
+            action=action,
+            operation_id=normalized_operation_id,
+        )
+    if operation is None:
+        return RunControlOperationResponse(
+            source_run_id=run_id,
+            action=action,
+            operation_id=operation_id,
+            status="absent",
+        )
+    queue_admission = await _run_control_queue_admission_state(
+        operation,
+        principal=principal,
+    )
+    return RunControlOperationResponse(
+        source_run_id=run_id,
+        action=action,
+        operation_id=operation_id,
+        run_id=operation["run_id"],
+        session_id=operation["session_id"],
+        status=str(operation.get("status") or "queued"),
+        queue_admission=queue_admission,
     )
 
 

@@ -70,6 +70,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
+            self.kwargs = kwargs
             captured.update(kwargs)
 
     class HookMatcher:
@@ -89,6 +90,17 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             self.message = message
 
     async def query(prompt, options):
+        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
+        await hook(
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "qa-file-reviewer"},
+                "tool_use_id": "tool-1",
+            },
+            "tool-1",
+            {},
+        )
         yield AssistantMessage([TextBlock("ok")])
         yield ResultMessage()
 
@@ -162,7 +174,12 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert result.error is None
     assert captured["permission_mode"] == "dontAsk"
     assert captured["tools"] == ["Bash", "Write", "Skill"]
-    assert captured["allowed_tools"] == ["Bash", "Write", "Skill", "mcp__corp:search__query"]
+    assert captured["allowed_tools"] == [
+        "Bash",
+        "Write",
+        "Skill(qa-file-reviewer)",
+        "mcp__corp:search__query",
+    ]
     assert captured["mcp_servers"] == {
         "corp:search": {"type": "http", "url": "https://mcp.example.test/v1"}
     }
@@ -410,20 +427,28 @@ def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="comp
             response = executor_response(request) if callable(executor_response) else executor_response
             if asyncio.iscoroutine(response):
                 response = await response
+            default_response = {
+                "status": status,
+                "message": "sandbox completed",
+                "sdk_used": True,
+                "used_skills": (
+                    [request.skill_ids[0]]
+                    if request.skill_ids and request.skill_ids[0] != "general-chat"
+                    else []
+                ),
+                "used_skills_source": (
+                    "executor_hook"
+                    if request.skill_ids and request.skill_ids[0] != "general-chat"
+                    else ""
+                ),
+            }
             return types.SimpleNamespace(
                 status=status,
                 provider=provider,
                 session_id=request.session_id,
                 run_id=request.run_id,
                 executor_response=dict(
-                    response
-                    or {
-                        "status": status,
-                        "message": "sandbox completed",
-                        "sdk_used": True,
-                        "used_skills": [],
-                        "used_skills_source": "",
-                    }
+                    response or default_response
                 ),
                 timings={},
             )
@@ -1326,7 +1351,16 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    runtime_requests = install_sandbox_runtime(monkeypatch)
+    runtime_requests = install_sandbox_runtime(
+        monkeypatch,
+        executor_response={
+            "status": "completed",
+            "message": "sandbox completed",
+            "sdk_used": True,
+            "used_skills": ["qa-file-reviewer"],
+            "used_skills_source": "executor_hook",
+        },
+    )
 
     result = await adapter.submit_run(
         payload(
@@ -1361,8 +1395,8 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert result.result["delegate_used"] is False
     assert result.result["allowed_skills"] == ["qa-file-reviewer", "minimax-docx"]
     assert result.result["staged_skills"] == ["qa-file-reviewer", "minimax-docx"]
-    assert result.result["used_skills"] == []
-    assert result.executor_payload["used_skills_source"] == "none"
+    assert result.result["used_skills"] == ["qa-file-reviewer"]
+    assert result.executor_payload["used_skills_source"] == "executor_hook"
     assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer", "minimax-docx"]
     manifest = result.executor_payload["skill_manifests"][0]
     assert manifest["skill_id"] == "qa-file-reviewer"
@@ -1371,7 +1405,7 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert manifest["source"]["kind"] == "builtin"
     assert manifest["allowed"] is True
     assert manifest["staged"] is True
-    assert manifest["used"] is False
+    assert manifest["used"] is True
     runtime_request = runtime_requests[0]
     workspace = (
         Path(current_settings.sandbox_workspace_root)
@@ -1396,6 +1430,48 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert "Latest artifact version: v4" in runtime_request.input_message
     assert "raw_storage_key" not in runtime_request.input_message
     assert "s3://private" not in runtime_request.input_message
+
+
+@pytest.mark.asyncio
+async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    current_settings.sandbox_workspace_root = str(Path(".pytest-tmp") / "sandbox-missing-skill-hook")
+    write_skill(tmp_path / "skills")
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
+
+    async def no_files(_payload, _workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    install_sandbox_runtime(
+        monkeypatch,
+        executor_response={
+            "status": "completed",
+            "message": "manual answer without a Skill hook",
+            "sdk_used": True,
+            "used_skills": [],
+            "used_skills_source": "",
+        },
+    )
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="general-agent",
+            input={"message": "审核结论"},
+            skill_manifests=pins,
+            context_snapshot={"execution_tier": "sdk_only_writing"},
+            context_pack={"execution_tier": "sdk_only_writing"},
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_selected_skill_not_invoked"
+    assert result.result["used_skills"] == []
+    assert result.executor_payload["used_skills_source"] == "none"
 
 
 @pytest.mark.asyncio
@@ -1463,6 +1539,8 @@ async def test_worker_threads_server_xlsx_contract_and_accepts_matching_runtime_
             "status": "completed",
             "message": "xlsx answer",
             "sdk_used": True,
+            "used_skills": ["qa-rag-skill"],
+            "used_skills_source": "executor_hook",
             "attachment_parser_evidence": [_xlsx_parser_evidence()],
         }
 
@@ -2186,6 +2264,8 @@ def test_worker_accepts_only_exact_required_xlsx_parser_evidence(
                 "status": "completed",
                 "message": "xlsx answer",
                 "sdk_used": True,
+                "used_skills": ["qa-rag-skill"],
+                "used_skills_source": "executor_hook",
                 "attachment_parser_evidence": [evidence],
             },
             timings={},
@@ -2673,10 +2753,10 @@ async def test_qa_file_reviewer_manifest_records_available_dependency(monkeypatc
     assert result.result["allowed_skills"] == ["qa-file-reviewer", "minimax-docx"]
     manifests = {item["skill_id"]: item for item in result.executor_payload["skill_manifests"]}
     assert manifests["qa-file-reviewer"]["dependency_ids"] == ["minimax-docx"]
-    assert result.result["used_skills"] == []
-    assert result.executor_payload["used_skills_source"] == "none"
+    assert result.result["used_skills"] == ["qa-file-reviewer"]
+    assert result.executor_payload["used_skills_source"] == "executor_hook"
     assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer", "minimax-docx"]
-    assert manifests["qa-file-reviewer"]["used"] is False
+    assert manifests["qa-file-reviewer"]["used"] is True
     assert manifests["minimax-docx"]["dependency_ids"] == []
     assert manifests["minimax-docx"]["used"] is False
 
@@ -4175,8 +4255,8 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
     assert result.message == "ok"
     assert captured["skills"] == ["qa-file-reviewer"]
     assert captured["permission_mode"] == "dontAsk"
-    assert captured["tools"] == ["Read", "Glob", "LS"]
-    assert captured["allowed_tools"] == ["Read", "Glob", "LS"]
+    assert captured["tools"] == ["Read", "Glob", "LS", "Skill"]
+    assert captured["allowed_tools"] == ["Read", "Glob", "LS", "Skill(qa-file-reviewer)"]
     assert captured["disallowed_tools"] == ["Write", "Edit", "NotebookEdit"]
     assert callable(captured["can_use_tool"])
 
@@ -4438,7 +4518,8 @@ async def test_sdk_runner_does_not_expose_worker_local_bash_fast_path(monkeypatc
         skills=["qa-file-reviewer"],
     )
 
-    assert captured["tools"] == ["Read", "Glob", "LS"]
+    assert captured["tools"] == ["Read", "Glob", "LS", "Skill"]
+    assert "Bash" not in captured["tools"]
     denied = await captured["can_use_tool"]("Bash", {"command": "echo local"}, None)
     assert denied.behavior == "deny"
     hook = captured["hooks"]["PreToolUse"][0].hooks[0]
@@ -4528,6 +4609,82 @@ async def test_sdk_runner_removes_project_settings_before_sdk_launch(monkeypatch
 
     assert result.message == "ok"
     assert captured["setting_sources"] == ["project"]
+
+
+@pytest.mark.asyncio
+async def test_sdk_runner_selected_skill_requires_tool_and_success_hook(monkeypatch, tmp_path):
+    captured = {}
+
+    class AssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = {}
+        model_usage = {}
+        result = "manual answer without using the selected Skill"
+        is_error = False
+        errors = []
+        stop_reason = None
+
+    class HookMatcher:
+        def __init__(self, matcher=None, hooks=None, timeout=None):
+            self.matcher = matcher
+            self.hooks = hooks or []
+            self.timeout = timeout
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    async def query(prompt, options):
+        yield AssistantMessage([TextBlock("manual answer without using the selected Skill")])
+        yield ResultMessage()
+
+    current_settings = types.SimpleNamespace(
+        claude_agent_sdk_enabled=True,
+        anthropic_base_url="",
+        anthropic_auth_token="",
+        anthropic_model="",
+        openai_api_key="",
+        claude_agent_model="model-a",
+        claude_agent_sdk_skills="",
+        claude_agent_sdk_timeout_seconds=5,
+        claude_agent_sdk_max_turns=12,
+        claude_agent_sdk_max_thinking_tokens=1024,
+        claude_agent_sdk_effort="high",
+        claude_agent_permission_mode="dontAsk",
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        types.SimpleNamespace(
+            AssistantMessage=AssistantMessage,
+            ClaudeAgentOptions=ClaudeAgentOptions,
+            HookMatcher=HookMatcher,
+            ResultMessage=ResultMessage,
+            TextBlock=TextBlock,
+            query=query,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="qa-file-reviewer",
+        skills=["qa-file-reviewer"],
+    )
+
+    assert "Skill" in captured["tools"]
+    assert "Skill(qa-file-reviewer)" in captured["allowed_tools"]
+    assert result.error == "claude_agent_sdk_selected_skill_not_invoked"
+    assert result.used_skills == []
 
 
 @pytest.mark.asyncio
@@ -4630,7 +4787,7 @@ async def test_sdk_runner_records_skill_use_from_sdk_hook(monkeypatch, tmp_path)
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
-        skill_id="general-chat",
+        skill_id="qa-file-reviewer",
         skills=["qa-file-reviewer", "minimax-docx"],
         on_skill_use=on_skill_use,
     )

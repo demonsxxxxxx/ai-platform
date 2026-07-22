@@ -62,6 +62,7 @@ DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker", "ragflow"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 RETRYABLE_RUN_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
+RUN_CONTROL_OPERATION_ACTIONS = {"retry", "resume"}
 MEMORY_RETENTION_CLEANUP_CURSOR_KEY = "memory_retention_cleanup"
 TOOL_PERMISSION_TERMINALIZATION_BATCH_LIMIT = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT
 TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT
@@ -3772,15 +3773,190 @@ async def enforce_user_active_run_admission(
     limit = int(limit)
     if limit <= 0:
         return 0
+    await acquire_user_active_run_admission_lock(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+    )
+    return await enforce_user_active_run_admission_under_lock(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        limit=limit,
+    )
+
+
+async def acquire_user_active_run_admission_lock(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """Acquire the transaction-scoped per-user run-admission serialization lock."""
+
     lock_scope = dumps_json({"tenant_id": tenant_id, "user_id": user_id})
     await conn.execute(
         "select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))",
         (lock_scope,),
     )
+
+
+async def enforce_user_active_run_admission_under_lock(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    limit: int,
+) -> int:
+    """Check the active-run limit after the caller acquired its user lock."""
+
+    limit = int(limit)
+    if limit <= 0:
+        return 0
     active_count = await count_active_runs_for_user(conn, tenant_id=tenant_id, user_id=user_id)
     if active_count >= limit:
         raise RepositoryConflictError("user_active_run_limit_exceeded")
     return active_count
+
+
+def _validated_run_control_operation_identity(*, action: str, operation_id: str) -> tuple[str, str]:
+    normalized_action = str(action or "").strip()
+    if normalized_action not in RUN_CONTROL_OPERATION_ACTIONS:
+        raise RepositoryConflictError("invalid_run_control_action")
+    normalized_operation_id = str(operation_id or "").strip()
+    try:
+        parsed_operation_id = uuid.UUID(normalized_operation_id)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise RepositoryConflictError("invalid_run_control_operation_id") from exc
+    if parsed_operation_id.version != 4 or str(parsed_operation_id) != normalized_operation_id:
+        raise RepositoryConflictError("invalid_run_control_operation_id")
+    return normalized_action, normalized_operation_id
+
+
+async def acquire_run_control_operation_lock(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    source_run_id: str,
+    action: str,
+    operation_id: str,
+) -> None:
+    """Serialize one exact principal-scoped retry/resume identity for this transaction."""
+
+    normalized_action, normalized_operation_id = _validated_run_control_operation_identity(
+        action=action,
+        operation_id=operation_id,
+    )
+    lock_scope = dumps_json(
+        {
+            "scope": "run_control_operation",
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "source_run_id": source_run_id,
+            "action": normalized_action,
+            "operation_id": normalized_operation_id,
+        }
+    )
+    await conn.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))",
+        (lock_scope,),
+    )
+
+
+async def get_run_control_operation(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    source_run_id: str,
+    action: str,
+    operation_id: str,
+) -> dict[str, Any] | None:
+    """Resolve an exact durable child mapping without crossing its principal or action scope."""
+
+    normalized_action, normalized_operation_id = _validated_run_control_operation_identity(
+        action=action,
+        operation_id=operation_id,
+    )
+    cursor = await conn.execute(
+        """
+        select source.id as source_run_id,
+               operation.payload_json->>'action' as action,
+               operation.payload_json->>'operation_id' as operation_id,
+               child.id as run_id,
+               child.session_id,
+               child.status,
+               child.workspace_id,
+               child.user_id,
+               child.agent_id,
+               child.skill_id,
+               child.input_json
+        from run_events operation
+        join runs source
+          on source.tenant_id = operation.tenant_id
+         and source.id = operation.run_id
+         and source.user_id = %s
+        join runs child
+          on child.tenant_id = operation.tenant_id
+         and child.id = operation.payload_json->>'child_run_id'
+         and child.user_id = %s
+         and child.copied_from_run_id = source.id
+        where operation.tenant_id = %s
+          and operation.run_id = %s
+          and operation.event_type = 'run_control_operation_committed'
+          and operation.payload_json->>'source_run_id' = %s
+          and operation.payload_json->>'action' = %s
+          and operation.payload_json->>'operation_id' = %s
+        order by operation.sequence desc, operation.created_at desc
+        limit 1
+        """,
+        (
+            user_id,
+            user_id,
+            tenant_id,
+            source_run_id,
+            source_run_id,
+            normalized_action,
+            normalized_operation_id,
+        ),
+    )
+    return await cursor.fetchone()
+
+
+async def record_run_control_operation(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    source_run_id: str,
+    child_run_id: str,
+    action: str,
+    operation_id: str,
+    trace_id: str | None = None,
+) -> str:
+    """Persist an immutable exact operation-to-child link in the authoritative event store."""
+
+    normalized_action, normalized_operation_id = _validated_run_control_operation_identity(
+        action=action,
+        operation_id=operation_id,
+    )
+    return await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=source_run_id,
+        trace_id=trace_id,
+        event_type="run_control_operation_committed",
+        stage="control",
+        message="Run control operation committed",
+        visible_to_user=False,
+        payload={
+            "visible_to_user": False,
+            "source_run_id": source_run_id,
+            "child_run_id": child_run_id,
+            "action": normalized_action,
+            "operation_id": normalized_operation_id,
+        },
+    )
 
 
 async def list_stale_run_reconciliation_candidates(
@@ -4144,17 +4320,26 @@ async def get_authorized_session(
     tenant_id: str,
     user_id: str,
     session_id: str,
+    workspace_id: str | None = None,
+    for_update: bool = False,
 ) -> dict[str, Any] | None:
+    lock_clause = " for update" if for_update else ""
+    workspace_filter = "and workspace_id = %s" if workspace_id else ""
+    params: list[Any] = [tenant_id, session_id, user_id]
+    if workspace_id:
+        params.append(workspace_id)
     cursor = await conn.execute(
-        """
+        f"""
         select *
         from sessions
         where tenant_id = %s
           and id = %s
           and user_id = %s
           and status = 'active'
+          {workspace_filter}
+        {lock_clause}
         """,
-        (tenant_id, session_id, user_id),
+        tuple(params),
     )
     return await cursor.fetchone()
 
@@ -11365,10 +11550,16 @@ async def list_authorized_session_runs(
     tenant_id: str,
     user_id: str,
     session_id: str,
+    workspace_id: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
+    workspace_filter = "and runs.workspace_id = %s" if workspace_id else ""
+    params: list[Any] = [tenant_id, user_id, session_id]
+    if workspace_id:
+        params.append(workspace_id)
+    params.append(limit)
     cursor = await conn.execute(
-        """
+        f"""
         select runs.id, runs.trace_id, runs.schema_version, runs.agent_id, runs.skill_id,
                runs.status, runs.error_code, runs.error_message, runs.created_at, runs.queued_at,
                runs.started_at, runs.finished_at, runs.result_json,
@@ -11395,6 +11586,7 @@ async def list_authorized_session_runs(
         where runs.tenant_id = %s
           and runs.user_id = %s
           and runs.session_id = %s
+          {workspace_filter}
         -- A non-null generation is the sole current-run authority.  Legacy
         -- unordered rows remain display-only and never outrank it.
         order by runs.session_generation desc nulls last,
@@ -11404,7 +11596,7 @@ async def list_authorized_session_runs(
                  runs.id desc
         limit %s
         """,
-        (tenant_id, user_id, session_id, limit),
+        tuple(params),
     )
     return list(await cursor.fetchall())
 

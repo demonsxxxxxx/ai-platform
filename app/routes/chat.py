@@ -863,7 +863,7 @@ def _message_content(row: dict[str, object], principal: AuthPrincipal) -> str:
 
 async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -> None:
     limit = int(get_settings().max_active_runs_per_user)
-    await repositories.enforce_user_active_run_admission(
+    await repositories.enforce_user_active_run_admission_under_lock(
         conn,
         tenant_id=tenant_id,
         user_id=user_id,
@@ -1049,6 +1049,11 @@ async def chat_stream(
                     display_name=principal.display_name,
                 )
             continuation_session = None
+            preserve_continuation_skill = bool(
+                request.session_id
+                and request.selected_skill is None
+                and request.skill_id is None
+            )
             if request.session_id:
                 continuation_session = await repositories.get_authorized_session(
                     conn,
@@ -1074,8 +1079,6 @@ async def chat_stream(
                 # selection may not defer ownership validation until write-time
                 # or switch the session to another agent.
                 requested_agent_id = str(continuation_session["agent_id"])
-                if request.selected_skill is None and request.skill_id is None:
-                    requested_skill_id = None
 
             if submission_id is not None and request_fingerprint is not None:
                 claimed_submission, created_submission = await repositories.claim_chat_submission(
@@ -1095,6 +1098,45 @@ async def chat_stream(
                     if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
                         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
                     return _chat_stream_response_from_submission(claimed_submission)
+
+            # One order for explicit and implicit chat creation: acquire the
+            # user admission advisory before any exact continuation-session row
+            # lock. The limit count is deliberately checked only after the
+            # established intent/capability/parameter errors below.
+            await repositories.acquire_user_active_run_admission_lock(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+            )
+
+            if preserve_continuation_skill:
+                # After the idempotency claim proves this is new work, hold the
+                # exact session scope through the prior-Skill read and the
+                # create_run generation allocation below.
+                locked_continuation_session = await repositories.get_authorized_session(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    session_id=request.session_id,
+                    workspace_id=effective_workspace_id,
+                    for_update=True,
+                )
+                if locked_continuation_session is None:
+                    raise HTTPException(status_code=404, detail="session_not_found")
+                continuation_session = locked_continuation_session
+                requested_agent_id = str(continuation_session["agent_id"])
+                prior_runs = await repositories.list_authorized_session_runs(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    session_id=request.session_id,
+                    workspace_id=effective_workspace_id,
+                    limit=1,
+                )
+                prior_skill_id = str(
+                    _row_value(prior_runs[0] if prior_runs else {}, "skill_id") or ""
+                ).strip()
+                requested_skill_id = prior_skill_id or None
 
             explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
             is_terminal_implicit_decision = False
@@ -1228,7 +1270,11 @@ async def chat_stream(
                 )
             if "docx" in (skill.get("input_modes") or []) and not resolved_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
-            await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
+            await enforce_user_active_run_limit(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+            )
             release_decision = resolve_rollout_skill_decision(
                 skill,
                 tenant_id=principal.tenant_id,
