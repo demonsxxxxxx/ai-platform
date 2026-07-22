@@ -42,7 +42,7 @@ from app.runtime.sandbox.executor_client import (
     prepare_executor_http_request,
 )
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
-from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION, SDK_NATIVE
+from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
 
 
 class SandboxRuntimeError(RuntimeError):
@@ -441,21 +441,20 @@ def _tool_policy_subject_authorized(subject: dict[str, Any], identity: str) -> b
 def _staged_skill_mount_required(request: SandboxRuntimeRequest) -> bool:
     return any(
         _tool_policy_subject_authorized(subject, "Skill")
-        and str(subject.get("execution_strategy") or "") == SDK_NATIVE
+        and isinstance(subject.get("allowed_skill_names"), list)
+        and any(isinstance(name, str) and name for name in subject["allowed_skill_names"])
         for subject in request.tool_policy_subjects
         if isinstance(subject, dict)
     )
 
 
 def _native_tool_required(request: SandboxRuntimeRequest) -> bool:
-    skill_native = _staged_skill_mount_required(request)
-    bash_isolated = any(
+    return any(
         _tool_policy_subject_authorized(subject, "Bash")
         and str(subject.get("command_isolation") or "") == NATIVE_COMMAND_ISOLATION
         for subject in request.tool_policy_subjects
         if isinstance(subject, dict)
     )
-    return skill_native and bash_isolated
 
 
 def _real_directory(path: Path, *, error: str) -> tuple[Path, os.stat_result]:
@@ -615,7 +614,7 @@ def _native_tool_admission_evidence(
 def _native_tool_labels(
     request: SandboxRuntimeRequest,
     workspace: WorkspaceLease,
-    skill_mount: _TrustedSkillMount,
+    skill_mount: _TrustedSkillMount | None,
 ) -> dict[str, str]:
     return {
         "ai-platform.owner": _NATIVE_TOOL_OWNER,
@@ -2044,8 +2043,6 @@ class DockerContainerProvider:
         socket_prepared = False
         try:
             trusted_skill_mount = skill_mount or _prepare_trusted_skill_mount(request, workspace)
-            if trusted_skill_mount is None:
-                raise ContainerStartFailedError("native tool staged Skill mount is unavailable")
             socket_path = self._prepare_native_tool_socket(workspace)
             socket_prepared = True
             existing_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
@@ -2061,10 +2058,16 @@ class DockerContainerProvider:
                         "bind": workspace.workspace_container_path,
                         "mode": "rw",
                     },
-                    str(trusted_skill_mount.host_path): {
-                        "bind": trusted_skill_mount.container_path,
-                        "mode": "ro",
-                    },
+                    **(
+                        {
+                            str(trusted_skill_mount.host_path): {
+                                "bind": trusted_skill_mount.container_path,
+                                "mode": "ro",
+                            }
+                        }
+                        if trusted_skill_mount is not None
+                        else {}
+                    ),
                     str(socket_path.parent): {
                         "bind": f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform",
                         "mode": "rw",

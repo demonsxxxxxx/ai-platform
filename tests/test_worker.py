@@ -367,6 +367,48 @@ def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile
     assert by_identity["Skill"]["allowed_skill_names"] == ["native-review"]
 
 
+def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission():
+    primary = primary_manifest("general-chat", "hash-general")
+    catalog_profile = resolve_skill_execution_profile(
+        skill_id="minimax-docx",
+        source_kind="builtin",
+        lifecycle_status="released",
+    )
+    catalog_manifest = primary_manifest("minimax-docx", "hash-minimax")
+    catalog_manifest.update(
+        {
+            "lifecycle_status": "released",
+            "execution_profile": catalog_profile,
+            "builtin_tool_identities": catalog_profile["builtin_tool_identities"],
+        }
+    )
+    payload = parse_queue_payload(
+        base_payload(
+            skill_id="general-chat",
+            skill_version="hash-general",
+            skill_manifests=[primary],
+        )
+    )
+
+    subjects = worker_module._builtin_capability_subjects(
+        payload=payload,
+        run_identity={"skill_id": "general-chat"},
+        skill={"skill_id": "general-chat", "skill_status": "active"},
+        skill_decision=types.SimpleNamespace(usable=True),
+        authorized_skill_manifests=[catalog_manifest],
+        authorized_skill_names=["minimax-docx"],
+    )
+    by_identity = {subject["identity"]: subject for subject in subjects}
+    runtime_request = types.SimpleNamespace(tool_policy_subjects=subjects)
+
+    assert by_identity["Skill"]["execution_strategy"] == "sdk_restricted"
+    assert by_identity["Skill"]["allowed_skill_names"] == ["minimax-docx"]
+    assert by_identity["Bash"]["execution_strategy"] == "sdk_native"
+    assert by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
+    assert container_provider._staged_skill_mount_required(runtime_request)
+    assert container_provider._native_tool_required(runtime_request)
+
+
 def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
     manifest = primary_manifest("native-review", "hash-native")
     manifest["source"] = {"kind": "uploaded"}

@@ -99,7 +99,8 @@ def native_tool_subjects() -> list[dict[str, Any]]:
             "declared": True,
             "active": True,
             "distributed": True,
-            "execution_strategy": "sdk_native",
+            "execution_strategy": "sdk_restricted",
+            "allowed_skill_names": ["native-review"],
         },
         {
             "identity": "Bash",
@@ -108,6 +109,7 @@ def native_tool_subjects() -> list[dict[str, Any]]:
             "declared": True,
             "active": True,
             "distributed": True,
+            "execution_strategy": "sdk_native",
             "command_isolation": "sibling-tool-sandbox-v1",
         },
     ]
@@ -119,6 +121,30 @@ def trusted_skill_mount_stub(selected_workspace: WorkspaceLease) -> SimpleNamesp
         container_path=f"{selected_workspace.workspace_container_path.rstrip('/')}/.claude",
         fingerprint="f" * 64,
     )
+
+
+def test_skill_mount_and_native_bash_admission_are_independently_derived():
+    import app.runtime.sandbox.container_provider as container_provider
+
+    staged_skill = native_tool_subjects()[0]
+    native_bash = native_tool_subjects()[1]
+    controlled_bash = {
+        **native_bash,
+        "execution_strategy": "platform_controlled",
+        "command_isolation": "minimal-environment-v1",
+    }
+    cases = (
+        ("implicit_native_catalog", [staged_skill, native_bash], True, True),
+        ("implicit_platform_controlled_catalog", [staged_skill, controlled_bash], True, False),
+        ("staged_catalog_without_bash", [staged_skill], True, False),
+        ("native_bash_without_catalog", [native_bash], False, True),
+        ("no_catalog_no_bash", [], False, False),
+    )
+
+    for case, subjects, mount_required, native_required in cases:
+        runtime_request = request(tool_policy_subjects=subjects)
+        assert container_provider._staged_skill_mount_required(runtime_request) is mount_required, case
+        assert container_provider._native_tool_required(runtime_request) is native_required, case
 
 
 class FakeDockerContainer:
@@ -1854,12 +1880,53 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
     assert created["name"] == "executor-exec-run-a"
     assert created["labels"]["ai-platform.run_id"] == "run-a"
     assert created["volumes"][workspace().workspace_host_path]["bind"] == "/workspace"
+    assert created["volumes"] == {
+        workspace().workspace_host_path: {"bind": "/workspace", "mode": "rw"}
+    }
+    assert created["labels"]["ai-platform.skill_mount.required"] == "false"
+    assert "AI_PLATFORM_NATIVE_TOOL_TOKEN" not in created["environment"]
+    assert "AI_PLATFORM_NATIVE_TOOL_SOCKET" not in created["environment"]
     assert created["environment"]["AI_PLATFORM_SESSION_ID"] == "session-a"
     assert created["environment"]["APP_MODULE"] == "app.runtime.sandbox.executor_app:create_executor_app"
     assert created["environment"]["APP_PORT"] == "18000"
     assert lease.executor_url == "http://127.0.0.1:18000"
     assert statuses[0].run_id == "run-a"
     assert statuses[0].sandbox_mode == "ephemeral"
+
+
+@pytest.mark.asyncio
+async def test_platform_controlled_implicit_catalog_mounts_claude_without_native_sidecar(tmp_path):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+    leased_workspace = workspace(workspace_host_path=str(workspace_path))
+    staged_skill, native_bash = native_tool_subjects()
+    controlled_bash = {
+        **native_bash,
+        "execution_strategy": "platform_controlled",
+        "command_isolation": "minimal-environment-v1",
+    }
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    lease = await provider.create_or_reuse(
+        request(tool_policy_subjects=[staged_skill, controlled_bash]),
+        leased_workspace,
+    )
+
+    assert [created["name"] for created in fake.created] == ["executor-exec-run-a"]
+    executor = fake.containers_by_name[lease.container_name]
+    assert executor.volumes[str(workspace_path)] == {"bind": "/workspace", "mode": "rw"}
+    assert executor.volumes[str((workspace_path / ".claude").resolve())] == {
+        "bind": "/workspace/.claude",
+        "mode": "ro",
+    }
+    assert "AI_PLATFORM_NATIVE_TOOL_TOKEN" not in executor.environment
+    assert "AI_PLATFORM_NATIVE_TOOL_SOCKET" not in executor.environment
 
 
 @pytest.mark.asyncio
@@ -2056,26 +2123,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     workspace_path = tmp_path / "workspace"
     workspace_path.mkdir()
     leased_workspace = workspace(workspace_host_path=str(workspace_path))
-    native_subjects = [
-        {
-            "identity": "Skill",
-            "declared_identities": ["Skill"],
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "execution_strategy": "sdk_native",
-        },
-        {
-            "identity": "Bash",
-            "declared_identities": ["Bash"],
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "command_isolation": "sibling-tool-sandbox-v1",
-        },
-    ]
+    native_subjects = native_tool_subjects()
     fake = FakeDockerClient()
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
@@ -2087,6 +2135,8 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
         leased_workspace,
     )
 
+    assert native_subjects[0]["execution_strategy"] == "sdk_restricted"
+    assert native_subjects[0]["allowed_skill_names"] == ["native-review"]
     assert [created["name"] for created in fake.created] == ["native-tool-run-a", "executor-exec-run-a"]
     sidecar, executor = fake.created
     assert sidecar["network_mode"] == "none"
@@ -2111,6 +2161,15 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     assert len(mount_fingerprint) == 64
     assert sidecar["labels"]["ai-platform.skill_mount.fingerprint"] == mount_fingerprint
     assert executor["labels"]["ai-platform.skill_mount.fingerprint"] == mount_fingerprint
+    kernel_attack_specs = {
+        "direct": "printf tampered > /workspace/.claude/skills/native-review/SKILL.md",
+        "chmod": "chmod u+w /workspace/.claude/skills/native-review/SKILL.md",
+        "rm": "rm -rf /workspace/.claude/skills/native-review",
+        "rename": "mv /workspace/.claude/skills/native-review /workspace/.claude/skills/replaced",
+        "symlink": "ln -s /workspace/outputs/delivery /workspace/.claude/skills/output-link",
+    }
+    assert set(kernel_attack_specs) == {"direct", "chmod", "rm", "rename", "symlink"}
+    assert all("/workspace/.claude" in command for command in kernel_attack_specs.values())
     assert sidecar["tmpfs"] == {
         "/tmp": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m",
         "/home/ai-platform": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=32m",
