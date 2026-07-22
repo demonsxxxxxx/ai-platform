@@ -21,6 +21,7 @@ from app.projection_redaction import (
 )
 from app.control_plane_contracts import EVENT_ENVELOPE_SCHEMA_VERSION, sanitize_public_text, standard_trace_id
 from app.routes.runs import artifact_card, event_visible_to_principal, run_event_response
+from app.run_projection import public_terminal_detail
 from app.settings import get_settings
 from app.tool_permission_projection import tool_permission_public_event_payload
 
@@ -77,7 +78,11 @@ def _public_terminal_text(run: dict[str, Any], principal: AuthPrincipal) -> str:
     if status == "succeeded":
         return "任务完成"
     if status == "failed":
-        return "run_failed"
+        detail = public_terminal_detail(status, run.get("error_code"))
+        return detail["message"] if detail is not None else ""
+    if status == "cancelled":
+        detail = public_terminal_detail(status)
+        return detail["message"] if detail is not None else ""
     return ""
 
 
@@ -150,18 +155,28 @@ def _terminal_final_payload(
             "info",
         )
     if status == "failed":
-        # Keep final failure presentation code-only.  The frontend maps this
-        # controlled marker to its localized product copy and never receives
-        # executor/runtime text as a transport-like error frame.
-        detail_code = (
-            "skill_sandbox_admission_failed"
-            if str(run.get("error_code") or "") == "native_tool_admission_failed"
-            else "run_failed"
-        )
+        detail = public_terminal_detail(status, run.get("error_code"))
+        if detail is None:
+            return None
         return (
             "final_detail",
-            {"detail_kind": "failed", "detail_code": detail_code},
+            {
+                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+                **detail,
+            },
             "error",
+        )
+    if status == "cancelled":
+        detail = public_terminal_detail(status)
+        if detail is None:
+            return None
+        return (
+            "final_detail",
+            {
+                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+                **detail,
+            },
+            "info",
         )
     return None
 
@@ -180,6 +195,61 @@ class _CompatibilityWireEvent:
 CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
 CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
 
+CHAT_PUBLIC_TOOL_ACTIVITIES = {
+    "attachmentparser": "input",
+    "bash": "processing",
+    "browser": "browser",
+    "edit": "artifact",
+    "fileread": "input",
+    "read": "input",
+    "readfile": "input",
+    "python": "processing",
+    "python3": "processing",
+    "powershell": "processing",
+    "ragflowknowledgesearch": "retrieval",
+    "shell": "processing",
+    "skill": "capability",
+    "validate": "artifact",
+    "validation": "artifact",
+    "websearch": "retrieval",
+    "write": "artifact",
+    "writefile": "artifact",
+}
+
+CHAT_PUBLIC_TOOL_EVENT_STATUS = {
+    "mcp_tool_call_started": "running",
+    "tool_call_started": "running",
+    "tool_call_delta": "running",
+    "tool_permission_authorized": "authorized",
+    "mcp_tool_call_completed": "completed",
+    "tool_call_completed": "completed",
+    "mcp_tool_denied": "blocked",
+    "tool_denied": "blocked",
+    "tool_permission_denied": "blocked",
+}
+
+
+def _public_tool_activity(raw_event_type: str, payload: dict[str, Any]) -> dict[str, str] | None:
+    """Classify a visible tool event for fixed commentary without exposing its name."""
+    status = CHAT_PUBLIC_TOOL_EVENT_STATUS.get(raw_event_type)
+    if status is None:
+        return None
+    raw_name = next(
+        (
+            payload.get(key)
+            for key in ("tool_name", "tool", "tool_id", "mcp_tool_id")
+            if isinstance(payload.get(key), str)
+        ),
+        "",
+    )
+    normalized_name = re.sub(r"[^a-z0-9]", "", str(raw_name).lower())
+    category = CHAT_PUBLIC_TOOL_ACTIVITIES.get(normalized_name, "processing")
+    return {
+        "kind": "activity",
+        "category": category,
+        "status": status,
+    }
+
 
 @dataclass(frozen=True)
 class _ChatPublicRunEventProjection:
@@ -193,41 +263,47 @@ class _ChatPublicRunEventProjection:
 
 
 CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
+    "run_queued": _ChatPublicRunEventProjection(
+        "queued", "queue", "任务正在排队", "waiting", "queue_capacity"
+    ),
     "queued": _ChatPublicRunEventProjection(
         "queued", "queue", "任务正在排队", "waiting", "queue_capacity"
     ),
     "worker_started": _ChatPublicRunEventProjection(
-        "run_started", "status", "任务已开始处理", "active"
+        "run_started", "execution", "已完成请求准备，正在进入受控执行阶段", "active"
     ),
     "run_started": _ChatPublicRunEventProjection(
-        "run_started", "status", "任务已开始处理", "active"
+        "run_started", "execution", "已完成请求准备，正在进入受控执行阶段", "active"
     ),
     "mcp_tool_call_started": _ChatPublicRunEventProjection(
-        "tool_call_started", "tool", "正在执行受控步骤", "active"
+        "agent_step_started", "activity", "正在执行受控处理步骤", "active"
     ),
     "tool_call_started": _ChatPublicRunEventProjection(
-        "tool_call_started", "tool", "正在执行受控步骤", "active"
+        "agent_step_started", "activity", "正在执行受控处理步骤", "active"
+    ),
+    "tool_call_delta": _ChatPublicRunEventProjection(
+        "agent_step_started", "activity", "受控处理步骤仍在进行", "active"
     ),
     "mcp_tool_call_completed": _ChatPublicRunEventProjection(
-        "tool_call_completed", "tool", "受控步骤已完成", "completed"
+        "agent_step_completed", "activity", "受控处理步骤已完成", "completed"
     ),
     "tool_call_completed": _ChatPublicRunEventProjection(
-        "tool_call_completed", "tool", "受控步骤已完成", "completed"
+        "agent_step_completed", "activity", "受控处理步骤已完成", "completed"
     ),
     "agent_step_started": _ChatPublicRunEventProjection(
-        "agent_step_started", "agent", "正在处理当前步骤", "active"
+        "agent_step_started", "activity", "正在执行当前计划步骤，完成后将汇总结果", "active"
     ),
     "agent_step_reused": _ChatPublicRunEventProjection(
-        "agent_step_reused", "agent", "正在复用已完成步骤", "active"
+        "agent_step_reused", "activity", "已复用可信阶段结果，正在继续后续步骤", "active"
     ),
     "agent_step_completed": _ChatPublicRunEventProjection(
-        "agent_step_completed", "agent", "当前步骤已完成", "completed"
+        "agent_step_completed", "activity", "当前计划步骤已完成，正在继续后续处理", "completed"
     ),
     "agent_step_blocked": _ChatPublicRunEventProjection(
-        "agent_step_blocked", "wait", "正在等待前置步骤", "waiting", "dependencies"
+        "agent_step_blocked", "wait", "当前计划步骤正在等待前置条件", "waiting", "dependencies"
     ),
     "agent_step_failed": _ChatPublicRunEventProjection(
-        "agent_step_failed", "agent", "当前步骤未能完成", "failed"
+        "agent_step_failed", "activity", "当前计划步骤未完成，正在整理可操作错误", "failed"
     ),
     "subagent_started": _ChatPublicRunEventProjection(
         "subagent_started", "agent", "正在协同处理", "active"
@@ -245,31 +321,40 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "run_child_created", "agent", "已安排协同任务", "active"
     ),
     "skill_selected": _ChatPublicRunEventProjection(
-        "capability_selected", "planning", "已选择处理能力", "completed"
+        "capability_selected", "planning", "已加载授权处理能力，下一步将按所选流程分析请求", "completed"
     ),
     "capability_selected": _ChatPublicRunEventProjection(
-        "capability_selected", "planning", "已选择处理能力", "completed"
+        "capability_selected", "planning", "已加载授权处理能力，下一步将按所选流程分析请求", "completed"
     ),
     "intent_detected": _ChatPublicRunEventProjection(
-        "intent_detected", "planning", "已识别处理方式", "completed"
+        "intent_detected", "planning", "已理解请求，正在确认适合的处理方式", "completed"
     ),
     "intent_confirmed": _ChatPublicRunEventProjection(
-        "intent_confirmed", "planning", "已确认处理方式", "completed"
+        "intent_confirmed", "planning", "已确认处理方式，下一步将准备授权上下文", "completed"
     ),
     "context_snapshot_created": _ChatPublicRunEventProjection(
-        "context_snapshot_created", "context", "已准备运行上下文", "completed"
+        "context_snapshot_created", "context", "已准备运行上下文，下一步将处理授权输入", "completed"
+    ),
+    "checkpoint_created": _ChatPublicRunEventProjection(
+        "context_snapshot_created", "context", "已保存阶段性进度", "completed"
     ),
     "file_bound": _ChatPublicRunEventProjection(
-        "file_bound", "context", "已准备输入文件", "completed"
+        "file_bound", "context", "已识别授权附件，下一步将确认文件结构", "completed"
     ),
     "artifact_created": _ChatPublicRunEventProjection(
-        "artifact_created", "artifact", "已生成结果文件", "completed"
+        "artifact_created", "artifact", "已生成结果文件，正在完成可用性检查", "completed"
     ),
     "mcp_tool_denied": _ChatPublicRunEventProjection(
-        "tool_denied", "policy", "工具调用被阻止", "blocked"
+        "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
     ),
     "tool_denied": _ChatPublicRunEventProjection(
-        "tool_denied", "policy", "工具调用被阻止", "blocked"
+        "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
+    ),
+    "tool_permission_authorized": _ChatPublicRunEventProjection(
+        "agent_step_started", "activity", "处理步骤已获授权，正在继续执行", "active"
+    ),
+    "tool_permission_denied": _ChatPublicRunEventProjection(
+        "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
     ),
     "tool_permission_requested": _ChatPublicRunEventProjection(
         "tool_permission_card", "policy", "正在等待权限决策", "waiting", "permission"
@@ -328,10 +413,23 @@ def _chat_projection_payload(
     if raw_event_type in {"skill_selected", "capability_selected"}:
         capability_id = payload.get("capability_id")
         return {"capability_id": capability_id} if isinstance(capability_id, str) else {}
-    if raw_event_type == "queued":
+    tool_activity = _public_tool_activity(raw_event_type, payload)
+    if tool_activity is not None:
+        return {"activity": tool_activity}
+    if raw_event_type in {"run_queued", "queued"}:
         queue_position = payload.get("queue_position")
         if isinstance(queue_position, int) and not isinstance(queue_position, bool) and queue_position > 0:
             return {"queue_position": queue_position}
+    if raw_event_type in {"worker_started", "run_started"}:
+        if payload.get("heartbeat") is True and payload.get("progress_kind") == "active":
+            return {
+                "activity": {
+                    "kind": "run",
+                    "category": "execution",
+                    "name": "任务执行",
+                    "status": "running",
+                }
+            }
     return {}
 
 
@@ -355,9 +453,59 @@ def _public_run_event_envelope(
         severity = "info"
     payload = _chat_projection_payload(raw_event_type, projected, run_id=run_id)
     message = presentation.message
+    stage = presentation.stage
     queue_position = payload.get("queue_position")
-    if raw_event_type == "queued" and isinstance(queue_position, int):
+    if raw_event_type in {"run_queued", "queued"} and isinstance(queue_position, int):
         message = f"任务正在排队（第 {queue_position} 位）"
+    activity = payload.get("activity")
+    if isinstance(activity, dict):
+        if activity.get("kind") == "run" and activity.get("category") == "execution":
+            message = "任务仍在处理中"
+            stage = "execution"
+        elif activity.get("kind") == "activity":
+            activity_category = str(activity.get("category") or "tool")
+            activity_status = str(activity.get("status") or "running")
+            if activity_status == "authorized":
+                message = "处理步骤已获授权，正在继续执行"
+            elif activity_status == "blocked":
+                message = "当前处理步骤未获授权，正在等待权限调整"
+            else:
+                activity_summaries = {
+                    "artifact": (
+                        "正在生成并校验结果文件",
+                        "结果文件已生成并完成校验",
+                    ),
+                    "browser": (
+                        "正在查看授权页面并整理信息",
+                        "已完成授权页面的信息整理",
+                    ),
+                    "capability": (
+                        "正在使用已授权 Skill 分析请求",
+                        "已完成授权 Skill 的分析步骤",
+                    ),
+                    "input": (
+                        "正在读取附件并确认文件结构",
+                        "已读取附件并确认文件结构",
+                    ),
+                    "processing": (
+                        "正在处理数据并准备结果",
+                        "已完成数据处理，正在整理结果",
+                    ),
+                    "retrieval": (
+                        "正在检索授权信息并整理依据",
+                        "已完成授权信息检索并整理依据",
+                    ),
+                }
+                running_summary, completed_summary = activity_summaries.get(
+                    activity_category,
+                    ("正在执行受控处理步骤", "受控处理步骤已完成"),
+                )
+                message = completed_summary if activity_status == "completed" else running_summary
+    if raw_event_type == "error":
+        terminal_detail = public_terminal_detail("failed", event.get("error_code"))
+        if terminal_detail is not None:
+            message = terminal_detail["message"]
+            payload = {"detail_code": terminal_detail["detail_code"]}
     return {
         "id": str(projected["id"]),
         "schema_version": str(projected["schema_version"]),
@@ -367,7 +515,7 @@ def _public_run_event_envelope(
         "run_id": run_id,
         "event_type": presentation.event_type,
         "type": presentation.event_type,
-        "stage": presentation.stage,
+        "stage": stage,
         "message": message,
         "severity": severity,
         "visible_to_user": True,
@@ -483,10 +631,10 @@ def _compatibility_events_for_run(
         ):
             continue
         if raw_event_type == "assistant_delta":
-            # Deltas exist only while the run is active. A terminal first
-            # connection and terminal history both converge directly to the
-            # canonical final snapshot below.
-            if status in {"succeeded", "failed", "cancelled"}:
+            # Successful terminal history converges to the canonical final
+            # snapshot. Failed/cancelled runs retain only canonical, sanitized
+            # answer deltas so useful partial output survives reconnect/reload.
+            if status == "succeeded":
                 continue
             delta = _assistant_delta_projection(run, event, principal)
             if delta is None:
@@ -644,16 +792,12 @@ def _compatibility_events_for_run(
     return compatibility_events
 
 
-def _public_error_text(run: dict[str, Any], principal: AuthPrincipal) -> str:
-    if is_ai_admin(principal):
-        return str(run.get("error_message") or run.get("error_code") or "")
-    error_message = sanitize_public_text(run.get("error_message"))
-    if error_message:
-        return error_message
-    error_code = sanitize_public_text(run.get("error_code"))
-    if error_code:
-        return error_code
-    return "run_failed" if _platform_status(str(run.get("status") or "")) == "failed" else ""
+def _public_error_text(run: dict[str, Any], _principal: AuthPrincipal) -> str:
+    status = _platform_status(str(run.get("status") or ""))
+    if status != "failed":
+        return ""
+    detail = public_terminal_detail(status, run.get("error_code"))
+    return detail["message"] if detail is not None else ""
 
 
 def _platform_status(status: str) -> str:
@@ -1014,6 +1158,12 @@ async def session_runs(
     for row in rows:
         if trace_id and row.get("trace_id") != trace_id:
             continue
+        status = _platform_status(str(row["status"]))
+        terminal_detail = (
+            public_terminal_detail(status, row.get("error_code"))
+            if status == "failed"
+            else None
+        )
         item = {
             "id": row["id"],
             "run_id": row["id"],
@@ -1022,8 +1172,9 @@ async def session_runs(
             if is_ai_admin(principal)
             else public_agent_id_for_projection(row.get("agent_id"), row.get("skill_id")),
             "capability_id": capability_id_from_skill(row["skill_id"], row["agent_id"]),
-            "status": _platform_status(str(row["status"])),
+            "status": status,
             "error": _public_error_text(row, principal),
+            "error_code": (terminal_detail or {}).get("detail_code"),
             "created_at": row.get("created_at"),
             "started_at": row.get("started_at") or row.get("queued_at") or row.get("created_at"),
             "completed_at": row.get("finished_at"),

@@ -9,8 +9,10 @@ test("projects the controlled native Skill sandbox admission failure stage", () 
     "final_detail",
     {
       run_id: "run-native-failed",
+      projection_version: "ai-platform.chat-public-projection.v1",
       detail_kind: "failed",
       detail_code: "skill_sandbox_admission_failed",
+      message: "unsafe token at /home/private/runtime.log",
     },
     [],
     "",
@@ -29,7 +31,109 @@ test("projects the controlled native Skill sandbox admission failure stage", () 
   assert.equal(part.stage, "skill_sandbox_admission");
   assert.equal(part.event_type, "skill_sandbox_admission_failed");
   assert.equal(part.severity, "error");
-  assert.doesNotMatch(JSON.stringify(part), /native_tool_admission_failed|\/home\/|token/);
+  assert.match(part.message, /隔离沙箱准入/);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /native_tool_admission_failed|\/home\/|token/,
+  );
+});
+
+test("keeps safe partial output and adds an actionable terminal failure", () => {
+  const parts: MessagePart[] = [
+    { type: "text", content: "已完成公开部分；" },
+    {
+      type: "run_status",
+      event_id: "evt-progress",
+      event_type: "agent_step_started",
+      stage: "activity",
+      message: "正在处理数据并准备结果",
+      severity: "info",
+    },
+  ];
+  const result = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-failed-partial",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "failed",
+      detail_code: "model_service_unavailable",
+      message: "raw provider token at /home/private/runtime.log",
+    },
+    parts,
+    "已完成公开部分；",
+    [],
+    0,
+    [],
+    false,
+    "run-failed-partial",
+  );
+
+  assert.equal(result.content, "已完成公开部分；");
+  assert.deepEqual(result.parts.map((part) => part.type), [
+    "text",
+    "run_status",
+    "run_status",
+  ]);
+  const terminal = result.parts.at(-1);
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "model_service_unavailable");
+  assert.match(terminal.message, /模型服务暂时不可用/);
+  assert.doesNotMatch(JSON.stringify(result), /provider token|\/home\/private/);
+});
+
+test("marks a cancelled terminal while retaining safe partial output", () => {
+  const result = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-cancelled-partial",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "cancelled",
+      detail_code: "run_cancelled",
+      message: "untrusted cancellation detail /home/private/runtime.log",
+    },
+    [{ type: "text", content: "已生成部分结果" }],
+    "已生成部分结果",
+    [],
+    0,
+    [],
+    false,
+    "run-cancelled-partial",
+  );
+
+  assert.equal(result.content, "已生成部分结果");
+  assert.equal(result.cancelled, true);
+  assert.equal(result.parts.at(-1)?.type, "run_status");
+  assert.doesNotMatch(JSON.stringify(result), /untrusted|\/home\/private/);
+});
+
+test("fails closed for unknown or mismatched terminal detail", () => {
+  for (const data of [
+    {
+      detail_kind: "failed",
+      detail_code: "private_executor_failure",
+      message: "secret token at /home/private/runtime.log",
+    },
+    {
+      detail_kind: "cancelled",
+      detail_code: "run_timeout",
+      message: "secret token at /home/private/runtime.log",
+    },
+  ]) {
+    const result = processMessageEvent(
+      "final_detail",
+      data,
+      [],
+      "",
+      [],
+      0,
+      [],
+      false,
+      "run-unknown",
+    );
+    assert.deepEqual(result.parts, []);
+    assert.equal(result.content, "");
+  }
 });
 
 test("merges streamed summary chunks inside a subagent by summary id", () => {
@@ -107,15 +211,41 @@ test("hides routine ai-platform run events from the chat transcript", () => {
   assert.doesNotMatch(JSON.stringify(result), /storage_key|tenants\/default/);
 });
 
+test("rejects legacy public tool-log events in favor of commentary activities", () => {
+  const result = processMessageEvent(
+    "run_event",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      event_id: "evt-legacy-tool-log",
+      sequence: 5,
+      event_type: "tool_call_started",
+      stage: "tool",
+      message: "Bash python private-script.py --token secret",
+      severity: "info",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.deepEqual(result.parts, []);
+  assert.doesNotMatch(JSON.stringify(result), /Bash|python|token|private-script/);
+});
+
 test("keeps user-actionable ai-platform run warnings visible", () => {
   const result = processMessageEvent(
     "run_event",
     {
+      projection_version: "ai-platform.chat-public-projection.v1",
       event_id: "evt-tool",
       sequence: 4,
-      event_type: "tool_denied",
-      stage: "policy",
-      message: "tool permission required",
+      event_type: "agent_step_blocked",
+      stage: "wait",
+      message: "当前处理步骤未获授权，正在等待权限调整",
       severity: "warning",
       payload: {
         reason: "requires confirmation",
@@ -143,9 +273,9 @@ test("keeps user-actionable ai-platform run warnings visible", () => {
   };
   assert.equal(part.type, "run_status");
   assert.equal(part.event_id, "evt-tool");
-  assert.equal(part.event_type, "tool_denied");
-  assert.equal(part.stage, "policy");
-  assert.equal(part.message, "tool permission required");
+  assert.equal(part.event_type, "agent_step_blocked");
+  assert.equal(part.stage, "wait");
+  assert.equal(part.message, "当前处理步骤未获授权，正在等待权限调整");
   assert.equal(part.severity, "warning");
   assert.equal(part.sequence, 4);
   assert.doesNotMatch(JSON.stringify(part), /storage_key|tenants\/default/);
@@ -296,13 +426,75 @@ test("shows only versioned allowlisted info progress in stream and history", () 
     "message-1",
   );
 
-  assert.equal(waiting.parts.length, 1);
-  assert.equal(waiting.parts[0]?.type, "run_status");
+  assert.equal(waiting.parts.length, 2);
+  assert.deepEqual(
+    waiting.parts.map((part) =>
+      part.type === "run_status" ? part.event_id : part.type,
+    ),
+    ["evt-started", "evt-waiting"],
+  );
   assert.equal(
-    waiting.parts[0]?.type === "run_status"
-      ? waiting.parts[0].event_id
+    waiting.parts[1]?.type === "run_status"
+      ? waiting.parts[1].event_id
       : null,
     "evt-waiting",
+  );
+});
+
+test("keeps a bounded public activity timeline and compacts repeated heartbeats", () => {
+  let parts: MessagePart[] = [];
+  for (let sequence = 1; sequence <= 14; sequence += 1) {
+    const result = processMessageEvent(
+      "run_event",
+      {
+        projection_version: "ai-platform.chat-public-projection.v1",
+        event_id: `evt-${sequence}`,
+        sequence,
+        event_type: sequence % 2 === 0 ? "agent_step_started" : "run_started",
+        stage: sequence % 2 === 0 ? "activity" : "execution",
+        message: `公开活动 ${sequence}`,
+        severity: "info",
+      },
+      parts,
+      "",
+      [],
+      0,
+      [],
+      true,
+      "message-1",
+    );
+    parts = result.parts;
+  }
+  assert.equal(parts.length, 12);
+  assert.equal(
+    parts[0]?.type === "run_status" ? parts[0].event_id : null,
+    "evt-3",
+  );
+
+  const repeated = processMessageEvent(
+    "run_event",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      event_id: "evt-15",
+      sequence: 15,
+      event_type: "agent_step_started",
+      stage: "activity",
+      message: "公开活动 14",
+      severity: "info",
+    },
+    parts,
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+  assert.equal(repeated.parts.length, 12);
+  const lastRepeated = repeated.parts.at(-1);
+  assert.equal(
+    lastRepeated?.type === "run_status" ? lastRepeated.event_id : null,
+    "evt-15",
   );
 });
 

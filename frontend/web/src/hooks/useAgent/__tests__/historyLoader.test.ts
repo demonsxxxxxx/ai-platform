@@ -371,10 +371,11 @@ test("reconstructMessagesFromEvents replays ai-platform run events and artifact 
         run_id: "run-review",
         timestamp: "2026-06-02T01:00:01.000Z",
         data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
           event_id: "evt-tool-status",
-          event_type: "tool_permission_required",
-          stage: "policy",
-          message: "tool permission required",
+          event_type: "agent_step_blocked",
+          stage: "wait",
+          message: "当前处理步骤未获授权，正在等待权限调整",
           severity: "warning",
           sequence: 7,
           payload: {
@@ -420,22 +421,38 @@ test("reconstructMessagesFromEvents replays ai-platform run events and artifact 
   );
 });
 
-test("reconstructMessagesFromEvents accepts production outer event types and keeps final payloads before the synthetic terminal", () => {
+test("reconstructMessagesFromEvents keeps public progress and partial output on failed reload", () => {
   const messages = reconstructMessagesFromEvents(
     [
       {
         id: "persisted-progress",
         sequence: 41,
-        event_type: "worker_started",
+        event_type: "run_started",
         run_id: "run-terminal",
         timestamp: "2026-07-15T01:00:00.000Z",
         data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
           event_id: "persisted-progress",
           run_id: "run-terminal",
-          event_type: "worker_started",
-          stage: "worker",
+          event_type: "run_started",
+          stage: "execution",
           severity: "info",
-          content: "开始处理",
+          message: "任务仍在处理中",
+        },
+      },
+      {
+        id: "persisted-partial",
+        sequence: 42,
+        event_type: "message:chunk",
+        run_id: "run-terminal",
+        timestamp: "2026-07-15T01:00:00.500Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: "persisted-partial",
+          sequence: 42,
+          run_id: "run-terminal",
+          content: "已完成公开部分；",
         },
       },
       {
@@ -443,7 +460,12 @@ test("reconstructMessagesFromEvents accepts production outer event types and kee
         event_type: "final_detail",
         run_id: "run-terminal",
         timestamp: "2026-07-15T01:00:01.000Z",
-        data: { detail_kind: "failed", detail_code: "run_failed" },
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          detail_kind: "failed",
+          detail_code: "model_service_unavailable",
+          message: "unsafe token at /home/private/runtime.log",
+        },
       },
       {
         id: "artifact-card",
@@ -471,10 +493,19 @@ test("reconstructMessagesFromEvents accepts production outer event types and kee
   );
 
   assert.equal(messages.length, 1);
-  assert.match(messages[0]?.content || "", /任务未能完成/);
+  assert.equal(messages[0]?.content, "已完成公开部分；");
   assert.deepEqual(messages[0]?.parts?.map((part) => part.type), [
+    "run_status",
+    "text",
     "artifact",
+    "run_status",
   ]);
+  const terminal = messages[0]?.parts?.at(-1);
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "model_service_unavailable");
+  assert.match(terminal.message, /模型服务暂时不可用/);
+  assert.doesNotMatch(JSON.stringify(messages), /unsafe token|\/home\/private/);
 });
 
 test("reconstructMessagesFromEvents replays a production outer permission event through the compatibility envelope", () => {
