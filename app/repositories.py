@@ -4144,17 +4144,26 @@ async def get_authorized_session(
     tenant_id: str,
     user_id: str,
     session_id: str,
+    workspace_id: str | None = None,
+    for_update: bool = False,
 ) -> dict[str, Any] | None:
+    lock_clause = " for update" if for_update else ""
+    workspace_filter = "and workspace_id = %s" if workspace_id else ""
+    params: list[Any] = [tenant_id, session_id, user_id]
+    if workspace_id:
+        params.append(workspace_id)
     cursor = await conn.execute(
-        """
+        f"""
         select *
         from sessions
         where tenant_id = %s
           and id = %s
           and user_id = %s
           and status = 'active'
+          {workspace_filter}
+        {lock_clause}
         """,
-        (tenant_id, session_id, user_id),
+        tuple(params),
     )
     return await cursor.fetchone()
 
@@ -11365,10 +11374,16 @@ async def list_authorized_session_runs(
     tenant_id: str,
     user_id: str,
     session_id: str,
+    workspace_id: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
+    workspace_filter = "and runs.workspace_id = %s" if workspace_id else ""
+    params: list[Any] = [tenant_id, user_id, session_id]
+    if workspace_id:
+        params.append(workspace_id)
+    params.append(limit)
     cursor = await conn.execute(
-        """
+        f"""
         select runs.id, runs.trace_id, runs.schema_version, runs.agent_id, runs.skill_id,
                runs.status, runs.error_code, runs.error_message, runs.created_at, runs.queued_at,
                runs.started_at, runs.finished_at, runs.result_json,
@@ -11395,6 +11410,7 @@ async def list_authorized_session_runs(
         where runs.tenant_id = %s
           and runs.user_id = %s
           and runs.session_id = %s
+          {workspace_filter}
         -- A non-null generation is the sole current-run authority.  Legacy
         -- unordered rows remain display-only and never outrank it.
         order by runs.session_generation desc nulls last,
@@ -11404,7 +11420,7 @@ async def list_authorized_session_runs(
                  runs.id desc
         limit %s
         """,
-        (tenant_id, user_id, session_id, limit),
+        tuple(params),
     )
     return list(await cursor.fetchall())
 

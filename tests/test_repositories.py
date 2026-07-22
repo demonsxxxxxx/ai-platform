@@ -514,6 +514,58 @@ async def test_owner_session_lookups_are_active_only_and_keep_principal_scope(lo
 
 
 @pytest.mark.asyncio
+async def test_selectorless_continuation_lock_precedes_same_session_generation_allocation():
+    class LinearizedConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if normalized.startswith("select * from sessions"):
+                return SingleRowCursor(
+                    {
+                        "id": "session-a",
+                        "tenant_id": "tenant-a",
+                        "workspace_id": "workspace-a",
+                        "user_id": "user-a",
+                        "agent_id": "general-agent",
+                        "status": "active",
+                    }
+                )
+            if normalized.startswith("update sessions set next_run_generation"):
+                return SingleRowCursor({"next_run_generation": 1})
+            raise AssertionError(f"unexpected SQL: {normalized}")
+
+    conn = LinearizedConnection()
+    session = await repositories.get_authorized_session(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        workspace_id="workspace-a",
+        for_update=True,
+    )
+    assert session is not None
+    generation = await repositories.allocate_session_run_generation(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id=str(session["workspace_id"]),
+        user_id="user-a",
+        session_id="session-a",
+        agent_id=str(session["agent_id"]),
+    )
+
+    assert generation == 1
+    lock_sql, lock_params = conn.calls[0]
+    assert lock_sql.endswith("for update")
+    assert lock_params == ("tenant-a", "session-a", "user-a", "workspace-a")
+    generation_sql, generation_params = conn.calls[1]
+    assert generation_sql.startswith("update sessions set next_run_generation = next_run_generation + 1")
+    assert generation_params == ("tenant-a", "workspace-a", "user-a", "session-a", "general-agent")
+
+
+@pytest.mark.asyncio
 async def test_owner_run_lookup_closes_on_session_delete_and_locks_only_the_run_row():
     run = {
         "id": "run-a",
@@ -751,6 +803,24 @@ async def test_authorized_session_runs_use_canonical_legacy_tie_break_order():
     id_order = sql.index("runs.id desc")
     assert created_at_order < ordinal_order < queued_at_order < id_order
     assert params == ("tenant-a", "user-a", "session-a", 50)
+
+
+@pytest.mark.asyncio
+async def test_authorized_session_runs_can_bind_one_workspace_for_continuation_inheritance():
+    conn = RecordingConnection()
+
+    await repositories.list_authorized_session_runs(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        workspace_id="workspace-a",
+        limit=1,
+    )
+
+    sql, params = conn.calls[-1]
+    assert "runs.workspace_id = %s" in sql
+    assert params == ("tenant-a", "user-a", "session-a", "workspace-a", 1)
 
 
 @pytest.mark.parametrize(

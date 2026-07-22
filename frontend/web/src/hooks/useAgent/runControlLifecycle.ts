@@ -537,11 +537,14 @@ export class RunControlLifecycle {
     patch: Partial<Omit<RunControlSnapshot, "revision">>,
   ): void {
     const next = { ...this.snapshot, ...patch };
-    const status = normalizedStatus(
-      next.readiness?.raw_status ??
-        next.readiness?.status ??
-        next.playback?.run?.status,
-    );
+    const playbackStatus = normalizedStatus(next.playback?.run?.status);
+    const status = isTerminalPlaybackStatus(playbackStatus)
+      ? playbackStatus
+      : normalizedStatus(
+          next.readiness?.raw_status ??
+            next.readiness?.status ??
+            next.playback?.run?.status,
+        );
     const mutationAvailable = next.owner !== null && !next.owner.mutationStarted;
     const busy = isBusyPhase(next.phase);
     this.snapshot = {
