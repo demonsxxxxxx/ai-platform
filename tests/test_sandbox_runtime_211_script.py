@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import subprocess
@@ -3939,3 +3940,564 @@ def test_generator_main_skip_live_submit_writes_structured_output(tmp_path, caps
     assert output["evidence_file"] == "[redacted-path]"
     assert output["executed_task"] is False
     assert "secret-token" not in evidence.read_text(encoding="utf-8")
+
+
+class SandboxRuntimeCleanupError(RuntimeError):
+    pass
+
+
+def inspection_args(generator, tmp_path, *, profile="platform-controlled", evidence_name="inspection.json"):
+    short_workspace_root = Path.cwd() / ".pytest-tmp" / "w" / str(abs(hash(str(tmp_path))))
+    return generator.build_parser().parse_args(
+        [
+            "--inspection-profile",
+            profile,
+            "--run-id",
+            "inspection-run-a",
+            "--workspace-root",
+            str(short_workspace_root),
+            "--sandbox-executor-image",
+            "ai-platform:test",
+            "--source-sha",
+            "a" * 40,
+            "--evidence-file",
+            str(tmp_path / evidence_name),
+            "--callback-token",
+            "never-record-this-secret",
+            "--json",
+        ]
+    )
+
+
+def passing_inspection_payload(*, workspace, profile, provider=None, lease=None):
+    from app.skills.registry import skill_content_hash
+
+    del provider, lease
+
+    staged_skill = Path(workspace.workspace_host_path) / ".claude" / "skills" / "general-chat"
+    fingerprint = skill_content_hash(staged_skill)
+    native = profile == "sdk-native"
+    return {
+        "mountinfo": [
+            {"mount_point": "/workspace", "mode": "rw"},
+            {"mount_point": "/workspace/.claude", "mode": "ro"},
+        ],
+        "mounts": {
+            "workspace_rw": True,
+            "claude_nested_ro": True,
+            "claude_nested_under_workspace": True,
+        },
+        "attacks": {
+            "direct_write": True,
+            "chmod": True,
+            "rm": True,
+            "mv": True,
+            "symlink": True,
+            "delivery_link_mutation": True,
+        },
+        "delivery_link_created": True,
+        "hashes": {"skill_before": fingerprint, "skill_after": fingerprint},
+        "writes": {"outputs": True, "delivery": True},
+        "provider_children": {
+            "primary_count": 1,
+            "native_sidecar_count": 1 if native else 0,
+        },
+        "sidecar": {
+            "expected": native,
+            "present": native,
+            "absent": not native,
+            "primary_native_credentials_absent": not native,
+            "token_paired": native,
+            "socket_paired": native,
+            "admission_paired": native,
+            "authenticated_health_probe": native,
+        },
+    }
+
+
+def fake_inspection_runtime_factory(*, mode="success", captured_requests=None):
+    def factory(
+        *,
+        workspace_root,
+        workspace,
+        execute_task,
+        record_lease,
+        release_lease,
+        callback_token_resolver,
+    ):
+        del workspace_root, callback_token_resolver
+        provider = object()
+
+        class FakeRuntime:
+            async def submit(self, request):
+                from app.runtime.sandbox.contracts import ContainerLease
+
+                if captured_requests is not None:
+                    captured_requests.append(request)
+                if mode == "provider_failure":
+                    raise RuntimeError("provider failed before child")
+                native = any(
+                    subject.get("identity") == "Bash"
+                    and subject.get("command_isolation") == "sibling-tool-sandbox-v1"
+                    for subject in request.tool_policy_subjects
+                )
+                lease = ContainerLease(
+                    container_id="exec-inspection-run-a",
+                    container_name="executor-exec-inspection-run-a",
+                    provider="docker",
+                    executor_url="http://127.0.0.1:18000",
+                    tenant_id=request.tenant_id,
+                    workspace_id=request.workspace_id,
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                    run_id=request.run_id,
+                    sandbox_mode=request.sandbox_mode,
+                    browser_enabled=request.browser_enabled,
+                    workspace_host_path=workspace.workspace_host_path,
+                    workspace_container_path="/workspace",
+                    labels={
+                        "ai-platform.run_id": request.run_id,
+                        "ai-platform.native_tool_required": "true" if native else "false",
+                    },
+                    timings={},
+                )
+                lease_id = await record_lease(lease, request, workspace)
+                try:
+                    await execute_task(lease.executor_url, object(), executor_headers={})
+                except BaseException:
+                    await release_lease(lease, "dispatch_failed", lease_id)
+                    raise
+                if mode == "cleanup_failure":
+                    raise SandboxRuntimeCleanupError("stop failed with secret details")
+                await release_lease(lease, "dispatch_completed", lease_id)
+                return type("Result", (), {"status": "completed", "run_id": request.run_id})()
+
+        return FakeRuntime(), provider
+
+    return factory
+
+
+def test_skill_mount_inspection_supports_exact_profiles_and_fixed_catalog(tmp_path, capsys):
+    generator = load_generator()
+    captured_requests = []
+
+    for profile in ("platform-controlled", "sdk-native"):
+        args = inspection_args(generator, tmp_path, profile=profile, evidence_name=f"{profile}.json")
+
+        exit_code = generator._run_skill_mount_inspection(
+            args,
+            _runtime_factory=fake_inspection_runtime_factory(captured_requests=captured_requests),
+            _inspection_callback=passing_inspection_payload,
+        )
+
+        evidence_path = Path(args.evidence_file)
+        raw = evidence_path.read_text(encoding="utf-8")
+        evidence = json.loads(raw)
+        assert exit_code == 0
+        assert evidence["schema_version"] == "ai-platform.sandbox-skill-mount-inspection-211.v1"
+        assert evidence["stage"] == "completed"
+        assert evidence["profile"] == {
+            "selected": profile,
+            "catalog": "implicit",
+            "primary_skill": "general-chat",
+            "primary_execution_strategy": "sdk_restricted",
+            "authorized_skill_count": 1,
+            "native_sidecar_expected": profile == "sdk-native",
+        }
+        assert evidence["counts"] == {
+            "mount_entries": 2,
+            "attacks_attempted": 6,
+            "attacks_blocked": 6,
+        }
+        assert evidence["hashes"]["staged_skill"] == evidence["hashes"]["skill_before"]
+        assert evidence["hashes"]["skill_before"] == evidence["hashes"]["skill_after"]
+        assert all(evidence["checks"].values())
+        assert evidence["cleanup"] == {
+            "attempted": True,
+            "provider_stop_confirmed": True,
+            "lease_release_observed": True,
+            "result": "confirmed",
+        }
+        assert evidence["provider_child_creation"]["primary_count"] == 1
+        assert evidence["provider_child_creation"]["native_sidecar_count"] == (1 if profile == "sdk-native" else 0)
+        assert "never-record-this-secret" not in raw
+        assert str(tmp_path) not in raw
+        assert "exec-inspection-run-a" not in raw
+        assert not list(evidence_path.parent.glob(f".{evidence_path.name}.*.tmp"))
+
+    platform_request, native_request = captured_requests
+    assert platform_request.skill_ids == ["general-chat"]
+    assert platform_request.mcp_tool_ids == []
+    assert [subject["identity"] for subject in platform_request.tool_policy_subjects] == ["Skill"]
+    assert platform_request.tool_policy_subjects[0]["allowed_skill_names"] == ["general-chat"]
+    assert [subject["identity"] for subject in native_request.tool_policy_subjects] == ["Skill", "Bash"]
+    assert native_request.tool_policy_subjects[1]["command_isolation"] == "sibling-tool-sandbox-v1"
+    capsys.readouterr()
+
+
+def test_skill_mount_inspection_fails_if_any_kernel_attack_is_not_blocked(tmp_path):
+    generator = load_generator()
+    args = inspection_args(generator, tmp_path)
+    workspace_holder = {}
+
+    def callback(*, provider, lease, workspace, profile):
+        del provider, lease
+        payload = passing_inspection_payload(workspace=workspace, profile=profile)
+        payload["attacks"]["chmod"] = False
+        workspace_holder["workspace"] = workspace
+        return payload
+
+    exit_code = generator._run_skill_mount_inspection(
+        args,
+        _runtime_factory=fake_inspection_runtime_factory(),
+        _inspection_callback=callback,
+    )
+
+    evidence = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert evidence["failure_category"] == "inspection_checks_failed"
+    assert evidence["checks"]["attack_chmod_kernel_blocked"] is False
+    assert evidence["counts"]["attacks_blocked"] == 5
+    assert evidence["cleanup"]["provider_stop_confirmed"] is True
+    assert Path(workspace_holder["workspace"].workspace_host_path).is_relative_to(Path(args.workspace_root))
+
+
+def test_skill_mount_inspection_records_provider_failure_before_child(tmp_path):
+    generator = load_generator()
+    args = inspection_args(generator, tmp_path)
+
+    exit_code = generator._run_skill_mount_inspection(
+        args,
+        _runtime_factory=fake_inspection_runtime_factory(mode="provider_failure"),
+        _inspection_callback=passing_inspection_payload,
+    )
+
+    evidence = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert evidence["failure_category"] == "provider_create_failure"
+    assert evidence["provider_child_creation"]["primary_observed"] is False
+    assert evidence["cleanup"]["result"] == "not_required"
+
+
+def test_skill_mount_inspection_records_failure_after_child_and_cleanup(tmp_path):
+    generator = load_generator()
+    args = inspection_args(generator, tmp_path)
+
+    def fail_after_child(**kwargs):
+        raise RuntimeError(f"inspection failed at {tmp_path} token=leak-me")
+
+    exit_code = generator._run_skill_mount_inspection(
+        args,
+        _runtime_factory=fake_inspection_runtime_factory(),
+        _inspection_callback=fail_after_child,
+    )
+
+    raw = Path(args.evidence_file).read_text(encoding="utf-8")
+    evidence = json.loads(raw)
+    assert exit_code == 1
+    assert evidence["failure_category"] == "inspection_failure"
+    assert evidence["provider_child_creation"]["primary_observed"] is True
+    assert evidence["cleanup"]["provider_stop_confirmed"] is True
+    assert str(tmp_path) not in raw
+    assert "leak-me" not in raw
+
+
+def test_skill_mount_inspection_records_cancel_and_cleanup(tmp_path):
+    generator = load_generator()
+    args = inspection_args(generator, tmp_path)
+
+    def cancel_after_child(**kwargs):
+        raise asyncio.CancelledError()
+
+    exit_code = generator._run_skill_mount_inspection(
+        args,
+        _runtime_factory=fake_inspection_runtime_factory(),
+        _inspection_callback=cancel_after_child,
+    )
+
+    evidence = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
+    assert exit_code == 130
+    assert evidence["stage"] == "cancelled"
+    assert evidence["failure_category"] == "cancelled"
+    assert evidence["cleanup"]["provider_stop_confirmed"] is True
+
+
+def test_skill_mount_inspection_records_cleanup_failure(tmp_path):
+    generator = load_generator()
+    args = inspection_args(generator, tmp_path)
+
+    exit_code = generator._run_skill_mount_inspection(
+        args,
+        _runtime_factory=fake_inspection_runtime_factory(mode="cleanup_failure"),
+        _inspection_callback=passing_inspection_payload,
+    )
+
+    evidence = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert evidence["failure_category"] == "cleanup_failure"
+    assert evidence["cleanup"] == {
+        "attempted": True,
+        "provider_stop_confirmed": False,
+        "lease_release_observed": False,
+        "result": "failed",
+    }
+
+
+def test_skill_mount_inspection_invalid_image_workspace_and_provider_fail_closed(tmp_path):
+    generator = load_generator()
+    cases = (
+        ("image", ["--sandbox-executor-image", "https://bad image"]),
+        ("workspace", ["--workspace-root", "relative-workspace"]),
+        ("provider", ["--sandbox-provider", "fake"]),
+    )
+    for name, override in cases:
+        args = inspection_args(generator, tmp_path, evidence_name=f"invalid-{name}.json")
+        option, value = override
+        setattr(
+            args,
+            {
+                "--sandbox-executor-image": "sandbox_executor_image",
+                "--workspace-root": "workspace_root",
+                "--sandbox-provider": "sandbox_provider",
+            }[option],
+            value,
+        )
+
+        exit_code = generator._run_skill_mount_inspection(
+            args,
+            _runtime_factory=lambda **kwargs: (_ for _ in ()).throw(AssertionError("factory must not run")),
+        )
+
+        evidence = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
+        assert exit_code == 1
+        assert evidence["failure_category"] == "invalid_configuration"
+        assert evidence["provider_child_creation"]["primary_observed"] is False
+
+
+def test_generator_entrypoint_writes_atomic_bootstrap_evidence_for_argument_error(tmp_path):
+    generator = load_generator()
+    evidence_path = tmp_path / "argument-error.json"
+
+    exit_code = generator._entrypoint(
+        [
+            "--inspection-profile",
+            "unsupported-profile",
+            "--evidence-file",
+            str(evidence_path),
+        ]
+    )
+
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert exit_code == 2
+    assert evidence == {
+        "schema_version": "ai-platform.sandbox-runtime-211.bootstrap-error.v1",
+        "stage": "bootstrap_error",
+        "failure_category": "argument_error",
+        "exit_code": 2,
+        "generated_at": evidence["generated_at"],
+        "redaction": {
+            "host_paths_absent": True,
+            "container_ids_absent": True,
+            "secrets_absent": True,
+        },
+    }
+    assert not list(tmp_path.glob(f".{evidence_path.name}.*.tmp"))
+
+
+def test_generator_entrypoint_writes_bootstrap_evidence_for_dependency_import_failure(tmp_path, monkeypatch):
+    generator = load_generator()
+    evidence_path = tmp_path / "import-error.json"
+
+    def fail_import(args):
+        raise ImportError("secret dependency path")
+
+    monkeypatch.setattr(generator, "_run_skill_mount_inspection", fail_import)
+    exit_code = generator._entrypoint(
+        [
+            "--inspection-profile",
+            "platform-controlled",
+            "--workspace-root",
+            str(tmp_path / "workspaces"),
+            "--sandbox-executor-image",
+            "ai-platform:test",
+            "--evidence-file",
+            str(evidence_path),
+        ]
+    )
+
+    raw = evidence_path.read_text(encoding="utf-8")
+    evidence = json.loads(raw)
+    assert exit_code == 1
+    assert evidence["failure_category"] == "dependency_import_failure"
+    assert "secret dependency path" not in raw
+
+
+def test_generator_default_parser_and_evidence_schema_remain_compatible(tmp_path):
+    generator = load_generator()
+    args = generator.build_parser().parse_args(["--skip-live-submit"])
+    evidence_path = tmp_path / "default-evidence.json"
+    computed_source_sha, computed_source_sha_valid = generator._selected_source_sha("")
+
+    exit_code = generator.main(
+        [
+            "--skip-live-submit",
+            "--evidence-file",
+            str(evidence_path),
+        ]
+    )
+
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert args.inspection_profile == ""
+    assert computed_source_sha_valid is True
+    assert len(computed_source_sha) == 64
+    assert all(character in "0123456789abcdef" for character in computed_source_sha)
+    assert exit_code == 0
+    assert evidence["schema_version"] == "ai-platform.sandbox-runtime-211.v1"
+    assert "profile" not in evidence
+
+
+def test_live_skill_mount_inspector_proves_mount_only_and_native_pairing_without_exposing_secrets():
+    generator = load_generator()
+    compile(generator._SKILL_MOUNT_INSPECTION_CODE, "<skill-mount-inspection>", "exec")
+    base_payload = {
+        "mountinfo": [
+            {"mount_point": "/workspace", "mode": "rw"},
+            {"mount_point": "/workspace/.claude", "mode": "ro"},
+        ],
+        "mounts": {
+            "workspace_rw": True,
+            "claude_nested_ro": True,
+            "claude_nested_under_workspace": True,
+        },
+        "attacks": {attack: True for attack in generator.INSPECTION_ATTACKS},
+        "delivery_link_created": True,
+        "hashes": {"skill_before": "a" * 64, "skill_after": "a" * 64},
+        "writes": {"outputs": True, "delivery": True},
+    }
+
+    class FakeSocketPath:
+        def __str__(self):
+            return "/safe/native-tool.sock"
+
+        def lstat(self):
+            return type("SocketStat", (), {"st_mode": 0o140000})()
+
+    socket_path = FakeSocketPath()
+    expected_socket = "/workspace/.ai-platform/native-tool.sock"
+    host_socket_bytes = str(len(str(socket_path).encode("utf-8")))
+    container_socket_bytes = str(len(expected_socket.encode("utf-8")))
+
+    class FakeContainer:
+        def __init__(self, *, environment, labels=None, inspection=False):
+            self.attrs = {
+                "Config": {
+                    "Env": [f"{key}={value}" for key, value in environment.items()],
+                    "Labels": dict(labels or {}),
+                }
+            }
+            self.inspection = inspection
+
+        def reload(self):
+            return None
+
+        def exec_run(self, command):
+            assert command[0:2] == ["python", "-c"]
+            assert self.inspection is True
+            return type(
+                "ExecResult",
+                (),
+                {"exit_code": 0, "output": json.dumps(base_payload).encode("utf-8")},
+            )()
+
+    for profile in ("platform-controlled", "sdk-native"):
+        native = profile == "sdk-native"
+        token = "native-secret-token" if native else ""
+        primary_environment = (
+            {
+                "AI_PLATFORM_NATIVE_TOOL_TOKEN": token,
+                "AI_PLATFORM_NATIVE_TOOL_SOCKET": expected_socket,
+            }
+            if native
+            else {}
+        )
+        admission_labels = {
+            "ai-platform.run_id": "inspection-run-a",
+            "ai-platform.native_tool_admission_phase": "authenticated_container_uds_health",
+            "ai-platform.native_tool_host_socket_path_bytes": host_socket_bytes,
+            "ai-platform.native_tool_container_socket_path_bytes": container_socket_bytes,
+        }
+        primary = FakeContainer(environment=primary_environment, inspection=True)
+        sidecar = (
+            FakeContainer(
+                environment={
+                    "AI_PLATFORM_NATIVE_TOOL_TOKEN": token,
+                    "AI_PLATFORM_NATIVE_TOOL_SOCKET": expected_socket,
+                },
+                labels=admission_labels,
+            )
+            if native
+            else None
+        )
+
+        class FakeContainers:
+            def get(self, name):
+                assert name == "executor-exec-inspection-run-a"
+                return primary
+
+            def list(self, *, all, filters):
+                assert all is True
+                owner_filter = next(item for item in filters["label"] if item.startswith("ai-platform.owner="))
+                owner = owner_filter.partition("=")[2]
+                if owner == "sandbox-runtime":
+                    return [primary]
+                return [sidecar] if native else []
+
+        class FakeProvider:
+            def __init__(self):
+                self.client = type("Client", (), {"containers": FakeContainers()})()
+                self._native_tool_probe = lambda container: container is sidecar
+
+            def _get_client(self):
+                return self.client
+
+            def _owned_native_tool_container(self, lease):
+                return sidecar
+
+            def _native_tool_socket_host_path(self, workspace):
+                return socket_path
+
+        lease = type(
+            "Lease",
+            (),
+            {
+                "container_name": "executor-exec-inspection-run-a",
+                "run_id": "inspection-run-a",
+                "labels": {
+                    "ai-platform.native_tool_required": "true" if native else "false",
+                    **(admission_labels if native else {}),
+                },
+            },
+        )()
+        result = asyncio.run(
+            generator._inspect_live_skill_mount(
+                provider=FakeProvider(),
+                lease=lease,
+                workspace=object(),
+                profile=profile,
+            )
+        )
+
+        assert result["provider_children"] == {
+            "primary_count": 1,
+            "native_sidecar_count": 1 if native else 0,
+        }
+        if native:
+            assert result["sidecar"]["token_paired"] is True
+            assert result["sidecar"]["socket_paired"] is True
+            assert result["sidecar"]["admission_paired"] is True
+            assert result["sidecar"]["authenticated_health_probe"] is True
+        else:
+            assert result["sidecar"]["absent"] is True
+            assert result["sidecar"]["primary_native_credentials_absent"] is True
+        if token:
+            assert token not in json.dumps(result)
