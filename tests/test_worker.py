@@ -4219,6 +4219,95 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_persists_reviewed_uploaded_skill_with_complete_governance_identity(monkeypatch):
+    snapshots = []
+    version = "hash-native-review"
+    profile = resolve_skill_execution_profile(
+        skill_id="native-review",
+        source_kind="uploaded",
+        lifecycle_status="released",
+    )
+    locked_manifest = {
+        "skill_id": "native-review",
+        "version": version,
+        "content_hash": version,
+        "source": {"kind": "uploaded"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+        "lifecycle_status": "released",
+        "execution_profile": profile,
+        "builtin_tool_identities": profile["builtin_tool_identities"],
+        "mcp_tool_ids": [],
+        "snapshot_governance": snapshot_governance(version),
+        "allowed": True,
+        "staged": False,
+        "used": False,
+    }
+    expected_source = repository_module.run_skill_snapshot_source_json(
+        locked_manifest,
+        release_decision=release_decision(version),
+    )
+
+    class ReviewedUploadedSkillAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="fake",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={"message": "done"},
+                executor_payload={
+                    "used_skills": ["native-review"],
+                    "used_skills_source": "executor_hook",
+                    "skill_manifests": [
+                        {
+                            "skill_id": "native-review",
+                            "version": "executor-version",
+                            "content_hash": "executor-version",
+                            "source": {"kind": "uploaded"},
+                            "allowed": True,
+                            "staged": True,
+                            "used": True,
+                        }
+                    ],
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        if kwargs["source_json"] != expected_source:
+            raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+        snapshots.append(kwargs)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+
+    outcome = await process_run_payload(
+        base_payload(
+            skill_id="native-review",
+            skill_version=version,
+            skill_manifests=[locked_manifest],
+        ),
+        AdapterRegistry({"fake": ReviewedUploadedSkillAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert len(snapshots) == 1
+    assert snapshots[0]["source_json"] == expected_source
+    assert snapshots[0]["source_json"]["execution_profile"] == profile
+    assert snapshots[0]["source_json"]["builtin_tool_identities"] == profile["builtin_tool_identities"]
+
+
+@pytest.mark.asyncio
 async def test_worker_drops_executor_returned_snapshot_governance_without_payload_match(monkeypatch):
     snapshots = []
 

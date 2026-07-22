@@ -12,7 +12,7 @@ import uuid
 
 from app import queue
 from app import repositories
-from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
+from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 from app.db import close_pool, transaction
 from app.executors.registry import AdapterRegistry
 from app.multi_agent_dispatcher import dispatch_multi_agent_ready_steps_for_worker
@@ -20,7 +20,7 @@ from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 from app.settings import get_settings
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
-from app.worker import WorkerOutcome, process_run_payload
+from app.worker import WorkerOutcome, parse_queue_payload, process_run_payload
 
 
 _next_memory_cleanup_at = 0.0
@@ -444,6 +444,115 @@ async def _maintenance_until_done(settings: object, interval_seconds: float) -> 
             logger.exception("Worker background maintenance failed")
 
 
+async def _terminalize_escaped_process_exception(
+    raw_payload: dict[str, object],
+    exc: Exception,
+) -> WorkerOutcome:
+    """Converge one valid claimed run after processing escapes its normal terminal path."""
+
+    try:
+        payload = parse_queue_payload(raw_payload)
+    except Exception:
+        raw_run_id = raw_payload.get("run_id")
+        return WorkerOutcome(
+            status="dead_letter",
+            run_id=str(raw_run_id) if isinstance(raw_run_id, str) else None,
+            error_code="worker_process_exception",
+            error_message=sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly.",
+        )
+
+    run_id = payload.run_id
+    error_code = "worker_process_exception"
+    error_message = sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly."
+    progress = None
+    async with transaction() as conn:
+        locked_run = await repositories.get_run(
+            conn,
+            tenant_id=payload.tenant_id,
+            run_id=run_id,
+            for_update=True,
+        )
+        if locked_run is None:
+            return WorkerOutcome("dead_letter", run_id, error_code, error_message)
+        locked_identity = {
+            "tenant_id": str(locked_run.get("tenant_id") or ""),
+            "workspace_id": str(locked_run.get("workspace_id") or ""),
+            "user_id": str(locked_run.get("user_id") or ""),
+            "session_id": str(locked_run.get("session_id") or ""),
+            "run_id": str(locked_run.get("id") or ""),
+            "agent_id": str(locked_run.get("agent_id") or ""),
+            "skill_id": str(locked_run.get("skill_id") or ""),
+        }
+        payload_identity = {
+            "tenant_id": payload.tenant_id,
+            "workspace_id": payload.workspace_id,
+            "user_id": payload.user_id,
+            "session_id": payload.session_id,
+            "run_id": payload.run_id,
+            "agent_id": payload.agent_id,
+            "skill_id": payload.skill_id,
+        }
+        if locked_identity != payload_identity:
+            return WorkerOutcome("dead_letter", run_id, error_code, error_message)
+        current_status = str(locked_run.get("status") or "")
+        if current_status in {"succeeded", "failed", "cancelled"}:
+            return WorkerOutcome(
+                current_status,
+                run_id,
+                str(locked_run.get("error_code") or "") or None,
+                sanitize_public_text(locked_run.get("error_message")) or None,
+            )
+        cancel_requested = bool(locked_run.get("cancel_requested_at")) or str(
+            locked_run.get("permission_terminalization_target") or ""
+        ) in {"cancel_requested", "cancelled"}
+        if cancel_requested:
+            progress = await repositories.cancel_run(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=run_id,
+                result_json={"message": "任务已取消"},
+            )
+        else:
+            progress = await repositories.fail_run(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=run_id,
+                error_code=error_code,
+                error_message=error_message,
+                result_json={"message": "Worker processing failed unexpectedly."},
+            )
+
+    if progress is None or not progress.is_terminal():
+        progress = await drain_run_tool_permission_terminalization(
+            tenant_id=payload.tenant_id,
+            run_id=run_id,
+            transaction_factory=transaction,
+            max_batches=4,
+        )
+    if progress is not None and progress.did_transition and progress.needs_reconcile:
+        try:
+            await reconcile_terminalized_permission_run(
+                tenant_id=payload.tenant_id,
+                run_id=run_id,
+                progress=progress,
+                transaction_factory=transaction,
+            )
+        except Exception:
+            logger.exception(
+                "Worker process exception terminalized before child reconciliation completed",
+                extra={"run_id": run_id},
+            )
+    if progress is not None and progress.is_terminal():
+        terminal_status = str(progress.status)
+        return WorkerOutcome(
+            terminal_status,
+            run_id,
+            error_code if terminal_status == "failed" else None,
+            error_message if terminal_status == "failed" else None,
+        )
+    return WorkerOutcome("dead_letter", run_id, error_code, error_message)
+
+
 async def run_once(
     registry: AdapterRegistry | None = None,
     timeout_seconds: int = 5,
@@ -482,12 +591,23 @@ async def run_once(
         try:
             outcome = await process_run_payload(message.payload, registry=registry, worker_id=resolved_worker_id)
         except Exception as exc:
-            outcome = WorkerOutcome(
-                status="dead_letter",
-                run_id=message.payload.get("run_id"),
-                error_code="worker_process_exception",
-                error_message=str(exc),
+            logger.exception(
+                "Worker payload processing escaped its terminal path",
+                extra={"run_id": message.payload.get("run_id")},
             )
+            try:
+                outcome = await _terminalize_escaped_process_exception(message.payload, exc)
+            except Exception:
+                logger.exception(
+                    "Worker process exception terminalization failed",
+                    extra={"run_id": message.payload.get("run_id")},
+                )
+                outcome = WorkerOutcome(
+                    status="dead_letter",
+                    run_id=message.payload.get("run_id"),
+                    error_code="worker_process_exception",
+                    error_message=sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly.",
+                )
     finally:
         tasks = [heartbeat_task]
         if maintenance_task is not None:

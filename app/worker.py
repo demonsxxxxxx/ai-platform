@@ -958,12 +958,24 @@ def _attach_payload_snapshot_governance(
             manifest["skill_version"] = payload_version
         if payload_hash:
             manifest["content_hash"] = payload_hash
-        for field in ("source", "files", "dependency_ids", "mcp_tool_ids", "builtin_tool_identities"):
+        for field in (
+            "source",
+            "files",
+            "dependency_ids",
+            "mcp_tool_ids",
+            "builtin_tool_identities",
+            "execution_profile",
+        ):
             payload_value = payload_manifest.get(field)
             if isinstance(payload_value, (dict, list)):
                 manifest[field] = payload_value
             else:
                 manifest.pop(field, None)
+        payload_lifecycle_status = payload_manifest.get("lifecycle_status")
+        if isinstance(payload_lifecycle_status, str):
+            manifest["lifecycle_status"] = payload_lifecycle_status
+        else:
+            manifest.pop("lifecycle_status", None)
         payload_governance = governance_by_skill.get(skill_id)
         if isinstance(payload_governance, dict):
             manifest["snapshot_governance"] = payload_governance
