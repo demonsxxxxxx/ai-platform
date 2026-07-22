@@ -254,23 +254,47 @@ export function buildRunCancelUrl(runId: string): string {
   return `${API_BASE}/api/ai/runs/${runId}/cancel`;
 }
 
-/** Build the existing retry-as-new-child route for one opaque run id. */
-export function buildRunRetryUrl(runId: string): string {
-  return `${API_BASE}/api/ai/runs/${encodeURIComponent(runId)}/retry`;
+export type RunControlMutationAction = "retry" | "resume";
+
+/** Build the idempotent retry route for one exact opaque operation. */
+export function buildRunRetryUrl(runId: string, operationId: string): string {
+  return `${API_BASE}/api/ai/runs/${encodeURIComponent(runId)}/retry?operation_id=${encodeURIComponent(operationId)}`;
 }
 
-/** Build the existing checkpoint-resume-as-new-child route for one run id. */
-export function buildRunResumeUrl(runId: string): string {
-  return `${API_BASE}/api/ai/runs/${encodeURIComponent(runId)}/resume`;
+/** Build the idempotent checkpoint-resume route for one exact operation. */
+export function buildRunResumeUrl(runId: string, operationId: string): string {
+  return `${API_BASE}/api/ai/runs/${encodeURIComponent(runId)}/resume?operation_id=${encodeURIComponent(operationId)}`;
 }
 
-/** A newly queued child produced by the existing run-control routes. */
+/** Build the GET-only authoritative resolver for one run-control operation. */
+export function buildRunControlOperationUrl(
+  runId: string,
+  action: RunControlMutationAction,
+  operationId: string,
+): string {
+  return `${API_BASE}/api/ai/runs/${encodeURIComponent(runId)}/control-operations/${action}/${encodeURIComponent(operationId)}`;
+}
+
+/** A newly queued child acknowledged for one exact run-control operation. */
 export interface RunControlChildResponse {
+  source_run_id?: string;
+  action?: RunControlMutationAction;
+  operation_id?: string;
   run_id: string;
   session_id: string;
   status: string;
   queue_position?: number;
   queue_insight?: unknown;
+}
+
+/** A linearized operation lookup; `absent` is authoritative for this scope. */
+export interface RunControlOperationResponse {
+  source_run_id: string;
+  action: RunControlMutationAction;
+  operation_id: string;
+  run_id: string | null;
+  session_id: string | null;
+  status: string;
 }
 
 /** Build the single supported Chat submission endpoint. */
@@ -455,24 +479,38 @@ export const sessionApi = {
     });
   },
 
-  /** Create one queued retry child; callers must never replay this POST. */
+  /** Create or resolve one queued retry child under an opaque operation id. */
   async retryRun(
     runId: string,
+    operationId: string,
     options: { signal?: AbortSignal } = {},
   ): Promise<RunControlChildResponse> {
-    return authFetch(buildRunRetryUrl(runId), {
+    return authFetch(buildRunRetryUrl(runId, operationId), {
       method: "POST",
       signal: options.signal,
     });
   },
 
-  /** Create one queued checkpoint-resume child; callers must never replay it. */
+  /** Create or resolve one checkpoint-resume child under an opaque operation id. */
   async resumeRun(
     runId: string,
+    operationId: string,
     options: { signal?: AbortSignal } = {},
   ): Promise<RunControlChildResponse> {
-    return authFetch(buildRunResumeUrl(runId), {
+    return authFetch(buildRunResumeUrl(runId, operationId), {
       method: "POST",
+      signal: options.signal,
+    });
+  },
+
+  /** Linearize with POST and resolve its exact durable child or safe absence. */
+  async resolveRunControlOperation(
+    runId: string,
+    action: RunControlMutationAction,
+    operationId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RunControlOperationResponse> {
+    return authFetch(buildRunControlOperationUrl(runId, action, operationId), {
       signal: options.signal,
     });
   },

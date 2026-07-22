@@ -140,6 +140,15 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     async def record_sandbox_runtime_cleanup_outcome(*_args, **_kwargs):
         return None
 
+    async def acquire_run_control_operation_lock(*_args, **_kwargs):
+        return None
+
+    async def get_run_control_operation(*_args, **_kwargs):
+        return None
+
+    async def record_run_control_operation(*_args, **_kwargs):
+        return "evt-control-operation"
+
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_auth_snapshot",
         update_auth_snapshot,
@@ -180,6 +189,21 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
         record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.acquire_run_control_operation_lock",
+        acquire_run_control_operation_lock,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_run_control_operation",
+        get_run_control_operation,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.record_run_control_operation",
+        record_run_control_operation,
+        raising=False,
+    )
 
 
 def headers():
@@ -190,6 +214,13 @@ def headers():
         "x-ai-roles": "user",
         "x-ai-gateway-secret": "test-secret",
     }
+
+
+RUN_CONTROL_OPERATION_ID = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+
+
+def run_control_url(run_id: str, action: str, operation_id: str = RUN_CONTROL_OPERATION_ID) -> str:
+    return f"/api/ai/runs/{run_id}/{action}?operation_id={operation_id}"
 
 
 def admin_headers():
@@ -677,12 +708,15 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
     client = TestClient(create_app())
 
-    response = client.post("/api/ai/runs/run-failed/retry", headers=headers())
+    response = client.post(run_control_url("run-failed", "retry"), headers=headers())
 
     assert response.status_code == 200
     assert response.json()["run_id"] == "run-retry"
     assert response.json()["session_id"] == "ses-old"
     assert response.json()["status"] == "queued"
+    assert response.json()["source_run_id"] == "run-failed"
+    assert response.json()["action"] == "retry"
+    assert response.json()["operation_id"] == RUN_CONTROL_OPERATION_ID
     assert response.json()["queue_position"] == 3
     assert calls["retry"] == [("default", "user-a", "run-failed")]
     assert calls["active_limit"] == ("default", "user-a", 3)
@@ -701,6 +735,153 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     assert calls["step"][0]["payload_json"]["checkpoint_id"] == "checkpoint-retry-code"
     assert calls["step"][0]["payload_json"]["source_step_id"] == "step-retry-source"
     assert calls["step"][0]["payload_json"]["copied_from_run_id"] == "run-failed"
+
+
+def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creation(monkeypatch):
+    calls: list[object] = []
+    mapping: dict[str, object] | None = None
+
+    async def acquire_lock(conn, **kwargs):
+        calls.append(("operation_lock", kwargs["action"], kwargs["operation_id"]))
+
+    async def resolve_operation(conn, **kwargs):
+        calls.append(("resolve", kwargs["action"], kwargs["operation_id"]))
+        return mapping
+
+    async def admit(conn, **kwargs):
+        calls.append(("admit", kwargs["tenant_id"], kwargs["user_id"], kwargs["limit"]))
+        return 0
+
+    async def retry(conn, **kwargs):
+        calls.append(("retry", kwargs["run_id"]))
+        return {
+            "run_id": "run-child-once",
+            "session_id": "session-parent",
+            "workspace_id": "default",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+        }
+
+    async def prepare(conn, **kwargs):
+        calls.append(("prepare", kwargs["copied"]["run_id"]))
+        return {
+            "tenant_id": "default",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "session_id": "session-parent",
+            "run_id": "run-child-once",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+        }
+
+    async def record(conn, **kwargs):
+        nonlocal mapping
+        calls.append(("record", kwargs["child_run_id"]))
+        mapping = {
+            "source_run_id": kwargs["source_run_id"],
+            "action": kwargs["action"],
+            "operation_id": kwargs["operation_id"],
+            "run_id": kwargs["child_run_id"],
+            "session_id": "session-parent",
+            "status": "queued",
+        }
+        return "evt-operation"
+
+    async def enqueue(payload):
+        calls.append(("enqueue", payload["run_id"]))
+        return 1
+
+    async def queue_insight(tenant_id, **_kwargs):
+        return {"tenant_id": tenant_id}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
+    monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
+    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", admit, raising=False)
+    monkeypatch.setattr(repository_module, "retry_run_as_new_task", retry, raising=False)
+    monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
+    monkeypatch.setattr(repository_module, "record_run_control_operation", record, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
+    client = TestClient(create_app())
+
+    first = client.post(run_control_url("run-parent", "retry"), headers=headers())
+    second = client.post(run_control_url("run-parent", "retry"), headers=headers())
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["run_id"] == second.json()["run_id"] == "run-child-once"
+    assert first.json()["source_run_id"] == second.json()["source_run_id"] == "run-parent"
+    assert first.json()["operation_id"] == second.json()["operation_id"] == RUN_CONTROL_OPERATION_ID
+    assert calls == [
+        ("operation_lock", "retry", RUN_CONTROL_OPERATION_ID),
+        ("resolve", "retry", RUN_CONTROL_OPERATION_ID),
+        ("admit", "default", "user-a", 3),
+        ("retry", "run-parent"),
+        ("prepare", "run-child-once"),
+        ("record", "run-child-once"),
+        ("enqueue", "run-child-once"),
+        ("operation_lock", "retry", RUN_CONTROL_OPERATION_ID),
+        ("resolve", "retry", RUN_CONTROL_OPERATION_ID),
+    ]
+
+
+def test_run_control_operation_get_linearizes_before_authorized_absence(monkeypatch):
+    calls: list[object] = []
+
+    async def acquire_lock(conn, **kwargs):
+        calls.append(("operation_lock", kwargs["action"], kwargs["operation_id"]))
+
+    async def authorized_source(conn, **kwargs):
+        calls.append(("source", kwargs["tenant_id"], kwargs["user_id"], kwargs["run_id"]))
+        return {"id": kwargs["run_id"], "status": "failed"}
+
+    async def absent_operation(conn, **kwargs):
+        calls.append(("resolve", kwargs["action"], kwargs["operation_id"]))
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
+    monkeypatch.setattr(repository_module, "get_authorized_run", authorized_source)
+    monkeypatch.setattr(repository_module, "get_run_control_operation", absent_operation, raising=False)
+    client = TestClient(create_app())
+
+    response = client.get(
+        f"/api/ai/runs/run-parent/control-operations/resume/{RUN_CONTROL_OPERATION_ID}",
+        headers=headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.json() == {
+        "source_run_id": "run-parent",
+        "action": "resume",
+        "operation_id": RUN_CONTROL_OPERATION_ID,
+        "run_id": None,
+        "session_id": None,
+        "status": "absent",
+    }
+    assert calls == [
+        ("operation_lock", "resume", RUN_CONTROL_OPERATION_ID),
+        ("source", "default", "user-a", "run-parent"),
+        ("resolve", "resume", RUN_CONTROL_OPERATION_ID),
+    ]
+
+
+def test_retry_requires_a_canonical_uuid4_operation_id(monkeypatch):
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    client = TestClient(create_app())
+
+    missing = client.post("/api/ai/runs/run-parent/retry", headers=headers())
+    uuid1 = client.post(
+        run_control_url("run-parent", "retry", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+        headers=headers(),
+    )
+
+    assert missing.status_code == 422
+    assert uuid1.status_code == 422
 
 
 def test_retry_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
@@ -733,7 +914,7 @@ def test_retry_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
     client = TestClient(create_app())
 
-    response = client.post("/api/ai/runs/run-failed/retry", headers=headers())
+    response = client.post(run_control_url("run-failed", "retry"), headers=headers())
 
     assert response.status_code == 409
     assert response.json()["detail"] == "user_active_run_limit_exceeded"
@@ -768,7 +949,7 @@ def test_retry_run_returns_capability_not_authorized_for_stale_source_capability
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
-    response = client.post("/api/ai/runs/run-failed/retry", headers=headers())
+    response = client.post(run_control_url("run-failed", "retry"), headers=headers())
 
     assert response.status_code == 403
     assert response.json()["detail"] == "capability_not_authorized"
@@ -803,7 +984,7 @@ def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     client = TestClient(create_app())
 
-    response = client.post("/api/ai/runs/run-running/retry", headers=headers())
+    response = client.post(run_control_url("run-running", "retry"), headers=headers())
 
     assert response.status_code == 409
     assert response.json()["detail"] == "status_not_retryable"
@@ -836,7 +1017,7 @@ def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     client = TestClient(create_app())
 
-    response = client.post("/api/ai/runs/missing-run/retry", headers=headers())
+    response = client.post(run_control_url("missing-run", "retry"), headers=headers())
 
     assert response.status_code == 404
     assert response.json()["detail"] == "run_not_found"
@@ -947,13 +1128,16 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
     client = TestClient(create_app())
 
-    response = client.post("/api/ai/runs/run-failed/resume", headers=headers())
+    response = client.post(run_control_url("run-failed", "resume"), headers=headers())
 
     assert response.status_code == 200
     assert response.json() == {
+        "source_run_id": "run-failed",
         "run_id": "run-resume-new",
         "session_id": "ses-old",
         "status": "queued",
+        "action": "resume",
+        "operation_id": RUN_CONTROL_OPERATION_ID,
         "queue_position": 2,
         "queue_insight": {"tenant_id": "default", "reason": "workers_busy"},
     }
@@ -1012,7 +1196,7 @@ def test_resume_run_rejects_source_without_checkpoint_outputs(monkeypatch):
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     client = TestClient(create_app())
 
-    response = client.post("/api/ai/runs/run-no-checkpoint/resume", headers=headers())
+    response = client.post(run_control_url("run-no-checkpoint", "resume"), headers=headers())
 
     assert response.status_code == 409
     assert response.json()["detail"] == "no_checkpoint_outputs"

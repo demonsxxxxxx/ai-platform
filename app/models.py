@@ -181,6 +181,27 @@ class RunControlResponse(BaseModel):
     queue_insight: dict[str, Any] | None = None
 
 
+class RunControlMutationResponse(RunControlResponse):
+    """Acknowledgement for one idempotent retry or resume control operation."""
+
+    source_run_id: str
+    action: Literal["retry", "resume"]
+    operation_id: UUID
+
+
+class RunControlOperationResponse(BaseModel):
+    """Safe public resolution of one principal-scoped retry or resume operation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_run_id: str
+    action: Literal["retry", "resume"]
+    operation_id: UUID
+    run_id: str | None = None
+    session_id: str | None = None
+    status: str
+
+
 class MultiAgentDispatchClaimRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

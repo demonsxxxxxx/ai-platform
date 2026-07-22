@@ -345,11 +345,20 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
             False,
         )
 
+    async def forbidden_admission(*_args, **_kwargs):
+        raise AssertionError("duplicate submission must return before taking the user admission lock")
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission, raising=False)
     monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal, raising=False)
     monkeypatch.setattr(repository_module, "get_authorized_session", owned_session, raising=False)
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission, raising=False)
+    monkeypatch.setattr(
+        repository_module,
+        "enforce_user_active_run_admission",
+        forbidden_admission,
+        raising=False,
+    )
 
     response = await chat_stream(request, principal=principal())
 
@@ -3219,7 +3228,13 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
     async def owned_session(conn, *, tenant_id, user_id, session_id, workspace_id=None, for_update=False):
         assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "ses_locked")
         session_locks.append((workspace_id, for_update))
+        if for_update:
+            calls.append(("session_lock", tenant_id, workspace_id, user_id, session_id))
         return {"id": session_id, "agent_id": "general-agent", "workspace_id": "workspace-owned"}
+
+    async def admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admission", tenant_id, user_id, limit))
+        return 0
 
     async def prior_runs(conn, *, tenant_id, user_id, session_id, workspace_id=None, limit=20):
         calls.append(("prior_runs", tenant_id, user_id, session_id, workspace_id, limit))
@@ -3234,6 +3249,11 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.enforce_user_active_run_admission",
+        admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.chat.repositories.list_authorized_session_runs", prior_runs)
     monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", deny_preserved_skill)
     monkeypatch.setattr("app.routes.chat.repositories.append_capability_authorization_denial_audit", noop)
@@ -3249,6 +3269,8 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
     assert exc_info.value.detail == "capability_not_authorized"
     assert session_locks == [(None, False), ("workspace-owned", True)]
     assert calls == [
+        ("admission", "tenant-a", "user-a", 3),
+        ("session_lock", "tenant-a", "workspace-owned", "user-a", "ses_locked"),
         ("prior_runs", "tenant-a", "user-a", "ses_locked", "workspace-owned", 1),
         ("authorize", "tenant-a", "general-agent", "audit-finding-rca"),
     ]
@@ -4022,7 +4044,7 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "user_active_run_limit_exceeded"
-    assert calls == ["resolve", ("admit", "tenant-a", "user-limit", 3)]
+    assert calls == [("admit", "tenant-a", "user-limit", 3)]
 
 
 @pytest.mark.asyncio

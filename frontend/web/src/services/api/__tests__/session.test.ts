@@ -5,6 +5,7 @@ import {
   buildMessageCheckpointUrl,
   buildMessageForkUrl,
   buildRunCancelUrl,
+  buildRunControlOperationUrl,
   buildRunRetryUrl,
   buildRunResumeUrl,
   buildSessionListUrl,
@@ -48,13 +49,18 @@ test("builds the canonical run cancel url", () => {
 });
 
 test("builds the canonical retry and checkpoint-resume URLs", () => {
+  const operationId = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
   assert.equal(
-    buildRunRetryUrl("run/with space"),
-    "/api/ai/runs/run%2Fwith%20space/retry",
+    buildRunRetryUrl("run/with space", operationId),
+    "/api/ai/runs/run%2Fwith%20space/retry?operation_id=7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
   );
   assert.equal(
-    buildRunResumeUrl("run/with space"),
-    "/api/ai/runs/run%2Fwith%20space/resume",
+    buildRunResumeUrl("run/with space", operationId),
+    "/api/ai/runs/run%2Fwith%20space/resume?operation_id=7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+  );
+  assert.equal(
+    buildRunControlOperationUrl("run/with space", "resume", operationId),
+    "/api/ai/runs/run%2Fwith%20space/control-operations/resume/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
   );
 });
 
@@ -74,15 +80,32 @@ test("run-control mutations use the shared cookie-session transport and forward 
   }) as typeof fetch;
 
   try {
+    const operationId = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
     await sessionApi.cancelRun("run-parent", { signal: controller.signal });
-    await sessionApi.retryRun("run-parent", { signal: controller.signal });
-    await sessionApi.resumeRun("run-parent", { signal: controller.signal });
+    await sessionApi.retryRun("run-parent", operationId, { signal: controller.signal });
+    await sessionApi.resumeRun("run-parent", operationId, { signal: controller.signal });
+    await sessionApi.resolveRunControlOperation("run-parent", "retry", operationId, {
+      signal: controller.signal,
+    });
     assert.deepEqual(
       calls.map((call) => [call.url, call.method, call.signal]),
       [
         ["/api/ai/runs/run-parent/cancel", "POST", controller.signal],
-        ["/api/ai/runs/run-parent/retry", "POST", controller.signal],
-        ["/api/ai/runs/run-parent/resume", "POST", controller.signal],
+        [
+          "/api/ai/runs/run-parent/retry?operation_id=7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+          "POST",
+          controller.signal,
+        ],
+        [
+          "/api/ai/runs/run-parent/resume?operation_id=7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+          "POST",
+          controller.signal,
+        ],
+        [
+          "/api/ai/runs/run-parent/control-operations/retry/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+          undefined,
+          controller.signal,
+        ],
       ],
     );
   } finally {

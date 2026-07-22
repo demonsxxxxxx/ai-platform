@@ -1099,6 +1099,15 @@ async def chat_stream(
                         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
                     return _chat_stream_response_from_submission(claimed_submission)
 
+            # One order for explicit and implicit chat creation: the user
+            # admission advisory lock precedes any exact continuation-session
+            # row lock, prior-Skill read and generation allocation/create_run.
+            await enforce_user_active_run_limit(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+            )
+
             if preserve_continuation_skill:
                 # After the idempotency claim proves this is new work, hold the
                 # exact session scope through the prior-Skill read and the
@@ -1260,7 +1269,6 @@ async def chat_stream(
                 )
             if "docx" in (skill.get("input_modes") or []) and not resolved_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
-            await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
             release_decision = resolve_rollout_skill_decision(
                 skill,
                 tenant_id=principal.tenant_id,

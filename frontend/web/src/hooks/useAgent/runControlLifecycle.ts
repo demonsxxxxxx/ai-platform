@@ -6,6 +6,8 @@ import {
   sessionApi,
   type ChatRunStatusResponse,
   type RunControlChildResponse,
+  type RunControlMutationAction,
+  type RunControlOperationResponse,
 } from "../../services/api/session";
 import { ApiRequestError } from "../../services/api/fetch";
 
@@ -25,6 +27,16 @@ export type RunControlPhase =
   | "reconnecting";
 
 export type RunControlAction = "cancel" | "retry" | "resume";
+
+interface PendingRunControlOperation {
+  version: 1;
+  tenantId: string;
+  userId: string;
+  sessionId: string;
+  sourceRunId: string;
+  action: RunControlMutationAction;
+  operationId: string;
+}
 
 /**
  * Public, non-secret facts that distinguish one browser authentication
@@ -121,6 +133,104 @@ const EMPTY_SNAPSHOT: RunControlSnapshot = {
   isBusy: false,
 };
 
+const RUN_CONTROL_OPERATION_STORAGE_PREFIX =
+  "ai-platform.run-control-operation.v1";
+const UUID4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function operationStorage(): Storage | null {
+  try {
+    return globalThis.sessionStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function operationStorageKey(parent: RunControlParentIdentity): string {
+  return [
+    RUN_CONTROL_OPERATION_STORAGE_PREFIX,
+    parent.auth.tenantId,
+    parent.auth.userId,
+    parent.sessionId,
+    parent.runId,
+  ]
+    .map(encodeURIComponent)
+    .join(":");
+}
+
+function loadPendingOperation(
+  parent: RunControlParentIdentity,
+): PendingRunControlOperation | null {
+  const storage = operationStorage();
+  if (!storage) return null;
+  const key = operationStorageKey(parent);
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<PendingRunControlOperation>;
+    const valid =
+      value.version === 1 &&
+      value.tenantId === parent.auth.tenantId &&
+      value.userId === parent.auth.userId &&
+      value.sessionId === parent.sessionId &&
+      value.sourceRunId === parent.runId &&
+      (value.action === "retry" || value.action === "resume") &&
+      typeof value.operationId === "string" &&
+      UUID4_PATTERN.test(value.operationId);
+    if (valid) return value as PendingRunControlOperation;
+    storage.removeItem(key);
+  } catch {
+    // Corrupt or unavailable browser state is never used to replay a mutation.
+  }
+  return null;
+}
+
+function persistPendingOperation(
+  parent: RunControlParentIdentity,
+  pending: PendingRunControlOperation,
+): boolean {
+  const storage = operationStorage();
+  if (!storage) return false;
+  try {
+    storage.setItem(operationStorageKey(parent), JSON.stringify(pending));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removePendingOperation(
+  parent: RunControlParentIdentity,
+  operationId: string,
+): void {
+  const storage = operationStorage();
+  if (!storage) return;
+  const key = operationStorageKey(parent);
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) return;
+    const value = JSON.parse(raw) as Partial<PendingRunControlOperation>;
+    if (value.operationId === operationId) storage.removeItem(key);
+  } catch {
+    // The resolver is already authoritative; storage cleanup is best effort.
+  }
+}
+
+function createOpaqueOperationId(): string {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") {
+    return cryptoApi.randomUUID();
+  }
+  if (typeof cryptoApi?.getRandomValues !== "function") {
+    throw new Error("control_operation_crypto_unavailable");
+  }
+  const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+}
+
 function normalizedStatus(value: unknown): string | null {
   return typeof value === "string" && value.trim()
     ? value.trim().toLowerCase()
@@ -154,7 +264,8 @@ function isTerminalPlaybackStatus(value: string | null): boolean {
 function isDefinitiveMutationRejection(error: ApiRequestError): boolean {
   // Only a server-confirmed authorization or precondition failure proves that
   // retry/resume did not create a child. Timeouts, throttling and every 5xx
-  // can occur after commit, so they must remain unconfirmed and GET-only.
+  // can occur after commit, so recovery is GET-first; POST is eligible only
+  // after the locked resolver proves authoritative absence.
   return [401, 403, 404, 409, 410, 412, 422].includes(error.status);
 }
 
@@ -179,9 +290,16 @@ function ownerIdentityKey(owner: RunControlOwner): string {
   return parentIdentityKey(owner);
 }
 
-function childFromResponse(response: RunControlChildResponse | null): RunControlChild | null {
+function childFromExactOperation(
+  response: RunControlChildResponse | RunControlOperationResponse | null,
+  pending: PendingRunControlOperation,
+): RunControlChild | null {
   if (
     !response ||
+    response.action !== pending.action ||
+    response.operation_id !== pending.operationId ||
+    (response.source_run_id !== undefined &&
+      response.source_run_id !== pending.sourceRunId) ||
     typeof response.session_id !== "string" ||
     !response.session_id.trim() ||
     typeof response.run_id !== "string" ||
@@ -216,6 +334,7 @@ export class RunControlLifecycle {
   private callbacks: RunControlLifecycleCallbacks | null = null;
   private parent: RunControlParentIdentity | null = null;
   private owner: RunControlOwner | null = null;
+  private pendingOperation: PendingRunControlOperation | null = null;
   private snapshot: RunControlSnapshot = EMPTY_SNAPSHOT;
   private readonly listeners = new Set<() => void>();
 
@@ -249,19 +368,20 @@ export class RunControlLifecycle {
 
     this.abortOwner();
     this.parent = parent;
+    this.pendingOperation = loadPendingOperation(parent);
     const owner: RunControlOwner = {
       ...parent,
       id: parentIdentityKey(parent),
       abortController: new AbortController(),
       readSequence: 0,
       actionSequence: 0,
-      phase: "idle",
-      mutationStarted: false,
+      phase: this.pendingOperation ? "unconfirmed" : "idle",
+      mutationStarted: this.pendingOperation !== null,
     };
     this.owner = owner;
     this.publish({
       owner,
-      phase: "idle",
+      phase: owner.phase,
       playback: null,
       readiness: null,
       readError: null,
@@ -275,6 +395,7 @@ export class RunControlLifecycle {
   invalidate(): void {
     this.abortOwner();
     this.owner = null;
+    this.pendingOperation = null;
     this.publish({
       owner: null,
       phase: "idle",
@@ -299,6 +420,12 @@ export class RunControlLifecycle {
   open(): void {
     const owner = this.owner;
     if (!owner || !this.isCurrentOwner(owner)) return;
+    const pending = this.pendingOperation;
+    if (pending && this.callbacks) {
+      const actionSequence = ++owner.actionSequence;
+      void this.resolvePendingOperation(owner, pending, actionSequence, true);
+      return;
+    }
     void this.refresh(owner);
   }
 
@@ -342,9 +469,11 @@ export class RunControlLifecycle {
       normalizedStatus(playback?.run?.status),
     );
     expectedOwner.phase =
-      playbackIsTerminal
-        ? "ready"
-        : (preservedPhase ?? (unavailable ? "read_error" : "ready"));
+      preservedPhase === "unconfirmed"
+        ? "unconfirmed"
+        : playbackIsTerminal
+          ? "ready"
+          : (preservedPhase ?? (unavailable ? "read_error" : "ready"));
     this.publishForOwner(expectedOwner, {
       phase: expectedOwner.phase,
       playback: playback ?? this.snapshot.playback,
@@ -434,6 +563,42 @@ export class RunControlLifecycle {
       return;
     }
 
+    let pending: PendingRunControlOperation | null = null;
+    if (action !== "cancel") {
+      try {
+        pending = {
+          version: 1,
+          tenantId: owner.auth.tenantId,
+          userId: owner.auth.userId,
+          sessionId: owner.sessionId,
+          sourceRunId: owner.runId,
+          action,
+          operationId: createOpaqueOperationId(),
+        };
+      } catch (error) {
+        owner.mutationStarted = true;
+        owner.phase = "rejected";
+        this.publishForOwner(owner, {
+          phase: "rejected",
+          rejectionMessage:
+            error instanceof Error
+              ? error.message
+              : "control_operation_crypto_unavailable",
+        });
+        return;
+      }
+      if (!persistPendingOperation(owner, pending)) {
+        owner.mutationStarted = true;
+        owner.phase = "rejected";
+        this.publishForOwner(owner, {
+          phase: "rejected",
+          rejectionMessage: "control_operation_storage_unavailable",
+        });
+        return;
+      }
+      this.pendingOperation = pending;
+    }
+
     owner.mutationStarted = true;
     const actionSequence = ++owner.actionSequence;
     const phase: RunControlPhase =
@@ -446,7 +611,11 @@ export class RunControlLifecycle {
     this.publishForOwner(owner, { phase, rejectionMessage: null, readError: null });
 
     try {
-      const response = await this.requestMutation(action, owner);
+      const response = await this.requestMutation(
+        action,
+        owner,
+        pending?.operationId,
+      );
       if (
         !this.isCurrentOwner(owner) ||
         owner.actionSequence !== actionSequence
@@ -463,20 +632,18 @@ export class RunControlLifecycle {
         return;
       }
 
-      const child = childFromResponse(response as RunControlChildResponse | null);
-      if (!child) {
-        this.publishUnconfirmed(owner);
+      if (!pending) return;
+      if (
+        await this.acceptOperationChild(
+          owner,
+          pending,
+          response as RunControlChildResponse | null,
+          actionSequence,
+        )
+      ) {
         return;
       }
-      owner.phase = "adopting";
-      this.publishForOwner(owner, { phase: "adopting", child });
-      const adoption = await this.callbacks.adoptRunControlChild(owner, child);
-      // The parent may have replaced this owner while loading the child. A
-      // superseded parent must be completely silent, including A→B→A races.
-      if (adoption === "superseded" || !this.isCurrentOwner(owner)) return;
-      if (adoption === "adopted") return;
-      // `created_unopened` is published by retainCreatedUnopened with a fresh
-      // owner. Do not let this old owner overwrite that newer snapshot.
+      await this.resolvePendingOperation(owner, pending, actionSequence, true);
     } catch (error) {
       if (
         !this.isCurrentOwner(owner) ||
@@ -485,38 +652,174 @@ export class RunControlLifecycle {
         return;
       }
       if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
-        owner.phase = "rejected";
-        this.publishForOwner(owner, {
-          phase: "rejected",
-          rejectionMessage: error.message,
-        });
+        if (pending) this.clearPendingOperation(owner, pending);
+        this.publishRejected(owner, error.message);
         return;
       }
-      // A lost mutation response is unknown, not failed. Do not replay a POST;
-      // refresh only playback/readiness through the existing GET transports.
-      this.publishUnconfirmed(owner);
+      if (pending) {
+        await this.resolvePendingOperation(owner, pending, actionSequence, true);
+        return;
+      }
+      // Cancellation keeps its existing parent GET convergence path. Retry and
+      // resume never infer a child from the terminal parent.
+      this.publishUnconfirmed(owner, true);
     }
   }
 
   private requestMutation(
     action: RunControlAction,
     owner: RunControlOwner,
+    operationId?: string,
   ): Promise<RunControlChildResponse | { run_id: string; status: string } | null> {
     const options = { signal: owner.abortController.signal };
     if (action === "cancel") {
       return sessionApi.cancelRun(owner.runId, options);
     }
-    if (action === "retry") {
-      return sessionApi.retryRun(owner.runId, options);
+    if (!operationId) {
+      return Promise.reject(new Error("control_operation_id_missing"));
     }
-    return sessionApi.resumeRun(owner.runId, options);
+    if (action === "retry") {
+      return sessionApi.retryRun(owner.runId, operationId, options);
+    }
+    return sessionApi.resumeRun(owner.runId, operationId, options);
   }
 
-  private publishUnconfirmed(owner: RunControlOwner): void {
+  private async resolvePendingOperation(
+    owner: RunControlOwner,
+    pending: PendingRunControlOperation,
+    actionSequence: number,
+    allowReplayAfterAbsence: boolean,
+  ): Promise<void> {
+    if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
+    this.publishUnconfirmed(owner);
+    let resolution: RunControlOperationResponse;
+    try {
+      resolution = await sessionApi.resolveRunControlOperation(
+        pending.sourceRunId,
+        pending.action,
+        pending.operationId,
+        { signal: owner.abortController.signal },
+      );
+    } catch (error) {
+      if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
+      if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
+        this.clearPendingOperation(owner, pending);
+        this.publishRejected(owner, error.message);
+      } else {
+        this.publishUnconfirmed(owner);
+      }
+      return;
+    }
+    if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
+    if (
+      await this.acceptOperationChild(
+        owner,
+        pending,
+        resolution,
+        actionSequence,
+      )
+    ) {
+      return;
+    }
+    const exactAbsence =
+      resolution.source_run_id === pending.sourceRunId &&
+      resolution.action === pending.action &&
+      resolution.operation_id === pending.operationId &&
+      resolution.status === "absent" &&
+      resolution.run_id === null &&
+      resolution.session_id === null;
+    if (!exactAbsence || !allowReplayAfterAbsence) {
+      this.publishUnconfirmed(owner);
+      return;
+    }
+
+    try {
+      const replay = await this.requestMutation(
+        pending.action,
+        owner,
+        pending.operationId,
+      );
+      if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
+      if (
+        await this.acceptOperationChild(
+          owner,
+          pending,
+          replay as RunControlChildResponse | null,
+          actionSequence,
+        )
+      ) {
+        return;
+      }
+      this.publishUnconfirmed(owner);
+    } catch (error) {
+      if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
+      if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
+        this.clearPendingOperation(owner, pending);
+        this.publishRejected(owner, error.message);
+      } else {
+        this.publishUnconfirmed(owner);
+      }
+    }
+  }
+
+  private async acceptOperationChild(
+    owner: RunControlOwner,
+    pending: PendingRunControlOperation,
+    response: RunControlChildResponse | RunControlOperationResponse | null,
+    actionSequence: number,
+  ): Promise<boolean> {
+    const child = childFromExactOperation(response, pending);
+    if (!child || !this.isCurrentOperation(owner, pending, actionSequence)) {
+      return false;
+    }
+    this.clearPendingOperation(owner, pending);
+    owner.phase = "adopting";
+    this.publishForOwner(owner, { phase: "adopting", child });
+    const adoption = await this.callbacks?.adoptRunControlChild(owner, child);
+    // The parent may replace this owner while loading the exact child. The old
+    // owner stays silent across A→B→A races and created-unopened handoff.
+    if (adoption === "superseded" || !this.isCurrentOwner(owner)) return true;
+    return true;
+  }
+
+  private isCurrentOperation(
+    owner: RunControlOwner,
+    pending: PendingRunControlOperation,
+    actionSequence: number,
+  ): boolean {
+    return (
+      this.isCurrentOwner(owner) &&
+      owner.actionSequence === actionSequence &&
+      this.pendingOperation?.operationId === pending.operationId
+    );
+  }
+
+  private clearPendingOperation(
+    owner: RunControlOwner,
+    pending: PendingRunControlOperation,
+  ): void {
+    removePendingOperation(owner, pending.operationId);
+    if (this.pendingOperation?.operationId === pending.operationId) {
+      this.pendingOperation = null;
+    }
+  }
+
+  private publishRejected(owner: RunControlOwner, message: string): void {
+    owner.phase = "rejected";
+    this.publishForOwner(owner, {
+      phase: "rejected",
+      rejectionMessage: message,
+    });
+  }
+
+  private publishUnconfirmed(
+    owner: RunControlOwner,
+    refreshParent = false,
+  ): void {
     if (!this.isCurrentOwner(owner)) return;
     owner.phase = "unconfirmed";
     this.publishForOwner(owner, { phase: "unconfirmed", rejectionMessage: null });
-    void this.refresh(owner);
+    if (refreshParent) void this.refresh(owner);
   }
 
   private abortOwner(): void {
