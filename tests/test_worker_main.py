@@ -1143,6 +1143,315 @@ async def test_run_once_dead_letters_process_exception(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    ("run_state", "expected_status", "terminal_call"),
+    [
+        ({"status": "running", "cancel_requested_at": None}, "failed", "fail"),
+        ({"status": "running", "cancel_requested_at": "2026-07-22T10:00:00Z"}, "cancelled", "cancel"),
+        ({"status": "succeeded", "cancel_requested_at": None}, "succeeded", None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_run_once_terminalizes_escaped_process_exception_with_locked_current_state(
+    monkeypatch,
+    run_state,
+    expected_status,
+    terminal_call,
+):
+    calls = []
+    payload = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "agent-a",
+        "skill_id": "skill-a",
+        "file_ids": [],
+        "input": {},
+        "executor_type": "fake",
+        "skill_version": "hash-skill-a",
+        "release_decision": {
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "policy_active": False,
+            "selected_version": "hash-skill-a",
+            "selected_track": "manifest_pin",
+        },
+        "skill_manifests": [
+            {
+                "skill_id": "skill-a",
+                "version": "hash-skill-a",
+                "content_hash": "hash-skill-a",
+            }
+        ],
+    }
+
+    class Transaction:
+        async def __aenter__(self):
+            calls.append(("tx_enter",))
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            calls.append(("tx_exit", exc_type))
+            return False
+
+    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
+        return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a")
+
+    async def process_run_payload(payload, registry=None, worker_id=None):
+        raise RuntimeError("snapshot persistence failed")
+
+    async def get_run(_conn, *, tenant_id, run_id, for_update):
+        calls.append(("lock", tenant_id, run_id, for_update))
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "agent_id": "agent-a",
+            "skill_id": "skill-a",
+            **run_state,
+        }
+
+    async def fail_run(_conn, **kwargs):
+        calls.append(
+            (
+                "fail",
+                kwargs["tenant_id"],
+                kwargs["run_id"],
+                kwargs["error_code"],
+                kwargs["error_message"],
+                kwargs["result_json"],
+            )
+        )
+        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+
+    async def cancel_run(_conn, **kwargs):
+        calls.append(("cancel", kwargs["tenant_id"], kwargs["run_id"]))
+        return repositories.ToolPermissionTerminalizationProgress(True, "cancelled", True, True)
+
+    async def reconcile(**kwargs):
+        calls.append(("reconcile", kwargs["tenant_id"], kwargs["run_id"], kwargs["progress"].status))
+
+    async def ack_run(raw, message_id=None):
+        calls.append(("ack", raw, message_id))
+
+    async def fail_leased_run(*args, **kwargs):
+        calls.append(("dead_letter",))
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker_main.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker_main.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
+    monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
+
+    outcome = await run_once(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        heartbeat_interval_seconds=60,
+        run_initial_maintenance=False,
+        run_background_maintenance=False,
+    )
+
+    assert outcome.status == expected_status
+    assert ("lock", "tenant-a", "run-a", True) in calls
+    assert ("ack", "raw-run", "msg-a") in calls
+    assert ("dead_letter",) not in calls
+    if terminal_call is None:
+        assert not any(call[0] in {"fail", "cancel", "reconcile"} for call in calls)
+    else:
+        assert any(call[0] == terminal_call for call in calls)
+        assert ("reconcile", "tenant-a", "run-a", expected_status) in calls
+    if terminal_call == "fail":
+        failure = next(call for call in calls if call[0] == "fail")
+        assert failure[3:] == (
+            "worker_process_exception",
+            "snapshot persistence failed",
+            {"message": "Worker processing failed unexpectedly."},
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_once_does_not_terminalize_escaped_exception_for_mismatched_locked_identity(monkeypatch):
+    calls = []
+    payload = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "agent-a",
+        "skill_id": "skill-a",
+        "file_ids": [],
+        "input": {},
+        "executor_type": "fake",
+        "skill_version": "hash-skill-a",
+        "release_decision": {
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "policy_active": False,
+            "selected_version": "hash-skill-a",
+            "selected_track": "manifest_pin",
+        },
+        "skill_manifests": [
+            {
+                "skill_id": "skill-a",
+                "version": "hash-skill-a",
+                "content_hash": "hash-skill-a",
+            }
+        ],
+    }
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def lease_run(**_kwargs):
+        return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a")
+
+    async def process_run_payload(*_args, **_kwargs):
+        raise RuntimeError("snapshot persistence failed")
+
+    async def get_run(_conn, **_kwargs):
+        return {
+            "id": "run-a",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-other",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "agent_id": "agent-a",
+            "skill_id": "skill-a",
+            "status": "running",
+        }
+
+    async def fail_run(*_args, **_kwargs):
+        raise AssertionError("mismatched locked identity must not be terminalized")
+
+    async def cancel_run(*_args, **_kwargs):
+        raise AssertionError("mismatched locked identity must not be cancelled")
+
+    async def ack_run(*_args, **_kwargs):
+        calls.append(("ack",))
+
+    async def fail_leased_run(_raw, **kwargs):
+        calls.append(("dead_letter", kwargs["error_code"]))
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker_main.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker_main.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
+    monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
+
+    outcome = await run_once(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        heartbeat_interval_seconds=60,
+        run_initial_maintenance=False,
+        run_background_maintenance=False,
+    )
+
+    assert outcome.status == "dead_letter"
+    assert calls == [("dead_letter", "worker_process_exception")]
+
+
+@pytest.mark.asyncio
+async def test_run_once_acknowledges_terminalized_process_exception_when_child_reconciliation_retries(monkeypatch):
+    payload = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "agent-a",
+        "skill_id": "skill-a",
+        "file_ids": [],
+        "input": {},
+        "executor_type": "fake",
+        "skill_version": "hash-skill-a",
+        "release_decision": {
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "policy_active": False,
+            "selected_version": "hash-skill-a",
+            "selected_track": "manifest_pin",
+        },
+        "skill_manifests": [
+            {
+                "skill_id": "skill-a",
+                "version": "hash-skill-a",
+                "content_hash": "hash-skill-a",
+            }
+        ],
+    }
+    calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def lease_run(**_kwargs):
+        return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a")
+
+    async def process_run_payload(*_args, **_kwargs):
+        raise RuntimeError("snapshot persistence failed")
+
+    async def get_run(_conn, **_kwargs):
+        return {
+            "id": "run-a",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "agent_id": "agent-a",
+            "skill_id": "skill-a",
+            "status": "running",
+        }
+
+    async def fail_run(*_args, **_kwargs):
+        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+
+    async def reconcile(**_kwargs):
+        raise RuntimeError("parent reconciliation retry")
+
+    async def ack_run(raw, message_id=None):
+        calls.append(("ack", raw, message_id))
+
+    async def fail_leased_run(*_args, **_kwargs):
+        calls.append(("dead_letter",))
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker_main.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
+    monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
+
+    outcome = await run_once(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        heartbeat_interval_seconds=60,
+        run_initial_maintenance=False,
+        run_background_maintenance=False,
+    )
+
+    assert outcome.status == "failed"
+    assert calls == [("ack", "raw-run", "msg-a")]
+
+
 @pytest.mark.asyncio
 async def test_run_once_returns_idle_without_message(monkeypatch):
     async def reclaim_expired_leases(**_kwargs):
