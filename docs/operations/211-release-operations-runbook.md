@@ -11,6 +11,53 @@ Use `tools/release_authority.py deploy-main-commit` with the explicit full commi
 fetched from authoritative `origin/main`. This command does not replace the
 readiness and ownership gates defined by the multi-agent workflow.
 
+For governed Docker egress, the command resolves the reviewed backend build to
+its local immutable `sha256:<64-hex>` Docker image ID and passes that value as
+`SANDBOX_EXECUTOR_IMAGE` to API and worker. Do not replace that handoff with a
+mutable `ai-platform:<commit>` tag; an operator must rebuild or resolve the
+target image ID before retrying when it is unavailable locally.
+
+## Governed Sandbox Overlay Contract
+
+At `<release-root>`, the operator-held environment file must set the exact
+release subject and the governed callback boundary without recording a raw key
+in terminal evidence:
+
+```text
+AI_PLATFORM_SOURCE_COMMIT=<40-lowercase-hex-commit>
+SANDBOX_EGRESS_POLICY_ENABLED=true
+SANDBOX_CALLBACK_BASE_URL=http://api.sandbox.internal:8020
+SANDBOX_EGRESS_PROOF_SIGNING_KEY=<operator-held-current-proof-key>
+SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>
+SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>
+DOCKER_SOCKET_GID=<host-docker-group-id>
+```
+
+The current key ID is durable proof metadata, not a secret. Previous keys are
+read only for signed `released` or `expired` history; active acquisition and
+dispatch require the current key and a fresh proof. Keep the raw values in the
+host environment file only.
+
+Use the standard release authority for the sandbox overlay; the placeholders
+below are contracts, not real paths, images, commits, or credentials. The
+authority retains the `ai-platform-phaseb` Compose project, resolves the
+immutable executor image itself, and is the only permitted mutation path:
+
+```bash
+cd <release-root>
+python3 tools/release_authority.py deploy-main-commit \
+  --release-root <release-root> \
+  --commit <40-lowercase-hex-commit> \
+  --docker-cmd "sudo -n docker" \
+  --env-file <release-root>/deploy/ai-platform/.env \
+  --compose-file deploy/ai-platform/docker-compose.yml \
+  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
+```
+
+Before allowing untrusted execution, verify that the API is healthy with the
+same runtime commit, that each lease bridge contains only that API witness and
+its sandbox, and that the proof key material is present but never printed.
+
 ## Readiness Evidence
 
 Before the workflow grants its release lease, the read-only host packet must

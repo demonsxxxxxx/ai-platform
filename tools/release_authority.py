@@ -597,6 +597,16 @@ def _require_sandbox_executor_image(
     except ReleaseAuthorityError:
         raise ReleaseAuthorityError("sandbox executor image provenance mismatch") from None
     return image
+
+
+def _immutable_sandbox_executor_reference(image: dict[str, Any]) -> str:
+    """Return the verified local Docker image ID used for governed executors."""
+    image_id = str(image.get("id") or "").strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        raise ReleaseAuthorityError("sandbox executor image ID is not immutable")
+    return image_id
+
+
 def _inspect_optional_container(docker: list[str], name: str) -> dict[str, Any] | None:
     existing = _run([*docker, "container", "inspect", name], check=False)
     if existing.returncode != 0:
@@ -968,14 +978,15 @@ def collect_live_parity(
     )
     api_executor_image = _container_sandbox_executor_image(api_inspect)
     worker_executor_image = _container_sandbox_executor_image(worker_inspect)
+    sandbox_executor_image = _immutable_sandbox_executor_reference(images["backend"])
     runtime = {
         "api_commit": str(api_health.get("runtime_commit") or ""),
         "api_health_status": api_health.get("status"),
         "worker_heartbeat": worker_heartbeat,
         "worker_running": containers["worker"].get("running") is True,
         "frontend_commit": str(frontend_provenance.get("git", {}).get("commit") or ""),
-        "api_sandbox_executor_image_matches_expected": api_executor_image == refs["backend"],
-        "worker_sandbox_executor_image_matches_expected": worker_executor_image == refs["backend"],
+        "api_sandbox_executor_image_matches_expected": api_executor_image == sandbox_executor_image,
+        "worker_sandbox_executor_image_matches_expected": worker_executor_image == sandbox_executor_image,
     }
     runtime["api_worker_sandbox_executor_images_match"] = (
         api_executor_image == worker_executor_image and api_executor_image is not None
@@ -1069,7 +1080,7 @@ def deploy_clean_commit(
     compose_environment = [
         f"AI_PLATFORM_IMAGE={refs['backend']}",
         f"AI_PLATFORM_FRONTEND_IMAGE={refs['frontend']}",
-        f"SANDBOX_EXECUTOR_IMAGE={refs['backend']}",
+        f"SANDBOX_EXECUTOR_IMAGE={_immutable_sandbox_executor_reference(images['backend'])}",
         f"AI_PLATFORM_SOURCE_COMMIT={normalized}",
         f"AI_PLATFORM_BUILD_COMMIT={normalized}",
         "AI_PLATFORM_BUILD_DIRTY=false",
@@ -1101,6 +1112,7 @@ def deploy_clean_commit(
     return {
         "commit": normalized,
         "images": refs,
+        "sandbox_executor_image": _immutable_sandbox_executor_reference(images["backend"]),
         "compose_file": str(selection.absolute_paths[0]),
         "compose_files": [str(path) for path in selection.absolute_paths],
     }

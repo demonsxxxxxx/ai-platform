@@ -7,6 +7,12 @@ from typing import Any, Awaitable, Callable
 
 from app import repositories
 from app.db import transaction
+from app.execution_boundary import (
+    REAL_SANDBOX_PROVIDERS,
+    governed_egress_authorized_native_tool_scope,
+    governed_egress_authorized_skill_scope,
+    governed_egress_proof_from_labels,
+)
 from app.executors.base import RunExecutionOwner
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import ContainerProvider, create_container_provider
@@ -142,6 +148,33 @@ class SandboxRuntime:
             and runtime_workspace_container_path
         ):
             raise ValueError("incomplete_runtime_handle")
+        image_subject = str(lease.labels.get("ai-platform.executor.requested_image") or "").strip()
+        image_digest = str(lease.labels.get("ai-platform.executor.requested_image_digest") or "").strip()
+        authorized_skill_scope = governed_egress_authorized_skill_scope(
+            skill_ids=request.skill_ids,
+            mcp_tool_ids=request.mcp_tool_ids,
+        )
+        authorized_native_tool_scope = governed_egress_authorized_native_tool_scope(request.tool_policy_subjects)
+        governed_egress_proof = governed_egress_proof_from_labels(
+            lease.provider,
+            lease.labels,
+            signing_key=getattr(get_settings(), "sandbox_egress_proof_signing_key", ""),
+            signing_key_id=getattr(get_settings(), "sandbox_egress_proof_key_id", "current"),
+            expected_binding={
+                "tenant_id": lease.tenant_id,
+                "workspace_id": lease.workspace_id,
+                "user_id": lease.user_id,
+                "session_id": lease.session_id,
+                "run_id": lease.run_id,
+                "image_subject": image_subject,
+                "image_digest": image_digest,
+                "authorized_skill_scope": authorized_skill_scope,
+                "authorized_native_tool_scope": authorized_native_tool_scope,
+                "lease_identity": f"{lease.provider}:{lease.container_name}:{lease.container_id}",
+            },
+        )
+        if lease.provider in REAL_SANDBOX_PROVIDERS and governed_egress_proof is None:
+            raise ValueError("governed_egress_proof_invalid")
         lease_payload = {
             "source": "sandbox_runtime",
             "evidence_class": "runtime_lease_projection",
@@ -153,9 +186,24 @@ class SandboxRuntime:
             "labels": {
                 str(key): str(value)
                 for key, value in lease.labels.items()
-                if not str(key).startswith("ai-platform.executor.")
+                if not str(key).startswith(
+                    (
+                        "ai-platform.executor.",
+                        "ai-platform.external_egress.",
+                        "ai-platform.governed_egress.",
+                    )
+                )
             },
         }
+        if governed_egress_proof is not None:
+            lease_payload["governed_egress_proof"] = governed_egress_proof
+            for proof_field in (
+                "image_subject_sha256",
+                "image_digest_sha256",
+                "authorized_skill_scope_sha256",
+                "authorized_native_tool_scope_sha256",
+            ):
+                lease_payload[f"governed_egress_{proof_field}"] = governed_egress_proof[proof_field]
         async with transaction() as conn:
             row = await repositories.create_sandbox_lease(
                 conn,
@@ -192,13 +240,14 @@ class SandboxRuntime:
                 reason=reason,
             )
 
-    async def _stop_and_release_ephemeral_lease(
+    async def _stop_and_release_recorded_lease(
         self,
         lease: ContainerLease,
         *,
         reason: str,
         lease_record_id: str | None,
     ) -> None:
+        """Confirm provider stop before releasing one recorded runtime lease."""
         stop_result = await self.provider.stop(lease, reason=reason)
         if stop_result.status == "failed":
             raise SandboxRuntimeCleanupError(reason=reason, stop_result=stop_result)
@@ -244,6 +293,8 @@ class SandboxRuntime:
                 raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
             raise
         externally_stopped = False
+        validation_started = False
+        validation_succeeded = False
 
         async def stop_owned_runtime(reason: str) -> bool:
             nonlocal externally_stopped
@@ -289,14 +340,26 @@ class SandboxRuntime:
                 governed_permission_wait=request.governed_permission_wait,
                 config=task_config,
             )
+            validation_started = True
+            await self.provider.validate_for_dispatch(lease, request, workspace)
+            validation_succeeded = True
             dispatch_started_at = time.monotonic()
             response = await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
         except BaseException as exc:
-            if request.sandbox_mode == "ephemeral" and not externally_stopped:
-                reason = "dispatch_cancelled" if isinstance(exc, asyncio.CancelledError) else "dispatch_failed"
+            validation_rejected = validation_started and not validation_succeeded
+            if not externally_stopped and (request.sandbox_mode == "ephemeral" or validation_rejected):
+                reason = (
+                    "dispatch_validation_cancelled"
+                    if validation_rejected and isinstance(exc, asyncio.CancelledError)
+                    else "dispatch_validation_failed"
+                    if validation_rejected
+                    else "dispatch_cancelled"
+                    if isinstance(exc, asyncio.CancelledError)
+                    else "dispatch_failed"
+                )
                 try:
-                    await self._stop_and_release_ephemeral_lease(lease, reason=reason, lease_record_id=lease_record_id)
+                    await self._stop_and_release_recorded_lease(lease, reason=reason, lease_record_id=lease_record_id)
                 except SandboxRuntimeCleanupError as cleanup_exc:
                     raise cleanup_exc from exc
             raise
@@ -311,7 +374,7 @@ class SandboxRuntime:
                 if terminal_status in {"cancelled", "canceled"}
                 else "dispatch_completed"
             )
-            await self._stop_and_release_ephemeral_lease(
+            await self._stop_and_release_recorded_lease(
                 lease,
                 reason=release_reason,
                 lease_record_id=lease_record_id,
