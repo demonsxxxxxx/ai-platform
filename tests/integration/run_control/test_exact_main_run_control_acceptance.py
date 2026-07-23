@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from copy import deepcopy
 
 import pytest
@@ -13,8 +14,10 @@ from tools.acceptance.run_control.validate_run_control_evidence_packet import (
     PACKET_SCHEMA_VERSION,
     PacketDecodeError,
     REQUIRED_CASE_IDS,
+    _read_packet,
     _result,
     decode_evidence_packet,
+    main,
     validate_run_control_evidence_packet,
 )
 
@@ -172,6 +175,48 @@ def test_strict_decoder_rejects_bounded_size_and_depth():
 
     with pytest.raises(PacketDecodeError, match="packet_depth_exceeded"):
         decode_evidence_packet(_nested_json(MAX_JSON_DEPTH + 1, {}))
+
+
+def test_strict_decoder_accepts_a_normal_bounded_integer():
+    assert decode_evidence_packet("123456789") == 123456789
+
+
+def test_read_packet_and_cli_redact_cpython_integer_digit_limit(tmp_path, monkeypatch, capsys):
+    digit_limit = sys.get_int_max_str_digits()
+    assert digit_limit > 0
+    oversized_integer = "9" * (max(digit_limit, 4300) + 1)
+    assert len(oversized_integer.encode("utf-8")) < MAX_PACKET_BYTES
+    packet_path = tmp_path / "large-integer.json"
+    packet_path.write_text(oversized_integer, encoding="utf-8")
+
+    with pytest.raises(PacketDecodeError) as exc_info:
+        _read_packet(str(packet_path))
+
+    assert exc_info.value.code == "packet_not_valid_json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "validate_run_control_evidence_packet.py",
+            "--packet",
+            str(packet_path),
+            "--expected-main-sha",
+            MAIN_SHA,
+        ],
+    )
+
+    assert main() == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out) == {
+        "errors": ["packet_not_valid_json"],
+        "schema_validity_is_not_runtime_proof": True,
+        "status": "schema_invalid",
+    }
+    assert "Traceback" not in captured.out
+    assert "Exceeds the limit" not in captured.out
+    assert oversized_integer not in captured.out
+    assert str(packet_path) not in captured.out
 
 
 def test_predecode_depth_guard_rejects_near_limit_valid_json_before_semantic_decoding():

@@ -133,6 +133,8 @@ def decode_evidence_packet(raw_text: str) -> Any:
         raise PacketDecodeError("packet_depth_exceeded") from exc
     except json.JSONDecodeError as exc:
         raise PacketDecodeError("packet_not_valid_json") from exc
+    except ValueError as exc:
+        raise PacketDecodeError("packet_not_valid_json") from exc
     _validate_json_depth(decoded)
     return decoded
 

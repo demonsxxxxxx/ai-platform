@@ -17,7 +17,9 @@ validation.  A duplicate member is not promised to outrank an over-depth input:
 the resource guard runs first.  It has no network, credential, environment,
 process, write, product-state, or evidence-reference probing behavior.  Its
 output is only `schema_valid` or `schema_invalid`; **schema validity is not
-runtime proof** and cannot generate, upgrade, or prove evidence.
+runtime proof** and cannot generate, upgrade, or prove evidence.  Other bounded
+decode failures, including a configured JSON-integer digit limit, use a fixed
+redacted invalid-JSON diagnostic without exception detail.
 
 ## Authoritative local test nodes
 
