@@ -80,7 +80,7 @@ def _patch_route(
             manifest[key] = values
         return {"payload_json": {"context_manifest": manifest}}
 
-    async def list_current_leases(conn, *, tenant_id, run_id):
+    async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
         if not active_lease:
             return []
         return [{"lease_payload_json": {"attempt_id": lease_attempt}}]
@@ -104,7 +104,7 @@ def _patch_route(
     monkeypatch.setattr(callbacks.repositories, "get_run_identity", get_run_identity)
     monkeypatch.setattr(
         callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_run",
+        "list_current_sandbox_runtime_leases_for_attempt",
         list_current_leases,
     )
     monkeypatch.setattr(callbacks.repositories, "get_bound_executor_context_snapshot", get_snapshot)
@@ -139,6 +139,47 @@ def test_context_retrieval_callback_derives_scope_and_records_allowed_event(monk
     }
     assert calls[1][0] == "event"
     assert "secret" not in str(response.json())
+
+
+def test_parallel_same_run_context_attempts_each_use_their_exact_lease_and_token(monkeypatch):
+    calls = _patch_route(monkeypatch)
+    lease_checks = []
+    import app.routes.runtime_callbacks as callbacks
+
+    async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
+        lease_checks.append((tenant_id, run_id, attempt_id))
+        if attempt_id not in {"attempt-a", "attempt-b"}:
+            return []
+        return [{"lease_payload_json": {"attempt_id": attempt_id}}]
+
+    monkeypatch.setattr(callbacks.repositories, "list_current_sandbox_runtime_leases_for_attempt", exact_lease)
+    client = TestClient(create_app())
+    first = client.post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers={"X-AI-Platform-Callback-Token": _token("secret")},
+        json=_payload(),
+    )
+    second_token_id = "cbt:run-a:attempt-b"
+    second = client.post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers={"X-AI-Platform-Callback-Token": _token("secret", second_token_id)},
+        json=_payload(attempt_id="attempt-b", callback_token_id=second_token_id),
+    )
+    crossed = client.post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers={"X-AI-Platform-Callback-Token": _token("secret")},
+        json=_payload(attempt_id="attempt-b", callback_token_id="cbt:run-a:attempt-a"),
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert crossed.status_code == 401
+    assert lease_checks == [
+        ("tenant-a", "run-a", "attempt-a"),
+        ("tenant-a", "run-a", "attempt-a"),
+        ("tenant-a", "run-a", "attempt-b"),
+        ("tenant-a", "run-a", "attempt-b"),
+    ]
+    assert [call[0] for call in calls] == ["read_run_artifact", "event", "read_run_artifact", "event"]
 
 
 def test_context_retrieval_callback_rejects_wrong_token_before_storage(monkeypatch):

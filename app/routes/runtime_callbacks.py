@@ -172,6 +172,12 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
                 message=str(executor_event["message"]),
                 payload=executor_payload,
             )
+        await _require_current_runtime_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=callback.run_id,
+            attempt_id=callback.attempt_id,
+        )
     return {"accepted": True, "event_count": 1 + len(events)}
 
 
@@ -182,10 +188,11 @@ async def _require_current_runtime_attempt(
     run_id: str,
     attempt_id: str,
 ) -> dict[str, Any]:
-    leases = await repositories.list_current_sandbox_runtime_leases_for_run(
+    leases = await repositories.list_current_sandbox_runtime_leases_for_attempt(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
+        attempt_id=attempt_id,
     )
     if len(leases) != 1:
         raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
@@ -330,6 +337,12 @@ async def executor_context_retrieval_callback(
                 "result": "allowed",
                 "visible_to_user": False,
             },
+        )
+        await _require_current_runtime_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
         )
     return {"result": result}
 

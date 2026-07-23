@@ -1,8 +1,10 @@
 import hashlib
 import hmac
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app import repositories
 from app.main import create_app
 from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent, ExecutorToolPermissionRequest
@@ -43,14 +45,152 @@ def patch_callback_settings(monkeypatch, settings_obj):
 
 
 def patch_active_attempt(monkeypatch, runtime_callbacks, attempt_id="attempt-a"):
-    async def list_current_leases(conn, *, tenant_id, run_id):
-        return [{"lease_payload_json": {"attempt_id": attempt_id}}]
+    active_attempt = attempt_id
+
+    async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
+        if attempt_id != active_attempt:
+            return []
+        return [{"lease_payload_json": {"attempt_id": active_attempt}}]
 
     monkeypatch.setattr(
         runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_run",
+        "list_current_sandbox_runtime_leases_for_attempt",
         list_current_leases,
     )
+
+
+def test_parallel_same_run_attempts_each_use_their_exact_lease_and_token(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    lease_checks = []
+    events = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
+        lease_checks.append((tenant_id, run_id, attempt_id))
+        if attempt_id not in {"attempt-a", "attempt-b"}:
+            return []
+        return [{"lease_payload_json": {"attempt_id": attempt_id}}]
+
+    async def append_event(conn, **kwargs):
+        events.append(kwargs)
+        return f"evt-{len(events)}"
+
+    import app.routes.runtime_callbacks as runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "list_current_sandbox_runtime_leases_for_attempt", exact_lease)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", append_event)
+    client = TestClient(create_app())
+
+    first = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(new_message=None, state_patch={}),
+    )
+    second_token_id = "cbt:run-a:attempt-b"
+    second = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret", second_token_id)},
+        json=callback_payload(
+            attempt_id="attempt-b",
+            callback_token_id=second_token_id,
+            new_message=None,
+            state_patch={},
+        ),
+    )
+    crossed = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(attempt_id="attempt-b", callback_token_id="cbt:run-a:attempt-a"),
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert crossed.status_code == 401
+    assert lease_checks == [
+        ("tenant-a", "run-a", "attempt-a"),
+        ("tenant-a", "run-a", "attempt-a"),
+        ("tenant-a", "run-a", "attempt-b"),
+        ("tenant-a", "run-a", "attempt-b"),
+    ]
+    assert [event["payload"]["attempt_id"] for event in events] == ["attempt-a", "attempt-b"]
+
+
+@pytest.mark.asyncio
+async def test_current_runtime_lease_query_locks_only_the_exact_attempt():
+    observed = []
+
+    class Cursor:
+        async def fetchall(self):
+            return [{"id": "lease-attempt-b"}]
+
+    class Connection:
+        async def execute(self, query, parameters):
+            observed.append((query, parameters))
+            return Cursor()
+
+    rows = await repositories.list_current_sandbox_runtime_leases_for_attempt(
+        Connection(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-b",
+    )
+
+    assert rows == [{"id": "lease-attempt-b"}]
+    query, parameters = observed[0]
+    assert "lease_payload_json ->> 'attempt_id' = %s" in query
+    assert "status = 'active'" in query and "for update" in query
+    assert parameters == ("tenant-a", "run-a", "attempt-b")
+
+
+def test_executor_callback_rejects_duplicate_exact_attempt_leases(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def duplicate_leases(conn, *, tenant_id, run_id, attempt_id):
+        lease = {"lease_payload_json": {"attempt_id": attempt_id}}
+        return [lease, dict(lease)]
+
+    async def fail_append_event(*args, **kwargs):
+        raise AssertionError("ambiguous exact attempt must not append events")
+
+    import app.routes.runtime_callbacks as runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        duplicate_leases,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "sandbox_runtime_attempt_inactive"}
 
 
 def test_executor_callback_requires_valid_token(monkeypatch):
@@ -179,8 +319,8 @@ def test_executor_callback_rejects_stale_attempt_before_event_action(monkeypatch
     async def get_run_identity(conn, *, run_id, for_update=False):
         return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
 
-    async def list_current_leases(conn, *, tenant_id, run_id):
-        calls.append((tenant_id, run_id))
+    async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
+        calls.append((tenant_id, run_id, attempt_id))
         return [{"lease_payload_json": {"attempt_id": "attempt-b"}}]
 
     async def fail_append_event(*args, **kwargs):
@@ -192,7 +332,7 @@ def test_executor_callback_rejects_stale_attempt_before_event_action(monkeypatch
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
     monkeypatch.setattr(
         runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_run",
+        "list_current_sandbox_runtime_leases_for_attempt",
         list_current_leases,
     )
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
@@ -205,7 +345,7 @@ def test_executor_callback_rejects_stale_attempt_before_event_action(monkeypatch
 
     assert response.status_code == 409
     assert response.json() == {"detail": "sandbox_runtime_attempt_mismatch"}
-    assert calls == [("tenant-a", "run-a")]
+    assert calls == [("tenant-a", "run-a", "attempt-a")]
 
 
 def test_executor_callback_rejects_released_attempt_before_event_action(monkeypatch):
@@ -221,7 +361,7 @@ def test_executor_callback_rejects_released_attempt_before_event_action(monkeypa
     async def get_run_identity(conn, *, run_id, for_update=False):
         return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
 
-    async def no_current_leases(conn, *, tenant_id, run_id):
+    async def no_current_leases(conn, *, tenant_id, run_id, attempt_id):
         return []
 
     async def fail_append_event(*args, **kwargs):
@@ -233,7 +373,7 @@ def test_executor_callback_rejects_released_attempt_before_event_action(monkeypa
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
     monkeypatch.setattr(
         runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_run",
+        "list_current_sandbox_runtime_leases_for_attempt",
         no_current_leases,
     )
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)

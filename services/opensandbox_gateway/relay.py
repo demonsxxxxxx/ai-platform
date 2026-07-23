@@ -7,11 +7,15 @@ from __future__ import annotations
 # read from HTTP and written to the scoped workspace; it is never interpolated
 # into a command.  The host broker chooses every remote destination.
 RELAY_SOURCE = r'''
-import base64, http.server, json, os, secrets, stat, sys, threading, time
+import base64, http.server, json, math, os, secrets, stat, sys, threading, time
 
 ROOT, BROKER_UID, BROKER_GID = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-RESPONSE_WAIT_SECONDS = float(sys.argv[4]) if len(sys.argv) > 4 else 65.0
-LISTEN_PORT = int(sys.argv[5]) if len(sys.argv) > 5 else 18888
+REQUEST_WAIT_SECONDS = float(sys.argv[4]) if len(sys.argv) > 4 else 5.0
+if len(sys.argv) > 6:
+    DISPATCH_WAIT_SECONDS, LISTEN_PORT = float(sys.argv[5]), int(sys.argv[6])
+else:
+    DISPATCH_WAIT_SECONDS = REQUEST_WAIT_SECONDS
+    LISTEN_PORT = int(sys.argv[5]) if len(sys.argv) > 5 else 18888
 ROOT_FD = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 REQ_FD = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=ROOT_FD)
 RESP_FD = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=ROOT_FD)
@@ -38,6 +42,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
     def _run(self):
         try:
+            created_at_unix_seconds = time.time()
+            created_at_monotonic = time.monotonic()
+            clean_path = self.path.split("?", 1)[0]
+            policy_timeout = DISPATCH_WAIT_SECONDS if clean_path == "/model/openai" or clean_path.startswith("/model/openai/") or clean_path == "/model/anthropic" or clean_path.startswith("/model/anthropic/") else REQUEST_WAIT_SECONDS
+            requested = self.headers.get("x-ai-platform-request-timeout-seconds")
+            requested_timeout = policy_timeout if requested is None else float(requested)
+            if not math.isfinite(requested_timeout) or requested_timeout <= 0:
+                self.send_error(400); return
+            total_timeout = min(policy_timeout, requested_timeout)
+            deadline = created_at_monotonic + total_timeout
+            self.connection.settimeout(max(.001, deadline - time.monotonic()))
             length = self.headers.get("content-length", "0")
             if not length.isdigit() or int(length) > 1048576:
                 self.send_error(413); return
@@ -51,6 +66,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "path": self.path,
                 "headers": {k.lower(): v for k, v in self.headers.items()},
                 "body": base64.b64encode(body).decode("ascii"),
+                "created_at_unix_seconds": created_at_unix_seconds,
+                "timeout_seconds": total_timeout,
             }
             descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=REQ_FD)
             try:
@@ -63,7 +80,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             finally:
                 os.close(descriptor)
             os.replace(temporary, name, src_dir_fd=REQ_FD, dst_dir_fd=REQ_FD)
-            deadline = time.monotonic() + RESPONSE_WAIT_SECONDS
             response_fd = None
             while time.monotonic() < deadline:
                 try:
@@ -78,6 +94,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     pass
                 self.send_error(504); return
             try:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("relay deadline exhausted")
+                self.connection.settimeout(max(.001, deadline - time.monotonic()))
                 evidence = os.fstat(response_fd)
                 if not stat.S_ISREG(evidence.st_mode) or evidence.st_uid != BROKER_UID or evidence.st_gid != BROKER_GID or stat.S_IMODE(evidence.st_mode) != 0o444 or evidence.st_size > 8388608:
                     raise RuntimeError("invalid broker response")

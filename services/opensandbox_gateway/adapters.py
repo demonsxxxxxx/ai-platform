@@ -8,6 +8,7 @@ import hmac
 import http.client
 import ipaddress
 import json
+import math
 import os
 import pathlib
 import re
@@ -61,6 +62,8 @@ class InMemoryStateStore:
         self.records: dict[str, LeaseRecord] = {}
         self.denials: list[tuple[str, str]] = []
         self._lock = threading.RLock()
+        self._outbound_condition = threading.Condition(self._lock)
+        self._outbound_tokens: dict[str, set[str]] = {}
 
     def get(self, sandbox_id: str) -> LeaseRecord | None:
         with self._lock:
@@ -106,6 +109,64 @@ class InMemoryStateStore:
                     values.append(record)
             return values
 
+    def begin_mailbox_claim(self, sandbox_id: str) -> str | None:
+        """Fence one mailbox claim against the durable active lease state."""
+
+        with self._outbound_condition:
+            record = self.records.get(sandbox_id)
+            if record is None or record.state != "active":
+                return None
+            token = secrets.token_hex(16)
+            self._outbound_tokens.setdefault(sandbox_id, set()).add(token)
+            return token
+
+    def confirm_mailbox_outbound(self, sandbox_id: str, token: str) -> bool:
+        """Atomically keep a claimed request only while its lease remains active."""
+
+        with self._outbound_condition:
+            tokens = self._outbound_tokens.get(sandbox_id)
+            if tokens is None or token not in tokens:
+                return False
+            record = self.records.get(sandbox_id)
+            if record is not None and record.state == "active":
+                return True
+            self._end_mailbox_outbound_locked(sandbox_id, token)
+            return False
+
+    def end_mailbox_outbound(self, sandbox_id: str, token: str) -> None:
+        """Release one claim/outbound fence and wake a pending cleanup."""
+
+        with self._outbound_condition:
+            self._end_mailbox_outbound_locked(sandbox_id, token)
+
+    def _end_mailbox_outbound_locked(self, sandbox_id: str, token: str) -> None:
+        tokens = self._outbound_tokens.get(sandbox_id)
+        if tokens is None:
+            return
+        tokens.discard(token)
+        if not tokens:
+            self._outbound_tokens.pop(sandbox_id, None)
+            self._outbound_condition.notify_all()
+
+    def transition_cleanup_pending(self, record: LeaseRecord, timeout_seconds: float) -> bool:
+        """Durably close admission, then wait boundedly for claimed work to drain."""
+
+        if record.state != "cleanup_pending":
+            return False
+        expires_at = time.monotonic() + max(0.0, timeout_seconds)
+        with self._outbound_condition:
+            current = self.records.get(record.sandbox_id)
+            if current is None or current.state not in {"active", "cleanup_pending"}:
+                return False
+            if current.state == "active":
+                self.records[record.sandbox_id] = record
+            while self._outbound_tokens.get(record.sandbox_id):
+                remaining = expires_at - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._outbound_condition.wait(remaining)
+            return True
+
     def record_deny(self, subject: str, code: str) -> None:
         with self._lock:
             self.denials.append((subject, code))
@@ -125,6 +186,8 @@ class SQLiteStateStore:
         self.path = path
         pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._outbound_condition = threading.Condition(self._lock)
+        self._outbound_tokens: dict[str, set[str]] = {}
         with self._connect() as db:
             db.executescript(
                 """
@@ -257,6 +320,86 @@ class SQLiteStateStore:
                 for key, value in filters.items()
             )
         ]
+
+    def begin_mailbox_claim(self, sandbox_id: str) -> str | None:
+        """Fence one mailbox claim against the durable active lease state."""
+
+        with self._outbound_condition, self._connect() as db:
+            row = db.execute("SELECT state FROM leases WHERE sandbox_id = ?", (sandbox_id,)).fetchone()
+            if row is None or row[0] != "active":
+                return None
+            token = secrets.token_hex(16)
+            self._outbound_tokens.setdefault(sandbox_id, set()).add(token)
+            return token
+
+    def confirm_mailbox_outbound(self, sandbox_id: str, token: str) -> bool:
+        """Atomically keep a claimed request only while its lease remains active."""
+
+        with self._outbound_condition, self._connect() as db:
+            tokens = self._outbound_tokens.get(sandbox_id)
+            if tokens is None or token not in tokens:
+                return False
+            row = db.execute("SELECT state FROM leases WHERE sandbox_id = ?", (sandbox_id,)).fetchone()
+            if row is not None and row[0] == "active":
+                return True
+            self._end_mailbox_outbound_locked(sandbox_id, token)
+            return False
+
+    def end_mailbox_outbound(self, sandbox_id: str, token: str) -> None:
+        """Release one claim/outbound fence and wake a pending cleanup."""
+
+        with self._outbound_condition:
+            self._end_mailbox_outbound_locked(sandbox_id, token)
+
+    def _end_mailbox_outbound_locked(self, sandbox_id: str, token: str) -> None:
+        tokens = self._outbound_tokens.get(sandbox_id)
+        if tokens is None:
+            return
+        tokens.discard(token)
+        if not tokens:
+            self._outbound_tokens.pop(sandbox_id, None)
+            self._outbound_condition.notify_all()
+
+    def transition_cleanup_pending(self, record: LeaseRecord, timeout_seconds: float) -> bool:
+        """Durably close admission, then wait boundedly for claimed work to drain."""
+
+        if record.state != "cleanup_pending":
+            return False
+        expires_at = time.monotonic() + max(0.0, timeout_seconds)
+        with self._outbound_condition:
+            with self._connect() as db:
+                db.isolation_level = None
+                db.execute("BEGIN IMMEDIATE")
+                try:
+                    row = db.execute("SELECT state FROM leases WHERE sandbox_id = ?", (record.sandbox_id,)).fetchone()
+                    if row is None or row[0] not in {"active", "cleanup_pending"}:
+                        db.execute("ROLLBACK")
+                        return False
+                    if row[0] == "active":
+                        values = (
+                            _json_text(record.scope),
+                            _json_text(record.metadata),
+                            _json_text(asdict(record)),
+                            record.state,
+                            record.workspace_host_path,
+                            record.sandbox_id,
+                        )
+                        changed = db.execute(
+                            "UPDATE leases SET scope_json=?, metadata_json=?, record_json=?, state=?, workspace_host_path=? WHERE sandbox_id=? AND state='active'",
+                            values,
+                        ).rowcount
+                        if changed != 1:
+                            raise GatewayError(409, "reservation_state_drift")
+                    db.execute("COMMIT")
+                except Exception:
+                    db.execute("ROLLBACK")
+                    raise
+            while self._outbound_tokens.get(record.sandbox_id):
+                remaining = expires_at - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._outbound_condition.wait(remaining)
+            return True
 
     def record_deny(self, subject: str, code: str) -> None:
         with self._lock, self._connect() as db:
@@ -524,6 +667,9 @@ class DockerRuntimeAdapter:
                 "/workspace/.opensandbox-gateway",
                 str(broker_uid),
                 str(broker_gid),
+                str(self.timeout_seconds),
+                str(self.dispatch_timeout_seconds),
+                "18888",
             ]
         )
 
@@ -720,10 +866,21 @@ class MailboxBroker:
     GLOBAL_PENDING_BYTES = 64 * 1024 * 1024
     EXPIRED_SWEEP_LIMIT = 16
 
-    def __init__(self, store: SQLiteStateStore, policy: BrokerPolicy, timeout_seconds: float, max_response_bytes: int, workspace_root: str = "/data/opensandbox/workspaces") -> None:
+    def __init__(
+        self,
+        store: SQLiteStateStore,
+        policy: BrokerPolicy,
+        timeout_seconds: float,
+        max_response_bytes: int,
+        workspace_root: str = "/data/opensandbox/workspaces",
+        dispatch_timeout_seconds: float | None = None,
+    ) -> None:
         self.store = store
         self.policy = policy
         self.timeout_seconds = timeout_seconds
+        self.dispatch_timeout_seconds = (
+            timeout_seconds if dispatch_timeout_seconds is None else dispatch_timeout_seconds
+        )
         self.max_response_bytes = max_response_bytes
         self.workspace_root = workspace_root
         self._rotation = 0
@@ -731,7 +888,7 @@ class MailboxBroker:
     def poll_once(self) -> int:
         """Process at most one bounded batch and return the number handled."""
 
-        deadline = operation_deadline(self.timeout_seconds)
+        deadline = operation_deadline(self.dispatch_timeout_seconds)
         with deadline_scope(deadline):
             return self._poll_until(deadline)
 
@@ -835,16 +992,27 @@ class MailboxBroker:
         entry: tuple[str, int, int, int, int],
         overflow: bool,
     ) -> bool:
-        descriptors = self._open_record_mailbox(record)
-        workspace_fd, _mailbox_fd, request_fd, claim_fd, response_fd = descriptors
+        token = self.store.begin_mailbox_claim(record.sandbox_id)
+        if token is None:
+            self.store.record_deny("mailbox-broker", "broker_lease_inactive")
+            return False
+        descriptors = None
         name = entry[0]
         claimed = None
         finished = False
+        abandoned_to_cleanup = False
         try:
+            descriptors = self._open_record_mailbox(record)
+            workspace_fd, _mailbox_fd, request_fd, claim_fd, response_fd = descriptors
             _revalidate_workspace_fd(workspace_fd, record.workspace_host_path)
             claimed = self._claim_request(request_fd, claim_fd, entry)
             if claimed is None:
                 self.store.record_deny("mailbox-broker", "broker_request_changed")
+                return False
+            if not self.store.confirm_mailbox_outbound(record.sandbox_id, token):
+                token = None
+                abandoned_to_cleanup = True
+                self.store.record_deny("mailbox-broker", "broker_lease_inactive")
                 return False
             if overflow:
                 self.store.record_deny("mailbox-broker", "broker_backlog_exceeded")
@@ -873,12 +1041,15 @@ class MailboxBroker:
             self.store.record_deny("mailbox-broker", "broker_response_write_failed")
             return False
         finally:
-            if claimed is not None and not finished:
+            if claimed is not None and not finished and not abandoned_to_cleanup and descriptors is not None:
                 try:
                     self._unlink_request_if_identity(claim_fd, claimed)
                 except OSError:
                     pass
-            self._close_mailbox(descriptors)
+            if descriptors is not None:
+                self._close_mailbox(descriptors)
+            if token is not None:
+                self.store.end_mailbox_outbound(record.sandbox_id, token)
 
     def _open_record_mailbox(self, record: LeaseRecord) -> tuple[int, int, int, int, int]:
         workspace_fd = mailbox_fd = request_fd = claim_fd = response_fd = None
@@ -946,6 +1117,16 @@ class MailboxBroker:
             finally:
                 os.close(descriptor)
             value = json.loads(raw.decode("utf-8"))
+            if set(value) != {
+                "version",
+                "method",
+                "path",
+                "headers",
+                "body",
+                "created_at_unix_seconds",
+                "timeout_seconds",
+            } or value["version"] != 1:
+                raise ValueError("invalid broker envelope")
             method = value["method"].upper()
             local = urllib.parse.urlsplit(value["path"])
             headers = value.get("headers") or {}
@@ -965,7 +1146,22 @@ class MailboxBroker:
         if kind == "callback":
             allowed_headers.add("x-ai-platform-callback-token")
         outbound_headers = {str(k).lower(): str(v) for k, v in headers.items() if str(k).lower() in allowed_headers}
-        deadline = operation_deadline(self.timeout_seconds)
+        policy_timeout = self.dispatch_timeout_seconds if kind in {"openai", "anthropic"} else self.timeout_seconds
+        try:
+            created_at = float(value["created_at_unix_seconds"])
+            requested_timeout = float(value["timeout_seconds"])
+        except (TypeError, ValueError):
+            raise GatewayError(400, "broker_request_invalid") from None
+        now = time.time()
+        if (
+            not math.isfinite(created_at)
+            or not math.isfinite(requested_timeout)
+            or created_at > now
+            or requested_timeout <= 0
+        ):
+            raise GatewayError(400, "broker_request_invalid")
+        remaining = created_at + min(requested_timeout, policy_timeout) - now
+        deadline = operation_deadline(remaining)
         connection = _PinnedHTTPSConnection(target.hostname, target.port or 443, ips, deadline)
         timer = deadline.arm(lambda: _close_http_connection(connection))
         try:

@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+AUTHORITY_REF=${OPENSANDBOX_GATEWAY_AUTHORITY_REF:-origin/main}
+EXPECTED_AUTHORITY_SHA=${OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA:-}
+AUTHORITY_EVIDENCE_ID=${OPENSANDBOX_GATEWAY_AUTHORITY_EVIDENCE_ID:-}
 RELEASES=/opt/opensandbox-gateway/releases
 CURRENT_LINK=/opt/opensandbox-gateway/current
 DEPLOY_STATE=/var/lib/opensandbox-gateway-deploy
@@ -35,6 +38,9 @@ verify_manifest() {
 
 validate_release() {
   commit=$1
+  mode=${2:-rollback}
+  is_commit "$EXPECTED_AUTHORITY_SHA" || return 1
+  is_authority_evidence_id "$AUTHORITY_EVIDENCE_ID" || return 1
   is_commit "$commit" || return 1
   release=$RELEASES/$commit
   test "$(readlink -f "$release")" = "$(readlink -f "$RELEASES")/$commit" || return 1
@@ -48,12 +54,35 @@ validate_release() {
   is_commit "$authority_commit" || return 1
   is_authority_evidence_id "$authority_evidence" || return 1
   test "$authority_commit" = "$commit" || return 1
+  test "$authority_ref" = "$AUTHORITY_REF" || return 1
   test "$(readlink -f "$source_root")" = "$source_root" || return 1
   require_root_tree "$source_root" || return 1
   git -C "$source_root" show-ref --verify --quiet "refs/remotes/$authority_ref" || return 1
-  current_authority=$(git -C "$source_root" rev-parse --verify "refs/remotes/$authority_ref^{commit}") || return 1
+  current_authority=$(git -C "$source_root" rev-parse --verify "refs/remotes/$AUTHORITY_REF^{commit}") || return 1
   is_commit "$current_authority" || return 1
-  git -C "$source_root" merge-base --is-ancestor "$commit" "$current_authority"
+  test "$current_authority" = "$EXPECTED_AUTHORITY_SHA" || return 1
+  git -C "$source_root" cat-file -e "$EXPECTED_AUTHORITY_SHA^{commit}" || return 1
+  case "$mode" in
+    rollback) git -C "$source_root" merge-base --is-ancestor "$commit" "$EXPECTED_AUTHORITY_SHA" ;;
+    *) return 1 ;;
+  esac
+}
+
+record_authority_state() {
+  deployed_sha=$1
+  authority_evidence=$2
+  is_commit "$deployed_sha" || return 1
+  is_authority_evidence_id "$authority_evidence" || return 1
+  sha_tmp=$DEPLOY_STATE/.current-authority-sha.$$
+  evidence_tmp=$DEPLOY_STATE/.current-authority-evidence.$$
+  printf '%s\n' "$deployed_sha" > "$sha_tmp"
+  printf '%s\n' "$authority_evidence" > "$evidence_tmp"
+  chown root:root "$sha_tmp" "$evidence_tmp"
+  chmod 0600 "$sha_tmp" "$evidence_tmp"
+  mv -f "$sha_tmp" "$AUTHORITY_SHA_STATE"
+  mv -f "$evidence_tmp" "$AUTHORITY_EVIDENCE_STATE"
+  test "$(cat "$AUTHORITY_SHA_STATE")" = "$deployed_sha"
+  test "$(cat "$AUTHORITY_EVIDENCE_STATE")" = "$authority_evidence"
 }
 
 require_marker_pair() {
@@ -97,11 +126,18 @@ preflight_snapshot() {
 
 rollback_main() {
 test "$(id -u)" -eq 0
+case "$AUTHORITY_REF" in ""|*[!A-Za-z0-9._/-]*|*..*) exit 1 ;; esac
+is_commit "$EXPECTED_AUTHORITY_SHA"
+is_authority_evidence_id "$AUTHORITY_EVIDENCE_ID"
 test "$(stat -c %u:%g:%a "$DEPLOY_STATE")" = 0:0:700
 test -f "$ROLLBACK_POINTER" && test ! -L "$ROLLBACK_POINTER"
 test "$(stat -c %u:%g:%a "$ROLLBACK_POINTER")" = 0:0:600
 exec 9>"$DEPLOY_STATE/install.lock"
 flock -n 9
+test -L "$CURRENT_LINK"
+CURRENT_TARGET=$(readlink "$CURRENT_LINK")
+case "$CURRENT_TARGET" in releases/*) CURRENT_COMMIT=${CURRENT_TARGET#releases/} ;; *) exit 1 ;; esac
+validate_release "$CURRENT_COMMIT" rollback
 SNAPSHOT_ID=$(cat "$ROLLBACK_POINTER")
 case "$SNAPSHOT_ID" in .rollback.[A-Za-z0-9]*) ;; *) exit 1 ;; esac
 SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
@@ -157,6 +193,7 @@ if test -n "$PREVIOUS"; then
   ln -s "$PREVIOUS" "$CURRENT_LINK.next"
   mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
   test "$(readlink -f "$CURRENT_LINK")" = "$RELEASES/$previous_commit"
+  record_authority_state "$previous_commit" "$AUTHORITY_EVIDENCE_ID"
 else
   rm -f "$CURRENT_LINK"
 fi

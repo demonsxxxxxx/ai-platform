@@ -21,7 +21,7 @@ import socket
 import threading
 import time
 import urllib.parse
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterator, Mapping, Protocol
 
@@ -392,6 +392,10 @@ class StateStore(Protocol):
     def activate(self, intent_id: str, owner_token: str, record: LeaseRecord) -> None: ...
     def save(self, record: LeaseRecord) -> None: ...
     def list(self, filters: Mapping[str, str]) -> list[LeaseRecord]: ...
+    def begin_mailbox_claim(self, sandbox_id: str) -> str | None: ...
+    def confirm_mailbox_outbound(self, sandbox_id: str, token: str) -> bool: ...
+    def end_mailbox_outbound(self, sandbox_id: str, token: str) -> None: ...
+    def transition_cleanup_pending(self, record: LeaseRecord, timeout_seconds: float) -> bool: ...
     def record_deny(self, subject: str, code: str) -> None: ...
     def deny_count(self, subject: str) -> int: ...
     def ready(self) -> bool: ...
@@ -859,6 +863,8 @@ class GatewayApplication:
         return False
 
     def _cleanup_pending(self, record: LeaseRecord) -> bool:
+        if not self.store.transition_cleanup_pending(record, self.config.request_timeout_seconds):
+            return False
         if not self._delete_upstream_and_verify(record.sandbox_id):
             return False
         self.runtime.stop_relay(record)
@@ -931,9 +937,8 @@ class GatewayApplication:
             return Response(204, {"content-length": "0"}, b"")
         self._verify_record(record)
         if record.state != "cleanup_pending":
-            record.state = "cleanup_pending"
+            record = replace(record, state="cleanup_pending")
             record.signature = self._sign_record(record)
-            self.store.save(record)
         if not self._cleanup_pending(record):
             raise GatewayError(503, "cleanup_pending")
         return Response(204, {"content-length": "0"}, b"")

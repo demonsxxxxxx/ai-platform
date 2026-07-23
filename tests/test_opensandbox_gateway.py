@@ -172,6 +172,16 @@ def application() -> tuple[GatewayApplication, InMemoryLifecycleTransport, InMem
     return GatewayApplication(config, lifecycle, runtime, store), lifecycle, runtime, store
 
 
+def active_mailbox_store(records, denials):
+    return SimpleNamespace(
+        list=lambda _filters: records,
+        record_deny=lambda subject, code: denials.append((subject, code)),
+        begin_mailbox_claim=lambda _sandbox_id: "mailbox-fence-token",
+        confirm_mailbox_outbound=lambda _sandbox_id, _token: True,
+        end_mailbox_outbound=lambda _sandbox_id, _token: None,
+    )
+
+
 def call(app: GatewayApplication, method: str, target: str, body: object | bytes = b"", headers: dict[str, str] | None = None) -> Response:
     if not isinstance(body, bytes):
         body = json.dumps(body, separators=(",", ":")).encode()
@@ -658,6 +668,7 @@ def test_uncertain_delete_survives_restart_and_broker_excludes_pending(tmp_path)
 
     assert call(app, "DELETE", f"/v1/sandboxes/{sandbox_id}").status == 503
     assert store.get(sandbox_id).state == "cleanup_pending"
+    assert store.begin_mailbox_claim(sandbox_id) is None
     broker = MailboxBroker(store, SimpleNamespace(targets={}), 0.1, 1024)
     assert broker.poll_once() == 0
 
@@ -667,6 +678,112 @@ def test_uncertain_delete_survives_restart_and_broker_excludes_pending(tmp_path)
     restarted = GatewayApplication(gateway_config(), lifecycle, restarted_runtime, SQLiteStateStore(str(state_path)))
     assert restarted.store.get(sandbox_id).state == "deleted"
     assert sandbox_id not in restarted_runtime.relays
+
+
+def test_claimed_mailbox_request_is_not_sent_after_delete_closes_admission(monkeypatch, tmp_path) -> None:
+    store = SQLiteStateStore(str(tmp_path / "mailbox-fence.sqlite3"))
+    app = GatewayApplication(gateway_config(), InMemoryLifecycleTransport(), InMemoryRuntimeAdapter(), store)
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "claim-delete")))["id"]
+    record = store.get(sandbox_id)
+    assert record is not None
+    broker = MailboxBroker(store, SimpleNamespace(targets={}), 1.0, 1024)
+    entry = ("1" * 32 + ".json", 1, 2, 10, 3)
+    claimed_entry = (entry[0] + "." + "a" * 32 + ".claim", *entry[1:])
+    claim_complete = threading.Event()
+    permit_confirmation = threading.Event()
+    broker_results = []
+    delete_results = []
+    sent = []
+
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
+    broker._close_mailbox = lambda _descriptors: None
+
+    def claim(_request_fd, _claim_fd, _entry):
+        claim_complete.set()
+        assert permit_confirmation.wait(2)
+        return claimed_entry
+
+    broker._claim_request = claim
+    broker._process = lambda *_args: sent.append("sent") or {"status": 200, "headers": {}, "body": ""}
+    broker._write_response = lambda *_args: None
+    broker._unlink_request_if_identity = lambda *_args: True
+    monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_args: None)
+
+    broker_thread = threading.Thread(target=lambda: broker_results.append(broker._handle_entry(record, entry, False)))
+    broker_thread.start()
+    assert claim_complete.wait(2)
+    delete_thread = threading.Thread(
+        target=lambda: delete_results.append(call(app, "DELETE", f"/v1/sandboxes/{sandbox_id}"))
+    )
+    delete_thread.start()
+    deadline = time.monotonic() + 2
+    while store.get(sandbox_id).state != "cleanup_pending":
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    permit_confirmation.set()
+    broker_thread.join(2)
+    delete_thread.join(2)
+
+    assert not broker_thread.is_alive() and not delete_thread.is_alive()
+    assert broker_results == [False]
+    assert sent == []
+    assert delete_results[0].status == 204
+    assert store.get(sandbox_id).state == "deleted"
+
+
+def test_started_mailbox_outbound_drains_before_delete_cleans_resources(monkeypatch) -> None:
+    app, _, runtime, store = application()
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "drain-delete")))["id"]
+    record = store.get(sandbox_id)
+    assert record is not None
+    broker = MailboxBroker(store, SimpleNamespace(targets={}), 1.0, 1024)
+    entry = ("2" * 32 + ".json", 1, 2, 10, 3)
+    claimed_entry = (entry[0] + "." + "b" * 32 + ".claim", *entry[1:])
+    outbound_started = threading.Event()
+    permit_finish = threading.Event()
+    outbound_finished = threading.Event()
+    cleanup_calls = []
+    broker_results = []
+    delete_results = []
+
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
+    broker._close_mailbox = lambda _descriptors: None
+    broker._claim_request = lambda *_args: claimed_entry
+
+    def process(*_args):
+        outbound_started.set()
+        assert permit_finish.wait(2)
+        outbound_finished.set()
+        return {"status": 200, "headers": {}, "body": ""}
+
+    broker._process = process
+    broker._write_response = lambda *_args: None
+    broker._unlink_request_if_identity = lambda *_args: True
+    runtime.cleanup_mailbox = lambda current: cleanup_calls.append(
+        (current.sandbox_id, outbound_finished.is_set())
+    )
+    monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_args: None)
+
+    broker_thread = threading.Thread(target=lambda: broker_results.append(broker._handle_entry(record, entry, False)))
+    broker_thread.start()
+    assert outbound_started.wait(2)
+    delete_thread = threading.Thread(
+        target=lambda: delete_results.append(call(app, "DELETE", f"/v1/sandboxes/{sandbox_id}"))
+    )
+    delete_thread.start()
+    deadline = time.monotonic() + 2
+    while store.get(sandbox_id).state != "cleanup_pending":
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert delete_thread.is_alive()
+    assert cleanup_calls == []
+    permit_finish.set()
+    broker_thread.join(2)
+    delete_thread.join(2)
+
+    assert broker_results == [True]
+    assert delete_results[0].status == 204
+    assert cleanup_calls == [(sandbox_id, True)]
 
 
 def test_capability_auth_schema_signature_and_broker_policy() -> None:
@@ -882,6 +999,34 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
             adapter.verify(record)
 
 
+def test_runtime_starts_relay_with_trusted_request_and_dispatch_budgets(monkeypatch) -> None:
+    app, _, _, store = application()
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "relay-budget")))["id"]
+    record = store.get(sandbox_id)
+    assert record is not None
+    adapter = DockerRuntimeAdapter(
+        gateway_config().record_signing_key,
+        5.0,
+        3600.0,
+        1024 * 1024,
+        gateway_config().workspace_root,
+    )
+    commands = []
+    monkeypatch.setattr(gateway_adapters.os, "name", "posix")
+    monkeypatch.setattr(gateway_adapters.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setitem(sys.modules, "grp", SimpleNamespace(getgrnam=lambda _name: SimpleNamespace(gr_gid=4321)))
+    monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(getpwnam=lambda _name: SimpleNamespace(pw_uid=1234)))
+    monkeypatch.setattr(gateway_adapters, "_open_workspace_dirfd", lambda *_args: 7)
+    monkeypatch.setattr(gateway_adapters, "_prepare_mailbox", lambda *_args: None)
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _fd: None)
+    monkeypatch.setattr(adapter, "_container_id", lambda _sandbox_id: "a" * 64)
+    monkeypatch.setattr(adapter, "_command", lambda argv, **_kwargs: commands.append(argv) or "")
+
+    adapter.start_relay(record)
+
+    assert commands[0][-3:] == ["5.0", "3600.0", "18888"]
+
+
 def test_http_transport_rejects_te_ambiguous_length_and_enforces_handler_bound() -> None:
     app, _, _, _ = application()
 
@@ -976,7 +1121,7 @@ def test_absolute_request_deadline_closes_slowloris_and_releases_slot(partial: b
         try:
             while chunk := slow.recv(4096):
                 chunks.append(chunk)
-        except ConnectionResetError:
+        except (ConnectionResetError, ConnectionAbortedError):
             pass
         timed_out = b"".join(chunks)
         assert timed_out == b"" or (b"408 Request Timeout" in timed_out and b"request_timeout" in timed_out)
@@ -1388,9 +1533,9 @@ def test_helper_deadline_interrupts_trickled_response(monkeypatch) -> None:
 
 
 def test_mailbox_poll_consumes_one_shared_absolute_budget(monkeypatch) -> None:
-    record = SimpleNamespace(workspace_host_path="/data/opensandbox/workspaces/one")
+    record = SimpleNamespace(sandbox_id="sandbox-one", workspace_host_path="/data/opensandbox/workspaces/one")
     denials: list[tuple[str, str]] = []
-    store = SimpleNamespace(list=lambda _: [record], record_deny=lambda subject, code: denials.append((subject, code)))
+    store = active_mailbox_store([record], denials)
     monkeypatch.setattr(gateway_adapters.os, "name", "posix")
     monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
     names = ["1" * 32 + ".json", "2" * 32 + ".json"]
@@ -1725,6 +1870,8 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
                     "Content-Type": "application/json",
                 },
                 "body": "e30=",
+                "created_at_unix_seconds": time.time(),
+                "timeout_seconds": 3600.0,
             }
         ).encode()
         evidence = SimpleNamespace(
@@ -1752,13 +1899,110 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
     assert "x-ai-platform-callback-token" not in model_headers
 
 
+def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_only_shortens(monkeypatch) -> None:
+    observed: list[float] = []
+
+    class Deadline:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def remaining(self):
+            return self.timeout
+
+        def arm(self, _callback):
+            return SimpleNamespace(cancel=lambda: None)
+
+        def bind_socket(self, _socket):
+            return None
+
+    class FakeResponse:
+        status = 200
+
+        @staticmethod
+        def read(_limit):
+            return b"{}"
+
+        @staticmethod
+        def getheaders():
+            return []
+
+    class FakeConnection:
+        sock = None
+
+        def __init__(self, *_args):
+            pass
+
+        def request(self, *_args, **_kwargs):
+            return None
+
+        def getresponse(self):
+            return FakeResponse()
+
+        def close(self):
+            return None
+
+    def deadline(timeout):
+        observed.append(timeout)
+        return Deadline(timeout)
+
+    monkeypatch.setattr(gateway_adapters, "operation_deadline", deadline)
+    monkeypatch.setattr(gateway_adapters, "_PinnedHTTPSConnection", FakeConnection)
+    monkeypatch.setattr(gateway_adapters.os, "open", lambda *_args, **_kwargs: 7)
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _fd: None)
+    monkeypatch.setattr(gateway_adapters.os, "getgid", lambda: 4321, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    policy = SimpleNamespace(
+        targets={
+            "callback": ("https://api.internal.example", ("10.56.1.20",)),
+            "openai": ("https://models.internal.example/openai/v1", ("10.56.1.21",)),
+            "anthropic": ("https://models.internal.example/anthropic/v1", ("10.56.1.22",)),
+        }
+    )
+    broker = MailboxBroker(SimpleNamespace(), policy, 5.0, 1024, dispatch_timeout_seconds=3600.0)
+
+    def process(path: str, requested_timeout: float) -> None:
+        raw = json.dumps(
+            {
+                "version": 1,
+                "method": "POST",
+                "path": path,
+                "headers": {"content-type": "application/json"},
+                "body": "e30=",
+                "created_at_unix_seconds": time.time(),
+                "timeout_seconds": requested_timeout,
+            }
+        ).encode()
+        evidence = SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o640,
+            st_size=len(raw),
+            st_uid=1000,
+            st_gid=4321,
+            st_dev=1,
+            st_ino=2,
+            st_mtime_ns=3,
+            st_ctime_ns=4,
+        )
+        chunks = iter((raw, b""))
+        monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _fd: evidence)
+        monkeypatch.setattr(gateway_adapters.os, "read", lambda *_args: next(chunks))
+        broker._process(6, "0" * 32 + ".json")
+
+    process("/api/ai/runtime/callbacks/executor", 7200.0)
+    process("/model/openai/chat/completions", 7200.0)
+    process("/model/anthropic/v1/messages", 12.0)
+
+    assert 4.5 <= observed[0] <= 5.0
+    assert 3599.0 <= observed[1] <= 3600.0
+    assert 11.5 <= observed[2] <= 12.0
+
+
 def test_mailbox_poll_isolates_bad_requests_and_bounds_each_sandbox(monkeypatch) -> None:
     records = [
-        SimpleNamespace(workspace_host_path="/data/opensandbox/workspaces/one"),
-        SimpleNamespace(workspace_host_path="/data/opensandbox/workspaces/two"),
+        SimpleNamespace(sandbox_id="sandbox-one", workspace_host_path="/data/opensandbox/workspaces/one"),
+        SimpleNamespace(sandbox_id="sandbox-two", workspace_host_path="/data/opensandbox/workspaces/two"),
     ]
     denials: list[tuple[str, str]] = []
-    store = SimpleNamespace(list=lambda _: records, record_deny=lambda subject, code: denials.append((subject, code)))
+    store = active_mailbox_store(records, denials)
     monkeypatch.setattr(gateway_adapters.os, "name", "posix")
     monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
     first_names = [f"{value:032x}.json" for value in range(20)]
@@ -1805,9 +2049,9 @@ def test_mailbox_poll_isolates_bad_requests_and_bounds_each_sandbox(monkeypatch)
     ),
 )
 def test_mailbox_per_sandbox_backlog_caps_fail_closed_without_outbound(monkeypatch, snapshot) -> None:
-    record = SimpleNamespace(workspace_host_path="/data/opensandbox/workspaces/one")
+    record = SimpleNamespace(sandbox_id="sandbox-one", workspace_host_path="/data/opensandbox/workspaces/one")
     denials = []
-    store = SimpleNamespace(list=lambda _: [record], record_deny=lambda *value: denials.append(value))
+    store = active_mailbox_store([record], denials)
     broker = MailboxBroker(store, SimpleNamespace(targets={}), 1.0, 1024)
     entry = ("1" * 32 + ".json", 1, 2, 10, 3)
     monkeypatch.setattr(gateway_adapters.os, "name", "posix")
@@ -1829,9 +2073,12 @@ def test_mailbox_per_sandbox_backlog_caps_fail_closed_without_outbound(monkeypat
 
 
 def test_mailbox_global_backlog_cap_fails_closed_for_every_sandbox(monkeypatch) -> None:
-    records = [SimpleNamespace(workspace_host_path=f"/workspace/{index}") for index in range(5)]
+    records = [
+        SimpleNamespace(sandbox_id=f"sandbox-{index}", workspace_host_path=f"/workspace/{index}")
+        for index in range(5)
+    ]
     denials = []
-    store = SimpleNamespace(list=lambda _: records, record_deny=lambda *value: denials.append(value))
+    store = active_mailbox_store(records, denials)
     broker = MailboxBroker(store, SimpleNamespace(targets={}), 1.0, 1024)
     monkeypatch.setattr(gateway_adapters.os, "name", "posix")
     monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
@@ -1942,7 +2189,8 @@ def test_mailbox_claim_is_unpredictable_atomic_and_revalidates_moved_inode(monke
 
 
 def test_mailbox_claim_is_cleaned_when_processing_deadline_expires(monkeypatch) -> None:
-    broker = MailboxBroker(SimpleNamespace(record_deny=lambda *_: None), SimpleNamespace(targets={}), 1.0, 1024)
+    store = active_mailbox_store([], [])
+    broker = MailboxBroker(store, SimpleNamespace(targets={}), 1.0, 1024)
     entry = ("1" * 32 + ".json", 1, 2, 10, 3)
     claimed = (entry[0] + "." + "a" * 32 + ".claim", *entry[1:])
     broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
@@ -1954,7 +2202,7 @@ def test_mailbox_claim_is_cleaned_when_processing_deadline_expires(monkeypatch) 
     monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
 
     with pytest.raises(DeadlineExceeded):
-        broker._handle_entry(SimpleNamespace(workspace_host_path="/workspace"), entry, False)
+        broker._handle_entry(SimpleNamespace(sandbox_id="sandbox-one", workspace_host_path="/workspace"), entry, False)
 
     assert removed == [(4, claimed)]
 
@@ -2464,6 +2712,9 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
         SNAPSHOT_ID=.rollback.contract; SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$SNAPSHOT" "$STATE"
+        EXPECTED_AUTHORITY_SHA=2222222222222222222222222222222222222222
+        AUTHORITY_EVIDENCE_ID=ls-remote-current
+        mkdir "$RELEASES/$EXPECTED_AUTHORITY_SHA"; : > "$CURRENT_LINK"
         printf '%s\n' "$SNAPSHOT_ID" > "$ROLLBACK_POINTER"
         : > "$SNAPSHOT/opensandbox-gateway.service.absent"
         : > "$SNAPSHOT/opensandbox-gateway-helper.service.absent"
@@ -2480,8 +2731,20 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         printf '%040d\n' 1 > "$AUTHORITY_SHA_STATE"
         printf 'current-evidence\n' > "$AUTHORITY_EVIDENCE_STATE"
         id() { test "$1" = -u && echo 0; }
+        test() {
+          if builtin test "$#" -eq 2 && builtin test "$1" = -L && builtin test "$2" = "$CURRENT_LINK"; then return 0; fi
+          builtin test "$@"
+        }
+        readlink() {
+          if builtin test "$#" -eq 1 && builtin test "$1" = "$CURRENT_LINK"; then
+            printf 'releases/%s\n' "$EXPECTED_AUTHORITY_SHA"
+          else
+            command readlink "$@"
+          fi
+        }
         stat() { target=${@: -1}; case "$target" in "$DEPLOY_STATE") echo 0:0:700;; "$ROLLBACK_POINTER") echo 0:0:600;; *) command stat "$@";; esac; }
         flock() { :; }; require_root_tree() { test -d "$1" && test ! -L "$1"; }; verify_manifest() { test -f "$1/MANIFEST.sha256"; }
+        validate_release() { :; }
         install() { if test "$1" = -d; then mkdir -p "${@: -1}"; else cp "${@: -2:1}" "${@: -1}"; fi; }
         setfacl() { cp "${1#--restore=}" "$ROOT/acl.current"; }
         systemctl() { case "$1" in is-active) test "${@: -1}" = opensandbox.service;; disable|stop|daemon-reload) :;; *) :;; esac; }
@@ -2493,6 +2756,68 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         test ! -e "$AUTHORITY_SHA_STATE"
         test ! -e "$AUTHORITY_EVIDENCE_STATE"
         grep -qx acl-original "$ROOT/acl.current"
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_rollback_requires_fresh_authority_and_rejects_stale_or_rewritten_main(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/rollback-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        eval "$(sed '/^rollback_main "\$@"$/d' "$SCRIPT")"
+        git init "$ROOT/source" >/dev/null
+        git -C "$ROOT/source" config user.email gateway@example.invalid
+        git -C "$ROOT/source" config user.name gateway-test
+        printf 'one\n' > "$ROOT/source/payload"; git -C "$ROOT/source" add payload
+        git -C "$ROOT/source" commit -m one >/dev/null; FIRST=$(git -C "$ROOT/source" rev-parse HEAD)
+        printf 'two\n' >> "$ROOT/source/payload"; git -C "$ROOT/source" commit -am two >/dev/null
+        FRESH=$(git -C "$ROOT/source" rev-parse HEAD)
+        git -C "$ROOT/source" update-ref refs/remotes/origin/main "$FRESH"
+        RELEASES=$ROOT/releases; mkdir -p "$RELEASES/$FIRST" "$RELEASES/$FRESH"
+        for COMMIT in "$FIRST" "$FRESH"; do
+          printf '%s\n' "$COMMIT" > "$RELEASES/$COMMIT/SOURCE_COMMIT"
+          printf '%s\n' "$ROOT/source" > "$RELEASES/$COMMIT/SOURCE_ROOT"
+          printf 'origin/main\n' > "$RELEASES/$COMMIT/AUTHORITY_REF"
+          printf '%s\n' "$COMMIT" > "$RELEASES/$COMMIT/AUTHORITY_COMMIT"
+          printf 'original-release-evidence\n' > "$RELEASES/$COMMIT/AUTHORITY_EVIDENCE_ID"
+          : > "$RELEASES/$COMMIT/MANIFEST.sha256"
+        done
+        require_root_tree() { test -d "$1" && test ! -L "$1"; }
+        verify_manifest() { test -f "$1/MANIFEST.sha256"; }
+        AUTHORITY_REF=origin/main; EXPECTED_AUTHORITY_SHA=$FRESH
+        AUTHORITY_EVIDENCE_ID=ls-remote-fresh-$FRESH
+        validate_release "$FRESH" rollback
+        validate_release "$FIRST" rollback
+
+        git -C "$ROOT/source" update-ref refs/remotes/origin/main "$FIRST"
+        ! validate_release "$FIRST" rollback
+        git -C "$ROOT/source" update-ref refs/remotes/origin/main "$FRESH"
+
+        git -C "$ROOT/source" checkout --orphan rewritten >/dev/null
+        git -C "$ROOT/source" rm -f payload >/dev/null
+        printf 'rewritten\n' > "$ROOT/source/rewritten"; git -C "$ROOT/source" add rewritten
+        git -C "$ROOT/source" commit -m rewritten >/dev/null
+        REWRITTEN=$(git -C "$ROOT/source" rev-parse HEAD)
+        git -C "$ROOT/source" update-ref refs/remotes/origin/main "$REWRITTEN"
+        EXPECTED_AUTHORITY_SHA=$REWRITTEN; AUTHORITY_EVIDENCE_ID=ls-remote-rewritten-$REWRITTEN
+        ! validate_release "$FIRST" rollback
+
+        AUTHORITY_EVIDENCE_ID='invalid evidence with spaces'
+        ! validate_release "$FRESH" rollback
+        git -C "$ROOT/source" update-ref refs/remotes/origin/main "$FRESH"
+        EXPECTED_AUTHORITY_SHA=$FRESH; AUTHORITY_EVIDENCE_ID=ls-remote-final-$FRESH
+        DEPLOY_STATE=$ROOT/deploy; mkdir "$DEPLOY_STATE"
+        AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
+        chown() { :; }; chmod() { :; }
+        record_authority_state "$FIRST" "$AUTHORITY_EVIDENCE_ID"
+        grep -qx "$FIRST" "$AUTHORITY_SHA_STATE"
+        grep -qx "$AUTHORITY_EVIDENCE_ID" "$AUTHORITY_EVIDENCE_STATE"
         ''',
     )
     assert result.returncode == 0, result.stderr or result.stdout

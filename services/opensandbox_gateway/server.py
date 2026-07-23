@@ -102,6 +102,7 @@ def run() -> None:
         config.request_timeout_seconds,
         config.max_response_bytes,
         config.workspace_root,
+        config.dispatch_timeout_seconds,
     )
     stop = threading.Event()
     worker = threading.Thread(target=_broker_loop, args=(broker, stop), name="opensandbox-mailbox-broker", daemon=True)

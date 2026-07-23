@@ -131,16 +131,27 @@ enable sandbox egress or bypass attestation.
 Run:
 
 ```sh
-sudo deploy/opensandbox/rollback-s72.sh
+ROLLBACK_AUTHORITY_SHA=$(git -C /path/to/reviewed/ai-platform ls-remote origin refs/heads/main | awk 'NR == 1 {print $1}')
+git -C /path/to/reviewed/ai-platform fetch origin main
+ROLLBACK_AUTHORITY_EVIDENCE_ID="ls-remote-$(date -u +%Y%m%dT%H%M%SZ)-$ROLLBACK_AUTHORITY_SHA"
+sudo env \
+  OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA="$ROLLBACK_AUTHORITY_SHA" \
+  OPENSANDBOX_GATEWAY_AUTHORITY_EVIDENCE_ID="$ROLLBACK_AUTHORITY_EVIDENCE_ID" \
+  deploy/opensandbox/rollback-s72.sh
 ```
 
 Rollback verifies the root-only descriptor, snapshot manifest, exact 40-hex
-release, realpath confinement, source ownership, authority SHA and authority
-evidence ID before mutation. Only this rollback path may accept a previously recorded
-release that is a verified ancestor of the current authoritative main ref. It
-restores the previous unit files, configuration, ACL, authority-SHA state,
+release, realpath confinement, source ownership, freshly resolved authority SHA
+and authority evidence ID before mutation. The release owner must resolve and
+fetch main immediately before invoking the root script; the root script has no
+fetch credentials and requires the local tracking ref to equal that supplied SHA.
+Only this rollback path may accept a previously recorded release, and only when
+it remains an ancestor of the supplied fresh main SHA. It restores the previous
+unit files, configuration, ACL, authority-SHA state,
 enable/active state and release pointer exactly; a first-install rollback
-restores their prior absence. It then rechecks that OpenSandbox is active on
+restores their prior absence. For a historical release it records and reads back
+the fresh rollback evidence ID alongside the deployed release SHA. It then
+rechecks that OpenSandbox is active on
 `127.0.0.1:8080`. It never changes ai-platform provider configuration and does
 not delete containers, workspaces or SQLite runtime state. Rotate downstream
 auth secrets if rollback followed suspected exposure.

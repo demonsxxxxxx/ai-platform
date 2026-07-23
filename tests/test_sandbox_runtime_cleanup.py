@@ -32,6 +32,7 @@ def opensandbox_cleanup_proof():
         user_id="user-a",
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         image_subject="registry.example/ai-platform@sha256:" + "a" * 64,
         image_digest="sha256:" + "a" * 64,
         authorized_skill_scope="cleanup-skill-scope",
