@@ -33,6 +33,7 @@ def run_payload(*, input_payload: dict, skill_id: str = "ragflow-knowledge-searc
         user_id="user-a",
         session_id="ses-a",
         run_id="run-a",
+        attempt_id="qat_test-ragflow-attempt",
         agent_id="sop-assistant",
         skill_id=skill_id,
         file_ids=[],

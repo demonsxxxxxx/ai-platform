@@ -895,7 +895,7 @@ async def test_run_once_acknowledges_completed_message(monkeypatch):
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
         calls.append(("lease", worker_id))
-        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", attempt_id="qat-test-attempt")
+        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(payload, registry=None, worker_id=None):
         calls.append(("process", payload["run_id"], worker_id))
@@ -942,7 +942,7 @@ async def test_run_once_keeps_queue_maintenance_running_during_long_processing(m
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
         calls.append(("lease", worker_id, max_processing_runs))
-        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", attempt_id="qat-test-attempt")
+        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(payload, registry=None, worker_id=None):
         calls.append(("process_started",))
@@ -984,7 +984,7 @@ async def test_run_once_dead_letters_unhandled_outcome(monkeypatch):
         calls.append(("reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
-        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", attempt_id="qat-test-attempt")
+        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(payload, registry=None, worker_id=None):
         return WorkerOutcome(status="dead_letter", run_id=None, error_code="bad", error_message="bad payload")
@@ -1020,7 +1020,7 @@ async def test_run_once_acknowledges_cancelled_message(monkeypatch):
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
         calls.append(("lease", worker_id))
-        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", attempt_id="qat-test-attempt")
+        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(payload, registry=None, worker_id=None):
         calls.append(("process", payload["run_id"], worker_id))
@@ -1060,7 +1060,7 @@ async def test_run_once_does_not_ack_cancelled_message_before_execution_owner_fi
     quiescent = asyncio.Event()
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
-        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", attempt_id="qat-test-attempt")
+        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(payload, registry=None, worker_id=None):
         processing.set()
@@ -1107,7 +1107,7 @@ async def test_run_once_dead_letters_process_exception(monkeypatch):
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
         calls.append(("lease", worker_id))
-        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", attempt_id="qat-test-attempt")
+        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(payload, registry=None, worker_id=None):
         calls.append(("process", payload["run_id"], worker_id))
@@ -1196,7 +1196,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
             return False
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
-        return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a", attempt_id="qat-test-attempt")
+        return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(payload, registry=None, worker_id=None):
         raise RuntimeError("snapshot persistence failed")
@@ -1314,7 +1314,7 @@ async def test_run_once_does_not_terminalize_escaped_exception_for_mismatched_lo
             return False
 
     async def lease_run(**_kwargs):
-        return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a", attempt_id="qat-test-attempt")
+        return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(*_args, **_kwargs):
         raise RuntimeError("snapshot persistence failed")
@@ -1402,7 +1402,7 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
             return False
 
     async def lease_run(**_kwargs):
-        return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a", attempt_id="qat-test-attempt")
+        return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(*_args, **_kwargs):
         raise RuntimeError("snapshot persistence failed")

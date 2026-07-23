@@ -39,6 +39,7 @@ def run_payload(**overrides) -> RunPayload:
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "attempt-a",
         "agent_id": "qa-word-review",
         "skill_id": skill_id,
         "file_ids": ["file-a"],

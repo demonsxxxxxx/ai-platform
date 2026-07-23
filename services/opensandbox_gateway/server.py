@@ -9,6 +9,7 @@ import signal
 import socket
 import ssl
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Mapping
 
@@ -75,6 +76,7 @@ def run() -> None:
     """Run the authenticated HTTPS gateway and host mailbox worker."""
 
     config, state_path, policy_path, cert_path, key_path, port = load_config()
+    _verify_certificate_ip_san(cert_path, config.public_authority)
     application, store = build_application(config, state_path)
     policy_value = json.loads(pathlib.Path(policy_path).read_text(encoding="utf-8"))
     policy = BrokerPolicy(policy_value)
@@ -85,7 +87,13 @@ def run() -> None:
     }
     if any(policy.targets[name][0] != value.rstrip("/") for name, value in expected_bases.items()):
         raise ValueError("egress policy target does not match signed gateway subjects")
-    broker = MailboxBroker(store, policy, config.request_timeout_seconds, config.max_response_bytes)
+    broker = MailboxBroker(
+        store,
+        policy,
+        config.request_timeout_seconds,
+        config.max_response_bytes,
+        config.workspace_root,
+    )
     stop = threading.Event()
     worker = threading.Thread(target=_broker_loop, args=(broker, stop), name="opensandbox-mailbox-broker", daemon=True)
     worker.start()
@@ -94,13 +102,18 @@ def run() -> None:
         app = application
         body_limit = config.max_body_bytes
 
-    server = _BoundedThreadingHTTPServer(("0.0.0.0", port), Handler, config.max_concurrent_handlers)
+    server = _BoundedThreadingHTTPServer(
+        ("0.0.0.0", port),
+        Handler,
+        config.max_concurrent_handlers,
+        request_deadline_seconds=config.request_timeout_seconds,
+    )
     server.daemon_threads = True
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.options |= ssl.OP_NO_COMPRESSION
     context.load_cert_chain(certfile=cert_path, keyfile=key_path)
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server.tls_context = context
 
     def shutdown(*_: object) -> None:
         stop.set()
@@ -128,7 +141,12 @@ class _GatewayHandler(BaseHTTPRequestHandler):
 
     def setup(self) -> None:
         super().setup()
-        self.connection.settimeout(self.socket_timeout_seconds)
+        deadline = self.server.request_deadline(self.connection)
+        self.connection.settimeout(max(0.001, deadline - time.monotonic()))
+
+    def finish(self) -> None:
+        self.server.release_request_deadline(self.connection)
+        super().finish()
 
     def log_message(self, format: str, *args: object) -> None:
         # Do not log targets, headers, bodies, or upstream secrets.
@@ -181,9 +199,46 @@ class _GatewayHandler(BaseHTTPRequestHandler):
 class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """Threading listener with a hard upper bound on active handlers."""
 
-    def __init__(self, server_address, handler_class, max_handlers: int) -> None:
+    def __init__(self, server_address, handler_class, max_handlers: int, request_deadline_seconds: float = 5.0) -> None:
         self._handler_slots = threading.BoundedSemaphore(max_handlers)
+        self._request_deadline_seconds = request_deadline_seconds
+        self.tls_context: ssl.SSLContext | None = None
+        self._request_deadlines: dict[int, tuple[float, threading.Timer]] = {}
+        self._request_deadlines_lock = threading.Lock()
         super().__init__(server_address, handler_class)
+
+    def get_request(self):
+        raw, address = super().get_request()
+        deadline = time.monotonic() + self._request_deadline_seconds
+        handshake_timer = threading.Timer(self._request_deadline_seconds, _expire_connection, args=(raw,))
+        handshake_timer.daemon = True
+        handshake_timer.start()
+        try:
+            raw.settimeout(max(0.001, deadline - time.monotonic()))
+            connection = self.tls_context.wrap_socket(raw, server_side=True) if self.tls_context is not None else raw
+            handshake_timer.cancel()
+            remaining = max(0.001, deadline - time.monotonic())
+            timer = threading.Timer(remaining, _expire_connection, args=(connection,))
+            timer.daemon = True
+            timer.start()
+            with self._request_deadlines_lock:
+                self._request_deadlines[id(connection)] = (deadline, timer)
+            return connection, address
+        except Exception:
+            handshake_timer.cancel()
+            raw.close()
+            raise
+
+    def request_deadline(self, connection: socket.socket) -> float:
+        with self._request_deadlines_lock:
+            value = self._request_deadlines.get(id(connection))
+        return value[0] if value is not None else time.monotonic() + self._request_deadline_seconds
+
+    def release_request_deadline(self, connection: socket.socket) -> None:
+        with self._request_deadlines_lock:
+            value = self._request_deadlines.pop(id(connection), None)
+        if value is not None:
+            value[1].cancel()
 
     def process_request(self, request, client_address) -> None:
         if not self._handler_slots.acquire(blocking=False):
@@ -206,6 +261,33 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
 def _broker_loop(broker: MailboxBroker, stop: threading.Event) -> None:
     while not stop.wait(0.02 if broker.poll_once() else 0.1):
         pass
+
+
+def _expire_connection(connection: socket.socket) -> None:
+    try:
+        connection.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    finally:
+        connection.close()
+
+
+def _verify_certificate_ip_san(cert_path: str, public_authority: str) -> None:
+    """Require the configured private literal IP as an exact certificate IP SAN."""
+
+    host = public_authority.rsplit(":", 1)[0]
+    expected = str(__import__("ipaddress").ip_address(host))
+    try:
+        decoded = ssl._ssl._test_decode_cert(cert_path)
+    except (OSError, ValueError, ssl.SSLError):
+        raise ValueError("gateway TLS certificate is invalid") from None
+    ip_sans = {
+        str(__import__("ipaddress").ip_address(value))
+        for kind, value in decoded.get("subjectAltName", ())
+        if kind == "IP Address"
+    }
+    if ip_sans != {expected}:
+        raise ValueError("gateway TLS certificate IP SAN does not exactly match public authority")
 
 
 def _required(env: Mapping[str, str], name: str) -> str:

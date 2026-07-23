@@ -44,7 +44,10 @@ class EmbeddedPocoAdapter:
 
                 runtime = SandboxRuntime()
 
-            await runtime.submit(build_sandbox_request(context), bridge_event)
+            await runtime.submit(
+                build_sandbox_request(context, attempt_id=payload.attempt_id),
+                bridge_event,
+            )
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="embedded-poco-adapter/0.2.0",
@@ -208,7 +211,7 @@ def _kernel_for_context(context: RunContext, sandbox_runtime=None) -> InProcessE
     )
 
 
-def build_sandbox_request(context: RunContext):
+def build_sandbox_request(context: RunContext, *, attempt_id: str):
     from app.runtime.sandbox.contracts import SandboxRuntimeRequest
     from app.settings import get_settings
 
@@ -220,6 +223,7 @@ def build_sandbox_request(context: RunContext):
         user_id=context.user_id,
         session_id=context.session_id,
         run_id=context.run_id,
+        attempt_id=attempt_id,
         agent_id=context.agent_id,
         skill_ids=context.skill_ids,
         mcp_tool_ids=context.mcp_tool_ids,

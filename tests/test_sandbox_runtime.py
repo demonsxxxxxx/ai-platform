@@ -34,6 +34,7 @@ def request(**overrides) -> SandboxRuntimeRequest:
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "qat_test-runtime-attempt",
         "agent_id": "general-agent",
         "skill_ids": ["general-chat"],
         "mcp_tool_ids": ["knowledge.search"],
@@ -483,7 +484,10 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
                         / "workspace"
                     ),
                     "workspace_container_path": "/workspace",
-                    "labels": {"ai-platform.run_id": "run-a"},
+                    "labels": {
+                        "ai-platform.run_id": "run-a",
+                        "ai-platform.attempt_id": "qat_test-runtime-attempt",
+                    },
                 },
                 {
                     "runtime_container_id": "exec-run-a",
@@ -524,6 +528,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         user_id="user-a",
         session_id="session-a",
         run_id="run-a",
+        attempt_id=runtime_request.attempt_id,
         image_subject="registry.example/ai-platform@sha256:" + "a" * 64,
         image_digest="sha256:" + "a" * 64,
         authorized_skill_scope=governed_egress_authorized_skill_scope(
@@ -599,7 +604,10 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
     assert create_kwargs["runtime_workspace_container_path"] == "/sandbox-workspace"
     assert create_kwargs["lease_payload_json"]["container_id"] == "osb-run-a"
     assert "executor_headers" not in create_kwargs["lease_payload_json"]
-    assert create_kwargs["lease_payload_json"]["labels"] == {"ai-platform.run_id": "run-a"}
+    assert create_kwargs["lease_payload_json"]["labels"] == {
+        "ai-platform.run_id": "run-a",
+        "ai-platform.attempt_id": runtime_request.attempt_id,
+    }
     assert create_kwargs["lease_payload_json"]["governed_egress_proof"] == governed_egress_proof
     assert "private-capability" not in repr(create_kwargs["lease_payload_json"])
     assert "registry.example" not in repr(create_kwargs["lease_payload_json"])
@@ -609,7 +617,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "replayed_binding",
-    ("tenant", "workspace", "user", "session", "run", "image", "skill", "tool"),
+        ("tenant", "workspace", "user", "session", "run", "attempt", "image", "skill", "tool"),
 )
 async def test_runtime_rejects_signed_proof_replayed_across_request_bindings(
     tmp_path,
@@ -637,7 +645,8 @@ async def test_runtime_rejects_signed_proof_replayed_across_request_bindings(
         "workspace_id": runtime_request.workspace_id,
         "user_id": runtime_request.user_id,
         "session_id": runtime_request.session_id,
-        "run_id": runtime_request.run_id,
+            "run_id": runtime_request.run_id,
+            "attempt_id": runtime_request.attempt_id,
         "image_subject": image,
         "image_digest": "sha256:" + "a" * 64,
         "authorized_skill_scope": governed_egress_authorized_skill_scope(
@@ -653,7 +662,8 @@ async def test_runtime_rejects_signed_proof_replayed_across_request_bindings(
         "workspace": ("workspace_id", "workspace-b"),
         "user": ("user_id", "user-b"),
         "session": ("session_id", "session-b"),
-        "run": ("run_id", "run-b"),
+            "run": ("run_id", "run-b"),
+            "attempt": ("attempt_id", "qat_other-attempt"),
         "image": ("image_subject", "registry.example/ai-platform@sha256:" + "b" * 64),
         "skill": (
             "authorized_skill_scope",
@@ -848,8 +858,9 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
                 tenant_id=request.tenant_id,
                 workspace_id=request.workspace_id,
                 user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
+                    session_id=request.session_id,
+                    run_id=request.run_id,
+                    attempt_id=request.attempt_id,
                 image_subject=image,
                 image_digest="sha256:" + "a" * 64,
                 authorized_skill_scope=governed_egress_authorized_skill_scope(
@@ -929,6 +940,7 @@ async def test_executor_client_posts_private_executor_headers():
         ExecutorTaskRequest(
             session_id="session-a",
             run_id="run-a",
+            attempt_id="qat_test-executor-attempt",
             prompt="hello",
             callback_url="http://callback.test",
             callback_token_id="cbt_run-a",
@@ -943,9 +955,10 @@ async def test_executor_client_posts_private_executor_headers():
         (
             "http://executor.test/v1/tasks/execute",
             {
-                "session_id": "session-a",
-                "run_id": "run-a",
-                "prompt": "hello",
+                    "session_id": "session-a",
+                    "run_id": "run-a",
+                    "attempt_id": "qat_test-executor-attempt",
+                    "prompt": "hello",
                 "callback_url": "http://callback.test",
                 "callback_token_id": "cbt_run-a",
                 "callback_token": "callback-secret",

@@ -3,7 +3,7 @@ from ipaddress import ip_address
 from typing import Any, Iterable, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.runtime.kernel_contracts import AgentEvent
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
@@ -321,22 +321,6 @@ class ExecutorTaskRequest(BaseModel):
     permission_mode: Literal["default", "plan", "acceptEdits", "bypassPermissions"] = "default"
     governed_permission_wait: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="before")
-    @classmethod
-    def require_queue_attempt_from_dispatch_context(cls, value: object):
-        if not isinstance(value, dict):
-            return value
-        result = dict(value)
-        config = result.get("config")
-        manifest = config.get("context_manifest") if isinstance(config, dict) else None
-        manifest_attempt = manifest.get("queue_attempt_id") if isinstance(manifest, dict) else None
-        explicit_attempt = result.get("attempt_id")
-        if explicit_attempt is None:
-            result["attempt_id"] = manifest_attempt
-        elif manifest_attempt != explicit_attempt:
-            raise ValueError("executor attempt identity mismatch")
-        return result
 
     @field_validator("session_id", "run_id", "attempt_id", "callback_token_id")
     @classmethod

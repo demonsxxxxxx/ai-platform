@@ -6,7 +6,9 @@ import hashlib
 import inspect
 import json
 import socket
+import ssl
 import threading
+import time
 import urllib.parse
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -15,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.runtime.sandbox.opensandbox_attestation import _OpenSandboxAttestor, _TransportResponse
+import services.opensandbox_gateway.adapters as gateway_adapters
 from services.opensandbox_gateway.adapters import (
     BrokerPolicy,
     InMemoryLifecycleTransport,
@@ -36,7 +39,11 @@ from services.opensandbox_gateway.gateway import (
     RuntimeEvidence,
 )
 from services.opensandbox_gateway.helper import _dispatch as helper_dispatch
-from services.opensandbox_gateway.server import _BoundedThreadingHTTPServer, _GatewayHandler
+from services.opensandbox_gateway.server import (
+    _BoundedThreadingHTTPServer,
+    _GatewayHandler,
+    _verify_certificate_ip_san,
+)
 
 
 IMAGE = "registry.example/executor@sha256:" + "1" * 64
@@ -128,7 +135,14 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
                 "name": "workspace",
                 "mountPath": "/workspace",
                 "readOnly": False,
-                "host": {"path": workspace or f"/data/opensandbox/workspaces/{suffix}"},
+                "host": {
+                    "path": workspace
+                    or (
+                        f"/data/opensandbox/workspaces/tenants/{scope['tenant_id']}"
+                        f"/workspaces/{scope['workspace_id']}/users/{scope['user_id']}"
+                        f"/sessions/{scope['session_id']}/runs/{scope['run_id']}/workspace"
+                    )
+                },
             }
         ],
     }
@@ -203,7 +217,7 @@ def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> No
         },
         "runtime": {"identity": "runsc", "subject": config.runtime_subject},
         "network": {"mode": "none", "default_deny": True},
-        "security": {"no_new_privileges": True},
+        "security": {"no_new_privileges": True, "user": "1000:1000", "uid": "1000", "gid": "1000"},
         "image": {"subject": IMAGE, "digest": IMAGE.rsplit("@", 1)[1]},
         "host_path_policy": {"subject": "scoped-workspace-only", "unscoped_host_paths_allowed": False},
         "subjects": {
@@ -213,7 +227,12 @@ def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> No
             "deny_audit": config.deny_audit_subject,
             "deny_counter": config.deny_counter_subject,
         },
-        "signed_profile": {"id": config.profile_id, "version": "v1", "proof_key_id": config.proof_key_id},
+        "signed_profile": {
+            "id": config.profile_id,
+            "version": "v1",
+            "proof_key_id": config.proof_key_id,
+            "profile_signature": value["signed_profile"]["profile_signature"],
+        },
     }
 
 
@@ -233,6 +252,7 @@ def test_payload_is_accepted_by_merged_ai_platform_attestor() -> None:
         gateway_policy_subject=config.gateway_policy_subject,
         callback_boundary_subject=config.callback_boundary_subject,
         proof_key_id=config.proof_key_id,
+        proof_signing_key=config.record_signing_key.decode(),
         transport=lambda *_: _TransportResponse(200, endpoint, body),
     )
     capability = SimpleNamespace(
@@ -300,9 +320,19 @@ def test_scope_reuse_workspace_conflict_and_idempotent_create() -> None:
     assert first.status == second.status == 201
     assert decoded(first) == decoded(second)
     assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 1
-    conflict = call(app, "POST", "/v1/sandboxes", create_payload(config, "two", "/data/opensandbox/workspaces/one"))
-    assert conflict.status == 409
-    assert decoded(conflict)["error"]["code"] == "workspace_scope_conflict"
+    aliased = create_payload(config, "two")
+    aliased["volumes"][0]["host"]["path"] = create_payload(config, "one")["volumes"][0]["host"]["path"]
+    conflict = call(app, "POST", "/v1/sandboxes", aliased)
+    assert conflict.status == 400
+    assert decoded(conflict)["error"]["code"] == "workspace_must_be_writable"
+
+    changed_attempt = create_payload(config)
+    changed_attempt["metadata"]["ai-platform.attempt_id"] = "attempt-two"
+    changed_attempt["env"]["AI_PLATFORM_ATTEMPT_ID"] = "attempt-two"
+    attempt_conflict = call(app, "POST", "/v1/sandboxes", changed_attempt)
+    assert attempt_conflict.status == 409
+    assert decoded(attempt_conflict)["error"]["code"] == "scope_conflict"
+    assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 1
 
 
 def test_dispatch_revalidates_scope_and_rewrites_callback() -> None:
@@ -411,21 +441,41 @@ def test_sqlite_store_persists_only_sealed_non_secret_record(tmp_path) -> None:
 
 def test_sqlite_workspace_reservation_is_cross_tenant_atomic_and_restart_reconciles(tmp_path) -> None:
     config = gateway_config()
-    lifecycle = InMemoryLifecycleTransport()
+    class BlockingCreate(InMemoryLifecycleTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def request(self, method: str, path: str, body: bytes = b"") -> Response:
+            if method == "POST" and path == "/v1/sandboxes":
+                self.entered.set()
+                assert self.release.wait(2)
+            return super().request(method, path, body)
+
+    lifecycle = BlockingCreate()
     runtime = InMemoryRuntimeAdapter()
     state_path = tmp_path / "atomic.sqlite3"
     first = GatewayApplication(config, lifecycle, runtime, SQLiteStateStore(str(state_path)))
     second = GatewayApplication(config, lifecycle, runtime, SQLiteStateStore(str(state_path)))
-    workspace = "/data/opensandbox/workspaces/shared"
+    payload = create_payload(config, "one")
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        responses = list(
-            pool.map(
-                lambda item: call(item[0], "POST", "/v1/sandboxes", create_payload(config, item[1], workspace)),
-                ((first, "one"), (second, "two")),
-            )
-        )
-    assert sorted(response.status for response in responses) == [201, 409]
+        winner = pool.submit(call, first, "POST", "/v1/sandboxes", payload)
+        assert lifecycle.entered.wait(2)
+        conflict = call(second, "POST", "/v1/sandboxes", payload)
+        lifecycle.release.set()
+        created = winner.result(timeout=2)
+    assert created.status == 201
+    assert conflict.status == 409
+    assert decoded(conflict)["error"]["code"] == "reservation_in_progress"
     assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 1
+    resumed = call(second, "POST", "/v1/sandboxes", payload)
+    assert resumed.status == 201 and decoded(resumed) == decoded(created)
+    assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 1
+
+    restarted_runtime = InMemoryRuntimeAdapter()
+    GatewayApplication(config, lifecycle, restarted_runtime, SQLiteStateStore(str(state_path)))
+    assert decoded(created)["id"] in restarted_runtime.relays
 
     class CrashAfterCreate(InMemoryLifecycleTransport):
         crash_once = True
@@ -442,13 +492,46 @@ def test_sqlite_workspace_reservation_is_cross_tenant_atomic_and_restart_reconci
     crashed_store = SQLiteStateStore(str(crash_path))
     crashed = GatewayApplication(config, crash_lifecycle, InMemoryRuntimeAdapter(), crashed_store)
     assert call(crashed, "POST", "/v1/sandboxes", create_payload(config, "crash")).status == 500
-    assert len(crashed_store.list({"state": "intent"})) == 1
+    assert len(crashed_store.list({"state": "uncertain_create"})) == 1
     recovered_runtime = InMemoryRuntimeAdapter()
     recovered_store = SQLiteStateStore(str(crash_path))
     GatewayApplication(config, crash_lifecycle, recovered_runtime, recovered_store)
     active = recovered_store.list({"state": "active"})
     assert len(active) == len(crash_lifecycle.sandboxes) == 1
     assert active[0].sandbox_id in recovered_runtime.relays
+
+
+def test_cleanup_pending_is_durable_until_delete_is_verified(tmp_path) -> None:
+    config = gateway_config()
+
+    class DeferredDelete(InMemoryLifecycleTransport):
+        reject_delete = True
+
+        def request(self, method: str, path: str, body: bytes = b"") -> Response:
+            if method == "DELETE" and self.reject_delete:
+                self.requests.append((method, path, body))
+                return Response.json(500, {"error": "deferred"})
+            return super().request(method, path, body)
+
+    class RelayFailure(InMemoryRuntimeAdapter):
+        def start_relay(self, record) -> None:
+            raise RuntimeError("simulated relay crash")
+
+    state_path = tmp_path / "cleanup.sqlite3"
+    lifecycle = DeferredDelete()
+    store = SQLiteStateStore(str(state_path))
+    app = GatewayApplication(config, lifecycle, RelayFailure(), store)
+    assert call(app, "POST", "/v1/sandboxes", create_payload(config, "cleanup")).status == 502
+    pending = store.list({"state": "cleanup_pending"})
+    assert len(pending) == 1 and pending[0].sandbox_id in lifecycle.sandboxes
+
+    lifecycle.reject_delete = False
+    recovered_runtime = InMemoryRuntimeAdapter()
+    recovered_store = SQLiteStateStore(str(state_path))
+    GatewayApplication(config, lifecycle, recovered_runtime, recovered_store)
+    assert recovered_store.get(pending[0].sandbox_id).state == "deleted"
+    assert pending[0].sandbox_id not in lifecycle.sandboxes
+    assert pending[0].sandbox_id not in recovered_runtime.relays
 
 
 def test_http_transport_rejects_te_ambiguous_length_and_enforces_handler_bound() -> None:
@@ -498,6 +581,134 @@ def test_http_transport_rejects_te_ambiguous_length_and_enforces_handler_bound()
     assert f"Content-Length: {len(body)}".encode() in head
 
 
+@pytest.mark.parametrize(
+    "partial",
+    (
+        b"GET /healthz HTTP/1.1",
+        b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow:",
+        b"POST /v1/sandboxes HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10\r\n\r\nx",
+    ),
+)
+def test_absolute_request_deadline_closes_slowloris_and_releases_slot(partial: bytes) -> None:
+    app, _, _, _ = application()
+
+    class Handler(_GatewayHandler):
+        body_limit = gateway_config().max_body_bytes
+
+    Handler.app = app
+    server = _BoundedThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        Handler,
+        1,
+        request_deadline_seconds=0.1,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    slow = socket.create_connection(server.server_address, timeout=1)
+    slow.sendall(partial)
+    slow.settimeout(1)
+    started = time.monotonic()
+    try:
+        timed_out = slow.recv(4096)
+        assert timed_out == b"" or (b"408 Request Timeout" in timed_out and b"request_timeout" in timed_out)
+        assert time.monotonic() - started < 0.8
+        released = False
+        release_deadline = time.monotonic() + 0.8
+        while time.monotonic() < release_deadline:
+            if server._handler_slots.acquire(blocking=False):
+                server._handler_slots.release()
+                released = True
+                break
+            time.sleep(0.01)
+        assert released
+        healthy = socket.create_connection(server.server_address, timeout=1)
+        healthy.sendall(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        healthy.settimeout(1)
+        response = b""
+        while chunk := healthy.recv(4096):
+            response += chunk
+        healthy.close()
+        assert b"200 OK" in response
+        assert b"concurrency_limit_reached" not in response
+    finally:
+        slow.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_absolute_deadline_covers_tls_handshake() -> None:
+    app, _, _, _ = application()
+
+    class Handler(_GatewayHandler):
+        body_limit = gateway_config().max_body_bytes
+
+    Handler.app = app
+
+    class BlockingTlsContext:
+        @staticmethod
+        def wrap_socket(raw, *, server_side: bool):
+            assert server_side is True
+            raw.recv(1)
+            return raw
+
+    server = _BoundedThreadingHTTPServer(("127.0.0.1", 0), Handler, 1, request_deadline_seconds=0.1)
+    server.tls_context = BlockingTlsContext()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = socket.create_connection(server.server_address, timeout=1)
+    client.settimeout(1)
+    started = time.monotonic()
+    try:
+        assert client.recv(1) == b""
+        assert time.monotonic() - started < 0.8
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_reconciliation_list_paginates_and_rejects_ambiguity() -> None:
+    class PagedLifecycle(InMemoryLifecycleTransport):
+        def __init__(self, pages) -> None:
+            super().__init__()
+            self.pages = pages
+
+        def request(self, method: str, path: str, body: bytes = b"") -> Response:
+            if method == "GET" and path.startswith("/v1/sandboxes?"):
+                page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)["page"][0])
+                items, response_page, has_next = self.pages(page)
+                return Response.json(
+                    200,
+                    {
+                        "items": items,
+                        "pagination": {"page": response_page, "pageSize": 100, "hasNextPage": has_next},
+                    },
+                )
+            return super().request(method, path, body)
+
+    config = gateway_config()
+    pages = lambda page: ([{"id": f"sandbox-{page}"}], page, page < 2)
+    app = GatewayApplication(config, PagedLifecycle(pages), InMemoryRuntimeAdapter(), InMemoryStateStore())
+    assert [item["id"] for item in app._list_intent_sandboxes("intent-one")] == ["sandbox-1", "sandbox-2"]
+
+    duplicate = lambda page: ([{"id": "sandbox-1"}], page, page < 2)
+    duplicate_app = GatewayApplication(config, PagedLifecycle(duplicate), InMemoryRuntimeAdapter(), InMemoryStateStore())
+    with pytest.raises(GatewayError, match="reservation_reconciliation_ambiguous"):
+        duplicate_app._list_intent_sandboxes("intent-one")
+
+    wrong_page = lambda page: ([], page + 1, False)
+    wrong_page_app = GatewayApplication(config, PagedLifecycle(wrong_page), InMemoryRuntimeAdapter(), InMemoryStateStore())
+    with pytest.raises(GatewayError, match="reservation_reconciliation_ambiguous"):
+        wrong_page_app._list_intent_sandboxes("intent-one")
+
+    never_ends = lambda page: ([], page, True)
+    bounded_app = GatewayApplication(config, PagedLifecycle(never_ends), InMemoryRuntimeAdapter(), InMemoryStateStore())
+    with pytest.raises(GatewayError, match="reservation_reconciliation_ambiguous"):
+        bounded_app._list_intent_sandboxes("intent-one")
+
+
 def test_real_sdk_list_query_and_response_contract() -> None:
     from opensandbox.api.lifecycle.api.sandboxes import get_sandboxes
     from opensandbox.api.lifecycle.models.list_sandboxes_response import ListSandboxesResponse
@@ -526,9 +737,22 @@ def test_real_sdk_list_query_and_response_contract() -> None:
     }
 
 
-def test_literal_private_ip_and_workspace_file_proxy_contracts() -> None:
+def test_literal_private_ip_certificate_san_and_workspace_file_proxy_contracts(monkeypatch) -> None:
     with pytest.raises(ValueError, match="approved literal IP"):
         replace(gateway_config(), public_authority="sandbox-gateway.example:8443").validate()
+    monkeypatch.setattr(ssl._ssl, "_test_decode_cert", lambda _: {"subjectAltName": (("IP Address", "10.56.1.72"),)})
+    _verify_certificate_ip_san("unused.pem", PUBLIC_AUTHORITY)
+    monkeypatch.setattr(ssl._ssl, "_test_decode_cert", lambda _: {"subjectAltName": (("DNS", "sandbox-gateway.example"),)})
+    with pytest.raises(ValueError, match="does not exactly match"):
+        _verify_certificate_ip_san("unused.pem", PUBLIC_AUTHORITY)
+    monkeypatch.setattr(
+        ssl._ssl,
+        "_test_decode_cert",
+        lambda _: {"subjectAltName": (("IP Address", "10.56.1.72"), ("IP Address", "10.56.1.73"))},
+    )
+    with pytest.raises(ValueError, match="does not exactly match"):
+        _verify_certificate_ip_san("unused.pem", PUBLIC_AUTHORITY)
+
     app, _, runtime, store = application()
     sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config())))["id"]
     token = decoded(call(app, "GET", f"/v1/sandboxes/{sandbox_id}/endpoints/44772?use_server_proxy=true"))["headers"][ROUTE_HEADER]
@@ -558,8 +782,69 @@ def test_literal_private_ip_and_workspace_file_proxy_contracts() -> None:
     )
     assert denied.status == 400
     assert len(runtime.proxied) == 2
-    mailbox_source = inspect.getsource(MailboxBroker)
-    assert "O_NOFOLLOW" in mailbox_source and "dir_fd=" in mailbox_source and "os.replace" in mailbox_source
+    mailbox_source = "\n".join(
+        (
+            inspect.getsource(MailboxBroker),
+            inspect.getsource(gateway_adapters._open_workspace_dirfd),
+            inspect.getsource(gateway_adapters._revalidate_workspace_fd),
+            inspect.getsource(gateway_adapters._remove_tree_at),
+        )
+    )
+    assert all(marker in mailbox_source for marker in ("O_NOFOLLOW", "dir_fd=", "os.replace", "fstat", "st_ino", "st_dev"))
+
+    for field, bad_value in (("owner", "0"), ("group", "0"), ("mode", "0644")):
+        invalid = multipart_lease_upload(record).replace(
+            f'"{field}":"{("0600" if field == "mode" else "1000")}"'.encode(),
+            f'"{field}":"{bad_value}"'.encode(),
+        )
+        rejected = call(
+            app,
+            "POST",
+            f"/v1/sandboxes/{sandbox_id}/proxy/44772/files/upload",
+            invalid,
+            {ROUTE_HEADER: token, "Content-Type": "multipart/form-data; boundary=lease-boundary"},
+        )
+        assert rejected.status == 400
+    assert len(runtime.proxied) == 2
+
+    for alias in (
+        "/data/opensandbox/workspaces/tenants/tenant-one/./workspaces/workspace-one/users/user-one/sessions/session-one/runs/run-one/workspace",
+        "/data/opensandbox/workspaces/tenants/tenant-one//workspaces/workspace-one/users/user-one/sessions/session-one/runs/run-one/workspace",
+        "/data/opensandbox/workspaces/tenants/tenant-one/workspaces/workspace-one/users/user-one/sessions/session-one/runs/run-one/workspace/",
+    ):
+        rejected = call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "one", alias))
+        assert rejected.status == 400
+
+
+def test_workspace_dirfd_identity_and_symlink_leaf_fail_closed(monkeypatch) -> None:
+    directory_mode = gateway_adapters.stat.S_IFDIR | 0o700
+    monkeypatch.setattr(gateway_adapters.os, "O_DIRECTORY", 0x10000, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(
+        gateway_adapters.os,
+        "fstat",
+        lambda _: SimpleNamespace(st_mode=directory_mode, st_dev=11, st_ino=22),
+    )
+    monkeypatch.setattr(
+        gateway_adapters.os,
+        "stat",
+        lambda *_, **__: SimpleNamespace(st_mode=directory_mode, st_dev=11, st_ino=23),
+    )
+    with pytest.raises(OSError, match="workspace identity changed"):
+        gateway_adapters._revalidate_workspace_fd(7, "/data/opensandbox/workspaces/scoped/workspace")
+
+    unlinked = []
+
+    def reject_symlink(name, flags, *, dir_fd):
+        assert flags & gateway_adapters.os.O_NOFOLLOW
+        assert flags & gateway_adapters.os.O_DIRECTORY
+        assert dir_fd == 9
+        raise NotADirectoryError(name)
+
+    monkeypatch.setattr(gateway_adapters.os, "open", reject_symlink)
+    monkeypatch.setattr(gateway_adapters.os, "unlink", lambda name, *, dir_fd: unlinked.append((name, dir_fd)))
+    gateway_adapters._remove_tree_at(9, "swapped-link")
+    assert unlinked == [("swapped-link", 9)]
 
 
 def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> None:
@@ -580,7 +865,33 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     helper_unit = (root / "deploy/opensandbox/opensandbox-gateway-helper.service").read_text(encoding="utf-8")
     install = (root / "deploy/opensandbox/install-s72.sh").read_text(encoding="utf-8")
     rollback = (root / "deploy/opensandbox/rollback-s72.sh").read_text(encoding="utf-8")
+    env_example = (root / "deploy/opensandbox/gateway.env.example").read_text(encoding="utf-8")
+    policy = json.loads((root / "deploy/opensandbox/egress-policy.v1.example.json").read_text(encoding="utf-8"))
     assert "docker.sock" not in public_unit and "SupplementaryGroups=docker" not in public_unit
     assert "docker.sock" in helper_unit and "SupplementaryGroups=docker" in helper_unit
-    assert all(marker in install for marker in ("releases", "current", "previous", "SOURCE_COMMIT", "systemctl restart"))
-    assert all(marker in rollback for marker in ("previous", "current", "SOURCE_COMMIT", "systemctl restart"))
+    assert all(
+        marker in install
+        for marker in (
+            "diff-index --quiet",
+            "ls-files --others",
+            "merge-base --is-ancestor",
+            "git -C \"$SOURCE_ROOT\" archive",
+            "SOURCE_COMMIT",
+            "workspaces.acl",
+            "trap 'rollback_install",
+            "systemctl daemon-reload",
+            "systemctl restart",
+            "WorkingDirectory",
+            "diff -r",
+            "current.next",
+        )
+    )
+    assert install.index("systemctl restart") < install.index("current.next")
+    assert all(
+        marker in rollback
+        for marker in ("previous-release", "gateway.env", "workspaces.acl", "daemon-reload", "systemctl restart", "WorkingDirectory", "current.next")
+    )
+    assert rollback.index("systemctl restart") < rollback.index("current.next")
+    callback_base = next(line.split("=", 1)[1] for line in env_example.splitlines() if line.startswith("OPENSANDBOX_GATEWAY_CALLBACK_BASE="))
+    assert callback_base == policy["targets"]["callback"]["base_url"]
+    assert urllib.parse.urlsplit(callback_base).path == ""

@@ -2,7 +2,7 @@
   "version": 1,
   "targets": {
     "callback": {
-      "base_url": "https://REQUIRED_CALLBACK_HOST/api/ai/runtime/callbacks",
+      "base_url": "https://REQUIRED_CALLBACK_HOST",
       "expected_ips": ["REQUIRED_PINNED_IP"]
     },
     "openai": {

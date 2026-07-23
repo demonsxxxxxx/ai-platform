@@ -19,6 +19,7 @@ from app.executors.claude_agent_sdk_runner import build_skill_prompt, run_claude
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.models import QueueRunPayload
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
+from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.skills import catalog
 from app.skills.catalog import (
     AVAILABLE,
@@ -556,7 +557,9 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
             )
         },
     }
-    return payload.model_dump(mode="python"), locked_run
+    raw = payload.model_dump(mode="python")
+    raw[QUEUE_ATTEMPT_ID_FIELD] = "attempt-a"
+    return raw, locked_run
 
 
 def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
@@ -757,6 +760,7 @@ async def test_adapter_stages_every_available_catalog_skill_but_prompt_contains_
         user_id="user-a",
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         agent_id="general-agent",
         skill_id="general-chat",
         file_ids=[],
@@ -806,6 +810,7 @@ async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkey
         user_id="user-a",
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         agent_id="general-agent",
         skill_id="general-chat",
         file_ids=[],

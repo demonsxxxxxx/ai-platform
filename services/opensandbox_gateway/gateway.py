@@ -14,6 +14,7 @@ from email import policy
 from email.parser import BytesParser
 import json
 import re
+import secrets
 import time
 import urllib.parse
 from dataclasses import asdict, dataclass, field
@@ -234,6 +235,7 @@ class LeaseRecord:
     executor_token_hash: str
     created_at: str
     state: str = "active"
+    reservation_owner_token: str = ""
     signature: str = ""
 
     def unsigned(self) -> dict[str, Any]:
@@ -253,11 +255,22 @@ class RuntimeEvidence:
     network_mode: str
     no_new_privileges: bool
     user: str
+    uid: str
+    gid: str
     image: str
     image_digest: str
     mounts: tuple[tuple[str, str, bool], ...]
     labels: Mapping[str, str]
     running: bool = True
+
+
+@dataclass(frozen=True)
+class ReservationResult:
+    """Atomic reservation decision and its opaque owner fence."""
+
+    outcome: str
+    record: LeaseRecord
+    owner_token: str
 
 
 class LifecycleTransport(Protocol):
@@ -272,8 +285,8 @@ class StateStore(Protocol):
 
     def get(self, sandbox_id: str) -> LeaseRecord | None: ...
     def find_scope(self, scope: Mapping[str, str]) -> LeaseRecord | None: ...
-    def reserve(self, record: LeaseRecord) -> LeaseRecord: ...
-    def activate(self, intent_id: str, record: LeaseRecord) -> None: ...
+    def reserve(self, record: LeaseRecord) -> ReservationResult: ...
+    def activate(self, intent_id: str, owner_token: str, record: LeaseRecord) -> None: ...
     def save(self, record: LeaseRecord) -> None: ...
     def list(self, filters: Mapping[str, str]) -> list[LeaseRecord]: ...
     def record_deny(self, subject: str, code: str) -> None: ...
@@ -394,21 +407,21 @@ class GatewayApplication:
             canonical_request_hash=accepted["request_hash"],
             executor_token_hash=accepted["executor_token_hash"],
             created_at=_now_iso(),
-            state="intent",
+            state="uncertain_create",
+            reservation_owner_token="reservation-" + secrets.token_hex(32),
         )
         intent.signature = self._sign_record(intent)
         reserved = self.store.reserve(intent)
-        if reserved.sandbox_id != intent_id or reserved.state != "intent":
-            if reserved.state == "active" and hmac.compare_digest(reserved.canonical_request_hash, accepted["request_hash"]):
-                self._attest(reserved.sandbox_id)
-                return Response.json(201, {"id": reserved.sandbox_id})
+        if reserved.outcome == "resume":
+            if reserved.record.state == "active" and hmac.compare_digest(reserved.record.canonical_request_hash, accepted["request_hash"]):
+                self._attest(reserved.record.sandbox_id)
+                return Response.json(201, {"id": reserved.record.sandbox_id})
+            raise GatewayError(409, "reservation_in_progress")
+        if reserved.outcome != "winner" or reserved.owner_token != intent.reservation_owner_token:
             raise GatewayError(409, "scope_conflict")
         upstream_body = _canonical(accepted["upstream"])
         upstream = self.lifecycle.request("POST", "/v1/sandboxes", upstream_body)
         if upstream.status not in (200, 201, 202):
-            intent.state = "deleted"
-            intent.signature = self._sign_record(intent)
-            self.store.save(intent)
             raise GatewayError(502, "upstream_create_failed")
         result = _bounded_json(upstream, self.config.max_response_bytes)
         sandbox_id = result.get("id")
@@ -427,15 +440,15 @@ class GatewayApplication:
             created_at=_now_iso(),
         )
         record.signature = self._sign_record(record)
-        self.store.activate(intent_id, record)
+        self.store.activate(intent_id, reserved.owner_token, record)
         try:
             self._attest(sandbox_id)
             self.runtime.start_relay(record)
         except Exception:
-            self.lifecycle.request("DELETE", f"/v1/sandboxes/{sandbox_id}")
             record.state = "cleanup_pending"
             record.signature = self._sign_record(record)
             self.store.save(record)
+            self._cleanup_pending(record)
             raise GatewayError(502, "post_create_verification_failed") from None
         return Response.json(upstream.status, result)
 
@@ -554,6 +567,10 @@ class GatewayApplication:
     def _accept_volumes(self, value: Any, scope: Mapping[str, str]) -> tuple[list[dict[str, Any]], str]:
         if not isinstance(value, list) or not value or len(value) > 2:
             raise GatewayError(400, "volume_policy_mismatch")
+        expected_workspace = (
+            f"{self.config.workspace_root}/tenants/{scope['tenant_id']}/workspaces/{scope['workspace_id']}"
+            f"/users/{scope['user_id']}/sessions/{scope['session_id']}/runs/{scope['run_id']}/workspace"
+        )
         expected_prefix = f"{self.config.workspace_root}/"
         accepted: list[dict[str, Any]] = []
         workspace = ""
@@ -566,12 +583,19 @@ class GatewayApplication:
             else:
                 host_path = host
             mount_path, read_only = item.get("mountPath"), item.get("readOnly", False)
-            if not isinstance(host_path, str) or not host_path.startswith(expected_prefix) or ".." in host_path.split("/"):
+            if (
+                not isinstance(host_path, str)
+                or not host_path.startswith(expected_prefix)
+                or ".." in host_path.split("/")
+                or "." in host_path.split("/")
+                or "//" in host_path
+                or host_path.endswith("/")
+            ):
                 raise GatewayError(400, "host_path_not_scoped")
             if not isinstance(mount_path, str) or mount_path not in ("/workspace", "/home/sandbox/.claude"):
                 raise GatewayError(400, "volume_policy_mismatch")
             if mount_path == "/workspace":
-                if read_only is not False:
+                if read_only is not False or host_path != expected_workspace:
                     raise GatewayError(400, "workspace_must_be_writable")
                 workspace = host_path
             elif read_only is not True or not host_path.startswith(expected_prefix):
@@ -582,20 +606,20 @@ class GatewayApplication:
         return accepted, workspace
 
     def _reconcile_intents(self) -> None:
-        for intent in self.store.list({"state": "intent"}) + self.store.list({"state": "reconciling"}):
+        for active in self.store.list({"state": "active"}):
+            self._verify_record(active)
+            self._attest(active.sandbox_id)
+            self.runtime.start_relay(active)
+        for pending in self.store.list({"state": "cleanup_pending"}):
+            self._verify_record(pending)
+            self._cleanup_pending(pending)
+        for intent in self.store.list({"state": "uncertain_create"}) + self.store.list({"state": "reconciling"}):
             self._verify_record(intent)
             intent.state = "reconciling"
             intent.signature = self._sign_record(intent)
             self.store.save(intent)
-            query = urllib.parse.urlencode(
-                {"metadata": f"ai-platform.gateway.intent_id={intent.sandbox_id}", "page": "1", "pageSize": "2"}
-            )
-            response = self.lifecycle.request("GET", f"/v1/sandboxes?{query}")
-            if response.status != 200:
-                raise GatewayError(503, "reservation_reconciliation_failed")
-            payload = _bounded_json(response, self.config.max_response_bytes)
-            items = payload.get("items")
-            if not isinstance(items, list) or len(items) > 1:
+            items = self._list_intent_sandboxes(intent.sandbox_id)
+            if len(items) > 1:
                 raise GatewayError(503, "reservation_reconciliation_ambiguous")
             if not items:
                 intent.state = "deleted"
@@ -607,9 +631,49 @@ class GatewayApplication:
                 raise GatewayError(503, "reservation_reconciliation_ambiguous")
             record = LeaseRecord(**{**intent.unsigned(), "sandbox_id": sandbox_id, "state": "active"})
             record.signature = self._sign_record(record)
-            self.store.activate(intent.sandbox_id, record)
+            self.store.activate(intent.sandbox_id, intent.reservation_owner_token, record)
             self._attest(sandbox_id)
             self.runtime.start_relay(record)
+
+    def _list_intent_sandboxes(self, intent_id: str) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for page in range(1, 101):
+            query = urllib.parse.urlencode(
+                {"metadata": f"ai-platform.gateway.intent_id={intent_id}", "page": str(page), "pageSize": "100"}
+            )
+            response = self.lifecycle.request("GET", f"/v1/sandboxes?{query}")
+            if response.status != 200:
+                raise GatewayError(503, "reservation_reconciliation_failed")
+            payload = _bounded_json(response, self.config.max_response_bytes)
+            page_items = payload.get("items")
+            pagination = payload.get("pagination")
+            if not isinstance(page_items, list) or not isinstance(pagination, Mapping):
+                raise GatewayError(503, "reservation_reconciliation_ambiguous")
+            if pagination.get("page") != page or pagination.get("pageSize") != 100 or not isinstance(pagination.get("hasNextPage"), bool):
+                raise GatewayError(503, "reservation_reconciliation_ambiguous")
+            for item in page_items:
+                sandbox_id = item.get("id") if isinstance(item, Mapping) else None
+                if not isinstance(sandbox_id, str) or not SANDBOX_ID.fullmatch(sandbox_id) or sandbox_id in seen:
+                    raise GatewayError(503, "reservation_reconciliation_ambiguous")
+                seen.add(sandbox_id)
+                items.append(dict(item))
+            if not pagination["hasNextPage"]:
+                return items
+        raise GatewayError(503, "reservation_reconciliation_ambiguous")
+
+    def _cleanup_pending(self, record: LeaseRecord) -> None:
+        result = self.lifecycle.request("DELETE", f"/v1/sandboxes/{record.sandbox_id}")
+        if result.status not in (200, 202, 204, 404):
+            return
+        verified = self.lifecycle.request("GET", f"/v1/sandboxes/{record.sandbox_id}")
+        if verified.status != 404:
+            return
+        self.runtime.stop_relay(record)
+        self.runtime.cleanup_mailbox(record)
+        record.state = "deleted"
+        record.signature = self._sign_record(record)
+        self.store.save(record)
 
     def _get(self, sandbox_id: str) -> Response:
         record, upstream = self._attest(sandbox_id)
@@ -768,6 +832,9 @@ class GatewayApplication:
             not isinstance(metadata, dict)
             or set(metadata) != {"path", "owner", "group", "mode"}
             or metadata.get("path") != sentinel
+            or metadata.get("owner") != "1000"
+            or metadata.get("group") != "1000"
+            or metadata.get("mode") != "0600"
             or parts[1].get_filename() not in {sentinel, sentinel.rsplit("/", 1)[1]}
             or sentinel_payload != expected_payload
         ):
@@ -807,6 +874,8 @@ class GatewayApplication:
             or evidence.network_mode != "none"
             or evidence.no_new_privileges is not True
             or evidence.user != "1000:1000"
+            or evidence.uid != "1000"
+            or evidence.gid != "1000"
             or evidence.image != record.image
             or evidence.image_digest != record.image_digest
             or tuple(sorted(evidence.mounts)) != expected_mounts
@@ -815,7 +884,9 @@ class GatewayApplication:
             raise GatewayError(409, "runtime_attestation_drift")
 
     def _attestation_payload(self, record: LeaseRecord) -> dict[str, Any]:
-        return {
+        evidence = self.runtime.verify(record)
+        self._validate_evidence(record, evidence)
+        payload = {
             "contract_version": CONTRACT_VERSION,
             "provider": "opensandbox",
             "sandbox_id": record.sandbox_id,
@@ -827,7 +898,12 @@ class GatewayApplication:
             },
             "runtime": {"identity": "runsc", "subject": self.config.runtime_subject},
             "network": {"mode": "none", "default_deny": True},
-            "security": {"no_new_privileges": True},
+            "security": {
+                "no_new_privileges": True,
+                "user": evidence.user,
+                "uid": evidence.uid,
+                "gid": evidence.gid,
+            },
             "image": {"subject": record.image, "digest": record.image_digest},
             "host_path_policy": {"subject": "scoped-workspace-only", "unscoped_host_paths_allowed": False},
             "subjects": {
@@ -839,6 +915,12 @@ class GatewayApplication:
             },
             "signed_profile": {"id": self.config.profile_id, "version": "v1", "proof_key_id": self.config.proof_key_id},
         }
+        payload["signed_profile"]["profile_signature"] = hmac.new(
+            self.config.record_signing_key,
+            _canonical(payload),
+            hashlib.sha256,
+        ).hexdigest()
+        return payload
 
     def _capability(self) -> Response:
         now = datetime.now(timezone.utc)

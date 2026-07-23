@@ -11,7 +11,6 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import socket
 import sqlite3
 import ssl
@@ -29,6 +28,7 @@ from .gateway import (
     GatewayError,
     LeaseRecord,
     Request,
+    ReservationResult,
     Response,
     RuntimeEvidence,
 )
@@ -55,20 +55,21 @@ class InMemoryStateStore:
         with self._lock:
             self.records[record.sandbox_id] = record
 
-    def reserve(self, record: LeaseRecord) -> LeaseRecord:
+    def reserve(self, record: LeaseRecord) -> ReservationResult:
         with self._lock:
             existing = self.find_scope(record.scope)
             if existing is not None:
-                return existing
+                outcome = "resume" if existing.canonical_request_hash == record.canonical_request_hash else "conflict"
+                return ReservationResult(outcome, existing, existing.reservation_owner_token)
             if any(item.workspace_host_path == record.workspace_host_path and item.state != "deleted" for item in self.records.values()):
-                raise GatewayError(409, "workspace_scope_conflict")
+                return ReservationResult("conflict", record, "")
             self.records[record.sandbox_id] = record
-            return record
+            return ReservationResult("winner", record, record.reservation_owner_token)
 
-    def activate(self, intent_id: str, record: LeaseRecord) -> None:
+    def activate(self, intent_id: str, owner_token: str, record: LeaseRecord) -> None:
         with self._lock:
             current = self.records.get(intent_id)
-            if current is None or current.state not in {"intent", "reconciling"}:
+            if current is None or current.state not in {"uncertain_create", "reconciling"} or not hmac.compare_digest(current.reservation_owner_token, owner_token):
                 raise GatewayError(409, "reservation_state_drift")
             self.records.pop(intent_id)
             self.records[record.sandbox_id] = record
@@ -161,7 +162,7 @@ class SQLiteStateStore:
                 values,
             )
 
-    def reserve(self, record: LeaseRecord) -> LeaseRecord:
+    def reserve(self, record: LeaseRecord) -> ReservationResult:
         with self._lock, self._connect() as db:
             db.isolation_level = None
             db.execute("BEGIN IMMEDIATE")
@@ -169,10 +170,13 @@ class SQLiteStateStore:
                 row = db.execute("SELECT record_json FROM leases WHERE scope_json = ? AND state != 'deleted'", (_json_text(record.scope),)).fetchone()
                 if row:
                     db.execute("COMMIT")
-                    return _record_from_json(row[0])
-                occupied = db.execute("SELECT 1 FROM leases WHERE workspace_host_path = ? AND state != 'deleted'", (record.workspace_host_path,)).fetchone()
+                    existing = _record_from_json(row[0])
+                    outcome = "resume" if existing.canonical_request_hash == record.canonical_request_hash else "conflict"
+                    return ReservationResult(outcome, existing, existing.reservation_owner_token)
+                occupied = db.execute("SELECT record_json FROM leases WHERE workspace_host_path = ? AND state != 'deleted'", (record.workspace_host_path,)).fetchone()
                 if occupied:
-                    raise GatewayError(409, "workspace_scope_conflict")
+                    db.execute("COMMIT")
+                    return ReservationResult("conflict", _record_from_json(occupied[0]), "")
                 db.execute(
                     "INSERT INTO leases VALUES (?, ?, ?, ?, ?, ?)",
                     (
@@ -185,18 +189,23 @@ class SQLiteStateStore:
                     ),
                 )
                 db.execute("COMMIT")
-                return record
+                return ReservationResult("winner", record, record.reservation_owner_token)
             except Exception:
                 db.execute("ROLLBACK")
                 raise
 
-    def activate(self, intent_id: str, record: LeaseRecord) -> None:
+    def activate(self, intent_id: str, owner_token: str, record: LeaseRecord) -> None:
         with self._lock, self._connect() as db:
             db.isolation_level = None
             db.execute("BEGIN IMMEDIATE")
             try:
-                current = db.execute("SELECT state FROM leases WHERE sandbox_id = ?", (intent_id,)).fetchone()
-                if current is None or current[0] not in {"intent", "reconciling"}:
+                current = db.execute("SELECT state, record_json FROM leases WHERE sandbox_id = ?", (intent_id,)).fetchone()
+                current_record = _record_from_json(current[1]) if current else None
+                if (
+                    current_record is None
+                    or current[0] not in {"uncertain_create", "reconciling"}
+                    or not hmac.compare_digest(current_record.reservation_owner_token, owner_token)
+                ):
                     raise GatewayError(409, "reservation_state_drift")
                 changed = db.execute(
                     "UPDATE leases SET sandbox_id=?, scope_json=?, metadata_json=?, record_json=?, state=?, workspace_host_path=? WHERE sandbox_id=?",
@@ -276,7 +285,23 @@ class InMemoryLifecycleTransport:
                     key, value = pair.split("=", 1)
                     filters[key] = value
             items = [item for item in self.sandboxes.values() if all(item.get("metadata", {}).get(key) == value for key, value in filters.items())]
-            return Response.json(200, {"items": items, "pagination": {"page": 1, "pageSize": int(query.get("pageSize", [100])[0]), "total": len(items)}})
+            page = int(query.get("page", [1])[0])
+            page_size = int(query.get("pageSize", [100])[0])
+            start = (page - 1) * page_size
+            page_items = items[start : start + page_size]
+            return Response.json(
+                200,
+                {
+                    "items": page_items,
+                    "pagination": {
+                        "page": page,
+                        "pageSize": page_size,
+                        "totalItems": len(items),
+                        "totalPages": (len(items) + page_size - 1) // page_size,
+                        "hasNextPage": start + page_size < len(items),
+                    },
+                },
+            )
         if path.startswith("/v1/sandboxes/"):
             sandbox_id = path.rsplit("/", 1)[1]
             if method == "GET":
@@ -332,6 +357,8 @@ class InMemoryRuntimeAdapter:
             network_mode="none",
             no_new_privileges=True,
             user="1000:1000",
+            uid="1000",
+            gid="1000",
             image=record.image,
             image_digest=record.image_digest,
             mounts=tuple((item["host"], item["mountPath"], item["readOnly"]) for item in record.mounts),
@@ -408,6 +435,8 @@ class DockerRuntimeAdapter:
             network_mode=str(host.get("NetworkMode") or ""),
             no_new_privileges=any(value in ("no-new-privileges", "no-new-privileges:true") for value in security),
             user=str(config.get("User") or ""),
+            uid="1000" if str(config.get("User") or "") == "1000:1000" else "",
+            gid="1000" if str(config.get("User") or "") == "1000:1000" else "",
             image=str(config.get("Image") or ""),
             image_digest=image_digest,
             mounts=mounts,
@@ -452,12 +481,13 @@ class DockerRuntimeAdapter:
         return Response(status, headers, body)
 
     def cleanup_mailbox(self, record: LeaseRecord) -> None:
-        workspace = pathlib.Path(record.workspace_host_path).resolve()
-        mailbox = (workspace / ".opensandbox-gateway").resolve()
-        if self.workspace_root not in workspace.parents or mailbox.parent != workspace:
+        if os.name != "posix":
             raise GatewayError(500, "cleanup_scope_invalid")
-        if mailbox.exists():
-            shutil.rmtree(mailbox)
+        workspace_fd = _open_workspace_dirfd(str(self.workspace_root), record.workspace_host_path)
+        try:
+            _remove_tree_at(workspace_fd, ".opensandbox-gateway")
+        finally:
+            os.close(workspace_fd)
 
     def _container_id(self, sandbox_id: str) -> str:
         output = self._command(["docker", "ps", "-aq", "--filter", f"label=opensandbox.io/id={sandbox_id}"])
@@ -506,6 +536,8 @@ class HelperRuntimeAdapter:
             network_mode=value["network_mode"],
             no_new_privileges=value["no_new_privileges"],
             user=value["user"],
+            uid=value["uid"],
+            gid=value["gid"],
             image=value["image"],
             image_digest=value["image_digest"],
             mounts=tuple(tuple(item) for item in value["mounts"]),
@@ -579,36 +611,44 @@ class BrokerPolicy:
 class MailboxBroker:
     """Move bounded requests from scoped workspaces to exact pinned HTTPS targets."""
 
-    def __init__(self, store: SQLiteStateStore, policy: BrokerPolicy, timeout_seconds: float, max_response_bytes: int) -> None:
+    def __init__(self, store: SQLiteStateStore, policy: BrokerPolicy, timeout_seconds: float, max_response_bytes: int, workspace_root: str = "/data/opensandbox/workspaces") -> None:
         self.store = store
         self.policy = policy
         self.timeout_seconds = timeout_seconds
         self.max_response_bytes = max_response_bytes
+        self.workspace_root = workspace_root
 
     def poll_once(self) -> int:
         """Process at most one bounded batch and return the number handled."""
 
         handled = 0
         for record in self.store.list({}):
-            workspace = pathlib.Path(record.workspace_host_path).resolve()
-            if os.name != "posix" or str(workspace) != record.workspace_host_path:
+            workspace_fd = mailbox_fd = request_fd = response_fd = None
+            if os.name != "posix":
                 self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
                 continue
-            mailbox = workspace / ".opensandbox-gateway"
-            request_dir = mailbox / "requests"
-            response_dir = request_dir.parent / "responses"
-            if not request_dir.is_dir():
-                continue
-            if mailbox.is_symlink() or request_dir.is_symlink() or request_dir.resolve().parent != mailbox:
-                self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
-                continue
-            response_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            if response_dir.is_symlink() or response_dir.resolve().parent != mailbox:
-                self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
-                continue
-            request_fd = os.open(request_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            response_fd = os.open(response_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
+                workspace_fd = _open_workspace_dirfd(self.workspace_root, record.workspace_host_path)
+                mailbox_fd = os.open(".opensandbox-gateway", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=workspace_fd)
+                request_fd = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
+                try:
+                    os.mkdir("responses", mode=0o700, dir_fd=mailbox_fd)
+                except FileExistsError:
+                    pass
+                response_fd = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
+            except FileNotFoundError:
+                for descriptor in (response_fd, request_fd, mailbox_fd, workspace_fd):
+                    if isinstance(descriptor, int):
+                        os.close(descriptor)
+                continue
+            except OSError:
+                self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
+                for descriptor in (response_fd, request_fd, mailbox_fd, workspace_fd):
+                    if isinstance(descriptor, int):
+                        os.close(descriptor)
+                continue
+            try:
+                _revalidate_workspace_fd(workspace_fd, record.workspace_host_path)
                 names = sorted(name for name in os.listdir(request_fd) if re.fullmatch(r"[0-9a-f]{32}\.json", name))[:16]
                 for name in names:
                     handled += 1
@@ -622,6 +662,8 @@ class MailboxBroker:
             finally:
                 os.close(response_fd)
                 os.close(request_fd)
+                os.close(mailbox_fd)
+                os.close(workspace_fd)
         return handled
 
     def _process(self, request_fd: int, name: str) -> dict[str, Any]:
@@ -629,8 +671,14 @@ class MailboxBroker:
             descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=request_fd)
             try:
                 evidence = os.fstat(descriptor)
-                if not stat.S_ISREG(evidence.st_mode) or evidence.st_size > 2 * 1024 * 1024:
-                    raise GatewayError(413, "broker_request_too_large")
+                if (
+                    not stat.S_ISREG(evidence.st_mode)
+                    or evidence.st_size > 2 * 1024 * 1024
+                    or evidence.st_uid != 1000
+                    or evidence.st_gid != 1000
+                    or stat.S_IMODE(evidence.st_mode) != 0o600
+                ):
+                    raise GatewayError(400, "broker_request_invalid")
                 raw = b""
                 while len(raw) <= 2 * 1024 * 1024:
                     chunk = os.read(descriptor, 65536)
@@ -711,6 +759,60 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             raise OSError("pinned address does not match DNS")
         raw = socket.create_connection((candidates[0], self.port), self.timeout)
         self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+
+
+def _open_workspace_dirfd(workspace_root: str, workspace_path: str) -> int:
+    root = os.path.normpath(workspace_root)
+    candidate = os.path.normpath(workspace_path)
+    if (
+        not os.path.isabs(root)
+        or not os.path.isabs(candidate)
+        or candidate == root
+        or not candidate.startswith(root + os.sep)
+        or candidate != workspace_path
+    ):
+        raise OSError("workspace path is not canonical")
+    parts = candidate[len(root) + 1 :].split(os.sep)
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise OSError("workspace path is not canonical")
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in parts:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        _revalidate_workspace_fd(descriptor, workspace_path)
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _revalidate_workspace_fd(workspace_fd: int, workspace_path: str) -> None:
+    opened = os.fstat(workspace_fd)
+    named = os.stat(workspace_path, follow_symlinks=False)
+    if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+        raise OSError("workspace identity changed")
+
+
+def _remove_tree_at(parent_fd: int, name: str) -> None:
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    except NotADirectoryError:
+        os.unlink(name, dir_fd=parent_fd)
+        return
+    try:
+        for child in os.listdir(descriptor):
+            evidence = os.stat(child, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISDIR(evidence.st_mode):
+                _remove_tree_at(descriptor, child)
+            else:
+                os.unlink(child, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
+    os.rmdir(name, dir_fd=parent_fd)
 
 
 def _record_from_json(value: str) -> LeaseRecord:

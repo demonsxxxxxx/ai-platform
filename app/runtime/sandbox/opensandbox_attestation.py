@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import ipaddress
 import json
 import re
@@ -308,6 +310,7 @@ class _OpenSandboxAttestor:
         "_gateway_policy_subject",
         "_path_template",
         "_proof_key_id",
+        "_proof_signing_key",
         "_runtime_subject",
         "_timeout_seconds",
         "_transport",
@@ -325,6 +328,7 @@ class _OpenSandboxAttestor:
         gateway_policy_subject: str,
         callback_boundary_subject: str,
         proof_key_id: str,
+        proof_signing_key: str,
         transport: _AttestationTransport,
     ) -> None:
         self._base_url = base_url
@@ -336,6 +340,9 @@ class _OpenSandboxAttestor:
         self._gateway_policy_subject = gateway_policy_subject
         self._callback_boundary_subject = callback_boundary_subject
         self._proof_key_id = proof_key_id
+        if len(proof_signing_key.encode("utf-8")) < 32:
+            raise ValueError("attestation proof signing key is invalid")
+        self._proof_signing_key = proof_signing_key.encode("utf-8")
         self._transport = transport
 
     def __repr__(self) -> str:
@@ -370,7 +377,7 @@ class _OpenSandboxAttestor:
         scope_labels["lease_id"] = (
             f"opensandbox:opensandbox-{scope_labels['run_id']}-{scope_labels['attempt_id']}:{sandbox_id}"
         )
-        return {
+        payload: dict[str, object] = {
             "contract_version": self._contract_version,
             "provider": "opensandbox",
             "sandbox_id": sandbox_id,
@@ -385,6 +392,9 @@ class _OpenSandboxAttestor:
             },
             "security": {
                 "no_new_privileges": True,
+                "user": "1000:1000",
+                "uid": "1000",
+                "gid": "1000",
             },
             "image": {
                 "subject": image_subject,
@@ -407,6 +417,14 @@ class _OpenSandboxAttestor:
                 "proof_key_id": self._proof_key_id,
             },
         }
+        signed_profile = payload["signed_profile"]
+        assert isinstance(signed_profile, dict)
+        signed_profile["profile_signature"] = hmac.new(
+            self._proof_signing_key,
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return payload
 
     async def __call__(self, capability: Any, request: Any, sandbox_id: str, info: Any) -> bool:
         try:
@@ -482,6 +500,7 @@ def build_opensandbox_attestation_probe(
                 getattr(settings, "opensandbox_external_egress_callback_boundary_subject", "")
             ),
             proof_key_id=_required_text(getattr(settings, "sandbox_egress_proof_key_id", "")),
+            proof_signing_key=_required_text(getattr(settings, "sandbox_egress_proof_signing_key", "")),
             transport=transport or _default_transport,
         )
     except (TypeError, ValueError):

@@ -166,6 +166,7 @@ class SandboxRuntime:
                 "user_id": lease.user_id,
                 "session_id": lease.session_id,
                 "run_id": lease.run_id,
+                "attempt_id": request.attempt_id,
                 "image_subject": image_subject,
                 "image_digest": image_digest,
                 "authorized_skill_scope": authorized_skill_scope,
@@ -330,6 +331,7 @@ class SandboxRuntime:
             task_request = ExecutorTaskRequest(
                 session_id=request.session_id,
                 run_id=request.run_id,
+                attempt_id=request.attempt_id,
                 prompt=request.input_message,
                 callback_url=trusted_callback_target.callback_url,
                 callback_token_id=self._lease_callback_token_id(lease),

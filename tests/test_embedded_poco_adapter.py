@@ -91,6 +91,7 @@ def run_payload(**overrides):
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "attempt-a",
         "agent_id": "general-agent",
         "skill_id": skill_id,
         "file_ids": [],
@@ -224,6 +225,7 @@ async def test_embedded_adapter_uses_sandbox_runtime_for_ephemeral_mode(monkeypa
     assert result.capabilities["sandbox"] is True
     assert result.result == {"message": "Sandbox run accepted", "sandbox_mode": "ephemeral"}
     assert len(submitted) == 1
+    assert submitted[0].attempt_id == "attempt-a"
     assert submitted[0].sandbox_mode == "ephemeral"
     assert submitted[0].browser_enabled is True
     assert submitted[0].permissions == ["chat.respond", "sandbox.execute"]
