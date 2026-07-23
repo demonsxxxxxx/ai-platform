@@ -588,7 +588,10 @@ def test_run_step_response_redacts_dispatch_control_metadata_for_ordinary_user()
         principal=principal(),
     )
 
-    assert step["payload"] == {"depends_on": ["plan"]}
+    assert step["step_key"] == "step-code"
+    assert step["title"] == "正在执行"
+    assert step["role"] is None
+    assert step["payload"] == {"dependency_count": 1}
     public_dump = str(step)
     assert "dispatch" not in public_dump
     assert "run-child" not in public_dump
@@ -2410,6 +2413,8 @@ async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnosti
         "provider-model=solstice-3 sdk diagnostic",
         "reasoning-draft request-id=orchid digest=0123456789abcdef",
         "url=https://executor.internal.example.invalid/v1",
+        "qa-file-reviewer",
+        "qa-word-review",
     )
 
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
@@ -2467,6 +2472,8 @@ async def test_get_run_reprojects_terminal_multi_agent_steps_without_trusting_ex
         "provider-model=solstice-3 sdk diagnostic",
         "reasoning-draft request-id=orchid digest=0123456789abcdef",
         "url=https://executor.internal.example.invalid/v1",
+        "qa-file-reviewer",
+        "qa-word-review",
     )
 
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
@@ -2492,16 +2499,35 @@ async def test_get_run_reprojects_terminal_multi_agent_steps_without_trusting_ex
     async def failed_steps(conn, *, tenant_id, run_id):
         return [
             {
+                "id": "step-plan",
+                "run_id": run_id,
+                "step_key": "qa-word-review",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "qa-file-reviewer",
+                "role": "qa-word-review",
+                "sequence": 1,
+                "payload_json": {"public_note": "公开的计划进度", "artifact_count": 0, "progress": 25},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
                 "id": "step-failed",
                 "run_id": run_id,
-                "step_key": "execute",
+                "step_key": "qa-file-reviewer",
                 "step_kind": "agent",
                 "status": "failed",
-                "title": raw_terms[0],
-                "role": raw_terms[1],
+                "title": "qa-file-reviewer",
+                "role": "qa-word-review",
                 "sequence": 2,
                 "payload_json": {
-                    "depends_on": ["plan"],
+                    "depends_on": ["qa-word-review"],
+                    "missing_dependencies": ["qa-file-reviewer"],
+                    "checkpoint_id": "qa-file-reviewer",
+                    "source_step_id": "qa-word-review",
+                    "subagent_id": "qa-file-reviewer",
                     "artifact_count": 1,
                     "progress": 50,
                     "error": raw_terms[0],
@@ -2527,19 +2553,38 @@ async def test_get_run_reprojects_terminal_multi_agent_steps_without_trusting_ex
 
     snapshot = ordinary.result["multi_agent"]
     assert snapshot["counts"]["failed"] == 1
-    assert snapshot["steps"][0]["status"] == "failed"
-    assert snapshot["steps"][0]["payload"] == {
-        "depends_on": ["plan"],
+    assert snapshot["counts"]["total"] == 2
+    failed_snapshot_step = snapshot["steps"][1]
+    assert failed_snapshot_step["step_id"] == "step-failed"
+    assert failed_snapshot_step["step_key"] == "step-failed"
+    assert failed_snapshot_step["status"] == "failed"
+    assert failed_snapshot_step["payload"] == {
+        "dependency_count": 1,
+        "depends_on": ["step-plan"],
+        "missing_dependency_count": 1,
         "artifact_count": 1,
         "progress": 50,
     }
-    assert ordinary.steps[0]["payload"] == snapshot["steps"][0]["payload"]
-    assert ordinary.steps[0]["title"] == "步骤未完成"
-    assert ordinary.steps[0]["role"] is None
+    ordinary_failed_step = ordinary.steps[1]
+    assert ordinary_failed_step["step_id"] == "step-failed"
+    assert ordinary_failed_step["step_key"] == "step-failed"
+    assert ordinary_failed_step["payload"] == {
+        "dependency_count": 1,
+        "missing_dependency_count": 1,
+        "artifact_count": 1,
+        "progress": 50,
+    }
+    assert ordinary_failed_step["title"] == "步骤未完成"
+    assert ordinary_failed_step["role"] is None
+    assert ordinary.steps[0]["payload"] == {
+        "artifact_count": 0,
+        "progress": 25,
+        "public_note": "公开的计划进度",
+    }
     assert all(term not in ordinary.model_dump_json() for term in raw_terms)
-    assert admin.steps[0]["title"] == raw_terms[0]
-    assert admin.steps[0]["payload"]["error"] == raw_terms[0]
-    assert admin.steps[0]["payload"]["output"] == raw_terms[2]
+    assert admin.steps[1]["title"] == "qa-file-reviewer"
+    assert admin.steps[1]["payload"]["error"] == raw_terms[0]
+    assert admin.steps[1]["payload"]["output"] == raw_terms[2]
 
 
 @pytest.mark.asyncio
@@ -2892,7 +2937,7 @@ async def test_get_run_includes_multi_agent_snapshot_from_run_steps(monkeypatch)
     assert multi_agent["counts"]["total"] == 2
     assert multi_agent["counts"]["cancelled"] == 2
     assert [step["status"] for step in multi_agent["steps"]] == ["cancelled", "cancelled"]
-    assert [step["step_key"] for step in response.steps] == ["plan", "code"]
+    assert [step["step_key"] for step in response.steps] == ["step-plan", "step-code"]
     assert response.result["message"] == "任务已取消。取消前已产生的公开内容仍会保留。"
 
 
@@ -3591,8 +3636,9 @@ def test_run_event_stream_emits_multi_agent_step_snapshot(monkeypatch):
     assert response.status_code == 200
     assert "event: multi_agent_snapshot" in response.text
     assert '"counts": {"total": 2, "pending": 0, "succeeded": 1, "failed": 1, "running": 0, "cancelled": 0, "reused": 0, "blocked": 1}' in response.text
-    assert '"step_key": "verify"' in response.text
-    assert '"missing_dependencies": ["missing"]' in response.text
+    assert '"step_key": "step-verify"' in response.text
+    assert '"missing_dependency_count": 1' in response.text
+    assert '"missing_dependencies"' not in response.text
 
 
 def test_run_event_stream_normalizes_canceled_status_to_cancelled(monkeypatch):

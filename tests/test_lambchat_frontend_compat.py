@@ -1183,12 +1183,26 @@ def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_relo
         assert all(term not in rendered for term in raw_terms)
 
 
-def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_reload(monkeypatch):
+@pytest.mark.parametrize(
+    ("event_type", "expected_stage", "expected_message"),
+    [
+        ("agent_step_failed", "activity", "当前计划步骤未完成，正在整理可操作错误"),
+        ("subagent_failed", "agent", "协同处理未能完成"),
+    ],
+)
+def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_reload(
+    monkeypatch,
+    event_type,
+    expected_stage,
+    expected_message,
+):
     raw_terms = (
         "command=render-report --private-param=amber",
         "provider-model=solstice-3 sdk diagnostic",
         "reasoning-draft request-id=orchid digest=0123456789abcdef",
         "url=https://executor.internal.example.invalid/v1",
+        "qa-file-reviewer",
+        "qa-word-review",
     )
     run = {
         "id": "run_a",
@@ -1216,7 +1230,7 @@ def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_rel
                 "trace_id": "trace_run_a",
                 "schema_version": "ai-platform.event-envelope.v1",
                 "sequence": 1,
-                "event_type": "agent_step_failed",
+                "event_type": event_type,
                 "stage": raw_terms[1],
                 "message": raw_terms[0],
                 "severity": "error",
@@ -1226,7 +1240,11 @@ def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_rel
                     "error": raw_terms[0],
                     "error_code": raw_terms[1],
                     "output": raw_terms[2],
-                    "metadata": {"url": raw_terms[3]},
+                    "metadata": {
+                        "url": raw_terms[3],
+                        "step_key": raw_terms[4],
+                        "subagent_id": raw_terms[5],
+                    },
                     "visible_to_user": True,
                 },
                 "created_at": "2026-07-23T00:00:00Z",
@@ -1280,16 +1298,16 @@ def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_rel
         for line in stream_response.text.splitlines()
         if line.startswith("data: ")
     ]
-    stream_event = next(payload for payload in stream_payloads if payload.get("event_type") == "agent_step_failed")
+    stream_event = next(payload for payload in stream_payloads if payload.get("event_type") == event_type)
     history_event = next(
         event
         for event in history_response.json()["events"]
-        if event["event_type"] == "agent_step_failed"
+        if event["event_type"] == event_type
     )
-    assert stream_event["stage"] == "activity"
+    assert stream_event["stage"] == expected_stage
     assert stream_event["payload"] == {}
-    assert stream_event["message"] == "当前计划步骤未完成，正在整理可操作错误"
-    assert history_event["data"]["stage"] == "activity"
+    assert stream_event["message"] == expected_message
+    assert history_event["data"]["stage"] == expected_stage
     assert history_event["payload"] == {}
     for rendered in (stream_response.text, history_response.text):
         assert all(term not in rendered for term in raw_terms)

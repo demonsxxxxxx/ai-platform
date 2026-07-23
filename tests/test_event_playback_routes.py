@@ -229,6 +229,8 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
         "provider-model=solstice-3 sdk diagnostic",
         "reasoning-draft request-id=orchid digest=0123456789abcdef",
         "url=https://executor.internal.example.invalid/v1",
+        "qa-file-reviewer",
+        "qa-word-review",
     )
     active_run = run_row()
     active_run["status"] = "running"
@@ -248,17 +250,36 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
     )
     failed_event["severity"] = "error"
     failed_event["error_code"] = raw_terms[2]
+    plan_step = {
+        "id": "step-plan",
+        "run_id": "run-a",
+        "step_key": "qa-word-review",
+        "step_kind": "agent",
+        "status": "succeeded",
+        "title": "qa-file-reviewer",
+        "role": "qa-word-review",
+        "sequence": 1,
+        "payload_json": {"artifact_count": 0, "progress": 25, "public_note": "公开的计划进度"},
+        "started_at": None,
+        "finished_at": None,
+        "created_at": None,
+        "updated_at": None,
+    }
     failed_step = {
         "id": "step-failed",
         "run_id": "run-a",
-        "step_key": "execute",
+        "step_key": "qa-file-reviewer",
         "step_kind": "agent",
         "status": "failed",
-        "title": raw_terms[0],
-        "role": raw_terms[1],
+        "title": "qa-file-reviewer",
+        "role": "qa-word-review",
         "sequence": 2,
         "payload_json": {
-            "depends_on": ["plan"],
+            "depends_on": ["qa-word-review"],
+            "missing_dependencies": ["qa-file-reviewer"],
+            "checkpoint_id": "qa-file-reviewer",
+            "source_step_id": "qa-word-review",
+            "subagent_id": "qa-file-reviewer",
             "artifact_count": 1,
             "progress": 50,
             "error": raw_terms[0],
@@ -282,7 +303,7 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
         return [artifact_row()]
 
     async def fake_list_run_steps(conn, *, tenant_id, run_id):
-        return [failed_step]
+        return [plan_step, failed_step]
 
     async def no_sleep(_seconds):
         return None
@@ -319,22 +340,106 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
     assert playback["artifacts"][0]["artifact_id"] == "artifact-a"
     snapshot = playback["multi_agent"]
     assert snapshot["counts"] == {
-        "total": 1,
+        "total": 2,
         "pending": 0,
-        "succeeded": 0,
+        "succeeded": 1,
         "failed": 1,
         "running": 0,
         "cancelled": 0,
         "reused": 0,
-        "blocked": 0,
+        "blocked": 1,
     }
-    assert snapshot["steps"][0]["status"] == "failed"
-    assert snapshot["steps"][0]["payload"] == {
-        "depends_on": ["plan"],
+    failed_snapshot_step = snapshot["steps"][1]
+    assert failed_snapshot_step["step_id"] == "step-failed"
+    assert failed_snapshot_step["step_key"] == "step-failed"
+    assert failed_snapshot_step["status"] == "failed"
+    assert failed_snapshot_step["payload"] == {
+        "dependency_count": 1,
+        "depends_on": ["step-plan"],
+        "missing_dependency_count": 1,
         "artifact_count": 1,
         "progress": 50,
     }
+    assert snapshot["steps"][0]["payload"] == {
+        "artifact_count": 0,
+        "progress": 25,
+        "public_note": "公开的计划进度",
+    }
     assert "event: multi_agent_snapshot" in stream_response.text
+    for rendered in (events_response.text, stream_response.text, playback_response.text):
+        assert all(term not in rendered for term in raw_terms)
+
+
+def test_subagent_failed_event_routes_use_fixed_public_activity(monkeypatch):
+    raw_terms = (
+        "command=render-report --private-param=amber",
+        "provider-model=solstice-3 sdk diagnostic",
+        "reasoning-draft request-id=orchid digest=0123456789abcdef",
+        "url=https://executor.internal.example.invalid/v1",
+        "qa-file-reviewer",
+        "qa-word-review",
+    )
+    active_run = run_row()
+    active_run["status"] = "running"
+    failed_event = event_row(
+        event_id="evt-subagent-failed",
+        sequence=5,
+        event_type="subagent_failed",
+        stage=raw_terms[1],
+        payload={
+            "error": raw_terms[0],
+            "error_code": raw_terms[1],
+            "output": raw_terms[2],
+            "metadata": {"url": raw_terms[3], "subagent_id": raw_terms[4]},
+            "visible_to_user": True,
+        },
+        message=raw_terms[0],
+    )
+    failed_event["severity"] = "error"
+    failed_event["error_code"] = raw_terms[5]
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return active_run
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        return [failed_event]
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_steps(conn, *, tenant_id, run_id):
+        return []
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", empty_steps)
+    monkeypatch.setattr(
+        "app.routes.runs.get_settings",
+        lambda: type("StreamSettings", (), {"run_event_stream_max_heartbeats": 1})(),
+    )
+    monkeypatch.setattr("app.routes.runs.asyncio.sleep", no_sleep)
+    client = TestClient(create_app())
+
+    events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
+    stream_response = client.get("/api/ai/runs/run-a/events/stream", headers=headers())
+    playback_response = client.get("/api/ai/runs/run-a/playback", headers=headers())
+
+    assert events_response.status_code == 200
+    assert stream_response.status_code == 200
+    assert playback_response.status_code == 200
+    event = events_response.json()["events"][0]
+    assert event["event_type"] == "subagent_failed"
+    assert event["stage"] == "subagent"
+    assert event["error_code"] == "subagent_failed"
+    assert event["message"] == "协同处理步骤未完成。请调整请求后重试。"
+    assert event["payload"] == {}
+    assert playback_response.json()["events"][0] == event
     for rendered in (events_response.text, stream_response.text, playback_response.text):
         assert all(term not in rendered for term in raw_terms)
 
@@ -676,21 +781,23 @@ def test_run_provenance_snapshot_links_steps_checkpoints_and_artifacts(monkeypat
     assert body["subagents"] == [
         {
             "subagent_id": "subagent-a",
-            "role": "reviewer",
-            "step_ids": ["step-a"],
-            "statuses": ["succeeded"],
-            "checkpoint_ids": ["checkpoint-a"],
+            "role": None,
+            "step_ids": [],
+            "statuses": [],
+            "checkpoint_ids": [],
             "artifact_ids": ["artifact-a"],
         }
     ]
     assert body["checkpoints"] == [
         {
             "checkpoint_id": "checkpoint-a",
-            "step_ids": ["step-a"],
+            "step_ids": [],
             "artifact_ids": ["artifact-a"],
-            "reused": True,
+            "reused": False,
         }
     ]
+    assert "checkpoint_id" not in body["steps"][0]["payload"]
+    assert "subagent_id" not in body["steps"][0]["payload"]
     assert body["artifact_tree"][0]["artifact_id"] == "artifact-a"
     assert body["artifact_tree"][0]["produced_by_step_id"] == "step-a"
     assert body["artifact_tree"][0]["checkpoint_id"] == "checkpoint-a"
@@ -764,8 +871,6 @@ def test_run_provenance_snapshot_projects_operational_artifact_tree(monkeypatch)
         }
     ]
     assert body["graph"]["edges"] == [
-        {"source_id": "step-a", "target_id": "checkpoint-a", "edge_kind": "step_checkpoint"},
-        {"source_id": "subagent-a", "target_id": "step-a", "edge_kind": "subagent_step"},
         {"source_id": "step-a", "target_id": "artifact-a", "edge_kind": "produced_artifact"},
         {"source_id": "checkpoint-a", "target_id": "artifact-a", "edge_kind": "checkpoint_artifact"},
         {"source_id": "subagent-a", "target_id": "artifact-a", "edge_kind": "subagent_artifact"},

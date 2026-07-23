@@ -4,7 +4,6 @@ from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
 from app.control_plane_contracts import (
-    ARTIFACT_LINEAGE_PRODUCER_ROLES,
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     EVENT_ENVELOPE_SCHEMA_VERSION,
     EXECUTOR_RESULT_SCHEMA_VERSION,
@@ -17,7 +16,6 @@ from app.control_plane_contracts import (
 )
 from app.projection_redaction import redact_raw_skill_references, sanitize_user_control_input
 from app.tool_permission_projection import tool_permission_public_event_payload
-from app.validation import assert_safe_id
 
 
 def normalize_run_status(status: str) -> str:
@@ -344,34 +342,71 @@ PUBLIC_STEP_TITLES = {
 }
 
 
-def _public_step_identifier(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    candidate = value.strip()
-    if not candidate:
-        return None
-    try:
-        return assert_safe_id(candidate, "step_projection_id")
-    except ValueError:
-        return None
+def _durable_public_step_id(row: dict[str, object]) -> str:
+    """Return the persisted step row identity used by ordinary-user clients."""
+    return str(row["id"])
 
 
-def _public_step_identifiers(value: object) -> list[str]:
+def _ordinary_step_id_mapping(rows: list[dict[str, object]]) -> dict[str, str]:
+    """Map only unambiguous persisted-row references to their public identities.
+
+    Step keys come from the executor's plan and may name Skills, providers, or
+    subagents.  They are therefore lookup input only.  The projected identity
+    is always the durable ``run_steps.id`` that the server created.
+    """
+    candidates: dict[str, set[str]] = {}
+    for row in rows:
+        public_id = _durable_public_step_id(row)
+        references = {public_id}
+        raw_step_key = row.get("step_key")
+        if isinstance(raw_step_key, str) and raw_step_key.strip():
+            references.add(raw_step_key.strip())
+        for reference in references:
+            candidates.setdefault(reference, set()).add(public_id)
+    return {
+        reference: next(iter(public_ids))
+        for reference, public_ids in candidates.items()
+        if len(public_ids) == 1
+    }
+
+
+def _bounded_reference_count(value: object) -> int | None:
     if not isinstance(value, list):
-        return []
-    return [identifier for item in value if (identifier := _public_step_identifier(item)) is not None]
+        return None
+    return min(len(value), 100_000)
 
 
-def _public_step_payload(raw_payload: dict[str, object], status: str) -> dict[str, object]:
+def _mapped_dependencies(value: object, step_id_mapping: dict[str, str] | None) -> list[str] | None:
+    if step_id_mapping is None or not isinstance(value, list):
+        return None
+    dependencies: list[str] = []
+    for dependency in value:
+        if not isinstance(dependency, str):
+            return None
+        public_id = step_id_mapping.get(dependency.strip())
+        if public_id is None:
+            return None
+        dependencies.append(public_id)
+    return dependencies
+
+
+def _public_step_payload(
+    raw_payload: dict[str, object],
+    status: str,
+    *,
+    step_id_mapping: dict[str, str] | None = None,
+) -> dict[str, object]:
     """Allowlist only structured ordinary-user step progress from persisted rows."""
     payload: dict[str, object] = {}
-    for key in ("depends_on", "missing_dependencies"):
-        identifiers = _public_step_identifiers(raw_payload.get(key))
-        if identifiers:
-            payload[key] = identifiers
-    for key in ("checkpoint_id", "source_step_id", "subagent_id"):
-        if identifier := _public_step_identifier(raw_payload.get(key)):
-            payload[key] = identifier
+    dependency_count = _bounded_reference_count(raw_payload.get("depends_on"))
+    if dependency_count is not None:
+        payload["dependency_count"] = dependency_count
+    mapped_dependencies = _mapped_dependencies(raw_payload.get("depends_on"), step_id_mapping)
+    if mapped_dependencies:
+        payload["depends_on"] = mapped_dependencies
+    missing_dependency_count = _bounded_reference_count(raw_payload.get("missing_dependencies"))
+    if missing_dependency_count is not None:
+        payload["missing_dependency_count"] = missing_dependency_count
     for key in ("checkpoint_reused", "checkpoint_reuse_pending"):
         if isinstance(raw_payload.get(key), bool):
             payload[key] = raw_payload[key]
@@ -388,25 +423,28 @@ def _public_step_payload(raw_payload: dict[str, object], status: str) -> dict[st
     return payload
 
 
-def _ordinary_run_step_response(row: dict[str, object]) -> dict[str, object]:
+def _ordinary_run_step_response(
+    row: dict[str, object],
+    *,
+    step_id_mapping: dict[str, str] | None = None,
+) -> dict[str, object]:
     raw_payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
     raw_status = normalize_step_status(row.get("status"))
     status = raw_status if raw_status in PUBLIC_STEP_STATUSES else "pending"
     raw_step_kind = str(row.get("step_kind") or "")
     step_kind = raw_step_kind if raw_step_kind in PUBLIC_STEP_KINDS else "agent"
-    raw_role = str(row.get("role") or "")
-    role = raw_role if raw_role in ARTIFACT_LINEAGE_PRODUCER_ROLES else None
+    public_step_id = _durable_public_step_id(row)
     return {
-        "id": str(row["id"]),
-        "step_id": str(row["id"]),
+        "id": public_step_id,
+        "step_id": public_step_id,
         "run_id": str(row["run_id"]),
-        "step_key": _public_step_identifier(row.get("step_key")) or "step",
+        "step_key": public_step_id,
         "step_kind": step_kind,
         "status": status,
         "title": PUBLIC_STEP_TITLES[status],
-        "role": role,
+        "role": None,
         "sequence": int(row.get("sequence") or 0),
-        "payload": _public_step_payload(raw_payload, status),
+        "payload": _public_step_payload(raw_payload, status, step_id_mapping=step_id_mapping),
         "started_at": row.get("started_at"),
         "finished_at": row.get("finished_at"),
         "created_at": row.get("created_at"),
@@ -470,7 +508,7 @@ def _multi_agent_snapshot_from_step_responses(
         "running": sum(1 for item in steps if item["status"] == "running"),
         "cancelled": sum(1 for item in steps if item["status"] == "cancelled"),
         "reused": sum(1 for item in steps if bool(item["payload"].get("checkpoint_reused"))),
-        "blocked": sum(1 for item in steps if bool(item["payload"].get("missing_dependencies"))),
+        "blocked": sum(1 for item in steps if bool(item["payload"].get("missing_dependency_count"))),
     }
     return {"run_id": run_id, "steps": steps, "counts": counts}
 
@@ -479,9 +517,10 @@ def _ordinary_multi_agent_snapshot(
     run_id: str,
     rows: list[dict[str, object]],
 ) -> dict[str, object] | None:
+    step_id_mapping = _ordinary_step_id_mapping(rows)
     return _multi_agent_snapshot_from_step_responses(
         run_id,
-        [_ordinary_run_step_response(row) for row in rows],
+        [_ordinary_run_step_response(row, step_id_mapping=step_id_mapping) for row in rows],
     )
 
 
