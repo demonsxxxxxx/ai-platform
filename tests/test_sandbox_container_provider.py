@@ -887,12 +887,16 @@ class OpenSandboxSettings:
     sandbox_callback_base_url = "http://host.docker.internal:8020"
     sandbox_egress_policy_enabled = False
     sandbox_egress_proof_signing_key = "provider-test-proof-key-with-enough-entropy-2026"
+    sandbox_egress_proof_key_id = "current"
     sandbox_callback_host_gateway = "host.docker.internal"
     opensandbox_domain = "opensandbox.local:8080"
     opensandbox_protocol = "http"
     opensandbox_api_key = "opensandbox-secret"
     opensandbox_use_server_proxy = False
     opensandbox_request_timeout_seconds = 30
+    opensandbox_attestation_path = "/v1/sandboxes/{sandbox_id}/attestation"
+    opensandbox_attestation_contract_version = "ai-platform.opensandbox.topology-attestation.v1"
+    opensandbox_attestation_timeout_seconds = 2.0
     opensandbox_timeout_seconds = 1800
     opensandbox_executor_image = ""
     opensandbox_executor_entrypoint = "/app/docker-entrypoint.sh uvicorn"
@@ -2115,15 +2119,51 @@ def test_create_container_provider_rejects_unknown_provider(monkeypatch):
 def test_create_container_provider_selects_opensandbox_and_still_rejects_unknown_provider(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     container_provider.reset_container_provider_cache()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    settings = OpenSandboxSettings()
+    settings.opensandbox_protocol = "https"
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
 
     provider = container_provider.create_container_provider()
 
     assert isinstance(provider, container_provider.OpenSandboxContainerProvider)
+    assert provider._authoritative_attestation_probe is not None
     assert container_provider.create_container_provider("opensandbox") is provider
     with pytest.raises(ValueError, match="Unknown sandbox container provider"):
         container_provider.create_container_provider("opensandbox://token@internal")
 
+    container_provider.reset_container_provider_cache()
+
+
+@pytest.mark.asyncio
+async def test_create_container_provider_opensandbox_fails_closed_without_factory_attestor(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    container_provider.reset_container_provider_cache()
+    settings = OpenSandboxSettings()
+    settings.opensandbox_api_key = ""
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+
+    provider = container_provider.create_container_provider()
+
+    assert isinstance(provider, container_provider.OpenSandboxContainerProvider)
+    assert provider._authoritative_attestation_probe is None
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="unsupported"):
+        await provider.create_or_reuse(request(), workspace())
+
+    container_provider.reset_container_provider_cache()
+
+
+def test_create_container_provider_docker_does_not_construct_opensandbox_attestor(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    container_provider.reset_container_provider_cache()
+    monkeypatch.setattr(
+        container_provider,
+        "build_opensandbox_attestation_probe",
+        lambda _settings: pytest.fail("Docker factory must not construct an OpenSandbox attestor"),
+    )
+
+    provider = container_provider.create_container_provider("docker")
+
+    assert isinstance(provider, container_provider.DockerContainerProvider)
     container_provider.reset_container_provider_cache()
 
 
@@ -4118,6 +4158,28 @@ async def test_opensandbox_provider_errors_do_not_leak_secret_or_host_path(monke
     assert str(exc_info.value) == "OpenSandbox sandbox start failed"
     assert "opensandbox-secret" not in str(exc_info.value)
     assert workspace().workspace_host_path not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_attestation_failure_redacts_private_transport_payload(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    private_detail = f"opensandbox-secret {workspace().workspace_host_path} private-attestation-payload"
+
+    def leaking_probe(*_args):
+        raise RuntimeError(private_detail)
+
+    provider = opensandbox_provider()
+    provider._authoritative_attestation_probe = leaking_probe
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError) as exc_info:
+        await provider.create_or_reuse(request(), workspace())
+
+    assert str(exc_info.value) == "OpenSandbox governed egress authoritative attestation failed"
+    assert "opensandbox-secret" not in str(exc_info.value)
+    assert workspace().workspace_host_path not in str(exc_info.value)
+    assert "private-attestation-payload" not in str(exc_info.value)
 
 
 @pytest.mark.asyncio
