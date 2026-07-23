@@ -50,6 +50,7 @@ def public_text_or_fallback(value: object, fallback: object = "") -> str:
 PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "run_failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
     "run_timeout": "任务执行超时。请缩小任务范围后重试。",
+    "run_budget_exhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
     "model_service_unavailable": "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
     "execution_service_unavailable": "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
     "dependent_service_unavailable": "任务依赖的服务暂时不可用。请稍后重试。",
@@ -63,6 +64,7 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "native_tool_admission_failed": "skill_sandbox_admission_failed",
     "executor_deadline_exceeded": "run_timeout",
     "executor_cleanup_timeout": "run_timeout",
+    "claude_agent_sdk_turn_limit_exceeded": "run_budget_exhausted",
     "claude_agent_sdk_runtime_error": "model_service_unavailable",
     "claude_agent_sdk_disabled": "execution_service_unavailable",
     "claude_agent_sdk_import_failed": "execution_service_unavailable",

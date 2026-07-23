@@ -1070,12 +1070,38 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
     assert "旧的部分输出" not in history_response.text
 
 
-def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_reload(monkeypatch):
+@pytest.mark.parametrize(
+    ("internal_error_code", "raw_sdk_error", "raw_error_message", "expected_detail_code", "expected_message"),
+    [
+        (
+            "claude_agent_sdk_turn_limit_exceeded",
+            "Reached maximum number of turns (128)",
+            "Reached maximum number of turns (128)",
+            "run_budget_exhausted",
+            "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
+        ),
+        (
+            "claude_agent_sdk_runtime_error",
+            "provider-model=solstice-3 sdk diagnostic",
+            "url=https://executor.internal.example.invalid/v1",
+            "model_service_unavailable",
+            "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+        ),
+    ],
+)
+def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_reload(
+    monkeypatch,
+    internal_error_code,
+    raw_sdk_error,
+    raw_error_message,
+    expected_detail_code,
+    expected_message,
+):
     raw_terms = (
         "command=render-report --private-param=amber",
-        "provider-model=solstice-3 sdk diagnostic",
+        raw_sdk_error,
         "reasoning-draft request-id=orchid digest=0123456789abcdef",
-        "url=https://executor.internal.example.invalid/v1",
+        raw_error_message,
     )
     run = {
         "id": "run_a",
@@ -1089,7 +1115,7 @@ def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_relo
             "sdk_error": raw_terms[1],
             "error": {"message": raw_terms[2]},
         },
-        "error_code": "claude_agent_sdk_runtime_error",
+        "error_code": internal_error_code,
         "error_message": raw_terms[3],
         "finished_at": "2026-07-23T00:00:00Z",
     }
@@ -1113,7 +1139,7 @@ def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_relo
                 "message": raw_terms[0],
                 "severity": "error",
                 "visible_to_user": True,
-                "error_code": "claude_agent_sdk_runtime_error",
+                "error_code": internal_error_code,
                 "payload_json": {
                     "result": {
                         "message": raw_terms[0],
@@ -1177,8 +1203,8 @@ def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_relo
         if event["data"].get("detail_kind") == "failed"
     )
     assert stream_detail == history_detail
-    assert stream_detail["detail_code"] == "model_service_unavailable"
-    assert stream_detail["message"] == "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
+    assert stream_detail["detail_code"] == expected_detail_code
+    assert stream_detail["message"] == expected_message
     for rendered in (stream_response.text, history_response.text):
         assert all(term not in rendered for term in raw_terms)
 

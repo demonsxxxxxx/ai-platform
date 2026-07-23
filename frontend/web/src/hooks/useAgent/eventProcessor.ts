@@ -245,6 +245,9 @@ function publicTerminalPresentation(
         defaultValue: "任务执行超时。请缩小任务范围后重试。",
       }),
     ),
+    run_budget_exhausted: failed(
+      i18n.t("chat.runTerminal.runBudgetExhausted"),
+    ),
     model_service_unavailable: failed(
       i18n.t("chat.runTerminal.modelServiceUnavailable", {
         defaultValue:

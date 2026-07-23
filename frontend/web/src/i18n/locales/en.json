@@ -564,6 +564,7 @@
     "sendNotAcceptedRetry": "Your message was not sent. Please try again.",
     "runTerminal": {
       "failed": "The task could not be completed. Try again later or contact an administrator if the problem persists.",
+      "runBudgetExhausted": "The task reached its execution-turn limit. Narrow or split the task, then retry.",
       "resultUnavailable": "The task has finished, but its result is temporarily unavailable. Please refresh the session.",
       "skillSandboxAdmissionFailed": "The selected Skill could not enter its isolated sandbox.",
       "statusUnavailable": "The task status could not be synchronized. Refresh this conversation and try again."

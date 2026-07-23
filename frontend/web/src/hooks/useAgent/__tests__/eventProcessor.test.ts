@@ -83,6 +83,36 @@ test("keeps safe partial output and adds an actionable terminal failure", () => 
   assert.doesNotMatch(JSON.stringify(result), /provider token|\/home\/private/);
 });
 
+test("projects turn-limit exhaustion as a safe actionable terminal", () => {
+  const result = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-turn-limit",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "failed",
+      detail_code: "run_budget_exhausted",
+      message: "Reached maximum number of turns (128)",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-turn-limit",
+  );
+
+  assert.equal(result.content, "任务已达到执行轮次上限。请缩小或拆分任务后重试。");
+  assert.equal(result.parts.length, 1);
+  const terminal = result.parts[0];
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "run_budget_exhausted");
+  assert.equal(terminal.severity, "error");
+  assert.equal(terminal.message, "任务已达到执行轮次上限。请缩小或拆分任务后重试。");
+  assert.doesNotMatch(JSON.stringify(result), /Reached maximum number of turns|128/);
+});
+
 test("marks a cancelled terminal while retaining safe partial output", () => {
   const result = processMessageEvent(
     "final_detail",

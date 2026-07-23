@@ -7,6 +7,7 @@ import inspect
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -64,6 +65,17 @@ _CONTROLLED_FILE_SKILL_CAPABILITIES = {
 _CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
 _CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS = 5.0
 _EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
+_SDK_PRESERVED_FAILURE_CODES = frozenset(
+    {
+        "claude_agent_sdk_disabled",
+        "claude_agent_sdk_unavailable",
+        "claude_agent_sdk_missing_structured_terminal",
+        "claude_agent_sdk_selected_skill_not_invoked",
+        "claude_agent_sdk_selected_skill_hook_failed",
+        "claude_agent_sdk_selected_skill_not_authorized",
+    }
+)
+_SDK_TURN_LIMIT_ERROR_PATTERN = re.compile(r"Reached maximum number of turns \(\d+\)")
 
 
 class _ExecutorCleanupError(RuntimeError):
@@ -71,6 +83,20 @@ class _ExecutorCleanupError(RuntimeError):
         super().__init__(error_message)
         self.error_code = error_code
         self.error_message = error_message
+
+
+def _canonical_sdk_failure_code(raw_error: str, *, used_sdk: bool) -> str:
+    """Keep known SDK terminal codes while classifying post-start SDK failures."""
+
+    if raw_error in _SDK_PRESERVED_FAILURE_CODES:
+        return raw_error
+    if raw_error.startswith("claude_agent_sdk_unavailable"):
+        return "claude_agent_sdk_unavailable"
+    if used_sdk and _SDK_TURN_LIMIT_ERROR_PATTERN.fullmatch(raw_error):
+        return "claude_agent_sdk_turn_limit_exceeded"
+    if used_sdk:
+        return "claude_agent_sdk_runtime_error"
+    return raw_error
 
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
@@ -1024,8 +1050,9 @@ async def _default_executor_runner(
         "attachment_parser_evidence": parser_evidence,
     }
     if error:
-        response["error_code"] = str(error)
-        response["error_message"] = str(error)
+        raw_error = str(error)
+        response["error_code"] = _canonical_sdk_failure_code(raw_error, used_sdk=used_sdk)
+        response["error_message"] = raw_error
     elif not used_sdk:
         response["error_code"] = "claude_agent_sdk_disabled"
         response["error_message"] = "Claude Agent SDK is disabled"
