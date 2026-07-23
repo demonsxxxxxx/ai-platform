@@ -1558,6 +1558,98 @@ async def test_opensandbox_provider_rechecks_profile_and_cleans_cached_lease_on_
 
 
 @pytest.mark.asyncio
+async def test_opensandbox_dispatch_accepts_the_current_capability_proof(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = ExternalEgressCapabilitySettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+    sandbox_request = request()
+    leased_workspace = workspace()
+
+    lease = await provider.create_or_reuse(sandbox_request, leased_workspace)
+    await provider.validate_for_dispatch(lease, sandbox_request, leased_workspace)
+
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    assert sandbox.killed is False
+    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+    assert provider._sandboxes[lease.container_id] is sandbox
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile_overrides", "setting_overrides"),
+    [
+        pytest.param({"profile_id": "profile-b"}, {}, id="profile"),
+        pytest.param(
+            {"opensandbox_endpoint": "http://opensandbox-rotated.local:8080"},
+            {"opensandbox_domain": "opensandbox-rotated.local:8080"},
+            id="endpoint",
+        ),
+        pytest.param(
+            {"ai_platform_runtime_subject": "runtime-subject-b"},
+            {"sandbox_runtime_subject": "runtime-subject-b"},
+            id="runtime-subject",
+        ),
+        pytest.param(
+            {"gateway_policy_subject": "gateway-policy-subject-b"},
+            {"opensandbox_external_egress_gateway_policy_subject": "gateway-policy-subject-b"},
+            id="gateway-policy-subject",
+        ),
+        pytest.param(
+            {"callback_boundary_subject": "callback-boundary-subject-b"},
+            {"opensandbox_external_egress_callback_boundary_subject": "callback-boundary-subject-b"},
+            id="callback-subject",
+        ),
+        pytest.param({"deny_audit_subject": "gateway-deny-audit-subject-b"}, {}, id="deny-audit-subject"),
+        pytest.param(
+            {"deny_counter_subject": "gateway-deny-counter-subject-b"},
+            {},
+            id="deny-counter-subject",
+        ),
+        pytest.param(
+            {"executor_image_digest": "sha256:" + "b" * 64},
+            {
+                "opensandbox_executor_image": "registry.example/ai-platform@sha256:" + "b" * 64,
+                "opensandbox_executor_image_digest": "sha256:" + "b" * 64,
+            },
+            id="executor-image",
+        ),
+    ],
+)
+async def test_opensandbox_dispatch_rejects_each_rotated_capability_subject_and_cleans_old_sandbox(
+    monkeypatch,
+    profile_overrides,
+    setting_overrides,
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = ExternalEgressCapabilitySettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    profiles = iter(
+        (
+            external_egress_capability_profile(),
+            external_egress_capability_profile(**profile_overrides),
+        )
+    )
+    provider = opensandbox_provider(capability_profile_fetcher=lambda *_args: next(profiles))
+    sandbox_request = request()
+    leased_workspace = workspace()
+    lease = await provider.create_or_reuse(sandbox_request, leased_workspace)
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    for name, value in setting_overrides.items():
+        setattr(settings, name, value)
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="dispatch proof is stale"):
+        await provider.validate_for_dispatch(lease, sandbox_request, leased_workspace)
+
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+    assert lease.container_id not in provider._sandboxes
+    assert f"opensandbox-{lease.run_id}" not in provider._leases
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("profile", "expected_message"),
     [
@@ -3550,6 +3642,8 @@ async def test_opensandbox_provider_stop_and_cleanup_are_scope_bounded(monkeypat
     assert stop_result.status == "stopped"
     assert FakeOpenSandbox.instances["osb-run-a"].killed is True
     assert FakeOpenSandbox.instances["osb-run-a"].closed is True
+    assert lease.container_id not in provider._sandboxes
+    assert f"opensandbox-{lease.run_id}" not in provider._leases
 
     same_tenant_failed = FakeOpenSandbox(
         sandbox_id="osb-orphan-a",
@@ -3606,9 +3700,61 @@ async def test_opensandbox_provider_stop_rejects_scope_mismatch_without_kill(mon
 
     stop_result = await provider.stop(lease, reason="expired")
 
-    assert stop_result.status == "not_found"
+    assert stop_result.status == "failed"
     assert sandbox.killed is False
     assert sandbox.closed is False
+    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+    assert provider._sandboxes[lease.container_id] is sandbox
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_sdk_not_found(monkeypatch):
+    from opensandbox.exceptions import SandboxApiException
+
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    provider._sandboxes.clear()
+
+    def authoritative_not_found(cls, sandbox_id, **_kwargs):
+        raise SandboxApiException(
+            f"sandbox {sandbox_id} is absent",
+            status_code=404,
+        )
+
+    monkeypatch.setattr(FakeOpenSandbox, "connect", classmethod(authoritative_not_found))
+
+    stop_result = await provider.stop(lease, reason="expired")
+
+    assert stop_result.status == "not_found"
+    assert sandbox.killed is False
+    assert lease.container_id not in provider._sandboxes
+    assert f"opensandbox-{lease.run_id}" not in provider._leases
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_stop_retains_tracking_for_untrusted_not_found_signal(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    provider._sandboxes.clear()
+
+    def untrusted_not_found(cls, sandbox_id, **_kwargs):
+        raise RuntimeError(f"sandbox container {sandbox_id} not found (404)")
+
+    monkeypatch.setattr(FakeOpenSandbox, "connect", classmethod(untrusted_not_found))
+
+    stop_result = await provider.stop(lease, reason="expired")
+
+    assert stop_result.status == "failed"
+    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
 
 
 @pytest.mark.asyncio

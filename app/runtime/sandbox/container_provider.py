@@ -1015,6 +1015,38 @@ class OpenSandboxExternalEgressCapability:
     issued_at_utc: datetime
     expires_at_utc: datetime
 
+    def _governed_egress_binding(
+        self,
+        *,
+        request: SandboxRuntimeRequest,
+        lease_identity: str,
+    ) -> dict[str, object]:
+        """Return every governed subject shared by proof creation and dispatch validation."""
+
+        return {
+            "runtime_subject": self.runtime_subject,
+            "policy_subject": self.gateway_policy_subject,
+            "callback_subject": self.callback_boundary_subject,
+            "denial_subject": f"{self.deny_audit_subject}:{self.deny_counter_subject}",
+            "network_id": self.profile_id,
+            "network_name": self.endpoint,
+            "tenant_id": request.tenant_id,
+            "workspace_id": request.workspace_id,
+            "user_id": request.user_id,
+            "session_id": request.session_id,
+            "run_id": request.run_id,
+            "image_subject": self.requested_image,
+            "image_digest": self.requested_image_digest,
+            "authorized_skill_scope": governed_egress_authorized_skill_scope(
+                skill_ids=request.skill_ids,
+                mcp_tool_ids=request.mcp_tool_ids,
+            ),
+            "authorized_native_tool_scope": governed_egress_authorized_native_tool_scope(
+                request.tool_policy_subjects
+            ),
+            "lease_identity": lease_identity,
+        }
+
     def governed_egress_proof(
         self,
         *,
@@ -1033,31 +1065,16 @@ class OpenSandboxExternalEgressCapability:
         return build_governed_egress_proof(
             signing_key=signing_key,
             provider="opensandbox",
-            runtime_subject=self.runtime_subject,
-            policy_subject=self.gateway_policy_subject,
-            callback_subject=self.callback_boundary_subject,
-            denial_subject=f"{self.deny_audit_subject}:{self.deny_counter_subject}",
-            network_id=self.profile_id,
-            network_name=self.endpoint,
             # OpenSandbox has no Docker bridge.  Its authenticated runsc
             # capability supplies policy-bound enforcement instead.
             network_internal=False,
-            tenant_id=request.tenant_id,
-            workspace_id=request.workspace_id,
-            user_id=request.user_id,
-            session_id=request.session_id,
-            run_id=request.run_id,
-            image_subject=self.requested_image,
-            image_digest=self.requested_image_digest,
-            authorized_skill_scope=governed_egress_authorized_skill_scope(
-                skill_ids=request.skill_ids,
-                mcp_tool_ids=request.mcp_tool_ids,
-            ),
-            authorized_native_tool_scope=governed_egress_authorized_native_tool_scope(request.tool_policy_subjects),
-            lease_identity=lease_identity,
             key_id=key_id,
             issued_at=issued_at,
             expires_at=expires_at,
+            **self._governed_egress_binding(
+                request=request,
+                lease_identity=lease_identity,
+            ),
         )
 
     def lease_labels(
@@ -2140,6 +2157,16 @@ def _is_not_found_error(exc: BaseException) -> bool:
     return ("not found" in message or "no such container" in message) and (
         "container" in message or "docker" in message or "404" in message
     )
+
+
+def _is_authoritative_opensandbox_not_found_error(exc: BaseException) -> bool:
+    """Return true only for the OpenSandbox SDK's explicit HTTP 404 response."""
+
+    try:
+        from opensandbox.exceptions import SandboxApiException
+    except ImportError:
+        return False
+    return isinstance(exc, SandboxApiException) and getattr(exc, "status_code", None) == 404
 
 
 def default_executor_health_probe(
@@ -4349,23 +4376,10 @@ class OpenSandboxContainerProvider:
                 info,
             )
             _ensure_capability_still_valid(capability, now=self._utcnow())
-            expected_binding = {
-                "tenant_id": request.tenant_id,
-                "workspace_id": request.workspace_id,
-                "user_id": request.user_id,
-                "session_id": request.session_id,
-                "run_id": request.run_id,
-                "image_subject": lease.labels.get("ai-platform.executor.requested_image", ""),
-                "image_digest": lease.labels.get("ai-platform.executor.requested_image_digest", ""),
-                "authorized_skill_scope": governed_egress_authorized_skill_scope(
-                    skill_ids=request.skill_ids,
-                    mcp_tool_ids=request.mcp_tool_ids,
-                ),
-                "authorized_native_tool_scope": governed_egress_authorized_native_tool_scope(
-                    request.tool_policy_subjects
-                ),
-                "lease_identity": f"opensandbox:{lease.container_name}:{lease.container_id}",
-            }
+            expected_binding = capability._governed_egress_binding(
+                request=request,
+                lease_identity=f"opensandbox:{lease.container_name}:{lease.container_id}",
+            )
             if (
                 governed_egress_proof_from_labels(
                     "opensandbox",
@@ -4399,16 +4413,25 @@ class OpenSandboxContainerProvider:
             else:
                 info = sandbox
             status = _opensandbox_status_from_info(info)
-            if status is None or not _status_matches_lease(status, lease):
-                self._leases.pop(f"opensandbox-{lease.run_id}", None)
-                self._sandboxes.pop(lease.container_id, None)
-                return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+            if (
+                status is None
+                or status.container_id != lease.container_id
+                or status.provider != lease.provider
+                or not _status_matches_lease(status, lease)
+            ):
+                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                self._sandboxes[lease.container_id] = sandbox
+                return StopResult(
+                    container_id=lease.container_id,
+                    status="failed",
+                    message="OpenSandbox sandbox stop failed",
+                )
             if not await self._cleanup_started_sandbox(sandbox):
                 self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
                 self._sandboxes[lease.container_id] = sandbox
                 return StopResult(container_id=lease.container_id, status="failed", message="OpenSandbox sandbox stop failed")
         except Exception as exc:
-            if _is_not_found_error(exc):
+            if _is_authoritative_opensandbox_not_found_error(exc):
                 self._leases.pop(f"opensandbox-{lease.run_id}", None)
                 self._sandboxes.pop(lease.container_id, None)
                 return StopResult(container_id=lease.container_id, status="not_found", message=reason)
