@@ -1020,6 +1020,12 @@ async def test_opensandbox_provider_admits_only_authenticated_runsc_external_egr
     assert proof["policy_bound_enforcement"] is True
     assert "gateway-policy-subject-a" not in lease.labels["ai-platform.governed_egress.proof"]
     assert "ai-platform.external_egress.endpoint" not in lease.labels
+    assert "ai-platform.external_egress.endpoint_sha256" not in lease.labels
+    remote_metadata = FakeOpenSandbox.created[0]["metadata"]
+    assert remote_metadata["ai-platform.external_egress.endpoint_sha256"] == hashlib.sha256(
+        b"http://opensandbox.local:8080"
+    ).hexdigest()
+    assert "http://opensandbox.local:8080" not in repr(remote_metadata)
     assert "network_policy" not in FakeOpenSandbox.created[0] or FakeOpenSandbox.created[0]["network_policy"] is None
 
 
@@ -1568,8 +1574,31 @@ async def test_opensandbox_dispatch_accepts_the_current_capability_proof(monkeyp
     leased_workspace = workspace()
 
     lease = await provider.create_or_reuse(sandbox_request, leased_workspace)
+    proof = container_provider.governed_egress_proof_from_labels(
+        "opensandbox",
+        lease.labels,
+        signing_key=settings.sandbox_egress_proof_signing_key,
+        expected_binding={
+            "runtime_subject": container_provider._opensandbox_governed_runtime_subject(
+                "runsc",
+                "runtime-subject-a",
+            )
+        },
+        now=TEST_CAPABILITY_NOW,
+    )
     await provider.validate_for_dispatch(lease, sandbox_request, leased_workspace)
 
+    assert proof is not None
+    assert (
+        container_provider.governed_egress_proof_from_labels(
+            "opensandbox",
+            lease.labels,
+            signing_key=settings.sandbox_egress_proof_signing_key,
+            expected_binding={"runtime_subject": "runtime-subject-a"},
+            now=TEST_CAPABILITY_NOW,
+        )
+        is None
+    )
     sandbox = FakeOpenSandbox.instances[lease.container_id]
     assert sandbox.killed is False
     assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
@@ -1641,6 +1670,32 @@ async def test_opensandbox_dispatch_rejects_each_rotated_capability_subject_and_
         setattr(settings, name, value)
 
     with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="dispatch proof is stale"):
+        await provider.validate_for_dispatch(lease, sandbox_request, leased_workspace)
+
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+    assert lease.container_id not in provider._sandboxes
+    assert f"opensandbox-{lease.run_id}" not in provider._leases
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_dispatch_rejects_non_runsc_runtime_identity_drift_and_cleans_old_sandbox(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: ExternalEgressCapabilitySettings())
+    profiles = iter(
+        (
+            external_egress_capability_profile(),
+            external_egress_capability_profile(runtime_identity="runc"),
+        )
+    )
+    provider = opensandbox_provider(capability_profile_fetcher=lambda *_args: next(profiles))
+    sandbox_request = request()
+    leased_workspace = workspace()
+    lease = await provider.create_or_reuse(sandbox_request, leased_workspace)
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="must be runsc"):
         await provider.validate_for_dispatch(lease, sandbox_request, leased_workspace)
 
     assert sandbox.killed is True
@@ -3708,6 +3763,73 @@ async def test_opensandbox_provider_stop_rejects_scope_mismatch_without_kill(mon
 
 
 @pytest.mark.asyncio
+async def test_opensandbox_provider_stop_accepts_signed_historical_production_cleanup_identity(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    cleanup_lease = lease.model_copy(
+        update={
+            "labels": {
+                container_provider.GOVERNED_EGRESS_PROOF_LABEL: lease.labels[
+                    container_provider.GOVERNED_EGRESS_PROOF_LABEL
+                ]
+            }
+        }
+    )
+    provider._utcnow = lambda: TEST_CAPABILITY_NOW + timedelta(days=1)
+
+    stop_result = await provider.stop(cleanup_lease, reason="expired")
+
+    assert stop_result.status == "stopped"
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+    assert lease.container_id not in provider._sandboxes
+    assert f"opensandbox-{lease.run_id}" not in provider._leases
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ambiguity", ("missing-capability", "runtime-identity", "proof-key", "unknown-status"))
+async def test_opensandbox_provider_stop_rejects_ambiguous_production_cleanup_identity(monkeypatch, ambiguity):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    settings = OpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    cleanup_lease = lease.model_copy(
+        update={
+            "labels": {
+                container_provider.GOVERNED_EGRESS_PROOF_LABEL: lease.labels[
+                    container_provider.GOVERNED_EGRESS_PROOF_LABEL
+                ]
+            }
+        }
+    )
+    if ambiguity == "missing-capability":
+        sandbox.metadata.pop("ai-platform.external_egress.endpoint_sha256")
+    elif ambiguity == "runtime-identity":
+        sandbox.metadata["ai-platform.external_egress.runtime_identity"] = "runc"
+    elif ambiguity == "proof-key":
+        settings.sandbox_egress_proof_signing_key = "rotated-proof-key-with-enough-independent-entropy-2026"
+    else:
+        sandbox.status.state = "UNKNOWN"
+
+    stop_result = await provider.stop(cleanup_lease, reason="expired")
+
+    assert stop_result.status == "failed"
+    assert sandbox.killed is False
+    assert sandbox.closed is False
+    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+    assert provider._sandboxes[lease.container_id] is sandbox
+
+
+@pytest.mark.asyncio
 async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_sdk_not_found(monkeypatch):
     from opensandbox.exceptions import SandboxApiException
 
@@ -3732,6 +3854,27 @@ async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_sdk_n
 
     assert stop_result.status == "not_found"
     assert sandbox.killed is False
+    assert lease.container_id not in provider._sandboxes
+    assert f"opensandbox-{lease.run_id}" not in provider._leases
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_sdk_not_found_during_kill(monkeypatch):
+    from opensandbox.exceptions import SandboxApiException
+
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    sandbox.kill_error = SandboxApiException("sandbox already absent", status_code=404)
+
+    stop_result = await provider.stop(lease, reason="expired")
+
+    assert stop_result.status == "not_found"
+    assert sandbox.closed is True
     assert lease.container_id not in provider._sandboxes
     assert f"opensandbox-{lease.run_id}" not in provider._leases
 
