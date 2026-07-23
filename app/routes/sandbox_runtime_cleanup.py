@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from typing import Any
 
+from app.execution_boundary import GOVERNED_EGRESS_PROOF_LABEL, governed_egress_proof_label
 from app.runtime.sandbox.container_provider import ContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease
 from app import repositories
@@ -36,6 +37,16 @@ def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
         and row.get("runtime_handle_verified_at")
     ):
         return None
+    labels: dict[str, str] = {}
+    if provider == "opensandbox":
+        lease_payload = row.get("lease_payload_json")
+        if not isinstance(lease_payload, dict):
+            lease_payload = row.get("lease_payload")
+        proof = lease_payload.get("governed_egress_proof") if isinstance(lease_payload, dict) else None
+        try:
+            labels[GOVERNED_EGRESS_PROOF_LABEL] = governed_egress_proof_label(proof)
+        except ValueError:
+            return None
     return ContainerLease(
         container_id=container_id,
         container_name=container_name,
@@ -50,7 +61,7 @@ def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
         browser_enabled=bool(row.get("browser_enabled")),
         workspace_host_path="",
         workspace_container_path=workspace_container_path,
-        labels={},
+        labels=labels,
     )
 
 
