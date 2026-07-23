@@ -219,6 +219,9 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
     "run_started": _ChatPublicRunEventProjection(
         "run_started", "execution", "已完成请求准备，正在进入受控执行阶段", "active"
     ),
+    "heartbeat": _ChatPublicRunEventProjection(
+        "heartbeat", "liveness", "任务仍在运行。", "active"
+    ),
     "mcp_tool_call_started": _ChatPublicRunEventProjection(
         "agent_step_started", "activity", "正在执行受控处理步骤", "active"
     ),
@@ -271,7 +274,7 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "capability_selected", "planning", "已加载授权处理能力，下一步将按所选流程分析请求", "completed"
     ),
     "intent_detected": _ChatPublicRunEventProjection(
-        "intent_detected", "planning", "已理解请求，正在确认适合的处理方式", "completed"
+        "intent_detected", "preparation", "正在准备受控运行请求。", "active"
     ),
     "intent_confirmed": _ChatPublicRunEventProjection(
         "intent_confirmed", "planning", "已确认处理方式，下一步将准备授权上下文", "completed"
@@ -417,15 +420,23 @@ def _chat_projection_payload(envelope: dict[str, Any]) -> dict[str, object]:
     if not isinstance(payload, dict):
         return {}
     activity = payload.get("activity")
-    if (
-        set(payload) == {"activity"}
-        and isinstance(activity, dict)
-        and set(activity) == {"category", "status"}
-        and isinstance(activity.get("category"), str)
-        and isinstance(activity.get("status"), str)
+    if set(payload) != {"activity"} or not isinstance(activity, dict):
+        return {}
+    activity_fields = set(activity)
+    if activity_fields not in (
+        {"category", "status"},
+        {"category", "status", "meaningful"},
     ):
-        return {"activity": dict(activity)}
-    return {}
+        return {}
+    if not isinstance(activity.get("category"), str) or not isinstance(activity.get("status"), str):
+        return {}
+    if activity_fields == {"category", "status", "meaningful"} and activity != {
+        "category": "liveness",
+        "status": "running",
+        "meaningful": False,
+    }:
+        return {}
+    return {"activity": dict(activity)}
 
 
 def _public_run_event_envelope(
@@ -445,6 +456,8 @@ def _public_run_event_envelope(
         if typed_product is not None
         else run_event_response(run_id, event, principal=principal)
     )
+    if projected.get("event_type") == "heartbeat":
+        presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS["heartbeat"]
     severity = str(projected.get("severity") or "info")
     if presentation.progress_kind == "failed":
         severity = "error"

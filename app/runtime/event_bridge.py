@@ -31,6 +31,15 @@ EVENT_STAGE_MAP = {
 
 
 def agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
+    stage = EVENT_STAGE_MAP.get(event.type)
+    if stage is None:
+        return {
+            "event_type": "executor_private_event",
+            "stage": "runtime",
+            "message": "",
+            "payload": {"visible_to_user": False, "admin_only": True},
+        }
+
     payload = dict(event.payload)
     if event.admin_only:
         payload["visible_to_user"] = False
@@ -40,7 +49,7 @@ def agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
 
     return {
         "event_type": event.type,
-        "stage": EVENT_STAGE_MAP[event.type],
+        "stage": stage,
         "message": event.message,
         "payload": payload,
     }

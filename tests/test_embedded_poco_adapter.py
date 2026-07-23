@@ -62,6 +62,12 @@ def test_every_supported_agent_event_type_has_a_stage_mapping():
     assert SUPPORTED_AGENT_EVENT_TYPES == set(EVENT_STAGE_MAP)
 
 
+@pytest.mark.parametrize("event_type", ["intent_detected", "skill_selected", "skill_used"])
+def test_executor_progress_types_are_not_kernel_agent_events(event_type):
+    with pytest.raises(ValueError, match=f"Unsupported agent event type: {event_type}"):
+        AgentEvent(type=event_type)
+
+
 def test_checkpoint_and_subagent_events_have_stable_stage_mapping():
     checkpoint = agent_event_to_executor_event(
         AgentEvent(type="checkpoint_created", message="checkpoint saved", payload={"checkpoint_id": "checkpoint-a"})
