@@ -293,19 +293,23 @@ def _validate_tenant(payload: dict[str, Any], tenant_id: str) -> None:
 
 
 def _validate_eligibility(payload: dict[str, Any]) -> None:
+    has_eligibility_signal = False
     for key in ("active", "enabled", "eligible"):
         if key not in payload:
             continue
+        has_eligibility_signal = True
         value = payload[key]
         if not isinstance(value, bool) or not value:
             raise PrincipalAuthorityDenied()
-    if "status" not in payload:
-        return
-    status_value = payload["status"]
-    if not isinstance(status_value, str):
-        raise PrincipalAuthorityDenied()
-    normalized = status_value.strip().casefold()
-    if normalized in _INELIGIBLE_STATUS_VALUES:
-        raise PrincipalAuthorityDenied()
-    if normalized not in _ELIGIBLE_STATUS_VALUES:
+    if "status" in payload:
+        has_eligibility_signal = True
+        status_value = payload["status"]
+        if not isinstance(status_value, str):
+            raise PrincipalAuthorityDenied()
+        normalized = status_value.strip().casefold()
+        if normalized in _INELIGIBLE_STATUS_VALUES:
+            raise PrincipalAuthorityDenied()
+        if normalized not in _ELIGIBLE_STATUS_VALUES:
+            raise PrincipalAuthorityDenied()
+    if not has_eligibility_signal:
         raise PrincipalAuthorityDenied()

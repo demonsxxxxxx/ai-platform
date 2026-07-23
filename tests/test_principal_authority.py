@@ -65,13 +65,17 @@ async def test_current_principal_recomputes_revoked_admin_role_from_the_same_aut
     admin = await resolve_current_principal(
         user_id="user-a",
         tenant_id="tenant-a",
-        user_info_adapter=_adapter({"workId": "user-a", "roles": ["developer"], "department": "qa"}),
+        user_info_adapter=_adapter(
+            {"workId": "user-a", "roles": ["developer"], "department": "qa", "active": True}
+        ),
         settings=_settings(),
     )
     revoked = await resolve_current_principal(
         user_id="user-a",
         tenant_id="tenant-a",
-        user_info_adapter=_adapter({"workId": "user-a", "roles": ["user"], "department": "qa"}),
+        user_info_adapter=_adapter(
+            {"workId": "user-a", "roles": ["user"], "department": "qa", "active": True}
+        ),
         settings=_settings(),
     )
 
@@ -95,7 +99,7 @@ async def test_current_principal_uses_changed_or_removed_department(department, 
         user_id="user-a",
         tenant_id="tenant-a",
         user_info_adapter=_adapter(
-            {"workId": "user-a", "roles": ["user"], "department": department}
+            {"workId": "user-a", "roles": ["user"], "department": department, "active": True}
         ),
         settings=_settings(),
     )
@@ -109,13 +113,80 @@ async def test_current_principal_honors_current_configured_admin_identity():
         user_id="user-a",
         tenant_id="tenant-a",
         user_info_adapter=_adapter(
-            {"workId": "user-a", "userName": "admin-login", "roles": [], "department": "platform"}
+            {
+                "workId": "user-a",
+                "userName": "admin-login",
+                "roles": [],
+                "department": "platform",
+                "active": True,
+            }
         ),
         settings=_settings(ai_admin_work_ids="ADMIN-LOGIN"),
     )
 
     assert principal.roles == ["admin"]
     assert principal.permissions == [*AI_USER_PERMISSIONS, *AI_ADMIN_PERMISSIONS]
+
+
+@pytest.mark.asyncio
+async def test_current_principal_rejects_missing_eligibility_signal():
+    with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
+        await resolve_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            user_info_adapter=_adapter({"workId": "user-a", "roles": ["user"]}),
+            settings=_settings(),
+        )
+
+
+@pytest.mark.parametrize(
+    "eligibility",
+    [
+        pytest.param({"active": False}, id="active-false"),
+        pytest.param({"enabled": False}, id="enabled-false"),
+        pytest.param({"eligible": False}, id="eligible-false"),
+        pytest.param({"active": "true"}, id="active-string"),
+        pytest.param({"enabled": 1}, id="enabled-integer"),
+        pytest.param({"eligible": None}, id="eligible-null"),
+        pytest.param({"status": ["active"]}, id="status-non-string"),
+        pytest.param({"status": "pending"}, id="status-unrecognized"),
+        pytest.param({"active": True, "enabled": False}, id="mixed-boolean-signals"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_current_principal_rejects_false_or_malformed_eligibility_signals(eligibility):
+    with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
+        await resolve_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            user_info_adapter=_adapter({"workId": "user-a", "roles": ["user"], **eligibility}),
+            settings=_settings(),
+        )
+
+
+@pytest.mark.parametrize(
+    "eligibility",
+    [
+        pytest.param({"active": True}, id="active"),
+        pytest.param({"enabled": True}, id="enabled"),
+        pytest.param({"eligible": True}, id="eligible"),
+        pytest.param({"status": "active"}, id="status"),
+        pytest.param(
+            {"active": True, "enabled": True, "eligible": True, "status": "enabled"},
+            id="multiple-signals",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_current_principal_accepts_valid_eligibility_signals(eligibility):
+    principal = await resolve_current_principal(
+        user_id="user-a",
+        tenant_id="tenant-a",
+        user_info_adapter=_adapter({"workId": "user-a", "roles": ["user"], **eligibility}),
+        settings=_settings(),
+    )
+
+    assert principal.roles == ["user"]
 
 
 def _http_failure():
