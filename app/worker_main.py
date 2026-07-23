@@ -156,11 +156,16 @@ async def _heartbeat_until_done(
     interval_seconds: float,
     ownership_lost: asyncio.Event,
 ) -> None:
-    while True:
-        await asyncio.sleep(interval_seconds)
-        if not await queue.heartbeat_run(message_id, worker_id=worker_id):
-            ownership_lost.set()
-            return
+    try:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            if not await queue.heartbeat_run(message_id, worker_id=worker_id):
+                ownership_lost.set()
+                return
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        ownership_lost.set()
 
 
 async def cleanup_expired_sandbox_leases() -> None:
@@ -452,15 +457,16 @@ async def _maintenance_until_done(settings: object, interval_seconds: float) -> 
 
 
 async def _terminalize_escaped_process_exception(
-    raw_payload: dict[str, object],
+    message: queue.QueueMessage,
+    worker_id: str,
     exc: Exception,
 ) -> WorkerOutcome:
     """Converge one valid claimed run after processing escapes its normal terminal path."""
 
     try:
-        payload = parse_leased_queue_envelope(raw_payload).payload
+        payload = parse_leased_queue_envelope(message.payload).payload
     except Exception:
-        raw_run_id = raw_payload.get("run_id")
+        raw_run_id = message.payload.get("run_id")
         return WorkerOutcome(
             status="dead_letter",
             run_id=str(raw_run_id) if isinstance(raw_run_id, str) else None,
@@ -472,7 +478,11 @@ async def _terminalize_escaped_process_exception(
     error_code = "worker_process_exception"
     error_message = sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly."
     progress = None
+    if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
+        return _queue_ownership_lost_outcome(run_id)
     async with transaction() as conn:
+        if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
+            return _queue_ownership_lost_outcome(run_id)
         locked_run = await repositories.get_run(
             conn,
             tenant_id=payload.tenant_id,
@@ -503,6 +513,8 @@ async def _terminalize_escaped_process_exception(
             return WorkerOutcome("dead_letter", run_id, error_code, error_message)
         current_status = str(locked_run.get("status") or "")
         if current_status in {"succeeded", "failed", "cancelled"}:
+            if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
+                return _queue_ownership_lost_outcome(run_id)
             return WorkerOutcome(
                 current_status,
                 run_id,
@@ -528,6 +540,8 @@ async def _terminalize_escaped_process_exception(
                 error_message=error_message,
                 result_json={"message": "Worker processing failed unexpectedly."},
             )
+        if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
+            raise _EscapedTerminalizationOwnershipLost(run_id)
 
     if progress is None or not progress.is_terminal():
         progress = await drain_run_tool_permission_terminalization(
@@ -558,6 +572,19 @@ async def _terminalize_escaped_process_exception(
             error_message if terminal_status == "failed" else None,
         )
     return WorkerOutcome("dead_letter", run_id, error_code, error_message)
+
+
+class _EscapedTerminalizationOwnershipLost(RuntimeError):
+    """Abort the SQL transaction when its queue lease proof becomes stale."""
+
+
+def _queue_ownership_lost_outcome(run_id: str | None) -> WorkerOutcome:
+    return WorkerOutcome(
+        status="ownership_lost",
+        run_id=run_id,
+        error_code="queue_ownership_lost",
+        error_message="Queue execution ownership was lost.",
+    )
 
 
 async def run_once(
@@ -610,7 +637,9 @@ async def run_once(
                 extra={"run_id": message.payload.get("run_id")},
             )
             try:
-                return await _terminalize_escaped_process_exception(message.payload, exc)
+                return await _terminalize_escaped_process_exception(message, resolved_worker_id, exc)
+            except _EscapedTerminalizationOwnershipLost:
+                return _queue_ownership_lost_outcome(message.payload.get("run_id"))
             except Exception:
                 logger.exception(
                     "Worker process exception terminalization failed",
@@ -626,17 +655,18 @@ async def run_once(
     processing_task = asyncio.create_task(process_leased_message())
     ownership_task = asyncio.create_task(ownership_lost.wait())
     try:
-        await asyncio.wait({processing_task, ownership_task}, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait(
+            {processing_task, ownership_task, heartbeat_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if heartbeat_task.done() and not heartbeat_task.cancelled():
+            # A heartbeat loop only terminates after ownership loss or a fail-closed IO error.
+            heartbeat_task.exception()
+            ownership_lost.set()
         if ownership_lost.is_set():
             processing_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await processing_task
-            return WorkerOutcome(
-                status="ownership_lost",
-                run_id=message.payload.get("run_id"),
-                error_code="queue_ownership_lost",
-                error_message="Queue execution ownership was lost.",
-            )
+            await asyncio.gather(processing_task, return_exceptions=True)
+            return _queue_ownership_lost_outcome(message.payload.get("run_id"))
         outcome = processing_task.result()
     finally:
         tasks = [heartbeat_task, ownership_task, processing_task]
@@ -645,26 +675,29 @@ async def run_once(
         for task in tasks:
             if not task.done():
                 task.cancel()
-        for task in tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        await asyncio.gather(*tasks, return_exceptions=True)
     if ownership_lost.is_set():
-        return WorkerOutcome(
-            status="ownership_lost",
-            run_id=message.payload.get("run_id"),
-            error_code="queue_ownership_lost",
-            error_message="Queue execution ownership was lost.",
-        )
+        return _queue_ownership_lost_outcome(message.payload.get("run_id"))
+    if outcome.status == "ownership_lost":
+        return outcome
     if outcome.status in {"succeeded", "failed", "skipped", "cancelled"}:
-        await queue.ack_run(message.raw, message_id=message.message_id)
+        try:
+            mutation = await queue.ack_run(message.raw, message_id=message.message_id)
+        except Exception:
+            return _queue_ownership_lost_outcome(message.payload.get("run_id"))
     else:
-        await queue.fail_leased_run(
-            message.raw,
-            error_code=outcome.error_code or "worker_unhandled",
-            error_message=outcome.error_message or "Worker could not process leased payload",
-            message_id=message.message_id,
-            worker_id=resolved_worker_id,
-        )
+        try:
+            mutation = await queue.fail_leased_run(
+                message.raw,
+                error_code=outcome.error_code or "worker_unhandled",
+                error_message=outcome.error_message or "Worker could not process leased payload",
+                message_id=message.message_id,
+                worker_id=resolved_worker_id,
+            )
+        except Exception:
+            return _queue_ownership_lost_outcome(message.payload.get("run_id"))
+    if not isinstance(mutation, queue.LeaseMutationOutcome) or not mutation.succeeded:
+        return _queue_ownership_lost_outcome(message.payload.get("run_id"))
     return outcome
 
 

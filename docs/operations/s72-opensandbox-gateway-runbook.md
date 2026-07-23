@@ -69,16 +69,16 @@ stat -c '%a %U:%G %n' /etc/opensandbox-gateway/secrets/* /etc/opensandbox-gatewa
 
 The first command must return no matches. The installer accepts only an exact
 40-character lowercase commit from a clean, root-owned, non-symlink Git tree.
-That commit must remain an ancestor of the exact authoritative remote ref
-`origin/main`; unset `OPENSANDBOX_GATEWAY_AUTHORITY_REF` unless an explicitly
-reviewed equivalent remote ref is required. Prepare and verify the checkout,
-then deploy:
+For a new install or upgrade, `HEAD` must equal the commit currently stored at
+`refs/remotes/origin/main`; being an older ancestor is not sufficient. Unset
+`OPENSANDBOX_GATEWAY_AUTHORITY_REF` unless an explicitly reviewed equivalent
+remote ref is required. Prepare and verify the checkout, then deploy:
 
 ```sh
 sudo test "$(git -C /path/to/reviewed/ai-platform rev-parse --verify 'HEAD^{commit}')" = "$(git -C /path/to/reviewed/ai-platform rev-parse HEAD)"
 sudo git -C /path/to/reviewed/ai-platform diff-index --quiet HEAD --
 sudo test -z "$(git -C /path/to/reviewed/ai-platform ls-files --others --exclude-standard)"
-sudo git -C /path/to/reviewed/ai-platform merge-base --is-ancestor HEAD origin/main
+sudo test "$(git -C /path/to/reviewed/ai-platform rev-parse 'HEAD^{commit}')" = "$(git -C /path/to/reviewed/ai-platform rev-parse 'refs/remotes/origin/main^{commit}')"
 sudo deploy/opensandbox/install-s72.sh /path/to/reviewed/ai-platform
 systemctl status --no-pager opensandbox-gateway.service
 journalctl -u opensandbox-gateway.service --since '-5 minutes' --no-pager
@@ -91,7 +91,10 @@ cannot access it. Writable SQLite runtime state remains separately under
 `/var/lib/opensandbox-gateway`. The installer validates the archived source and
 manifest, reloads and restarts both units, verifies their absolute release
 working directories and source readback, and only then atomically switches
-`/opt/opensandbox-gateway/current` and the root-only rollback descriptor.
+`/opt/opensandbox-gateway/current` and the root-only rollback descriptor. It
+records the exact authority SHA in both the immutable release and
+`/var/lib/opensandbox-gateway-deploy/current-authority-sha`, reads it back before
+success, and restores that state (or its prior absence) after any failed install.
 
 ## Mandatory remote smoke gate
 
@@ -119,8 +122,10 @@ sudo deploy/opensandbox/rollback-s72.sh
 ```
 
 Rollback verifies the root-only descriptor, snapshot manifest, exact 40-hex
-release, realpath confinement, source ownership and `origin/main` reachability
-before mutation. It restores the previous unit files, configuration, ACL,
+release, realpath confinement, source ownership and the recorded authority SHA
+before mutation. Only this rollback path may accept a previously recorded
+release that is a verified ancestor of the current authoritative main ref. It
+restores the previous unit files, configuration, ACL, authority-SHA state,
 enable/active state and release pointer exactly; a first-install rollback
 restores their prior absence. It then rechecks that OpenSandbox is active on
 `127.0.0.1:8080`. It never changes ai-platform provider configuration and does

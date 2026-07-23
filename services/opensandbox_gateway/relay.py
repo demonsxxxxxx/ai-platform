@@ -10,6 +10,8 @@ RELAY_SOURCE = r'''
 import base64, http.server, json, os, secrets, stat, sys, threading, time
 
 ROOT, BROKER_UID, BROKER_GID = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+RESPONSE_WAIT_SECONDS = float(sys.argv[4]) if len(sys.argv) > 4 else 65.0
+LISTEN_PORT = int(sys.argv[5]) if len(sys.argv) > 5 else 18888
 ROOT_FD = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 REQ_FD = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=ROOT_FD)
 RESP_FD = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=ROOT_FD)
@@ -61,7 +63,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             finally:
                 os.close(descriptor)
             os.replace(temporary, name, src_dir_fd=REQ_FD, dst_dir_fd=REQ_FD)
-            deadline = time.monotonic() + 65
+            deadline = time.monotonic() + RESPONSE_WAIT_SECONDS
             response_fd = None
             while time.monotonic() < deadline:
                 try:
@@ -70,6 +72,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 except FileNotFoundError:
                     time.sleep(.02)
             if response_fd is None:
+                try:
+                    os.unlink(name, dir_fd=REQ_FD)
+                except FileNotFoundError:
+                    pass
                 self.send_error(504); return
             try:
                 evidence = os.fstat(response_fd)
@@ -117,7 +123,7 @@ class BoundedServer(http.server.ThreadingHTTPServer):
         finally:
             self.slots.release()
 
-server = BoundedServer(("127.0.0.1", 18888), Handler)
+server = BoundedServer(("127.0.0.1", LISTEN_PORT), Handler)
 server.daemon_threads = True
 server.serve_forever()
 '''

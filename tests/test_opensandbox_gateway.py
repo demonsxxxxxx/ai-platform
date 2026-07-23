@@ -12,6 +12,7 @@ import socket
 import ssl
 import stat
 import subprocess
+import sys
 import textwrap
 import threading
 import time
@@ -24,6 +25,7 @@ import pytest
 
 from app.runtime.sandbox.opensandbox_attestation import _OpenSandboxAttestor, _TransportResponse
 import services.opensandbox_gateway.adapters as gateway_adapters
+import services.opensandbox_gateway.helper as gateway_helper
 from services.opensandbox_gateway.adapters import (
     BrokerPolicy,
     DockerRuntimeAdapter,
@@ -50,9 +52,11 @@ from services.opensandbox_gateway.gateway import (
     operation_deadline,
 )
 from services.opensandbox_gateway.helper import _dispatch as helper_dispatch
+from services.opensandbox_gateway.relay import RELAY_SOURCE
 from services.opensandbox_gateway.server import (
     _BoundedThreadingHTTPServer,
     _GatewayHandler,
+    _broker_loop,
     _verify_certificate_ip_san,
 )
 
@@ -143,7 +147,7 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
         "secureAccess": False,
         "volumes": [
             {
-                "name": "workspace",
+                "name": "ai-platform-workspace",
                 "mountPath": "/workspace",
                 "readOnly": False,
                 "host": {
@@ -363,6 +367,129 @@ def test_scope_segments_and_skill_mount_are_exactly_bound_to_canonical_workspace
     rejected_mount = call(app, "POST", "/v1/sandboxes", cross_tenant)
     assert rejected_mount.status == 400
     assert decoded(rejected_mount)["error"]["code"] == "skill_mount_must_be_read_only"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_code"),
+    (
+        (lambda value: value["metadata"].pop("ai-platform.skill_mount.required"), "create_metadata_invalid"),
+        (
+            lambda value: value["metadata"].update(
+                {"ai-platform.skill_mount.required": "true", "ai-platform.skill_mount.fingerprint": ""}
+            ),
+            "skill_mount_fingerprint_invalid",
+        ),
+        (
+            lambda value: value["metadata"].update(
+                {"ai-platform.skill_mount.required": "true", "ai-platform.skill_mount.fingerprint": "F" * 64}
+            ),
+            "skill_mount_fingerprint_invalid",
+        ),
+    ),
+)
+def test_skill_mount_declaration_is_required_and_canonical(mutate, expected_code) -> None:
+    app, _, _, _ = application()
+    value = create_payload(gateway_config())
+    mutate(value)
+    response = call(app, "POST", "/v1/sandboxes", value)
+    assert response.status == 400
+    assert decoded(response)["error"]["code"] == expected_code
+
+
+@pytest.mark.parametrize("case", ("required_false_extra", "required_missing_volume", "wrong_source", "writable"))
+def test_skill_mount_declaration_and_volume_are_bidirectionally_bound(case) -> None:
+    app, _, _, _ = application()
+    value = create_payload(gateway_config())
+    workspace_path = value["volumes"][0]["host"]["path"]
+    skill_volume = {
+        "name": "ai-platform-claude-skills",
+        "mountPath": "/workspace/.claude",
+        "readOnly": True,
+        "host": {"path": workspace_path + "/.claude"},
+    }
+    if case != "required_false_extra":
+        value["metadata"].update(
+            {"ai-platform.skill_mount.required": "true", "ai-platform.skill_mount.fingerprint": "a" * 64}
+        )
+    if case != "required_missing_volume":
+        value["volumes"].append(skill_volume)
+    if case == "wrong_source":
+        skill_volume["host"]["path"] = workspace_path + "/other/.claude"
+    if case == "writable":
+        skill_volume["readOnly"] = False
+
+    response = call(app, "POST", "/v1/sandboxes", value)
+    assert response.status == 400
+    assert decoded(response)["error"]["code"] in {
+        "skill_mount_declaration_mismatch",
+        "skill_mount_must_be_read_only",
+    }
+
+
+def test_skill_mount_runtime_fingerprint_drift_fails_attestation() -> None:
+    app, _, runtime, _ = application()
+    value = create_payload(gateway_config())
+    workspace_path = value["volumes"][0]["host"]["path"]
+    value["metadata"].update(
+        {"ai-platform.skill_mount.required": "true", "ai-platform.skill_mount.fingerprint": "a" * 64}
+    )
+    value["volumes"].append(
+        {
+            "name": "ai-platform-claude-skills",
+            "mountPath": "/workspace/.claude",
+            "readOnly": True,
+            "host": {"path": workspace_path + "/.claude"},
+        }
+    )
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", value))["id"]
+    runtime.evidence[sandbox_id] = replace(
+        runtime.evidence[sandbox_id],
+        skill_mount_fingerprint="b" * 64,
+    )
+
+    response = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
+    assert response.status == 409
+    assert decoded(response)["error"]["code"] == "runtime_attestation_drift"
+
+
+def test_runtime_skill_mount_fingerprint_uses_exact_opened_source_inodes(monkeypatch) -> None:
+    app, _, _, store = application()
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config())))["id"]
+    record = store.get(sandbox_id)
+    assert record is not None
+    workspace = record.workspace_host_path
+    record.metadata["ai-platform.skill_mount.required"] = "true"
+    record.mounts.append(
+        {"host": workspace + "/.claude", "mountPath": "/workspace/.claude", "readOnly": True}
+    )
+    nodes = {
+        10: SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_dev=1, st_ino=2),
+        11: SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_dev=3, st_ino=4),
+        12: SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_dev=5, st_ino=6),
+    }
+    named_nodes = dict(nodes)
+    monkeypatch.setattr(gateway_adapters.os, "O_DIRECTORY", 0x10000, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(gateway_adapters, "_open_workspace_dirfd", lambda *_: 10)
+    monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
+    monkeypatch.setattr(
+        gateway_adapters.os,
+        "open",
+        lambda name, *_args, dir_fd, **_kwargs: 11 if (name, dir_fd) == (".claude", 10) else 12,
+    )
+    monkeypatch.setattr(gateway_adapters.os, "fstat", lambda descriptor: nodes[descriptor])
+    monkeypatch.setattr(
+        gateway_adapters.os,
+        "stat",
+        lambda name, **kwargs: named_nodes[10 if name == workspace else 11 if name == ".claude" else 12],
+    )
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _descriptor: None)
+    expected = hashlib.sha256(b"1\x002\x003\x004\x005\x006").hexdigest()
+
+    assert gateway_adapters._runtime_skill_mount_fingerprint(record, gateway_config().workspace_root) == expected
+    nodes[12] = SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_dev=5, st_ino=99)
+    with pytest.raises(GatewayError, match="skill_mount_runtime_drift"):
+        gateway_adapters._runtime_skill_mount_fingerprint(record, gateway_config().workspace_root)
 
 
 def test_scope_reuse_workspace_conflict_and_idempotent_create() -> None:
@@ -848,7 +975,193 @@ def test_absolute_deadline_covers_tls_handshake() -> None:
         client.close()
         server.shutdown()
         server.server_close()
+    thread.join(timeout=2)
+
+
+def test_exact_dispatch_uses_accept_time_total_budget_not_ingress_phase_cap() -> None:
+    observed: list[float] = []
+
+    class DispatchApp:
+        def handle(self, request: Request) -> Response:
+            observed.append(operation_deadline(1.0).remaining())
+            time.sleep(0.12)
+            return Response.json(200, {"ok": True})
+
+    class Handler(_GatewayHandler):
+        app = DispatchApp()
+        body_limit = gateway_config().max_body_bytes
+
+    server = _BoundedThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        Handler,
+        1,
+        request_deadline_seconds=0.05,
+        dispatch_deadline_seconds=0.4,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = socket.create_connection(server.server_address, timeout=1)
+    try:
+        client.sendall(
+            b"POST /v1/sandboxes/sandbox-one/proxy/18000/v1/tasks/execute HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\nContent-Length: 0\r\n\r\n"
+        )
+        client.settimeout(1)
+        response = b""
+        while chunk := client.recv(4096):
+            response += chunk
+        assert b"200 OK" in response and b'{"ok":true}' in response
+        assert observed and 0.15 < observed[0] <= 0.4
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
         thread.join(timeout=2)
+
+
+def test_exact_dispatch_cannot_outlive_accept_time_total_budget() -> None:
+    class DispatchApp:
+        def handle(self, request: Request) -> Response:
+            while True:
+                operation_deadline(1.0).remaining()
+                time.sleep(0.02)
+
+    class Handler(_GatewayHandler):
+        app = DispatchApp()
+        body_limit = gateway_config().max_body_bytes
+
+    server = _BoundedThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        Handler,
+        1,
+        request_deadline_seconds=0.05,
+        dispatch_deadline_seconds=0.18,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = socket.create_connection(server.server_address, timeout=1)
+    started = time.monotonic()
+    try:
+        client.sendall(
+            b"POST /v1/sandboxes/sandbox-one/proxy/18000/v1/tasks/execute HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\nContent-Length: 0\r\n\r\n"
+        )
+        client.settimeout(1)
+        while client.recv(4096):
+            pass
+        assert time.monotonic() - started < 0.7
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_helper_server_uses_real_framing_and_one_bounded_connection_budget(monkeypatch) -> None:
+    app, _, runtime, store = application()
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config())))["id"]
+    record = store.get(sandbox_id)
+    assert record is not None
+    request = json.dumps(
+        {"version": 1, "operation": "verify", "record": record.__dict__, "arguments": {}},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    server_socket, client_socket = socket.socketpair()
+    peer_option = getattr(socket, "SO_PEERCRED", 0xF00D)
+    monkeypatch.setattr(gateway_helper.socket, "SO_PEERCRED", peer_option, raising=False)
+
+    class PeerSocket:
+        def getsockopt(self, *_args):
+            return __import__("struct").pack("3i", 123, 1000, 1000)
+
+        def __getattr__(self, name):
+            return getattr(server_socket, name)
+
+    slots = threading.BoundedSemaphore(1)
+    assert slots.acquire(blocking=False)
+    worker = threading.Thread(
+        target=gateway_helper._serve_connection,
+        args=(PeerSocket(), 1000, gateway_config().record_signing_key, runtime, slots, 0.2, 0.5),
+    )
+    worker.start()
+    try:
+        frame = __import__("struct").pack("!I", len(request)) + request
+        for split in (frame[:2], frame[2:7], frame[7:]):
+            client_socket.sendall(split)
+        client_socket.settimeout(1)
+        size = __import__("struct").unpack("!I", gateway_adapters._recv_exact(client_socket, 4, MonotonicDeadline.after(1)))[0]
+        response = json.loads(gateway_adapters._recv_exact(client_socket, size, MonotonicDeadline.after(1)))
+        assert response["ok"] is True
+        assert response["result"]["sandbox_id"] == sandbox_id
+    finally:
+        client_socket.close()
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+        assert slots.acquire(blocking=False)
+        slots.release()
+
+
+def test_helper_real_framing_allows_only_cleanup_operations_for_cleanup_pending(monkeypatch) -> None:
+    app, _, runtime, store = application()
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config())))["id"]
+    active = store.get(sandbox_id)
+    assert active is not None
+    pending = replace(active, state="cleanup_pending", signature="")
+    pending.signature = app._sign_record(pending)
+    peer_option = getattr(socket, "SO_PEERCRED", 0xF00D)
+    monkeypatch.setattr(gateway_helper.socket, "SO_PEERCRED", peer_option, raising=False)
+
+    def framed(operation: str, arguments: dict[str, object]) -> dict[str, object]:
+        server_socket, client_socket = socket.socketpair()
+
+        class PeerSocket:
+            def getsockopt(self, *_args):
+                return __import__("struct").pack("3i", 123, 1000, 1000)
+
+            def __getattr__(self, name):
+                return getattr(server_socket, name)
+
+        payload = json.dumps(
+            {"version": 1, "operation": operation, "record": pending.__dict__, "arguments": arguments},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        slots = threading.BoundedSemaphore(1)
+        assert slots.acquire(blocking=False)
+        worker = threading.Thread(
+            target=gateway_helper._serve_connection,
+            args=(PeerSocket(), 1000, gateway_config().record_signing_key, runtime, slots, 0.2, 0.5),
+        )
+        worker.start()
+        try:
+            client_socket.sendall(__import__("struct").pack("!I", len(payload)) + payload)
+            size = __import__("struct").unpack(
+                "!I",
+                gateway_adapters._recv_exact(client_socket, 4, MonotonicDeadline.after(1)),
+            )[0]
+            return json.loads(gateway_adapters._recv_exact(client_socket, size, MonotonicDeadline.after(1)))
+        finally:
+            client_socket.close()
+            worker.join(timeout=1)
+            assert not worker.is_alive()
+
+    for operation in ("stop_relay", "cleanup_mailbox"):
+        assert framed(operation, {}) == {"ok": True, "result": {}}
+    denied = {
+        "verify": {},
+        "start_relay": {},
+        "proxy": {
+            "port": 18000,
+            "method": "POST",
+            "target": "/v1/tasks/execute",
+            "headers": {},
+            "body": "",
+        },
+    }
+    for operation, arguments in denied.items():
+        response = framed(operation, arguments)
+        assert response == {"ok": False, "status": 409, "code": "helper_record_invalid"}
 
 
 @pytest.mark.parametrize("phase", ("headers", "body"))
@@ -1000,28 +1313,19 @@ def test_mailbox_poll_consumes_one_shared_absolute_budget(monkeypatch) -> None:
     denials: list[tuple[str, str]] = []
     store = SimpleNamespace(list=lambda _: [record], record_deny=lambda subject, code: denials.append((subject, code)))
     monkeypatch.setattr(gateway_adapters.os, "name", "posix")
-    monkeypatch.setattr(gateway_adapters.os, "O_DIRECTORY", 0x10000, raising=False)
-    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
-    monkeypatch.setattr(gateway_adapters.os, "getuid", lambda: 2000, raising=False)
-    monkeypatch.setattr(gateway_adapters.os, "getgid", lambda: 3000, raising=False)
-    monkeypatch.setattr(gateway_adapters, "_open_workspace_dirfd", lambda *_: 10)
     monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
-    monkeypatch.setattr(gateway_adapters, "_require_directory", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        gateway_adapters.os,
-        "open",
-        lambda name, *_, dir_fd, **__: dir_fd + (100 if name in {".opensandbox-gateway", "requests"} else 200),
-    )
-    monkeypatch.setattr(gateway_adapters.os, "close", lambda _: None)
-    monkeypatch.setattr(gateway_adapters.os, "unlink", lambda *_args, **_kwargs: None)
     names = ["1" * 32 + ".json", "2" * 32 + ".json"]
-    monkeypatch.setattr(gateway_adapters.os, "listdir", lambda descriptor: names if descriptor == 210 else [])
     broker = MailboxBroker(store, SimpleNamespace(targets={}), 0.1, 1024)
-    broker._prune_responses = lambda _: None
+    entries = [(name, 1, index + 1, 10, index + 1) for index, name in enumerate(names)]
+    broker._snapshot_record = lambda *_: (len(entries), 20, entries)
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4)
+    broker._close_mailbox = lambda _descriptors: None
+    broker._request_identity_matches = lambda *_: True
+    broker._unlink_request_if_identity = lambda *_: True
     processed: list[str] = []
     responses: list[int] = []
 
-    def process(_descriptor, name):
+    def process(_descriptor, name, _identity):
         processed.append(name)
         while True:
             time.sleep(0.02)
@@ -1030,10 +1334,10 @@ def test_mailbox_poll_consumes_one_shared_absolute_budget(monkeypatch) -> None:
     broker._process = process
     broker._write_response = lambda _descriptor, _name, value: responses.append(value["status"])
     started = time.monotonic()
-    assert broker.poll_once() == 1
+    assert broker.poll_once() == 0
     assert time.monotonic() - started < 0.6
     assert processed == [names[0]]
-    assert responses == [500]
+    assert responses == []
     assert ("mailbox-broker", "broker_deadline_exceeded") in denials
 
 
@@ -1290,31 +1594,24 @@ def test_mailbox_poll_isolates_bad_requests_and_bounds_each_sandbox(monkeypatch)
     ]
     denials: list[tuple[str, str]] = []
     store = SimpleNamespace(list=lambda _: records, record_deny=lambda subject, code: denials.append((subject, code)))
-    workspace_fds = iter((10, 11))
     monkeypatch.setattr(gateway_adapters.os, "name", "posix")
-    monkeypatch.setattr(gateway_adapters.os, "O_DIRECTORY", 0x10000, raising=False)
-    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
-    monkeypatch.setattr(gateway_adapters.os, "getuid", lambda: 2000, raising=False)
-    monkeypatch.setattr(gateway_adapters.os, "getgid", lambda: 3000, raising=False)
-    monkeypatch.setattr(gateway_adapters, "_open_workspace_dirfd", lambda *_: next(workspace_fds))
     monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
-    monkeypatch.setattr(gateway_adapters, "_require_directory", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(gateway_adapters.os, "open", lambda name, *_, dir_fd, **__: dir_fd + (100 if name in {".opensandbox-gateway", "requests"} else 200))
-    monkeypatch.setattr(gateway_adapters.os, "close", lambda _: None)
-    monkeypatch.setattr(gateway_adapters.os, "unlink", lambda *_args, **_kwargs: None)
     first_names = [f"{value:032x}.json" for value in range(20)]
     second_names = ["f" * 32 + ".json"]
-    monkeypatch.setattr(
-        gateway_adapters.os,
-        "listdir",
-        lambda descriptor: first_names if descriptor == 210 else second_names if descriptor == 211 else [],
-    )
     broker = MailboxBroker(store, SimpleNamespace(targets={}), 1.0, 1024)
     processed: list[str] = []
     responses: list[tuple[str, int]] = []
-    broker._prune_responses = lambda _: None
+    snapshots = {
+        records[0].workspace_host_path: (20, 200, [(first_names[0], 1, 1, 10, 1)]),
+        records[1].workspace_host_path: (1, 10, [(second_names[0], 2, 2, 10, 2)]),
+    }
+    broker._snapshot_record = lambda record, _now: snapshots[record.workspace_host_path]
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4)
+    broker._close_mailbox = lambda _descriptors: None
+    broker._request_identity_matches = lambda *_: True
+    broker._unlink_request_if_identity = lambda *_: True
 
-    def process(_descriptor, name):
+    def process(_descriptor, name, _identity):
         processed.append(name)
         if len(processed) == 1:
             raise RuntimeError("one malformed request")
@@ -1322,10 +1619,181 @@ def test_mailbox_poll_isolates_bad_requests_and_bounds_each_sandbox(monkeypatch)
 
     broker._process = process
     broker._write_response = lambda _descriptor, name, value: responses.append((name, value["status"]))
-    assert broker.poll_once() == 17
-    assert len(processed) == 17 and second_names[0] in processed
+    assert broker.poll_once() == 2
+    assert processed == [first_names[0], second_names[0]]
     assert responses[0][1] == 500 and responses[-1] == (second_names[0], 200)
     assert ("mailbox-broker", "broker_internal_error") in denials
+
+    processed.clear()
+    responses.clear()
+    assert broker.poll_once() == 2
+    assert processed == [second_names[0], first_names[0]]
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    (
+        (MailboxBroker.PER_SANDBOX_PENDING_COUNT + 1, 1024),
+        (1, MailboxBroker.PER_SANDBOX_PENDING_BYTES + 1),
+    ),
+)
+def test_mailbox_per_sandbox_backlog_caps_fail_closed_without_outbound(monkeypatch, snapshot) -> None:
+    record = SimpleNamespace(workspace_host_path="/data/opensandbox/workspaces/one")
+    denials = []
+    store = SimpleNamespace(list=lambda _: [record], record_deny=lambda *value: denials.append(value))
+    broker = MailboxBroker(store, SimpleNamespace(targets={}), 1.0, 1024)
+    entry = ("1" * 32 + ".json", 1, 2, 10, 3)
+    monkeypatch.setattr(gateway_adapters.os, "name", "posix")
+    monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
+    broker._snapshot_record = lambda *_: (snapshot[0], snapshot[1], [entry])
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4)
+    broker._close_mailbox = lambda _descriptors: None
+    broker._request_identity_matches = lambda *_: True
+    broker._unlink_request_if_identity = lambda *_: True
+    broker._process = lambda *_: (_ for _ in ()).throw(AssertionError("overflow must not reach upstream"))
+    responses = []
+    broker._write_response = lambda _fd, _name, response: responses.append(response)
+
+    assert broker.poll_once() == 1
+    assert [response["status"] for response in responses] == [429]
+    assert ("mailbox-broker", "broker_backlog_exceeded") in denials
+
+
+def test_mailbox_global_backlog_cap_fails_closed_for_every_sandbox(monkeypatch) -> None:
+    records = [SimpleNamespace(workspace_host_path=f"/workspace/{index}") for index in range(5)]
+    denials = []
+    store = SimpleNamespace(list=lambda _: records, record_deny=lambda *value: denials.append(value))
+    broker = MailboxBroker(store, SimpleNamespace(targets={}), 1.0, 1024)
+    monkeypatch.setattr(gateway_adapters.os, "name", "posix")
+    monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
+
+    def snapshot(record, _now):
+        index = int(record.workspace_host_path.rsplit("/", 1)[1])
+        return 60, 600, [(f"{index:032x}.json", index + 1, index + 2, 10, index + 3)]
+
+    broker._snapshot_record = snapshot
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4)
+    broker._close_mailbox = lambda _descriptors: None
+    broker._request_identity_matches = lambda *_: True
+    broker._unlink_request_if_identity = lambda *_: True
+    broker._process = lambda *_: (_ for _ in ()).throw(AssertionError("global overflow must not reach upstream"))
+    responses = []
+    broker._write_response = lambda _fd, name, response: responses.append((name, response["status"]))
+
+    assert broker.poll_once() == 5
+    assert len(responses) == 5 and {status for _, status in responses} == {429}
+
+
+def test_mailbox_expired_requests_are_reclaimed_with_bounded_identity_delete(monkeypatch) -> None:
+    record = SimpleNamespace(workspace_host_path="/data/opensandbox/workspaces/one")
+    denials = []
+    store = SimpleNamespace(list=lambda _: [record], record_deny=lambda *value: denials.append(value))
+    broker = MailboxBroker(store, SimpleNamespace(targets={}), 1.0, 1024)
+    names = [f"{index:032x}.json" for index in range(2)]
+    old = time.time() - broker.REQUEST_TTL_SECONDS - 1
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4)
+    broker._close_mailbox = lambda _descriptors: None
+    broker._prune_responses = lambda _fd: None
+    monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
+    monkeypatch.setattr(gateway_adapters.os, "listdir", lambda _fd: names)
+    monkeypatch.setattr(
+        gateway_adapters.os,
+        "stat",
+        lambda name, **_kwargs: SimpleNamespace(
+            st_dev=1,
+            st_ino=names.index(name) + 1,
+            st_size=10,
+            st_mtime=old,
+            st_mtime_ns=int(old * 1_000_000_000),
+        ),
+    )
+    removed = []
+    broker._unlink_request_if_identity = lambda _fd, identity: removed.append(identity) or True
+
+    assert broker._snapshot_record(record, time.time()) == (0, 0, [])
+    assert [identity[0] for identity in removed] == names
+    assert denials.count(("mailbox-broker", "broker_request_expired")) == 2
+
+
+def test_mailbox_named_inode_swap_is_rejected_before_response_and_delete(monkeypatch) -> None:
+    broker = MailboxBroker(SimpleNamespace(), SimpleNamespace(targets={}), 1.0, 1024)
+    entry = ("1" * 32 + ".json", 1, 2, 10, 3)
+    named = SimpleNamespace(st_mode=stat.S_IFREG | 0o640, st_dev=1, st_ino=2)
+    opened = SimpleNamespace(st_mode=stat.S_IFREG | 0o640, st_dev=1, st_ino=9)
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "stat", lambda *_args, **_kwargs: named)
+    monkeypatch.setattr(gateway_adapters.os, "open", lambda *_args, **_kwargs: 7)
+    monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _fd: opened)
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _fd: None)
+
+    assert broker._request_identity_matches(3, entry) is False
+
+
+def test_broker_loop_isolates_iteration_exception_and_continues() -> None:
+    stop = threading.Event()
+    calls = 0
+
+    class Broker:
+        def poll_once(self):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("one iteration failed")
+            stop.set()
+            return 0
+
+    thread = threading.Thread(target=_broker_loop, args=(Broker(), stop))
+    thread.start()
+    thread.join(timeout=1)
+    assert calls == 2 and not thread.is_alive()
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
+    reason="real relay owner/mode and timeout cleanup requires a root-capable POSIX release gate",
+)
+def test_relay_timeout_removes_pending_request_on_real_posix(tmp_path) -> None:
+    mailbox = tmp_path / "mailbox"
+    requests = mailbox / "requests"
+    responses = mailbox / "responses"
+    requests.mkdir(parents=True)
+    responses.mkdir()
+    os.chmod(mailbox, 0o711)
+    os.chown(mailbox, 0, 0)
+    os.chmod(requests, 0o2770)
+    os.chown(requests, 1000, 0)
+    os.chmod(responses, 0o755)
+    os.chown(responses, 0, 0)
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    process = subprocess.Popen(
+        [sys.executable, "-c", RELAY_SOURCE, str(mailbox), "0", "0", "0.05", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                client = socket.create_connection(("127.0.0.1", port), timeout=0.2)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
+        with client:
+            client.sendall(b"POST /callback HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+            client.settimeout(1)
+            response = b""
+            while chunk := client.recv(4096):
+                response += chunk
+        assert b"504 Gateway Timeout" in response
+        assert not list(requests.glob("[0-9a-f]*.json"))
+    finally:
+        process.terminate()
+        process.wait(timeout=2)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX dirfd/mode enforcement requires the s72 execution environment")
@@ -1421,6 +1889,7 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
         eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; STATE=$ROOT/systemctl; ACTIONS=$ROOT/actions
+        DEPLOY_STATE=$ROOT/deploy; AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha; mkdir -p "$DEPLOY_STATE"
         mkdir -p "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$STATE"
         printf 'acl-before\n' > "$ROOT/acl.current"
         require_root_tree() { test -d "$1" && test ! -L "$1"; }
@@ -1457,6 +1926,7 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway.service"
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         test ! -e "$CONFIG_DIR" && test ! -e "$CURRENT_LINK"
+        test ! -e "$AUTHORITY_SHA_STATE"
         grep -qx acl-before "$ROOT/acl.current"
         test ! -e "$STATE/opensandbox-gateway.service.active" && test ! -e "$STATE/opensandbox-gateway.service.enabled"
         test ! -e "$STATE/opensandbox-gateway-helper.service.active" && test ! -e "$STATE/opensandbox-gateway-helper.service.enabled"
@@ -1486,10 +1956,12 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; STATE=$ROOT/systemctl; ACTIONS=$ROOT/actions
+        DEPLOY_STATE=$ROOT/deploy; AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha; mkdir -p "$DEPLOY_STATE"
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$STATE"
         printf 'old-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'old-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'old-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-old\n' > "$ROOT/acl.current"
+        printf '{old}\n' > "$AUTHORITY_SHA_STATE"
         rm -f "$CURRENT_LINK"; ln -s releases/{old} "$CURRENT_LINK"
         : > "$STATE/opensandbox-gateway.service.active"; : > "$STATE/opensandbox-gateway.service.enabled"
         : > "$STATE/opensandbox-gateway-helper.service.active"; : > "$STATE/opensandbox-gateway-helper.service.enabled"
@@ -1498,7 +1970,13 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         verify_manifest() {{ test -f "$1/MANIFEST.sha256"; }}
         validate_release() {{ is_commit "$1"; }}
         chown() {{ :; }}
-        stat() {{ test "$1" = -c && {{ echo 0; return; }}; command stat "$@"; }}
+        stat() {{
+          if test "$1" = -c; then
+            test "${{@: -1}}" = "$AUTHORITY_SHA_STATE" && echo 0:0:600 || echo 0
+            return
+          fi
+          command stat "$@"
+        }}
         install() {{ if test "$1" = -d; then mkdir -p "${{@: -1}}"; else cp "${{@: -2:1}}" "${{@: -1}}"; fi; }}
         getfacl() {{ cat "$ROOT/acl.current"; }}
         setfacl() {{ cp "${{1#--restore=}}" "$ROOT/acl.current"; }}
@@ -1516,6 +1994,7 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         grep -qx old-helper "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         grep -qx old-config "$CONFIG_DIR/gateway.env"; grep -qx acl-old "$ROOT/acl.current"
         test "$(readlink "$CURRENT_LINK")" = releases/{old}
+        grep -qx '{old}' "$AUTHORITY_SHA_STATE"
         grep '^restart:.*:releases/{new}$' "$ACTIONS" >/dev/null
         ''',
     )
@@ -1553,16 +2032,28 @@ def test_release_validation_enforces_commit_owner_symlink_manifest_and_main(tmp_
         printf '%s\n' "$COMMIT" > "$RELEASES/$COMMIT/SOURCE_COMMIT"
         printf '%s\n' "$ROOT/source" > "$RELEASES/$COMMIT/SOURCE_ROOT"
         printf 'origin/main\n' > "$RELEASES/$COMMIT/AUTHORITY_REF"
+        printf '%s\n' "$COMMIT" > "$RELEASES/$COMMIT/AUTHORITY_COMMIT"
         printf 'sealed\n' > "$RELEASES/$COMMIT/payload"
         chown() { :; }; require_root_tree() { test -d "$1" && test ! -L "$1"; }
-        write_manifest "$RELEASES/$COMMIT"; validate_release "$COMMIT"
+        write_manifest "$RELEASES/$COMMIT"; validate_release "$COMMIT" exact
+        test "$(require_exact_authority_head "$ROOT/source" origin/main)" = "$COMMIT"
         printf 'tampered\n' >> "$RELEASES/$COMMIT/payload"; ! validate_release "$COMMIT"
+        printf 'sealed\n' > "$RELEASES/$COMMIT/payload"; write_manifest "$RELEASES/$COMMIT"
+        git -C "$ROOT/source" checkout -- payload
         printf 'two\n' >> "$ROOT/source/payload"; git -C "$ROOT/source" commit -am two >/dev/null
+        git -C "$ROOT/source" push origin main >/dev/null
+        git -C "$ROOT/source" fetch origin main >/dev/null
+        validate_release "$COMMIT" rollback
+        ! validate_release "$COMMIT" exact
+        printf 'three\n' >> "$ROOT/source/payload"; git -C "$ROOT/source" commit -am three >/dev/null
         UNPUSHED=$(git -C "$ROOT/source" rev-parse HEAD); mkdir "$RELEASES/$UNPUSHED"
         printf '%s\n' "$UNPUSHED" > "$RELEASES/$UNPUSHED/SOURCE_COMMIT"
         printf '%s\n' "$ROOT/source" > "$RELEASES/$UNPUSHED/SOURCE_ROOT"
-        printf 'origin/main\n' > "$RELEASES/$UNPUSHED/AUTHORITY_REF"; printf 'sealed\n' > "$RELEASES/$UNPUSHED/payload"
+        printf 'origin/main\n' > "$RELEASES/$UNPUSHED/AUTHORITY_REF"
+        printf '%s\n' "$UNPUSHED" > "$RELEASES/$UNPUSHED/AUTHORITY_COMMIT"
+        printf 'sealed\n' > "$RELEASES/$UNPUSHED/payload"
         write_manifest "$RELEASES/$UNPUSHED"; ! validate_release "$UNPUSHED"
+        ! require_exact_authority_head "$ROOT/source" origin/main
         ''',
     )
     assert result.returncode == 0, result.stderr or result.stdout
@@ -1580,6 +2071,7 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; DEPLOY_STATE=$ROOT/deploy
         ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot; STATE=$ROOT/systemctl
+        AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
         SNAPSHOT_ID=.rollback.contract; SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$SNAPSHOT" "$STATE"
         printf '%s\n' "$SNAPSHOT_ID" > "$ROLLBACK_POINTER"
@@ -1589,11 +2081,12 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         : > "$SNAPSHOT/opensandbox-gateway-helper.service.inactive"
         : > "$SNAPSHOT/opensandbox-gateway.service.disabled"
         : > "$SNAPSHOT/opensandbox-gateway-helper.service.disabled"
-        : > "$SNAPSHOT/config.absent"; printf 'acl-original\n' > "$SNAPSHOT/workspaces.acl"
+        : > "$SNAPSHOT/config.absent"; : > "$SNAPSHOT/authority-sha.absent"; printf 'acl-original\n' > "$SNAPSHOT/workspaces.acl"
         : > "$SNAPSHOT/current.absent"; : > "$SNAPSHOT/MANIFEST.sha256"
         printf 'new-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'new-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-new\n' > "$ROOT/acl.current"
+        printf '%040d\n' 1 > "$AUTHORITY_SHA_STATE"
         id() { test "$1" = -u && echo 0; }
         stat() { target=${@: -1}; case "$target" in "$DEPLOY_STATE") echo 0:0:700;; "$ROLLBACK_POINTER") echo 0:0:600;; *) command stat "$@";; esac; }
         flock() { :; }; require_root_tree() { test -d "$1" && test ! -L "$1"; }; verify_manifest() { test -f "$1/MANIFEST.sha256"; }
@@ -1605,6 +2098,7 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway.service"
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         test ! -e "$CONFIG_DIR" && test ! -e "$CURRENT_LINK"
+        test ! -e "$AUTHORITY_SHA_STATE"
         grep -qx acl-original "$ROOT/acl.current"
         ''',
     )

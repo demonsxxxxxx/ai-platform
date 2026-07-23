@@ -719,6 +719,24 @@ class FakeRedis:
             self.meta[message_id] = json.dumps(metadata, ensure_ascii=False)
             self.workers[worker_id] = str(now)
             return json.dumps({"status": "heartbeat"})
+        if "verify-run-lease-ownership" in script:
+            _processing_meta_key, fence_key = keys_and_args[:numkeys]
+            message_id, attempt_id, owner_token, raw, worker_id, fence_prefix = keys_and_args[numkeys:]
+            lease = json.loads(self.meta.get(message_id) or "{}")
+            if (
+                lease.get("raw") != raw
+                or lease.get("message_id") != message_id
+                or lease.get("attempt_id") != attempt_id
+                or lease.get("owner_token") != owner_token
+                or lease.get("worker_id") != worker_id
+            ):
+                return json.dumps({"status": "stale_owner"})
+            expected_fence = f"{fence_prefix}:{lease.get('tenant_id', '')}:{lease.get('run_id', '')}"
+            if fence_key != expected_fence:
+                return json.dumps({"status": "stale_owner"})
+            if fence_key in self.fences:
+                return json.dumps({"status": "reconciliation_fenced"})
+            return json.dumps({"status": "current"})
         if "ack-run-lease" in script:
             processing_key, processing_meta_key, retry_meta_key, fence_key = keys_and_args[:numkeys]
             raw, message_id, attempt_id, owner_token, fence_prefix = keys_and_args[numkeys:]
@@ -1844,8 +1862,10 @@ async def test_ack_and_fail_remove_from_processing(monkeypatch):
 
     monkeypatch.setattr("app.queue.get_redis", get_redis)
 
-    assert await queue.ack_run(raw, message_id=handle) is True
-    assert await queue.fail_leased_run(other_raw, error_code="boom", error_message="failed", message_id=other_handle) is True
+    assert (await queue.ack_run(raw, message_id=handle)).status == "acked"
+    assert (
+        await queue.fail_leased_run(other_raw, error_code="boom", error_message="failed", message_id=other_handle)
+    ).status == "failed"
 
     assert (queue.PROCESSING_KEY, 1, raw) in fake.removed
     assert (queue.PROCESSING_KEY, 1, other_raw) in fake.removed
@@ -1862,8 +1882,10 @@ async def test_stale_lease_owner_cannot_heartbeat_ack_or_fail(monkeypatch):
     stale_handle = queue._lease_handle(message_id, f"qat_{'1' * 64}", f"qown_{'1' * 64}")
 
     assert await queue.heartbeat_run(stale_handle, worker_id="worker-a") is False
-    assert await queue.ack_run(raw, message_id=stale_handle) is False
-    assert await queue.fail_leased_run(raw, error_code="stale", error_message="stale", message_id=stale_handle) is False
+    assert (await queue.ack_run(raw, message_id=stale_handle)).status == "stale_owner"
+    assert (
+        await queue.fail_leased_run(raw, error_code="stale", error_message="stale", message_id=stale_handle)
+    ).status == "stale_owner"
     assert fake.processing == [raw]
     assert json.loads(fake.meta[message_id])["attempt_id"] == attempt_id
     assert fake.pushed == []
@@ -1882,14 +1904,44 @@ async def test_active_reconciliation_fence_rejects_heartbeat_ack_and_fail(monkey
     monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
 
     assert await queue.heartbeat_run(handle, worker_id="worker-a") is False
-    assert await queue.ack_run(raw, message_id=handle) is False
-    assert await queue.fail_leased_run(raw, error_code="stale", error_message="stale", message_id=handle) is False
+    assert (await queue.ack_run(raw, message_id=handle)).status == "reconciliation_fenced"
+    assert (
+        await queue.fail_leased_run(raw, error_code="stale", error_message="stale", message_id=handle)
+    ).status == "reconciliation_fenced"
     assert fake.processing == [raw]
     assert message_id in fake.meta and fake.pushed == []
     ack_call = next(call for call in fake.eval_calls if call[0] == queue.ACK_LEASE_SCRIPT)
     fail_call = next(call for call in fake.eval_calls if call[0] == queue.FAIL_LEASE_SCRIPT)
     assert ack_call[1] == 4 and ack_call[2][3] == fence_key
     assert fail_call[1] == 5 and fail_call[2][4] == fence_key
+
+
+@pytest.mark.asyncio
+async def test_exact_lease_ownership_proof_binds_attempt_owner_worker_and_reconciliation_fence(monkeypatch):
+    raw = payload_json()
+    message_id, attempt_id, owner_token, handle, metadata = lease_identity(raw)
+    fake = FakeRedis(processing=[raw], meta={message_id: json.dumps(metadata)})
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
+    current = queue.QueueMessage(raw, {}, handle, message_id, attempt_id, owner_token)
+
+    assert (await queue.verify_lease_ownership(current, worker_id="worker-a")).status == "current"
+
+    stale_attempt = f"qat_{'2' * 64}"
+    stale_owner = f"qown_{'2' * 64}"
+    stale = queue.QueueMessage(
+        raw,
+        {},
+        queue._lease_handle(message_id, stale_attempt, stale_owner),
+        message_id,
+        stale_attempt,
+        stale_owner,
+    )
+    assert (await queue.verify_lease_ownership(stale, worker_id="worker-a")).status == "stale_owner"
+    assert (await queue.verify_lease_ownership(current, worker_id="worker-old")).status == "stale_owner"
+
+    fence_key = queue.reconciliation_fence_key(tenant_id="tenant-a", run_id="run-a")
+    fake.fences[fence_key] = "reconciler-owner"
+    assert (await queue.verify_lease_ownership(current, worker_id="worker-a")).status == "reconciliation_fenced"
 
 
 @pytest.mark.asyncio

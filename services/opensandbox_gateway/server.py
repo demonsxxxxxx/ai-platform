@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import signal
 import socket
 import ssl
@@ -75,6 +76,7 @@ def build_application(config: GatewayConfig, state_path: str) -> tuple[GatewayAp
         os.environ.get("OPENSANDBOX_GATEWAY_HELPER_SOCKET", "/run/opensandbox-gateway/helper.sock"),
         config.request_timeout_seconds,
         config.max_response_bytes,
+        config.dispatch_timeout_seconds,
     )
     return GatewayApplication(config, lifecycle, runtime, store), store
 
@@ -114,6 +116,7 @@ def run() -> None:
         Handler,
         config.max_concurrent_handlers,
         request_deadline_seconds=config.request_timeout_seconds,
+        dispatch_deadline_seconds=config.dispatch_timeout_seconds,
     )
     server.daemon_threads = True
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -185,8 +188,10 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             self._write(400, {"content-type": "application/json"}, b'{"error":{"code":"request_body_incomplete"}}')
             return
         request = Request(self.command, self.path, {key: value for key, value in self.headers.items()}, body)
-        response = self.app.handle(request)
-        self._write(response.status, response.headers, response.body)
+        application_deadline = self.server.application_deadline(self.connection, request)
+        with deadline_scope(application_deadline):
+            response = self.app.handle(request)
+            self._write(response.status, response.headers, response.body)
 
     def _write(self, status: int, headers: Mapping[str, str], body: bytes) -> None:
         self.server.request_deadline(self.connection).bind_socket(self.connection)
@@ -209,9 +214,19 @@ class _GatewayHandler(BaseHTTPRequestHandler):
 class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """Threading listener with a hard upper bound on active handlers."""
 
-    def __init__(self, server_address, handler_class, max_handlers: int, request_deadline_seconds: float = 5.0) -> None:
+    def __init__(
+        self,
+        server_address,
+        handler_class,
+        max_handlers: int,
+        request_deadline_seconds: float = 5.0,
+        dispatch_deadline_seconds: float | None = None,
+    ) -> None:
         self._handler_slots = threading.BoundedSemaphore(max_handlers)
         self._request_deadline_seconds = request_deadline_seconds
+        self._dispatch_deadline_seconds = (
+            request_deadline_seconds if dispatch_deadline_seconds is None else dispatch_deadline_seconds
+        )
         self.tls_context: ssl.SSLContext | None = None
         self._request_deadlines: dict[int, _ConnectionDeadline] = {}
         self._request_deadlines_lock = threading.Lock()
@@ -225,11 +240,25 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
     def request_deadline(self, connection: socket.socket) -> MonotonicDeadline:
         return self._ensure_request_deadline(connection).deadline
 
+    def application_deadline(self, connection: socket.socket, request: Request) -> MonotonicDeadline:
+        """Promote only the exact executor dispatch route to the accept-time total budget."""
+
+        if (
+            request.method.upper() == "POST"
+            and re.fullmatch(
+                r"/v1/sandboxes/[^/?]+/proxy/18000/v1/tasks/execute(?:\?[^#]*)?",
+                request.target,
+            )
+        ):
+            return self._ensure_request_deadline(connection).promote()
+        return self.request_deadline(connection)
+
     def _ensure_request_deadline(self, connection: socket.socket) -> "_ConnectionDeadline":
         with self._request_deadlines_lock:
             value = self._request_deadlines.get(id(connection))
             if value is None:
-                value = _ConnectionDeadline(MonotonicDeadline.after(self._request_deadline_seconds), connection)
+                total = MonotonicDeadline.after(self._dispatch_deadline_seconds)
+                value = _ConnectionDeadline(total, total.bounded(self._request_deadline_seconds), connection)
                 self._request_deadlines[id(connection)] = value
         return value
 
@@ -237,7 +266,8 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         with self._request_deadlines_lock:
             value = self._request_deadlines.pop(id(old), None)
             if value is None:
-                value = _ConnectionDeadline(MonotonicDeadline.after(self._request_deadline_seconds), new)
+                total = MonotonicDeadline.after(self._dispatch_deadline_seconds)
+                value = _ConnectionDeadline(total, total.bounded(self._request_deadline_seconds), new)
             else:
                 value.replace(new)
             self._request_deadlines[id(new)] = value
@@ -304,13 +334,38 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
 
 class _ConnectionDeadline:
-    """Own one accepted connection, its absolute deadline, and its timer."""
+    """Own one accept-time total budget plus its shorter ingress phase cap."""
 
-    def __init__(self, deadline: MonotonicDeadline, connection: socket.socket) -> None:
-        self.deadline = deadline
+    def __init__(
+        self,
+        total_deadline: MonotonicDeadline,
+        phase_deadline: MonotonicDeadline,
+        connection: socket.socket,
+    ) -> None:
+        self._total_deadline = total_deadline
+        self._phase_deadline = phase_deadline
+        self._promoted = False
         self._connection = connection
         self._lock = threading.Lock()
-        self._timer = deadline.arm(self._expire)
+        self._total_timer = total_deadline.arm(self._expire_total)
+        self._phase_timer = phase_deadline.arm(self._expire_phase)
+
+    @property
+    def deadline(self) -> MonotonicDeadline:
+        """Return the current cap without ever extending the accept-time total."""
+
+        with self._lock:
+            return self._total_deadline if self._promoted else self._phase_deadline
+
+    def promote(self) -> MonotonicDeadline:
+        """Release the ingress cap while retaining the already-running total timer."""
+
+        with self._lock:
+            self._promoted = True
+            deadline = self._total_deadline
+        self._phase_timer.cancel()
+        deadline.remaining()
+        return deadline
 
     def replace(self, connection: socket.socket) -> None:
         """Move expiry ownership from the raw socket to its TLS wrapper."""
@@ -318,22 +373,34 @@ class _ConnectionDeadline:
         with self._lock:
             self._connection = connection
         if self.deadline.expired():
-            self._expire()
+            self._expire_total()
 
     def cancel(self) -> None:
         """Release the timer after every terminal connection path."""
 
-        self._timer.cancel()
+        self._phase_timer.cancel()
+        self._total_timer.cancel()
 
-    def _expire(self) -> None:
+    def _expire_phase(self) -> None:
+        with self._lock:
+            if self._promoted:
+                return
+            connection = self._connection
+        _expire_connection(connection)
+
+    def _expire_total(self) -> None:
         with self._lock:
             connection = self._connection
         _expire_connection(connection)
 
 
 def _broker_loop(broker: MailboxBroker, stop: threading.Event) -> None:
-    while not stop.wait(0.02 if broker.poll_once() else 0.1):
-        pass
+    while not stop.is_set():
+        try:
+            handled = broker.poll_once()
+        except Exception:
+            handled = 0
+        stop.wait(0.02 if handled else 0.1)
 
 
 def _expire_connection(connection: socket.socket) -> None:

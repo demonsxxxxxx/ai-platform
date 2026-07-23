@@ -362,6 +362,7 @@ class RuntimeEvidence:
     image_digest: str
     mounts: tuple[tuple[str, str, bool], ...]
     labels: Mapping[str, str]
+    skill_mount_fingerprint: str = ""
     running: bool = True
     relay_active: bool = False
 
@@ -646,7 +647,7 @@ class GatewayApplication:
             raise GatewayError(400, "model_boundary_mismatch")
         if any(k.upper().endswith("_PROXY") for k in env):
             raise GatewayError(400, "proxy_environment_not_allowed")
-        mounts, workspace = self._accept_volumes(payload.get("volumes"), scope)
+        mounts, workspace = self._accept_volumes(payload.get("volumes"), scope, metadata)
         rewritten = json.loads(json.dumps(payload))
         rewritten_env = rewritten["env"]
         rewritten_env["AI_PLATFORM_CALLBACK_BASE_URL"] = "http://127.0.0.1:18888"
@@ -666,7 +667,12 @@ class GatewayApplication:
             "executor_token_hash": hmac.new(self.config.record_signing_key, executor_token.encode(), hashlib.sha256).hexdigest(),
         }
 
-    def _accept_volumes(self, value: Any, scope: Mapping[str, str]) -> tuple[list[dict[str, Any]], str]:
+    def _accept_volumes(
+        self,
+        value: Any,
+        scope: Mapping[str, str],
+        metadata: Mapping[str, str],
+    ) -> tuple[list[dict[str, Any]], str]:
         if not isinstance(value, list) or not value or len(value) > 2:
             raise GatewayError(400, "volume_policy_mismatch")
         expected_workspace = (
@@ -677,6 +683,17 @@ class GatewayApplication:
         expected_prefix = f"{self.config.workspace_root}/"
         accepted: list[dict[str, Any]] = []
         workspace = ""
+        names: set[str] = set()
+        mount_paths: set[str] = set()
+        required = metadata.get("ai-platform.skill_mount.required")
+        fingerprint = metadata.get("ai-platform.skill_mount.fingerprint")
+        if required not in {"true", "false"}:
+            raise GatewayError(400, "skill_mount_declaration_invalid")
+        if required == "true":
+            if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+                raise GatewayError(400, "skill_mount_fingerprint_invalid")
+        elif fingerprint != "":
+            raise GatewayError(400, "skill_mount_fingerprint_invalid")
         for item in value:
             if not isinstance(item, dict) or set(item) - {"name", "mountPath", "host", "readOnly"}:
                 raise GatewayError(400, "volume_policy_mismatch")
@@ -686,6 +703,11 @@ class GatewayApplication:
             else:
                 host_path = host
             mount_path, read_only = item.get("mountPath"), item.get("readOnly", False)
+            name = item.get("name")
+            if not isinstance(name, str) or name in names or mount_path in mount_paths:
+                raise GatewayError(400, "volume_policy_mismatch")
+            names.add(name)
+            mount_paths.add(mount_path)
             if (
                 not isinstance(host_path, str)
                 or not host_path.startswith(expected_prefix)
@@ -698,14 +720,16 @@ class GatewayApplication:
             if not isinstance(mount_path, str) or mount_path not in ("/workspace", "/workspace/.claude"):
                 raise GatewayError(400, "volume_policy_mismatch")
             if mount_path == "/workspace":
-                if read_only is not False or host_path != expected_workspace:
+                if name != "ai-platform-workspace" or read_only is not False or host_path != expected_workspace:
                     raise GatewayError(400, "workspace_must_be_writable")
                 workspace = host_path
-            elif read_only is not True or host_path != expected_skill_mount:
+            elif name != "ai-platform-claude-skills" or read_only is not True or host_path != expected_skill_mount:
                 raise GatewayError(400, "skill_mount_must_be_read_only")
             accepted.append({"host": host_path, "mountPath": mount_path, "readOnly": bool(read_only)})
         if not workspace:
             raise GatewayError(400, "workspace_mount_missing")
+        if ("/workspace/.claude" in mount_paths) != (required == "true"):
+            raise GatewayError(400, "skill_mount_declaration_mismatch")
         return accepted, workspace
 
     def _reconcile_intents(self) -> None:
@@ -1023,6 +1047,7 @@ class GatewayApplication:
 
     def _validate_evidence(self, record: LeaseRecord, evidence: RuntimeEvidence) -> None:
         expected_mounts = tuple(sorted((m["host"], m["mountPath"], bool(m["readOnly"])) for m in record.mounts))
+        expected_skill_fingerprint = record.metadata["ai-platform.skill_mount.fingerprint"]
         if (
             evidence.sandbox_id != record.sandbox_id
             or not evidence.running
@@ -1035,6 +1060,7 @@ class GatewayApplication:
             or evidence.image != record.image
             or evidence.image_digest != record.image_digest
             or tuple(sorted(evidence.mounts)) != expected_mounts
+            or evidence.skill_mount_fingerprint != expected_skill_fingerprint
             or not _metadata_matches(evidence.labels, record.metadata)
         ):
             raise GatewayError(409, "runtime_attestation_drift")

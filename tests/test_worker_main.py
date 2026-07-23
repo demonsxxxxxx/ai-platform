@@ -1,12 +1,13 @@
 import asyncio
 import json
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 import app.worker_main as worker_main
 from app import repositories
-from app.queue import QueueMessage
+from app.queue import LeaseMutationOutcome, QueueMessage
 from app.worker import WorkerOutcome
 from app.worker_main import run_once
 
@@ -76,6 +77,10 @@ def default_sandbox_cleanup(monkeypatch):
     async def renew_run_reconciliation_fence(_fence, *, ttl_seconds):
         return ttl_seconds > 0
 
+    async def verify_lease_ownership(_message, *, worker_id):
+        assert worker_id
+        return LeaseMutationOutcome("current")
+
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_sandbox_leases",
         cleanup_expired_sandbox_leases,
@@ -99,6 +104,11 @@ def default_sandbox_cleanup(monkeypatch):
     monkeypatch.setattr(
         "app.worker_main.queue.renew_run_reconciliation_fence",
         renew_run_reconciliation_fence,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.queue.verify_lease_ownership",
+        verify_lease_ownership,
         raising=False,
     )
 
@@ -903,9 +913,11 @@ async def test_run_once_acknowledges_completed_message(monkeypatch):
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
+        return LeaseMutationOutcome("acked")
 
     async def fail_leased_run(raw, *, error_code, error_message, message_id=None, worker_id=None):
         calls.append(("fail", raw, error_code, error_message))
+        return LeaseMutationOutcome("failed")
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
@@ -953,9 +965,11 @@ async def test_run_once_ownership_loss_cancels_processing_without_ack_or_fail(mo
 
     async def ack_run(*_args, **_kwargs):
         calls.append(("ack",))
+        return LeaseMutationOutcome("acked")
 
     async def fail_leased_run(*_args, **_kwargs):
         calls.append(("fail",))
+        return LeaseMutationOutcome("failed")
 
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
@@ -979,6 +993,108 @@ async def test_run_once_ownership_loss_cancels_processing_without_ack_or_fail(mo
     )
     assert ("processing_cancelled",) in calls
     assert not any(call[0] in {"ack", "fail"} for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_run_once_heartbeat_io_exception_cancels_processing_without_queue_mutation(monkeypatch):
+    calls = []
+    processing_started = asyncio.Event()
+
+    async def lease_run(**_kwargs):
+        return QueueMessage(
+            raw="raw-run",
+            payload={"run_id": "run-a"},
+            message_id="msg-a",
+            queue_message_id="msg-a",
+            attempt_id="qat-test-attempt",
+            owner_token="qown-test-owner",
+        )
+
+    async def process_run_payload(*_args, **_kwargs):
+        processing_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            calls.append(("processing_cancelled",))
+            raise
+
+    async def heartbeat_run(*_args, **_kwargs):
+        await processing_started.wait()
+        raise OSError("redis unavailable")
+
+    async def forbidden_mutation(*_args, **_kwargs):
+        calls.append(("queue_mutation",))
+        return LeaseMutationOutcome("acked")
+
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr("app.worker_main.queue.heartbeat_run", heartbeat_run)
+    monkeypatch.setattr("app.worker_main.queue.ack_run", forbidden_mutation)
+    monkeypatch.setattr("app.worker_main.queue.fail_leased_run", forbidden_mutation)
+
+    outcome = await run_once(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        heartbeat_interval_seconds=0,
+        run_initial_maintenance=False,
+        run_background_maintenance=False,
+    )
+
+    assert outcome.status == "ownership_lost"
+    assert calls == [("processing_cancelled",)]
+
+
+@pytest.mark.parametrize(
+    ("process_status", "mutation_name", "rejected_status"),
+    (("succeeded", "ack_run", "reconciliation_fenced"), ("dead_letter", "fail_leased_run", "stale_owner")),
+)
+@pytest.mark.asyncio
+async def test_run_once_surfaces_rejected_ack_or_fail_as_ownership_loss(
+    monkeypatch,
+    process_status,
+    mutation_name,
+    rejected_status,
+):
+    calls = []
+
+    async def lease_run(**_kwargs):
+        return QueueMessage(
+            raw="raw-run",
+            payload={"run_id": "run-a"},
+            message_id="msg-a",
+            queue_message_id="msg-a",
+            attempt_id="qat-test-attempt",
+            owner_token="qown-test-owner",
+        )
+
+    async def process_run_payload(*_args, **_kwargs):
+        return WorkerOutcome(process_status, "run-a", "bad", "bad")
+
+    async def rejected(*_args, **_kwargs):
+        calls.append((mutation_name,))
+        return LeaseMutationOutcome(rejected_status)
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("only the selected terminal queue mutation is allowed")
+
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr(f"app.worker_main.queue.{mutation_name}", rejected)
+    monkeypatch.setattr(
+        f"app.worker_main.queue.{'fail_leased_run' if mutation_name == 'ack_run' else 'ack_run'}",
+        forbidden,
+    )
+
+    outcome = await run_once(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        heartbeat_interval_seconds=60,
+        run_initial_maintenance=False,
+        run_background_maintenance=False,
+    )
+
+    assert outcome.status == "ownership_lost"
+    assert calls == [(mutation_name,)]
 
 
 @pytest.mark.asyncio
@@ -1010,9 +1126,11 @@ async def test_run_once_keeps_queue_maintenance_running_during_long_processing(m
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
+        return LeaseMutationOutcome("acked")
 
     async def fail_leased_run(raw, *, error_code, error_message, message_id=None, worker_id=None):
         calls.append(("fail", raw, error_code, error_message, message_id, worker_id))
+        return LeaseMutationOutcome("failed")
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
@@ -1049,9 +1167,11 @@ async def test_run_once_dead_letters_unhandled_outcome(monkeypatch):
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw))
+        return LeaseMutationOutcome("acked")
 
     async def fail_leased_run(raw, *, error_code, error_message, message_id=None, worker_id=None):
         calls.append(("fail", raw, error_code, error_message, message_id, worker_id))
+        return LeaseMutationOutcome("failed")
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
@@ -1086,9 +1206,11 @@ async def test_run_once_acknowledges_cancelled_message(monkeypatch):
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
+        return LeaseMutationOutcome("acked")
 
     async def fail_leased_run(raw, *, error_code, error_message, message_id=None, worker_id=None):
         calls.append(("fail", raw, error_code, error_message, message_id, worker_id))
+        return LeaseMutationOutcome("failed")
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
@@ -1127,9 +1249,11 @@ async def test_run_once_does_not_ack_cancelled_message_before_execution_owner_fi
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
+        return LeaseMutationOutcome("acked")
 
     async def fail_leased_run(*args, **kwargs):
         calls.append(("fail",))
+        return LeaseMutationOutcome("failed")
 
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
@@ -1173,9 +1297,11 @@ async def test_run_once_dead_letters_process_exception(monkeypatch):
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
+        return LeaseMutationOutcome("acked")
 
     async def fail_leased_run(raw, *, error_code, error_message, message_id=None, worker_id=None):
         calls.append(("fail", raw, error_code, error_message, message_id, worker_id))
+        return LeaseMutationOutcome("failed")
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
@@ -1295,9 +1421,11 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
+        return LeaseMutationOutcome("acked")
 
     async def fail_leased_run(*args, **kwargs):
         calls.append(("dead_letter",))
+        return LeaseMutationOutcome("failed")
 
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -1399,9 +1527,11 @@ async def test_run_once_does_not_terminalize_escaped_exception_for_mismatched_lo
 
     async def ack_run(*_args, **_kwargs):
         calls.append(("ack",))
+        return LeaseMutationOutcome("acked")
 
     async def fail_leased_run(_raw, **kwargs):
         calls.append(("dead_letter", kwargs["error_code"]))
+        return LeaseMutationOutcome("failed")
 
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -1488,9 +1618,11 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
 
     async def ack_run(raw, message_id=None):
         calls.append(("ack", raw, message_id))
+        return LeaseMutationOutcome("acked")
 
     async def fail_leased_run(*_args, **_kwargs):
         calls.append(("dead_letter",))
+        return LeaseMutationOutcome("failed")
 
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -1511,6 +1643,98 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
 
     assert outcome.status == "failed"
     assert calls == [("ack", "raw-run", "msg-a")]
+
+
+@pytest.mark.parametrize("stale_status", ("stale_owner", "reconciliation_fenced"))
+@pytest.mark.asyncio
+async def test_escaped_terminalization_rejects_stale_owner_or_fence_before_transaction(monkeypatch, stale_status):
+    entered = False
+    payload = SimpleNamespace(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="agent-a",
+        skill_id="skill-a",
+    )
+    message = QueueMessage("raw", {"run_id": "run-a"}, "lease", "message", "attempt", "owner")
+
+    class Transaction:
+        async def __aenter__(self):
+            nonlocal entered
+            entered = True
+            return object()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def verify(*_args, **_kwargs):
+        return LeaseMutationOutcome(stale_status)
+
+    monkeypatch.setattr(worker_main, "parse_leased_queue_envelope", lambda _value: SimpleNamespace(payload=payload))
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
+
+    outcome = await worker_main._terminalize_escaped_process_exception(message, "worker-a", RuntimeError("boom"))
+
+    assert outcome.status == "ownership_lost"
+    assert entered is False
+
+
+@pytest.mark.asyncio
+async def test_escaped_terminalization_rolls_back_when_fence_changes_after_terminal_write(monkeypatch):
+    calls = []
+    statuses = iter(("current", "current", "reconciliation_fenced"))
+    payload = SimpleNamespace(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="agent-a",
+        skill_id="skill-a",
+    )
+    message = QueueMessage("raw", {"run_id": "run-a"}, "lease", "message", "attempt", "owner")
+
+    class Transaction:
+        async def __aenter__(self):
+            calls.append(("tx_enter",))
+            return object()
+
+        async def __aexit__(self, exc_type, _exc, _tb):
+            calls.append(("tx_rollback", exc_type is worker_main._EscapedTerminalizationOwnershipLost))
+            return False
+
+    async def verify(*_args, **_kwargs):
+        return LeaseMutationOutcome(next(statuses))
+
+    async def get_run(*_args, **_kwargs):
+        return {
+            "id": "run-a",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "agent_id": "agent-a",
+            "skill_id": "skill-a",
+            "status": "running",
+        }
+
+    async def fail_run(*_args, **_kwargs):
+        calls.append(("terminal_write",))
+        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+
+    monkeypatch.setattr(worker_main, "parse_leased_queue_envelope", lambda _value: SimpleNamespace(payload=payload))
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
+    monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
+    monkeypatch.setattr(worker_main.repositories, "fail_run", fail_run)
+
+    with pytest.raises(worker_main._EscapedTerminalizationOwnershipLost):
+        await worker_main._terminalize_escaped_process_exception(message, "worker-a", RuntimeError("boom"))
+
+    assert calls == [("tx_enter",), ("terminal_write",), ("tx_rollback", True)]
 
 
 @pytest.mark.asyncio

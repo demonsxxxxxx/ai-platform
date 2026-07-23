@@ -5,6 +5,7 @@ RELEASES=/opt/opensandbox-gateway/releases
 CURRENT_LINK=/opt/opensandbox-gateway/current
 DEPLOY_STATE=/var/lib/opensandbox-gateway-deploy
 ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot
+AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
 SYSTEMD_DIR=/etc/systemd/system
 CONFIG_DIR=/etc/opensandbox-gateway
 WORKSPACE_ROOT=/data/opensandbox/workspaces
@@ -36,10 +37,15 @@ validate_release() {
   verify_manifest "$release"
   source_root=$(cat "$release/SOURCE_ROOT")
   authority_ref=$(cat "$release/AUTHORITY_REF")
+  authority_commit=$(cat "$release/AUTHORITY_COMMIT")
+  is_commit "$authority_commit"
+  test "$authority_commit" = "$commit"
   test "$(readlink -f "$source_root")" = "$source_root"
   require_root_tree "$source_root"
   git -C "$source_root" show-ref --verify --quiet "refs/remotes/$authority_ref"
-  git -C "$source_root" merge-base --is-ancestor "$commit" "$authority_ref"
+  current_authority=$(git -C "$source_root" rev-parse --verify "refs/remotes/$authority_ref^{commit}")
+  is_commit "$current_authority"
+  git -C "$source_root" merge-base --is-ancestor "$commit" "$current_authority"
 }
 
 rollback_main() {
@@ -70,6 +76,15 @@ else
   rm -rf "$CONFIG_DIR"
 fi
 setfacl --restore="$SNAPSHOT/workspaces.acl"
+if test -f "$SNAPSHOT/authority-sha"; then
+  authority_sha=$(cat "$SNAPSHOT/authority-sha")
+  is_commit "$authority_sha"
+  install -o root -g root -m 0600 "$SNAPSHOT/authority-sha" "$AUTHORITY_SHA_STATE"
+elif test -f "$SNAPSHOT/authority-sha.absent"; then
+  rm -f "$AUTHORITY_SHA_STATE"
+else
+  exit 1
+fi
 PREVIOUS=
 if test -f "$SNAPSHOT/current"; then
   previous=$(cat "$SNAPSHOT/current")

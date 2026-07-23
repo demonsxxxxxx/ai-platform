@@ -389,6 +389,7 @@ class InMemoryRuntimeAdapter:
             image_digest=record.image_digest,
             mounts=tuple((item["host"], item["mountPath"], item["readOnly"]) for item in record.mounts),
             labels=dict(record.metadata),
+            skill_mount_fingerprint=record.metadata["ai-platform.skill_mount.fingerprint"],
         )
 
     def verify(self, record: LeaseRecord) -> RuntimeEvidence:
@@ -490,6 +491,7 @@ class DockerRuntimeAdapter:
             image_digest=image_digest,
             mounts=mounts,
             labels=labels,
+            skill_mount_fingerprint=_runtime_skill_mount_fingerprint(record, str(self.workspace_root)),
             running=bool(state.get("Running")),
             relay_active=identity["relay_active"],
         )
@@ -601,9 +603,16 @@ class DockerRuntimeAdapter:
 class HelperRuntimeAdapter:
     """Narrow authenticated Unix-socket client for Docker-owned operations."""
 
-    def __init__(self, socket_path: str, timeout_seconds: float, max_response_bytes: int) -> None:
+    def __init__(
+        self,
+        socket_path: str,
+        timeout_seconds: float,
+        max_response_bytes: int,
+        dispatch_timeout_seconds: float | None = None,
+    ) -> None:
         self.socket_path = socket_path
         self.timeout_seconds = timeout_seconds
+        self.dispatch_timeout_seconds = timeout_seconds if dispatch_timeout_seconds is None else dispatch_timeout_seconds
         self.max_response_bytes = max_response_bytes
 
     def verify(self, record: LeaseRecord) -> RuntimeEvidence:
@@ -620,6 +629,7 @@ class HelperRuntimeAdapter:
             image_digest=value["image_digest"],
             mounts=tuple(tuple(item) for item in value["mounts"]),
             labels=value["labels"],
+            skill_mount_fingerprint=value["skill_mount_fingerprint"],
             running=value["running"],
             relay_active=value["relay_active"],
         )
@@ -651,7 +661,14 @@ class HelperRuntimeAdapter:
         payload = _json_text({"version": 1, "operation": operation, "record": asdict(record), "arguments": dict(arguments or {})}).encode()
         if len(payload) > 2 * 1024 * 1024:
             raise GatewayError(413, "helper_request_too_large")
-        deadline = operation_deadline(self.timeout_seconds)
+        dispatch = (
+            operation == "proxy"
+            and isinstance(arguments, Mapping)
+            and arguments.get("port") == 18000
+            and str(arguments.get("method") or "").upper() == "POST"
+            and str(arguments.get("target") or "").split("?", 1)[0] == "/v1/tasks/execute"
+        )
+        deadline = operation_deadline(self.dispatch_timeout_seconds if dispatch else self.timeout_seconds)
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         timer = None
         try:
@@ -696,12 +713,20 @@ class BrokerPolicy:
 class MailboxBroker:
     """Move bounded requests from scoped workspaces to exact pinned HTTPS targets."""
 
+    REQUEST_TTL_SECONDS = 70.0
+    PER_SANDBOX_PENDING_COUNT = 64
+    PER_SANDBOX_PENDING_BYTES = 16 * 1024 * 1024
+    GLOBAL_PENDING_COUNT = 256
+    GLOBAL_PENDING_BYTES = 64 * 1024 * 1024
+    EXPIRED_SWEEP_LIMIT = 16
+
     def __init__(self, store: SQLiteStateStore, policy: BrokerPolicy, timeout_seconds: float, max_response_bytes: int, workspace_root: str = "/data/opensandbox/workspaces") -> None:
         self.store = store
         self.policy = policy
         self.timeout_seconds = timeout_seconds
         self.max_response_bytes = max_response_bytes
         self.workspace_root = workspace_root
+        self._rotation = 0
 
     def poll_once(self) -> int:
         """Process at most one bounded batch and return the number handled."""
@@ -711,73 +736,181 @@ class MailboxBroker:
             return self._poll_until(deadline)
 
     def _poll_until(self, deadline) -> int:
-        handled = 0
-        for record in self.store.list({}):
+        records = list(self.store.list({}))
+        if not records:
+            self._rotation = 0
+            return 0
+        start = self._rotation % len(records)
+        records = records[start:] + records[:start]
+        self._rotation = (start + 1) % len(records)
+        snapshots: list[tuple[Any, int, int, list[tuple[str, int, int, int, int]]]] = []
+        total_count = 0
+        total_bytes = 0
+        now = time.time()
+        for record in records:
             try:
                 deadline.remaining()
             except DeadlineExceeded:
                 self.store.record_deny("mailbox-broker", "broker_deadline_exceeded")
                 break
-            workspace_fd = mailbox_fd = request_fd = response_fd = None
             if os.name != "posix":
                 self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
                 continue
             try:
-                workspace_fd = _open_workspace_dirfd(self.workspace_root, record.workspace_host_path)
-                mailbox_fd = os.open(".opensandbox-gateway", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=workspace_fd)
-                request_fd = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
-                response_fd = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
-                _require_directory(mailbox_fd, uid=0, gid=0, mode=0o711)
-                _require_directory(request_fd, uid=1000, gid=os.getgid(), mode=0o2770)
-                _require_directory(response_fd, uid=os.getuid(), gid=os.getgid(), mode=0o755)
+                count, size, entries = self._snapshot_record(record, now)
             except FileNotFoundError:
-                for descriptor in (response_fd, request_fd, mailbox_fd, workspace_fd):
-                    if isinstance(descriptor, int):
-                        os.close(descriptor)
                 continue
-            except OSError:
+            except Exception:
                 self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
-                for descriptor in (response_fd, request_fd, mailbox_fd, workspace_fd):
-                    if isinstance(descriptor, int):
-                        os.close(descriptor)
+                continue
+            snapshots.append((record, count, size, entries))
+            total_count += count
+            total_bytes += size
+
+        handled = 0
+        for record, count, size, entries in snapshots:
+            if not entries:
                 continue
             try:
-                _revalidate_workspace_fd(workspace_fd, record.workspace_host_path)
-                self._prune_responses(response_fd)
-                names = sorted(name for name in os.listdir(request_fd) if re.fullmatch(r"[0-9a-f]{32}\.json", name))[:16]
-                for name in names:
-                    try:
-                        deadline.remaining()
-                    except DeadlineExceeded:
-                        self.store.record_deny("mailbox-broker", "broker_deadline_exceeded")
-                        return handled
-                    try:
-                        response = self._process(request_fd, name)
-                    except GatewayError as exc:
-                        self.store.record_deny("mailbox-broker", exc.code)
-                        response = {"status": exc.status, "headers": {"content-type": "application/json"}, "body": base64.b64encode(_json_text({"error": {"code": exc.code}}).encode()).decode()}
-                    except Exception:
-                        self.store.record_deny("mailbox-broker", "broker_internal_error")
-                        response = {"status": 500, "headers": {"content-type": "application/json"}, "body": base64.b64encode(b'{"error":{"code":"broker_internal_error"}}').decode()}
-                    try:
-                        self._write_response(response_fd, name, response)
-                        os.unlink(name, dir_fd=request_fd)
-                        handled += 1
-                    except OSError:
-                        self.store.record_deny("mailbox-broker", "broker_response_write_failed")
-                        continue
-            finally:
-                os.close(response_fd)
-                os.close(request_fd)
-                os.close(mailbox_fd)
-                os.close(workspace_fd)
+                deadline.remaining()
+                overflow = (
+                    count > self.PER_SANDBOX_PENDING_COUNT
+                    or size > self.PER_SANDBOX_PENDING_BYTES
+                    or total_count > self.GLOBAL_PENDING_COUNT
+                    or total_bytes > self.GLOBAL_PENDING_BYTES
+                )
+                if self._handle_entry(record, entries[0], overflow):
+                    handled += 1
+                    total_count = max(0, total_count - 1)
+                    total_bytes = max(0, total_bytes - entries[0][3])
+            except DeadlineExceeded:
+                self.store.record_deny("mailbox-broker", "broker_deadline_exceeded")
+                return handled
+            except Exception:
+                self.store.record_deny("mailbox-broker", "broker_internal_error")
+                continue
         return handled
 
-    def _process(self, request_fd: int, name: str) -> dict[str, Any]:
+    def _snapshot_record(
+        self,
+        record: LeaseRecord,
+        now: float,
+    ) -> tuple[int, int, list[tuple[str, int, int, int, int]]]:
+        descriptors = self._open_record_mailbox(record)
+        workspace_fd, _mailbox_fd, request_fd, response_fd = descriptors
+        try:
+            _revalidate_workspace_fd(workspace_fd, record.workspace_host_path)
+            self._prune_responses(response_fd)
+            candidates = sorted(
+                name for name in os.listdir(request_fd) if re.fullmatch(r"[0-9a-f]{32}\.json", name)
+            )
+            entries: list[tuple[str, int, int, int, int]] = []
+            expired = 0
+            known_bytes = 0
+            scan_limit = self.PER_SANDBOX_PENDING_COUNT + self.EXPIRED_SWEEP_LIMIT + 1
+            for name in candidates[:scan_limit]:
+                try:
+                    evidence = os.stat(name, dir_fd=request_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                identity = (name, evidence.st_dev, evidence.st_ino, evidence.st_size, evidence.st_mtime_ns)
+                if now - evidence.st_mtime > self.REQUEST_TTL_SECONDS and expired < self.EXPIRED_SWEEP_LIMIT:
+                    if self._unlink_request_if_identity(request_fd, identity):
+                        expired += 1
+                        self.store.record_deny("mailbox-broker", "broker_request_expired")
+                    continue
+                entries.append(identity)
+                known_bytes += max(0, int(evidence.st_size))
+            count = max(0, len(candidates) - expired)
+            if len(candidates) > scan_limit:
+                known_bytes = max(known_bytes, self.PER_SANDBOX_PENDING_BYTES + 1)
+            return count, known_bytes, entries
+        finally:
+            self._close_mailbox(descriptors)
+
+    def _handle_entry(
+        self,
+        record: LeaseRecord,
+        entry: tuple[str, int, int, int, int],
+        overflow: bool,
+    ) -> bool:
+        descriptors = self._open_record_mailbox(record)
+        workspace_fd, _mailbox_fd, request_fd, response_fd = descriptors
+        name = entry[0]
+        try:
+            _revalidate_workspace_fd(workspace_fd, record.workspace_host_path)
+            if overflow:
+                self.store.record_deny("mailbox-broker", "broker_backlog_exceeded")
+                response = self._error_response(429, "broker_backlog_exceeded")
+            else:
+                try:
+                    response = self._process(request_fd, name, entry)
+                except DeadlineExceeded:
+                    raise
+                except GatewayError as exc:
+                    self.store.record_deny("mailbox-broker", exc.code)
+                    response = self._error_response(exc.status, exc.code)
+                except Exception:
+                    self.store.record_deny("mailbox-broker", "broker_internal_error")
+                    response = self._error_response(500, "broker_internal_error")
+            if not self._request_identity_matches(request_fd, entry):
+                self.store.record_deny("mailbox-broker", "broker_request_changed")
+                return False
+            self._write_response(response_fd, name, response)
+            if not self._unlink_request_if_identity(request_fd, entry):
+                self._unlink_response_if_regular(response_fd, name)
+                self.store.record_deny("mailbox-broker", "broker_request_changed")
+                return False
+            return True
+        except DeadlineExceeded:
+            raise
+        except OSError:
+            self.store.record_deny("mailbox-broker", "broker_response_write_failed")
+            return False
+        finally:
+            self._close_mailbox(descriptors)
+
+    def _open_record_mailbox(self, record: LeaseRecord) -> tuple[int, int, int, int]:
+        workspace_fd = mailbox_fd = request_fd = response_fd = None
+        try:
+            workspace_fd = _open_workspace_dirfd(self.workspace_root, record.workspace_host_path)
+            mailbox_fd = os.open(".opensandbox-gateway", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=workspace_fd)
+            request_fd = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
+            response_fd = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
+            _require_directory(mailbox_fd, uid=0, gid=0, mode=0o711)
+            _require_directory(request_fd, uid=1000, gid=os.getgid(), mode=0o2770)
+            _require_directory(response_fd, uid=os.getuid(), gid=os.getgid(), mode=0o755)
+            return workspace_fd, mailbox_fd, request_fd, response_fd
+        except Exception:
+            self._close_mailbox((workspace_fd, mailbox_fd, request_fd, response_fd))
+            raise
+
+    @staticmethod
+    def _close_mailbox(descriptors) -> None:
+        for descriptor in reversed(descriptors):
+            if isinstance(descriptor, int):
+                os.close(descriptor)
+
+    @staticmethod
+    def _error_response(status: int, code: str) -> dict[str, Any]:
+        return {
+            "status": status,
+            "headers": {"content-type": "application/json"},
+            "body": base64.b64encode(_json_text({"error": {"code": code}}).encode()).decode(),
+        }
+
+    def _process(
+        self,
+        request_fd: int,
+        name: str,
+        expected_identity: tuple[str, int, int, int, int] | None = None,
+    ) -> dict[str, Any]:
         try:
             descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=request_fd)
             try:
                 evidence = os.fstat(descriptor)
+                if expected_identity is not None and (evidence.st_dev, evidence.st_ino) != expected_identity[1:3]:
+                    raise GatewayError(400, "broker_request_changed")
                 if (
                     not stat.S_ISREG(evidence.st_mode)
                     or evidence.st_size > 2 * 1024 * 1024
@@ -843,6 +976,57 @@ class MailboxBroker:
             connection.close()
 
     @staticmethod
+    def _request_identity_matches(
+        request_fd: int,
+        expected: tuple[str, int, int, int, int],
+    ) -> bool:
+        name, expected_dev, expected_ino, _size, _mtime = expected
+        descriptor = None
+        try:
+            named = os.stat(name, dir_fd=request_fd, follow_symlinks=False)
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=request_fd)
+            opened = os.fstat(descriptor)
+            return (
+                stat.S_ISREG(named.st_mode)
+                and stat.S_ISREG(opened.st_mode)
+                and (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino) == (expected_dev, expected_ino)
+            )
+        except OSError:
+            return False
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @classmethod
+    def _unlink_request_if_identity(
+        cls,
+        request_fd: int,
+        expected: tuple[str, int, int, int, int],
+    ) -> bool:
+        if not cls._request_identity_matches(request_fd, expected):
+            return False
+        try:
+            os.unlink(expected[0], dir_fd=request_fd)
+            return True
+        except FileNotFoundError:
+            return False
+
+    @staticmethod
+    def _unlink_response_if_regular(response_fd: int, name: str) -> None:
+        descriptor = None
+        try:
+            named = os.stat(name, dir_fd=response_fd, follow_symlinks=False)
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=response_fd)
+            opened = os.fstat(descriptor)
+            if stat.S_ISREG(named.st_mode) and (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino):
+                os.unlink(name, dir_fd=response_fd)
+        except FileNotFoundError:
+            pass
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
     def _write_response(response_fd: int, name: str, response: Mapping[str, Any]) -> None:
         temporary = f".{secrets.token_hex(16)}.tmp"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
@@ -865,8 +1049,8 @@ class MailboxBroker:
                 pass
             raise
 
-    @staticmethod
-    def _prune_responses(response_fd: int) -> None:
+    @classmethod
+    def _prune_responses(cls, response_fd: int) -> None:
         cutoff = time.time() - 120.0
         removed = 0
         for name in sorted(os.listdir(response_fd)):
@@ -875,7 +1059,7 @@ class MailboxBroker:
             try:
                 evidence = os.stat(name, dir_fd=response_fd, follow_symlinks=False)
                 if stat.S_ISREG(evidence.st_mode) and evidence.st_mtime < cutoff:
-                    os.unlink(name, dir_fd=response_fd)
+                    cls._unlink_response_if_regular(response_fd, name)
                     removed += 1
             except FileNotFoundError:
                 continue
@@ -904,6 +1088,56 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self.sock = wrapped
         self.deadline.bind_socket(wrapped)
         wrapped.do_handshake()
+
+
+def _runtime_skill_mount_fingerprint(record: LeaseRecord, workspace_root: str) -> str:
+    """Recompute the trusted Skill source identity from opened host directories."""
+
+    required = record.metadata.get("ai-platform.skill_mount.required")
+    if required == "false":
+        return ""
+    if required != "true" or not any(
+        mount["host"] == f"{record.workspace_host_path}/.claude"
+        and mount["mountPath"] == "/workspace/.claude"
+        and mount["readOnly"] is True
+        for mount in record.mounts
+    ):
+        raise GatewayError(409, "skill_mount_runtime_drift")
+    workspace_fd = claude_fd = skills_fd = None
+    try:
+        workspace_fd = _open_workspace_dirfd(workspace_root, record.workspace_host_path)
+        claude_fd = os.open(".claude", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=workspace_fd)
+        skills_fd = os.open("skills", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=claude_fd)
+        _revalidate_workspace_fd(workspace_fd, record.workspace_host_path)
+        nodes = (
+            _require_named_directory_identity(None, record.workspace_host_path, workspace_fd),
+            _require_named_directory_identity(workspace_fd, ".claude", claude_fd),
+            _require_named_directory_identity(claude_fd, "skills", skills_fd),
+        )
+        material = "\0".join(str(value) for node in nodes for value in (node.st_dev, node.st_ino))
+        return hashlib.sha256(material.encode("ascii")).hexdigest()
+    except (OSError, ValueError):
+        raise GatewayError(409, "skill_mount_runtime_drift") from None
+    finally:
+        for descriptor in (skills_fd, claude_fd, workspace_fd):
+            if isinstance(descriptor, int):
+                os.close(descriptor)
+
+
+def _require_named_directory_identity(parent_fd: int | None, name: str, descriptor: int):
+    named = (
+        os.stat(name, follow_symlinks=False)
+        if parent_fd is None
+        else os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    )
+    opened = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(named.st_mode)
+        or not stat.S_ISDIR(opened.st_mode)
+        or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
+    ):
+        raise OSError("Skill mount identity changed")
+    return opened
 
 
 def _open_workspace_dirfd(workspace_root: str, workspace_path: str) -> int:

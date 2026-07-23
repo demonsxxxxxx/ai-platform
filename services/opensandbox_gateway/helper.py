@@ -13,8 +13,17 @@ import struct
 import threading
 from dataclasses import asdict
 
-from .adapters import DockerRuntimeAdapter, _recv_exact
-from .gateway import EXECD_ALLOWED, EXECUTOR_ALLOWED, GatewayError, LeaseRecord, Request
+from .adapters import DockerRuntimeAdapter, _expire_socket, _recv_exact
+from .gateway import (
+    EXECD_ALLOWED,
+    EXECUTOR_ALLOWED,
+    DeadlineExceeded,
+    GatewayError,
+    LeaseRecord,
+    MonotonicDeadline,
+    Request,
+    deadline_scope,
+)
 
 
 def run_helper() -> None:
@@ -42,7 +51,7 @@ def run_helper() -> None:
                 continue
             threading.Thread(
                 target=_serve_connection,
-                args=(connection, allowed_uid, signing_key, adapter, slots),
+                args=(connection, allowed_uid, signing_key, adapter, slots, timeout, dispatch_timeout),
                 daemon=True,
             ).start()
     finally:
@@ -50,17 +59,34 @@ def run_helper() -> None:
         target.unlink(missing_ok=True)
 
 
-def _serve_connection(connection, allowed_uid, signing_key, adapter, slots) -> None:
+def _serve_connection(
+    connection,
+    allowed_uid,
+    signing_key,
+    adapter,
+    slots,
+    timeout_seconds: float = 5.0,
+    dispatch_timeout_seconds: float = 3600.0,
+) -> None:
+    total_deadline = MonotonicDeadline.after(dispatch_timeout_seconds)
+    phase_deadline = total_deadline.bounded(timeout_seconds)
+    total_timer = total_deadline.arm(lambda: _expire_socket(connection))
+    phase_timer = phase_deadline.arm(lambda: _expire_socket(connection))
+    response_deadline = phase_deadline
     try:
         credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
         _pid, uid, _gid = struct.unpack("3i", credentials)
         if uid != allowed_uid:
             raise GatewayError(401, "helper_peer_rejected")
-        size = struct.unpack("!I", _recv_exact(connection, 4))[0]
+        size = struct.unpack("!I", _recv_exact(connection, 4, phase_deadline))[0]
         if size > 2 * 1024 * 1024:
             raise GatewayError(413, "helper_request_too_large")
-        value = json.loads(_recv_exact(connection, size))
-        result = _dispatch(value, signing_key, adapter)
+        value = json.loads(_recv_exact(connection, size, phase_deadline))
+        if _is_dispatch_operation(value):
+            phase_timer.cancel()
+            response_deadline = total_deadline
+        with deadline_scope(response_deadline):
+            result = _dispatch(value, signing_key, adapter)
         response = {"ok": True, "result": result}
     except GatewayError as exc:
         response = {"ok": False, "status": exc.status, "code": exc.code}
@@ -68,10 +94,27 @@ def _serve_connection(connection, allowed_uid, signing_key, adapter, slots) -> N
         response = {"ok": False, "status": 500, "code": "runtime_helper_failed"}
     try:
         data = json.dumps(response, sort_keys=True, separators=(",", ":")).encode()
+        response_deadline.bind_socket(connection)
         connection.sendall(struct.pack("!I", len(data)) + data)
+    except (DeadlineExceeded, OSError):
+        pass
     finally:
+        phase_timer.cancel()
+        total_timer.cancel()
         connection.close()
         slots.release()
+
+
+def _is_dispatch_operation(value) -> bool:
+    if not isinstance(value, dict) or value.get("operation") != "proxy":
+        return False
+    arguments = value.get("arguments")
+    return (
+        isinstance(arguments, dict)
+        and arguments.get("port") == 18000
+        and str(arguments.get("method") or "").upper() == "POST"
+        and str(arguments.get("target") or "").split("?", 1)[0] == "/v1/tasks/execute"
+    )
 
 
 def _dispatch(value, signing_key, adapter):
@@ -87,9 +130,12 @@ def _dispatch(value, signing_key, adapter):
         json.dumps(unsigned, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(),
         hashlib.sha256,
     ).hexdigest()
-    if not hmac.compare_digest(record.signature, expected) or record.state != "active":
+    if not hmac.compare_digest(record.signature, expected):
         raise GatewayError(409, "helper_record_invalid")
     operation, arguments = value["operation"], value["arguments"]
+    allowed_states = {"active", "cleanup_pending"} if operation in {"stop_relay", "cleanup_mailbox"} else {"active"}
+    if record.state not in allowed_states:
+        raise GatewayError(409, "helper_record_invalid")
     if operation == "verify" and arguments == {}:
         return asdict(adapter.verify(record))
     if operation == "start_relay" and arguments == {}:

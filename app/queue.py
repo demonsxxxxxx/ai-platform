@@ -872,6 +872,29 @@ return cjson.encode({status = "failed"})
 """
 
 
+VERIFY_LEASE_OWNERSHIP_SCRIPT = """
+-- ai-platform:verify-run-lease-ownership:v1
+local metadata_json = redis.call("hget", KEYS[1], ARGV[1])
+local ok, metadata = pcall(cjson.decode, metadata_json or "")
+if not ok or type(metadata) ~= "table"
+  or tostring(metadata["message_id"] or "") ~= ARGV[1]
+  or tostring(metadata["attempt_id"] or "") ~= ARGV[2]
+  or tostring(metadata["owner_token"] or "") ~= ARGV[3]
+  or tostring(metadata["raw"] or "") ~= ARGV[4]
+  or tostring(metadata["worker_id"] or "") ~= ARGV[5] then
+  return cjson.encode({status = "stale_owner"})
+end
+local expected_fence_key = ARGV[6] .. ":" .. tostring(metadata["tenant_id"] or "") .. ":" .. tostring(metadata["run_id"] or "")
+if KEYS[2] ~= expected_fence_key then
+  return cjson.encode({status = "stale_owner"})
+end
+if redis.call("exists", KEYS[2]) == 1 then
+  return cjson.encode({status = "reconciliation_fenced"})
+end
+return cjson.encode({status = "current"})
+"""
+
+
 @dataclass(frozen=True)
 class QueueKeys:
     queued: str
@@ -895,6 +918,19 @@ class QueueMessage:
     queue_message_id: str
     attempt_id: str
     owner_token: str
+
+
+@dataclass(frozen=True)
+class LeaseMutationOutcome:
+    """Explicit result of a fenced queue lease mutation or ownership proof."""
+
+    status: str
+
+    @property
+    def succeeded(self) -> bool:
+        """Return whether the requested lease operation reached its exact success state."""
+
+        return self.status in {"acked", "failed", "current"}
 
 
 QUEUE_ATTEMPT_ID_FIELD = "_queue_attempt_id"
@@ -2227,17 +2263,17 @@ async def lease_run(
         await redis.aclose()
 
 
-async def ack_run(raw: str, *, message_id: str | None = None) -> bool:
+async def ack_run(raw: str, *, message_id: str | None = None) -> LeaseMutationOutcome:
     keys = get_queue_keys()
     redis = await get_redis()
     try:
         lease = _parse_lease_handle(str(message_id or ""))
         if lease is None:
-            return False
+            return LeaseMutationOutcome("invalid_lease")
         queue_message_id, attempt_id, owner_token = lease
         fence_key = _lease_fence_key(keys, raw)
         if fence_key is None:
-            return False
+            return LeaseMutationOutcome("invalid_payload")
         result = _decode_redis_script_result(
             await redis.eval(
                 ACK_LEASE_SCRIPT,
@@ -2253,7 +2289,7 @@ async def ack_run(raw: str, *, message_id: str | None = None) -> bool:
                 keys.reconciliation_fence_prefix,
             )
         )
-        return str(result.get("status") or "") == "acked"
+        return LeaseMutationOutcome(str(result.get("status") or "inconclusive"))
     finally:
         await redis.aclose()
 
@@ -2265,17 +2301,17 @@ async def fail_leased_run(
     error_message: str,
     message_id: str | None = None,
     worker_id: str | None = None,
-) -> bool:
+) -> LeaseMutationOutcome:
     keys = get_queue_keys()
     redis = await get_redis()
     try:
         lease = _parse_lease_handle(str(message_id or ""))
         if lease is None:
-            return False
+            return LeaseMutationOutcome("invalid_lease")
         queue_message_id, attempt_id, owner_token = lease
         fence_key = _lease_fence_key(keys, raw)
         if fence_key is None:
-            return False
+            return LeaseMutationOutcome("invalid_payload")
         result = _decode_redis_script_result(
             await redis.eval(
                 FAIL_LEASE_SCRIPT,
@@ -2299,7 +2335,38 @@ async def fail_leased_run(
                 keys.reconciliation_fence_prefix,
             )
         )
-        return str(result.get("status") or "") == "failed"
+        return LeaseMutationOutcome(str(result.get("status") or "inconclusive"))
+    finally:
+        await redis.aclose()
+
+
+async def verify_lease_ownership(message: QueueMessage, *, worker_id: str) -> LeaseMutationOutcome:
+    """Prove the full attempt/owner/fence lease remains current without mutating it."""
+
+    lease = _parse_lease_handle(message.message_id)
+    if lease != (message.queue_message_id, message.attempt_id, message.owner_token):
+        return LeaseMutationOutcome("invalid_lease")
+    keys = get_queue_keys()
+    fence_key = _lease_fence_key(keys, message.raw)
+    if fence_key is None:
+        return LeaseMutationOutcome("invalid_payload")
+    redis = await get_redis()
+    try:
+        result = _decode_redis_script_result(
+            await redis.eval(
+                VERIFY_LEASE_OWNERSHIP_SCRIPT,
+                2,
+                keys.processing_meta,
+                fence_key,
+                message.queue_message_id,
+                message.attempt_id,
+                message.owner_token,
+                message.raw,
+                worker_id,
+                keys.reconciliation_fence_prefix,
+            )
+        )
+        return LeaseMutationOutcome(str(result.get("status") or "inconclusive"))
     finally:
         await redis.aclose()
 
@@ -2446,5 +2513,7 @@ async def dequeue_run(timeout_seconds: int = 5) -> dict[str, Any] | None:
     message = await lease_run(timeout_seconds=timeout_seconds)
     if message is None:
         return None
-    await ack_run(message.raw, message_id=message.message_id)
+    outcome = await ack_run(message.raw, message_id=message.message_id)
+    if not outcome.succeeded:
+        raise RuntimeError("queue lease acknowledgment was rejected")
     return message.payload
