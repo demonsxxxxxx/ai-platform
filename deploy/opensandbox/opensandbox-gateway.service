@@ -1,0 +1,45 @@
+[Unit]
+Description=AI Platform OpenSandbox HTTPS gateway v1
+After=network-online.target docker.service opensandbox.service
+Wants=network-online.target
+Requires=docker.service opensandbox.service
+
+[Service]
+Type=simple
+User=opensandbox-gateway
+Group=opensandbox-gateway
+SupplementaryGroups=docker
+WorkingDirectory=/opt/opensandbox-gateway
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/opensandbox-gateway/gateway.env
+ExecStart=/usr/bin/python3 -m services.opensandbox_gateway
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=30s
+TimeoutStopSec=15s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/run/docker.sock
+ReadWritePaths=/var/lib/opensandbox-gateway /data/opensandbox/workspaces
+
+[Install]
+WantedBy=multi-user.target
