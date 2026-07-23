@@ -117,10 +117,14 @@ Compose deployment:
   and `docker import`, build once from that flat base, and re-run provenance,
   health, and target-path verification.
 
-The role build stages are bounded at 90 seconds for backend and 180 seconds for
-frontend. Treat a timeout or failed stage as a redacted authority failure; retain
-the compact stage evidence and do not expose the environment file or raw command
-output. The existing external lease/fencing gate remains the only overlap guard.
+Backend source-only/runtime-overlay stages are bounded at 90 seconds and frontend
+source-only stages at 180 seconds. Dependency-triggered canonical builds have a
+separate bounded 900-second bootstrap maximum; this does not widen either
+source-only SLO. On timeout the authority terminates its owned process tree and
+uses a short bounded pipe-drain grace before reporting the redacted failure.
+Retain the compact stage evidence and do not expose the environment file or raw
+command output. The existing external lease/fencing gate remains the only overlap
+guard.
 
 The local workstation does not provide Docker. The real-211 benchmark gate must
 observe backend-only auto release below 90 seconds, frontend-only below 180
