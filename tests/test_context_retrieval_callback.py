@@ -12,7 +12,7 @@ from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrieva
 from app.runtime.sandbox.contracts import ContextRetrievalScope
 
 
-def _token(secret: str, token_id: str = "cbt_run-a") -> str:
+def _token(secret: str, token_id: str = "cbt:run-a:attempt-a") -> str:
     return hmac.new(secret.encode(), token_id.encode(), hashlib.sha256).hexdigest()
 
 
@@ -20,7 +20,8 @@ def _payload(action: str = "read_run_artifact", arguments=None, **overrides):
     payload = {
         "session_id": "session-a",
         "run_id": "run-a",
-        "callback_token_id": "cbt_run-a",
+        "attempt_id": "attempt-a",
+        "callback_token_id": "cbt:run-a:attempt-a",
         "action": action,
         "arguments": arguments or {"artifact_id": "artifact-a"},
     }
@@ -36,7 +37,15 @@ class _Transaction:
         return None
 
 
-def _patch_route(monkeypatch, *, status="running", tools=None, action_result=None):
+def _patch_route(
+    monkeypatch,
+    *,
+    status="running",
+    tools=None,
+    action_result=None,
+    lease_attempt="attempt-a",
+    active_lease=True,
+):
     import app.routes.runtime_callbacks as callbacks
 
     calls = []
@@ -71,6 +80,11 @@ def _patch_route(monkeypatch, *, status="running", tools=None, action_result=Non
             manifest[key] = values
         return {"payload_json": {"context_manifest": manifest}}
 
+    async def list_current_leases(conn, *, tenant_id, run_id):
+        if not active_lease:
+            return []
+        return [{"lease_payload_json": {"attempt_id": lease_attempt}}]
+
     async def run_action(retrieval, *, action, arguments, identity):
         calls.append((action, arguments, identity))
         if isinstance(action_result, Exception):
@@ -88,6 +102,11 @@ def _patch_route(monkeypatch, *, status="running", tools=None, action_result=Non
     monkeypatch.setattr(callbacks, "get_settings", lambda: type("S", (), {"sandbox_callback_token": "secret"})())
     monkeypatch.setattr(callbacks, "transaction", lambda: _Transaction())
     monkeypatch.setattr(callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_run",
+        list_current_leases,
+    )
     monkeypatch.setattr(callbacks.repositories, "get_bound_executor_context_snapshot", get_snapshot)
     monkeypatch.setattr(callbacks.repositories, "append_event", append_event)
     monkeypatch.setattr(callbacks, "ObjectStorage", lambda: object())
@@ -131,6 +150,29 @@ def test_context_retrieval_callback_rejects_wrong_token_before_storage(monkeypat
     )
 
     assert response.status_code == 401
+    assert calls == []
+
+
+def test_context_retrieval_callback_rejects_missing_attempt_and_caller_tenant(monkeypatch):
+    calls = _patch_route(monkeypatch)
+    client = TestClient(create_app())
+    headers = {"X-AI-Platform-Callback-Token": _token("secret")}
+    missing_attempt = _payload()
+    missing_attempt.pop("attempt_id")
+
+    missing = client.post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers=headers,
+        json=missing_attempt,
+    )
+    forged_tenant = client.post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers=headers,
+        json=_payload(tenant_id="tenant-b"),
+    )
+
+    assert missing.status_code == 422
+    assert forged_tenant.status_code == 422
     assert calls == []
 
 
@@ -202,6 +244,30 @@ def test_context_retrieval_callback_fails_closed_when_fixed_snapshot_is_unavaila
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    ("route_kwargs", "detail"),
+    [
+        ({"lease_attempt": "attempt-b"}, "sandbox_runtime_attempt_mismatch"),
+        ({"active_lease": False}, "sandbox_runtime_attempt_inactive"),
+    ],
+)
+def test_context_retrieval_callback_rejects_stale_or_released_attempt_before_action(
+    monkeypatch,
+    route_kwargs,
+    detail,
+):
+    calls = _patch_route(monkeypatch, **route_kwargs)
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers={"X-AI-Platform-Callback-Token": _token("secret")},
+        json=_payload(),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": detail}
+    assert calls == []
+
+
 @pytest.mark.asyncio
 async def test_platform_context_client_stages_brokered_bytes_without_returning_token(tmp_path, monkeypatch):
     requests = []
@@ -245,8 +311,9 @@ async def test_platform_context_client_stages_brokered_bytes_without_returning_t
     )
     retrieval = PlatformContextRetrievalClient(
         callback_url="http://platform.test/api/ai/runtime/callbacks/context-retrieval",
-        callback_token_id="cbt_run-a",
+        callback_token_id="cbt:run-a:attempt-a",
         callback_token="secret",
+        attempt_id="attempt-a",
         scope=scope,
     )
 
@@ -264,6 +331,7 @@ async def test_platform_context_client_stages_brokered_bytes_without_returning_t
     assert result["workspace_path"] == "context/artifact-a/translated.docx"
     assert "secret" not in str(result)
     assert requests[0][1]["run_id"] == "run-a"
+    assert requests[0][1]["attempt_id"] == "attempt-a"
     assert requests[0][2] == {"X-AI-Platform-Callback-Token": "secret"}
 
 
@@ -276,8 +344,9 @@ async def test_platform_context_client_rejects_forged_scope_before_callback(monk
     monkeypatch.setattr("app.runtime.sandbox.context_retrieval_client.httpx.AsyncClient", FailClient)
     retrieval = PlatformContextRetrievalClient(
         callback_url="http://platform.test/api/ai/runtime/callbacks/context-retrieval",
-        callback_token_id="cbt_run-a",
+        callback_token_id="cbt:run-a:attempt-a",
         callback_token="secret",
+        attempt_id="attempt-a",
         scope=ContextRetrievalScope(
             tenant_id="tenant-a",
             workspace_id="workspace-a",

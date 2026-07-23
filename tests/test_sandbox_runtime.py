@@ -109,7 +109,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert sent[0][1].run_id == "run-a"
     assert sent[0][1].prompt == "hello"
     assert sent[0][1].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
-    assert sent[0][1].callback_token_id == "cbt_run-a_exec-run-a"
+    assert sent[0][1].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"
     assert sent[0][1].callback_token == "secret-token"
     assert sent[0][1].callback_base_url == "http://platform.test"
     assert sent[0][1].permission_mode == "default"
@@ -279,7 +279,7 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
     assert requirement["parser_id"] == "ai-platform.xlsx.openpyxl"
     assert sent[0].config["context_retrieval_scope"]["user_id"] == "user-a"
     assert sent[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
-    assert sent[0].callback_token_id == "cbt_run-a_exec-run-a"
+    assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"
 
 
 @pytest.mark.asyncio
@@ -466,6 +466,7 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
                     {
                         "source": "sandbox_runtime",
                         "evidence_class": "runtime_lease_projection",
+                        "attempt_id": "qat_test-runtime-attempt",
                         "container_id": "exec-run-a",
                         "container_name": "executor-exec-run-a",
                         "executor_url": "http://executor.test",
@@ -603,6 +604,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
     assert create_kwargs["runtime_executor_url"] == "http://opensandbox-executor.test"
     assert create_kwargs["runtime_workspace_container_path"] == "/sandbox-workspace"
     assert create_kwargs["lease_payload_json"]["container_id"] == "osb-run-a"
+    assert create_kwargs["lease_payload_json"]["attempt_id"] == runtime_request.attempt_id
     assert "executor_headers" not in create_kwargs["lease_payload_json"]
     assert create_kwargs["lease_payload_json"]["labels"] == {
         "ai-platform.run_id": "run-a",
@@ -1119,8 +1121,8 @@ async def test_runtime_default_callback_token_is_hmac_scoped_to_token_id(tmp_pat
 
     await runtime.submit(request(callback_token_id="cbt_run-a"))
 
-    assert sent[0].callback_token_id == "cbt_run-a_exec-run-a"
-    assert sent[0].callback_token == derived_callback_token("settings-token", "cbt_run-a_exec-run-a")
+    assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"
+    assert sent[0].callback_token == derived_callback_token("settings-token", "cbt:run-a:qat_test-runtime-attempt")
     assert sent[0].callback_token != "settings-token"
 
 
@@ -1156,8 +1158,8 @@ async def test_runtime_ignores_untrusted_callback_input_and_uses_trusted_platfor
 
     assert sent[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
     assert sent[0].callback_base_url == "http://platform.test"
-    assert sent[0].callback_token_id == "cbt_run-a_exec-run-a"
-    assert sent[0].callback_token == "derived-for-cbt_run-a_exec-run-a"
+    assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"
+    assert sent[0].callback_token == "derived-for-cbt:run-a:qat_test-runtime-attempt"
 
 
 @pytest.mark.asyncio

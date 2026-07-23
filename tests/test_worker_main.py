@@ -924,6 +924,64 @@ async def test_run_once_acknowledges_completed_message(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_once_ownership_loss_cancels_processing_without_ack_or_fail(monkeypatch):
+    calls = []
+    processing_started = asyncio.Event()
+
+    async def lease_run(**_kwargs):
+        return QueueMessage(
+            raw="raw-run",
+            payload={"run_id": "run-a", "_queue_attempt_id": "qat-test-attempt"},
+            message_id="msg-a",
+            queue_message_id="msg-a",
+            attempt_id="qat-test-attempt",
+            owner_token="qown-test-owner",
+        )
+
+    async def process_run_payload(*_args, **_kwargs):
+        processing_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            calls.append(("processing_cancelled",))
+            raise
+
+    async def heartbeat_run(message_id, worker_id):
+        await processing_started.wait()
+        calls.append(("ownership_lost", message_id, worker_id))
+        return False
+
+    async def ack_run(*_args, **_kwargs):
+        calls.append(("ack",))
+
+    async def fail_leased_run(*_args, **_kwargs):
+        calls.append(("fail",))
+
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr("app.worker_main.queue.heartbeat_run", heartbeat_run)
+    monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
+    monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
+
+    outcome = await run_once(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        heartbeat_interval_seconds=0,
+        run_initial_maintenance=False,
+        run_background_maintenance=False,
+    )
+
+    assert outcome == WorkerOutcome(
+        status="ownership_lost",
+        run_id="run-a",
+        error_code="queue_ownership_lost",
+        error_message="Queue execution ownership was lost.",
+    )
+    assert ("processing_cancelled",) in calls
+    assert not any(call[0] in {"ack", "fail"} for call in calls)
+
+
+@pytest.mark.asyncio
 async def test_run_once_keeps_queue_maintenance_running_during_long_processing(monkeypatch):
     calls = []
     maintenance_seen_during_processing = asyncio.Event()
@@ -1184,6 +1242,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
                 "content_hash": "hash-skill-a",
             }
         ],
+        "_queue_attempt_id": "qat-test-attempt",
     }
 
     class Transaction:
@@ -1285,6 +1344,7 @@ async def test_run_once_does_not_terminalize_escaped_exception_for_mismatched_lo
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "_queue_attempt_id": "qat-test-attempt",
         "agent_id": "agent-a",
         "skill_id": "skill-a",
         "file_ids": [],
@@ -1372,6 +1432,7 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "_queue_attempt_id": "qat-test-attempt",
         "agent_id": "agent-a",
         "skill_id": "skill-a",
         "file_ids": [],

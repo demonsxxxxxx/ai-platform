@@ -20,7 +20,14 @@ from .adapters import (
     MailboxBroker,
     SQLiteStateStore,
 )
-from .gateway import GatewayApplication, GatewayConfig, Request
+from .gateway import (
+    DeadlineExceeded,
+    GatewayApplication,
+    GatewayConfig,
+    MonotonicDeadline,
+    Request,
+    deadline_scope,
+)
 
 
 def load_config(environ: Mapping[str, str] | None = None) -> tuple[GatewayConfig, str, str, str, str, int]:
@@ -142,17 +149,18 @@ class _GatewayHandler(BaseHTTPRequestHandler):
     def setup(self) -> None:
         super().setup()
         deadline = self.server.request_deadline(self.connection)
-        self.connection.settimeout(max(0.001, deadline - time.monotonic()))
-
-    def finish(self) -> None:
-        self.server.release_request_deadline(self.connection)
-        super().finish()
+        deadline.bind_socket(self.connection)
 
     def log_message(self, format: str, *args: object) -> None:
         # Do not log targets, headers, bodies, or upstream secrets.
         return None
 
     def _dispatch(self) -> None:
+        deadline = self.server.request_deadline(self.connection)
+        with deadline_scope(deadline):
+            self._dispatch_with_deadline(deadline)
+
+    def _dispatch_with_deadline(self, deadline: MonotonicDeadline) -> None:
         if self.headers.get_all("transfer-encoding", []):
             self._write(400, {"content-type": "application/json"}, b'{"error":{"code":"transfer_encoding_rejected"}}')
             return
@@ -168,6 +176,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             self._write(413, {"content-type": "application/json"}, b'{"error":{"code":"request_too_large"}}')
             return
         try:
+            deadline.bind_socket(self.connection)
             body = self.rfile.read(int(raw_length))
         except (TimeoutError, socket.timeout):
             self._write(408, {"content-type": "application/json"}, b'{"error":{"code":"request_timeout"}}')
@@ -180,6 +189,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         self._write(response.status, response.headers, response.body)
 
     def _write(self, status: int, headers: Mapping[str, str], body: bytes) -> None:
+        self.server.request_deadline(self.connection).bind_socket(self.connection)
         self.send_response(status)
         for key, value in headers.items():
             if key.lower() not in {"connection", "transfer-encoding", "server", "date"}:
@@ -203,59 +213,122 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self._handler_slots = threading.BoundedSemaphore(max_handlers)
         self._request_deadline_seconds = request_deadline_seconds
         self.tls_context: ssl.SSLContext | None = None
-        self._request_deadlines: dict[int, tuple[float, threading.Timer]] = {}
+        self._request_deadlines: dict[int, _ConnectionDeadline] = {}
         self._request_deadlines_lock = threading.Lock()
         super().__init__(server_address, handler_class)
 
     def get_request(self):
         raw, address = super().get_request()
-        deadline = time.monotonic() + self._request_deadline_seconds
-        handshake_timer = threading.Timer(self._request_deadline_seconds, _expire_connection, args=(raw,))
-        handshake_timer.daemon = True
-        handshake_timer.start()
-        try:
-            raw.settimeout(max(0.001, deadline - time.monotonic()))
-            connection = self.tls_context.wrap_socket(raw, server_side=True) if self.tls_context is not None else raw
-            handshake_timer.cancel()
-            remaining = max(0.001, deadline - time.monotonic())
-            timer = threading.Timer(remaining, _expire_connection, args=(connection,))
-            timer.daemon = True
-            timer.start()
-            with self._request_deadlines_lock:
-                self._request_deadlines[id(connection)] = (deadline, timer)
-            return connection, address
-        except Exception:
-            handshake_timer.cancel()
-            raw.close()
-            raise
+        self._ensure_request_deadline(raw)
+        return raw, address
 
-    def request_deadline(self, connection: socket.socket) -> float:
+    def request_deadline(self, connection: socket.socket) -> MonotonicDeadline:
+        return self._ensure_request_deadline(connection).deadline
+
+    def _ensure_request_deadline(self, connection: socket.socket) -> "_ConnectionDeadline":
         with self._request_deadlines_lock:
             value = self._request_deadlines.get(id(connection))
-        return value[0] if value is not None else time.monotonic() + self._request_deadline_seconds
+            if value is None:
+                value = _ConnectionDeadline(MonotonicDeadline.after(self._request_deadline_seconds), connection)
+                self._request_deadlines[id(connection)] = value
+        return value
+
+    def _replace_request_connection(self, old: socket.socket, new: socket.socket) -> None:
+        with self._request_deadlines_lock:
+            value = self._request_deadlines.pop(id(old), None)
+            if value is None:
+                value = _ConnectionDeadline(MonotonicDeadline.after(self._request_deadline_seconds), new)
+            else:
+                value.replace(new)
+            self._request_deadlines[id(new)] = value
 
     def release_request_deadline(self, connection: socket.socket) -> None:
         with self._request_deadlines_lock:
             value = self._request_deadlines.pop(id(connection), None)
         if value is not None:
-            value[1].cancel()
+            value.cancel()
 
     def process_request(self, request, client_address) -> None:
+        deadline = self.request_deadline(request)
         if not self._handler_slots.acquire(blocking=False):
             try:
+                deadline.bind_socket(request)
                 request.sendall(
                     b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 46\r\nConnection: close\r\n\r\n{\"error\":{\"code\":\"concurrency_limit_reached\"}}"
                 )
+            except (DeadlineExceeded, OSError, socket.timeout):
+                pass
             finally:
+                self.release_request_deadline(request)
                 self.shutdown_request(request)
             return
-        super().process_request(request, client_address)
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.release_request_deadline(request)
+            self.shutdown_request(request)
+            self._handler_slots.release()
+            raise
 
     def process_request_thread(self, request, client_address) -> None:
+        connection = request
         try:
-            super().process_request_thread(request, client_address)
+            deadline = self.request_deadline(request)
+            deadline.bind_socket(request)
+            if self.tls_context is not None:
+                connection = self.tls_context.wrap_socket(
+                    request,
+                    server_side=True,
+                    do_handshake_on_connect=False,
+                )
+                self._replace_request_connection(request, connection)
+                deadline.bind_socket(connection)
+                connection.do_handshake()
+            with deadline_scope(deadline):
+                self.finish_request(connection, client_address)
+        except (DeadlineExceeded, OSError, ssl.SSLError, socket.timeout):
+            pass
+        except Exception:
+            # Never expose request, header, TLS, or upstream details.
+            pass
         finally:
-            self._handler_slots.release()
+            try:
+                self.release_request_deadline(connection)
+                if connection is not request:
+                    self.release_request_deadline(request)
+                self.shutdown_request(connection)
+            finally:
+                if connection is not request:
+                    request.close()
+                self._handler_slots.release()
+
+
+class _ConnectionDeadline:
+    """Own one accepted connection, its absolute deadline, and its timer."""
+
+    def __init__(self, deadline: MonotonicDeadline, connection: socket.socket) -> None:
+        self.deadline = deadline
+        self._connection = connection
+        self._lock = threading.Lock()
+        self._timer = deadline.arm(self._expire)
+
+    def replace(self, connection: socket.socket) -> None:
+        """Move expiry ownership from the raw socket to its TLS wrapper."""
+
+        with self._lock:
+            self._connection = connection
+        if self.deadline.expired():
+            self._expire()
+
+    def cancel(self) -> None:
+        """Release the timer after every terminal connection path."""
+
+        self._timer.cancel()
+
+    def _expire(self) -> None:
+        with self._lock:
+            connection = self._connection
+        _expire_connection(connection)
 
 
 def _broker_loop(broker: MailboxBroker, stop: threading.Event) -> None:

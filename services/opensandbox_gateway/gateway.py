@@ -10,16 +10,20 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
+import contextvars
+from contextlib import contextmanager
 from email import policy
 from email.parser import BytesParser
 import json
 import re
 import secrets
+import socket
+import threading
 import time
 import urllib.parse
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol
 
 
 CONTRACT_VERSION = "ai-platform.opensandbox.topology-attestation.v1"
@@ -30,6 +34,7 @@ MAX_BODY_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_METADATA_VALUE = 512
 SAFE_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/+\-=]{0,511}\Z")
+SCOPE_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@+\-]{0,127}\Z")
 SANDBOX_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 SHA_IMAGE = re.compile(r"[^\s/@]+(?:/[^\s/@]+)*@(?P<digest>sha256:[0-9a-f]{64})\Z")
 SCOPE_KEYS = (
@@ -110,6 +115,102 @@ EXECUTOR_ALLOWED = {
     ("GET", "/health/runtime-identity"),
     ("POST", "/v1/tasks/execute"),
 }
+
+
+class DeadlineExceeded(TimeoutError):
+    """Internal signal that one monotonic operation budget is exhausted."""
+
+
+class _DeadlineTimer:
+    """Idempotent ownership handle for one deadline interrupt timer."""
+
+    def __init__(self, timer: threading.Timer) -> None:
+        self._timer = timer
+        self._lock = threading.Lock()
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Cancel the timer exactly once from any completion path."""
+
+        with self._lock:
+            if self._cancelled:
+                return
+            self._cancelled = True
+            self._timer.cancel()
+
+
+@dataclass(frozen=True)
+class MonotonicDeadline:
+    """One absolute monotonic budget shared by nested transport operations."""
+
+    expires_at: float
+
+    @classmethod
+    def after(cls, timeout_seconds: float) -> "MonotonicDeadline":
+        """Create a deadline without permitting non-positive budgets."""
+
+        if timeout_seconds <= 0:
+            raise DeadlineExceeded("deadline exhausted")
+        return cls(time.monotonic() + timeout_seconds)
+
+    def remaining(self) -> float:
+        """Return the remaining budget or fail once the absolute time passed."""
+
+        remaining = self.expires_at - time.monotonic()
+        if remaining <= 0:
+            raise DeadlineExceeded("deadline exhausted")
+        return remaining
+
+    def expired(self) -> bool:
+        """Return whether the absolute expiry has passed."""
+
+        return time.monotonic() >= self.expires_at
+
+    def bounded(self, timeout_seconds: float) -> "MonotonicDeadline":
+        """Apply a tighter operation ceiling without extending this deadline."""
+
+        if timeout_seconds <= 0:
+            raise DeadlineExceeded("deadline exhausted")
+        return MonotonicDeadline(min(self.expires_at, time.monotonic() + timeout_seconds))
+
+    def bind_socket(self, connection: socket.socket) -> None:
+        """Set the next socket wait to no more than the remaining budget."""
+
+        connection.settimeout(max(0.001, self.remaining()))
+
+    def arm(self, interrupt: Callable[[], None]) -> _DeadlineTimer:
+        """Interrupt a blocking implementation when the absolute expiry arrives."""
+
+        timer = threading.Timer(self.remaining(), interrupt)
+        timer.daemon = True
+        timer.start()
+        return _DeadlineTimer(timer)
+
+
+_ACTIVE_DEADLINE: contextvars.ContextVar[MonotonicDeadline | None] = contextvars.ContextVar(
+    "opensandbox_gateway_deadline",
+    default=None,
+)
+
+
+@contextmanager
+def deadline_scope(deadline: MonotonicDeadline) -> Iterator[MonotonicDeadline]:
+    """Expose one inbound budget to every nested production adapter."""
+
+    token = _ACTIVE_DEADLINE.set(deadline)
+    try:
+        yield deadline
+    finally:
+        _ACTIVE_DEADLINE.reset(token)
+
+
+def operation_deadline(timeout_seconds: float) -> MonotonicDeadline:
+    """Use the current inbound deadline, tightened by an operation ceiling."""
+
+    active = _ACTIVE_DEADLINE.get()
+    if active is None:
+        return MonotonicDeadline.after(timeout_seconds)
+    return active.bounded(timeout_seconds)
 
 
 @dataclass(frozen=True)
@@ -262,6 +363,7 @@ class RuntimeEvidence:
     mounts: tuple[tuple[str, str, bool], ...]
     labels: Mapping[str, str]
     running: bool = True
+    relay_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -483,7 +585,7 @@ class GatewayApplication:
         scope = {}
         for name, label in SCOPE_LABELS.items():
             value = metadata.get(label)
-            if not isinstance(value, str) or not SAFE_VALUE.fullmatch(value):
+            if not isinstance(value, str) or not SCOPE_SEGMENT.fullmatch(value):
                 raise GatewayError(400, "scope_invalid")
             scope[name] = value
         expected_subjects = {
@@ -571,6 +673,7 @@ class GatewayApplication:
             f"{self.config.workspace_root}/tenants/{scope['tenant_id']}/workspaces/{scope['workspace_id']}"
             f"/users/{scope['user_id']}/sessions/{scope['session_id']}/runs/{scope['run_id']}/workspace"
         )
+        expected_skill_mount = f"{expected_workspace}/.claude"
         expected_prefix = f"{self.config.workspace_root}/"
         accepted: list[dict[str, Any]] = []
         workspace = ""
@@ -592,13 +695,13 @@ class GatewayApplication:
                 or host_path.endswith("/")
             ):
                 raise GatewayError(400, "host_path_not_scoped")
-            if not isinstance(mount_path, str) or mount_path not in ("/workspace", "/home/sandbox/.claude"):
+            if not isinstance(mount_path, str) or mount_path not in ("/workspace", "/workspace/.claude"):
                 raise GatewayError(400, "volume_policy_mismatch")
             if mount_path == "/workspace":
                 if read_only is not False or host_path != expected_workspace:
                     raise GatewayError(400, "workspace_must_be_writable")
                 workspace = host_path
-            elif read_only is not True or not host_path.startswith(expected_prefix):
+            elif read_only is not True or host_path != expected_skill_mount:
                 raise GatewayError(400, "skill_mount_must_be_read_only")
             accepted.append({"host": host_path, "mountPath": mount_path, "readOnly": bool(read_only)})
         if not workspace:
@@ -608,39 +711,89 @@ class GatewayApplication:
     def _reconcile_intents(self) -> None:
         for active in self.store.list({"state": "active"}):
             self._verify_record(active)
-            self._attest(active.sandbox_id)
-            self.runtime.start_relay(active)
+            evidence = self.runtime.verify(active)
+            self._validate_evidence(active, evidence)
+            if not evidence.relay_active:
+                self.runtime.start_relay(active)
         for pending in self.store.list({"state": "cleanup_pending"}):
             self._verify_record(pending)
             self._cleanup_pending(pending)
         for intent in self.store.list({"state": "uncertain_create"}) + self.store.list({"state": "reconciling"}):
-            self._verify_record(intent)
-            intent.state = "reconciling"
+            self._reconcile_intent(intent)
+
+    def _reconcile_intent(self, intent: LeaseRecord) -> None:
+        self._verify_record(intent)
+        intent.state = "reconciling"
+        intent.signature = self._sign_record(intent)
+        self.store.save(intent)
+        items = self._list_intent_sandboxes(intent.sandbox_id)
+        if len(items) > 1:
+            raise GatewayError(503, "reservation_reconciliation_ambiguous")
+        if not items:
+            intent.state = "deleted"
             intent.signature = self._sign_record(intent)
             self.store.save(intent)
-            items = self._list_intent_sandboxes(intent.sandbox_id)
-            if len(items) > 1:
-                raise GatewayError(503, "reservation_reconciliation_ambiguous")
-            if not items:
-                intent.state = "deleted"
-                intent.signature = self._sign_record(intent)
-                self.store.save(intent)
+            return
+        sandbox_id = items[0].get("id") if isinstance(items[0], dict) else None
+        if not isinstance(sandbox_id, str) or not SANDBOX_ID.fullmatch(sandbox_id):
+            raise GatewayError(503, "reservation_reconciliation_ambiguous")
+        record = LeaseRecord(**{**intent.unsigned(), "sandbox_id": sandbox_id, "state": "active"})
+        record.signature = self._sign_record(record)
+        self.store.activate(intent.sandbox_id, intent.reservation_owner_token, record)
+        self._attest(sandbox_id)
+        self.runtime.start_relay(record)
+
+    def _reconcile_online(self, filters: Mapping[str, str]) -> None:
+        """Run one bounded tenant-attempt reconciliation pass during inventory."""
+
+        scoped = {key: value for key, value in filters.items() if key in set(SCOPE_LABELS.values())}
+        for state in ("cleanup_pending", "uncertain_create", "reconciling", "active"):
+            records = self.store.list({**scoped, "state": state})
+            if len(records) > 100:
+                raise GatewayError(503, "online_reconciliation_bounded")
+            for record in records:
+                if state == "cleanup_pending":
+                    self._verify_record(record)
+                    self._cleanup_pending(record)
+                elif state in {"uncertain_create", "reconciling"}:
+                    self._reconcile_intent(record)
+                else:
+                    self._verify_record(record)
+                    evidence = self.runtime.verify(record)
+                    self._validate_evidence(record, evidence)
+                    if not evidence.relay_active:
+                        self.runtime.start_relay(record)
+        if not all(SCOPE_LABELS[name] in filters for name in ("tenant_id", "attempt_id")):
+            return
+        upstream = self._list_upstream_sandboxes(scoped)
+        tracked = {record.sandbox_id for record in self.store.list({})}
+        for item in upstream:
+            sandbox_id = item["id"]
+            if sandbox_id in tracked:
                 continue
-            sandbox_id = items[0].get("id") if isinstance(items[0], dict) else None
-            if not isinstance(sandbox_id, str) or not SANDBOX_ID.fullmatch(sandbox_id):
-                raise GatewayError(503, "reservation_reconciliation_ambiguous")
-            record = LeaseRecord(**{**intent.unsigned(), "sandbox_id": sandbox_id, "state": "active"})
-            record.signature = self._sign_record(record)
-            self.store.activate(intent.sandbox_id, intent.reservation_owner_token, record)
-            self._attest(sandbox_id)
-            self.runtime.start_relay(record)
+            metadata = item.get("metadata")
+            if (
+                not isinstance(metadata, Mapping)
+                or metadata.get("ai-platform.owner") != "sandbox-runtime"
+                or any(metadata.get(key) != value for key, value in scoped.items())
+            ):
+                raise GatewayError(503, "orphan_reconciliation_ambiguous")
+            if not self._delete_upstream_and_verify(sandbox_id):
+                raise GatewayError(503, "orphan_reconciliation_failed")
 
     def _list_intent_sandboxes(self, intent_id: str) -> list[dict[str, Any]]:
+        return self._list_upstream_sandboxes({"ai-platform.gateway.intent_id": intent_id})
+
+    def _list_upstream_sandboxes(self, metadata_filters: Mapping[str, str]) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         seen: set[str] = set()
         for page in range(1, 101):
             query = urllib.parse.urlencode(
-                {"metadata": f"ai-platform.gateway.intent_id={intent_id}", "page": str(page), "pageSize": "100"}
+                {
+                    "metadata": "&".join(f"{key}={value}" for key, value in metadata_filters.items()),
+                    "page": str(page),
+                    "pageSize": "100",
+                }
             )
             response = self.lifecycle.request("GET", f"/v1/sandboxes?{query}")
             if response.status != 200:
@@ -662,12 +815,14 @@ class GatewayApplication:
                 return items
         raise GatewayError(503, "reservation_reconciliation_ambiguous")
 
-    def _cleanup_pending(self, record: LeaseRecord) -> None:
-        result = self.lifecycle.request("DELETE", f"/v1/sandboxes/{record.sandbox_id}")
+    def _delete_upstream_and_verify(self, sandbox_id: str) -> bool:
+        result = self.lifecycle.request("DELETE", f"/v1/sandboxes/{sandbox_id}")
         if result.status not in (200, 202, 204, 404):
-            return
-        verified = self.lifecycle.request("GET", f"/v1/sandboxes/{record.sandbox_id}")
-        if verified.status != 404:
+            return False
+        return self.lifecycle.request("GET", f"/v1/sandboxes/{sandbox_id}").status == 404
+
+    def _cleanup_pending(self, record: LeaseRecord) -> None:
+        if not self._delete_upstream_and_verify(record.sandbox_id):
             return
         self.runtime.stop_relay(record)
         self.runtime.cleanup_mailbox(record)
@@ -705,6 +860,7 @@ class GatewayApplication:
             filters[key] = value
         if filters.get("ai-platform.owner") != "sandbox-runtime" or not any(k in filters for k in SCOPE_LABELS.values()):
             raise GatewayError(400, "scope_filter_required")
+        self._reconcile_online(filters)
         records = self.store.list(filters)
         total_items = len(records)
         start = (page - 1) * page_size

@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import socket
 import sqlite3
 import ssl
@@ -19,20 +20,38 @@ import subprocess
 import threading
 import time
 import urllib.parse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import struct
 from typing import Any, Mapping
 
 from .gateway import (
     CALLBACK_PATHS,
+    DeadlineExceeded,
     GatewayError,
     LeaseRecord,
     Request,
     ReservationResult,
     Response,
     RuntimeEvidence,
+    deadline_scope,
+    operation_deadline,
 )
 from .relay import PROXY_SOURCE, RELAY_SOURCE, STOP_RELAY_SOURCE
+
+
+_RUNTIME_IDENTITY_PROBE_SOURCE = r'''
+import json, os, pathlib, sys
+uid, gid = os.getuid(), os.getgid()
+relay_active = False
+try:
+    value = (pathlib.Path(sys.argv[1]) / "requests" / "relay.pid").read_text(encoding="ascii").strip()
+    if value.isdigit():
+        os.kill(int(value), 0)
+        relay_active = True
+except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, OSError):
+    relay_active = False
+print(json.dumps({"user": f"{uid}:{gid}", "uid": str(uid), "gid": str(gid), "relay_active": relay_active}, sort_keys=True))
+'''
 
 
 class InMemoryStateStore:
@@ -322,22 +341,29 @@ class LoopbackLifecycleTransport:
     def request(self, method: str, path: str, body: bytes = b"") -> Response:
         if not path.startswith("/") or "//" in path or ".." in path.split("/"):
             raise GatewayError(500, "invalid_upstream_path")
-        connection = http.client.HTTPConnection("127.0.0.1", 8080, timeout=self.timeout_seconds)
+        deadline = operation_deadline(self.timeout_seconds)
+        connection = http.client.HTTPConnection("127.0.0.1", 8080, timeout=deadline.remaining())
+        timer = deadline.arm(lambda: _close_http_connection(connection))
         try:
             headers = {"accept": "application/json"}
             if body:
                 headers.update({"content-type": "application/json", "content-length": str(len(body))})
             connection.request(method, path, body=body, headers=headers)
+            if connection.sock is not None:
+                deadline.bind_socket(connection.sock)
             response = connection.getresponse()
             if 300 <= response.status < 400:
                 raise GatewayError(502, "upstream_redirect_rejected")
+            if connection.sock is not None:
+                deadline.bind_socket(connection.sock)
             data = response.read(self.max_response_bytes + 1)
             if len(data) > self.max_response_bytes:
                 raise GatewayError(502, "upstream_response_too_large")
             return Response(response.status, {k.lower(): v for k, v in response.getheaders()}, data)
-        except (OSError, http.client.HTTPException):
+        except (DeadlineExceeded, OSError, http.client.HTTPException):
             raise GatewayError(502, "upstream_unavailable") from None
         finally:
+            timer.cancel()
             connection.close()
 
 
@@ -368,7 +394,10 @@ class InMemoryRuntimeAdapter:
     def verify(self, record: LeaseRecord) -> RuntimeEvidence:
         if record.sandbox_id not in self.evidence:
             self.provision(record)
-        return self.evidence[record.sandbox_id]
+        return replace(
+            self.evidence[record.sandbox_id],
+            relay_active=record.sandbox_id in self.relays,
+        )
 
     def start_relay(self, record: LeaseRecord) -> None:
         self.relays.add(record.sandbox_id)
@@ -429,24 +458,72 @@ class DockerRuntimeAdapter:
         image_info = self._json_command(["docker", "image", "inspect", str(info.get("Image") or "")])[0]
         digests = {str(value).rsplit("@", 1)[-1] for value in image_info.get("RepoDigests") or []}
         image_digest = record.image_digest if record.image_digest in digests else ""
+        identity = self._json_command(
+            [
+                "docker",
+                "exec",
+                container_id,
+                "python3",
+                "-c",
+                _RUNTIME_IDENTITY_PROBE_SOURCE,
+                "/workspace/.opensandbox-gateway",
+            ]
+        )
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != {"user", "uid", "gid", "relay_active"}
+            or not isinstance(identity["relay_active"], bool)
+            or str(config.get("User") or "") != identity["user"]
+            or identity["uid"] == "0"
+            or identity["gid"] == "0"
+        ):
+            raise GatewayError(409, "executor_identity_mismatch")
         return RuntimeEvidence(
             sandbox_id=record.sandbox_id,
             runtime=str(host.get("Runtime") or ""),
             network_mode=str(host.get("NetworkMode") or ""),
             no_new_privileges=any(value in ("no-new-privileges", "no-new-privileges:true") for value in security),
-            user=str(config.get("User") or ""),
-            uid="1000" if str(config.get("User") or "") == "1000:1000" else "",
-            gid="1000" if str(config.get("User") or "") == "1000:1000" else "",
+            user=identity["user"],
+            uid=identity["uid"],
+            gid=identity["gid"],
             image=str(config.get("Image") or ""),
             image_digest=image_digest,
             mounts=mounts,
             labels=labels,
             running=bool(state.get("Running")),
+            relay_active=identity["relay_active"],
         )
 
     def start_relay(self, record: LeaseRecord) -> None:
+        if os.name != "posix" or os.geteuid() != 0:
+            raise GatewayError(500, "mailbox_protocol_unavailable")
+        import grp
+        import pwd
+
+        broker_uid = pwd.getpwnam("opensandbox-gateway").pw_uid
+        broker_gid = grp.getgrnam("opensandbox-gateway").gr_gid
+        workspace_fd = _open_workspace_dirfd(str(self.workspace_root), record.workspace_host_path)
+        try:
+            _prepare_mailbox(workspace_fd, record.workspace_host_path, broker_uid, broker_gid)
+        except OSError:
+            raise GatewayError(500, "mailbox_protocol_invalid") from None
+        finally:
+            os.close(workspace_fd)
         container_id = self._container_id(record.sandbox_id)
-        self._command(["docker", "exec", "-d", container_id, "python3", "-c", RELAY_SOURCE, "/workspace/.opensandbox-gateway"])
+        self._command(
+            [
+                "docker",
+                "exec",
+                "-d",
+                container_id,
+                "python3",
+                "-c",
+                RELAY_SOURCE,
+                "/workspace/.opensandbox-gateway",
+                str(broker_uid),
+                str(broker_gid),
+            ]
+        )
 
     def stop_relay(self, record: LeaseRecord) -> None:
         try:
@@ -503,13 +580,14 @@ class DockerRuntimeAdapter:
             raise GatewayError(502, "docker_evidence_invalid") from None
 
     def _command(self, argv: list[str], input_bytes: bytes | None = None, timeout_seconds: float | None = None) -> str:
+        deadline = operation_deadline(self.timeout_seconds if timeout_seconds is None else timeout_seconds)
         try:
             result = subprocess.run(
                 argv,
                 input=input_bytes,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                timeout=self.timeout_seconds if timeout_seconds is None else timeout_seconds,
+                timeout=deadline.remaining(),
                 check=False,
                 shell=False,
             )
@@ -543,6 +621,7 @@ class HelperRuntimeAdapter:
             mounts=tuple(tuple(item) for item in value["mounts"]),
             labels=value["labels"],
             running=value["running"],
+            relay_active=value["relay_active"],
         )
 
     def start_relay(self, record: LeaseRecord) -> None:
@@ -572,18 +651,24 @@ class HelperRuntimeAdapter:
         payload = _json_text({"version": 1, "operation": operation, "record": asdict(record), "arguments": dict(arguments or {})}).encode()
         if len(payload) > 2 * 1024 * 1024:
             raise GatewayError(413, "helper_request_too_large")
+        deadline = operation_deadline(self.timeout_seconds)
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(self.timeout_seconds)
+        timer = None
         try:
+            deadline.bind_socket(client)
+            timer = deadline.arm(lambda: _expire_socket(client))
             client.connect(self.socket_path)
+            deadline.bind_socket(client)
             client.sendall(struct.pack("!I", len(payload)) + payload)
-            size = struct.unpack("!I", _recv_exact(client, 4))[0]
+            size = struct.unpack("!I", _recv_exact(client, 4, deadline))[0]
             if size > self.max_response_bytes:
                 raise GatewayError(502, "helper_response_too_large")
-            response = json.loads(_recv_exact(client, size))
-        except (OSError, ValueError, KeyError, json.JSONDecodeError, struct.error):
+            response = json.loads(_recv_exact(client, size, deadline))
+        except (DeadlineExceeded, OSError, ValueError, KeyError, json.JSONDecodeError, struct.error):
             raise GatewayError(502, "runtime_helper_unavailable") from None
         finally:
+            if timer is not None:
+                timer.cancel()
             client.close()
         if response.get("ok") is not True or not isinstance(response.get("result"), dict):
             raise GatewayError(int(response.get("status") or 502), str(response.get("code") or "runtime_helper_failed"))
@@ -621,8 +706,18 @@ class MailboxBroker:
     def poll_once(self) -> int:
         """Process at most one bounded batch and return the number handled."""
 
+        deadline = operation_deadline(self.timeout_seconds)
+        with deadline_scope(deadline):
+            return self._poll_until(deadline)
+
+    def _poll_until(self, deadline) -> int:
         handled = 0
         for record in self.store.list({}):
+            try:
+                deadline.remaining()
+            except DeadlineExceeded:
+                self.store.record_deny("mailbox-broker", "broker_deadline_exceeded")
+                break
             workspace_fd = mailbox_fd = request_fd = response_fd = None
             if os.name != "posix":
                 self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
@@ -631,11 +726,10 @@ class MailboxBroker:
                 workspace_fd = _open_workspace_dirfd(self.workspace_root, record.workspace_host_path)
                 mailbox_fd = os.open(".opensandbox-gateway", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=workspace_fd)
                 request_fd = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
-                try:
-                    os.mkdir("responses", mode=0o700, dir_fd=mailbox_fd)
-                except FileExistsError:
-                    pass
                 response_fd = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
+                _require_directory(mailbox_fd, uid=0, gid=0, mode=0o711)
+                _require_directory(request_fd, uid=1000, gid=os.getgid(), mode=0o2770)
+                _require_directory(response_fd, uid=os.getuid(), gid=os.getgid(), mode=0o755)
             except FileNotFoundError:
                 for descriptor in (response_fd, request_fd, mailbox_fd, workspace_fd):
                     if isinstance(descriptor, int):
@@ -649,16 +743,29 @@ class MailboxBroker:
                 continue
             try:
                 _revalidate_workspace_fd(workspace_fd, record.workspace_host_path)
+                self._prune_responses(response_fd)
                 names = sorted(name for name in os.listdir(request_fd) if re.fullmatch(r"[0-9a-f]{32}\.json", name))[:16]
                 for name in names:
-                    handled += 1
+                    try:
+                        deadline.remaining()
+                    except DeadlineExceeded:
+                        self.store.record_deny("mailbox-broker", "broker_deadline_exceeded")
+                        return handled
                     try:
                         response = self._process(request_fd, name)
                     except GatewayError as exc:
                         self.store.record_deny("mailbox-broker", exc.code)
                         response = {"status": exc.status, "headers": {"content-type": "application/json"}, "body": base64.b64encode(_json_text({"error": {"code": exc.code}}).encode()).decode()}
-                    self._write_response(response_fd, name, response)
-                    os.unlink(name, dir_fd=request_fd)
+                    except Exception:
+                        self.store.record_deny("mailbox-broker", "broker_internal_error")
+                        response = {"status": 500, "headers": {"content-type": "application/json"}, "body": base64.b64encode(b'{"error":{"code":"broker_internal_error"}}').decode()}
+                    try:
+                        self._write_response(response_fd, name, response)
+                        os.unlink(name, dir_fd=request_fd)
+                        handled += 1
+                    except OSError:
+                        self.store.record_deny("mailbox-broker", "broker_response_write_failed")
+                        continue
             finally:
                 os.close(response_fd)
                 os.close(request_fd)
@@ -675,8 +782,8 @@ class MailboxBroker:
                     not stat.S_ISREG(evidence.st_mode)
                     or evidence.st_size > 2 * 1024 * 1024
                     or evidence.st_uid != 1000
-                    or evidence.st_gid != 1000
-                    or stat.S_IMODE(evidence.st_mode) != 0o600
+                    or evidence.st_gid != os.getgid()
+                    or stat.S_IMODE(evidence.st_mode) != 0o640
                 ):
                     raise GatewayError(400, "broker_request_invalid")
                 raw = b""
@@ -685,6 +792,12 @@ class MailboxBroker:
                     if not chunk:
                         break
                     raw += chunk
+                after = os.fstat(descriptor)
+                if (
+                    (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                    != (evidence.st_dev, evidence.st_ino, evidence.st_size, evidence.st_mtime_ns, evidence.st_ctime_ns)
+                ):
+                    raise GatewayError(400, "broker_request_changed")
             finally:
                 os.close(descriptor)
             value = json.loads(raw.decode("utf-8"))
@@ -705,26 +818,33 @@ class MailboxBroker:
             raise GatewayError(500, "broker_policy_invalid")
         allowed_headers = {"authorization", "content-type", "accept", "anthropic-version", "x-api-key", "user-agent"}
         outbound_headers = {str(k).lower(): str(v) for k, v in headers.items() if str(k).lower() in allowed_headers}
-        connection = _PinnedHTTPSConnection(target.hostname, target.port or 443, ips, self.timeout_seconds)
+        deadline = operation_deadline(self.timeout_seconds)
+        connection = _PinnedHTTPSConnection(target.hostname, target.port or 443, ips, deadline)
+        timer = deadline.arm(lambda: _close_http_connection(connection))
         try:
             request_path = target.path + (("?" + local.query) if local.query else "")
             connection.request(method, request_path, body=body, headers=outbound_headers)
+            if connection.sock is not None:
+                deadline.bind_socket(connection.sock)
             response = connection.getresponse()
             if 300 <= response.status < 400:
                 raise GatewayError(502, "broker_redirect_rejected")
+            if connection.sock is not None:
+                deadline.bind_socket(connection.sock)
             data = response.read(self.max_response_bytes + 1)
             if len(data) > self.max_response_bytes:
                 raise GatewayError(502, "broker_response_too_large")
             kept = {k.lower(): v for k, v in response.getheaders() if k.lower() in {"content-type", "cache-control"}}
             return {"status": response.status, "headers": kept, "body": base64.b64encode(data).decode("ascii")}
-        except (OSError, ssl.SSLError, http.client.HTTPException):
+        except (DeadlineExceeded, OSError, ssl.SSLError, http.client.HTTPException):
             raise GatewayError(502, "broker_upstream_unavailable") from None
         finally:
+            timer.cancel()
             connection.close()
 
     @staticmethod
     def _write_response(response_fd: int, name: str, response: Mapping[str, Any]) -> None:
-        temporary = f".{name}.{os.getpid()}.tmp"
+        temporary = f".{secrets.token_hex(16)}.tmp"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
         descriptor = os.open(temporary, flags, 0o600, dir_fd=response_fd)
         try:
@@ -733,9 +853,32 @@ class MailboxBroker:
             while offset < len(data):
                 offset += os.write(descriptor, data[offset:])
             os.fsync(descriptor)
+            os.fchmod(descriptor, 0o444)
         finally:
             os.close(descriptor)
-        os.replace(temporary, name, src_dir_fd=response_fd, dst_dir_fd=response_fd)
+        try:
+            os.replace(temporary, name, src_dir_fd=response_fd, dst_dir_fd=response_fd)
+        except Exception:
+            try:
+                os.unlink(temporary, dir_fd=response_fd)
+            except FileNotFoundError:
+                pass
+            raise
+
+    @staticmethod
+    def _prune_responses(response_fd: int) -> None:
+        cutoff = time.time() - 120.0
+        removed = 0
+        for name in sorted(os.listdir(response_fd)):
+            if removed >= 16 or not re.fullmatch(r"[0-9a-f]{32}\.json", name):
+                continue
+            try:
+                evidence = os.stat(name, dir_fd=response_fd, follow_symlinks=False)
+                if stat.S_ISREG(evidence.st_mode) and evidence.st_mtime < cutoff:
+                    os.unlink(name, dir_fd=response_fd)
+                    removed += 1
+            except FileNotFoundError:
+                continue
 
     @staticmethod
     def _route(path: str) -> tuple[str, str]:
@@ -748,17 +891,19 @@ class MailboxBroker:
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self, hostname: str, port: int, expected_ips: tuple[str, ...], timeout: float) -> None:
-        super().__init__(hostname, port, timeout=timeout, context=ssl.create_default_context())
+    def __init__(self, hostname: str, port: int, expected_ips: tuple[str, ...], deadline) -> None:
+        super().__init__(hostname, port, timeout=deadline.remaining(), context=ssl.create_default_context())
         self.expected_ips = expected_ips
+        self.deadline = deadline
 
     def connect(self) -> None:
-        resolved = {item[4][0] for item in socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM)}
-        candidates = [value for value in self.expected_ips if value in resolved]
-        if not candidates:
-            raise OSError("pinned address does not match DNS")
-        raw = socket.create_connection((candidates[0], self.port), self.timeout)
-        self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        raw = socket.create_connection((self.expected_ips[0], self.port), self.deadline.remaining())
+        self.sock = raw
+        self.deadline.bind_socket(raw)
+        wrapped = self._context.wrap_socket(raw, server_hostname=self.host, do_handshake_on_connect=False)
+        self.sock = wrapped
+        self.deadline.bind_socket(wrapped)
+        wrapped.do_handshake()
 
 
 def _open_workspace_dirfd(workspace_root: str, workspace_path: str) -> int:
@@ -795,6 +940,47 @@ def _revalidate_workspace_fd(workspace_fd: int, workspace_path: str) -> None:
         raise OSError("workspace identity changed")
 
 
+def _prepare_mailbox(workspace_fd: int, workspace_path: str, broker_uid: int, broker_gid: int) -> None:
+    """Create the fixed root/sandbox/broker ownership protocol below one workspace."""
+
+    _revalidate_workspace_fd(workspace_fd, workspace_path)
+    _remove_tree_at(workspace_fd, ".opensandbox-gateway")
+    os.mkdir(".opensandbox-gateway", mode=0o711, dir_fd=workspace_fd)
+    mailbox_fd = os.open(".opensandbox-gateway", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=workspace_fd)
+    try:
+        os.fchown(mailbox_fd, 0, 0)
+        os.fchmod(mailbox_fd, 0o711)
+        os.mkdir("requests", mode=0o700, dir_fd=mailbox_fd)
+        os.mkdir("responses", mode=0o700, dir_fd=mailbox_fd)
+        request_fd = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
+        response_fd = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
+        try:
+            os.fchown(request_fd, 1000, broker_gid)
+            os.fchmod(request_fd, 0o2770)
+            os.fchown(response_fd, broker_uid, broker_gid)
+            os.fchmod(response_fd, 0o755)
+            _require_directory(mailbox_fd, uid=0, gid=0, mode=0o711)
+            _require_directory(request_fd, uid=1000, gid=broker_gid, mode=0o2770)
+            _require_directory(response_fd, uid=broker_uid, gid=broker_gid, mode=0o755)
+        finally:
+            os.close(response_fd)
+            os.close(request_fd)
+    finally:
+        os.close(mailbox_fd)
+    _revalidate_workspace_fd(workspace_fd, workspace_path)
+
+
+def _require_directory(descriptor: int, *, uid: int, gid: int, mode: int) -> None:
+    evidence = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(evidence.st_mode)
+        or evidence.st_uid != uid
+        or evidence.st_gid != gid
+        or stat.S_IMODE(evidence.st_mode) != mode
+    ):
+        raise OSError("mailbox ownership protocol mismatch")
+
+
 def _remove_tree_at(parent_fd: int, name: str) -> None:
     try:
         descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
@@ -823,9 +1009,26 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def _recv_exact(connection: socket.socket, size: int) -> bytes:
+def _expire_socket(connection: socket.socket) -> None:
+    try:
+        connection.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    finally:
+        connection.close()
+
+
+def _close_http_connection(connection: http.client.HTTPConnection) -> None:
+    sock = connection.sock
+    if sock is not None:
+        _expire_socket(sock)
+    connection.close()
+
+
+def _recv_exact(connection: socket.socket, size: int, deadline) -> bytes:
     data = bytearray()
     while len(data) < size:
+        deadline.bind_socket(connection)
         chunk = connection.recv(size - len(data))
         if not chunk:
             raise OSError("unexpected end of helper response")

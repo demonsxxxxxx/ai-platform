@@ -98,6 +98,78 @@ async def test_worker_submit_monitor_preserves_normal_terminal_result():
 
 
 @pytest.mark.asyncio
+async def test_worker_submit_monitor_external_cancellation_stops_registered_owner():
+    started = asyncio.Event()
+    calls: list[tuple[str, str] | tuple[str]] = []
+
+    class OwnedAdapter:
+        async def submit_run(self, payload, event_sink=None, execution_owner=None):
+            async def stop_remote(reason: str):
+                calls.append(("stop", reason))
+                return True
+
+            execution_owner.register_stop(stop_remote)
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                calls.append(("adapter_cancelled",))
+                raise
+
+    skill_version = "hash-general-chat"
+    payload = RunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="qat-test-attempt",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        file_ids=[],
+        input={},
+        skill_version=skill_version,
+        release_decision=release_decision(skill_version),
+        skill_manifests=[primary_manifest("general-chat", skill_version)],
+    )
+
+    task = asyncio.create_task(
+        worker_module._submit_run_until_cancelled(
+            OwnedAdapter(),
+            payload,
+            event_sink=None,
+            cancel_requested=lambda: _async_false(),
+            poll_interval_seconds=0.01,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert calls == [("stop", "worker_interrupted"), ("adapter_cancelled",)]
+
+
+async def _async_false() -> bool:
+    return False
+
+
+def test_authoritative_leased_envelope_extracts_attempt_before_extra_forbid():
+    raw = base_payload()
+    raw["_queue_attempt_id"] = "qat-test-attempt"
+
+    envelope = worker_module.parse_leased_queue_envelope(raw)
+
+    assert envelope.attempt_id == "qat-test-attempt"
+    assert envelope.payload.run_id == "run-a"
+    assert "_queue_attempt_id" not in envelope.payload.model_dump()
+    with pytest.raises(worker_module.InvalidLeasedQueueEnvelope):
+        worker_module.parse_leased_queue_envelope({key: value for key, value in raw.items() if key != "_queue_attempt_id"})
+    with pytest.raises(worker_module.InvalidLeasedQueueEnvelope):
+        worker_module.parse_leased_queue_envelope({**raw, "_queue_attempt_id": ""})
+
+
+@pytest.mark.asyncio
 async def test_run_execution_owner_bounds_non_cooperative_stop_without_detaching_writer():
     release_writer = asyncio.Event()
     writer_stopped = asyncio.Event()

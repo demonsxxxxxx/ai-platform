@@ -44,9 +44,11 @@ Do not deploy until all of the following are current on s72:
 1. OpenSandbox is the expected 0.2.1 service, active only on
    `127.0.0.1:8080`, with `network_mode=none`, runsc, no-new-privileges, and the
    sole allowed host root `/data/opensandbox/workspaces`.
-2. The public DNS name resolves to s72, the certificate SAN covers that exact
-   name, the complete chain validates, and only the TLS gateway port will be
-   reachable from ai-platform.
+2. `OPENSANDBOX_GATEWAY_PUBLIC_AUTHORITY` is the approved literal private s72 IP
+   and TLS port. The certificate contains that exact address as an IP SAN (a DNS
+   SAN or CN is insufficient), the complete chain validates, and only that TLS
+   gateway port is reachable from ai-platform. Keep the ai-platform endpoint in
+   the same literal-IP form; do not broaden it to caller-controlled DNS.
 3. Three independent secret files contain newly provisioned lifecycle API key,
    capability bearer token, and at least 32 bytes of record-signing key. Never
    place their values in `gateway.env` or operator output.
@@ -65,14 +67,31 @@ grep -R 'REQUIRED' /etc/opensandbox-gateway/gateway.env /etc/opensandbox-gateway
 stat -c '%a %U:%G %n' /etc/opensandbox-gateway/secrets/* /etc/opensandbox-gateway/tls/*
 ```
 
-The first command must return no matches. Deploy from the exact reviewed source
-checkout:
+The first command must return no matches. The installer accepts only an exact
+40-character lowercase commit from a clean, root-owned, non-symlink Git tree.
+That commit must remain an ancestor of the exact authoritative remote ref
+`origin/main`; unset `OPENSANDBOX_GATEWAY_AUTHORITY_REF` unless an explicitly
+reviewed equivalent remote ref is required. Prepare and verify the checkout,
+then deploy:
 
 ```sh
+sudo test "$(git -C /path/to/reviewed/ai-platform rev-parse --verify 'HEAD^{commit}')" = "$(git -C /path/to/reviewed/ai-platform rev-parse HEAD)"
+sudo git -C /path/to/reviewed/ai-platform diff-index --quiet HEAD --
+sudo test -z "$(git -C /path/to/reviewed/ai-platform ls-files --others --exclude-standard)"
+sudo git -C /path/to/reviewed/ai-platform merge-base --is-ancestor HEAD origin/main
 sudo deploy/opensandbox/install-s72.sh /path/to/reviewed/ai-platform
 systemctl status --no-pager opensandbox-gateway.service
 journalctl -u opensandbox-gateway.service --since '-5 minutes' --no-pager
 ```
+
+The immutable release, unit/config/ACL rollback snapshot, manifest and atomic
+snapshot descriptor are root-owned. Deployment authority state lives only under
+`/var/lib/opensandbox-gateway-deploy` (`0700`, root:root); the public gateway unit
+cannot access it. Writable SQLite runtime state remains separately under
+`/var/lib/opensandbox-gateway`. The installer validates the archived source and
+manifest, reloads and restarts both units, verifies their absolute release
+working directories and source readback, and only then atomically switches
+`/opt/opensandbox-gateway/current` and the root-only rollback descriptor.
 
 ## Mandatory remote smoke gate
 
@@ -99,9 +118,11 @@ Run:
 sudo deploy/opensandbox/rollback-s72.sh
 ```
 
-This disables and removes only the gateway unit and its workspace ACL. It
-leaves OpenSandbox on loopback, verifies that service is active, and does not
-touch ai-platform provider configuration. Source, policy, secrets, and SQLite
-state remain for forensic recovery. No container, workspace, or state data is
-deleted. Rotate the two downstream auth secrets if rollback followed any
-suspected exposure.
+Rollback verifies the root-only descriptor, snapshot manifest, exact 40-hex
+release, realpath confinement, source ownership and `origin/main` reachability
+before mutation. It restores the previous unit files, configuration, ACL,
+enable/active state and release pointer exactly; a first-install rollback
+restores their prior absence. It then rechecks that OpenSandbox is active on
+`127.0.0.1:8080`. It never changes ai-platform provider configuration and does
+not delete containers, workspaces or SQLite runtime state. Rotate downstream
+auth secrets if rollback followed suspected exposure.

@@ -830,6 +830,13 @@ if not ok or type(metadata) ~= "table"
   or tostring(metadata["raw"] or "") ~= ARGV[1] then
   return cjson.encode({status = "stale_owner"})
 end
+local expected_fence_key = ARGV[5] .. ":" .. tostring(metadata["tenant_id"] or "") .. ":" .. tostring(metadata["run_id"] or "")
+if KEYS[4] ~= expected_fence_key then
+  return cjson.encode({status = "stale_owner"})
+end
+if redis.call("exists", KEYS[4]) == 1 then
+  return cjson.encode({status = "reconciliation_fenced"})
+end
 redis.call("lrem", KEYS[1], 1, ARGV[1])
 redis.call("hdel", KEYS[2], ARGV[2])
 redis.call("hdel", KEYS[3], ARGV[2])
@@ -847,6 +854,13 @@ if not ok or type(metadata) ~= "table"
   or tostring(metadata["owner_token"] or "") ~= ARGV[4]
   or tostring(metadata["raw"] or "") ~= ARGV[1] then
   return cjson.encode({status = "stale_owner"})
+end
+local expected_fence_key = ARGV[6] .. ":" .. tostring(metadata["tenant_id"] or "") .. ":" .. tostring(metadata["run_id"] or "")
+if KEYS[5] ~= expected_fence_key then
+  return cjson.encode({status = "stale_owner"})
+end
+if redis.call("exists", KEYS[5]) == 1 then
+  return cjson.encode({status = "reconciliation_fenced"})
 end
 local dead_letter = cjson.decode(ARGV[5])
 dead_letter["attempts"] = tonumber(metadata["attempts"] or 0)
@@ -911,6 +925,14 @@ def _leased_payload(payload: dict[str, Any], *, attempt_id: str) -> dict[str, An
     leased_payload = dict(payload)
     leased_payload[QUEUE_ATTEMPT_ID_FIELD] = attempt_id
     return leased_payload
+
+
+def _lease_fence_key(keys: QueueKeys, raw: str) -> str | None:
+    try:
+        payload = QueueRunPayload.model_validate_json(raw)
+    except ValidationError:
+        return None
+    return f"{keys.reconciliation_fence_prefix}:{payload.tenant_id}:{payload.run_id}"
 
 
 @dataclass(frozen=True)
@@ -2213,17 +2235,22 @@ async def ack_run(raw: str, *, message_id: str | None = None) -> bool:
         if lease is None:
             return False
         queue_message_id, attempt_id, owner_token = lease
+        fence_key = _lease_fence_key(keys, raw)
+        if fence_key is None:
+            return False
         result = _decode_redis_script_result(
             await redis.eval(
                 ACK_LEASE_SCRIPT,
-                3,
+                4,
                 keys.processing,
                 keys.processing_meta,
                 keys.retry_meta,
+                fence_key,
                 raw,
                 queue_message_id,
                 attempt_id,
                 owner_token,
+                keys.reconciliation_fence_prefix,
             )
         )
         return str(result.get("status") or "") == "acked"
@@ -2246,14 +2273,18 @@ async def fail_leased_run(
         if lease is None:
             return False
         queue_message_id, attempt_id, owner_token = lease
+        fence_key = _lease_fence_key(keys, raw)
+        if fence_key is None:
+            return False
         result = _decode_redis_script_result(
             await redis.eval(
                 FAIL_LEASE_SCRIPT,
-                4,
+                5,
                 keys.processing,
                 keys.processing_meta,
                 keys.retry_meta,
                 keys.dead_letter,
+                fence_key,
                 raw,
                 queue_message_id,
                 attempt_id,
@@ -2265,6 +2296,7 @@ async def fail_leased_run(
                     attempts=None,
                     worker_id=worker_id,
                 ),
+                keys.reconciliation_fence_prefix,
             )
         )
         return str(result.get("status") or "") == "failed"

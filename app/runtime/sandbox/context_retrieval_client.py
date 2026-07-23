@@ -10,6 +10,7 @@ import httpx
 from app.context_retrieval import ContextRetrievalDenied
 from app.path_safety import ensure_creatable_inside
 from app.runtime.sandbox.contracts import ContextRetrievalScope
+from app.validation import assert_safe_id
 
 
 class PlatformContextRetrievalClient:
@@ -21,12 +22,14 @@ class PlatformContextRetrievalClient:
         callback_url: str,
         callback_token_id: str,
         callback_token: str,
+        attempt_id: str,
         scope: ContextRetrievalScope,
         timeout_seconds: float = 30.0,
     ) -> None:
         self._callback_url = callback_url
         self._callback_token_id = callback_token_id
         self._callback_token = callback_token
+        self._attempt_id = assert_safe_id(attempt_id, "attempt_id")
         self._scope = scope
         self._timeout_seconds = max(1.0, float(timeout_seconds))
 
@@ -55,6 +58,7 @@ class PlatformContextRetrievalClient:
         payload = {
             "session_id": self._scope.session_id,
             "run_id": self._scope.run_id,
+            "attempt_id": self._attempt_id,
             "callback_token_id": self._callback_token_id,
             "action": action,
             "arguments": arguments,

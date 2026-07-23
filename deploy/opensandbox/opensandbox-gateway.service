@@ -38,6 +38,7 @@ AmbientCapabilities=
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/opensandbox-gateway /data/opensandbox/workspaces /run/opensandbox-gateway
+InaccessiblePaths=/var/lib/opensandbox-gateway-deploy
 
 [Install]
 WantedBy=multi-user.target

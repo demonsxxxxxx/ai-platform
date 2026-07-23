@@ -916,6 +916,7 @@ def _context_retrieval_for_request(
         callback_url=callback_target.context_retrieval_url,
         callback_token_id=request.callback_token_id,
         callback_token=request.callback_token,
+        attempt_id=request.attempt_id,
         scope=scope,
     )
     identity = ScopedContextRetrievalIdentity(
@@ -1141,6 +1142,7 @@ def create_executor_app(
         running_event = ExecutorCallbackEvent(
             session_id=request.session_id,
             run_id=request.run_id,
+            attempt_id=request.attempt_id,
             callback_token_id=request.callback_token_id,
             status="running",
             progress=5,
@@ -1186,6 +1188,7 @@ def create_executor_app(
             callback_event = ExecutorCallbackEvent(
                 session_id=request.session_id,
                 run_id=request.run_id,
+                attempt_id=request.attempt_id,
                 callback_token_id=request.callback_token_id,
                 status="running",
                 progress=35 if agent_event.type.startswith("tool_call") else 60 if agent_event.type == "artifact_created" else 20,
@@ -1271,6 +1274,7 @@ def create_executor_app(
         execution_observation = ExecutorCallbackEvent(
             session_id=request.session_id,
             run_id=request.run_id,
+            attempt_id=request.attempt_id,
             callback_token_id=request.callback_token_id,
             status="running",
             progress=99,

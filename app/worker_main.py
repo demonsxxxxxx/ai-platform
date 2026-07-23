@@ -20,7 +20,7 @@ from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 from app.settings import get_settings
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
-from app.worker import WorkerOutcome, parse_queue_payload, process_run_payload
+from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
 
 
 _next_memory_cleanup_at = 0.0
@@ -150,10 +150,17 @@ async def _worker_runtime_heartbeat_until_done(worker_id: str, interval_seconds:
         await asyncio.sleep(interval_seconds)
 
 
-async def _heartbeat_until_done(message_id: str, worker_id: str, interval_seconds: float) -> None:
+async def _heartbeat_until_done(
+    message_id: str,
+    worker_id: str,
+    interval_seconds: float,
+    ownership_lost: asyncio.Event,
+) -> None:
     while True:
         await asyncio.sleep(interval_seconds)
-        await queue.heartbeat_run(message_id, worker_id=worker_id)
+        if not await queue.heartbeat_run(message_id, worker_id=worker_id):
+            ownership_lost.set()
+            return
 
 
 async def cleanup_expired_sandbox_leases() -> None:
@@ -451,7 +458,7 @@ async def _terminalize_escaped_process_exception(
     """Converge one valid claimed run after processing escapes its normal terminal path."""
 
     try:
-        payload = parse_queue_payload(raw_payload)
+        payload = parse_leased_queue_envelope(raw_payload).payload
     except Exception:
         raw_run_id = raw_payload.get("run_id")
         return WorkerOutcome(
@@ -577,8 +584,14 @@ async def run_once(
     if message is None:
         return WorkerOutcome(status="idle", run_id=None)
 
+    ownership_lost = asyncio.Event()
     heartbeat_task = asyncio.create_task(
-        _heartbeat_until_done(message.message_id, resolved_worker_id, heartbeat_interval_seconds)
+        _heartbeat_until_done(
+            message.message_id,
+            resolved_worker_id,
+            heartbeat_interval_seconds,
+            ownership_lost,
+        )
     )
     maintenance_task = (
         asyncio.create_task(
@@ -587,36 +600,61 @@ async def run_once(
         if run_background_maintenance
         else None
     )
-    try:
+
+    async def process_leased_message() -> WorkerOutcome:
         try:
-            outcome = await process_run_payload(message.payload, registry=registry, worker_id=resolved_worker_id)
+            return await process_run_payload(message.payload, registry=registry, worker_id=resolved_worker_id)
         except Exception as exc:
             logger.exception(
                 "Worker payload processing escaped its terminal path",
                 extra={"run_id": message.payload.get("run_id")},
             )
             try:
-                outcome = await _terminalize_escaped_process_exception(message.payload, exc)
+                return await _terminalize_escaped_process_exception(message.payload, exc)
             except Exception:
                 logger.exception(
                     "Worker process exception terminalization failed",
                     extra={"run_id": message.payload.get("run_id")},
                 )
-                outcome = WorkerOutcome(
+                return WorkerOutcome(
                     status="dead_letter",
                     run_id=message.payload.get("run_id"),
                     error_code="worker_process_exception",
                     error_message=sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly.",
                 )
+
+    processing_task = asyncio.create_task(process_leased_message())
+    ownership_task = asyncio.create_task(ownership_lost.wait())
+    try:
+        await asyncio.wait({processing_task, ownership_task}, return_when=asyncio.FIRST_COMPLETED)
+        if ownership_lost.is_set():
+            processing_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await processing_task
+            return WorkerOutcome(
+                status="ownership_lost",
+                run_id=message.payload.get("run_id"),
+                error_code="queue_ownership_lost",
+                error_message="Queue execution ownership was lost.",
+            )
+        outcome = processing_task.result()
     finally:
-        tasks = [heartbeat_task]
+        tasks = [heartbeat_task, ownership_task, processing_task]
         if maintenance_task is not None:
             tasks.append(maintenance_task)
         for task in tasks:
-            task.cancel()
+            if not task.done():
+                task.cancel()
         for task in tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+    if ownership_lost.is_set():
+        return WorkerOutcome(
+            status="ownership_lost",
+            run_id=message.payload.get("run_id"),
+            error_code="queue_ownership_lost",
+            error_message="Queue execution ownership was lost.",
+        )
     if outcome.status in {"succeeded", "failed", "skipped", "cancelled"}:
         await queue.ack_run(message.raw, message_id=message.message_id)
     else:

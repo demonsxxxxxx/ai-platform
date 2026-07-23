@@ -1010,6 +1010,23 @@ CAPABILITY_PROFILE_MAX_REQUEST_SECONDS = 2.0
 CAPABILITY_PROFILE_MAX_RESPONSE_BYTES = 64 * 1024
 CAPABILITY_PROFILE_MAX_TOKEN_BYTES = 4096
 CapabilityProfileFetcher = Callable[[str, dict[str, str], float], dict[str, Any]]
+_OPENSANDBOX_CAPABILITY_PROFILE_FIELDS = {
+    "schema_version",
+    "profile_id",
+    "provider",
+    "issued_at",
+    "expires_at",
+    "opensandbox_endpoint",
+    "runtime_identity",
+    "ai_platform_runtime_subject",
+    "gateway_policy_subject",
+    "callback_boundary_subject",
+    "deny_audit_subject",
+    "deny_counter_subject",
+    "executor_image_digest",
+    "proof_key_id",
+    "profile_signature",
+}
 
 
 def _opensandbox_governed_runtime_subject(runtime_identity: str, runtime_subject: str) -> str:
@@ -1346,6 +1363,23 @@ def _validate_opensandbox_external_egress_profile(
 ) -> OpenSandboxExternalEgressCapability:
     if not isinstance(profile, dict):
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile is malformed") from None
+    if set(profile) != _OPENSANDBOX_CAPABILITY_PROFILE_FIELDS:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile shape is invalid") from None
+    proof_key_id = _required_capability_value(profile.get("proof_key_id"), field="proof_key_id")
+    if proof_key_id != _governed_egress_proof_key_id(settings):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile proof key mismatch") from None
+    signature = profile.get("profile_signature")
+    signing_key = str(getattr(settings, "sandbox_egress_proof_signing_key", "") or "")
+    if not has_governed_egress_signing_key(signing_key) or not isinstance(signature, str) or re.fullmatch(r"[0-9a-f]{64}", signature) is None:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile signature is invalid") from None
+    unsigned = {key: value for key, value in profile.items() if key != "profile_signature"}
+    expected_signature = hmac.new(
+        signing_key.encode("utf-8"),
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile signature is invalid") from None
     if profile.get("schema_version") != OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_SCHEMA_VERSION:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile schema is unsupported") from None
     if profile.get("provider") != "opensandbox":
@@ -4029,6 +4063,61 @@ class OpenSandboxContainerProvider:
         if close is not None:
             await _maybe_await(close())
 
+    @staticmethod
+    def _pagination_value(pagination: Any, snake_name: str, camel_name: str) -> Any:
+        if isinstance(pagination, dict):
+            return pagination.get(snake_name, pagination.get(camel_name))
+        return getattr(pagination, snake_name, None)
+
+    async def _list_all_sandbox_infos(self, manager: Any, metadata_filter: dict[str, str]) -> list[Any]:
+        """Exhaust the real SDK page contract with strict bounded progress guards."""
+
+        if not (hasattr(manager, "list_sandbox_infos") and self._sandbox_filter_class is not None):
+            infos = list(await _maybe_await(manager.list_sandboxes(metadata=metadata_filter)) or [])
+            if len(infos) > 10000:
+                raise ContainerStartFailedError("OpenSandbox inventory exceeded bounded pages")
+            seen: set[str] = set()
+            for info in infos:
+                status = _opensandbox_status_from_info(info)
+                if status is None or status.container_id in seen:
+                    raise ContainerStartFailedError("OpenSandbox inventory pagination is ambiguous")
+                seen.add(status.container_id)
+            return infos
+        collected: list[Any] = []
+        seen: set[str] = set()
+        for page in range(1, 101):
+            paged = await _maybe_await(
+                manager.list_sandbox_infos(
+                    self._sandbox_filter_class(metadata=metadata_filter, page=page, page_size=100)
+                )
+            )
+            infos = getattr(paged, "sandbox_infos", None)
+            pagination = getattr(paged, "pagination", None)
+            if isinstance(paged, dict):
+                infos = paged.get("sandbox_infos")
+                pagination = paged.get("pagination")
+            actual_page = self._pagination_value(pagination, "page", "page")
+            actual_size = self._pagination_value(pagination, "page_size", "pageSize")
+            has_next = self._pagination_value(pagination, "has_next_page", "hasNextPage")
+            if (
+                not isinstance(infos, list)
+                or type(actual_page) is not int
+                or actual_page != page
+                or type(actual_size) is not int
+                or actual_size != 100
+                or type(has_next) is not bool
+            ):
+                raise ContainerStartFailedError("OpenSandbox inventory pagination is ambiguous")
+            for info in infos:
+                status = _opensandbox_status_from_info(info)
+                if status is None or status.container_id in seen:
+                    raise ContainerStartFailedError("OpenSandbox inventory pagination is ambiguous")
+                seen.add(status.container_id)
+                collected.append(info)
+            if not has_next:
+                return collected
+        raise ContainerStartFailedError("OpenSandbox inventory exceeded bounded pages")
+
     async def _write_and_verify_sentinel(
         self,
         sandbox: Any,
@@ -4675,17 +4764,7 @@ class OpenSandboxContainerProvider:
                 if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id", "sandbox_mode"}
             }
             metadata_filter["ai-platform.owner"] = "sandbox-runtime"
-            if hasattr(manager, "list_sandbox_infos") and self._sandbox_filter_class is not None:
-                paged = await _maybe_await(
-                    manager.list_sandbox_infos(
-                        self._sandbox_filter_class(metadata=metadata_filter, page_size=100)
-                    )
-                )
-                infos = getattr(paged, "sandbox_infos", None)
-                if infos is None and isinstance(paged, dict):
-                    infos = paged.get("sandbox_infos")
-            else:
-                infos = await _maybe_await(manager.list_sandboxes(metadata=metadata_filter))
+            infos = await self._list_all_sandbox_infos(manager, metadata_filter)
             statuses = [
                 status
                 for info in (infos or [])
@@ -4700,11 +4779,14 @@ class OpenSandboxContainerProvider:
             return await self._list_remote_statuses(filters)
         except OpenSandboxUnavailableError:
             raise
-        except Exception:
-            statuses = [_status_from_lease(lease, status="running") for lease in self._leases.values()]
-            return [status for status in statuses if _matches_filters(status, filters)]
+        except ContainerStartFailedError:
+            raise
+        except Exception as exc:
+            raise ContainerStartFailedError("OpenSandbox inventory failed") from exc
 
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
+        if not all(isinstance(filters.get(key), str) and filters[key] for key in ("tenant_id", "attempt_id")):
+            raise ContainerCleanupFailedError("OpenSandbox cleanup requires exact tenant and attempt scope")
         settings = get_settings()
         manager = await self._manager(self._connection_config(settings))
         try:
@@ -4714,17 +4796,7 @@ class OpenSandboxContainerProvider:
                 if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id", "sandbox_mode"}
             }
             metadata_filter["ai-platform.owner"] = "sandbox-runtime"
-            if hasattr(manager, "list_sandbox_infos") and self._sandbox_filter_class is not None:
-                paged = await _maybe_await(
-                    manager.list_sandbox_infos(
-                        self._sandbox_filter_class(metadata=metadata_filter, page_size=100)
-                    )
-                )
-                infos = getattr(paged, "sandbox_infos", None)
-                if infos is None and isinstance(paged, dict):
-                    infos = paged.get("sandbox_infos")
-            else:
-                infos = await _maybe_await(manager.list_sandboxes(metadata=metadata_filter))
+            infos = await self._list_all_sandbox_infos(manager, metadata_filter)
             results: list[StopResult] = []
             for info in infos or []:
                 status = _opensandbox_status_from_info(info)

@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import hmac
 import inspect
 import importlib
 import json
@@ -944,10 +945,17 @@ def external_egress_capability_profile(
         "deny_audit_subject": "gateway-deny-audit-subject-a",
         "deny_counter_subject": "gateway-deny-counter-subject-a",
         "executor_image_digest": "sha256:" + "a" * 64,
+        "proof_key_id": "current",
         "issued_at": (now - timedelta(seconds=10)).isoformat().replace("+00:00", "Z"),
         "expires_at": (now + timedelta(seconds=120)).isoformat().replace("+00:00", "Z"),
     }
     profile.update(overrides)
+    if "profile_signature" not in overrides:
+        profile["profile_signature"] = hmac.new(
+            OpenSandboxSettings.sandbox_egress_proof_signing_key.encode("utf-8"),
+            json.dumps(profile, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
     return profile
 
 
@@ -1463,6 +1471,32 @@ async def test_opensandbox_provider_fails_closed_for_missing_stale_or_drifted_ex
 
     with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match=expected_message):
         await opensandbox_provider(capability_profile_fetcher=lambda *_args: payload).create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper", ("missing-signature", "extra-field", "proof-key", "payload", "signature"))
+async def test_opensandbox_provider_rejects_capability_profile_signature_and_key_tamper(monkeypatch, tamper):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: ExternalEgressCapabilitySettings())
+    profile = external_egress_capability_profile()
+    if tamper == "missing-signature":
+        profile.pop("profile_signature")
+    elif tamper == "extra-field":
+        profile["unexpected"] = "value"
+    elif tamper == "proof-key":
+        profile = external_egress_capability_profile(proof_key_id="retired")
+    elif tamper == "payload":
+        profile["profile_id"] = "tampered-after-signing"
+    else:
+        profile["profile_signature"] = "0" * 64
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError):
+        await opensandbox_provider(capability_profile_fetcher=lambda *_args: profile).create_or_reuse(
+            request(), workspace()
+        )
 
     assert FakeOpenSandbox.created == []
 
@@ -3801,6 +3835,7 @@ async def test_opensandbox_provider_stop_and_cleanup_are_scope_bounded(monkeypat
             "ai-platform.user_id": "user-a",
             "ai-platform.session_id": "session-a",
             "ai-platform.run_id": "run-orphan-a",
+            "ai-platform.attempt_id": "qat-test-attempt",
             "ai-platform.sandbox_mode": "ephemeral",
             "ai-platform.browser_enabled": "false",
         },
@@ -3825,7 +3860,10 @@ async def test_opensandbox_provider_stop_and_cleanup_are_scope_bounded(monkeypat
     )
     FakeOpenSandboxManager.sandboxes = [same_tenant_failed, same_tenant_running, foreign_failed]
 
-    results = await provider.cleanup_orphan_containers({"tenant_id": "tenant-a"}, reason="admin_runtime")
+    results = await provider.cleanup_orphan_containers(
+        {"tenant_id": "tenant-a", "attempt_id": "qat-test-attempt"},
+        reason="admin_runtime",
+    )
 
     assert [item.container_id for item in results] == ["osb-orphan-a"]
     assert FakeOpenSandboxManager.killed == ["osb-orphan-a"]
@@ -3852,6 +3890,154 @@ async def test_opensandbox_provider_stop_rejects_scope_mismatch_without_kill(mon
     assert sandbox.closed is False
     assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
     assert provider._sandboxes[lease.container_id] is sandbox
+
+
+def _paged_opensandbox_provider(manager_class):
+    from opensandbox.models.sandboxes import SandboxFilter
+    from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
+
+    return OpenSandboxContainerProvider(
+        sandbox_class=FakeOpenSandbox,
+        sandbox_manager_class=manager_class,
+        connection_config_class=FakeConnectionConfig,
+        file_class=FakeOpenSandboxFile,
+        host_class=FakeOpenSandboxHost,
+        volume_class=FakeOpenSandboxVolume,
+        network_policy_class=FakeOpenSandboxNetworkPolicy,
+        network_rule_class=FakeOpenSandboxNetworkRule,
+        sandbox_filter_class=SandboxFilter,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+        capability_profile_fetcher=lambda *_args: external_egress_capability_profile(),
+        authoritative_attestation_probe=lambda *_args: True,
+        utcnow=lambda: TEST_CAPABILITY_NOW,
+    )
+
+
+def _inventory_sandbox(sandbox_id: str, *, tenant_id: str, attempt_id: str) -> FakeOpenSandbox:
+    return FakeOpenSandbox(
+        sandbox_id=sandbox_id,
+        metadata={
+            "ai-platform.owner": "sandbox-runtime",
+            "ai-platform.tenant_id": tenant_id,
+            "ai-platform.workspace_id": "workspace-a",
+            "ai-platform.user_id": "user-a",
+            "ai-platform.session_id": "session-a",
+            "ai-platform.run_id": "run-a",
+            "ai-platform.attempt_id": attempt_id,
+            "ai-platform.sandbox_mode": "ephemeral",
+            "ai-platform.browser_enabled": "false",
+        },
+        state="FAILED",
+    )
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_sdk_inventory_and_cleanup_exhaust_all_pages_with_exact_attempt(monkeypatch):
+    from opensandbox.models.sandboxes import PaginationInfo
+    from app.runtime.sandbox import container_provider
+
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    target = [
+        _inventory_sandbox(f"osb-target-{index:03d}", tenant_id="tenant-a", attempt_id="attempt-a")
+        for index in range(101)
+    ]
+    foreign_tenant = _inventory_sandbox("osb-foreign-tenant", tenant_id="tenant-b", attempt_id="attempt-a")
+    foreign_attempt = _inventory_sandbox("osb-foreign-attempt", tenant_id="tenant-a", attempt_id="attempt-b")
+
+    class PagedManager:
+        calls = []
+        killed = []
+        sandboxes = [*target, foreign_tenant, foreign_attempt]
+
+        @classmethod
+        def create(cls, **_kwargs):
+            return cls()
+
+        async def close(self):
+            return None
+
+        async def list_sandbox_infos(self, filter):
+            type(self).calls.append(filter)
+            values = [
+                item
+                for item in self.sandboxes
+                if all(item.metadata.get(key) == value for key, value in (filter.metadata or {}).items())
+            ]
+            start = (filter.page - 1) * filter.page_size
+            page_items = values[start : start + filter.page_size]
+            total_pages = max((len(values) + filter.page_size - 1) // filter.page_size, 1)
+            return SimpleNamespace(
+                sandbox_infos=page_items,
+                pagination=PaginationInfo(
+                    page=filter.page,
+                    page_size=filter.page_size,
+                    total_items=len(values),
+                    total_pages=total_pages,
+                    has_next_page=filter.page < total_pages,
+                ),
+            )
+
+        async def kill_sandbox(self, sandbox_id):
+            type(self).killed.append(sandbox_id)
+
+    provider = _paged_opensandbox_provider(PagedManager)
+    filters = {"tenant_id": "tenant-a", "attempt_id": "attempt-a"}
+    statuses = await provider.list_runtime_containers(filters)
+    results = await provider.cleanup_orphan_containers(filters, reason="orphan_reconciliation")
+
+    assert len(statuses) == len(results) == 101
+    assert statuses[-1].container_id == "osb-target-100"
+    assert PagedManager.killed[-1] == "osb-target-100"
+    assert foreign_tenant.id not in PagedManager.killed
+    assert foreign_attempt.id not in PagedManager.killed
+    assert [(item.page, item.page_size) for item in PagedManager.calls] == [(1, 100), (2, 100), (1, 100), (2, 100)]
+    expected_metadata = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.tenant_id": "tenant-a",
+        "ai-platform.attempt_id": "attempt-a",
+    }
+    assert all(item.metadata == expected_metadata for item in PagedManager.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("non-monotonic-page", "duplicate-id", "max-pages"))
+async def test_opensandbox_sdk_inventory_rejects_non_progressing_or_unbounded_pages(monkeypatch, mode):
+    from opensandbox.models.sandboxes import PaginationInfo
+    from app.runtime.sandbox import container_provider
+
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    class BrokenPagedManager:
+        @classmethod
+        def create(cls, **_kwargs):
+            return cls()
+
+        async def close(self):
+            return None
+
+        async def list_sandbox_infos(self, filter):
+            sandbox_index = 0 if mode == "duplicate-id" else filter.page
+            item = _inventory_sandbox(
+                f"osb-page-{sandbox_index:03d}",
+                tenant_id="tenant-a",
+                attempt_id="attempt-a",
+            )
+            actual_page = 1 if mode == "non-monotonic-page" and filter.page == 2 else filter.page
+            return SimpleNamespace(
+                sandbox_infos=[item],
+                pagination=PaginationInfo(
+                    page=actual_page,
+                    page_size=100,
+                    total_items=10001,
+                    total_pages=101,
+                    has_next_page=True,
+                ),
+            )
+
+    provider = _paged_opensandbox_provider(BrokenPagedManager)
+    with pytest.raises(container_provider.ContainerStartFailedError):
+        await provider.list_runtime_containers({"tenant_id": "tenant-a", "attempt_id": "attempt-a"})
 
 
 @pytest.mark.asyncio

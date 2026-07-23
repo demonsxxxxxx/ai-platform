@@ -338,6 +338,7 @@ class ExecutorCallbackEvent(BaseModel):
 
     session_id: str
     run_id: str
+    attempt_id: str
     callback_token_id: str
     status: CallbackStatus
     progress: int = Field(ge=0, le=100)
@@ -347,7 +348,7 @@ class ExecutorCallbackEvent(BaseModel):
     error_message: str | None = None
     events: list[AgentEvent] = Field(default_factory=list)
 
-    @field_validator("session_id", "run_id", "callback_token_id")
+    @field_validator("session_id", "run_id", "attempt_id", "callback_token_id")
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
@@ -365,6 +366,7 @@ class ExecutorContextRetrievalRequest(BaseModel):
 
     session_id: str
     run_id: str
+    attempt_id: str
     callback_token_id: str
     action: Literal[
         "read_session_messages",
@@ -376,7 +378,7 @@ class ExecutorContextRetrievalRequest(BaseModel):
     ]
     arguments: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("session_id", "run_id", "callback_token_id")
+    @field_validator("session_id", "run_id", "attempt_id", "callback_token_id")
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
@@ -389,6 +391,7 @@ class ExecutorToolPermissionRequest(BaseModel):
 
     session_id: str
     run_id: str
+    attempt_id: str
     callback_token_id: str
     sdk_session_id: str | None = None
     tool_name: str
@@ -400,7 +403,7 @@ class ExecutorToolPermissionRequest(BaseModel):
     reason: str = "Claude SDK tool permission required"
     permission_wait_seconds: float | None = Field(default=None, ge=0, le=TOOL_PERMISSION_REQUEST_TTL_SECONDS)
 
-    @field_validator("session_id", "run_id", "callback_token_id")
+    @field_validator("session_id", "run_id", "attempt_id", "callback_token_id")
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)

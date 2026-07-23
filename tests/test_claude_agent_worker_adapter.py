@@ -2058,7 +2058,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
     assert result.status == "succeeded"
     assert runtime_calls
     assert runtime_calls[0].skill_ids == ["general-chat"]
-    assert runtime_calls[0].callback_token_id == "cbt_run_1"
+    assert runtime_calls[0].callback_token_id == "cbt:run_1:qat-test-attempt"
     assert runtime_calls[0].sandbox_mode == "ephemeral"
     assert result.executor_payload["sandbox_provider"] == "docker"
 

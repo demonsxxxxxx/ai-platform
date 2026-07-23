@@ -212,6 +212,7 @@ def _kernel_for_context(context: RunContext, sandbox_runtime=None) -> InProcessE
 
 
 def build_sandbox_request(context: RunContext, *, attempt_id: str):
+    from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
     from app.runtime.sandbox.contracts import SandboxRuntimeRequest
     from app.settings import get_settings
 
@@ -236,7 +237,9 @@ def build_sandbox_request(context: RunContext, *, attempt_id: str):
         permissions=permissions,
         resource_limits=context.resource_limits,
         callback_url=f"{settings.sandbox_callback_base_url.rstrip('/')}/api/ai/runtime/callbacks/executor",
-        callback_token_id=f"cbt_{context.run_id}",
+        callback_token_id=callback_token_id_for_binding(
+            CallbackTokenBinding(run_id=context.run_id, attempt_id=attempt_id)
+        ),
     )
 
 

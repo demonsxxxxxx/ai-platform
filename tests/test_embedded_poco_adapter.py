@@ -232,7 +232,7 @@ async def test_embedded_adapter_uses_sandbox_runtime_for_ephemeral_mode(monkeypa
     assert submitted[0].resource_limits["max_tool_calls"] == 9
     assert submitted[0].file_ids == ["file-a"]
     assert submitted[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
-    assert submitted[0].callback_token_id == "cbt_run-a"
+    assert submitted[0].callback_token_id == "cbt:run-a:attempt-a"
     assert [event["event_type"] for event in events] == ["run_started", "assistant_delta", "run_completed"]
     assert events[1]["payload"]["delta"] == "sandbox delta"
 
