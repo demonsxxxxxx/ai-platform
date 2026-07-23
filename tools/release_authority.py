@@ -313,6 +313,8 @@ def _run(
     timeout: int = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
     input: str | bytes | None = None,
 ) -> subprocess.CompletedProcess[Any]:
+    if text and isinstance(input, (bytes, bytearray, memoryview)):
+        raise TypeError("text mode input must be str, not bytes-like")
     arguments = list(command)
     windows_job_handle = _create_owned_windows_job()
     process: subprocess.Popen[Any] | None = None

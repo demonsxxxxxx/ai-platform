@@ -3134,7 +3134,7 @@ def test_run_non_timeout_communicate_error_cleans_tree_and_preserves_exception(m
             release_authority._run(
                 [sys.executable, "-c", child_code],
                 text=True,
-                input=b"binary-input",
+                input="text-input",
                 timeout=5,
             )
         assert exc_info.value is failure
@@ -3222,13 +3222,6 @@ def test_run_preserves_text_binary_environment_cwd_and_check_contract(tmp_path):
     assert binary_result.stdout == binary_payload
     assert binary_result.stderr == b""
 
-    with pytest.raises(TypeError, match="must be str, not bytes"):
-        release_authority._run(
-            [sys.executable, "-c", "import time; time.sleep(30)"],
-            text=True,
-            input=b"invalid-binary-input",
-        )
-
     unchecked = release_authority._run(
         [sys.executable, "-c", "import sys; print('failed-output'); sys.exit(7)"],
         check=False,
@@ -3241,6 +3234,28 @@ def test_run_preserves_text_binary_environment_cwd_and_check_contract(tmp_path):
         )
     assert exc_info.value.returncode == 8
     assert exc_info.value.stderr == "failed-error\n"
+
+
+@pytest.mark.parametrize("invalid_input", [b"bytes", bytearray(b"bytearray"), memoryview(b"memoryview")])
+def test_run_rejects_bytes_like_text_input_before_popen(monkeypatch, invalid_input):
+    popen_calls = 0
+
+    def fail_popen(*args, **kwargs):
+        nonlocal popen_calls
+        popen_calls += 1
+        pytest.fail("Popen must not run for invalid text-mode input")
+
+    monkeypatch.setattr(subprocess, "Popen", fail_popen)
+    with pytest.raises(TypeError) as exc_info:
+        release_authority._run(
+            ["private-command", "private-argument"],
+            text=True,
+            input=invalid_input,
+        )
+
+    assert type(exc_info.value) is TypeError
+    assert str(exc_info.value) == "text mode input must be str, not bytes-like"
+    assert popen_calls == 0
 
 
 def test_role_timeouts_distinguish_canonical_dependency_from_source_only(monkeypatch, tmp_path):
