@@ -60,6 +60,7 @@ from app.run_projection import (
     normalize_run_status,
     progress_for_status,
     public_text_or_fallback,
+    public_terminal_projection,
     run_contract_version,
     run_event_response,
     run_step_response,
@@ -2025,7 +2026,16 @@ async def get_run(
     raw_agent_id = str(run["agent_id"])
     show_raw_skill = is_ai_admin(principal)
     multi_agent_snapshot = multi_agent_snapshot_from_steps(run_id, steps, principal=principal)
-    if multi_agent_snapshot is not None:
+    terminal_projection = (
+        public_terminal_projection(
+            run_status,
+            run.get("error_code"),
+            multi_agent=multi_agent_snapshot,
+        )
+        if not show_raw_skill
+        else None
+    )
+    if multi_agent_snapshot is not None and terminal_projection is None:
         result_payload["multi_agent"] = multi_agent_snapshot
     input_payload = run["input_json"] if isinstance(run["input_json"], dict) else {}
     if show_raw_skill:
@@ -2033,19 +2043,27 @@ async def get_run(
         result_payload = sanitize_public_payload(result_payload)
     else:
         input_payload = sanitize_user_control_input(input_payload)
-        result_payload = sanitize_public_payload(redact_raw_skill_references(result_payload))
+        result_payload = (
+            dict(terminal_projection["result"])
+            if terminal_projection is not None
+            else sanitize_public_payload(redact_raw_skill_references(result_payload))
+        )
     if not isinstance(input_payload, dict):
         input_payload = {}
     input_payload.pop("context_snapshot_id", None)
     input_payload.pop("context_snapshot", None)
     if not isinstance(result_payload, dict):
         result_payload = {}
-    error_code = (
-        sanitize_public_text(run.get("error_code"))
-        if show_raw_skill
-        else ("run_failed" if run.get("error_code") else None)
-    )
-    error_message = sanitize_public_text(run.get("error_message"))
+    if terminal_projection is not None:
+        error_code = terminal_projection["error_code"]
+        error_message = str(terminal_projection["message"])
+    else:
+        error_code = (
+            sanitize_public_text(run.get("error_code"))
+            if show_raw_skill
+            else ("run_failed" if run.get("error_code") else None)
+        )
+        error_message = sanitize_public_text(run.get("error_message"))
     context_ref = (
         run_context_ref_from_snapshot_row(bound_context_snapshot)
         if isinstance(bound_context_snapshot, dict)

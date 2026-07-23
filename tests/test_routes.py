@@ -638,7 +638,7 @@ def test_run_event_response_redacts_runtime_private_error_code_for_ordinary_user
     )
 
     assert event["error_code"] == "run_failed"
-    assert event["message"] == ""
+    assert event["message"] == "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
     assert "runtime211" not in str(event)
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(event)
     assert "/var/lib/ai-platform" not in str(event)
@@ -2404,6 +2404,63 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnostics(monkeypatch):
+    raw_terms = (
+        "command=render-report --private-param=amber",
+        "provider-model=solstice-3 sdk diagnostic",
+        "reasoning-draft request-id=orchid digest=0123456789abcdef",
+        "url=https://executor.internal.example.invalid/v1",
+    )
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "failed",
+            "input_json": {},
+            "result_json": {
+                "message": raw_terms[0],
+                "sdk_error": raw_terms[1],
+                "error": {"message": raw_terms[2]},
+            },
+            "error_code": "claude_agent_sdk_runtime_error",
+            "error_message": raw_terms[3],
+        }
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_events(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_steps(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", empty_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", empty_steps)
+
+    ordinary = await get_run("run-a", principal=principal())
+    admin = await get_run("run-a", principal=principal(roles=["admin"]))
+
+    fixed_message = "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
+    assert ordinary.result == {"message": fixed_message}
+    assert ordinary.error_code == "model_service_unavailable"
+    assert ordinary.error_message == fixed_message
+    assert all(term not in ordinary.model_dump_json() for term in raw_terms)
+    assert admin.result["message"] == raw_terms[0]
+    assert admin.result["sdk_error"] == raw_terms[1]
+    assert admin.result["error"] == {"message": raw_terms[2]}
+    assert admin.error_code == "claude_agent_sdk_runtime_error"
+    assert admin.error_message == raw_terms[3]
+
+
+@pytest.mark.asyncio
 async def test_get_run_redacts_ragflow_internal_reference_ids_for_ordinary_user(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {
@@ -2754,7 +2811,7 @@ async def test_get_run_includes_multi_agent_snapshot_from_run_steps(monkeypatch)
     assert multi_agent["counts"]["cancelled"] == 2
     assert [step["status"] for step in multi_agent["steps"]] == ["cancelled", "cancelled"]
     assert [step["step_key"] for step in response.steps] == ["plan", "code"]
-    assert response.result["message"] == "任务已取消"
+    assert response.result["message"] == "任务已取消。取消前已产生的公开内容仍会保留。"
 
 
 @pytest.mark.asyncio

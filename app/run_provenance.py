@@ -22,6 +22,7 @@ from app.run_projection import (
     normalize_step_status,
     progress_for_status,
     public_text_or_fallback,
+    public_terminal_projection,
     run_contract_version,
     run_step_response,
 )
@@ -275,6 +276,11 @@ def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> di
     raw_skill_id = str(run["skill_id"])
     raw_agent_id = str(run["agent_id"])
     show_raw_skill = is_ai_admin(principal)
+    terminal_projection = (
+        public_terminal_projection(run.get("status"), run.get("error_code"))
+        if not show_raw_skill
+        else None
+    )
     return {
         "run_id": str(run["id"]),
         "session_id": str(run["session_id"]),
@@ -291,9 +297,17 @@ def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> di
         "error_code": (
             sanitize_public_text(run.get("error_code"))
             if show_raw_skill
-            else ("run_failed" if run.get("error_code") else None)
+            else (
+                terminal_projection["error_code"]
+                if terminal_projection is not None
+                else ("run_failed" if run.get("error_code") else None)
+            )
         ),
-        "error_message": sanitize_public_text(run.get("error_message")),
+        "error_message": (
+            str(terminal_projection["message"])
+            if terminal_projection is not None
+            else sanitize_public_text(run.get("error_message"))
+        ),
     }
 
 

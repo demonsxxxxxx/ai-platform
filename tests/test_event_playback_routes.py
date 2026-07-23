@@ -167,8 +167,13 @@ def test_run_event_response_projects_fixed_public_terminal_code_and_message():
             "visible_to_user": True,
             "private_payload": {"token": "secret"},
             "runtime_path": "/home/private/runtime.log",
+            "result": {
+                "message": "opaque executor diagnosis violet-lantern",
+                "sdk_error": "adapter response violet-lantern",
+                "error": {"message": "nested violet-lantern"},
+            },
         },
-        message="API token failed at /home/private/runtime.log",
+        message="opaque executor diagnosis violet-lantern",
     )
     row["severity"] = "error"
     row["error_code"] = "claude_agent_sdk_runtime_error"
@@ -183,11 +188,118 @@ def test_run_event_response_projects_fixed_public_terminal_code_and_message():
 
     assert projected["error_code"] == "model_service_unavailable"
     assert projected["message"] == "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
-    assert projected["payload"] == {"visible_to_user": True}
+    assert projected["payload"] == {}
     serialized = str(projected)
     assert "claude_agent_sdk_runtime_error" not in serialized
     assert "secret" not in serialized
     assert "/home/private" not in serialized
+    assert "violet-lantern" not in serialized
+
+
+def test_run_event_response_keeps_nonterminal_public_activity():
+    row = event_row(
+        event_id="evt-progress",
+        sequence=8,
+        event_type="assistant_delta",
+        stage="answer",
+        payload={
+            "delta": "已完成公开部分；",
+            "source": "worker_answer_delta_v1",
+            "visible_to_user": True,
+            "severity": "info",
+        },
+        message="公开进度",
+    )
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="tenant-a",
+        roles=["user"],
+    )
+
+    projected = run_event_response("run-a", row, principal=principal)
+
+    assert projected["message"] == "公开进度"
+    assert projected["payload"] == row["payload_json"]
+
+
+def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnostics(monkeypatch):
+    raw_terms = (
+        "command=render-report --private-param=amber",
+        "provider-model=solstice-3 sdk diagnostic",
+        "reasoning-draft request-id=orchid digest=0123456789abcdef",
+        "url=https://executor.internal.example.invalid/v1",
+    )
+    failed_run = run_row()
+    failed_run.update(
+        {
+            "status": "failed",
+            "result_json": {
+                "message": raw_terms[0],
+                "sdk_error": raw_terms[1],
+                "error": {"message": raw_terms[2]},
+            },
+            "error_code": "claude_agent_sdk_runtime_error",
+            "error_message": raw_terms[3],
+        }
+    )
+    failed_event = event_row(
+        event_id="evt-terminal",
+        sequence=9,
+        event_type="error",
+        stage="executor",
+        payload={
+            "result": {
+                "message": raw_terms[0],
+                "sdk_error": raw_terms[1],
+                "error": {"message": raw_terms[2]},
+            },
+            "error_message": raw_terms[3],
+            "visible_to_user": True,
+        },
+        message=raw_terms[0],
+    )
+    failed_event["severity"] = "error"
+    failed_event["error_code"] = "claude_agent_sdk_runtime_error"
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
+        return failed_run
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        return [failed_event]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
+    stream_response = client.get("/api/ai/runs/run-a/events/stream", headers=headers())
+    playback_response = client.get("/api/ai/runs/run-a/playback", headers=headers())
+
+    assert events_response.status_code == 200
+    assert stream_response.status_code == 200
+    assert playback_response.status_code == 200
+    event = events_response.json()["events"][0]
+    assert event["error_code"] == "model_service_unavailable"
+    assert event["message"] == "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
+    assert event["payload"] == {}
+    playback = playback_response.json()
+    assert playback["run"]["error_code"] == "model_service_unavailable"
+    assert playback["run"]["error_message"] == event["message"]
+    assert playback["events"][0] == event
+    for rendered in (events_response.text, stream_response.text, playback_response.text):
+        assert all(term not in rendered for term in raw_terms)
 
 
 def test_run_events_route_supports_sequence_replay_cursor(monkeypatch):

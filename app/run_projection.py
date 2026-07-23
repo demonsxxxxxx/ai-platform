@@ -81,8 +81,18 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
 }
 
 
-def public_terminal_detail(status: object, error_code: object = None) -> dict[str, str] | None:
-    """Return one fixed public terminal code/message without using executor detail."""
+def public_terminal_projection(
+    status: object,
+    error_code: object = None,
+    *,
+    multi_agent: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    """Build the sole ordinary-user projection for failed or cancelled terminals.
+
+    The optional ``multi_agent`` value must already be a public step projection.
+    It is the only preserved structured activity: raw executor ``result_json``
+    is never copied into a terminal response.
+    """
     normalized_status = normalize_run_status(str(status or ""))
     if normalized_status == "cancelled":
         detail_code = "run_cancelled"
@@ -93,10 +103,29 @@ def public_terminal_detail(status: object, error_code: object = None) -> dict[st
         detail_kind = "failed"
     else:
         return None
+    message = PUBLIC_TERMINAL_DETAIL_MESSAGES[detail_code]
+    result: dict[str, object] = {"message": message}
+    if isinstance(multi_agent, dict):
+        result["multi_agent"] = multi_agent
     return {
         "detail_kind": detail_kind,
         "detail_code": detail_code,
-        "message": PUBLIC_TERMINAL_DETAIL_MESSAGES[detail_code],
+        "message": message,
+        "error_code": detail_code if detail_kind == "failed" else None,
+        "result": result,
+        "event_payload": {},
+    }
+
+
+def public_terminal_detail(status: object, error_code: object = None) -> dict[str, str] | None:
+    """Return the stable public terminal taxonomy used by compatibility clients."""
+    projection = public_terminal_projection(status, error_code)
+    if projection is None:
+        return None
+    return {
+        "detail_kind": str(projection["detail_kind"]),
+        "detail_code": str(projection["detail_code"]),
+        "message": str(projection["message"]),
     }
 
 
@@ -229,18 +258,17 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
     sanitized_error_code = sanitize_public_text(row.get("error_code"))
     error_code = sanitized_error_code or (None if not row.get("error_code") else "run_failed")
     if principal is not None and not is_ai_admin(principal):
-        terminal_detail = None
-        if raw_event_type in {"error", "run_failed"} or row.get("error_code"):
-            terminal_detail = public_terminal_detail("failed", row.get("error_code"))
+        terminal_projection = None
+        if raw_event_type in {"error", "run_failed"}:
+            terminal_projection = public_terminal_projection("failed", row.get("error_code"))
         elif raw_event_type in {"run_cancelled", "run_canceled"}:
-            terminal_detail = public_terminal_detail("cancelled")
-        if terminal_detail is not None:
-            message = terminal_detail["message"]
-            error_code = (
-                terminal_detail["detail_code"]
-                if terminal_detail["detail_kind"] == "failed"
-                else None
-            )
+            terminal_projection = public_terminal_projection("cancelled")
+        if terminal_projection is not None:
+            # Replace, rather than selectively redact, nested executor failure
+            # fields such as result/message/error/sdk_error.
+            payload = dict(terminal_projection["event_payload"])
+            message = str(terminal_projection["message"])
+            error_code = terminal_projection["error_code"]
     return {
         "id": str(row["id"]),
         "schema_version": required_schema_version(
