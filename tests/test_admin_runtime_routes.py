@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +22,14 @@ def signed_runtime_proof_key(monkeypatch):
     )
 
 
-def signed_runtime_lease(*, run_id: str, provider: str = "docker", tenant_id: str = "default") -> dict:
+def signed_runtime_lease(
+    *,
+    run_id: str,
+    provider: str = "docker",
+    tenant_id: str = "default",
+    issued_at: datetime | None = None,
+    expires_at: datetime | None = None,
+) -> dict:
     from app.execution_boundary import (
         build_governed_egress_proof,
         governed_egress_authorized_native_tool_scope,
@@ -53,7 +61,13 @@ def signed_runtime_lease(*, run_id: str, provider: str = "docker", tenant_id: st
         image_digest="sha256:" + "a" * 64,
         authorized_skill_scope=governed_egress_authorized_skill_scope(skill_ids=[], mcp_tool_ids=[]),
         authorized_native_tool_scope=governed_egress_authorized_native_tool_scope([]),
-        lease_identity=f"{provider}:{container_name}",
+        lease_identity=(
+            f"docker:{container_name}:{container_id}"
+            if provider == "docker"
+            else f"{provider}:{container_name}"
+        ),
+        issued_at=issued_at,
+        expires_at=expires_at,
     )
     return {
         "tenant_id": tenant_id,
@@ -732,6 +746,79 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
     assert [row["id"] for row in repository_rows] == ["lease-released", "lease-placeholder-history"]
     assert [lease["lease_id"] for lease in body["sandbox_lease_history"]] == ["lease-released"]
     assert "secret-token" not in str(body["sandbox_lease_history"])
+
+
+def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_history(monkeypatch):
+    class FakeProvider:
+        async def list_runtime_containers(self, filters):
+            assert filters == {"tenant_id": "default"}
+            return []
+
+    @asynccontextmanager
+    async def lease_transaction():
+        yield object()
+
+    now = datetime.now(timezone.utc)
+    issued_at = now - timedelta(minutes=2)
+    expires_at = now - timedelta(seconds=1)
+
+    def runtime_row(lease_id: str, status: str, lease: dict) -> dict:
+        return {
+            "id": lease_id,
+            "trace_id": f"trace-{lease_id}",
+            "sandbox_mode": "ephemeral",
+            "status": status,
+            "browser_enabled": False,
+            "resource_limits_json": {},
+            "user_visible_payload_json": {"workspace": "/workspace"},
+            **lease,
+        }
+
+    active_stale = runtime_row(
+        "lease-active-stale",
+        "active",
+        signed_runtime_lease(run_id="active-stale", issued_at=issued_at, expires_at=expires_at),
+    )
+    released_historical = runtime_row(
+        "lease-released-historical",
+        "released",
+        signed_runtime_lease(run_id="released-historical", issued_at=issued_at, expires_at=expires_at),
+    )
+    forged_historical = runtime_row(
+        "lease-forged-historical",
+        "released",
+        signed_runtime_lease(run_id="forged-historical", issued_at=issued_at, expires_at=expires_at),
+    )
+    forged_historical["lease_payload_json"]["governed_egress_proof"]["signature"] = "0" * 64
+
+    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+        assert tenant_id == "default"
+        assert reason == "expired"
+        return []
+
+    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
+        assert tenant_id == "default"
+        return [active_stale] if status == "active" else [active_stale, released_historical, forged_historical]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        fake_cleanup_expired_sandbox_runtime_leases,
+        raising=False,
+    )
+    patch_db_only_cleanup(monkeypatch)
+    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/runtime/containers?include_lease_history=true", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()["sandbox_leases"] == []
+    assert [lease["lease_id"] for lease in response.json()["sandbox_lease_history"]] == [
+        "lease-released-historical"
+    ]
 
 
 def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypatch):

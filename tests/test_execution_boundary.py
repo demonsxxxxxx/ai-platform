@@ -83,7 +83,7 @@ def _real_runtime_lease(module, **overrides):
             skill_ids=["general-chat"], mcp_tool_ids=["knowledge.search"]
         ),
         "authorized_native_tool_scope": module.governed_egress_authorized_native_tool_scope([]),
-        "lease_identity": "docker:executor-exec-run-a",
+        "lease_identity": "docker:executor-exec-run-a:exec-run-a",
     }
     proof = module.build_governed_egress_proof(
         signing_key=PROOF_KEY,
@@ -159,6 +159,7 @@ def test_runtime_lease_rejects_legacy_shape_tamper_replay_and_expiry():
     tampered["lease_payload_json"]["governed_egress_proof"]["run_id_sha256"] = "b" * 64
     replayed = _real_runtime_lease(module, run_id="run-b")
     expired = _real_runtime_lease(module)
+    expired["status"] = "released"
     expired["lease_payload_json"]["governed_egress_proof"] = module.build_governed_egress_proof(
         signing_key=PROOF_KEY,
         provider="docker",
@@ -180,7 +181,7 @@ def test_runtime_lease_rejects_legacy_shape_tamper_replay_and_expiry():
             skill_ids=["general-chat"], mcp_tool_ids=["knowledge.search"]
         ),
         authorized_native_tool_scope=module.governed_egress_authorized_native_tool_scope([]),
-        lease_identity="docker:executor-exec-run-a",
+        lease_identity="docker:executor-exec-run-a:exec-run-a",
         issued_at=datetime.now(timezone.utc) - timedelta(seconds=120),
         expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
     )
@@ -189,5 +190,17 @@ def test_runtime_lease_rejects_legacy_shape_tamper_replay_and_expiry():
     assert module.is_accepted_runtime_lease(tampered, signing_key=PROOF_KEY) is False
     assert module.is_accepted_runtime_lease(replayed, signing_key=PROOF_KEY) is False
     assert module.is_accepted_runtime_lease(expired, signing_key=PROOF_KEY) is False
+    expired["status"] = "active"
+    assert module.is_accepted_runtime_lease(
+        expired,
+        signing_key=PROOF_KEY,
+        verification_mode="historical",
+    ) is False
+    expired["status"] = "released"
+    assert module.is_accepted_runtime_lease(
+        expired,
+        signing_key=PROOF_KEY,
+        verification_mode="historical",
+    ) is True
     assert module.has_governed_egress_signing_key("") is False
     assert module.has_governed_egress_signing_key("too-short") is False

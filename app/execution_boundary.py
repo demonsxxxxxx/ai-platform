@@ -290,8 +290,14 @@ def is_governed_egress_proof(
     signing_key: object,
     expected_binding: Mapping[str, object] | None = None,
     now: datetime | None = None,
+    require_fresh: bool = True,
 ) -> bool:
-    """Verify the exact sealed proof, scope binding, and expiry in constant time."""
+    """Verify a sealed proof, optionally requiring it remains admissible now.
+
+    ``require_fresh=False`` is for signed terminal audit evidence only. Runtime
+    acquisition, reuse, dispatch, and active-lease admission must retain the
+    default fresh mode and therefore reject an expired proof.
+    """
     key = _valid_signing_key(signing_key)
     if provider not in REAL_SANDBOX_PROVIDERS or key is None or not isinstance(proof, dict):
         return False
@@ -316,7 +322,7 @@ def is_governed_egress_proof(
         or expires_at is None
         or expires_at <= issued_at
         or expires_at - issued_at > timedelta(seconds=GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS)
-        or expires_at <= current_time
+        or (require_fresh and expires_at <= current_time)
         or issued_at > current_time + timedelta(seconds=30)
     ):
         return False
@@ -378,13 +384,19 @@ def _runtime_lease_expected_binding(row: Mapping[str, Any], payload: Mapping[str
         isinstance(value, str) and value for value in (container_id, container_name)
     ):
         return None
+    provider = str(row.get("provider") or "")
+    lease_identity = (
+        f"docker:{container_name}:{container_id}"
+        if provider == "docker"
+        else f"{provider}:{container_name}"
+    )
     return {
         "tenant_id": row.get("tenant_id"),
         "workspace_id": row.get("workspace_id"),
         "user_id": row.get("user_id"),
         "session_id": row.get("session_id"),
         "run_id": row.get("run_id"),
-        "lease_identity": f"{row.get('provider')}:{container_name}",
+        "lease_identity": lease_identity,
     }
 
 
@@ -413,8 +425,19 @@ def is_accepted_runtime_lease(
     *,
     signing_key: object | None = None,
     now: datetime | None = None,
+    verification_mode: str = "active",
 ) -> bool:
-    """Return whether a persisted lease carries a valid, bound real-runtime proof."""
+    """Verify active admission or signed historical evidence for one lease.
+
+    ``active`` is the only mode for runtime admission and requires a proof that
+    has not expired. ``historical`` is limited to terminal audit projections:
+    it still requires exact shape, signature, and scope binding, but permits a
+    naturally expired proof without extending its runtime authority.
+    """
+    if verification_mode not in {"active", "historical"}:
+        return False
+    if verification_mode == "historical" and str(row.get("status") or "") not in {"released", "expired"}:
+        return False
     provider = str(row.get("provider") or "")
     payload = row.get("lease_payload_json")
     if not isinstance(payload, dict):
@@ -434,6 +457,7 @@ def is_accepted_runtime_lease(
             signing_key=key,
             expected_binding=expected_binding,
             now=now,
+            require_fresh=verification_mode == "active",
         )
         and isinstance(proof, dict)
         and _payload_matches_signed_projection(payload, proof)

@@ -575,7 +575,7 @@ async def test_runtime_rejects_signed_proof_replayed_across_request_bindings(
         network_id="network-a",
         network_name="ai-platform-sandbox-egress-internal-v1",
         network_internal=True,
-        lease_identity="docker:executor-exec-run-a",
+        lease_identity="docker:executor-exec-run-a:exec-run-a",
         **proof_scope,
     )
     lease = ContainerLease(
