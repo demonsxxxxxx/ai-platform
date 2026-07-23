@@ -54,6 +54,7 @@ from app.runtime.sandbox.executor_client import (
     EXECUTOR_CONNECT_BASE_URL_METADATA,
     prepare_executor_http_request,
 )
+from app.runtime.sandbox.opensandbox_attestation import build_opensandbox_attestation_probe
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
 
@@ -4755,7 +4756,9 @@ def create_container_provider(provider_name: str | None = None) -> ContainerProv
         _PROVIDER_CACHE[selected] = provider
         return provider
     if selected == "opensandbox":
-        provider = OpenSandboxContainerProvider()
+        provider = OpenSandboxContainerProvider(
+            authoritative_attestation_probe=build_opensandbox_attestation_probe(get_settings())
+        )
         _PROVIDER_CACHE[selected] = provider
         return provider
     raise ValueError(f"Unknown sandbox container provider: {selected}")
