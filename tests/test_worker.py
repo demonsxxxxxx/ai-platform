@@ -32,7 +32,7 @@ from app.worker import (
     parse_queue_payload,
     process_run_payload,
 )
-from app.auth import is_ai_admin
+from app.auth import AuthPrincipal, is_ai_admin
 from app.runtime.sandbox import container_provider
 from app.skills.execution_profiles import resolve_skill_execution_profile
 
@@ -486,6 +486,25 @@ async def fake_append_message(*args, **kwargs):
     return "msg-a"
 
 
+def _test_current_principal(
+    *,
+    user_id: str,
+    tenant_id: str,
+    department_id: str = "",
+    roles: list[str] | None = None,
+    source: str = "test-current-principal",
+) -> AuthPrincipal:
+    return AuthPrincipal(
+        user_id=user_id,
+        display_name=user_id,
+        tenant_id=tenant_id,
+        department_id=department_id,
+        roles=list(["user"] if roles is None else roles),
+        permissions=["agent:use"],
+        source=source,
+    )
+
+
 @pytest.fixture(autouse=True)
 def default_cancel_not_requested(monkeypatch):
     global _CURRENT_QUEUE_PAYLOAD
@@ -504,6 +523,15 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
+
+    async def resolve_test_current_principal(*, user_id, tenant_id):
+        return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
+
+    monkeypatch.setattr(
+        "app.worker.resolve_current_principal",
+        resolve_test_current_principal,
+        raising=False,
+    )
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return False
@@ -7192,6 +7220,7 @@ def _install_task6_worker_fakes(
     principal_roles=None,
     principal_department_id="qa",
     auth_source="session-token",
+    current_principal: AuthPrincipal | None = None,
 ):
     calls = []
     skill_id = "qa-file-reviewer"
@@ -7247,6 +7276,12 @@ def _install_task6_worker_fakes(
         },
     }
     state["locked_run"] = locked_run
+    resolved_current_principal = current_principal or _test_current_principal(
+        user_id="user-a",
+        tenant_id="tenant-a",
+        department_id="qa",
+        roles=["qa_operator"],
+    )
 
     class CaptureAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -7277,6 +7312,10 @@ def _install_task6_worker_fakes(
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("lock", tenant_id, run_id))
         return locked_run
+
+    async def resolve_task6_current_principal(*, user_id, tenant_id):
+        assert (user_id, tenant_id) == ("user-a", "tenant-a")
+        return resolved_current_principal
 
     async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         calls.append(("skill_lookup", tenant_id, agent_id, skill_id))
@@ -7327,6 +7366,11 @@ def _install_task6_worker_fakes(
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.worker.resolve_current_principal",
+        resolve_task6_current_principal,
+        raising=False,
+    )
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.resolve_agent_skill", resolve_agent_skill, raising=False)
     monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_agent_skill, raising=False)
@@ -7362,8 +7406,7 @@ def _task6_assert_no_executor_calls(calls):
 
 
 @pytest.mark.asyncio
-async def test_worker_authorization_snapshot_uses_only_locked_run_principal(monkeypatch):
-    captured = {}
+async def test_worker_current_principal_denial_cannot_be_restored_by_queued_snapshot(monkeypatch):
     raw, registry, _, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={
@@ -7377,37 +7420,45 @@ async def test_worker_authorization_snapshot_uses_only_locked_run_principal(monk
             "principal_department_id": "finance",
             "auth_source": "queue-input",
         },
-        principal_roles=[" QA-Operator ", "qa_operator"],
-        principal_department_id="qa",
+        principal_roles=["admin"],
+        principal_department_id="finance",
         auth_source="locked-session-token",
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            department_id="rd",
+            roles=["user"],
+        ),
     )
-
-    def capture_admin_check(principal):
-        captured.update(
-            tenant_id=principal.tenant_id,
-            department_id=principal.department_id,
-            roles=principal.roles,
-            source=principal.source,
-        )
-        return False
-
-    monkeypatch.setattr("app.worker.is_ai_admin", capture_admin_check, raising=False)
 
     outcome = await process_run_payload(raw, registry=registry)
 
-    assert outcome.status == "succeeded"
-    assert captured == {
-        "tenant_id": "tenant-a",
-        "department_id": "qa",
-        "roles": ["qa-operator", "qa_operator"],
-        "source": "locked-session-token",
-    }
-    assert any(call[0] == "skill_lookup" for call in calls)
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+    denied_audit = next(
+        call[1]
+        for call in calls
+        if call[0] == "audit" and call[1]["action"] == "capability_distribution.denied"
+    )
+    assert denied_audit["payload_json"]["actor_department_id"] == "rd"
+    assert denied_audit["payload_json"]["actor_roles"] == ["user"]
+    assert denied_audit["payload_json"]["decision_reason"] == "department_not_allowed"
 
 
 @pytest.mark.asyncio
 async def test_worker_capability_distribution_allows_current_skill_after_enqueue(monkeypatch):
-    raw, registry, _, calls = _install_task6_worker_fakes(monkeypatch)
+    raw, registry, _, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        principal_roles=["user"],
+        principal_department_id="rd",
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            department_id="qa",
+            roles=["qa_operator"],
+        ),
+    )
 
     outcome = await process_run_payload(raw, registry=registry)
 
@@ -7530,7 +7581,15 @@ async def test_worker_capability_distribution_rechecks_skill_changes_after_enque
     change,
     expected_reason,
 ):
-    raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch)
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            department_id="qa",
+            roles=["qa_operator"],
+        ),
+    )
     distribution = state["distributions"][("skill", "qa-file-reviewer")]
     if change == "hidden":
         distribution["visible_to_user"] = False
@@ -7657,6 +7716,12 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"mode": "file", "mcp_tool_ids": ["tool-a"]},
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            department_id="qa",
+            roles=["qa_operator"],
+        ),
     )
     state["tools"]["tool-a"] = _task6_tool("tool-a", "server-a")
     state["distributions"][("mcp_server", "server-a")] = _task6_distribution(
@@ -7729,8 +7794,14 @@ async def test_worker_registered_tools_never_receive_partially_authorized_mcp_se
 async def test_worker_reauthorization_denies_archived_skill_before_admin_bypass(monkeypatch):
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
-        principal_roles=["admin"],
-        principal_department_id="platform",
+        principal_roles=["user"],
+        principal_department_id="rd",
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            department_id="platform",
+            roles=["admin"],
+        ),
     )
     state["distributions"][("skill", "qa-file-reviewer")]["metadata_json"] = {
         "archived_at": "2026-07-15T00:00:00.000Z",
@@ -7759,8 +7830,14 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"mode": "file", "mcp_tool_ids": ["tool-admin"]},
-        principal_roles=["admin"],
-        principal_department_id="platform",
+        principal_roles=["user"],
+        principal_department_id="rd",
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            department_id="platform",
+            roles=["admin"],
+        ),
     )
     state["distributions"][("skill", "qa-file-reviewer")]["visible_to_user"] = False
     state["tools"]["tool-admin"] = _task6_tool("tool-admin", "server-admin")

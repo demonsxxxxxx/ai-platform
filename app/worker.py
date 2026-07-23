@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
@@ -38,6 +39,11 @@ from app.execution_boundary import decide_execution_boundary
 from app.executors.base import ExecutorResult, RunExecutionOwner, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.principal_authority import (
+    CURRENT_PRINCIPAL_DENIAL_REASON,
+    PrincipalAuthorityDenied,
+    resolve_current_principal,
+)
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.skills.catalog import (
     AuthorizedSkillCatalogBinding,
@@ -1410,12 +1416,32 @@ async def _reauthorize_worker_capabilities(
     conn,
     *,
     payload: QueueRunPayload,
-    locked_run: object,
     run_identity: dict[str, str],
+    current_principal_resolver: Callable[..., Awaitable[AuthPrincipal]] | None = None,
 ) -> _WorkerCapabilityAuthorization:
-    principal = _locked_run_principal(locked_run, run_identity)
-    context = _worker_capability_context(principal)
     decisions: list[_WorkerCapabilityDecision] = []
+    resolver = current_principal_resolver or resolve_current_principal
+    try:
+        principal = await resolver(
+            user_id=run_identity["user_id"],
+            tenant_id=run_identity["tenant_id"],
+        )
+    except PrincipalAuthorityDenied:
+        principal = AuthPrincipal(
+            user_id=run_identity["user_id"],
+            display_name=run_identity["user_id"],
+            tenant_id=run_identity["tenant_id"],
+            roles=[],
+            permissions=[],
+            source="company-user-info-current",
+        )
+        denial = _worker_capability_record(
+            "principal_authority",
+            "current_principal",
+            _denied_capability_decision(CURRENT_PRINCIPAL_DENIAL_REASON),
+        )
+        return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+    context = _worker_capability_context(principal)
 
     try:
         await repositories.validate_run_skill_snapshots_for_dispatch(
@@ -2248,7 +2274,6 @@ async def process_run_payload(
             capability_authorization = await _reauthorize_worker_capabilities(
                 conn,
                 payload=payload,
-                locked_run=locked,
                 run_identity=run_identity,
             )
             admin_bypass_audits = _worker_admin_bypass_audits(
