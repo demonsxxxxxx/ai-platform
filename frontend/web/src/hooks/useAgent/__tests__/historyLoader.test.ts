@@ -509,6 +509,42 @@ test("reconstructMessagesFromEvents keeps public progress and partial output on 
   assert.doesNotMatch(JSON.stringify(messages), /unsafe token|\/home\/private/);
 });
 
+test("reconstructMessagesFromEvents replays turn-limit exhaustion without raw diagnostics", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "turn-limit-final",
+        event_type: "final_detail",
+        run_id: "run-turn-limit",
+        timestamp: "2026-07-23T00:00:01.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          detail_kind: "failed",
+          detail_code: "run_budget_exhausted",
+          message: "Reached maximum number of turns (128)",
+        },
+      },
+      {
+        id: "run-turn-limit:terminal:failed",
+        event_type: "done",
+        run_id: "run-turn-limit",
+        timestamp: "2026-07-23T00:00:02.000Z",
+        data: { run_id: "run-turn-limit", status: "failed" },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.equal(messages.length, 1);
+  const terminal = messages[0]?.parts?.at(-1);
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected run status");
+  assert.equal(terminal.event_type, "run_budget_exhausted");
+  assert.equal(terminal.message, "任务已达到执行轮次上限。请缩小或拆分任务后重试。");
+  assert.doesNotMatch(JSON.stringify(messages), /Reached maximum number of turns|128/);
+});
+
 test("reconstructMessagesFromEvents keeps cancelled partial output visibly terminal", () => {
   const messages = reconstructMessagesFromEvents(
     [

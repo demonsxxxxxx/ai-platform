@@ -564,6 +564,7 @@
     "sendNotAcceptedRetry": "消息未发送，请重试。",
     "runTerminal": {
       "failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
+      "runBudgetExhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
       "resultUnavailable": "任务终态已确认，但结果暂时无法加载。请刷新会话。",
       "skillSandboxAdmissionFailed": "所选 Skill 未能通过隔离沙箱准入。",
       "statusUnavailable": "任务状态暂时无法同步。请刷新当前会话后重试。"

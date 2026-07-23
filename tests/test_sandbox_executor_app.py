@@ -353,6 +353,75 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
     }
 
 
+@pytest.mark.parametrize(
+    ("sdk_error", "used_sdk", "expected_error_code"),
+    [
+        ("Reached maximum number of turns (128)", True, "claude_agent_sdk_turn_limit_exceeded"),
+        ("xReached maximum number of turns (128)", True, "claude_agent_sdk_runtime_error"),
+        ("Reached maximum number of turns (128) after retry", True, "claude_agent_sdk_runtime_error"),
+        (" Reached maximum number of turns (128)", True, "claude_agent_sdk_runtime_error"),
+        ("Reached maximum number of turns (128.0)", True, "claude_agent_sdk_runtime_error"),
+        ("model gateway timeout", True, "claude_agent_sdk_runtime_error"),
+        ("claude_agent_sdk_disabled", False, "claude_agent_sdk_disabled"),
+        (
+            "claude_agent_sdk_unavailable: No module named claude_agent_sdk",
+            False,
+            "claude_agent_sdk_unavailable",
+        ),
+        ("claude_agent_sdk_missing_structured_terminal", True, "claude_agent_sdk_missing_structured_terminal"),
+        ("claude_agent_sdk_selected_skill_not_invoked", True, "claude_agent_sdk_selected_skill_not_invoked"),
+        ("claude_agent_sdk_selected_skill_hook_failed", True, "claude_agent_sdk_selected_skill_hook_failed"),
+        ("claude_agent_sdk_selected_skill_not_authorized", True, "claude_agent_sdk_selected_skill_not_authorized"),
+    ],
+)
+def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_codes(
+    tmp_path, monkeypatch, sdk_error, used_sdk, expected_error_code
+):
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": used_sdk,
+                "message": "sdk execution failed",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 8},
+                "error": sdk_error,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return {"accepted": True}
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["sdk_used"] is used_sdk
+    assert body["error_code"] == expected_error_code
+    assert body["error_message"] == sdk_error
+    assert body["used_skills"] == []
+    assert callbacks[-1]["state_patch"] == {
+        "stage": "executor_finished",
+        "error_code": expected_error_code,
+    }
+
+
 def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
     callbacks = []
 

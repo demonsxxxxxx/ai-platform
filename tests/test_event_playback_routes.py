@@ -1,6 +1,7 @@
 import json
 from contextlib import asynccontextmanager
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import AuthPrincipal
@@ -135,6 +136,11 @@ async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
 
 
 def test_public_terminal_detail_maps_only_fixed_actionable_categories():
+    assert public_terminal_detail("failed", "claude_agent_sdk_turn_limit_exceeded") == {
+        "detail_kind": "failed",
+        "detail_code": "run_budget_exhausted",
+        "message": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
+    }
     assert public_terminal_detail("failed", "claude_agent_sdk_runtime_error") == {
         "detail_kind": "failed",
         "detail_code": "model_service_unavailable",
@@ -456,12 +462,38 @@ def test_subagent_failed_event_routes_use_fixed_public_activity(monkeypatch):
         assert all(term not in rendered for term in raw_terms)
 
 
-def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnostics(monkeypatch):
+@pytest.mark.parametrize(
+    ("internal_error_code", "raw_sdk_error", "raw_error_message", "expected_error_code", "expected_message"),
+    [
+        (
+            "claude_agent_sdk_turn_limit_exceeded",
+            "Reached maximum number of turns (128)",
+            "Reached maximum number of turns (128)",
+            "run_budget_exhausted",
+            "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
+        ),
+        (
+            "claude_agent_sdk_runtime_error",
+            "provider-model=solstice-3 sdk diagnostic",
+            "url=https://executor.internal.example.invalid/v1",
+            "model_service_unavailable",
+            "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+        ),
+    ],
+)
+def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnostics(
+    monkeypatch,
+    internal_error_code,
+    raw_sdk_error,
+    raw_error_message,
+    expected_error_code,
+    expected_message,
+):
     raw_terms = (
         "command=render-report --private-param=amber",
-        "provider-model=solstice-3 sdk diagnostic",
+        raw_sdk_error,
         "reasoning-draft request-id=orchid digest=0123456789abcdef",
-        "url=https://executor.internal.example.invalid/v1",
+        raw_error_message,
     )
     failed_run = run_row()
     failed_run.update(
@@ -472,7 +504,7 @@ def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnost
                 "sdk_error": raw_terms[1],
                 "error": {"message": raw_terms[2]},
             },
-            "error_code": "claude_agent_sdk_runtime_error",
+            "error_code": internal_error_code,
             "error_message": raw_terms[3],
         }
     )
@@ -493,7 +525,7 @@ def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnost
         message=raw_terms[0],
     )
     failed_event["severity"] = "error"
-    failed_event["error_code"] = "claude_agent_sdk_runtime_error"
+    failed_event["error_code"] = internal_error_code
 
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
@@ -524,11 +556,11 @@ def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnost
     assert stream_response.status_code == 200
     assert playback_response.status_code == 200
     event = events_response.json()["events"][0]
-    assert event["error_code"] == "model_service_unavailable"
-    assert event["message"] == "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
+    assert event["error_code"] == expected_error_code
+    assert event["message"] == expected_message
     assert event["payload"] == {}
     playback = playback_response.json()
-    assert playback["run"]["error_code"] == "model_service_unavailable"
+    assert playback["run"]["error_code"] == expected_error_code
     assert playback["run"]["error_message"] == event["message"]
     assert playback["events"][0] == event
     for rendered in (events_response.text, stream_response.text, playback_response.text):
