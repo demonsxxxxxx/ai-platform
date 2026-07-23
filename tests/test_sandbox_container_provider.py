@@ -71,6 +71,7 @@ def request(**overrides) -> SandboxRuntimeRequest:
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "qat-test-attempt",
         "agent_id": "general-agent",
         "skill_ids": ["general-chat"],
         "input_message": "hello",
@@ -4945,6 +4946,7 @@ async def test_docker_restart_with_expired_signed_proof_cleans_remote_before_col
         user_id=sandbox_request.user_id,
         session_id=sandbox_request.session_id,
         run_id=sandbox_request.run_id,
+        attempt_id=sandbox_request.attempt_id,
         image_subject=lease.labels["ai-platform.executor.requested_image"],
         image_digest=lease.labels["ai-platform.executor.requested_image_digest"],
         authorized_skill_scope=governed_egress_authorized_skill_scope(

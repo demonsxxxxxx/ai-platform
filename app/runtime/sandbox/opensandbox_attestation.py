@@ -365,9 +365,11 @@ class _OpenSandboxAttestor:
         deny_counter_subject = _required_text(getattr(capability, "deny_counter_subject", ""))
         scope_labels = {
             key: _required_text(getattr(request, key, ""))
-            for key in ("tenant_id", "workspace_id", "user_id", "session_id", "run_id")
+            for key in ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id")
         }
-        scope_labels["lease_id"] = f"opensandbox:opensandbox-{scope_labels['run_id']}:{sandbox_id}"
+        scope_labels["lease_id"] = (
+            f"opensandbox:opensandbox-{scope_labels['run_id']}-{scope_labels['attempt_id']}:{sandbox_id}"
+        )
         return {
             "contract_version": self._contract_version,
             "provider": "opensandbox",

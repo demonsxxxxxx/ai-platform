@@ -146,6 +146,10 @@ def _matches_filters(status: ContainerStatus, filters: dict[str, str]) -> bool:
         actual = getattr(status, key, None)
         if actual is None:
             detail_value = status.detail.get(key)
+            if detail_value is None and key == "attempt_id":
+                labels = status.detail.get("labels")
+                if isinstance(labels, dict):
+                    detail_value = labels.get("ai-platform.attempt_id")
             if detail_value is None or str(detail_value) != str(expected):
                 return False
             continue
@@ -252,7 +256,10 @@ def _lease_from_request(
         browser_enabled=request.browser_enabled,
         workspace_host_path=workspace.workspace_host_path,
         workspace_container_path=workspace.workspace_container_path,
-        labels={"ai-platform.run_id": request.run_id},
+        labels={
+            "ai-platform.run_id": request.run_id,
+            "ai-platform.attempt_id": request.attempt_id,
+        },
         timings=timings or {},
     )
 
@@ -411,6 +418,7 @@ def _lease_matches_request_workspace(
         and lease.user_id == request.user_id == workspace.user_id
         and lease.session_id == request.session_id == workspace.session_id
         and lease.run_id == request.run_id == workspace.run_id
+        and lease.labels.get("ai-platform.attempt_id") == request.attempt_id
         and lease.sandbox_mode == request.sandbox_mode
         and lease.browser_enabled == request.browser_enabled
         and lease.workspace_host_path == workspace.workspace_host_path
@@ -869,6 +877,7 @@ def _executor_environment(
         "APP_PORT": "18000",
         "AI_PLATFORM_SESSION_ID": request.session_id,
         "AI_PLATFORM_RUN_ID": request.run_id,
+        "AI_PLATFORM_ATTEMPT_ID": request.attempt_id,
         "AI_PLATFORM_CALLBACK_BASE_URL": trusted_callback.base_url,
         "SANDBOX_CALLBACK_BASE_URL": trusted_callback.base_url,
         "AI_PLATFORM_EXECUTOR_AUTH_TOKEN": executor_auth_token,
@@ -1073,6 +1082,7 @@ class OpenSandboxExternalEgressCapability:
             "user_id": request.user_id,
             "session_id": request.session_id,
             "run_id": request.run_id,
+            "attempt_id": request.attempt_id,
             "image_subject": self.requested_image,
             "image_digest": self.requested_image_digest,
             "authorized_skill_scope": governed_egress_authorized_skill_scope(
@@ -1452,6 +1462,7 @@ def _platform_metadata(request: SandboxRuntimeRequest) -> dict[str, str]:
         "ai-platform.user_id": request.user_id,
         "ai-platform.session_id": request.session_id,
         "ai-platform.run_id": request.run_id,
+        "ai-platform.attempt_id": request.attempt_id,
         "ai-platform.sandbox_mode": request.sandbox_mode,
         "ai-platform.browser_enabled": "true" if request.browser_enabled else "false",
     }
@@ -1715,6 +1726,7 @@ def _opensandbox_cleanup_expected_binding(
             "user_id": lease.user_id,
             "session_id": lease.session_id,
             "run_id": lease.run_id,
+            "attempt_id": str(labels.get("ai-platform.attempt_id") or ""),
             "image_subject": requested_image,
             "image_digest": requested_image_digest,
             "lease_identity": f"opensandbox:{lease.container_name}:{lease.container_id}",
@@ -2231,6 +2243,7 @@ def _seal_docker_governed_egress_after_readback(
             user_id=request.user_id,
             session_id=request.session_id,
             run_id=request.run_id,
+            attempt_id=request.attempt_id,
             image_subject=admission.lease_labels["ai-platform.executor.requested_image"],
             image_digest=admission.lease_labels["ai-platform.executor.requested_image_digest"],
             authorized_skill_scope=governed_egress_authorized_skill_scope(
@@ -3698,6 +3711,7 @@ class DockerContainerProvider:
                 "user_id": request.user_id,
                 "session_id": request.session_id,
                 "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
                 "image_subject": lease.labels.get("ai-platform.executor.requested_image", ""),
                 "image_digest": lease.labels.get("ai-platform.executor.requested_image_digest", ""),
                 "authorized_skill_scope": governed_egress_authorized_skill_scope(
@@ -4030,6 +4044,7 @@ class OpenSandboxContainerProvider:
                 "user_id": request.user_id,
                 "session_id": request.session_id,
                 "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
             },
             sort_keys=True,
         )
@@ -4340,6 +4355,7 @@ class OpenSandboxContainerProvider:
                 "user_id": request.user_id,
                 "session_id": request.session_id,
                 "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
             }
         )
         if remote_statuses:
@@ -4656,7 +4672,7 @@ class OpenSandboxContainerProvider:
             metadata_filter = {
                 f"ai-platform.{key}": value
                 for key, value in filters.items()
-                if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "sandbox_mode"}
+                if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id", "sandbox_mode"}
             }
             metadata_filter["ai-platform.owner"] = "sandbox-runtime"
             if hasattr(manager, "list_sandbox_infos") and self._sandbox_filter_class is not None:
@@ -4695,7 +4711,7 @@ class OpenSandboxContainerProvider:
             metadata_filter = {
                 f"ai-platform.{key}": value
                 for key, value in filters.items()
-                if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "sandbox_mode"}
+                if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id", "sandbox_mode"}
             }
             metadata_filter["ai-platform.owner"] = "sandbox-runtime"
             if hasattr(manager, "list_sandbox_infos") and self._sandbox_filter_class is not None:

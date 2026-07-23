@@ -44,6 +44,7 @@ from app.principal_authority import (
     PrincipalAuthorityDenied,
     resolve_current_principal,
 )
+from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.skills.catalog import (
     AuthorizedSkillCatalogBinding,
@@ -57,7 +58,7 @@ from app.skills.execution_profiles import canonical_skill_execution_profile
 from app.settings import get_settings
 from app.tool_policy import evaluate_tool_policy
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
-from app.validation import SAFE_ID_PATTERN
+from app.validation import SAFE_ID_PATTERN, assert_safe_id
 
 
 class _WorkerClock:
@@ -2133,8 +2134,27 @@ async def process_run_payload(
     *,
     worker_id: str | None = None,
 ) -> WorkerOutcome:
+    attempt_id = raw.get(QUEUE_ATTEMPT_ID_FIELD)
+    if not isinstance(attempt_id, str):
+        return WorkerOutcome(
+            status="dead_letter",
+            run_id=None,
+            error_code="invalid_queue_attempt",
+            error_message="Queue lease attempt identity is required.",
+        )
+    parseable_raw = dict(raw)
+    parseable_raw.pop(QUEUE_ATTEMPT_ID_FIELD, None)
     try:
-        payload = parse_queue_payload(raw)
+        assert_safe_id(attempt_id, "attempt_id")
+    except ValueError:
+        return WorkerOutcome(
+            status="dead_letter",
+            run_id=None,
+            error_code="invalid_queue_attempt",
+            error_message="Queue lease attempt identity is invalid.",
+        )
+    try:
+        payload = parse_queue_payload(parseable_raw)
     except ValidationError as exc:
         return WorkerOutcome(
             status="dead_letter",
@@ -2516,6 +2536,7 @@ async def process_run_payload(
         user_id=run_identity["user_id"],
         session_id=run_identity["session_id"],
         run_id=run_identity["run_id"],
+        attempt_id=attempt_id,
         agent_id=run_identity["agent_id"],
         skill_id=run_identity["skill_id"],
         file_ids=payload.file_ids,

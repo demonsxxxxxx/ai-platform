@@ -1159,6 +1159,8 @@ class ClaudeAgentWorkerAdapter:
             prepared.attachment_metadata,
             allow_file_content_tools=_requires_typed_attachment_preprocessing(payload),
         )
+        runtime_context_manifest = dict(runtime_context_manifest or {})
+        runtime_context_manifest["queue_attempt_id"] = payload.attempt_id
         if attachment_requirements:
             if context_manifest is None:
                 return self._attachment_parser_failure_result(
@@ -1185,6 +1187,7 @@ class ClaudeAgentWorkerAdapter:
             user_id=payload.user_id,
             session_id=payload.session_id,
             run_id=payload.run_id,
+            attempt_id=payload.attempt_id,
             agent_id=payload.agent_id,
             skill_ids=_runtime_request_skill_ids(payload, prepared),
             mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),

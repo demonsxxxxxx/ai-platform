@@ -10,16 +10,18 @@ import ipaddress
 import json
 import os
 import pathlib
+import re
 import shutil
 import socket
 import sqlite3
 import ssl
+import stat
 import subprocess
-import tempfile
 import threading
 import time
 import urllib.parse
 from dataclasses import asdict
+import struct
 from typing import Any, Mapping
 
 from .gateway import (
@@ -53,13 +55,34 @@ class InMemoryStateStore:
         with self._lock:
             self.records[record.sandbox_id] = record
 
+    def reserve(self, record: LeaseRecord) -> LeaseRecord:
+        with self._lock:
+            existing = self.find_scope(record.scope)
+            if existing is not None:
+                return existing
+            if any(item.workspace_host_path == record.workspace_host_path and item.state != "deleted" for item in self.records.values()):
+                raise GatewayError(409, "workspace_scope_conflict")
+            self.records[record.sandbox_id] = record
+            return record
+
+    def activate(self, intent_id: str, record: LeaseRecord) -> None:
+        with self._lock:
+            current = self.records.get(intent_id)
+            if current is None or current.state not in {"intent", "reconciling"}:
+                raise GatewayError(409, "reservation_state_drift")
+            self.records.pop(intent_id)
+            self.records[record.sandbox_id] = record
+
     def list(self, filters: Mapping[str, str]) -> list[LeaseRecord]:
         with self._lock:
             values = []
             for record in self.records.values():
                 if record.state == "deleted":
                     continue
-                if all((record.workspace_host_path if key == "workspace_host_path" else record.metadata.get(key)) == value for key, value in filters.items()):
+                if all(
+                    (record.state if key == "state" else record.workspace_host_path if key == "workspace_host_path" else record.metadata.get(key)) == value
+                    for key, value in filters.items()
+                ):
                     values.append(record)
             return values
 
@@ -96,6 +119,8 @@ class SQLiteStateStore:
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS active_scope
                     ON leases(scope_json) WHERE state != 'deleted';
+                CREATE UNIQUE INDEX IF NOT EXISTS active_workspace
+                    ON leases(workspace_host_path) WHERE state != 'deleted';
                 CREATE TABLE IF NOT EXISTS denials (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     occurred_at INTEGER NOT NULL,
@@ -136,11 +161,74 @@ class SQLiteStateStore:
                 values,
             )
 
+    def reserve(self, record: LeaseRecord) -> LeaseRecord:
+        with self._lock, self._connect() as db:
+            db.isolation_level = None
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                row = db.execute("SELECT record_json FROM leases WHERE scope_json = ? AND state != 'deleted'", (_json_text(record.scope),)).fetchone()
+                if row:
+                    db.execute("COMMIT")
+                    return _record_from_json(row[0])
+                occupied = db.execute("SELECT 1 FROM leases WHERE workspace_host_path = ? AND state != 'deleted'", (record.workspace_host_path,)).fetchone()
+                if occupied:
+                    raise GatewayError(409, "workspace_scope_conflict")
+                db.execute(
+                    "INSERT INTO leases VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        record.sandbox_id,
+                        _json_text(record.scope),
+                        _json_text(record.metadata),
+                        _json_text(asdict(record)),
+                        record.state,
+                        record.workspace_host_path,
+                    ),
+                )
+                db.execute("COMMIT")
+                return record
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
+    def activate(self, intent_id: str, record: LeaseRecord) -> None:
+        with self._lock, self._connect() as db:
+            db.isolation_level = None
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                current = db.execute("SELECT state FROM leases WHERE sandbox_id = ?", (intent_id,)).fetchone()
+                if current is None or current[0] not in {"intent", "reconciling"}:
+                    raise GatewayError(409, "reservation_state_drift")
+                changed = db.execute(
+                    "UPDATE leases SET sandbox_id=?, scope_json=?, metadata_json=?, record_json=?, state=?, workspace_host_path=? WHERE sandbox_id=?",
+                    (
+                        record.sandbox_id,
+                        _json_text(record.scope),
+                        _json_text(record.metadata),
+                        _json_text(asdict(record)),
+                        record.state,
+                        record.workspace_host_path,
+                        intent_id,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise GatewayError(409, "reservation_state_drift")
+                db.execute("COMMIT")
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
     def list(self, filters: Mapping[str, str]) -> list[LeaseRecord]:
         with self._lock, self._connect() as db:
-            rows = db.execute("SELECT record_json FROM leases WHERE state != 'deleted' ORDER BY sandbox_id LIMIT 101").fetchall()
+            rows = db.execute("SELECT record_json FROM leases WHERE state != 'deleted' ORDER BY sandbox_id").fetchall()
         records = [_record_from_json(row[0]) for row in rows]
-        return [r for r in records if all((r.workspace_host_path if key == "workspace_host_path" else r.metadata.get(key)) == value for key, value in filters.items())]
+        return [
+            r
+            for r in records
+            if all(
+                (r.state if key == "state" else r.workspace_host_path if key == "workspace_host_path" else r.metadata.get(key)) == value
+                for key, value in filters.items()
+            )
+        ]
 
     def record_deny(self, subject: str, code: str) -> None:
         with self._lock, self._connect() as db:
@@ -180,6 +268,15 @@ class InMemoryLifecycleTransport:
             info = {"id": sandbox_id, "status": "running", "metadata": value["metadata"]}
             self.sandboxes[sandbox_id] = info
             return Response.json(201, {"id": sandbox_id})
+        if path.startswith("/v1/sandboxes?") and method == "GET":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+            filters = {}
+            for pair in query.get("metadata", [""])[0].split("&"):
+                if "=" in pair:
+                    key, value = pair.split("=", 1)
+                    filters[key] = value
+            items = [item for item in self.sandboxes.values() if all(item.get("metadata", {}).get(key) == value for key, value in filters.items())]
+            return Response.json(200, {"items": items, "pagination": {"page": 1, "pageSize": int(query.get("pageSize", [100])[0]), "total": len(items)}})
         if path.startswith("/v1/sandboxes/"):
             sandbox_id = path.rsplit("/", 1)[1]
             if method == "GET":
@@ -234,6 +331,7 @@ class InMemoryRuntimeAdapter:
             runtime="runsc",
             network_mode="none",
             no_new_privileges=True,
+            user="1000:1000",
             image=record.image,
             image_digest=record.image_digest,
             mounts=tuple((item["host"], item["mountPath"], item["readOnly"]) for item in record.mounts),
@@ -287,8 +385,8 @@ class DockerRuntimeAdapter:
         if not hmac.compare_digest(token_hash, record.executor_token_hash):
             raise GatewayError(409, "executor_credential_drift")
         expected_local = {
-            "AI_PLATFORM_CALLBACK_BASE_URL": "http://127.0.0.1:18888/callback",
-            "SANDBOX_CALLBACK_BASE_URL": "http://127.0.0.1:18888/callback",
+            "AI_PLATFORM_CALLBACK_BASE_URL": "http://127.0.0.1:18888",
+            "SANDBOX_CALLBACK_BASE_URL": "http://127.0.0.1:18888",
             "OPENAI_BASE_URL": "http://127.0.0.1:18888/model/openai",
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:18888/model/anthropic",
         }
@@ -309,6 +407,7 @@ class DockerRuntimeAdapter:
             runtime=str(host.get("Runtime") or ""),
             network_mode=str(host.get("NetworkMode") or ""),
             no_new_privileges=any(value in ("no-new-privileges", "no-new-privileges:true") for value in security),
+            user=str(config.get("User") or ""),
             image=str(config.get("Image") or ""),
             image_digest=image_digest,
             mounts=mounts,
@@ -391,6 +490,74 @@ class DockerRuntimeAdapter:
         return result.stdout.decode("utf-8")
 
 
+class HelperRuntimeAdapter:
+    """Narrow authenticated Unix-socket client for Docker-owned operations."""
+
+    def __init__(self, socket_path: str, timeout_seconds: float, max_response_bytes: int) -> None:
+        self.socket_path = socket_path
+        self.timeout_seconds = timeout_seconds
+        self.max_response_bytes = max_response_bytes
+
+    def verify(self, record: LeaseRecord) -> RuntimeEvidence:
+        value = self._call("verify", record)
+        return RuntimeEvidence(
+            sandbox_id=value["sandbox_id"],
+            runtime=value["runtime"],
+            network_mode=value["network_mode"],
+            no_new_privileges=value["no_new_privileges"],
+            user=value["user"],
+            image=value["image"],
+            image_digest=value["image_digest"],
+            mounts=tuple(tuple(item) for item in value["mounts"]),
+            labels=value["labels"],
+            running=value["running"],
+        )
+
+    def start_relay(self, record: LeaseRecord) -> None:
+        self._call("start_relay", record)
+
+    def stop_relay(self, record: LeaseRecord) -> None:
+        self._call("stop_relay", record)
+
+    def cleanup_mailbox(self, record: LeaseRecord) -> None:
+        self._call("cleanup_mailbox", record)
+
+    def proxy(self, record: LeaseRecord, port: int, request: Request) -> Response:
+        value = self._call(
+            "proxy",
+            record,
+            {
+                "port": port,
+                "method": request.method,
+                "target": request.target,
+                "headers": dict(request.headers),
+                "body": base64.b64encode(request.body).decode("ascii"),
+            },
+        )
+        return Response(int(value["status"]), value.get("headers") or {}, base64.b64decode(value["body"], validate=True))
+
+    def _call(self, operation: str, record: LeaseRecord, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _json_text({"version": 1, "operation": operation, "record": asdict(record), "arguments": dict(arguments or {})}).encode()
+        if len(payload) > 2 * 1024 * 1024:
+            raise GatewayError(413, "helper_request_too_large")
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(self.timeout_seconds)
+        try:
+            client.connect(self.socket_path)
+            client.sendall(struct.pack("!I", len(payload)) + payload)
+            size = struct.unpack("!I", _recv_exact(client, 4))[0]
+            if size > self.max_response_bytes:
+                raise GatewayError(502, "helper_response_too_large")
+            response = json.loads(_recv_exact(client, size))
+        except (OSError, ValueError, KeyError, json.JSONDecodeError, struct.error):
+            raise GatewayError(502, "runtime_helper_unavailable") from None
+        finally:
+            client.close()
+        if response.get("ok") is not True or not isinstance(response.get("result"), dict):
+            raise GatewayError(int(response.get("status") or 502), str(response.get("code") or "runtime_helper_failed"))
+        return response["result"]
+
+
 class BrokerPolicy:
     """Exact HTTPS broker targets and their pinned IP addresses."""
 
@@ -424,6 +591,9 @@ class MailboxBroker:
         handled = 0
         for record in self.store.list({}):
             workspace = pathlib.Path(record.workspace_host_path).resolve()
+            if os.name != "posix" or str(workspace) != record.workspace_host_path:
+                self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
+                continue
             mailbox = workspace / ".opensandbox-gateway"
             request_dir = mailbox / "requests"
             response_dir = request_dir.parent / "responses"
@@ -436,29 +606,40 @@ class MailboxBroker:
             if response_dir.is_symlink() or response_dir.resolve().parent != mailbox:
                 self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
                 continue
-            for path in sorted(request_dir.glob("*.json"))[:16]:
-                if path.is_symlink() or path.resolve().parent != request_dir:
-                    self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
-                    continue
-                handled += 1
-                try:
-                    response = self._process(path)
-                except GatewayError as exc:
-                    self.store.record_deny("mailbox-broker", exc.code)
-                    response = {"status": exc.status, "headers": {"content-type": "application/json"}, "body": base64.b64encode(_json_text({"error": {"code": exc.code}}).encode()).decode()}
-                destination = response_dir / path.name
-                with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=response_dir, delete=False) as output:
-                    output.write(_json_text(response))
-                    temp = pathlib.Path(output.name)
-                os.replace(temp, destination)
-                path.unlink(missing_ok=True)
+            request_fd = os.open(request_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            response_fd = os.open(response_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                names = sorted(name for name in os.listdir(request_fd) if re.fullmatch(r"[0-9a-f]{32}\.json", name))[:16]
+                for name in names:
+                    handled += 1
+                    try:
+                        response = self._process(request_fd, name)
+                    except GatewayError as exc:
+                        self.store.record_deny("mailbox-broker", exc.code)
+                        response = {"status": exc.status, "headers": {"content-type": "application/json"}, "body": base64.b64encode(_json_text({"error": {"code": exc.code}}).encode()).decode()}
+                    self._write_response(response_fd, name, response)
+                    os.unlink(name, dir_fd=request_fd)
+            finally:
+                os.close(response_fd)
+                os.close(request_fd)
         return handled
 
-    def _process(self, path: pathlib.Path) -> dict[str, Any]:
-        if path.stat().st_size > 2 * 1024 * 1024:
-            raise GatewayError(413, "broker_request_too_large")
+    def _process(self, request_fd: int, name: str) -> dict[str, Any]:
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=request_fd)
+            try:
+                evidence = os.fstat(descriptor)
+                if not stat.S_ISREG(evidence.st_mode) or evidence.st_size > 2 * 1024 * 1024:
+                    raise GatewayError(413, "broker_request_too_large")
+                raw = b""
+                while len(raw) <= 2 * 1024 * 1024:
+                    chunk = os.read(descriptor, 65536)
+                    if not chunk:
+                        break
+                    raw += chunk
+            finally:
+                os.close(descriptor)
+            value = json.loads(raw.decode("utf-8"))
             method = value["method"].upper()
             local = urllib.parse.urlsplit(value["path"])
             headers = value.get("headers") or {}
@@ -494,8 +675,25 @@ class MailboxBroker:
             connection.close()
 
     @staticmethod
+    def _write_response(response_fd: int, name: str, response: Mapping[str, Any]) -> None:
+        temporary = f".{name}.{os.getpid()}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=response_fd)
+        try:
+            data = _json_text(response).encode("utf-8")
+            offset = 0
+            while offset < len(data):
+                offset += os.write(descriptor, data[offset:])
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, name, src_dir_fd=response_fd, dst_dir_fd=response_fd)
+
+    @staticmethod
     def _route(path: str) -> tuple[str, str]:
-        for prefix, kind in (("/callback", "callback"), ("/model/openai", "openai"), ("/model/anthropic", "anthropic")):
+        if path in CALLBACK_PATHS:
+            return "callback", path
+        for prefix, kind in (("/model/openai", "openai"), ("/model/anthropic", "anthropic")):
             if path == prefix or path.startswith(prefix + "/"):
                 return kind, path[len(prefix):]
         raise GatewayError(404, "broker_route_not_allowed")
@@ -521,3 +719,13 @@ def _record_from_json(value: str) -> LeaseRecord:
 
 def _json_text(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _recv_exact(connection: socket.socket, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        chunk = connection.recv(size - len(data))
+        if not chunk:
+            raise OSError("unexpected end of helper response")
+        data.extend(chunk)
+    return bytes(data)

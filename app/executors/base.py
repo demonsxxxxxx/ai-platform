@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Callable, Coroutine, Protocol, TypeVar
 
 from app.control_plane_contracts import RUN_PAYLOAD_SCHEMA_VERSION
 from app.skills.release_policy import validate_release_decision_lock
+from app.validation import assert_safe_id
 
 
 ADAPTER_RESULT_SCHEMA_VERSION = "ai-platform.executor-result.v1"
@@ -177,6 +178,7 @@ class RunPayload:
     user_id: str
     session_id: str
     run_id: str
+    attempt_id: str
     agent_id: str
     skill_id: str
     file_ids: list[str]
@@ -193,6 +195,7 @@ class RunPayload:
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        assert_safe_id(self.attempt_id, "attempt_id")
         if self.schema_version != RUN_PAYLOAD_SCHEMA_VERSION:
             raise ValueError("run_payload_schema_version_invalid")
         validate_release_decision_lock(

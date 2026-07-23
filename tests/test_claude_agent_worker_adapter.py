@@ -388,6 +388,7 @@ def payload(**overrides):
         "user_id": "user-a",
         "session_id": "ses_1",
         "run_id": "run_1",
+        "attempt_id": "qat-test-attempt",
         "agent_id": "translate",
         "skill_id": "baoyu-translate",
         "file_ids": ["file_1"],
@@ -1239,6 +1240,8 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
     assert current_policy_helper.is_dir()
     assert result.status == "succeeded"
     assert runtime_requests[0].skill_ids == ["qa-file-reviewer", "legacy-helper"]
+    assert runtime_requests[0].attempt_id == "qat-test-attempt"
+    assert runtime_requests[0].context_manifest["queue_attempt_id"] == "qat-test-attempt"
     assert result.executor_payload["skill_manifests"][0]["dependency_ids"] == ["legacy-helper"]
     assert result.executor_payload["required_artifact_types"] == ["reviewed_docx"]
 

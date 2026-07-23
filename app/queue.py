@@ -798,6 +798,26 @@ class QueueMessage:
     raw: str
     payload: dict[str, Any]
     message_id: str
+    attempt_id: str
+
+
+QUEUE_ATTEMPT_ID_FIELD = "_queue_attempt_id"
+
+
+def queue_attempt_id(message_id: str, attempts: int) -> str:
+    """Return the immutable identity of one atomically leased queue attempt."""
+
+    if not message_id or isinstance(attempts, bool) or attempts < 1:
+        raise ValueError("queue lease attempt is invalid")
+    material = f"ai-platform.queue-attempt.v1\0{message_id}\0{attempts}".encode("utf-8")
+    return f"qat_{hashlib.sha256(material).hexdigest()}"
+
+
+def _leased_payload(payload: dict[str, Any], *, message_id: str, attempts: int) -> tuple[dict[str, Any], str]:
+    attempt_id = queue_attempt_id(message_id, attempts)
+    leased_payload = dict(payload)
+    leased_payload[QUEUE_ATTEMPT_ID_FIELD] = attempt_id
+    return leased_payload, attempt_id
 
 
 @dataclass(frozen=True)
@@ -1996,7 +2016,8 @@ async def _lease_run_legacy(
         now=now,
     ):
         return None
-    return QueueMessage(raw=raw, payload=payload, message_id=message_id)
+    payload, attempt_id = _leased_payload(payload, message_id=message_id, attempts=attempts)
+    return QueueMessage(raw=raw, payload=payload, message_id=message_id, attempt_id=attempt_id)
 
 
 async def _lease_run_with_quota(
@@ -2089,8 +2110,15 @@ async def _lease_run_with_quota(
                 continue
             if status != "leased":
                 continue
-            payload = payload_model.model_dump()
-            return QueueMessage(raw=raw, payload=payload, message_id=message_id)
+            attempts = result.get("attempts")
+            if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 1:
+                continue
+            payload, attempt_id = _leased_payload(
+                payload_model.model_dump(),
+                message_id=message_id,
+                attempts=attempts,
+            )
+            return QueueMessage(raw=raw, payload=payload, message_id=message_id, attempt_id=attempt_id)
         scanned += end_index - scan_start + 1
     return None
 

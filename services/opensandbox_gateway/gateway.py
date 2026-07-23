@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
+from email import policy
+from email.parser import BytesParser
 import json
 import re
 import time
@@ -34,6 +37,7 @@ SCOPE_KEYS = (
     "user_id",
     "session_id",
     "run_id",
+    "attempt_id",
 )
 SCOPE_LABELS = {name: f"ai-platform.{name}" for name in SCOPE_KEYS}
 REQUIRED_METADATA = {
@@ -49,6 +53,7 @@ ALLOWED_METADATA_KEYS = {
     "ai-platform.user_id",
     "ai-platform.session_id",
     "ai-platform.run_id",
+    "ai-platform.attempt_id",
     "ai-platform.sandbox_mode",
     "ai-platform.browser_enabled",
     "ai-platform.provider_backend",
@@ -159,6 +164,7 @@ class GatewayConfig:
     capability_ttl_seconds: int = 120
     max_body_bytes: int = MAX_BODY_BYTES
     max_response_bytes: int = MAX_RESPONSE_BYTES
+    max_concurrent_handlers: int = 32
 
     def validate(self) -> None:
         """Reject ambiguous endpoints, weak secrets, and mutable subjects."""
@@ -171,6 +177,13 @@ class GatewayConfig:
             raise ValueError("OpenSandbox upstream must be the fixed loopback endpoint")
         if not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?", self.public_authority):
             raise ValueError("public authority must be a hostname and optional port")
+        public_host = self.public_authority.rsplit(":", 1)[0]
+        try:
+            public_address = ipaddress.ip_address(public_host)
+        except ValueError:
+            raise ValueError("public authority must be an approved literal IP") from None
+        if not public_address.is_private or public_address.is_loopback or public_address.is_unspecified:
+            raise ValueError("public authority must be an approved private IP")
         if not SHA_IMAGE.fullmatch(self.executor_image):
             raise ValueError("executor image must be immutable")
         for value in (
@@ -190,6 +203,8 @@ class GatewayConfig:
             raise ValueError("executor entrypoint is invalid")
         for base in (self.callback_upstream_base, self.openai_upstream_base, self.anthropic_upstream_base):
             _validate_https_base(base)
+        if urllib.parse.urlsplit(self.callback_upstream_base).path not in ("", "/"):
+            raise ValueError("callback base must not contain a path")
         if not 0.1 <= self.request_timeout_seconds <= 10.0:
             raise ValueError("request timeout is outside the bounded range")
         if not 1.0 <= self.dispatch_timeout_seconds <= 3600.0:
@@ -200,6 +215,8 @@ class GatewayConfig:
             raise ValueError("request body limit is outside the bounded range")
         if not 1024 <= self.max_response_bytes <= MAX_RESPONSE_BYTES:
             raise ValueError("response body limit is outside the bounded range")
+        if not 1 <= self.max_concurrent_handlers <= 64:
+            raise ValueError("handler concurrency is outside the bounded range")
 
 
 @dataclass
@@ -235,6 +252,7 @@ class RuntimeEvidence:
     runtime: str
     network_mode: str
     no_new_privileges: bool
+    user: str
     image: str
     image_digest: str
     mounts: tuple[tuple[str, str, bool], ...]
@@ -254,6 +272,8 @@ class StateStore(Protocol):
 
     def get(self, sandbox_id: str) -> LeaseRecord | None: ...
     def find_scope(self, scope: Mapping[str, str]) -> LeaseRecord | None: ...
+    def reserve(self, record: LeaseRecord) -> LeaseRecord: ...
+    def activate(self, intent_id: str, record: LeaseRecord) -> None: ...
     def save(self, record: LeaseRecord) -> None: ...
     def list(self, filters: Mapping[str, str]) -> list[LeaseRecord]: ...
     def record_deny(self, subject: str, code: str) -> None: ...
@@ -289,6 +309,7 @@ class GatewayApplication:
         self.lifecycle = lifecycle
         self.runtime = runtime
         self.store = store
+        self._reconcile_intents()
 
     def handle(self, request: Request) -> Response:
         """Handle one request without exposing internal exception details."""
@@ -354,15 +375,40 @@ class GatewayApplication:
     def _create(self, request: Request) -> Response:
         payload = _json_object(request.body)
         accepted = self._accept_create(payload)
-        existing = self.store.find_scope(accepted["scope"])
-        if existing and existing.state == "active":
-            if hmac.compare_digest(existing.canonical_request_hash, accepted["request_hash"]):
-                self._attest(existing.sandbox_id)
-                return Response.json(201, {"id": existing.sandbox_id})
+        intent_id = "intent-" + hmac.new(
+            self.config.record_signing_key,
+            b"reservation-v1\0" + accepted["request_hash"].encode() + b"\0" + accepted["workspace_host_path"].encode(),
+            hashlib.sha256,
+        ).hexdigest()[:48]
+        upstream_metadata = dict(accepted["metadata"])
+        upstream_metadata["ai-platform.gateway.intent_id"] = intent_id
+        accepted["upstream"]["metadata"] = upstream_metadata
+        intent = LeaseRecord(
+            sandbox_id=intent_id,
+            scope=accepted["scope"],
+            metadata=upstream_metadata,
+            image=accepted["image"],
+            image_digest=accepted["image_digest"],
+            workspace_host_path=accepted["workspace_host_path"],
+            mounts=accepted["mounts"],
+            canonical_request_hash=accepted["request_hash"],
+            executor_token_hash=accepted["executor_token_hash"],
+            created_at=_now_iso(),
+            state="intent",
+        )
+        intent.signature = self._sign_record(intent)
+        reserved = self.store.reserve(intent)
+        if reserved.sandbox_id != intent_id or reserved.state != "intent":
+            if reserved.state == "active" and hmac.compare_digest(reserved.canonical_request_hash, accepted["request_hash"]):
+                self._attest(reserved.sandbox_id)
+                return Response.json(201, {"id": reserved.sandbox_id})
             raise GatewayError(409, "scope_conflict")
         upstream_body = _canonical(accepted["upstream"])
         upstream = self.lifecycle.request("POST", "/v1/sandboxes", upstream_body)
         if upstream.status not in (200, 201, 202):
+            intent.state = "deleted"
+            intent.signature = self._sign_record(intent)
+            self.store.save(intent)
             raise GatewayError(502, "upstream_create_failed")
         result = _bounded_json(upstream, self.config.max_response_bytes)
         sandbox_id = result.get("id")
@@ -371,7 +417,7 @@ class GatewayApplication:
         record = LeaseRecord(
             sandbox_id=sandbox_id,
             scope=accepted["scope"],
-            metadata=accepted["metadata"],
+            metadata=upstream_metadata,
             image=accepted["image"],
             image_digest=accepted["image_digest"],
             workspace_host_path=accepted["workspace_host_path"],
@@ -381,7 +427,7 @@ class GatewayApplication:
             created_at=_now_iso(),
         )
         record.signature = self._sign_record(record)
-        self.store.save(record)
+        self.store.activate(intent_id, record)
         try:
             self._attest(sandbox_id)
             self.runtime.start_relay(record)
@@ -473,7 +519,11 @@ class GatewayApplication:
         executor_token = env.get("AI_PLATFORM_EXECUTOR_AUTH_TOKEN")
         if not isinstance(executor_token, str) or len(executor_token.encode()) < 24:
             raise GatewayError(400, "executor_credential_invalid")
-        if env.get("AI_PLATFORM_SESSION_ID") != scope["session_id"] or env.get("AI_PLATFORM_RUN_ID") != scope["run_id"]:
+        if (
+            env.get("AI_PLATFORM_SESSION_ID") != scope["session_id"]
+            or env.get("AI_PLATFORM_RUN_ID") != scope["run_id"]
+            or env.get("AI_PLATFORM_ATTEMPT_ID") != scope["attempt_id"]
+        ):
             raise GatewayError(400, "environment_scope_mismatch")
         if env.get("AI_PLATFORM_CALLBACK_BASE_URL") != self.config.callback_upstream_base or env.get("SANDBOX_CALLBACK_BASE_URL") != self.config.callback_upstream_base:
             raise GatewayError(400, "callback_boundary_mismatch")
@@ -484,8 +534,8 @@ class GatewayApplication:
         mounts, workspace = self._accept_volumes(payload.get("volumes"), scope)
         rewritten = json.loads(json.dumps(payload))
         rewritten_env = rewritten["env"]
-        rewritten_env["AI_PLATFORM_CALLBACK_BASE_URL"] = "http://127.0.0.1:18888/callback"
-        rewritten_env["SANDBOX_CALLBACK_BASE_URL"] = "http://127.0.0.1:18888/callback"
+        rewritten_env["AI_PLATFORM_CALLBACK_BASE_URL"] = "http://127.0.0.1:18888"
+        rewritten_env["SANDBOX_CALLBACK_BASE_URL"] = "http://127.0.0.1:18888"
         rewritten_env["OPENAI_BASE_URL"] = "http://127.0.0.1:18888/model/openai"
         rewritten_env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:18888/model/anthropic"
         request_hash = hashlib.sha256(_canonical(payload)).hexdigest()
@@ -529,11 +579,37 @@ class GatewayApplication:
             accepted.append({"host": host_path, "mountPath": mount_path, "readOnly": bool(read_only)})
         if not workspace:
             raise GatewayError(400, "workspace_mount_missing")
-        # Scope cannot share a previously accepted workspace with a different lease.
-        prior = self.store.list({"workspace_host_path": workspace})
-        if any(record.scope != dict(scope) and record.state != "deleted" for record in prior):
-            raise GatewayError(409, "workspace_scope_conflict")
         return accepted, workspace
+
+    def _reconcile_intents(self) -> None:
+        for intent in self.store.list({"state": "intent"}) + self.store.list({"state": "reconciling"}):
+            self._verify_record(intent)
+            intent.state = "reconciling"
+            intent.signature = self._sign_record(intent)
+            self.store.save(intent)
+            query = urllib.parse.urlencode(
+                {"metadata": f"ai-platform.gateway.intent_id={intent.sandbox_id}", "page": "1", "pageSize": "2"}
+            )
+            response = self.lifecycle.request("GET", f"/v1/sandboxes?{query}")
+            if response.status != 200:
+                raise GatewayError(503, "reservation_reconciliation_failed")
+            payload = _bounded_json(response, self.config.max_response_bytes)
+            items = payload.get("items")
+            if not isinstance(items, list) or len(items) > 1:
+                raise GatewayError(503, "reservation_reconciliation_ambiguous")
+            if not items:
+                intent.state = "deleted"
+                intent.signature = self._sign_record(intent)
+                self.store.save(intent)
+                continue
+            sandbox_id = items[0].get("id") if isinstance(items[0], dict) else None
+            if not isinstance(sandbox_id, str) or not SANDBOX_ID.fullmatch(sandbox_id):
+                raise GatewayError(503, "reservation_reconciliation_ambiguous")
+            record = LeaseRecord(**{**intent.unsigned(), "sandbox_id": sandbox_id, "state": "active"})
+            record.signature = self._sign_record(record)
+            self.store.activate(intent.sandbox_id, record)
+            self._attest(sandbox_id)
+            self.runtime.start_relay(record)
 
     def _get(self, sandbox_id: str) -> Response:
         record, upstream = self._attest(sandbox_id)
@@ -541,29 +617,55 @@ class GatewayApplication:
         return upstream
 
     def _list(self, query: str) -> Response:
-        values = urllib.parse.parse_qs(query, keep_blank_values=True, strict_parsing=True)
-        if set(values) != {"metadata"} or len(values["metadata"]) != 1:
+        try:
+            pairs = urllib.parse.parse_qsl(query, keep_blank_values=True, strict_parsing=True)
+        except ValueError:
+            raise GatewayError(400, "scope_filter_invalid") from None
+        if [key for key, _ in pairs] != ["metadata", "page", "pageSize"]:
             raise GatewayError(400, "scope_filter_required")
+        values = dict(pairs)
+        if urllib.parse.urlencode(pairs) != query:
+            raise GatewayError(400, "scope_filter_invalid")
+        if not values["page"].isdigit() or not values["pageSize"].isdigit():
+            raise GatewayError(400, "pagination_invalid")
+        page, page_size = int(values["page"]), int(values["pageSize"])
+        if str(page) != values["page"] or str(page_size) != values["pageSize"] or not 1 <= page <= 100000 or not 1 <= page_size <= 100:
+            raise GatewayError(400, "pagination_invalid")
         filters: dict[str, str] = {}
-        for pair in values["metadata"][0].split("&"):
+        for pair in values["metadata"].split("&"):
             if "=" not in pair:
                 raise GatewayError(400, "scope_filter_invalid")
             key, value = pair.split("=", 1)
-            if key not in set(SCOPE_LABELS.values()) | {"ai-platform.owner"} or not value:
+            if key in filters or key not in set(SCOPE_LABELS.values()) | {"ai-platform.owner"} or not value:
                 raise GatewayError(400, "scope_filter_invalid")
             filters[key] = value
         if filters.get("ai-platform.owner") != "sandbox-runtime" or not any(k in filters for k in SCOPE_LABELS.values()):
             raise GatewayError(400, "scope_filter_required")
         records = self.store.list(filters)
+        total_items = len(records)
+        start = (page - 1) * page_size
         items = []
-        for record in records[:100]:
+        for record in records[start : start + page_size]:
             try:
                 _, response = self._attest(record.sandbox_id)
                 item = _bounded_json(response, self.config.max_response_bytes)
                 items.append(item)
             except GatewayError:
                 continue
-        return Response.json(200, {"items": items, "pagination": {"total": len(items), "page": 1, "pageSize": 100}})
+        total_pages = (total_items + page_size - 1) // page_size
+        return Response.json(
+            200,
+            {
+                "items": items,
+                "pagination": {
+                    "page": page,
+                    "pageSize": page_size,
+                    "totalItems": total_items,
+                    "totalPages": total_pages,
+                    "hasNextPage": page < total_pages,
+                },
+            },
+        )
 
     def _delete(self, sandbox_id: str) -> Response:
         record = self.store.get(sandbox_id)
@@ -611,24 +713,74 @@ class GatewayApplication:
         if (request.method.upper(), clean_path) not in allowed:
             raise GatewayError(404, "proxy_route_not_allowed")
         forwarded = request
+        if port == 44772 and clean_path in {"/files/upload", "/files/download"}:
+            self._validate_workspace_file_request(record, request, clean_path)
+        if port == 44772 and clean_path == "/command":
+            command = _json_object(request.body)
+            if command != {"command": "test -f /workspace/.ai-platform-opensandbox-lease.json"}:
+                raise GatewayError(400, "workspace_command_not_allowed")
         if port == 18000 and clean_path == "/v1/tasks/execute":
             task = _json_object(request.body)
             self._validate_task_scope(task, record)
-            task["callback_base_url"] = "http://127.0.0.1:18888/callback"
-            if "callback_url" in task:
-                task["callback_url"] = "http://127.0.0.1:18888/callback"
+            task["callback_base_url"] = "http://127.0.0.1:18888"
+            task["callback_url"] = "http://127.0.0.1:18888/api/ai/runtime/callbacks/executor"
             forwarded = Request(request.method, path, request.headers, _canonical(task))
         result = self.runtime.proxy(record, port, forwarded)
         if len(result.body) > self.config.max_response_bytes:
             raise GatewayError(502, "upstream_response_too_large")
         return result
 
+    def _validate_workspace_file_request(self, record: LeaseRecord, request: Request, path: str) -> None:
+        sentinel = "/workspace/.ai-platform-opensandbox-lease.json"
+        if path == "/files/download":
+            try:
+                pairs = urllib.parse.parse_qsl(urllib.parse.urlsplit(request.target).query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                raise GatewayError(400, "workspace_file_request_invalid") from None
+            if pairs != [("path", sentinel)] or urllib.parse.urlencode(pairs) != urllib.parse.urlsplit(request.target).query:
+                raise GatewayError(400, "workspace_file_request_invalid")
+            return
+        content_type = _header(request.headers, "content-type")
+        if not content_type.startswith("multipart/form-data; boundary="):
+            raise GatewayError(400, "workspace_file_request_invalid")
+        boundary = content_type.split("boundary=", 1)[1]
+        if not re.fullmatch(r"[A-Za-z0-9_'()+,./:=?-]{1,70}", boundary):
+            raise GatewayError(400, "workspace_file_request_invalid")
+        try:
+            message = BytesParser(policy=policy.HTTP).parsebytes(
+                f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode() + request.body
+            )
+            parts = list(message.iter_parts())
+        except Exception:
+            raise GatewayError(400, "workspace_file_request_invalid") from None
+        if len(parts) != 2 or [part.get_param("name", header="content-disposition") for part in parts] != ["metadata", "file"]:
+            raise GatewayError(400, "workspace_file_request_invalid")
+        if any(part.get("content-transfer-encoding") for part in parts):
+            raise GatewayError(400, "workspace_file_request_invalid")
+        try:
+            metadata = json.loads(parts[0].get_payload(decode=True))
+            content = parts[1].get_payload(decode=True)
+            sentinel_payload = json.loads(content)
+        except Exception:
+            raise GatewayError(400, "workspace_file_request_invalid") from None
+        expected_payload = {"schema_version": "ai-platform.opensandbox-lease.v1", **record.scope}
+        if (
+            not isinstance(metadata, dict)
+            or set(metadata) != {"path", "owner", "group", "mode"}
+            or metadata.get("path") != sentinel
+            or parts[1].get_filename() not in {sentinel, sentinel.rsplit("/", 1)[1]}
+            or sentinel_payload != expected_payload
+        ):
+            raise GatewayError(400, "workspace_file_request_invalid")
+
     def _validate_task_scope(self, task: Mapping[str, Any], record: LeaseRecord) -> None:
         for name in SCOPE_KEYS:
             if task.get(name) != record.scope[name]:
                 raise GatewayError(409, "dispatch_scope_mismatch")
-        callback = task.get("callback_base_url", task.get("callback_url"))
-        if callback != self.config.callback_upstream_base:
+        if (
+            task.get("callback_base_url") != self.config.callback_upstream_base
+            or task.get("callback_url") != self.config.callback_upstream_base.rstrip("/") + "/api/ai/runtime/callbacks/executor"
+        ):
             raise GatewayError(409, "dispatch_callback_mismatch")
 
     def _attest(self, sandbox_id: str) -> tuple[LeaseRecord, Response]:
@@ -654,6 +806,7 @@ class GatewayApplication:
             or evidence.runtime != "runsc"
             or evidence.network_mode != "none"
             or evidence.no_new_privileges is not True
+            or evidence.user != "1000:1000"
             or evidence.image != record.image
             or evidence.image_digest != record.image_digest
             or tuple(sorted(evidence.mounts)) != expected_mounts
@@ -668,7 +821,9 @@ class GatewayApplication:
             "sandbox_id": record.sandbox_id,
             "scope_labels": {
                 **record.scope,
-                "lease_id": f"opensandbox:opensandbox-{record.scope['run_id']}:{record.sandbox_id}",
+                "lease_id": (
+                    f"opensandbox:opensandbox-{record.scope['run_id']}-{record.scope['attempt_id']}:{record.sandbox_id}"
+                ),
             },
             "runtime": {"identity": "runsc", "subject": self.config.runtime_subject},
             "network": {"mode": "none", "default_deny": True},
@@ -767,10 +922,10 @@ def _bounded_json(response: Response, limit: int) -> dict[str, Any]:
 def _safe_target(target: str) -> tuple[str, str]:
     if len(target) > 4096 or not target.startswith("/") or "#" in target:
         raise GatewayError(400, "invalid_target")
-    lowered = target.lower()
-    if "%2f" in lowered or "%5c" in lowered or "%2e" in lowered or "\\" in target:
-        raise GatewayError(400, "invalid_target")
     split = urllib.parse.urlsplit(target)
+    lowered_path = split.path.lower()
+    if "%2f" in lowered_path or "%5c" in lowered_path or "%2e" in lowered_path or "\\" in target:
+        raise GatewayError(400, "invalid_target")
     if split.scheme or split.netloc or "//" in split.path or ".." in split.path.split("/"):
         raise GatewayError(400, "invalid_target")
     return split.path, split.query

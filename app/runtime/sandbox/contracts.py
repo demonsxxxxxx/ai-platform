@@ -3,7 +3,7 @@ from ipaddress import ip_address
 from typing import Any, Iterable, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.runtime.kernel_contracts import AgentEvent
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
@@ -143,6 +143,7 @@ class SandboxRuntimeRequest(BaseModel):
     user_id: str
     session_id: str
     run_id: str
+    attempt_id: str
     agent_id: str
     skill_ids: list[str] = Field(default_factory=list)
     mcp_tool_ids: list[str] = Field(default_factory=list)
@@ -165,7 +166,7 @@ class SandboxRuntimeRequest(BaseModel):
     sdk_session_id: str | None = None
     governed_permission_wait: bool = False
 
-    @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "callback_token_id")
+    @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "attempt_id", "agent_id", "callback_token_id")
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
@@ -310,6 +311,7 @@ class ExecutorTaskRequest(BaseModel):
 
     session_id: str
     run_id: str
+    attempt_id: str
     prompt: str
     callback_url: str
     callback_token_id: str
@@ -320,7 +322,23 @@ class ExecutorTaskRequest(BaseModel):
     governed_permission_wait: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("session_id", "run_id", "callback_token_id")
+    @model_validator(mode="before")
+    @classmethod
+    def require_queue_attempt_from_dispatch_context(cls, value: object):
+        if not isinstance(value, dict):
+            return value
+        result = dict(value)
+        config = result.get("config")
+        manifest = config.get("context_manifest") if isinstance(config, dict) else None
+        manifest_attempt = manifest.get("queue_attempt_id") if isinstance(manifest, dict) else None
+        explicit_attempt = result.get("attempt_id")
+        if explicit_attempt is None:
+            result["attempt_id"] = manifest_attempt
+        elif manifest_attempt != explicit_attempt:
+            raise ValueError("executor attempt identity mismatch")
+        return result
+
+    @field_validator("session_id", "run_id", "attempt_id", "callback_token_id")
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)

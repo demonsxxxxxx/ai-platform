@@ -62,6 +62,7 @@ def runtime_request(**overrides: Any) -> SimpleNamespace:
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "qat-attempt-a",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -78,7 +79,8 @@ def attestation_payload(**overrides: Any) -> dict[str, Any]:
             "user_id": "user-a",
             "session_id": "session-a",
             "run_id": "run-a",
-            "lease_id": "opensandbox:opensandbox-run-a:sandbox-a",
+            "attempt_id": "qat-attempt-a",
+            "lease_id": "opensandbox:opensandbox-run-a-qat-attempt-a:sandbox-a",
         },
         "runtime": {
             "identity": "runsc",

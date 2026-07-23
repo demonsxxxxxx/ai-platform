@@ -1115,6 +1115,8 @@ async def test_lease_run_moves_valid_payload_to_processing(monkeypatch):
     assert message is not None
     assert message.payload["run_id"] == "run-a"
     assert message.message_id == queue.message_id_for_raw(message.raw)
+    assert message.attempt_id == queue.queue_attempt_id(message.message_id, 1)
+    assert message.payload[queue.QUEUE_ATTEMPT_ID_FIELD] == message.attempt_id
     assert fake.source == queue.QUEUE_KEY
     assert fake.destination == queue.PROCESSING_KEY
     assert fake.timeout == 3
@@ -2476,6 +2478,9 @@ async def test_reclaimed_message_preserves_attempts_until_dead_letter(monkeypatc
 
     assert message is not None
     assert json.loads(fake.meta[message_id])["attempts"] == 2
+    assert message.attempt_id == queue.queue_attempt_id(message_id, 2)
+    assert message.payload[queue.QUEUE_ATTEMPT_ID_FIELD] == message.attempt_id
+    assert message.attempt_id != queue.queue_attempt_id(message_id, 1)
 
     second_reclaim = await queue.reclaim_expired_leases(
         visibility_timeout_seconds=10,
