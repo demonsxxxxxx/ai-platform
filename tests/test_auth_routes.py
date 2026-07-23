@@ -155,18 +155,25 @@ def test_ai_admin_maps_platform_admin_aliases():
         ([], "user"),
     ],
 )
-def test_company_login_collapses_upstream_roles_to_one_product_role(
-    monkeypatch,
+@pytest.mark.asyncio
+async def test_company_login_collapses_upstream_roles_to_one_product_role(
     upstream_roles,
     expected_role,
 ):
-    from app.routes.auth import _roles_for_login
+    from app.principal_authority import resolve_login_principal
 
-    monkeypatch.setattr("app.routes.auth.get_settings", lambda: auth_settings(ai_admin_work_ids=""))
+    async def user_info_adapter(_work_id):
+        return {"roles": upstream_roles}
 
-    assert _roles_for_login("synthetic-work-id", "synthetic-login", {"roles": upstream_roles}) == [
-        expected_role
-    ]
+    principal = await resolve_login_principal(
+        work_id="synthetic-work-id",
+        login_name="synthetic-login",
+        display_name="Synthetic User",
+        user_info_adapter=user_info_adapter,
+        settings=auth_settings(ai_admin_work_ids=""),
+    )
+
+    assert principal.roles == [expected_role]
 
 
 def test_signed_session_roundtrip_preserves_principal(monkeypatch):
