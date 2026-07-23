@@ -52,6 +52,8 @@ def fixed_runtime_identity_test_seams(monkeypatch, request):
         sandbox_callback_base_url = "http://api.sandbox.internal:8020"
         sandbox_callback_host_gateway = ""
         sandbox_egress_proof_signing_key = "provider-test-proof-key-with-enough-entropy-2026"
+        sandbox_egress_proof_key_id = "current"
+        ai_platform_runtime_commit = "a" * 40
 
         def __init__(self, settings: Any) -> None:
             self._settings = settings
@@ -120,6 +122,8 @@ def governed_docker_settings(**overrides: Any) -> SimpleNamespace:
         "sandbox_egress_policy_enabled": True,
         "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
         "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+        "sandbox_egress_proof_key_id": "current",
+        "ai_platform_runtime_commit": "a" * 40,
         "sandbox_callback_host_gateway": "",
     }
     values.update(overrides)
@@ -402,6 +406,9 @@ class FakeDockerNetworks:
         self._client.networks_by_name[name] = network
         self._client.network_create_calls.append((name, kwargs))
         return network
+
+    def list(self) -> list[FakeDockerNetwork]:
+        return list(self._client.networks_by_name.values())
 
 
 class FakeDockerClient:
@@ -955,8 +962,29 @@ def opensandbox_provider(*, health_probe=None, identity_probe=None, capability_p
         identity_probe=identity_probe
         or (lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001}),
         capability_profile_fetcher=capability_profile_fetcher or (lambda *_args: external_egress_capability_profile()),
+        authoritative_attestation_probe=lambda _capability, runtime_request, sandbox_id, info: (
+            isinstance(info, dict)
+            and info.get("id") == sandbox_id
+            and info.get("metadata", {}).get("ai-platform.tenant_id") == runtime_request.tenant_id
+            and info.get("metadata", {}).get("ai-platform.run_id") == runtime_request.run_id
+        ),
         utcnow=utcnow or (lambda: TEST_CAPABILITY_NOW),
     )
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_governed_egress_fails_closed_without_authoritative_topology_attestation(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: ExternalEgressCapabilitySettings())
+    provider = opensandbox_provider()
+    provider._authoritative_attestation_probe = None
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="unsupported"):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.instances == {}
 
 
 @pytest.mark.asyncio
@@ -2508,8 +2536,9 @@ async def test_docker_provider_occupied_native_socket_preflight_has_zero_false_r
             "sandbox_workspace_root": str(tmp_path.parent / "o"),
             "sandbox_executor_image": "registry.example/ai-platform@sha256:" + "a" * 64,
             "sandbox_egress_policy_enabled": True,
-            "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
-            "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
+                "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "ai_platform_runtime_commit": "a" * 40,
         }
     )
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
@@ -2551,8 +2580,9 @@ async def test_docker_provider_rejects_preexisting_socket_directory_with_wrong_o
             "sandbox_workspace_root": str(tmp_path.parent / "w"),
             "sandbox_executor_image": "registry.example/ai-platform@sha256:" + "a" * 64,
             "sandbox_egress_policy_enabled": True,
-            "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
-            "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
+                "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "ai_platform_runtime_commit": "a" * 40,
         }
     )
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
@@ -2884,8 +2914,9 @@ async def test_docker_provider_rejects_overlong_configured_socket_root_before_co
             "sandbox_workspace_root": _workspace_path_for_native_socket_bytes(211),
             "sandbox_executor_image": "registry.example/ai-platform@sha256:" + "a" * 64,
             "sandbox_egress_policy_enabled": True,
-            "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
-            "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
+                "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "ai_platform_runtime_commit": "a" * 40,
         }
     )
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
@@ -2926,8 +2957,9 @@ async def test_docker_provider_stop_removes_only_the_owned_short_socket_director
             "sandbox_workspace_root": str(short_socket_root),
             "sandbox_executor_image": "registry.example/ai-platform@sha256:" + "a" * 64,
             "sandbox_egress_policy_enabled": True,
-            "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
-            "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
+                "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "ai_platform_runtime_commit": "a" * 40,
         }
     )
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
@@ -3181,8 +3213,9 @@ async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
                 "sandbox_executor_published_host": "127.0.0.1",
                 "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
                 "sandbox_egress_policy_enabled": True,
-                "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
-                "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                    "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
+                    "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                    "ai_platform_runtime_commit": "a" * 40,
                 "sandbox_callback_host_gateway": "host.docker.internal",
                 "openai_base_url": "http://new-api.test/v1",
                 "openai_api_key": "test-newapi-token",
@@ -4086,6 +4119,39 @@ async def test_docker_governed_network_is_per_sandbox_and_contains_only_api_and_
 
 
 @pytest.mark.asyncio
+async def test_docker_dispatch_rejects_and_tracks_an_extra_governed_network_peer(monkeypatch):
+    """A third member fails closed instead of becoming a cross-sandbox path."""
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    fake = FakeDockerClient()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+    sandbox_request = request()
+    leased_workspace = workspace()
+    lease = await provider.create_or_reuse(sandbox_request, leased_workspace)
+    peer = FakeDockerContainer(
+        image="unrelated:immutable",
+        name="unrelated-peer",
+        detach=True,
+        labels={"ai-platform.owner": "another-runtime"},
+        volumes={},
+        environment={},
+    )
+    fake.containers_by_name[peer.name] = peer
+    fake.attach_to_network(peer, container_provider._governed_docker_network_name(lease))
+
+    with pytest.raises(container_provider.ContainerCleanupFailedError, match="cleanup"):
+        await provider.validate_for_dispatch(lease, sandbox_request, leased_workspace)
+
+    assert fake.containers_by_name[lease.container_name].removed is True
+    assert peer.removed is False
+    assert provider._leases[lease.container_id] is lease
+
+
+@pytest.mark.asyncio
 async def test_docker_rejects_unreachable_or_stale_api_callback_before_dispatch(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     fake = FakeDockerClient()
@@ -4105,6 +4171,21 @@ async def test_docker_rejects_unreachable_or_stale_api_callback_before_dispatch(
     fake.api_container.attrs["State"]["Health"]["Status"] = "unhealthy"
     with pytest.raises(container_provider.GovernedEgressAdmissionError):
         await provider.create_or_reuse(request(run_id="run-c"), workspace(run_id="run-c"))
+
+
+@pytest.mark.asyncio
+async def test_docker_requires_api_witness_to_match_the_exact_runtime_commit(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    fake = FakeDockerClient()
+    fake.api_container.labels["ai-platform.source-commit"] = "b" * 40
+    fake.api_container.attrs["Config"]["Labels"] = fake.api_container.labels
+    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
+    provider = container_provider.DockerContainerProvider(docker_client_factory=lambda: fake)
+
+    with pytest.raises(container_provider.GovernedEgressAdmissionError):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert fake.created == []
 
 
 @pytest.mark.asyncio
@@ -5117,8 +5198,9 @@ async def test_docker_provider_requires_published_executor_port(monkeypatch):
                 "sandbox_executor_image": "registry.example/ai-platform@sha256:" + "a" * 64,
             "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
             "sandbox_egress_policy_enabled": True,
-            "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
-                "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
+                    "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "ai_platform_runtime_commit": "a" * 40,
             "sandbox_container_start_timeout_seconds": 1,
             "sandbox_executor_health_timeout_seconds": 1,
         },
@@ -5236,8 +5318,9 @@ async def test_docker_provider_uses_loopback_executor_url_and_private_auth_heade
             "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
             "sandbox_callback_host_gateway": "host.docker.internal",
             "sandbox_egress_policy_enabled": True,
-            "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
-                "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
+                    "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "ai_platform_runtime_commit": "a" * 40,
             "sandbox_container_start_timeout_seconds": 5,
             "sandbox_executor_health_timeout_seconds": 5,
         },
@@ -5438,8 +5521,9 @@ async def test_docker_provider_publishes_configured_hostname_without_governed_ho
             "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
             "sandbox_callback_host_gateway": "host.docker.internal",
             "sandbox_egress_policy_enabled": True,
-            "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
-                "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
+                    "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "ai_platform_runtime_commit": "a" * 40,
             "sandbox_container_start_timeout_seconds": 5,
             "sandbox_executor_health_timeout_seconds": 5,
         },
@@ -5500,8 +5584,9 @@ async def test_docker_provider_rebuilds_instead_of_reusing_when_inspected_bind_i
             "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
             "sandbox_callback_host_gateway": "host.docker.internal",
             "sandbox_egress_policy_enabled": True,
-            "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
-                "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
+                    "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
+                "ai_platform_runtime_commit": "a" * 40,
             "sandbox_container_start_timeout_seconds": 5,
             "sandbox_executor_health_timeout_seconds": 5,
         },

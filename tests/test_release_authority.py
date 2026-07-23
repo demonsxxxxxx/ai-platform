@@ -24,6 +24,7 @@ from tools.release_authority import (
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 SANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.sandbox.yml"
+RUNBOOK = ROOT / "docs" / "operations" / "211-release-operations-runbook.md"
 LEGACY_FRONTEND_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.frontend.yml"
 AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
 SANDBOX_IMAGE_ID = "sha256:" + "e" * 64
@@ -92,6 +93,15 @@ def test_sandbox_compose_overlay_preserves_live_docker_provider_and_mounts():
     )
     assert workspace_mount in services["api"]["volumes"]
     assert workspace_mount in services["worker"]["volumes"]
+
+
+def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract():
+    text = RUNBOOK.read_text(encoding="utf-8")
+
+    assert "<release-root>/deploy/ai-platform/docker-compose.sandbox.yml" in text
+    assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
+    assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
+    assert "SANDBOX_EXECUTOR_IMAGE=sha256:<64-lowercase-hex-image-id>" in text
 
 
 def test_backend_and_frontend_images_publish_release_authority_labels():

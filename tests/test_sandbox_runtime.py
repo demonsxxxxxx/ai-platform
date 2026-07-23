@@ -131,6 +131,48 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
 
 
 @pytest.mark.asyncio
+async def test_runtime_revalidates_provider_evidence_immediately_before_dispatch(tmp_path, monkeypatch):
+    """A proof/topology change after lease persistence must block executor I/O."""
+    calls: list[tuple[str, str]] = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class DriftedProvider(FakeContainerProvider):
+        async def validate_for_dispatch(self, lease, runtime_request, leased_workspace):
+            calls.append(("validate", lease.container_id))
+            raise RuntimeError("governed egress changed after acquisition")
+
+        async def stop(self, lease, *, reason):
+            calls.append(("stop", reason))
+            return await super().stop(lease, reason=reason)
+
+    async def execute(*_args, **_kwargs):
+        raise AssertionError("executor dispatch must not occur after evidence drift")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=DriftedProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: calls.append(("record", "lease")) or "lease-a",
+        release_lease=lambda _lease, reason, *_args: calls.append(("release", reason)),
+    )
+
+    with pytest.raises(RuntimeError, match="egress changed"):
+        await runtime.submit(request(sandbox_mode="ephemeral"))
+
+    assert calls == [
+        ("record", "lease"),
+        ("validate", "exec-run-a"),
+        ("stop", "dispatch_failed"),
+        ("release", "dispatch_failed"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp_path, monkeypatch):
     sent = []
 
@@ -219,6 +261,9 @@ async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tm
 
         async def stop(self, lease, *, reason: str):
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+
+        async def validate_for_dispatch(self, lease, runtime_request, leased_workspace):
+            return None
 
     async def execute(executor_url, task_request):
         return {

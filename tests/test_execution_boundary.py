@@ -70,7 +70,7 @@ def test_non_claude_adapter_keeps_adapter_managed_execution():
     assert decision.fail_closed is False
 
 
-def _real_runtime_lease(module, **overrides):
+def _real_runtime_lease(module, *, signing_key=PROOF_KEY, key_id="current", **overrides):
     scope = {
         "tenant_id": "tenant-a",
         "workspace_id": "workspace-a",
@@ -86,7 +86,8 @@ def _real_runtime_lease(module, **overrides):
         "lease_identity": "docker:executor-exec-run-a:exec-run-a",
     }
     proof = module.build_governed_egress_proof(
-        signing_key=PROOF_KEY,
+        signing_key=signing_key,
+        key_id=key_id,
         provider="docker",
         runtime_subject="docker-internal-bridge",
         policy_subject="network-id:network-name:internal",
@@ -204,3 +205,33 @@ def test_runtime_lease_rejects_legacy_shape_tamper_replay_and_expiry():
     ) is True
     assert module.has_governed_egress_signing_key("") is False
     assert module.has_governed_egress_signing_key("too-short") is False
+
+
+def test_runtime_lease_key_rotation_allows_only_bounded_previous_terminal_history():
+    module = _module()
+    previous_key = "previous-proof-key-for-tests-with-enough-entropy-2026"
+    current_key = "current-proof-key-for-tests-with-enough-entropy-2026"
+    row = _real_runtime_lease(module, signing_key=previous_key, key_id="previous-2026")
+    row["status"] = "released"
+
+    assert module.is_accepted_runtime_lease(
+        row,
+        signing_key=current_key,
+        signing_key_id="current-2026",
+        previous_signing_keys={"previous-2026": previous_key},
+        verification_mode="active",
+    ) is False
+    assert module.is_accepted_runtime_lease(
+        row,
+        signing_key=current_key,
+        signing_key_id="current-2026",
+        previous_signing_keys={"previous-2026": previous_key},
+        verification_mode="historical",
+    ) is True
+    assert module.is_accepted_runtime_lease(
+        row,
+        signing_key=current_key,
+        signing_key_id="current-2026",
+        previous_signing_keys={"unknown-key": previous_key},
+        verification_mode="historical",
+    ) is False

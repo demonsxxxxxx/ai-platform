@@ -17,6 +17,45 @@ its local immutable `sha256:<64-hex>` Docker image ID and passes that value as
 mutable `ai-platform:<commit>` tag; an operator must rebuild or resolve the
 target image ID before retrying when it is unavailable locally.
 
+## Governed Sandbox Overlay Contract
+
+At `<release-root>`, the operator-held environment file must set the exact
+release subject and the governed callback boundary without recording a raw key
+in terminal evidence:
+
+```text
+AI_PLATFORM_SOURCE_COMMIT=<40-lowercase-hex-commit>
+SANDBOX_EGRESS_POLICY_ENABLED=true
+SANDBOX_CALLBACK_BASE_URL=http://api.sandbox.internal:8020
+SANDBOX_EGRESS_PROOF_SIGNING_KEY=<operator-held-current-proof-key>
+SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>
+SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>
+DOCKER_SOCKET_GID=<host-docker-group-id>
+```
+
+The current key ID is durable proof metadata, not a secret. Previous keys are
+read only for signed `released` or `expired` history; active acquisition and
+dispatch require the current key and a fresh proof. Keep the raw values in the
+host environment file only.
+
+Use the sandbox overlay explicitly; the placeholders below are contracts, not
+real paths, images, commits, or credentials:
+
+```bash
+cd <release-root>
+sudo -n env \
+  AI_PLATFORM_IMAGE=<reviewed-api-worker-image> \
+  SANDBOX_EXECUTOR_IMAGE=sha256:<64-lowercase-hex-image-id> \
+  docker compose --env-file <release-root>/deploy/ai-platform/.env \
+  -f <release-root>/deploy/ai-platform/docker-compose.yml \
+  -f <release-root>/deploy/ai-platform/docker-compose.sandbox.yml \
+  up -d --no-build api worker workspace-init
+```
+
+Before allowing untrusted execution, verify that the API is healthy with the
+same runtime commit, that each lease bridge contains only that API witness and
+its sandbox, and that the proof key material is present but never printed.
+
 ## Readiness Evidence
 
 Before the workflow grants its release lease, the read-only host packet must

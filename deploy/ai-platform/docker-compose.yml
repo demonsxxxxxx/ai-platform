@@ -152,6 +152,8 @@ services:
       SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}
       SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress-internal-v1}
       SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:-}
+      SANDBOX_EGRESS_PROOF_KEY_ID: ${SANDBOX_EGRESS_PROOF_KEY_ID:-current}
+      SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON: ${SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON:-}
       SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-}
       OPENSANDBOX_DOMAIN: ${OPENSANDBOX_DOMAIN:-localhost:8080}
       OPENSANDBOX_PROTOCOL: ${OPENSANDBOX_PROTOCOL:-http}
@@ -166,6 +168,16 @@ services:
       OPENSANDBOX_ALLOWED_EGRESS_HOSTS: ${OPENSANDBOX_ALLOWED_EGRESS_HOSTS:-}
     ports:
       - "${AI_PLATFORM_API_PORT:-8020}:8020"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, os, urllib.request; body = json.load(urllib.request.urlopen('http://127.0.0.1:8020/api/ai/health', timeout=5)); raise SystemExit(0 if body == {'status': 'ok', 'runtime_commit': os.environ['AI_PLATFORM_RUNTIME_COMMIT']} else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 10
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -274,6 +286,8 @@ services:
       SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}
       SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress-internal-v1}
       SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:-}
+      SANDBOX_EGRESS_PROOF_KEY_ID: ${SANDBOX_EGRESS_PROOF_KEY_ID:-current}
+      SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON: ${SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON:-}
       SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-}
       OPENSANDBOX_DOMAIN: ${OPENSANDBOX_DOMAIN:-localhost:8080}
       OPENSANDBOX_PROTOCOL: ${OPENSANDBOX_PROTOCOL:-http}

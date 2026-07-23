@@ -159,6 +159,7 @@ class SandboxRuntime:
             lease.provider,
             lease.labels,
             signing_key=getattr(get_settings(), "sandbox_egress_proof_signing_key", ""),
+            signing_key_id=getattr(get_settings(), "sandbox_egress_proof_key_id", "current"),
             expected_binding={
                 "tenant_id": lease.tenant_id,
                 "workspace_id": lease.workspace_id,
@@ -336,6 +337,7 @@ class SandboxRuntime:
                 governed_permission_wait=request.governed_permission_wait,
                 config=task_config,
             )
+            await self.provider.validate_for_dispatch(lease, request, workspace)
             dispatch_started_at = time.monotonic()
             response = await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)

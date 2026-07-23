@@ -360,6 +360,8 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
         "SANDBOX_EGRESS_POLICY_ENABLED=false",
         "SANDBOX_EGRESS_NETWORK_NAME=ai-platform-sandbox-egress-internal-v1",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY=replace_me_with_a_random_32_byte_minimum_value",
+        "SANDBOX_EGRESS_PROOF_KEY_ID=current",
+        "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=",
         "SANDBOX_CALLBACK_HOST_GATEWAY=",
     ]:
         assert expected in env_example_text
@@ -374,9 +376,16 @@ def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():
             "SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}",
             "SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress-internal-v1}",
             "SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:-}",
+            "SANDBOX_EGRESS_PROOF_KEY_ID: ${SANDBOX_EGRESS_PROOF_KEY_ID:-current}",
+            "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON: ${SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON:-}",
             "SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-}",
         ]:
             assert expected in service_text
+
+    api_text = compose_service_text(compose_text, "api")
+    assert "healthcheck:" in api_text
+    assert "/api/ai/health" in api_text
+    assert "AI_PLATFORM_RUNTIME_COMMIT" in api_text
 
 
 def test_compose_defines_new_internal_egress_network_for_api_callback_only():

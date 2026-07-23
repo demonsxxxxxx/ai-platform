@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
@@ -18,9 +19,12 @@ GOVERNED_EGRESS_PROOF_SCHEMA = "ai-platform.governed-egress-proof.v2"
 GOVERNED_EGRESS_PROOF_LABEL = "ai-platform.governed_egress.proof"
 GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS = 900
 GOVERNED_EGRESS_PROOF_MIN_SIGNING_KEY_BYTES = 32
+GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID = "current"
+GOVERNED_EGRESS_PROOF_MAX_PREVIOUS_KEYS = 4
 _GOVERNED_EGRESS_PROOF_KEYS = frozenset(
     {
         "schema_version",
+        "key_id",
         "provider",
         "source",
         "evidence_class",
@@ -180,6 +184,29 @@ def has_governed_egress_signing_key(signing_key: object) -> bool:
     return _valid_signing_key(signing_key) is not None
 
 
+def _valid_governed_egress_key_id(value: object) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized) else None
+
+
+def governed_egress_previous_signing_keys(value: object) -> dict[str, str]:
+    """Decode a bounded read-only previous-key map without projecting its secrets."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(value, Mapping) or len(value) > GOVERNED_EGRESS_PROOF_MAX_PREVIOUS_KEYS:
+        return {}
+    keys: dict[str, str] = {}
+    for key_id, key in value.items():
+        normalized_id = _valid_governed_egress_key_id(key_id)
+        if normalized_id is None or _valid_signing_key(key) is None:
+            return {}
+        keys[normalized_id] = str(key)
+    return keys
+
+
 def _format_timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -224,12 +251,19 @@ def build_governed_egress_proof(
     authorized_skill_scope: object,
     authorized_native_tool_scope: object,
     lease_identity: object,
+    key_id: object = GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
     issued_at: datetime | None = None,
     expires_at: datetime | None = None,
 ) -> dict[str, object]:
     """Seal one provider-neutral, redacted, expiry-bounded egress admission proof."""
     key = _valid_signing_key(signing_key)
-    if provider not in REAL_SANDBOX_PROVIDERS or key is None or not isinstance(network_internal, bool):
+    normalized_key_id = _valid_governed_egress_key_id(key_id)
+    if (
+        provider not in REAL_SANDBOX_PROVIDERS
+        or key is None
+        or normalized_key_id is None
+        or not isinstance(network_internal, bool)
+    ):
         raise ValueError("governed_egress_proof_invalid")
     issued = (issued_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     expiry = (expires_at or issued + timedelta(seconds=GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS)).astimezone(timezone.utc)
@@ -255,6 +289,7 @@ def build_governed_egress_proof(
     }
     proof: dict[str, object] = {
         "schema_version": GOVERNED_EGRESS_PROOF_SCHEMA,
+        "key_id": normalized_key_id,
         "provider": provider,
         "source": REAL_SANDBOX_EVIDENCE_SOURCE,
         "evidence_class": REAL_SANDBOX_EVIDENCE_CLASS,
@@ -288,6 +323,9 @@ def is_governed_egress_proof(
     *,
     provider: str,
     signing_key: object,
+    signing_key_id: object = GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
+    previous_signing_keys: Mapping[str, str] | None = None,
+    allow_previous_keys: bool = False,
     expected_binding: Mapping[str, object] | None = None,
     now: datetime | None = None,
     require_fresh: bool = True,
@@ -298,13 +336,15 @@ def is_governed_egress_proof(
     acquisition, reuse, dispatch, and active-lease admission must retain the
     default fresh mode and therefore reject an expired proof.
     """
-    key = _valid_signing_key(signing_key)
-    if provider not in REAL_SANDBOX_PROVIDERS or key is None or not isinstance(proof, dict):
+    current_key = _valid_signing_key(signing_key)
+    current_key_id = _valid_governed_egress_key_id(signing_key_id)
+    if provider not in REAL_SANDBOX_PROVIDERS or current_key is None or current_key_id is None or not isinstance(proof, dict):
         return False
     if set(proof) != _GOVERNED_EGRESS_PROOF_KEYS:
         return False
     if (
         proof.get("schema_version") != GOVERNED_EGRESS_PROOF_SCHEMA
+        or not isinstance(proof.get("key_id"), str)
         or proof.get("provider") != provider
         or proof.get("source") != REAL_SANDBOX_EVIDENCE_SOURCE
         or proof.get("evidence_class") != REAL_SANDBOX_EVIDENCE_CLASS
@@ -333,7 +373,11 @@ def is_governed_egress_proof(
     signature = proof.get("signature")
     if not isinstance(signature, str) or len(signature) != 64 or any(char not in "0123456789abcdef" for char in signature):
         return False
-    if not hmac.compare_digest(signature, _proof_signature(proof, key)):
+    proof_key_id = _valid_governed_egress_key_id(proof.get("key_id"))
+    verification_key = current_key if proof_key_id == current_key_id else None
+    if verification_key is None and allow_previous_keys and proof_key_id is not None:
+        verification_key = _valid_signing_key((previous_signing_keys or {}).get(proof_key_id))
+    if verification_key is None or not hmac.compare_digest(signature, _proof_signature(proof, verification_key)):
         return False
     return expected_binding is None or _proof_matches_expected_binding(proof, expected_binding)
 
@@ -350,6 +394,9 @@ def governed_egress_proof_from_labels(
     labels: object,
     *,
     signing_key: object,
+    signing_key_id: object = GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
+    previous_signing_keys: Mapping[str, str] | None = None,
+    allow_previous_keys: bool = False,
     expected_binding: Mapping[str, object] | None = None,
     now: datetime | None = None,
 ) -> dict[str, object] | None:
@@ -369,6 +416,9 @@ def governed_egress_proof_from_labels(
             proof,
             provider=provider,
             signing_key=signing_key,
+            signing_key_id=signing_key_id,
+            previous_signing_keys=previous_signing_keys,
+            allow_previous_keys=allow_previous_keys,
             expected_binding=expected_binding,
             now=now,
         )
@@ -420,6 +470,8 @@ def is_accepted_runtime_lease(
     row: dict[str, Any],
     *,
     signing_key: object | None = None,
+    signing_key_id: object | None = None,
+    previous_signing_keys: Mapping[str, str] | None = None,
     now: datetime | None = None,
     verification_mode: str = "active",
 ) -> bool:
@@ -439,7 +491,20 @@ def is_accepted_runtime_lease(
     if not isinstance(payload, dict):
         payload = row.get("lease_payload")
     expected_binding = _runtime_lease_expected_binding(row, payload) if isinstance(payload, dict) else None
-    key = signing_key if signing_key is not None else get_settings().sandbox_egress_proof_signing_key
+    settings = get_settings()
+    key = signing_key if signing_key is not None else settings.sandbox_egress_proof_signing_key
+    current_key_id = (
+        signing_key_id
+        if signing_key_id is not None
+        else getattr(settings, "sandbox_egress_proof_key_id", GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID)
+    )
+    historical_keys = (
+        previous_signing_keys
+        if previous_signing_keys is not None
+        else governed_egress_previous_signing_keys(
+            getattr(settings, "sandbox_egress_proof_previous_keys_json", "")
+        )
+    )
     proof = payload.get("governed_egress_proof") if isinstance(payload, dict) else None
     return (
         isinstance(payload, dict)
@@ -451,6 +516,9 @@ def is_accepted_runtime_lease(
             proof,
             provider=provider,
             signing_key=key,
+            signing_key_id=current_key_id,
+            previous_signing_keys=historical_keys if verification_mode == "historical" else None,
+            allow_previous_keys=verification_mode == "historical",
             expected_binding=expected_binding,
             now=now,
             require_fresh=verification_mode == "active",
