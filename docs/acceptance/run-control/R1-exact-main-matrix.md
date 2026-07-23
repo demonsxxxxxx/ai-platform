@@ -9,9 +9,12 @@ acceptance.
 
 The only R1 helper is the pure-offline
 `tools/acceptance/run_control/validate_run_control_evidence_packet.py`.  It reads
-at most 64 KiB from one explicitly supplied local JSON packet, rejects duplicate
-JSON object members at every nesting level before schema validation, and rejects
-packets deeper than 12 levels.  It has no network, credential, environment,
+at most 64 KiB from one explicitly supplied local JSON packet.  A linear,
+string/escape-aware resource guard rejects raw nesting deeper than 12 before
+semantic decoding; bounded inputs then use `json.loads` with duplicate JSON
+object-member rejection at every nesting level before schema or secret
+validation.  A duplicate member is not promised to outrank an over-depth input:
+the resource guard runs first.  It has no network, credential, environment,
 process, write, product-state, or evidence-reference probing behavior.  Its
 output is only `schema_valid` or `schema_invalid`; **schema validity is not
 runtime proof** and cannot generate, upgrade, or prove evidence.

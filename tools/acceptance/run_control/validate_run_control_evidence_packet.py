@@ -77,15 +77,44 @@ def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _validate_json_depth(value: Any, *, depth: int = 1) -> None:
-    """Reject excessively nested packets before schema and secret validation."""
+def _guard_raw_json_nesting(raw_text: str) -> None:
+    """Linearly cap container nesting while ignoring braces and brackets in strings."""
 
-    if depth > MAX_JSON_DEPTH:
-        raise PacketDecodeError("packet_depth_exceeded")
+    nesting = 0
+    in_string = False
+    escaped = False
+    for character in raw_text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            nesting += 1
+            if nesting > MAX_JSON_DEPTH:
+                raise PacketDecodeError("packet_depth_exceeded")
+        elif character in "}]":
+            # Deliberately do not validate matching structure here.  The strict
+            # JSON decoder owns malformed syntax after this resource guard.
+            nesting = max(nesting - 1, 0)
+
+
+def _validate_json_depth(value: Any, *, depth: int = 0) -> None:
+    """Keep the decoded container walk aligned with the pre-decode nesting cap."""
+
     if isinstance(value, dict):
+        if depth >= MAX_JSON_DEPTH:
+            raise PacketDecodeError("packet_depth_exceeded")
         for child in value.values():
             _validate_json_depth(child, depth=depth + 1)
     elif isinstance(value, list):
+        if depth >= MAX_JSON_DEPTH:
+            raise PacketDecodeError("packet_depth_exceeded")
         for child in value:
             _validate_json_depth(child, depth=depth + 1)
 
@@ -95,10 +124,13 @@ def decode_evidence_packet(raw_text: str) -> Any:
 
     if len(raw_text.encode("utf-8")) > MAX_PACKET_BYTES:
         raise PacketDecodeError("packet_size_exceeded")
+    _guard_raw_json_nesting(raw_text)
     try:
         decoded = json.loads(raw_text, object_pairs_hook=_reject_duplicate_members)
     except PacketDecodeError:
         raise
+    except RecursionError as exc:
+        raise PacketDecodeError("packet_depth_exceeded") from exc
     except json.JSONDecodeError as exc:
         raise PacketDecodeError("packet_not_valid_json") from exc
     _validate_json_depth(decoded)

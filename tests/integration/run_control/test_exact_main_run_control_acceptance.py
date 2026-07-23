@@ -56,6 +56,10 @@ def _source_ref(packet: dict[str, object]) -> dict[str, str]:
     return packet["cases"][0]["evidence_refs"][0]
 
 
+def _nested_json(depth: int, payload: object) -> str:
+    return "[" * depth + json.dumps(payload) + "]" * depth
+
+
 def test_validator_accepts_only_a_complete_redacted_exact_main_packet(valid_packet):
     assert validate_run_control_evidence_packet(valid_packet, expected_main_sha=MAIN_SHA) == []
 
@@ -166,11 +170,58 @@ def test_strict_decoder_rejects_bounded_size_and_depth():
     with pytest.raises(PacketDecodeError, match="packet_size_exceeded"):
         decode_evidence_packet(" " * (MAX_PACKET_BYTES + 1))
 
-    deeply_nested: object = {}
-    for _ in range(MAX_JSON_DEPTH + 1):
-        deeply_nested = {"node": deeply_nested}
     with pytest.raises(PacketDecodeError, match="packet_depth_exceeded"):
-        decode_evidence_packet(json.dumps(deeply_nested))
+        decode_evidence_packet(_nested_json(MAX_JSON_DEPTH + 1, {}))
+
+
+def test_predecode_depth_guard_rejects_near_limit_valid_json_before_semantic_decoding():
+    depth = MAX_JSON_DEPTH + 1
+    payload = "x" * (MAX_PACKET_BYTES - (2 * depth) - 2)
+    raw_packet = _nested_json(depth, payload)
+
+    assert len(raw_packet.encode("utf-8")) == MAX_PACKET_BYTES
+    with pytest.raises(PacketDecodeError) as exc_info:
+        decode_evidence_packet(raw_packet)
+
+    assert exc_info.value.code == "packet_depth_exceeded"
+    assert _result([exc_info.value.code]) == {
+        "status": "schema_invalid",
+        "schema_validity_is_not_runtime_proof": True,
+        "errors": ["packet_depth_exceeded"],
+    }
+
+
+def test_predecode_depth_guard_takes_priority_over_outer_duplicate_member():
+    raw_packet = '{"outer":' + _nested_json(MAX_JSON_DEPTH + 1, 0) + ',"outer":0}'
+
+    with pytest.raises(PacketDecodeError) as exc_info:
+        decode_evidence_packet(raw_packet)
+
+    result_text = json.dumps(_result([exc_info.value.code]))
+    assert exc_info.value.code == "packet_depth_exceeded"
+    assert "outer" not in result_text
+    assert "Traceback" not in result_text
+
+
+def test_predecode_nesting_guard_ignores_delimiters_and_escapes_inside_strings():
+    expected_text = '{}[] with "quotes" and a \\ backslash'
+    raw_packet = _nested_json(MAX_JSON_DEPTH, expected_text)
+
+    decoded = decode_evidence_packet(raw_packet)
+    for _ in range(MAX_JSON_DEPTH):
+        decoded = decoded[0]
+
+    assert decoded == expected_text
+
+
+def test_bounded_nested_duplicate_still_uses_fixed_duplicate_member_diagnostic():
+    raw_packet = '[[{"case":{"case_id":"runtime_run_control","case_id":"browser_ordinary_user_run_control"}}]]'
+
+    with pytest.raises(PacketDecodeError) as exc_info:
+        decode_evidence_packet(raw_packet)
+
+    assert exc_info.value.code == "packet_duplicate_member"
+    assert "case_id" not in json.dumps(_result([exc_info.value.code]))
 
 
 def test_validator_rejects_local_only_evidence_for_runtime_and_browser_claims(valid_packet):
