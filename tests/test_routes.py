@@ -3378,18 +3378,28 @@ async def test_get_run_steps_returns_authorized_multi_agent_steps(monkeypatch):
     response = await get_run_steps("run-a", principal=principal())
 
     assert response["run_id"] == "run-a"
-    assert response["steps"][0]["step_key"] == "coding-1"
-    assert response["steps"][0]["status"] == "succeeded"
-    assert response["steps"][0]["role"] == "coding"
+    step = response["steps"][0]
+    assert step["id"] == "step-a"
+    assert step["step_id"] == "step-a"
+    assert step["step_key"] == "step-a"
+    assert step["status"] == "succeeded"
+    assert step["title"] == "步骤已完成"
+    assert step["role"] is None
+    assert step["payload"]["dependency_count"] == 1
+    assert "depends_on" not in step["payload"]
+    assert "coding-1" not in str(step)
+    assert "coding agent" not in str(step)
+    assert "coding" not in str(step)
+    assert "plan" not in str(step)
     assert "skill_ids" not in response["steps"][0]
     assert "mcp_tool_ids" not in response["steps"][0]
     assert "resource_limits" not in response["steps"][0]
     assert "sandbox_mode" not in response["steps"][0]
     assert "browser_enabled" not in response["steps"][0]
-    assert "mcp_tool_ids" not in response["steps"][0]["payload"]
-    assert "resource_limits" not in response["steps"][0]["payload"]
-    assert "sandbox_mode" not in response["steps"][0]["payload"]
-    assert "browser_enabled" not in response["steps"][0]["payload"]
+    assert "mcp_tool_ids" not in step["payload"]
+    assert "resource_limits" not in step["payload"]
+    assert "sandbox_mode" not in step["payload"]
+    assert "browser_enabled" not in step["payload"]
 
 
 @pytest.mark.asyncio
@@ -3433,7 +3443,7 @@ async def test_get_run_steps_redacts_raw_skill_references_for_ordinary_user(monk
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(response["steps"][0])
     assert "/var/lib/ai-platform" not in str(response["steps"][0])
     assert "runtime211" not in str(response["steps"][0])
-    assert response["steps"][0]["title"] == "review"
+    assert response["steps"][0]["title"] == "正在执行"
     assert response["steps"][0]["role"] is None
 
 
