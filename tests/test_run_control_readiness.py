@@ -60,7 +60,10 @@ def test_readiness_module_projects_public_resume_without_private_step_payload():
     )
 
     assert snapshot["contract_version"] == "ai-platform.run-control-readiness.v1"
-    assert snapshot["run"]["error_message"] == "run_failed"
+    fixed_failure_message = "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
+    assert snapshot["run"]["error_message"] == fixed_failure_message
+    assert "qa-file-reviewer" not in fixed_failure_message
+    assert "qa-word-review" not in fixed_failure_message
     assert snapshot["actions"]["resume"]["enabled"] is True
     assert snapshot["actions"]["resume"]["reason"] == "checkpoint_outputs_available"
     assert snapshot["checkpoint_candidates"] == [
@@ -68,7 +71,7 @@ def test_readiness_module_projects_public_resume_without_private_step_payload():
             "step_id": "step-skill",
             "step_key": "step-skill",
             "status": "succeeded",
-            "title": "step-skill",
+            "title": "步骤已完成",
             "role": None,
             "sequence": 1,
             "reusable": True,
