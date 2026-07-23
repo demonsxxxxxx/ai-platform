@@ -80,6 +80,19 @@ async def fake_transaction():
     yield object()
 
 
+def _stub_run_control_operation_guard(monkeypatch, events):
+    """Record retry/resume serialization without turning a unit-test transaction into a database fake."""
+
+    async def record_lock(conn, **kwargs):
+        events.append(("operation_lock", kwargs["action"], kwargs["source_run_id"]))
+
+    async def no_existing_operation(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", record_lock)
+    monkeypatch.setattr(repository_module, "get_run_control_operation", no_existing_operation)
+
+
 def principal(**overrides):
     values = {
         "user_id": "user-a",
@@ -4466,6 +4479,7 @@ async def test_requeue_routes_audit_capability_denial_after_source_transaction_r
         return 0
 
     async def copy_source(*args, **kwargs):
+        events.append(("copy", source))
         return {"run_id": "run-copy"}
 
     async def deny_prepare(*args, **kwargs):
@@ -4481,6 +4495,7 @@ async def test_requeue_routes_audit_capability_denial_after_source_transaction_r
     monkeypatch.setattr(repository_module, repository_method, copy_source)
     monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", deny_prepare)
     monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+    _stub_run_control_operation_guard(monkeypatch, events)
 
     with pytest.raises(HTTPException) as exc_info:
         await route_func("run-source", principal=principal(department_id="finance", roles=["user"]))
@@ -4488,6 +4503,12 @@ async def test_requeue_routes_audit_capability_denial_after_source_transaction_r
     assert exc_info.value.status_code == 403
     assert events == [
         ("enter", 1),
+        *(
+            [("operation_lock", source.removesuffix("_run"), "run-source")]
+            if source != "copy_run"
+            else []
+        ),
+        ("copy", source),
         ("authorize", source),
         ("exit", 1),
         ("enter", 2),
@@ -4677,6 +4698,7 @@ async def test_copy_retry_resume_revocation_returns_403_without_enqueue(monkeypa
     monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", deny_prepare)
     monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
     monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", allow_admission)
+    _stub_run_control_operation_guard(monkeypatch, calls)
 
     with pytest.raises(HTTPException) as exc_info:
         await route(
@@ -4687,6 +4709,11 @@ async def test_copy_retry_resume_revocation_returns_403_without_enqueue(monkeypa
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "capability_not_authorized"
     assert calls == [
+        *(
+            [("operation_lock", route.__name__.removesuffix("_run"), "run-original")]
+            if route.__name__ != "copy_run"
+            else []
+        ),
         (repository_method, "run-original"),
         ("prepare", repository_method.removesuffix("_as_new_task").replace("_run", "_run")),
     ]
@@ -4738,6 +4765,7 @@ async def test_copy_retry_resume_capability_lifecycle_denial_returns_403_without
     monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", fail_prepare)
     monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
     monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", allow_admission)
+    _stub_run_control_operation_guard(monkeypatch, calls)
 
     with pytest.raises(HTTPException) as exc_info:
         await route(
@@ -4747,7 +4775,14 @@ async def test_copy_retry_resume_capability_lifecycle_denial_returns_403_without
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "capability_not_authorized"
-    assert calls == [(repository_method, "run-original")]
+    assert calls == [
+        *(
+            [("operation_lock", route.__name__.removesuffix("_run"), "run-original")]
+            if route.__name__ != "copy_run"
+            else []
+        ),
+        (repository_method, "run-original"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -4768,6 +4803,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
     resolver_error,
 ):
     audits = []
+    events = []
     source_run = {
         "id": "run-original",
         "tenant_id": "tenant-a",
@@ -4798,6 +4834,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         return dict(source_run)
 
     async def reject_selector(*args, **kwargs):
+        events.append(("reauthorization", resolver_error))
         raise RepositoryConflictError(resolver_error)
 
     async def no_active_run(*args, **kwargs):
@@ -4848,6 +4885,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES,
     )
     monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+    _stub_run_control_operation_guard(monkeypatch, events)
 
     with pytest.raises(HTTPException) as exc_info:
         await route(
@@ -4862,6 +4900,14 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "capability_not_authorized"
+    assert events == [
+        *(
+            [("operation_lock", route.__name__.removesuffix("_run"), "run-original")]
+            if route.__name__ != "copy_run"
+            else []
+        ),
+        ("reauthorization", resolver_error),
+    ]
     assert audits == [(route.__name__, "general-chat", "capability_not_authorized")]
 
 
