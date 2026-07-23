@@ -4,18 +4,26 @@ ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
 ARG AI_PLATFORM_BUILD_REPOSITORY=unknown
 
-FROM node:22-bookworm AS build
+FROM node:22-bookworm AS dependencies
+
+WORKDIR /workspace
+
+COPY frontend/web/.npmrc frontend/web/package.json frontend/web/pnpm-lock.yaml frontend/web/pnpm-workspace.yaml ./frontend/web/
+
+WORKDIR /workspace/frontend/web
+RUN corepack enable && corepack pnpm install --frozen-lockfile
+
+FROM dependencies AS build
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
 ARG AI_PLATFORM_BUILD_REPOSITORY=unknown
 
-WORKDIR /workspace
-
 ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}
 ENV AI_PLATFORM_BUILD_DIRTY=${AI_PLATFORM_BUILD_DIRTY}
 
-COPY frontend/web/.npmrc frontend/web/package.json frontend/web/pnpm-lock.yaml frontend/web/pnpm-workspace.yaml ./frontend/web/
+WORKDIR /workspace
+
 COPY frontend/web/eslint.config.js frontend/web/index.html ./frontend/web/
 COPY frontend/web/postcss.config.js frontend/web/tailwind.config.js frontend/web/tsconfig.json frontend/web/vite.config.ts ./frontend/web/
 COPY frontend/web/public ./frontend/web/public
@@ -25,9 +33,9 @@ COPY tools ./tools
 COPY .github/workflows/ai-platform-frontend.yml ./.github/workflows/ai-platform-frontend.yml
 
 WORKDIR /workspace/frontend/web
-RUN corepack enable && corepack pnpm install --frozen-lockfile && corepack pnpm run ci:verify
+RUN corepack pnpm run ci:verify
 
-FROM nginx:1.27-alpine
+FROM nginx:1.27-alpine AS runtime
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
