@@ -14,6 +14,7 @@ import re
 import shlex
 import subprocess
 import tarfile
+import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Sequence
@@ -49,10 +50,64 @@ COMPATIBILITY_IMAGE_COMMIT_LABELS = (
     "ai_platform_runtime_subject",
     "ai_platform_source_tree_commit",
 )
+DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
+BACKEND_STAGE_TIMEOUT_SECONDS = 90
+FRONTEND_STAGE_TIMEOUT_SECONDS = 180
+BACKEND_DEPENDENCY_PATHS = frozenset({"pyproject.toml", "Dockerfile"})
+FRONTEND_DEPENDENCY_PATHS = frozenset(
+    {
+        "frontend/web/.npmrc",
+        "frontend/web/package.json",
+        "frontend/web/pnpm-lock.yaml",
+        "frontend/web/pnpm-workspace.yaml",
+        "frontend/web/Dockerfile",
+    }
+)
+BACKEND_SOURCE_PREFIXES = (
+    "app/",
+    "tools/",
+    "scripts/",
+    "skills/",
+    "docs/release-evidence/",
+)
+BACKEND_SOURCE_PATHS = frozenset({"docker-entrypoint.sh"})
+FRONTEND_SOURCE_PREFIX = "frontend/web/"
 
 
 class ReleaseAuthorityError(RuntimeError):
     """Raised when a release-authority invariant is not satisfied."""
+
+
+@dataclass(frozen=True)
+class RuntimeChangeSet:
+    """Classified runtime-affecting paths between a verified live commit and target."""
+
+    backend_dependency: tuple[str, ...]
+    backend_source: tuple[str, ...]
+    frontend_dependency: tuple[str, ...]
+    frontend_source: tuple[str, ...]
+    deployment_only: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RolePlan:
+    """One deterministic role action selected from a classified change set."""
+
+    role: str
+    change_kind: str
+    action: str
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AutoReleasePlan:
+    """Compact, role-specific release plan for one current-runtime to target transition."""
+
+    current_commit: str
+    target_commit: str
+    changes: RuntimeChangeSet
+    roles: tuple[RolePlan, ...]
+    no_runtime_change: bool
 
 
 @dataclass(frozen=True)
@@ -71,6 +126,8 @@ def _run(
     check: bool = True,
     text: bool = True,
     env: dict[str, str] | None = None,
+    timeout: int = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
+    input: str | bytes | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(
         list(command),
@@ -79,6 +136,8 @@ def _run(
         capture_output=True,
         text=text,
         env=env,
+        timeout=timeout,
+        input=input,
     )
 
 
@@ -119,6 +178,133 @@ def build_image_references(commit: str) -> dict[str, str]:
         "backend": f"ai-platform:{normalized}",
         "frontend": f"ai-platform-frontend:{normalized}",
     }
+
+
+def classify_runtime_changes(paths: Sequence[str]) -> RuntimeChangeSet:
+    """Classify changed paths by their image/runtime effect without invoking Docker."""
+    categories: dict[str, list[str]] = {
+        "backend_dependency": [],
+        "backend_source": [],
+        "frontend_dependency": [],
+        "frontend_source": [],
+        "deployment_only": [],
+    }
+    for path in sorted(set(paths)):
+        if path in BACKEND_DEPENDENCY_PATHS:
+            categories["backend_dependency"].append(path)
+        elif path in FRONTEND_DEPENDENCY_PATHS:
+            categories["frontend_dependency"].append(path)
+        elif path in BACKEND_SOURCE_PATHS or path.startswith(BACKEND_SOURCE_PREFIXES):
+            categories["backend_source"].append(path)
+        elif path.startswith(FRONTEND_SOURCE_PREFIX):
+            categories["frontend_source"].append(path)
+        else:
+            categories["deployment_only"].append(path)
+    return RuntimeChangeSet(**{name: tuple(value) for name, value in categories.items()})
+
+
+def build_auto_release_plan(
+    current_commit: str,
+    target_commit: str,
+    changes: RuntimeChangeSet,
+) -> AutoReleasePlan:
+    """Plan canonical builds only for dependency changes and promotions for unchanged roles."""
+    current = _normalize_commit(current_commit)
+    target = _normalize_commit(target_commit)
+
+    def role_plan(role: str, dependency: tuple[str, ...], source: tuple[str, ...]) -> RolePlan:
+        if dependency:
+            return RolePlan(role, "dependency", "canonical-build", dependency)
+        if source:
+            action = "runtime-rebuild" if role == "backend" else "source-build"
+            return RolePlan(role, "source", action, source)
+        return RolePlan(
+            role,
+            "unchanged",
+            "reuse" if current == target else "promote",
+            (),
+        )
+
+    roles = (
+        role_plan("backend", changes.backend_dependency, changes.backend_source),
+        role_plan("frontend", changes.frontend_dependency, changes.frontend_source),
+    )
+    return AutoReleasePlan(
+        current_commit=current,
+        target_commit=target,
+        changes=changes,
+        roles=roles,
+        no_runtime_change=not any(
+            (
+                changes.backend_dependency,
+                changes.backend_source,
+                changes.frontend_dependency,
+                changes.frontend_source,
+            )
+        ),
+    )
+
+
+def _plan_as_dict(plan: AutoReleasePlan) -> dict[str, Any]:
+    """Serialize the compact plan without expanding command or environment details."""
+    return {
+        "current_commit": plan.current_commit,
+        "target_commit": plan.target_commit,
+        "no_runtime_change": plan.no_runtime_change,
+        "changes": {
+            "backend_dependency": list(plan.changes.backend_dependency),
+            "backend_source": list(plan.changes.backend_source),
+            "frontend_dependency": list(plan.changes.frontend_dependency),
+            "frontend_source": list(plan.changes.frontend_source),
+            "deployment_only": list(plan.changes.deployment_only),
+        },
+        "roles": [
+            {
+                "role": item.role,
+                "change_kind": item.change_kind,
+                "action": item.action,
+                "paths": list(item.paths),
+            }
+            for item in plan.roles
+        ],
+    }
+
+
+def _stage(
+    events: list[dict[str, Any]],
+    *,
+    name: str,
+    strategy: str,
+    action: str,
+    operation: Any,
+) -> Any:
+    """Run one bounded release stage and retain compact, redacted timing evidence."""
+    started = time.monotonic()
+    try:
+        value = operation()
+    except (OSError, subprocess.SubprocessError, ReleaseAuthorityError) as exc:
+        events.append(
+            {
+                "stage": name,
+                "strategy": strategy,
+                "action": action,
+                "status": "failed",
+                "wall_time_seconds": round(time.monotonic() - started, 3),
+            }
+        )
+        error = ReleaseAuthorityError(f"release stage failed: {name}")
+        setattr(error, "stage_events", tuple(events))
+        raise error from exc
+    events.append(
+        {
+            "stage": name,
+            "strategy": strategy,
+            "action": action,
+            "status": "ok",
+            "wall_time_seconds": round(time.monotonic() - started, 3),
+        }
+    )
+    return value
 
 
 def authoritative_repository(repo_root: Path) -> str:
@@ -568,6 +754,156 @@ def _existing_release_image(
     return image
 
 
+def _release_label_dockerfile_lines(role: str) -> str:
+    """Return all target-provenance labels required for one promoted image role."""
+    common = [
+        "LABEL org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
+        "LABEL ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",
+        "LABEL ai-platform.source-commit=$AI_PLATFORM_BUILD_COMMIT",
+        'LABEL ai-platform.build-dirty="$AI_PLATFORM_BUILD_DIRTY"',
+        "LABEL ai-platform.source-repository=$AI_PLATFORM_BUILD_REPOSITORY",
+        f"LABEL ai-platform.release-role={role}",
+    ]
+    if role == "backend":
+        common[1:1] = [
+            "LABEL ai-platform.runtime-subject=$AI_PLATFORM_BUILD_COMMIT",
+            "LABEL ai-platform.source_revision=$AI_PLATFORM_BUILD_COMMIT",
+            "LABEL ai-platform.source_commit=$AI_PLATFORM_BUILD_COMMIT",
+            "LABEL ai-platform.runtime_subject=$AI_PLATFORM_BUILD_COMMIT",
+            "LABEL ai-platform.source_tree_commit=$AI_PLATFORM_BUILD_COMMIT",
+        ]
+    return "\n".join(common)
+
+
+def _backend_provenance_dockerfile_run() -> str:
+    """Return the backend embedded-source marker update used by source rebuilds and promotions."""
+    return '''RUN printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.ai-platform-source-revision \\
+    && printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.codex-source-revision \\
+    && printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.source-commit \\
+    && AI_PLATFORM_BUILD_COMMIT="$AI_PLATFORM_BUILD_COMMIT" AI_PLATFORM_BUILD_DIRTY="$AI_PLATFORM_BUILD_DIRTY" \\
+       python -c "import json, os; from pathlib import Path; commit = os.environ.get('AI_PLATFORM_BUILD_COMMIT', 'unknown').strip() or 'unknown'; dirty_text = os.environ.get('AI_PLATFORM_BUILD_DIRTY', 'unknown').strip().lower(); dirty = dirty_text != 'false'; dirty_paths = [] if not dirty else ['unknown_runtime_affecting_dirty_paths']; payload = dict(schema_version='ai-platform.source-snapshot.v1', source_tree_commit_sha=commit, runtime_subject_commit_sha=commit, source_tree_dirty=dirty, runtime_affecting_changes_since_runtime_subject=[], runtime_affecting_dirty_paths=dirty_paths, snapshot_source='dockerfile_build_args'); Path('/app/.ai-platform-source-snapshot.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\\n', encoding='utf-8')"'''
+
+
+def _promotion_dockerfile(role: str) -> str:
+    """Build a provenance-only image from a verified local role image without dependency commands."""
+    labels = _release_label_dockerfile_lines(role)
+    if role == "backend":
+        marker = _backend_provenance_dockerfile_run()
+        user = "USER 10001:10001"
+    elif role == "frontend":
+        marker = (
+            'RUN sed -i "s/\\\"commit\\\": \\\"[^\\\"]*\\\"/\\\"commit\\\": '
+            '\\\"${AI_PLATFORM_BUILD_COMMIT}\\\"/" '
+            "/usr/share/nginx/html/ai-platform-build-provenance.json"
+        )
+        user = ""
+    else:
+        raise ReleaseAuthorityError("release role is invalid")
+    return f"""# syntax=docker/dockerfile:1.7
+ARG BASE_IMAGE
+FROM ${{BASE_IMAGE}}
+ARG AI_PLATFORM_BUILD_COMMIT
+ARG AI_PLATFORM_BUILD_DIRTY
+ARG AI_PLATFORM_BUILD_REPOSITORY
+USER root
+{labels}
+{marker}
+{user}
+"""
+
+
+def _backend_runtime_dockerfile() -> str:
+    """Build source-only backend runtime from a verified image with no dependency installer command."""
+    labels = _release_label_dockerfile_lines("backend")
+    marker = _backend_provenance_dockerfile_run()
+    return f"""# syntax=docker/dockerfile:1.7
+ARG BASE_IMAGE
+FROM ${{BASE_IMAGE}}
+ARG AI_PLATFORM_BUILD_COMMIT
+ARG AI_PLATFORM_BUILD_DIRTY
+ARG AI_PLATFORM_BUILD_REPOSITORY
+USER root
+RUN rm -rf /app/app /app/tools /app/scripts /app/skills /app/docs/release-evidence \\
+    && rm -f /app/docker-entrypoint.sh /app/.ai-platform-source-revision \\
+       /app/.codex-source-revision /app/.source-commit /app/.ai-platform-source-snapshot.json
+COPY app /app/app
+COPY tools /app/tools
+COPY scripts /app/scripts
+COPY skills /app/skills
+COPY docs/release-evidence /app/docs/release-evidence
+COPY --chmod=0755 docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod -R a+rX /app && chmod 0755 /app/docker-entrypoint.sh
+{labels}
+{marker}
+USER 10001:10001
+"""
+
+
+def _build_args(commit: str, repository: str) -> list[str]:
+    return [
+        "--build-arg", f"AI_PLATFORM_BUILD_COMMIT={commit}",
+        "--build-arg", "AI_PLATFORM_BUILD_DIRTY=false",
+        "--build-arg", f"AI_PLATFORM_BUILD_REPOSITORY={repository}",
+    ]
+
+
+def _role_timeout(role: str) -> int:
+    if role == "backend":
+        return BACKEND_STAGE_TIMEOUT_SECONDS
+    if role == "frontend":
+        return FRONTEND_STAGE_TIMEOUT_SECONDS
+    raise ReleaseAuthorityError("release role is invalid")
+
+
+def _canonical_or_source_build(
+    docker: list[str],
+    *,
+    repo_root: Path,
+    reference: str,
+    commit: str,
+    repository: str,
+    role: str,
+    source_only: bool,
+) -> None:
+    dockerfile = "Dockerfile" if role == "backend" else "frontend/web/Dockerfile"
+    command = [*docker, "build", *_build_args(commit, repository), "-t", reference]
+    if source_only:
+        command.extend(["--target", "runtime"])
+    command.extend(["-f", dockerfile, "."])
+    _run(command, cwd=repo_root, timeout=_role_timeout(role))
+
+
+def _build_from_verified_role_image(
+    docker: list[str],
+    *,
+    repo_root: Path,
+    reference: str,
+    base_reference: str,
+    commit: str,
+    repository: str,
+    role: str,
+    dockerfile: str,
+) -> None:
+    """Create one target role image from a verified local source image through a bounded build."""
+    _run(
+        [
+            *docker,
+            "build",
+            "--build-arg",
+            f"BASE_IMAGE={base_reference}",
+            *_build_args(commit, repository),
+            "-t",
+            reference,
+            "-f",
+            "-",
+            ".",
+        ],
+        cwd=repo_root,
+        timeout=_role_timeout(role),
+        input=dockerfile,
+    )
+
+
 def _require_sandbox_executor_image(
     docker: list[str],
     reference: str,
@@ -1004,6 +1340,58 @@ def collect_live_parity(
     )
 
 
+def _verified_current_runtime(
+    docker: list[str],
+    target_selection: _ComposeSelection,
+    *,
+    docker_cmd: str,
+) -> dict[str, Any]:
+    """Verify the live role provenance before selecting any auto-release action."""
+    selections: list[_ComposeSelection] = []
+    commits: list[str] = []
+    for role in ("api", "worker", "frontend"):
+        record, _ = _container_inspect_record(docker, f"ai-platform-{role}")
+        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+        if labels.get("ai-platform.source-dirty") != "false":
+            raise ReleaseAuthorityError("current runtime provenance is invalid")
+        try:
+            commit = _normalize_commit(str(labels.get("ai-platform.source-commit") or ""))
+        except ReleaseAuthorityError as exc:
+            raise ReleaseAuthorityError("current runtime provenance is invalid") from exc
+        owned_selection = _compose_ownership_selection(labels, target_selection)
+        if owned_selection is None:
+            raise ReleaseAuthorityError("current runtime provenance is invalid")
+        commits.append(commit)
+        selections.append(owned_selection)
+    if len(set(commits)) != 1 or len(set(selections)) != 1:
+        raise ReleaseAuthorityError("current runtime provenance is invalid")
+    current_commit = commits[0]
+    current_selection = selections[0]
+    parity = collect_live_parity(
+        current_selection.checkout_root,
+        current_commit,
+        docker_cmd=docker_cmd,
+        compose_files=current_selection.relative_paths,
+    )
+    if parity.get("verified") is not True:
+        raise ReleaseAuthorityError("current runtime provenance is invalid")
+    return {
+        "commit": current_commit,
+        "references": build_image_references(current_commit),
+        "parity": parity,
+    }
+
+
+def _auto_release_plan(
+    repo_root: Path,
+    target_commit: str,
+    current_commit: str,
+) -> AutoReleasePlan:
+    """Classify the verified live-to-target diff from the exact target checkout."""
+    paths = _git_paths(repo_root, "diff", "--name-only", f"{current_commit}..{target_commit}")
+    return build_auto_release_plan(current_commit, target_commit, classify_runtime_changes(paths))
+
+
 def deploy_clean_commit(
     repo_root: Path,
     commit: str,
@@ -1014,8 +1402,17 @@ def deploy_clean_commit(
     expected_manual_frontend_image: str | None = None,
     expected_manual_frontend_image_id: str | None = None,
     compose_files: Sequence[str | Path] | None = None,
+    strategy: str = "canonical",
+    auto_plan: AutoReleasePlan | None = None,
+    current_references: dict[str, str] | None = None,
+    stage_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build immutable images and recreate the repo-local compose release."""
+    if strategy not in {"canonical", "auto"}:
+        raise ReleaseAuthorityError("release strategy is invalid")
+    if strategy == "auto" and (auto_plan is None or current_references is None):
+        raise ReleaseAuthorityError("auto release plan is required")
+    events = stage_events if stage_events is not None else []
     normalized = assert_clean_commit(repo_root, commit)
     selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
@@ -1028,14 +1425,9 @@ def deploy_clean_commit(
         expected_manual_frontend_image_id=expected_manual_frontend_image_id,
     )
     refs = build_image_references(normalized)
-    common_args = [
-        "--build-arg", f"AI_PLATFORM_BUILD_COMMIT={normalized}",
-        "--build-arg", "AI_PLATFORM_BUILD_DIRTY=false",
-        "--build-arg", f"AI_PLATFORM_BUILD_REPOSITORY={repository}",
-    ]
     images: dict[str, dict[str, Any]] = {}
-    dockerfiles = {"backend": "Dockerfile", "frontend": "frontend/web/Dockerfile"}
     for role, reference in refs.items():
+        image_lookup_started = time.monotonic()
         image = _existing_release_image(
             docker,
             reference,
@@ -1043,18 +1435,101 @@ def deploy_clean_commit(
             repository=repository,
             role=role,
         )
+        if image is not None and strategy == "auto":
+            events.append(
+                {
+                    "stage": f"{role}-image",
+                    "strategy": strategy,
+                    "action": "reuse-verified-target",
+                    "status": "ok",
+                    "wall_time_seconds": round(time.monotonic() - image_lookup_started, 3),
+                }
+            )
         if image is None:
-            _run(
-                [*docker, "build", *common_args, "-t", reference, "-f", dockerfiles[role], "."],
-                cwd=repo_root,
+            item = (
+                next(plan for plan in auto_plan.roles if plan.role == role)
+                if auto_plan is not None
+                else RolePlan(role, "dependency", "canonical-build", ())
             )
-            image = _image_record(docker, reference)
-            _validate_release_image(
-                image,
-                commit=normalized,
-                repository=repository,
-                role=role,
+            if item.action == "canonical-build":
+                _stage(
+                    events,
+                    name=f"{role}-image",
+                    strategy=strategy,
+                    action=item.action,
+                    operation=lambda: _canonical_or_source_build(
+                        docker,
+                        repo_root=repo_root,
+                        reference=reference,
+                        commit=normalized,
+                        repository=repository,
+                        role=role,
+                        source_only=False,
+                    ),
+                )
+            elif item.action == "source-build":
+                _stage(
+                    events,
+                    name=f"{role}-image",
+                    strategy=strategy,
+                    action=item.action,
+                    operation=lambda: _canonical_or_source_build(
+                        docker,
+                        repo_root=repo_root,
+                        reference=reference,
+                        commit=normalized,
+                        repository=repository,
+                        role=role,
+                        source_only=True,
+                    ),
+                )
+            elif item.action in {"runtime-rebuild", "promote"}:
+                assert current_references is not None
+                base_reference = current_references.get(role)
+                if not base_reference:
+                    raise ReleaseAuthorityError("verified current role image is unavailable")
+                base_image = _existing_release_image(
+                    docker,
+                    base_reference,
+                    commit=auto_plan.current_commit if auto_plan is not None else normalized,
+                    repository=repository,
+                    role=role,
+                )
+                if base_image is None:
+                    raise ReleaseAuthorityError("verified current role image is unavailable")
+                dockerfile = (
+                    _backend_runtime_dockerfile()
+                    if item.action == "runtime-rebuild"
+                    else _promotion_dockerfile(role)
+                )
+                _stage(
+                    events,
+                    name=f"{role}-image",
+                    strategy=strategy,
+                    action=item.action,
+                    operation=lambda: _build_from_verified_role_image(
+                        docker,
+                        repo_root=repo_root,
+                        reference=reference,
+                        base_reference=base_reference,
+                        commit=normalized,
+                        repository=repository,
+                        role=role,
+                        dockerfile=dockerfile,
+                    ),
+                )
+            elif item.action == "reuse":
+                raise ReleaseAuthorityError("verified target role image is unavailable")
+            else:
+                raise ReleaseAuthorityError("auto release role action is invalid")
+            image = _stage(
+                events,
+                name=f"{role}-image-validate",
+                strategy=strategy,
+                action="validate",
+                operation=lambda: _image_record(docker, reference),
             )
+            _validate_release_image(image, commit=normalized, repository=repository, role=role)
         images[role] = image
 
     images["backend"] = _require_sandbox_executor_image(
@@ -1075,7 +1550,13 @@ def deploy_clean_commit(
             or _manual_frontend_container_id(current_frontend) != manual_frontend_id
         ):
             raise ReleaseAuthorityError("manual frontend changed before removal")
-        _run([*docker, "container", "rm", "-f", manual_frontend_id])
+        _stage(
+            events,
+            name="manual-frontend-removal",
+            strategy=strategy,
+            action="remove",
+            operation=lambda: _run([*docker, "container", "rm", "-f", manual_frontend_id]),
+        )
 
     compose_environment = [
         f"AI_PLATFORM_IMAGE={refs['backend']}",
@@ -1094,28 +1575,39 @@ def deploy_clean_commit(
         for path in selection.absolute_paths
         for argument in ("-f", str(path))
     ]
-    _run(
-        [
-            *compose_command,
-            "compose",
-            "-p",
-            COMPOSE_PROJECT,
-            "--env-file",
-            str(env_file.resolve()),
-            *compose_file_args,
-            "up",
-            "-d",
-            "--no-build",
-        ],
-        cwd=selection.absolute_paths[0].parent,
+    _stage(
+        events,
+        name="compose-recreate",
+        strategy=strategy,
+        action="converge",
+        operation=lambda: _run(
+            [
+                *compose_command,
+                "compose",
+                "-p",
+                COMPOSE_PROJECT,
+                "--env-file",
+                str(env_file.resolve()),
+                *compose_file_args,
+                "up",
+                "-d",
+                "--no-build",
+            ],
+            cwd=selection.absolute_paths[0].parent,
+        ),
     )
-    return {
+    result = {
         "commit": normalized,
         "images": refs,
         "sandbox_executor_image": _immutable_sandbox_executor_reference(images["backend"]),
         "compose_file": str(selection.absolute_paths[0]),
         "compose_files": [str(path) for path in selection.absolute_paths],
+        "strategy": strategy,
+        "stages": events,
     }
+    if auto_plan is not None:
+        result["plan"] = _plan_as_dict(auto_plan)
+    return result
 
 
 def deploy_main_commit(
@@ -1128,30 +1620,90 @@ def deploy_main_commit(
     expected_manual_frontend_image: str | None = None,
     expected_manual_frontend_image_id: str | None = None,
     compose_files: Sequence[str | Path] | None = None,
+    strategy: str = "canonical",
 ) -> dict[str, Any]:
     """Deploy and verify an exact fetched main commit from an isolated checkout."""
+    if strategy not in {"canonical", "auto"}:
+        raise ReleaseAuthorityError("release strategy is invalid")
     normalized = _normalize_commit(commit)
     checkout = materialize_main_checkout(release_root, normalized)
-    deployment = deploy_clean_commit(
-        checkout,
-        normalized,
-        docker_cmd=docker_cmd,
-        env_file=env_file,
-        replace_known_manual_frontend=replace_known_manual_frontend,
-        expected_manual_frontend_image=expected_manual_frontend_image,
-        expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-        compose_files=compose_files,
-    )
-    parity = collect_live_parity(
-        checkout,
-        normalized,
-        docker_cmd=docker_cmd,
-        compose_files=compose_files,
-    )
-    if parity.get("verified") is not True:
-        mismatches = parity.get("mismatches")
-        detail = ", ".join(str(item) for item in mismatches) if isinstance(mismatches, list) else "unknown"
-        raise ReleaseAuthorityError(f"deployed release parity failed: {detail}")
+    if strategy == "canonical":
+        deployment = deploy_clean_commit(
+            checkout,
+            normalized,
+            docker_cmd=docker_cmd,
+            env_file=env_file,
+            replace_known_manual_frontend=replace_known_manual_frontend,
+            expected_manual_frontend_image=expected_manual_frontend_image,
+            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
+            compose_files=compose_files,
+        )
+        parity = collect_live_parity(
+            checkout,
+            normalized,
+            docker_cmd=docker_cmd,
+            compose_files=compose_files,
+        )
+        if parity.get("verified") is not True:
+            mismatches = parity.get("mismatches")
+            detail = ", ".join(str(item) for item in mismatches) if isinstance(mismatches, list) else "unknown"
+            raise ReleaseAuthorityError(f"deployed release parity failed: {detail}")
+    else:
+        events: list[dict[str, Any]] = []
+        assert_clean_commit(checkout, normalized)
+        target_selection = resolve_compose_files(checkout, compose_files)
+        docker = _docker_base(docker_cmd)
+        current = _stage(
+            events,
+            name="current-runtime-provenance",
+            strategy=strategy,
+            action="verify",
+            operation=lambda: _verified_current_runtime(
+                docker,
+                target_selection,
+                docker_cmd=docker_cmd,
+            ),
+        )
+        plan = _stage(
+            events,
+            name="runtime-diff-classification",
+            strategy=strategy,
+            action="plan",
+            operation=lambda: _auto_release_plan(checkout, normalized, current["commit"]),
+        )
+        deployment = deploy_clean_commit(
+            checkout,
+            normalized,
+            docker_cmd=docker_cmd,
+            env_file=env_file,
+            replace_known_manual_frontend=replace_known_manual_frontend,
+            expected_manual_frontend_image=expected_manual_frontend_image,
+            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
+            compose_files=compose_files,
+            strategy=strategy,
+            auto_plan=plan,
+            current_references=current["references"],
+            stage_events=events,
+        )
+
+        def final_parity() -> dict[str, Any]:
+            report = collect_live_parity(
+                checkout,
+                normalized,
+                docker_cmd=docker_cmd,
+                compose_files=compose_files,
+            )
+            if report.get("verified") is not True:
+                raise ReleaseAuthorityError("deployed release parity failed")
+            return report
+
+        parity = _stage(
+            events,
+            name="final-parity",
+            strategy=strategy,
+            action="verify",
+            operation=final_parity,
+        )
     return {
         "commit": normalized,
         "checkout": str(checkout),
@@ -1205,6 +1757,12 @@ def main() -> int:
     deploy_main.add_argument("--expected-manual-frontend-image")
     deploy_main.add_argument("--expected-manual-frontend-image-id")
     deploy_main.add_argument(
+        "--strategy",
+        choices=("auto", "canonical"),
+        default="auto",
+        help="Role-specific release strategy; auto reuses verified current provenance",
+    )
+    deploy_main.add_argument(
         "--compose-file",
         dest="compose_files",
         action="append",
@@ -1255,6 +1813,7 @@ def main() -> int:
                     expected_manual_frontend_image=args.expected_manual_frontend_image,
                     expected_manual_frontend_image_id=args.expected_manual_frontend_image_id,
                     compose_files=args.compose_files,
+                    strategy=args.strategy,
                 ),
                 None,
             )
@@ -1268,7 +1827,11 @@ def main() -> int:
             _write_json(report, args.output)
             return 0 if report["verified"] else 1
     except ReleaseAuthorityError as exc:
-        _write_json({"verified": False, "error": str(exc), "command": args.command}, None)
+        payload: dict[str, Any] = {"verified": False, "error": str(exc), "command": args.command}
+        stage_events = getattr(exc, "stage_events", None)
+        if isinstance(stage_events, tuple):
+            payload["stages"] = list(stage_events)
+        _write_json(payload, None)
         return 2
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
         _write_json(

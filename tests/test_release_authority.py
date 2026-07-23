@@ -2590,3 +2590,360 @@ def test_release_authority_cli_exposes_git_native_main_commit_deploy():
     assert "--repo-root" not in help_text
     assert "--commit" in help_text
     assert "--compose-file" in help_text
+    assert "--strategy" in help_text
+
+
+@pytest.mark.parametrize(
+    ("paths", "backend", "frontend", "no_runtime_change"),
+    [
+        (["pyproject.toml"], ("dependency", "canonical-build"), ("unchanged", "promote"), False),
+        (["app/main.py"], ("source", "runtime-rebuild"), ("unchanged", "promote"), False),
+        (["frontend/web/pnpm-lock.yaml"], ("unchanged", "promote"), ("dependency", "canonical-build"), False),
+        (["frontend/web/src/App.tsx"], ("unchanged", "promote"), ("source", "source-build"), False),
+        (["deploy/ai-platform/docker-compose.yml"], ("unchanged", "promote"), ("unchanged", "promote"), True),
+    ],
+)
+def test_auto_strategy_classifies_role_changes_and_no_runtime_plan(
+    paths,
+    backend,
+    frontend,
+    no_runtime_change,
+):
+    plan = release_authority.build_auto_release_plan(
+        "1" * 40,
+        "2" * 40,
+        release_authority.classify_runtime_changes(paths),
+    )
+
+    assert [(item.change_kind, item.action) for item in plan.roles] == [backend, frontend]
+    assert plan.no_runtime_change is no_runtime_change
+
+
+def test_dockerfiles_install_dependencies_before_source_and_provenance_layers():
+    backend = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    frontend = (ROOT / "frontend" / "web" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert backend.index("COPY pyproject.toml") < backend.index("pip install --no-cache-dir -r")
+    assert backend.index("pip install --no-cache-dir -r") < backend.index("COPY app /app/app")
+    assert backend.index("COPY app /app/app") < backend.index("LABEL ai-platform.source-commit")
+    assert frontend.index("pnpm install --frozen-lockfile") < frontend.index("COPY frontend/web/src")
+    assert frontend.index("COPY frontend/web/src") < frontend.index("corepack pnpm run ci:verify")
+
+
+def _configure_auto_deploy(monkeypatch, tmp_path, *, current, target, target_present=False):
+    _write_compose_files(tmp_path)
+    commands: list[tuple[list[str], dict]] = []
+    built: set[str] = set()
+    current_refs = build_image_references(current)
+    target_refs = build_image_references(target)
+
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: target)
+    monkeypatch.setattr("tools.release_authority._git", lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n")
+
+    def fake_image_record(docker, image):
+        if image in target_refs.values() and not (target_present or image in built):
+            raise subprocess.CalledProcessError(1, [*docker, "image", "inspect", image])
+        if image in target_refs.values():
+            commit = target
+        elif image in current_refs.values():
+            commit = current
+        else:
+            raise AssertionError(f"unexpected image lookup: {image}")
+        role = "frontend" if "frontend" in image else "backend"
+        return {
+            "id": "sha256:frontend" if role == "frontend" else SANDBOX_IMAGE_ID,
+            "labels": _published_image_labels(commit, role),
+        }
+
+    def fake_run(command, **kwargs):
+        command = list(command)
+        commands.append((command, kwargs))
+        if len(command) >= 3 and command[-3:-1] == ["container", "inspect"]:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
+        if "build" in command:
+            built.add(command[command.index("-t") + 1])
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._image_record", fake_image_record)
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+    return commands, current_refs
+
+
+def test_auto_backend_source_only_uses_runtime_rebuild_without_dependency_commands(monkeypatch, tmp_path):
+    current = "1" * 40
+    target = "2" * 40
+    commands, current_refs = _configure_auto_deploy(
+        monkeypatch, tmp_path, current=current, target=target
+    )
+    plan = release_authority.build_auto_release_plan(
+        current,
+        target,
+        release_authority.classify_runtime_changes(["app/main.py"]),
+    )
+
+    deployment = deploy_clean_commit(
+        tmp_path,
+        target,
+        docker_cmd="docker",
+        env_file=tmp_path / ".env",
+        replace_known_manual_frontend=False,
+        strategy="auto",
+        auto_plan=plan,
+        current_references=current_refs,
+    )
+
+    builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
+    backend_runtime = next(kwargs["input"] for command, kwargs in builds if "COPY app /app/app" in kwargs.get("input", ""))
+    assert not any(token in backend_runtime.lower() for token in ("apt", "pip", "pnpm"))
+    assert all("frontend/web/Dockerfile" not in command for command, _ in builds)
+    assert deployment["plan"]["roles"][0]["action"] == "runtime-rebuild"
+    assert any(event["action"] == "runtime-rebuild" for event in deployment["stages"])
+
+
+def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_path):
+    current = "3" * 40
+    target = "4" * 40
+    commands, current_refs = _configure_auto_deploy(
+        monkeypatch, tmp_path, current=current, target=target
+    )
+    plan = release_authority.build_auto_release_plan(
+        current,
+        target,
+        release_authority.classify_runtime_changes(["pyproject.toml"]),
+    )
+
+    deploy_clean_commit(
+        tmp_path,
+        target,
+        docker_cmd="docker",
+        env_file=tmp_path / ".env",
+        replace_known_manual_frontend=False,
+        strategy="auto",
+        auto_plan=plan,
+        current_references=current_refs,
+    )
+
+    builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
+    assert any(command[command.index("-f") + 1] == "Dockerfile" for command, _ in builds)
+    assert all("frontend/web/Dockerfile" not in command for command, _ in builds)
+    promoted_frontend = next(kwargs["input"] for command, kwargs in builds if "frontend" in command[command.index("-t") + 1])
+    assert "ai-platform-build-provenance.json" in promoted_frontend
+
+
+def test_auto_no_runtime_change_promotes_roles_without_role_builds(monkeypatch, tmp_path):
+    current = "5" * 40
+    target = "6" * 40
+    commands, current_refs = _configure_auto_deploy(
+        monkeypatch, tmp_path, current=current, target=target
+    )
+    plan = release_authority.build_auto_release_plan(
+        current,
+        target,
+        release_authority.classify_runtime_changes(["docs/operations/runbook.md"]),
+    )
+
+    deployment = deploy_clean_commit(
+        tmp_path,
+        target,
+        docker_cmd="docker",
+        env_file=tmp_path / ".env",
+        replace_known_manual_frontend=False,
+        strategy="auto",
+        auto_plan=plan,
+        current_references=current_refs,
+    )
+
+    builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
+    assert all(command[command.index("-f") + 1] == "-" for command, _ in builds)
+    assert {event["action"] for event in deployment["stages"] if event["stage"].endswith("-image")} == {"promote"}
+    assert deployment["plan"]["no_runtime_change"] is True
+
+
+def test_auto_promote_rewrites_target_labels_and_embedded_markers():
+    backend = release_authority._promotion_dockerfile("backend")
+    frontend = release_authority._promotion_dockerfile("frontend")
+
+    for label in (
+        "ai-platform.source-commit=$AI_PLATFORM_BUILD_COMMIT",
+        "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
+        "ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",
+    ):
+        assert label in backend
+        assert label in frontend
+    assert "/app/.ai-platform-source-revision" in backend
+    assert "/app/.ai-platform-source-snapshot.json" in backend
+    assert "ai-platform-build-provenance.json" in frontend
+    assert "${AI_PLATFORM_BUILD_COMMIT}" in frontend
+
+
+def test_invalid_current_runtime_provenance_fails_before_mutation(monkeypatch, tmp_path):
+    current = "7" * 40
+    main, _ = _write_compose_files(tmp_path)
+    selection = release_authority.resolve_compose_files(tmp_path, [COMPOSE_RELATIVE_PATH])
+    commands: list[list[str]] = []
+    config_files = _compose_config_value(main)
+
+    def fake_run(command, **kwargs):
+        command = list(command)
+        commands.append(command)
+        role = command[-1].removeprefix("ai-platform-")
+        payload = _owned_container_payload(role, main.parent, config_files)
+        payload[0]["State"] = {"Running": True}
+        payload[0]["Config"]["Labels"].update(
+            {
+                "ai-platform.source-commit": current,
+                "ai-platform.source-dirty": "false",
+            }
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+    monkeypatch.setattr("tools.release_authority.collect_live_parity", lambda *args, **kwargs: {"verified": False})
+
+    with pytest.raises(ReleaseAuthorityError, match="current runtime provenance is invalid"):
+        release_authority._verified_current_runtime(["docker"], selection, docker_cmd="docker")
+
+    assert all("build" not in command and "compose" not in command for command in commands)
+
+
+def test_timeout_stage_is_bounded_and_redacted(monkeypatch, tmp_path):
+    seen: dict[str, object] = {}
+    events: list[dict] = []
+
+    def timeout_run(command, **kwargs):
+        seen["timeout"] = kwargs["timeout"]
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output="private-marker", stderr="private-marker")
+
+    monkeypatch.setattr("tools.release_authority._run", timeout_run)
+    with pytest.raises(ReleaseAuthorityError, match="^release stage failed: backend-image$") as exc_info:
+        release_authority._stage(
+            events,
+            name="backend-image",
+            strategy="auto",
+            action="runtime-rebuild",
+            operation=lambda: release_authority._canonical_or_source_build(
+                ["docker"],
+                repo_root=tmp_path,
+                reference="ai-platform:" + "8" * 40,
+                commit="8" * 40,
+                repository=AUTHORITATIVE_REPOSITORY,
+                role="backend",
+                source_only=False,
+            ),
+        )
+
+    assert seen["timeout"] == release_authority.BACKEND_STAGE_TIMEOUT_SECONDS
+    assert exc_info.value.stage_events[-1]["status"] == "failed"
+    assert "private-marker" not in str(exc_info.value)
+
+
+def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, tmp_path):
+    target = "9" * 40
+    commands, references = _configure_auto_deploy(
+        monkeypatch,
+        tmp_path,
+        current=target,
+        target=target,
+        target_present=True,
+    )
+    plan = release_authority.build_auto_release_plan(
+        target,
+        target,
+        release_authority.classify_runtime_changes([]),
+    )
+
+    for _ in range(2):
+        deploy_clean_commit(
+            tmp_path,
+            target,
+            docker_cmd="docker",
+            env_file=tmp_path / ".env",
+            replace_known_manual_frontend=False,
+            strategy="auto",
+            auto_plan=plan,
+            current_references=references,
+        )
+
+    assert not any("build" in command for command, _ in commands)
+    assert sum("compose" in command for command, _ in commands) == 2
+
+
+def test_legacy_deploy_cli_dispatch_does_not_read_auto_strategy(monkeypatch, capsys, tmp_path):
+    observed = {}
+
+    def fake_deploy(repo_root, commit, **kwargs):
+        observed["repo_root"] = repo_root
+        observed["commit"] = commit
+        observed["kwargs"] = kwargs
+        return {"commit": commit}
+
+    monkeypatch.setattr("tools.release_authority.deploy_clean_commit", fake_deploy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py",
+            "deploy",
+            "--repo-root",
+            str(tmp_path),
+            "--commit",
+            "a" * 40,
+            "--env-file",
+            str(tmp_path / ".env"),
+        ],
+    )
+
+    assert release_authority.main() == 0
+    assert observed["repo_root"] == tmp_path
+    assert observed["commit"] == "a" * 40
+    assert "strategy" not in observed["kwargs"]
+    assert json.loads(capsys.readouterr().out) == {"commit": "a" * 40}
+
+
+def test_deploy_main_cli_forwards_explicit_auto_strategy(monkeypatch, capsys, tmp_path):
+    observed = {}
+
+    def fake_deploy_main(release_root, commit, **kwargs):
+        observed["release_root"] = release_root
+        observed["commit"] = commit
+        observed["kwargs"] = kwargs
+        return {"commit": commit}
+
+    monkeypatch.setattr("tools.release_authority.deploy_main_commit", fake_deploy_main)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py",
+            "deploy-main-commit",
+            "--release-root",
+            str(tmp_path / "releases"),
+            "--commit",
+            "b" * 40,
+            "--env-file",
+            str(tmp_path / ".env"),
+            "--strategy",
+            "auto",
+        ],
+    )
+
+    assert release_authority.main() == 0
+    assert observed["release_root"] == tmp_path / "releases"
+    assert observed["commit"] == "b" * 40
+    assert observed["kwargs"]["strategy"] == "auto"
+    assert json.loads(capsys.readouterr().out) == {"commit": "b" * 40}
+
+
+def test_backend_runtime_rebuild_clears_current_subjects_before_target_copies():
+    dockerfile = release_authority._backend_runtime_dockerfile()
+
+    cleanup = "RUN rm -rf /app/app /app/tools /app/scripts /app/skills /app/docs/release-evidence"
+    assert cleanup in dockerfile
+    assert dockerfile.index(cleanup) < dockerfile.index("COPY app /app/app")
+    assert dockerfile.index(cleanup) < dockerfile.index("COPY tools /app/tools")
+    assert dockerfile.index(cleanup) < dockerfile.index("COPY scripts /app/scripts")
+    assert dockerfile.index(cleanup) < dockerfile.index("COPY skills /app/skills")
+    assert dockerfile.index(cleanup) < dockerfile.index("COPY docs/release-evidence /app/docs/release-evidence")
+    assert "/app/docker-entrypoint.sh" in dockerfile.split("COPY app /app/app", 1)[0]
+    assert "/app/.ai-platform-source-snapshot.json" in dockerfile.split("COPY app /app/app", 1)[0]
+    assert not any(token in dockerfile.lower() for token in ("apt", "pip", "pnpm"))

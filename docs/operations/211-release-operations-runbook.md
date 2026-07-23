@@ -48,6 +48,7 @@ cd <release-root>
 python3 tools/release_authority.py deploy-main-commit \
   --release-root <release-root> \
   --commit <40-lowercase-hex-commit> \
+  --strategy auto \
   --docker-cmd "sudo -n docker" \
   --env-file <release-root>/deploy/ai-platform/.env \
   --compose-file deploy/ai-platform/docker-compose.yml \
@@ -80,6 +81,25 @@ work rather than becoming discovery work inside a mutation task.
 
 ## Offline And Runtime-Only Recovery
 
+`--strategy auto` verifies current Compose ownership, role image labels, embedded
+runtime provenance, and the immutable sandbox executor reference before it
+classifies `current-runtime..target`. It then emits compact, redacted per-stage
+strategy/action/wall-time evidence:
+
+- role dependency manifests select that role's canonical build;
+- backend source-only changes select the runtime-only rebase, which copies the
+  exact target source and rewrites source markers without APT, pip, or pnpm;
+- frontend source-only changes use the cached dependency stage and rebuild only
+  the frontend source stage;
+- unchanged roles promote the already verified current role image to exact target
+  labels and embedded provenance; deployment-only changes rebuild neither role;
+- a rerun for the same target and Compose project reuses verified target images,
+  then converges Compose with `--no-build`.
+
+The following established offline and runtime-only recovery safeguards remain
+part of that same release-authority path; they do not authorize an alternate
+Compose deployment:
+
 - Do not make a smoke check depend on Docker Hub. For sandbox cancel probes,
   prefer an already-local image such as `ai-platform:local` via
   `--cancel-image ai-platform:local`.
@@ -87,13 +107,25 @@ work rather than becoming discovery work inside a mutation task.
   variables as build arguments. When dependencies have not changed and package
   download fails, rebuild the local runtime image from the current or backup
   image by copying only `pyproject.toml`, `app/`, `skills/`, and
-  `docker-entrypoint.sh`, then recreate with `--no-build`.
+  `docker-entrypoint.sh`, then recreate with `--no-build`. The auto backend
+  runtime rebase additionally clears and replaces every target runtime subject
+  before it updates exact provenance, so deleted target files cannot survive.
 - Runtime-only images prepared from a Git archive or Windows snapshot must run
   `chmod +x /app/docker-entrypoint.sh` before container recreation.
 - If repeated runtime-only rebases fail with Docker `max depth exceeded`, stop
   stacking layers. Flatten the current healthy container with `docker export`
   and `docker import`, build once from that flat base, and re-run provenance,
   health, and target-path verification.
+
+The role build stages are bounded at 90 seconds for backend and 180 seconds for
+frontend. Treat a timeout or failed stage as a redacted authority failure; retain
+the compact stage evidence and do not expose the environment file or raw command
+output. The existing external lease/fencing gate remains the only overlap guard.
+
+The local workstation does not provide Docker. The real-211 benchmark gate must
+observe backend-only auto release below 90 seconds, frontend-only below 180
+seconds, and deployment-only change with zero role builds before those timings
+are claimed as passed.
 
 ## Terminal Evidence
 
