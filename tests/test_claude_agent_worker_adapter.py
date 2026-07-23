@@ -3232,9 +3232,15 @@ async def test_sandbox_required_general_chat_bridges_agent_event_to_keyword_work
 
     assert result.status == "succeeded"
     assert [event["event_type"] for event in received_events] == [
-        "skills_staged",
+        "intent_detected",
+        "skill_selected",
+        "run_started",
         "runtime_container_started",
     ]
+    assert all(
+        event["payload"] == {"visible_to_user": True, "severity": "info"}
+        for event in received_events[:-1]
+    )
     assert received_events[-1] == {
         "event_type": "runtime_container_started",
         "stage": "runtime",
@@ -3280,6 +3286,59 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
     assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
     assert result.result["sdk_used"] is True
     assert result.result["delegate_used"] is False
+
+
+@pytest.mark.asyncio
+async def test_skill_progress_is_absent_without_skills_and_has_no_false_completion_on_failure(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter()
+
+    async def no_files(payload, workspace):
+        return []
+
+    events = []
+
+    async def event_sink(**event):
+        events.append(event)
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    original_allowed_skill_names = claude_agent_worker._allowed_skill_names
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker._allowed_skill_names",
+        lambda *_args, **_kwargs: [],
+    )
+
+    prepared, failure = await adapter._prepare_sdk_run(
+        payload(file_ids=[]),
+        event_sink=event_sink,
+    )
+
+    assert failure is None
+    assert prepared is not None
+    assert prepared.staged_skill_names == []
+    assert events == []
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker._allowed_skill_names",
+        original_allowed_skill_names,
+    )
+
+    def fail_stage(*_args, **_kwargs):
+        raise RuntimeError("staging failed")
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.SkillStager.stage_skills", fail_stage)
+    with pytest.raises(RuntimeError, match="staging failed"):
+        await adapter._prepare_sdk_run(
+            payload(file_ids=[]),
+            event_sink=event_sink,
+            workspace=tmp_path / "failed-staging" / "run",
+            workspace_root=tmp_path / "failed-staging",
+        )
+
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -3330,7 +3389,12 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
     assert exc_info.value is cancellation
     assert runtime_submit_calls == 1
     assert runtime_continued is False
-    assert received_event_types == ["skills_staged", "assistant_delta"]
+    assert received_event_types == [
+        "intent_detected",
+        "skill_selected",
+        "run_started",
+        "assistant_delta",
+    ]
 
 
 @pytest.mark.asyncio
@@ -3412,6 +3476,7 @@ async def test_direct_general_chat_sdk_path_removes_file_tools_but_keeps_artifac
 ):
     current_settings = settings(tmp_path, sdk_enabled=True)
     captured = {}
+    events = []
 
     async def fake_run_claude_agent_sdk(**kwargs):
         captured.update(kwargs)
@@ -3445,8 +3510,12 @@ async def test_direct_general_chat_sdk_path_removes_file_tools_but_keeps_artifac
         fake_run_claude_agent_sdk,
     )
 
+    async def event_sink(**event):
+        events.append(event)
+
     result = await adapter._try_run_sdk(
         current_payload,
+        event_sink=event_sink,
         workspace=tmp_path / "workspaces" / "default" / "run_1",
         file_names=["book.xlsx"],
         staged_skill_names=[],
@@ -3464,6 +3533,14 @@ async def test_direct_general_chat_sdk_path_removes_file_tools_but_keeps_artifac
     assert "stage_context_file_to_workspace" not in captured["prompt"]
     assert "read_run_artifact" in captured["prompt"]
     assert "stage_run_artifact_to_workspace" in captured["prompt"]
+    assert events == [
+        {
+            "event_type": "run_started",
+            "stage": "runtime",
+            "message": "SDK runtime dispatch is active",
+            "payload": {"visible_to_user": True, "severity": "info"},
+        }
+    ]
 
 
 @pytest.mark.asyncio

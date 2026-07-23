@@ -286,7 +286,7 @@ def _ordinary_event_details(
     severity: str = "info",
     event_type: str | None = None,
     error_code: str | None = None,
-) -> dict[str, dict[str, str | None]]:
+) -> dict[str, dict[str, object]]:
     return {
         raw_event_type: {
             "event_type": event_type or raw_event_type,
@@ -301,7 +301,7 @@ def _ordinary_event_details(
     }
 
 
-PUBLIC_ORDINARY_EVENT_DETAILS: dict[str, dict[str, str | None]] = {}
+PUBLIC_ORDINARY_EVENT_DETAILS: dict[str, dict[str, object]] = {}
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
     _ordinary_event_details(
         ("queued",),
@@ -436,7 +436,15 @@ PUBLIC_ORDINARY_EVENT_DETAILS.update(
 )
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
     _ordinary_event_details(
-        ("intent_detected", "intent_confirmed"),
+        ("intent_detected",),
+        stage="preparation",
+        message="正在准备受控运行请求。",
+        status="running",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("intent_confirmed",),
         stage="planning",
         message="已确认处理方式，正在准备下一步。",
         status="completed",
@@ -540,6 +548,17 @@ PUBLIC_ORDINARY_GENERIC_EVENT_DETAIL = {
     "error_code": None,
 }
 
+PUBLIC_ORDINARY_HEARTBEAT_EVENT_DETAIL = {
+    "event_type": "heartbeat",
+    "stage": "liveness",
+    "message": "任务仍在运行。",
+    "category": "liveness",
+    "status": "running",
+    "severity": "info",
+    "error_code": None,
+    "meaningful": False,
+}
+
 # Terminal envelopes retain a stable event class, but their user-facing text
 # and code remain wholly owned by ``public_terminal_projection``.
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
@@ -602,26 +621,35 @@ def executor_result_schema_version(run: dict[str, object]) -> str:
     )
 
 
-def _ordinary_event_payload(detail: dict[str, str | None]) -> dict[str, object]:
+def _ordinary_event_payload(detail: dict[str, object]) -> dict[str, object]:
     if detail["status"] in {"blocked", "failed"}:
         return {}
-    return {
-        "activity": {
-            "category": str(detail["category"]),
-            "status": str(detail["status"]),
-        }
+    activity: dict[str, object] = {
+        "category": str(detail["category"]),
+        "status": str(detail["status"]),
     }
+    if detail.get("meaningful") is False:
+        activity["meaningful"] = False
+    return {"activity": activity}
 
 
 def _ordinary_run_event_response(run_id: str, row: dict[str, object]) -> dict[str, object]:
     """Build the complete ordinary-user event envelope from fixed event policy."""
     raw_event_type = str(row.get("event_type") or "")
+    raw_payload = row.get("payload_json")
+    if not isinstance(raw_payload, dict):
+        raw_payload = {}
     terminal_projection = None
     if raw_event_type in {"error", "run_failed"}:
         terminal_projection = public_terminal_projection("failed", row.get("error_code"))
     elif raw_event_type in {"run_cancelled", "run_canceled"}:
         terminal_projection = public_terminal_projection("cancelled")
-    detail = PUBLIC_ORDINARY_EVENT_DETAILS.get(raw_event_type, PUBLIC_ORDINARY_GENERIC_EVENT_DETAIL)
+    detail: dict[str, object] = PUBLIC_ORDINARY_EVENT_DETAILS.get(
+        raw_event_type,
+        PUBLIC_ORDINARY_GENERIC_EVENT_DETAIL,
+    )
+    if raw_event_type == "run_started" and raw_payload.get("heartbeat") is True:
+        detail = PUBLIC_ORDINARY_HEARTBEAT_EVENT_DETAIL
     payload = _ordinary_event_payload(detail)
     message = str(detail["message"])
     error_code = detail["error_code"]

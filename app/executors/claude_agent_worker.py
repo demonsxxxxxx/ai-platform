@@ -92,6 +92,25 @@ _WORD_MAIN_DOCUMENT_CONTENT_TYPE = (
 )
 
 
+async def _emit_public_progress_event(
+    event_sink: ExecutorEventSink | None,
+    *,
+    event_type: str,
+    stage: str,
+    message: str,
+) -> None:
+    """Emit one fixed public-safe progress fact without executor-owned detail."""
+
+    if event_sink is None:
+        return
+    await event_sink(
+        event_type=event_type,
+        stage=stage,
+        message=message,
+        payload={"visible_to_user": True, "severity": "info"},
+    )
+
+
 @dataclass(frozen=True)
 class _AuthorizedAttachmentMetadata:
     """Authorized attachment metadata that never requires reading object bytes."""
@@ -1074,17 +1093,12 @@ class ClaudeAgentWorkerAdapter:
             workspace=resolved_workspace,
             skills=selected_skills,
         )
-        if event_sink is not None:
-            await event_sink(
-                event_type="skills_staged",
+        if selected_skills:
+            await _emit_public_progress_event(
+                event_sink,
+                event_type="skill_selected",
                 stage="skills",
-                message="Platform Skills staged for Claude Agent SDK",
-                payload={
-                    "allowed_skills": allowed_skill_names,
-                    "staged_skills": staged_skill_names,
-                    "visible_to_user": False,
-                    "severity": "info",
-                },
+                message="Authorized Skills are ready",
             )
 
         prompt_context_pack = self._executor_context_pack(payload)
@@ -1202,6 +1216,12 @@ class ClaudeAgentWorkerAdapter:
             async def runtime_event_sink(agent_event):
                 await event_sink(**agent_event_to_executor_event(agent_event))
 
+        await _emit_public_progress_event(
+            event_sink,
+            event_type="run_started",
+            stage="runtime",
+            message="Sandbox runtime dispatch is active",
+        )
         runtime_result = await _submit_sandbox_runtime(
             runtime,
             request,
@@ -1494,6 +1514,12 @@ class ClaudeAgentWorkerAdapter:
         if not settings.claude_agent_sdk_enabled:
             return None
         sandbox_required = _ordinary_run_requires_sandbox(payload)
+        await _emit_public_progress_event(
+            event_sink,
+            event_type="intent_detected",
+            stage="planning",
+            message="Run preparation started",
+        )
         prepared, preflight_failure = await self._prepare_sdk_run(
             payload,
             event_sink=event_sink,
@@ -1771,6 +1797,12 @@ class ClaudeAgentWorkerAdapter:
             if context_retrieval is not None and context_retrieval_identity is not None:
                 sdk_kwargs["context_retrieval"] = context_retrieval
                 sdk_kwargs["context_retrieval_identity"] = context_retrieval_identity
+            await _emit_public_progress_event(
+                event_sink,
+                event_type="run_started",
+                stage="runtime",
+                message="SDK runtime dispatch is active",
+            )
             return await run_claude_agent_sdk(**sdk_kwargs)
         except ClaudeAgentSdkNotAvailable as exc:
             return type("SdkUnavailable", (), {
