@@ -1070,6 +1070,249 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
     assert "旧的部分输出" not in history_response.text
 
 
+def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_reload(monkeypatch):
+    raw_terms = (
+        "command=render-report --private-param=amber",
+        "provider-model=solstice-3 sdk diagnostic",
+        "reasoning-draft request-id=orchid digest=0123456789abcdef",
+        "url=https://executor.internal.example.invalid/v1",
+    )
+    run = {
+        "id": "run_a",
+        "session_id": "ses_a",
+        "trace_id": "trace_run_a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "result_json": {
+            "message": raw_terms[0],
+            "sdk_error": raw_terms[1],
+            "error": {"message": raw_terms[2]},
+        },
+        "error_code": "claude_agent_sdk_runtime_error",
+        "error_message": raw_terms[3],
+        "finished_at": "2026-07-23T00:00:00Z",
+    }
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run_a")
+        return run
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "evt-terminal",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 1,
+                "event_type": "error",
+                "stage": "executor",
+                "message": raw_terms[0],
+                "severity": "error",
+                "visible_to_user": True,
+                "error_code": "claude_agent_sdk_runtime_error",
+                "payload_json": {
+                    "result": {
+                        "message": raw_terms[0],
+                        "sdk_error": raw_terms[1],
+                        "error": {"message": raw_terms[2]},
+                    },
+                    "error_message": raw_terms[3],
+                    "visible_to_user": True,
+                },
+                "created_at": "2026-07-23T00:00:00Z",
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.get_settings",
+        lambda: SimpleNamespace(run_event_stream_max_heartbeats=1),
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        fake_list_run_artifacts,
+    )
+    client = TestClient(create_app())
+
+    stream_response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=auth_headers(),
+    )
+    history_response = client.get(
+        "/api/sessions/ses_a/events?run_id=run_a",
+        headers=auth_headers(),
+    )
+
+    assert stream_response.status_code == 200
+    assert history_response.status_code == 200
+    stream_payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in stream_response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    stream_detail = next(payload for payload in stream_payloads if payload.get("detail_kind") == "failed")
+    history_detail = next(
+        event["data"]
+        for event in history_response.json()["events"]
+        if event["data"].get("detail_kind") == "failed"
+    )
+    assert stream_detail == history_detail
+    assert stream_detail["detail_code"] == "model_service_unavailable"
+    assert stream_detail["message"] == "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
+    for rendered in (stream_response.text, history_response.text):
+        assert all(term not in rendered for term in raw_terms)
+
+
+@pytest.mark.parametrize(
+    ("event_type", "expected_stage", "expected_message"),
+    [
+        ("agent_step_failed", "activity", "当前计划步骤未完成，正在整理可操作错误"),
+        ("subagent_failed", "agent", "协同处理未能完成"),
+    ],
+)
+def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_reload(
+    monkeypatch,
+    event_type,
+    expected_stage,
+    expected_message,
+):
+    raw_terms = (
+        "command=render-report --private-param=amber",
+        "provider-model=solstice-3 sdk diagnostic",
+        "reasoning-draft request-id=orchid digest=0123456789abcdef",
+        "url=https://executor.internal.example.invalid/v1",
+        "qa-file-reviewer",
+        "qa-word-review",
+    )
+    run = {
+        "id": "run_a",
+        "session_id": "ses_a",
+        "trace_id": "trace_run_a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+        "result_json": {},
+        "error_code": None,
+        "error_message": None,
+    }
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run_a")
+        return run
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "evt-step-failed",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 1,
+                "event_type": event_type,
+                "stage": raw_terms[1],
+                "message": raw_terms[0],
+                "severity": "error",
+                "visible_to_user": True,
+                "error_code": raw_terms[2],
+                "payload_json": {
+                    "error": raw_terms[0],
+                    "error_code": raw_terms[1],
+                    "output": raw_terms[2],
+                    "metadata": {
+                        "url": raw_terms[3],
+                        "step_key": raw_terms[4],
+                        "subagent_id": raw_terms[5],
+                    },
+                    "visible_to_user": True,
+                },
+                "created_at": "2026-07-23T00:00:00Z",
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.get_settings",
+        lambda: SimpleNamespace(run_event_stream_max_heartbeats=1),
+    )
+    monkeypatch.setattr("app.routes.lambchat_compat.asyncio.sleep", no_sleep)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        fake_list_run_artifacts,
+    )
+    client = TestClient(create_app())
+
+    stream_response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=auth_headers(),
+    )
+    history_response = client.get(
+        "/api/sessions/ses_a/events?run_id=run_a",
+        headers=auth_headers(),
+    )
+
+    assert stream_response.status_code == 200
+    assert history_response.status_code == 200
+    stream_payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in stream_response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    stream_event = next(payload for payload in stream_payloads if payload.get("event_type") == event_type)
+    history_event = next(
+        event
+        for event in history_response.json()["events"]
+        if event["event_type"] == event_type
+    )
+    assert stream_event["stage"] == expected_stage
+    assert stream_event["payload"] == {}
+    assert stream_event["message"] == expected_message
+    assert history_event["data"]["stage"] == expected_stage
+    assert history_event["payload"] == {}
+    for rendered in (stream_response.text, history_response.text):
+        assert all(term not in rendered for term in raw_terms)
+
+
 @pytest.mark.parametrize(
     ("agent_id", "skill_id", "message", "expected_content"),
     [
@@ -1518,7 +1761,7 @@ def test_lambchat_sse_stream_projects_only_safe_versioned_chat_progress(monkeypa
     assert '"event_type": "run_started"' in response.text
     assert '"event_type": "agent_step_started"' in response.text
     assert "已完成请求准备，正在进入受控执行阶段" in response.text
-    assert "正在处理数据并准备结果" in response.text
+    assert "正在执行受控处理步骤" in response.text
     assert "worker-alpha" not in response.text
     assert "private chain of thought" not in response.text
     assert "/var/lib/private" not in response.text
@@ -1533,13 +1776,12 @@ def test_lambchat_sse_stream_projects_only_safe_versioned_chat_progress(monkeypa
     assert "message fallback must stay hidden" not in response.text
     assert "evt-extra-fields" not in response.text
     assert "delta with untrusted extras" not in response.text
-    assert '"kind": "run"' in response.text
-    assert '"category": "execution"' in response.text
-    assert '"kind": "activity"' in response.text
-    assert '"category": "processing"' in response.text
+    assert '"activity": {"category": "execution", "status": "running"}' in response.text
+    assert '"activity": {"category": "tool", "status": "running"}' in response.text
     assert '"status": "running"' in response.text
-    assert "任务仍在处理中" in response.text
-    assert "正在处理数据并准备结果" in response.text
+    assert '"kind":' not in response.text
+    assert "任务仍在处理中" not in response.text
+    assert "正在执行受控处理步骤" in response.text
     assert '"name": "Bash"' not in response.text
     assert "Bash" not in response.text
     assert "已保存阶段性进度" in response.text
@@ -1558,6 +1800,9 @@ def test_lambchat_sse_rebuilds_permission_cards_for_every_principal(
     user_id,
     roles,
 ):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         assert tenant_id == "default"
         return {
@@ -1611,6 +1856,9 @@ def test_lambchat_sse_rebuilds_permission_cards_for_every_principal(
     async def empty_artifacts(conn, *, tenant_id, run_id):
         return []
 
+    async def empty_user_messages(conn, *, tenant_id, user_id, session_id, run_ids):
+        return []
+
     async def no_sleep(_seconds):
         return None
 
@@ -1626,6 +1874,10 @@ def test_lambchat_sse_rebuilds_permission_cards_for_every_principal(
         fake_get_authorized_run,
     )
     monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
         "app.routes.lambchat_compat.repositories.list_run_events",
         fake_list_run_events,
     )
@@ -1633,14 +1885,41 @@ def test_lambchat_sse_rebuilds_permission_cards_for_every_principal(
         "app.routes.lambchat_compat.repositories.list_run_artifacts",
         empty_artifacts,
     )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        empty_user_messages,
+    )
     client = TestClient(create_app())
 
     response = client.get(
         "/api/chat/sessions/ses_a/stream?run_id=run_a",
         headers=action_headers(user_id=user_id, roles=roles),
     )
+    reload_response = client.get(
+        "/api/sessions/ses_a/events?run_id=run_a",
+        headers=action_headers(user_id=user_id, roles=roles),
+    )
 
     assert response.status_code == 200
+    assert reload_response.status_code == 200
+    stream_payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    stream_card = next(
+        payload["payload"]["tool_permission_card"]
+        for payload in stream_payloads
+        if isinstance(payload.get("payload"), dict)
+        and isinstance(payload["payload"].get("tool_permission_card"), dict)
+    )
+    reload_card = next(
+        event["payload"]["tool_permission_card"]
+        for event in reload_response.json()["events"]
+        if isinstance(event.get("payload"), dict)
+        and isinstance(event["payload"].get("tool_permission_card"), dict)
+    )
+    assert stream_card == reload_card
     assert '"schema_version": "ai-platform.tool-permission-card.v1"' in response.text
     assert '"permission_request_id": "req-a"' in response.text
     assert '"run_id": "run_a"' in response.text
@@ -1732,6 +2011,181 @@ def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monk
         "run_id": "run_a",
         "content": "partial",
     }
+
+
+def test_lambchat_strict_delta_contract_is_shared_by_live_sse_and_exact_reload(monkeypatch):
+    unsafe_terms = (
+        "malformed fallback must stay hidden",
+        "extra-key private payload must stay hidden",
+        "wrong-source private payload must stay hidden",
+        "hidden delta private payload must stay hidden",
+    )
+    run = {
+        "id": "run_a",
+        "session_id": "ses_a",
+        "trace_id": "trace_run_a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "result_json": {},
+        "error_code": "unknown_failure",
+        "error_message": "private terminal diagnostic",
+        "finished_at": "2026-07-23T00:00:00Z",
+    }
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run_a")
+        return run
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        base = {
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "created_at": None,
+        }
+        return [
+            {
+                **base,
+                "id": "evt-valid",
+                "sequence": 1,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "payload_json": {
+                    "delta": "保留的公开进度",
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+            },
+            {
+                **base,
+                "id": "evt-malformed",
+                "sequence": 2,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": unsafe_terms[0],
+                "payload_json": {
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+            },
+            {
+                **base,
+                "id": "evt-extra",
+                "sequence": 3,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "payload_json": {
+                    "delta": unsafe_terms[1],
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                    "private_payload": {"token": "secret"},
+                },
+            },
+            {
+                **base,
+                "id": "evt-wrong-source",
+                "sequence": 4,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "payload_json": {
+                    "delta": unsafe_terms[2],
+                    "source": "executor_safe_looking_source",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+            },
+            {
+                **base,
+                "id": "evt-hidden",
+                "sequence": 5,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "visible_to_user": False,
+                "payload_json": {
+                    "delta": unsafe_terms[3],
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+            },
+        ]
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_user_messages(conn, *, tenant_id, user_id, session_id, run_ids):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        empty_artifacts,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        empty_user_messages,
+    )
+    client = TestClient(create_app())
+
+    stream_response = client.get("/api/chat/sessions/ses_a/stream?run_id=run_a", headers=auth_headers())
+    reload_response = client.get("/api/sessions/ses_a/events?run_id=run_a", headers=auth_headers())
+
+    assert stream_response.status_code == 200
+    assert reload_response.status_code == 200
+    stream_payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in stream_response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    stream_deltas = [payload for payload in stream_payloads if payload.get("projection_kind") == "assistant_delta"]
+    reload_deltas = [
+        event["payload"]
+        for event in reload_response.json()["events"]
+        if event["event_type"] == "message:chunk"
+    ]
+    assert stream_deltas == reload_deltas == [
+        {
+            "projection_version": "ai-platform.chat-public-projection.v1",
+            "projection_kind": "assistant_delta",
+            "event_id": "evt-valid",
+            "sequence": 1,
+            "run_id": "run_a",
+            "content": "保留的公开进度",
+        }
+    ]
+    for rendered in (stream_response.text, reload_response.text):
+        assert all(term not in rendered for term in unsafe_terms)
+        assert "evt-malformed" not in rendered
+        assert "evt-extra" not in rendered
+        assert "evt-wrong-source" not in rendered
+        assert "evt-hidden" not in rendered
+        assert "private_payload" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -1853,7 +2307,8 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         "cancelled" if status == "canceled" else status
     )
     serialized = str(history)
-    assert "正在处理数据并准备结果" in serialized
+    assert "已完成请求准备，正在进入受控执行阶段" in serialized
+    assert "受控处理步骤仍在进行" in serialized
     assert "private chain of thought" not in serialized
     assert "secret token" not in serialized
     assert "/home/private" not in serialized
@@ -2591,7 +3046,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     assert event["event_type"] == "capability_selected"
     assert event["sequence"] == 37
     assert "sequence" not in event["data"]
-    assert event["payload"]["capability_id"] == "document_review"
+    assert event["payload"] == {"activity": {"category": "capability", "status": "completed"}}
     assert event["data"] == {
         "projection_version": "ai-platform.chat-public-projection.v1",
         "event_id": "evt_a",
@@ -2602,7 +3057,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
         "severity": "info",
         "progress_kind": "completed",
         "wait_reason": None,
-        "payload": {"capability_id": "document_review"},
+        "payload": {"activity": {"category": "capability", "status": "completed"}},
         "created_at": None,
         "content": "已加载授权处理能力，下一步将按所选流程分析请求",
         "status": "planning",

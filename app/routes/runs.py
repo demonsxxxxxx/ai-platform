@@ -58,11 +58,14 @@ from app.run_projection import (
     executor_result_schema_version,
     multi_agent_snapshot_from_steps,
     normalize_run_status,
+    ordinary_nonterminal_run_result,
     progress_for_status,
     public_text_or_fallback,
+    public_terminal_projection,
     run_contract_version,
     run_event_response,
     run_step_response,
+    run_step_responses,
 )
 from app.run_provenance import (
     readiness_public_text,
@@ -330,6 +333,22 @@ def _resume_manifest_step(
     }
 
 
+def _ordinary_resume_manifest_step(public_step: dict[str, object]) -> dict[str, object]:
+    payload = public_step.get("payload") if isinstance(public_step.get("payload"), dict) else {}
+    dependencies = payload.get("depends_on") if isinstance(payload.get("depends_on"), list) else []
+    return {
+        "step_id": str(public_step["step_id"]),
+        "step_key": str(public_step["step_id"]),
+        "status": str(public_step["status"]),
+        "title": public_step.get("title"),
+        "role": None,
+        "sequence": int(public_step.get("sequence") or 0),
+        "depends_on": [str(item) for item in dependencies if isinstance(item, str)],
+        "reuse_intent": "reuse_pending" if payload.get("checkpoint_reuse_pending") else "rerun",
+        "source_run_id": None,
+    }
+
+
 def run_resume_manifest_snapshot(
     *,
     run: dict[str, object],
@@ -338,18 +357,23 @@ def run_resume_manifest_snapshot(
     authorized_source_run_ids: set[str] | None = None,
 ) -> dict[str, object]:
     """Return read-only checkpoint reuse intent for a copied run."""
-    raw_terms = readiness_raw_projection_terms(run)
-    manifest_steps = [
-        _resume_manifest_step(
-            row,
-            principal,
-            raw_terms=raw_terms,
-            authorized_source_run_ids=authorized_source_run_ids or set(),
-        )
-        for row in steps
-    ]
-    source_run_ids = sorted({str(item["source_run_id"]) for item in manifest_steps if item.get("source_run_id")})
-    source_run_id = source_run_ids[0] if len(source_run_ids) == 1 else None
+    show_raw_skill = is_ai_admin(principal)
+    if not show_raw_skill:
+        manifest_steps = [_ordinary_resume_manifest_step(step) for step in run_step_responses(steps, principal=principal)]
+        source_run_id = None
+    else:
+        raw_terms = readiness_raw_projection_terms(run)
+        manifest_steps = [
+            _resume_manifest_step(
+                row,
+                principal,
+                raw_terms=raw_terms,
+                authorized_source_run_ids=authorized_source_run_ids or set(),
+            )
+            for row in steps
+        ]
+        source_run_ids = sorted({str(item["source_run_id"]) for item in manifest_steps if item.get("source_run_id")})
+        source_run_id = source_run_ids[0] if len(source_run_ids) == 1 else None
     counts = {
         "total": len(manifest_steps),
         "reuse_pending": sum(1 for item in manifest_steps if item["reuse_intent"] == "reuse_pending"),
@@ -360,23 +384,10 @@ def run_resume_manifest_snapshot(
         "failed": sum(1 for item in manifest_steps if item["status"] == "failed"),
         "cancelled": sum(1 for item in manifest_steps if item["status"] == "cancelled"),
     }
-    run_summary = run_playback_summary(run, principal)
-    if not is_ai_admin(principal):
-        raw_error_message = run_summary.get("error_message")
-        error_fallback = (
-            "run_failed"
-            if raw_error_message and normalize_run_status(str(run["status"])) == "failed"
-            else ""
-        )
-        run_summary["error_message"] = readiness_public_text(
-            raw_error_message,
-            fallback=error_fallback,
-            raw_terms=raw_terms,
-        )
     resume_enabled = counts["reuse_pending"] > 0
     return {
         "contract_version": RUN_RESUME_MANIFEST_CONTRACT_VERSION,
-        "run": run_summary,
+        "run": run_playback_summary(run, principal),
         "source_run_id": source_run_id,
         "resume_enabled": resume_enabled,
         "reason": "reuse_pending" if resume_enabled else "no_reuse_pending",
@@ -1774,15 +1785,16 @@ async def get_run_resume_manifest(
             raise HTTPException(status_code=404, detail="run_not_found")
         steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
         authorized_source_run_ids: set[str] = set()
-        for source_run_id in _resume_manifest_source_run_candidates(steps):
-            source_run = await repositories.get_authorized_run(
-                conn,
-                tenant_id=tenant_id,
-                user_id=principal.user_id,
-                run_id=source_run_id,
-            )
-            if source_run is not None:
-                authorized_source_run_ids.add(source_run_id)
+        if is_ai_admin(principal):
+            for source_run_id in _resume_manifest_source_run_candidates(steps):
+                source_run = await repositories.get_authorized_run(
+                    conn,
+                    tenant_id=tenant_id,
+                    user_id=principal.user_id,
+                    run_id=source_run_id,
+                )
+                if source_run is not None:
+                    authorized_source_run_ids.add(source_run_id)
     return run_resume_manifest_snapshot(
         run=run,
         steps=steps,
@@ -2020,32 +2032,54 @@ async def get_run(
     contract_version = run_contract_version(run)
     executor_schema_version = executor_result_schema_version(run)
     result = run["result_json"] if isinstance(run["result_json"], dict) else {}
-    result_payload = dict(result)
     raw_skill_id = str(run["skill_id"])
     raw_agent_id = str(run["agent_id"])
     show_raw_skill = is_ai_admin(principal)
-    multi_agent_snapshot = multi_agent_snapshot_from_steps(run_id, steps, principal=principal)
-    if multi_agent_snapshot is not None:
-        result_payload["multi_agent"] = multi_agent_snapshot
+    terminal_projection = (
+        public_terminal_projection(
+            run_status,
+            run.get("error_code"),
+            run_id=run_id,
+            step_rows=steps,
+        )
+        if not show_raw_skill
+        else None
+    )
     input_payload = run["input_json"] if isinstance(run["input_json"], dict) else {}
     if show_raw_skill:
         input_payload = sanitize_public_payload(input_payload)
-        result_payload = sanitize_public_payload(result_payload)
+        result_payload = sanitize_public_payload(result)
+        multi_agent_snapshot = multi_agent_snapshot_from_steps(run_id, steps, principal=principal)
+        if multi_agent_snapshot is not None:
+            result_payload["multi_agent"] = multi_agent_snapshot
     else:
         input_payload = sanitize_user_control_input(input_payload)
-        result_payload = sanitize_public_payload(redact_raw_skill_references(result_payload))
+        result_payload = (
+            dict(terminal_projection["result"])
+            if terminal_projection is not None
+            else (
+                ordinary_nonterminal_run_result(run_id=run_id, step_rows=steps)
+                if normalize_run_status(run_status) in {"queued", "running"}
+                else sanitize_public_payload(redact_raw_skill_references(result))
+            )
+        )
     if not isinstance(input_payload, dict):
         input_payload = {}
     input_payload.pop("context_snapshot_id", None)
     input_payload.pop("context_snapshot", None)
     if not isinstance(result_payload, dict):
         result_payload = {}
-    error_code = (
-        sanitize_public_text(run.get("error_code"))
-        if show_raw_skill
-        else ("run_failed" if run.get("error_code") else None)
-    )
-    error_message = sanitize_public_text(run.get("error_message"))
+    if terminal_projection is not None:
+        error_code = terminal_projection["error_code"]
+        error_message = str(terminal_projection["message"])
+    else:
+        if show_raw_skill:
+            error_code = sanitize_public_text(run.get("error_code"))
+            error_message = sanitize_public_text(run.get("error_message"))
+        else:
+            public_summary = run_playback_summary(run, principal)
+            error_code = public_summary["error_code"]
+            error_message = str(public_summary["error_message"])
     context_ref = (
         run_context_ref_from_snapshot_row(bound_context_snapshot)
         if isinstance(bound_context_snapshot, dict)
@@ -2057,7 +2091,11 @@ async def get_run(
         agent_id=raw_agent_id if show_raw_skill else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
         skill_id=raw_skill_id if show_raw_skill else None,
         capability_id=capability_id_from_skill(raw_skill_id, raw_agent_id),
-        trace_id=str(run.get("trace_id") or standard_trace_id(str(run["id"]))),
+        trace_id=(
+            str(run.get("trace_id") or standard_trace_id(str(run["id"])))
+            if show_raw_skill
+            else standard_trace_id(str(run["id"]))
+        ),
         contract_version=contract_version,
         executor_schema_version=executor_schema_version if show_raw_skill else None,
         status=normalize_run_status(str(run["status"])),
@@ -2066,7 +2104,7 @@ async def get_run(
         result=result_payload,
         artifacts=[artifact_card(row, principal=principal) for row in artifacts],
         events=[run_event_response(run_id, row, principal=principal) for row in events if event_visible_to_principal(row, principal)],
-        steps=[run_step_response(row, principal=principal) for row in steps],
+        steps=run_step_responses(steps, principal=principal),
         queue_position=queue_position,
         queue_insight=queue_insight,
         cancel_requested_at=run.get("cancel_requested_at"),
@@ -2121,7 +2159,7 @@ async def get_run_playback(
         if event_visible_to_principal(row, principal)
     ]
     artifact_cards = [artifact_card(row, principal=principal) for row in artifacts]
-    step_cards = [run_step_response(row, principal=principal) for row in steps]
+    step_cards = run_step_responses(steps, principal=principal)
     next_after_sequence = next_sequence_from_rows(events, fallback=after_sequence)
     latest_context_ref = (
         run_context_ref_from_snapshot_row(bound_context_snapshot)
@@ -2217,7 +2255,7 @@ async def get_run_steps(
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
         steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-    return {"run_id": run_id, "steps": [run_step_response(row, principal=principal) for row in steps]}
+    return {"run_id": run_id, "steps": run_step_responses(steps, principal=principal)}
 
 
 @router.get("/runs/{run_id}/events/stream")

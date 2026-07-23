@@ -47,8 +47,12 @@ def test_projection_module_owns_run_progress_event_step_and_artifact_cards():
         principal=principal(),
     )
     assert event["event_type"] == "run_child_created"
-    assert event["payload"] == {"visible_to_user": True, "step_key": "review"}
+    assert event["stage"] == "status"
+    assert event["message"] == "已安排协同任务。"
+    assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
+    assert "review" not in str(event)
     assert "dispatch-private" not in str(event)
+    assert "run-parent" not in str(event)
 
     step = run_step_response(
         {
@@ -73,7 +77,13 @@ def test_projection_module_owns_run_progress_event_step_and_artifact_cards():
         principal=principal(),
     )
     assert step["status"] == "cancelled"
-    assert step["payload"] == {"public_note": "ok"}
+    assert step["id"] == "step-a"
+    assert step["step_key"] == "step-a"
+    assert step["title"] == "步骤已取消"
+    assert step["role"] is None
+    assert step["payload"] == {}
+    assert "public_note" not in str(step)
+    assert "review" not in str(step)
     assert "resource_limits" not in step
 
     card = artifact_card(
@@ -95,8 +105,34 @@ def test_projection_module_owns_run_progress_event_step_and_artifact_cards():
         principal=principal(),
     )
     assert card["preview_url"] == "/api/ai/artifacts/artifact-a/preview"
-    assert "source_run_id" not in card["lineage"]
+    assert card["label"] == "reviewed_docx"
+    assert card["lineage"] == {}
+    assert card["manifest"] == {}
+    assert "source_run_id" not in str(card)
+    assert "source_file_id" not in str(card)
     assert "storage_key" not in str(card)
+
+    admin_step = run_step_response(
+        {
+            "id": "step-a",
+            "run_id": "run-a",
+            "step_key": "review",
+            "step_kind": "agent",
+            "status": "canceled",
+            "title": "Review",
+            "role": "reviewer",
+            "sequence": 1,
+            "payload_json": {"public_note": "ok", "dispatch_id": "dispatch-private"},
+            "started_at": None,
+            "finished_at": None,
+            "created_at": None,
+            "updated_at": None,
+        },
+        principal=principal(roles=["admin"]),
+    )
+    assert admin_step["step_key"] == "review"
+    assert admin_step["role"] == "reviewer"
+    assert admin_step["payload"] == {"public_note": "ok", "dispatch_id": "dispatch-private"}
 
 
 def test_artifact_card_uses_stored_filename_for_xlsx_preview_eligibility():
@@ -127,7 +163,7 @@ def test_artifact_card_uses_stored_filename_for_xlsx_preview_eligibility():
     assert legacy["preview_url"] is None
 
 
-def test_projection_projects_terminal_tool_permission_cards_without_decision_controls():
+def test_projection_keeps_terminal_tool_permission_events_as_fixed_activity():
     event = run_event_response(
         "run-a",
         {
@@ -165,22 +201,12 @@ def test_projection_projects_terminal_tool_permission_cards_without_decision_con
     )
 
     assert event["event_type"] == "tool_permission_card"
-    assert event["payload"] == {
-        "visible_to_user": True,
-        "tool_permission_card": {
-            "schema_version": "ai-platform.tool-permission-card.v1",
-            "permission_request_id": "tpr-terminal",
-            "run_id": "run-a",
-            "tool_id": "Bash",
-            "tool_call_id": "call-terminal",
-            "action": "execute",
-            "risk_level": "high",
-            "write_capable": True,
-            "reason": "run_cancel_requested",
-            "status": "cancelled",
-            "decision": None,
-        },
-    }
+    assert event["stage"] == "policy"
+    assert event["message"] == "权限请求已结束。"
+    assert event["payload"] == {"activity": {"category": "policy", "status": "completed"}}
+    assert "tool_permission_card" not in str(event["payload"])
+    assert "tpr-terminal" not in str(event)
+    assert "decision_endpoint" not in str(event)
 
 
 @pytest.mark.parametrize("event_type", ["run_failed", "run_cancelled"])
@@ -218,11 +244,49 @@ def test_projection_preserves_durable_terminalization_observability(event_type):
     assert event["latency_ms"] == 17
     assert event["token_counts"] == {"input": 3, "output": 5, "total": 8}
     assert event["cost"] == {"estimated_cost_minor": 11}
-    assert event["payload"]["artifact_count"] == 2
-    assert event["payload"]["result"] == {"message": "safe durable result"}
+    assert event["payload"] == {}
     if event_type == "run_failed":
-        assert event["error_code"] == "executor_failure"
-        assert event["payload"]["error_message"] == "safe terminal error"
+        assert event["event_type"] == "error"
+        assert event["error_code"] == "run_failed"
+        assert event["message"] == "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
+    else:
+        assert event["event_type"] == "run_cancelled"
+        assert event["error_code"] is None
+        assert event["message"] == "任务已取消。取消前已产生的公开内容仍会保留。"
+    assert "safe durable result" not in str(event)
+    assert "safe terminal error" not in str(event)
+
+    admin_event = run_event_response(
+        "run-a",
+        {
+            "id": f"admin-{event_type}",
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 51,
+            "event_type": event_type,
+            "stage": "worker",
+            "message": "Run failed" if event_type == "run_failed" else "任务已取消",
+            "severity": "error",
+            "visible_to_user": True,
+            "error_code": "executor_failure" if event_type == "run_failed" else None,
+            "latency_ms": 17,
+            "input_token_count": 3,
+            "output_token_count": 5,
+            "total_token_count": 8,
+            "estimated_cost_minor": 11,
+            "payload_json": {
+                "visible_to_user": True,
+                "artifact_count": 2,
+                "result": {"message": "safe durable result"},
+                "error_message": "safe terminal error" if event_type == "run_failed" else None,
+            },
+            "created_at": None,
+        },
+        principal=principal(roles=["admin"]),
+    )
+    assert admin_event["payload"]["result"] == {"message": "safe durable result"}
+    if event_type == "run_failed":
+        assert admin_event["payload"]["error_message"] == "safe terminal error"
 
 
 def test_projection_module_rejects_invalid_event_schema_version():

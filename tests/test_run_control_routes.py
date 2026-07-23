@@ -1746,10 +1746,10 @@ def test_run_control_readiness_enables_resume_from_checkpoint_outputs(monkeypatc
     assert body["checkpoint_candidates"] == [
         {
             "step_id": "step-code",
-            "step_key": "code",
+            "step_key": "step-code",
             "status": "succeeded",
-            "title": "Code",
-            "role": "coding",
+            "title": "步骤已完成",
+            "role": None,
             "sequence": 1,
             "reusable": True,
             "reason": "output_available",
@@ -1802,14 +1802,14 @@ def test_run_control_readiness_redacts_raw_skill_ids_from_public_scalars(monkeyp
 
     assert response.status_code == 200
     body = response.json()
-    assert body["run"]["error_message"] == "run_failed"
+    assert body["run"]["error_message"] == "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
     assert body["multi_agent"] is None
     assert body["checkpoint_candidates"] == [
         {
             "step_id": "step-skill",
             "step_key": "step-skill",
             "status": "succeeded",
-            "title": "step-skill",
+            "title": "步骤已完成",
             "role": None,
             "sequence": 1,
             "reusable": True,
@@ -1823,7 +1823,10 @@ def test_run_control_readiness_redacts_raw_skill_ids_from_public_scalars(monkeyp
 
 def test_run_control_readiness_enables_cancel_and_includes_queue_insight(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
-        return readiness_run_row(status="queued")
+        return readiness_run_row(
+            status="queued",
+            error_message="qa-file-reviewer queued behind qa-word-review",
+        )
 
     async def fake_list_run_steps(conn, *, tenant_id, run_id):
         return []
@@ -1849,11 +1852,17 @@ def test_run_control_readiness_enables_cancel_and_includes_queue_insight(monkeyp
     assert body["actions"]["resume"]["reason"] == "active_run"
     assert body["actions"]["retry"]["reason"] == "status_not_retryable"
     assert body["queue_insight"] == {"tenant_id": "default", "queued": 2, "running": 1}
+    assert body["run"]["error_message"] == ""
+    assert "qa-file-reviewer" not in str(body)
+    assert "qa-word-review" not in str(body)
 
 
 def test_run_control_readiness_projects_multi_agent_dependency_gates(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
-        row = readiness_run_row(status="running")
+        row = readiness_run_row(
+            status="running",
+            error_message="qa-file-reviewer is waiting for qa-word-review",
+        )
         row["input_json"] = {
             "input": {
                 "message": "build feature",
@@ -1975,45 +1984,43 @@ def test_run_control_readiness_projects_multi_agent_dependency_gates(monkeypatch
     }
     assert body["multi_agent"]["steps"] == [
         {
-            "step_key": "plan",
+            "step_key": "step-plan",
             "step_id": "step-plan",
-            "title": "Plan",
-            "role": "planner",
+            "title": "步骤已完成",
+            "role": None,
             "sequence": 1,
             "status": "succeeded",
             "depends_on": [],
             "dependency_statuses": [],
             "ready": False,
             "blocked_reason": "terminal_step",
-            "source": "recorded",
         },
         {
-            "step_key": "code",
+            "step_key": "step-code",
             "step_id": "step-code",
-            "title": "Code",
-            "role": "coder",
+            "title": "等待执行",
+            "role": None,
             "sequence": 2,
             "status": "pending",
-            "depends_on": ["plan"],
-            "dependency_statuses": [{"step_key": "plan", "status": "succeeded"}],
+            "depends_on": ["step-plan"],
+            "dependency_statuses": [{"step_key": "step-plan", "status": "succeeded", "reason": None}],
             "ready": True,
             "blocked_reason": None,
-            "source": "recorded",
         },
         {
-            "step_key": "verify",
+            "step_key": "step-verify",
             "step_id": "step-verify",
-            "title": "verify",
+            "title": "等待执行",
             "role": None,
             "sequence": 3,
             "status": "pending",
-            "depends_on": ["code"],
-            "dependency_statuses": [{"step_key": "code", "status": "pending"}],
+            "depends_on": ["step-code"],
+            "dependency_statuses": [{"step_key": "step-code", "status": "pending", "reason": None}],
             "ready": False,
             "blocked_reason": "waiting_on_dependencies",
-            "source": "recorded",
         },
     ]
+    assert body["run"]["error_message"] == ""
     public_dump = str(body)
     assert "qa-file-reviewer" not in public_dump
     assert "skill_ids" not in public_dump
@@ -2290,9 +2297,7 @@ def test_run_control_readiness_blocks_hidden_multi_agent_dependencies(monkeypatc
     assert body["multi_agent"]["counts"]["blocked"] == 1
     assert body["multi_agent"]["counts"]["hidden_dependencies"] == 1
     assert body["multi_agent"]["steps"][1]["depends_on"] == []
-    assert body["multi_agent"]["steps"][1]["dependency_statuses"] == [
-        {"step_key": None, "status": "hidden", "reason": "unsafe_dependency"}
-    ]
+    assert body["multi_agent"]["steps"][1]["dependency_statuses"] == []
     assert body["multi_agent"]["steps"][1]["ready"] is False
     assert body["multi_agent"]["steps"][1]["blocked_reason"] == "hidden_dependencies"
     public_dump = str(body)
@@ -3416,7 +3421,7 @@ def test_run_resume_manifest_projects_copied_reuse_intent(monkeypatch):
     assert body["contract_version"] == "ai-platform.run-resume-manifest.v1"
     assert body["run"]["run_id"] == "run-resume"
     assert body["run"]["skill_id"] is None
-    assert body["source_run_id"] == "run-old"
+    assert body["source_run_id"] is None
     assert body["resume_enabled"] is True
     assert body["reason"] == "reuse_pending"
     assert body["counts"] == {
@@ -3432,23 +3437,23 @@ def test_run_resume_manifest_projects_copied_reuse_intent(monkeypatch):
     assert body["steps"] == [
         {
             "step_id": "step-code",
-            "step_key": "code",
+            "step_key": "step-code",
             "status": "pending",
-            "title": "Code",
-            "role": "coding",
+            "title": "等待执行",
+            "role": None,
             "sequence": 1,
             "depends_on": [],
             "reuse_intent": "reuse_pending",
-            "source_run_id": "run-old",
+            "source_run_id": None,
         },
         {
             "step_id": "step-test",
-            "step_key": "test",
+            "step_key": "step-test",
             "status": "pending",
-            "title": "Test",
-            "role": "verifier",
+            "title": "等待执行",
+            "role": None,
             "sequence": 2,
-            "depends_on": ["code"],
+            "depends_on": ["step-code"],
             "reuse_intent": "rerun",
             "source_run_id": None,
         },
@@ -3501,18 +3506,18 @@ def test_run_resume_manifest_redacts_raw_skill_ids_from_public_scalars(monkeypat
 
     assert response.status_code == 200
     body = response.json()
-    assert body["run"]["error_message"] == "run_failed"
+    assert body["run"]["error_message"] == "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
     assert body["steps"] == [
         {
             "step_id": "step-skill",
             "step_key": "step-skill",
             "status": "pending",
-            "title": "step-skill",
+            "title": "等待执行",
             "role": None,
             "sequence": 1,
-            "depends_on": [],
+            "depends_on": ["step-skill"],
             "reuse_intent": "reuse_pending",
-            "source_run_id": "run-old",
+            "source_run_id": None,
         }
     ]
     public_dump = str(body)
@@ -3805,27 +3810,17 @@ def test_run_checkpoint_audit_projects_materialization_without_private_payload(m
     assert body["run"]["run_id"] == "run-a"
     assert body["run"]["skill_id"] is None
     assert body["counts"] == {
-        "checkpoints": 1,
+        "checkpoints": 0,
         "resume_reusable": 1,
-        "artifact_materialized": 1,
+        "artifact_materialized": 0,
         "step_only": 0,
         "artifact_only": 0,
         "incomplete": 0,
         "gaps": 0,
         "uncheckpointed_reusable_steps": 0,
     }
-    assert body["checkpoints"] == [
-        {
-            "checkpoint_id": "checkpoint-a",
-            "audit_state": "materialized",
-            "resume_reusable": True,
-            "artifact_materialized": True,
-            "step_ids": ["step-code"],
-            "artifact_ids": ["artifact-report"],
-            "reuse": {"pending": 0, "reused": 1},
-            "gaps": [],
-        }
-    ]
+    assert body["checkpoints"] == []
+    assert body["uncheckpointed_reusable_steps"] == []
     public_dump = str(body)
     assert "raw checkpoint output" not in public_dump
     assert "storage_key" not in public_dump
@@ -3833,6 +3828,10 @@ def test_run_checkpoint_audit_projects_materialization_without_private_payload(m
     assert "resource_limits" not in public_dump
     assert "sandbox_mode" not in public_dump
     assert "private_payload" not in public_dump
+    assert '"checkpoint-a"' not in json.dumps(body)
+    assert "step-code" not in public_dump
+    assert "artifact-report" not in public_dump
+    assert "source_step_id" not in public_dump
     assert "/tmp/" not in public_dump
     assert "C:/runtime" not in public_dump
     assert "qa-file-reviewer" not in public_dump
@@ -3890,7 +3889,7 @@ def test_run_checkpoint_audit_reports_artifact_only_and_uncheckpointed_step_gaps
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -3918,7 +3917,7 @@ def test_run_checkpoint_audit_reports_artifact_only_and_uncheckpointed_step_gaps
     ]
 
 
-def test_run_checkpoint_audit_redacts_raw_skill_reference_in_checkpoint_id(monkeypatch):
+def test_run_checkpoint_audit_admin_retains_raw_skill_checkpoint_correlation(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return resume_manifest_run_row(status="failed")
 
@@ -3973,26 +3972,28 @@ def test_run_checkpoint_audit_redacts_raw_skill_reference_in_checkpoint_id(monke
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     body = response.json()
-    assert body["checkpoints"] == []
-    assert body["uncheckpointed_reusable_steps"] == [
+    assert body["checkpoints"] == [
         {
-            "step_id": "step-unsafe",
-            "step_key": "step-unsafe",
-            "status": "succeeded",
-            "reason": "missing_checkpoint_id",
+            "checkpoint_id": "checkpoint-qa-file-reviewer",
+            "audit_state": "materialized",
+            "resume_reusable": True,
+            "artifact_materialized": True,
+            "step_ids": ["step-unsafe"],
+            "artifact_ids": ["artifact-unsafe"],
+            "reuse": {"pending": 0, "reused": 0},
+            "gaps": [],
         }
     ]
-    public_dump = str(body)
-    assert "qa-file-reviewer" not in public_dump
-    assert "checkpoint-qa-file-reviewer" not in public_dump
-    assert "reusable output" not in public_dump
+    assert body["uncheckpointed_reusable_steps"] == []
+    assert "qa-file-reviewer" in str(body)
+    assert "reusable output" not in str(body)
 
 
-def test_run_checkpoint_audit_redacts_fingerprint_step_key_for_ordinary_user(monkeypatch):
+def test_run_checkpoint_audit_admin_retains_fingerprint_step_key_for_correlation(monkeypatch):
     unsafe_hash = "a" * 64
     unsafe_step_key = f"build-{unsafe_hash}"
 
@@ -4028,22 +4029,20 @@ def test_run_checkpoint_audit_redacts_fingerprint_step_key_for_ordinary_user(mon
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     body = response.json()
     assert body["uncheckpointed_reusable_steps"] == [
         {
             "step_id": "step-build",
-            "step_key": "step-build",
+            "step_key": unsafe_step_key,
             "status": "succeeded",
             "reason": "missing_checkpoint_id",
         }
     ]
-    public_dump = str(body)
-    assert unsafe_step_key not in public_dump
-    assert unsafe_hash not in public_dump
-    assert "reusable output" not in public_dump
+    assert unsafe_step_key in str(body)
+    assert "reusable output" not in str(body)
 
 
 def test_run_checkpoint_audit_reports_step_only_incomplete_and_producer_mismatch(monkeypatch):
@@ -4143,7 +4142,7 @@ def test_run_checkpoint_audit_reports_step_only_incomplete_and_producer_mismatch
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     checkpoints = {item["checkpoint_id"]: item for item in response.json()["checkpoints"]}
@@ -4238,7 +4237,7 @@ def test_run_checkpoint_audit_requires_valid_artifact_source_step_for_materializ
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     assert response.json()["checkpoints"] == [
@@ -4307,7 +4306,7 @@ def test_run_checkpoint_audit_missing_producer_does_not_materialize_existing_che
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     assert response.json()["checkpoints"] == [

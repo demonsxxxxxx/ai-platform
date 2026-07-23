@@ -195,62 +195,6 @@ class _CompatibilityWireEvent:
 CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
 CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
 
-CHAT_PUBLIC_TOOL_ACTIVITIES = {
-    "attachmentparser": "input",
-    "bash": "processing",
-    "browser": "browser",
-    "edit": "artifact",
-    "fileread": "input",
-    "read": "input",
-    "readfile": "input",
-    "python": "processing",
-    "python3": "processing",
-    "powershell": "processing",
-    "ragflowknowledgesearch": "retrieval",
-    "shell": "processing",
-    "skill": "capability",
-    "validate": "artifact",
-    "validation": "artifact",
-    "websearch": "retrieval",
-    "write": "artifact",
-    "writefile": "artifact",
-}
-
-CHAT_PUBLIC_TOOL_EVENT_STATUS = {
-    "mcp_tool_call_started": "running",
-    "tool_call_started": "running",
-    "tool_call_delta": "running",
-    "tool_permission_authorized": "authorized",
-    "mcp_tool_call_completed": "completed",
-    "tool_call_completed": "completed",
-    "mcp_tool_denied": "blocked",
-    "tool_denied": "blocked",
-    "tool_permission_denied": "blocked",
-}
-
-
-def _public_tool_activity(raw_event_type: str, payload: dict[str, Any]) -> dict[str, str] | None:
-    """Classify a visible tool event for fixed commentary without exposing its name."""
-    status = CHAT_PUBLIC_TOOL_EVENT_STATUS.get(raw_event_type)
-    if status is None:
-        return None
-    raw_name = next(
-        (
-            payload.get(key)
-            for key in ("tool_name", "tool", "tool_id", "mcp_tool_id")
-            if isinstance(payload.get(key), str)
-        ),
-        "",
-    )
-    normalized_name = re.sub(r"[^a-z0-9]", "", str(raw_name).lower())
-    category = CHAT_PUBLIC_TOOL_ACTIVITIES.get(normalized_name, "processing")
-    return {
-        "kind": "activity",
-        "category": category,
-        "status": status,
-    }
-
-
 @dataclass(frozen=True)
 class _ChatPublicRunEventProjection:
     """Controlled Chat presentation for one explicitly allowlisted run event."""
@@ -387,63 +331,120 @@ def _chat_event_marked_visible(event: dict[str, Any]) -> bool:
     return True
 
 
-def _chat_projection_payload(
-    raw_event_type: str,
-    envelope: dict[str, Any],
-    *,
-    run_id: str,
-) -> dict[str, object]:
-    """Retain only fields explicitly required by a public Chat presentation."""
-    payload = envelope.get("payload")
-    if not isinstance(payload, dict):
-        return {}
-    if raw_event_type in {
+@dataclass(frozen=True)
+class _StrictChatEventProduct:
+    """One narrowly typed Chat product retained beside the generic event envelope."""
+
+    kind: str
+    generic_envelope: dict[str, object]
+    payload: dict[str, object]
+
+
+def _strict_typed_chat_event_product(
+    run: dict[str, Any],
+    event: dict[str, Any],
+    principal: AuthPrincipal,
+) -> _StrictChatEventProduct | None:
+    """Retain only exact answer deltas or reconstructed permission cards for Chat.
+
+    Generic run events remain owned by ``run_event_response``.  This seam is
+    deliberately narrower: it reads raw persisted data only to construct two
+    pre-existing typed Chat products, never to relay arbitrary event text or
+    payload fields.  Both live SSE and exact-run history use it through the
+    shared compatibility event builder.
+    """
+    raw_event_type = str(event.get("event_type") or "")
+    if raw_event_type not in {
+        "assistant_delta",
         "tool_permission_requested",
         "tool_permission_decided",
         "tool_permission_terminalized",
     }:
-        card_source = payload.get("tool_permission_card")
-        permission_payload = tool_permission_public_event_payload(
-            run_id=run_id,
-            event_type=raw_event_type,
-            payload=card_source if isinstance(card_source, dict) else payload,
+        return None
+    if not _chat_event_marked_visible(event) or not event_visible_to_principal(event, principal):
+        return None
+    run_id = str(run["id"])
+    generic_envelope = run_event_response(run_id, event, principal=principal)
+    raw_payload = event.get("payload_json")
+    if not isinstance(raw_payload, dict):
+        return None
+    if raw_event_type == "assistant_delta":
+        if (
+            event.get("stage") != "answer"
+            or event.get("visible_to_user") is not True
+            or event.get("severity") != "info"
+            or set(raw_payload) != {"delta", "source", "visible_to_user", "severity"}
+            or raw_payload.get("source") != CHAT_ASSISTANT_DELTA_SOURCE
+            or raw_payload.get("visible_to_user") is not True
+            or raw_payload.get("severity") != "info"
+            or not isinstance(raw_payload.get("delta"), str)
+        ):
+            return None
+        content = _sanitize_chat_answer_text(run, raw_payload["delta"])
+        if not content:
+            return None
+        return _StrictChatEventProduct(
+            kind="assistant_delta",
+            generic_envelope=generic_envelope,
+            payload={
+                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+                "projection_kind": "assistant_delta",
+                "event_id": str(generic_envelope["event_id"]),
+                "sequence": int(generic_envelope["sequence"]),
+                "run_id": run_id,
+                "content": content,
+            },
         )
-        card = permission_payload.get("tool_permission_card")
-        return {"tool_permission_card": card} if isinstance(card, dict) else {}
-    if raw_event_type in {"skill_selected", "capability_selected"}:
-        capability_id = payload.get("capability_id")
-        return {"capability_id": capability_id} if isinstance(capability_id, str) else {}
-    tool_activity = _public_tool_activity(raw_event_type, payload)
-    if tool_activity is not None:
-        return {"activity": tool_activity}
-    if raw_event_type in {"run_queued", "queued"}:
-        queue_position = payload.get("queue_position")
-        if isinstance(queue_position, int) and not isinstance(queue_position, bool) and queue_position > 0:
-            return {"queue_position": queue_position}
-    if raw_event_type in {"worker_started", "run_started"}:
-        if payload.get("heartbeat") is True and payload.get("progress_kind") == "active":
-            return {
-                "activity": {
-                    "kind": "run",
-                    "category": "execution",
-                    "name": "任务执行",
-                    "status": "running",
-                }
-            }
+    card_source = raw_payload.get("tool_permission_card")
+    reconstructed = tool_permission_public_event_payload(
+        run_id=run_id,
+        event_type=raw_event_type,
+        payload=card_source if isinstance(card_source, dict) else raw_payload,
+    )
+    card = reconstructed.get("tool_permission_card")
+    if not isinstance(card, dict):
+        return None
+    return _StrictChatEventProduct(
+        kind="tool_permission_card",
+        generic_envelope=generic_envelope,
+        payload={"tool_permission_card": card},
+    )
+
+
+def _chat_projection_payload(envelope: dict[str, Any]) -> dict[str, object]:
+    """Copy only the fixed activity tuple from the generic public envelope."""
+    payload = envelope.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    activity = payload.get("activity")
+    if (
+        set(payload) == {"activity"}
+        and isinstance(activity, dict)
+        and set(activity) == {"category", "status"}
+        and isinstance(activity.get("category"), str)
+        and isinstance(activity.get("status"), str)
+    ):
+        return {"activity": dict(activity)}
     return {}
 
 
 def _public_run_event_envelope(
-    run_id: str,
+    run: dict[str, Any],
     event: dict[str, Any],
     principal: AuthPrincipal,
 ) -> dict[str, object] | None:
     """Project one persisted event through the explicit public Chat allowlist."""
+    run_id = str(run["id"])
     raw_event_type = str(event.get("event_type") or "")
     presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS.get(raw_event_type)
     if presentation is None:
         return None
-    projected = run_event_response(run_id, event, principal=principal)
+    typed_product = _strict_typed_chat_event_product(run, event, principal)
+    projected = (
+        typed_product.generic_envelope
+        if typed_product is not None
+        else run_event_response(run_id, event, principal=principal)
+    )
     severity = str(projected.get("severity") or "info")
     if presentation.progress_kind == "failed":
         severity = "error"
@@ -451,56 +452,13 @@ def _public_run_event_envelope(
         severity = "warning"
     elif severity not in {"info", "warning", "error"}:
         severity = "info"
-    payload = _chat_projection_payload(raw_event_type, projected, run_id=run_id)
+    payload = (
+        typed_product.payload
+        if typed_product is not None and typed_product.kind == "tool_permission_card"
+        else _chat_projection_payload(projected)
+    )
     message = presentation.message
     stage = presentation.stage
-    queue_position = payload.get("queue_position")
-    if raw_event_type in {"run_queued", "queued"} and isinstance(queue_position, int):
-        message = f"任务正在排队（第 {queue_position} 位）"
-    activity = payload.get("activity")
-    if isinstance(activity, dict):
-        if activity.get("kind") == "run" and activity.get("category") == "execution":
-            message = "任务仍在处理中"
-            stage = "execution"
-        elif activity.get("kind") == "activity":
-            activity_category = str(activity.get("category") or "tool")
-            activity_status = str(activity.get("status") or "running")
-            if activity_status == "authorized":
-                message = "处理步骤已获授权，正在继续执行"
-            elif activity_status == "blocked":
-                message = "当前处理步骤未获授权，正在等待权限调整"
-            else:
-                activity_summaries = {
-                    "artifact": (
-                        "正在生成并校验结果文件",
-                        "结果文件已生成并完成校验",
-                    ),
-                    "browser": (
-                        "正在查看授权页面并整理信息",
-                        "已完成授权页面的信息整理",
-                    ),
-                    "capability": (
-                        "正在使用已授权 Skill 分析请求",
-                        "已完成授权 Skill 的分析步骤",
-                    ),
-                    "input": (
-                        "正在读取附件并确认文件结构",
-                        "已读取附件并确认文件结构",
-                    ),
-                    "processing": (
-                        "正在处理数据并准备结果",
-                        "已完成数据处理，正在整理结果",
-                    ),
-                    "retrieval": (
-                        "正在检索授权信息并整理依据",
-                        "已完成授权信息检索并整理依据",
-                    ),
-                }
-                running_summary, completed_summary = activity_summaries.get(
-                    activity_category,
-                    ("正在执行受控处理步骤", "受控处理步骤已完成"),
-                )
-                message = completed_summary if activity_status == "completed" else running_summary
     if raw_event_type == "error":
         terminal_detail = public_terminal_detail("failed", event.get("error_code"))
         if terminal_detail is not None:
@@ -532,33 +490,10 @@ def _assistant_delta_projection(
     principal: AuthPrincipal,
 ) -> dict[str, object] | None:
     """Return a sanitized delta frame without carrying any executor payload."""
-    run_id = str(run["id"])
-    projected = run_event_response(run_id, event, principal=principal)
-    payload = projected.get("payload")
-    if not isinstance(payload, dict):
+    typed_product = _strict_typed_chat_event_product(run, event, principal)
+    if typed_product is None or typed_product.kind != "assistant_delta":
         return None
-    if projected.get("stage") != "answer":
-        return None
-    if set(payload) != {"delta", "source", "visible_to_user", "severity"}:
-        return None
-    if payload.get("source") != CHAT_ASSISTANT_DELTA_SOURCE:
-        return None
-    if payload.get("visible_to_user") is not True or payload.get("severity") != "info":
-        return None
-    raw_delta = payload.get("delta")
-    if not isinstance(raw_delta, str):
-        return None
-    content = _sanitize_chat_answer_text(run, raw_delta)
-    if not content:
-        return None
-    return {
-        "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-        "projection_kind": "assistant_delta",
-        "event_id": str(projected["event_id"]),
-        "sequence": int(projected["sequence"]),
-        "run_id": run_id,
-        "content": content,
-    }
+    return typed_product.payload
 
 
 def _event_sequence_sort_key(event: dict[str, Any], position: int) -> tuple[int, int]:
@@ -662,7 +597,7 @@ def _compatibility_events_for_run(
                 )
             )
             continue
-        envelope = _public_run_event_envelope(run_id, event, principal)
+        envelope = _public_run_event_envelope(run, event, principal)
         if envelope is None:
             continue
         payload = envelope["payload"] if isinstance(envelope.get("payload"), dict) else {}

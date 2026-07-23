@@ -33,9 +33,11 @@ from app.routes.runs import (
     copy_run,
     create_run,
     get_run,
+    get_run_control_readiness,
     get_run_events,
     get_run_playback,
     get_run_provenance,
+    get_run_resume_manifest,
     get_run_steps,
     multi_agent_snapshot_from_steps,
     progress_for_status,
@@ -444,7 +446,7 @@ def test_run_event_response_uses_standard_envelope():
         "run-a",
         {
             "id": "evt-a",
-            "trace_id": "trace_run_a",
+            "trace_id": "request-id=orchid",
             "schema_version": "ai-platform.event-envelope.v1",
             "sequence": 3,
             "event_type": "queued",
@@ -509,7 +511,8 @@ def test_run_event_response_redacts_dispatch_control_metadata_for_ordinary_user(
         principal=principal(),
     )
 
-    assert event["payload"] == {"visible_to_user": True, "step_key": "code"}
+    assert event["message"] == "已安排协同任务。"
+    assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     public_dump = str(event)
     assert "dispatch-code" not in public_dump
     assert "run-parent" not in public_dump
@@ -550,7 +553,8 @@ def test_run_event_response_aliases_multi_agent_child_created_for_ordinary_user(
     assert event["event_type"] == "run_child_created"
     assert event["type"] == "run_child_created"
     assert admin_event["event_type"] == "run_multi_agent_child_created"
-    assert event["payload"] == {"visible_to_user": True, "step_key": "code"}
+    assert event["message"] == "已安排协同任务。"
+    assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     public_dump = str(event)
     assert "dispatch-code" not in public_dump
     assert "run-parent" not in public_dump
@@ -588,7 +592,10 @@ def test_run_step_response_redacts_dispatch_control_metadata_for_ordinary_user()
         principal=principal(),
     )
 
-    assert step["payload"] == {"depends_on": ["plan"]}
+    assert step["step_key"] == "step-code"
+    assert step["title"] == "正在执行"
+    assert step["role"] is None
+    assert step["payload"] == {"dependency_count": 1}
     public_dump = str(step)
     assert "dispatch" not in public_dump
     assert "run-child" not in public_dump
@@ -618,7 +625,7 @@ def test_run_event_response_redacts_runtime_private_error_code_for_ordinary_user
         "run-a",
         {
             "id": "evt-a",
-            "trace_id": "trace_run_a",
+            "trace_id": "request-id=orchid",
             "schema_version": "ai-platform.event-envelope.v1",
             "event_type": "error",
             "stage": "worker",
@@ -638,7 +645,7 @@ def test_run_event_response_redacts_runtime_private_error_code_for_ordinary_user
     )
 
     assert event["error_code"] == "run_failed"
-    assert event["message"] == ""
+    assert event["message"] == "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
     assert "runtime211" not in str(event)
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(event)
     assert "/var/lib/ai-platform" not in str(event)
@@ -703,14 +710,17 @@ def test_run_playback_summary_projects_public_agent_id_for_ordinary_user():
             "skill_id": "qa-file-reviewer",
             "status": "running",
             "error_code": None,
-            "error_message": None,
+            "error_message": "qa-file-reviewer is waiting for qa-word-review; executor note opaque-4711",
         },
         principal=principal(),
     )
 
     assert summary["agent_id"] == "document-review"
     assert summary["capability_id"] == "document_review"
+    assert summary["error_message"] == ""
+    assert "qa-file-reviewer" not in str(summary)
     assert "qa-word-review" not in str(summary)
+    assert "opaque-4711" not in str(summary)
 
 
 @pytest.mark.asyncio
@@ -943,7 +953,8 @@ def test_run_event_response_sanitizes_runtime_envelope_for_ordinary_user():
     assert event["event_type"] == "status"
     assert event["type"] == "status"
     assert event["stage"] == "status"
-    assert event["message"] == ""
+    assert event["message"] == "任务状态已更新。"
+    assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     assert "runtime211" not in str(event)
     assert "worker" not in str(event)
     assert "qa-review-queue-runtime" not in str(event)
@@ -1023,39 +1034,8 @@ def test_run_event_response_redacts_secret_like_payload_for_ordinary_user():
     )
 
     serialized = str(event)
-    assert event["message"] == (
-        "callback authorization=[redacted-secret] [redacted-email] "
-        "https://example.com/doc clientsecret=[redacted-secret] "
-        "passwordhash=[redacted-secret] secretkey=[redacted-secret] "
-        "clientcredentialblob=[redacted-secret] "
-        "secretarysecret=[redacted-secret] "
-        "authorizationbearer=[redacted-secret] "
-        "privatekey=[redacted-secret] "
-        "bearer=[redacted-secret] "
-        "authkey=[redacted-secret]"
-    )
-    assert event["payload"] == {
-        "note": (
-            "api_key=[redacted-secret] client_secret=[redacted-secret] githubtoken=[redacted-secret] "
-            "passworddigest=[redacted-secret] secretvalue=[redacted-secret] "
-            "servicecredentialsjson=[redacted-secret] "
-            "awsaccesskeyid=[redacted-secret]"
-        ),
-        "url": "https://example.com/doc",
-        "homepage": "http://example.com/home",
-        "headers": {},
-        "authstatus": "approved",
-        "input_token_count": 12,
-        "output_token_count": 8,
-        "total_token_count": 20,
-        "remaining_token_budget": 100,
-        "oauth_authorization_status": "approved",
-        "secretary_name": "Jane",
-        "client_secretary_name": "Jane Doe",
-        "tokenizer": "cl100k_base",
-        "publickey": "public-key-visible",
-        "safe": "done",
-    }
+    assert event["message"] == "任务状态已更新。"
+    assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     assert "bearer-token-123" not in serialized
     assert "nested-bearer-token" not in serialized
     assert "user@example.com" not in serialized
@@ -1092,8 +1072,8 @@ def test_run_event_response_redacts_secret_like_payload_for_ordinary_user():
     assert "auth-key-compact" not in serialized
     assert "auth-header-compact" not in serialized
     assert "auth-value-compact" not in serialized
-    assert "approved" in serialized
-    assert "public-key-visible" in serialized
+    assert "approved" not in serialized
+    assert "public-key-visible" not in serialized
     assert "client-credential-secret-compact" not in serialized
     assert "service-credentials-secret-compact" not in serialized
     assert "authorization-header-compact" not in serialized
@@ -2225,7 +2205,7 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
             **RUN_SCHEMA_FIELDS,
             "agent_id": "qa-word-review",
             "skill_id": "qa-file-reviewer",
-            "trace_id": "trace_run_a",
+            "trace_id": "request-id=orchid",
             "schema_version": "ai-platform.run.v1",
             "status": "running",
             "input_json": {
@@ -2390,6 +2370,7 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
     assert "runtime_path" not in public_dump
     assert "used_skills_source" not in public_dump
     assert "executor_hook" not in public_dump
+    assert "request-id=orchid" not in public_dump
     assert "skill_id" not in response.events[0]["payload"]
     assert "skill_ids" not in response.events[0]["payload"]
     assert "skill_ids" not in response.steps[0]
@@ -2401,6 +2382,374 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
     assert "/var/lib/ai-platform" not in str(response.steps[0])
     assert response.error_code == "run_failed"
     assert response.error_message == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["queued", "running"])
+async def test_get_run_nonterminal_reload_uses_canonical_result_allowlist_and_preserves_admin_diagnostics(
+    monkeypatch,
+    status,
+):
+    diagnostic = "qa-file-reviewer agent qa-word-review executor diagnostic opaque-981"
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": status,
+            "input_json": {},
+            "result_json": {
+                "message": diagnostic,
+                "sdk_error": diagnostic,
+                "error": {"message": diagnostic},
+                "multi_agent": {"steps": [{"step_key": "qa-file-reviewer-step", "output": diagnostic}]},
+            },
+            "error_code": "executor_failure",
+            "error_message": diagnostic,
+        }
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_events(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_steps(conn, *, tenant_id, run_id):
+        return []
+
+    async def queue_position(*, tenant_id, run_id):
+        return 1
+
+    async def queue_insight_for_status(status, tenant_id, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", empty_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", empty_steps)
+    monkeypatch.setattr("app.routes.runs.get_run_queue_position", queue_position)
+    monkeypatch.setattr("app.routes.runs.queue_insight_for_status", queue_insight_for_status)
+
+    ordinary = await get_run("run-a", principal=principal())
+    admin = await get_run("run-a", principal=principal(roles=["admin"]))
+
+    assert ordinary.result == {}
+    assert ordinary.error_code == "run_failed"
+    assert ordinary.error_message == ""
+    assert ordinary.agent_id == "document-review"
+    assert diagnostic not in ordinary.model_dump_json()
+    assert "qa-file-reviewer" not in ordinary.model_dump_json()
+    assert "qa-word-review" not in ordinary.model_dump_json()
+    assert admin.result["message"] == diagnostic
+    assert admin.result["sdk_error"] == diagnostic
+    assert admin.result["error"] == {"message": diagnostic}
+    assert admin.error_code == "executor_failure"
+    assert admin.error_message == diagnostic
+
+
+@pytest.mark.asyncio
+async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnostics(monkeypatch):
+    raw_terms = (
+        "command=render-report --private-param=amber",
+        "provider-model=solstice-3 sdk diagnostic",
+        "reasoning-draft request-id=orchid digest=0123456789abcdef",
+        "url=https://executor.internal.example.invalid/v1",
+        "qa-file-reviewer",
+        "qa-word-review",
+    )
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "failed",
+            "input_json": {},
+            "result_json": {
+                "message": raw_terms[0],
+                "sdk_error": raw_terms[1],
+                "error": {"message": raw_terms[2]},
+            },
+            "error_code": "claude_agent_sdk_runtime_error",
+            "error_message": raw_terms[3],
+        }
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_events(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_steps(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", empty_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", empty_steps)
+
+    ordinary = await get_run("run-a", principal=principal())
+    admin = await get_run("run-a", principal=principal(roles=["admin"]))
+
+    fixed_message = "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
+    assert ordinary.result == {"message": fixed_message}
+    assert ordinary.error_code == "model_service_unavailable"
+    assert ordinary.error_message == fixed_message
+    assert all(term not in ordinary.model_dump_json() for term in raw_terms)
+    assert admin.result["message"] == raw_terms[0]
+    assert admin.result["sdk_error"] == raw_terms[1]
+    assert admin.result["error"] == {"message": raw_terms[2]}
+    assert admin.error_code == "claude_agent_sdk_runtime_error"
+    assert admin.error_message == raw_terms[3]
+
+
+@pytest.mark.asyncio
+async def test_get_run_reprojects_terminal_multi_agent_steps_without_trusting_executor_payload(monkeypatch):
+    raw_terms = (
+        "command=render-report --private-param=amber",
+        "provider-model=solstice-3 sdk diagnostic",
+        "reasoning-draft request-id=orchid digest=0123456789abcdef",
+        "url=https://executor.internal.example.invalid/v1",
+        "qa-file-reviewer",
+        "qa-word-review",
+    )
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "failed",
+            "input_json": {},
+            "result_json": {"multi_agent": {"steps": [{"output": raw_terms[0]}]}},
+            "error_code": "claude_agent_sdk_runtime_error",
+            "error_message": raw_terms[3],
+        }
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_events(conn, *, tenant_id, run_id):
+        return []
+
+    async def failed_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-plan",
+                "run_id": run_id,
+                "step_key": "qa-word-review",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "qa-file-reviewer",
+                "role": "qa-word-review",
+                "sequence": 1,
+                "payload_json": {"public_note": "公开的计划进度", "artifact_count": 0, "progress": 25},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "step-failed",
+                "run_id": run_id,
+                "step_key": "qa-file-reviewer",
+                "step_kind": "agent",
+                "status": "failed",
+                "title": "qa-file-reviewer",
+                "role": "qa-word-review",
+                "sequence": 2,
+                "payload_json": {
+                    "depends_on": ["qa-word-review"],
+                    "missing_dependencies": ["qa-file-reviewer"],
+                    "checkpoint_id": "qa-file-reviewer",
+                    "source_step_id": "qa-word-review",
+                    "subagent_id": "qa-file-reviewer",
+                    "artifact_count": 1,
+                    "progress": 50,
+                    "error": raw_terms[0],
+                    "error_code": raw_terms[1],
+                    "output": raw_terms[2],
+                    "metadata": {"url": raw_terms[3]},
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", empty_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", failed_steps)
+
+    ordinary = await get_run("run-a", principal=principal())
+    admin = await get_run("run-a", principal=principal(roles=["admin"]))
+
+    snapshot = ordinary.result["multi_agent"]
+    assert snapshot["counts"]["failed"] == 1
+    assert snapshot["counts"]["total"] == 2
+    failed_snapshot_step = snapshot["steps"][1]
+    assert failed_snapshot_step["step_id"] == "step-failed"
+    assert failed_snapshot_step["step_key"] == "step-failed"
+    assert failed_snapshot_step["status"] == "failed"
+    assert failed_snapshot_step["payload"] == {
+        "dependency_count": 1,
+        "depends_on": ["step-plan"],
+        "missing_dependency_count": 1,
+        "artifact_count": 1,
+        "progress": 50,
+    }
+    ordinary_failed_step = ordinary.steps[1]
+    assert ordinary_failed_step["step_id"] == "step-failed"
+    assert ordinary_failed_step["step_key"] == "step-failed"
+    assert ordinary_failed_step["payload"] == {
+        "dependency_count": 1,
+        "depends_on": ["step-plan"],
+        "missing_dependency_count": 1,
+        "artifact_count": 1,
+        "progress": 50,
+    }
+    assert ordinary_failed_step["title"] == "步骤未完成"
+    assert ordinary_failed_step["role"] is None
+    assert ordinary.steps[0]["step_id"] == "step-plan"
+    assert ordinary.steps[0]["step_key"] == "step-plan"
+    assert ordinary.steps[0]["title"] == "步骤已完成"
+    assert ordinary.steps[0]["role"] is None
+    assert ordinary.steps[0]["payload"] == {
+        "artifact_count": 0,
+        "progress": 25,
+    }
+    assert all(term not in ordinary.model_dump_json() for term in raw_terms)
+    assert admin.steps[1]["title"] == "qa-file-reviewer"
+    assert admin.steps[1]["payload"]["error"] == raw_terms[0]
+    assert admin.steps[1]["payload"]["output"] == raw_terms[2]
+
+
+@pytest.mark.asyncio
+async def test_control_readiness_and_resume_manifest_omit_unmapped_executor_dependencies(monkeypatch):
+    raw_terms = ("qa-file-reviewer", "qa-word-review", "unmapped-safe-id", "checkpoint-safe-id", "source-run-private")
+    run = {
+        "id": "run-a",
+        "session_id": "ses-a",
+        **RUN_SCHEMA_FIELDS,
+        "agent_id": raw_terms[1],
+        "skill_id": raw_terms[0],
+        "status": "running",
+        "trace_id": "trace-a",
+        "input_json": {
+            "input": {
+                "execution_mode": "multi_agent",
+                "multi_agent_steps": [
+                    {"step_key": raw_terms[0]},
+                    {"step_key": raw_terms[1], "depends_on": [raw_terms[0], raw_terms[2]]},
+                ],
+            }
+        },
+        "result_json": {},
+        "error_code": None,
+        "error_message": None,
+    }
+    steps = [
+        {
+            "id": "step-plan",
+            "run_id": "run-a",
+            "step_key": raw_terms[0],
+            "step_kind": "agent",
+            "status": "succeeded",
+            "title": raw_terms[0],
+            "role": raw_terms[1],
+            "sequence": 1,
+            "payload_json": {"public_note": "safe-looking executor note", "artifact_count": 1, "progress": 100},
+            "started_at": None,
+            "finished_at": None,
+            "created_at": None,
+            "updated_at": None,
+        },
+        {
+            "id": "step-unsafe",
+            "run_id": "run-a",
+            "step_key": raw_terms[1],
+            "step_kind": "agent",
+            "status": "pending",
+            "title": raw_terms[1],
+            "role": raw_terms[0],
+            "sequence": 2,
+            "payload_json": {
+                "depends_on": [raw_terms[0], raw_terms[2]],
+                "missing_dependencies": [raw_terms[1]],
+                "checkpoint_id": raw_terms[3],
+                "source_step_id": raw_terms[0],
+                "subagent_id": raw_terms[1],
+                "checkpoint_reuse_pending": True,
+                "copied_from_run_id": raw_terms[4],
+                "public_note": "safe-looking executor note",
+                "artifact_count": 2,
+                "progress": 25,
+            },
+            "started_at": None,
+            "finished_at": None,
+            "created_at": None,
+            "updated_at": None,
+        },
+    ]
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
+        return run
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+        return steps
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+
+    readiness = await get_run_control_readiness("run-a", principal=principal())
+    manifest = await get_run_resume_manifest("run-a", principal=principal())
+
+    public_steps = readiness["multi_agent"]["steps"]
+    assert public_steps[0]["step_key"] == "step-plan"
+    assert public_steps[0]["title"] == "步骤已完成"
+    assert public_steps[0]["role"] is None
+    assert public_steps[1] == {
+        "step_key": "step-unsafe",
+        "step_id": "step-unsafe",
+        "title": "等待执行",
+        "role": None,
+        "sequence": 2,
+        "status": "pending",
+        "depends_on": [],
+        "dependency_statuses": [],
+        "ready": False,
+        "blocked_reason": "hidden_dependencies",
+    }
+    assert readiness["multi_agent"]["counts"]["hidden_dependencies"] == 3
+    assert manifest["steps"][1] == {
+        "step_id": "step-unsafe",
+        "step_key": "step-unsafe",
+        "status": "pending",
+        "title": "等待执行",
+        "role": None,
+        "sequence": 2,
+        "depends_on": [],
+        "reuse_intent": "reuse_pending",
+        "source_run_id": None,
+    }
+    public_dump = str({"readiness": readiness, "manifest": manifest})
+    assert all(term not in public_dump for term in raw_terms)
+    assert "safe-looking executor note" not in public_dump
 
 
 @pytest.mark.asyncio
@@ -2753,8 +3102,8 @@ async def test_get_run_includes_multi_agent_snapshot_from_run_steps(monkeypatch)
     assert multi_agent["counts"]["total"] == 2
     assert multi_agent["counts"]["cancelled"] == 2
     assert [step["status"] for step in multi_agent["steps"]] == ["cancelled", "cancelled"]
-    assert [step["step_key"] for step in response.steps] == ["plan", "code"]
-    assert response.result["message"] == "任务已取消"
+    assert [step["step_key"] for step in response.steps] == ["step-plan", "step-code"]
+    assert response.result["message"] == "任务已取消。取消前已产生的公开内容仍会保留。"
 
 
 @pytest.mark.asyncio
@@ -3094,18 +3443,28 @@ async def test_get_run_steps_returns_authorized_multi_agent_steps(monkeypatch):
     response = await get_run_steps("run-a", principal=principal())
 
     assert response["run_id"] == "run-a"
-    assert response["steps"][0]["step_key"] == "coding-1"
-    assert response["steps"][0]["status"] == "succeeded"
-    assert response["steps"][0]["role"] == "coding"
+    step = response["steps"][0]
+    assert step["id"] == "step-a"
+    assert step["step_id"] == "step-a"
+    assert step["step_key"] == "step-a"
+    assert step["status"] == "succeeded"
+    assert step["title"] == "步骤已完成"
+    assert step["role"] is None
+    assert step["payload"]["dependency_count"] == 1
+    assert "depends_on" not in step["payload"]
+    assert "coding-1" not in str(step)
+    assert "coding agent" not in str(step)
+    assert "coding" not in str(step)
+    assert "plan" not in str(step)
     assert "skill_ids" not in response["steps"][0]
     assert "mcp_tool_ids" not in response["steps"][0]
     assert "resource_limits" not in response["steps"][0]
     assert "sandbox_mode" not in response["steps"][0]
     assert "browser_enabled" not in response["steps"][0]
-    assert "mcp_tool_ids" not in response["steps"][0]["payload"]
-    assert "resource_limits" not in response["steps"][0]["payload"]
-    assert "sandbox_mode" not in response["steps"][0]["payload"]
-    assert "browser_enabled" not in response["steps"][0]["payload"]
+    assert "mcp_tool_ids" not in step["payload"]
+    assert "resource_limits" not in step["payload"]
+    assert "sandbox_mode" not in step["payload"]
+    assert "browser_enabled" not in step["payload"]
 
 
 @pytest.mark.asyncio
@@ -3149,7 +3508,7 @@ async def test_get_run_steps_redacts_raw_skill_references_for_ordinary_user(monk
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(response["steps"][0])
     assert "/var/lib/ai-platform" not in str(response["steps"][0])
     assert "runtime211" not in str(response["steps"][0])
-    assert response["steps"][0]["title"] == "review"
+    assert response["steps"][0]["title"] == "正在执行"
     assert response["steps"][0]["role"] is None
 
 
@@ -3452,8 +3811,9 @@ def test_run_event_stream_emits_multi_agent_step_snapshot(monkeypatch):
     assert response.status_code == 200
     assert "event: multi_agent_snapshot" in response.text
     assert '"counts": {"total": 2, "pending": 0, "succeeded": 1, "failed": 1, "running": 0, "cancelled": 0, "reused": 0, "blocked": 1}' in response.text
-    assert '"step_key": "verify"' in response.text
-    assert '"missing_dependencies": ["missing"]' in response.text
+    assert '"step_key": "step-verify"' in response.text
+    assert '"missing_dependency_count": 1' in response.text
+    assert '"missing_dependencies"' not in response.text
 
 
 def test_run_event_stream_normalizes_canceled_status_to_cancelled(monkeypatch):
@@ -3564,7 +3924,7 @@ def test_multi_agent_snapshot_redacts_parent_finalized_private_payload():
 
     assert snapshot["counts"]["succeeded"] == 1
     dumped = json.dumps(snapshot, ensure_ascii=False)
-    assert "safe output" in dumped
+    assert "safe output" not in dumped
     assert "private_payload" not in dumped
     assert "storage_key" not in dumped
     assert "/app/private.py" not in dumped

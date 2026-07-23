@@ -22,8 +22,10 @@ from app.run_projection import (
     normalize_step_status,
     progress_for_status,
     public_text_or_fallback,
+    public_terminal_projection,
     run_contract_version,
     run_step_response,
+    run_step_responses,
 )
 from app.validation import assert_safe_id
 
@@ -271,17 +273,44 @@ def _artifact_tree_parent(
     return None, None
 
 
+def _ordinary_run_summary_error_message(
+    run: dict[str, object],
+    terminal_projection: dict[str, object] | None,
+) -> str:
+    """Keep persisted nonterminal diagnostics private behind the summary seam."""
+    if terminal_projection is not None:
+        return str(terminal_projection["message"])
+    # A nonterminal ``error_message`` is executor diagnostics.  It is not a
+    # public progress field, even when generic text sanitization leaves it
+    # syntax-safe.  Resolve raw Skill/agent terms here so every consumer crosses
+    # the same known-term policy before the value is deliberately withheld.
+    _readiness_public_text(
+        run.get("error_message"),
+        raw_terms=_readiness_raw_projection_terms(run),
+    )
+    return ""
+
+
 def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> dict[str, object]:
     raw_skill_id = str(run["skill_id"])
     raw_agent_id = str(run["agent_id"])
     show_raw_skill = is_ai_admin(principal)
+    terminal_projection = (
+        public_terminal_projection(run.get("status"), run.get("error_code"))
+        if not show_raw_skill
+        else None
+    )
     return {
         "run_id": str(run["id"]),
         "session_id": str(run["session_id"]),
         "agent_id": raw_agent_id if show_raw_skill else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
         "skill_id": raw_skill_id if show_raw_skill else None,
         "capability_id": capability_id_from_skill(raw_skill_id, raw_agent_id),
-        "trace_id": str(run.get("trace_id") or standard_trace_id(str(run["id"]))),
+        "trace_id": (
+            str(run.get("trace_id") or standard_trace_id(str(run["id"])))
+            if show_raw_skill
+            else standard_trace_id(str(run["id"]))
+        ),
         "contract_version": run_contract_version(run),
         "executor_schema_version": executor_result_schema_version(run) if show_raw_skill else None,
         "status": normalize_run_status(str(run["status"])),
@@ -291,9 +320,68 @@ def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> di
         "error_code": (
             sanitize_public_text(run.get("error_code"))
             if show_raw_skill
-            else ("run_failed" if run.get("error_code") else None)
+            else (
+                terminal_projection["error_code"]
+                if terminal_projection is not None
+                else ("run_failed" if run.get("error_code") else None)
+            )
         ),
-        "error_message": sanitize_public_text(run.get("error_message")),
+        "error_message": (
+            sanitize_public_text(run.get("error_message"))
+            if show_raw_skill
+            else _ordinary_run_summary_error_message(run, terminal_projection)
+        ),
+    }
+
+
+def _ordinary_run_provenance_snapshot(
+    *,
+    run: dict[str, object],
+    steps: list[dict[str, object]],
+    artifacts: list[dict[str, object]],
+    principal: AuthPrincipal,
+) -> dict[str, object]:
+    """Return server-owned artifact and step facts without executor lineage."""
+    step_cards = run_step_responses(steps, principal=principal)
+    artifact_cards = [artifact_card(row, principal=principal) for row in artifacts]
+    artifact_tree = [
+        {
+            "node_id": str(artifact["artifact_id"]),
+            "node_kind": "artifact",
+            "artifact_id": str(artifact["artifact_id"]),
+            "artifact_type": artifact.get("artifact_type"),
+            "label": artifact.get("label"),
+            "produced_by_step_id": None,
+            "source_step_id": None,
+            "parent_id": None,
+            "parent_kind": None,
+            "children_ids": [],
+            "producer_kind": None,
+            "producer_role": None,
+            "checkpoint_id": None,
+            "subagent_id": None,
+            "lineage": {},
+            "gaps": [],
+        }
+        for artifact in artifact_cards
+    ]
+    return {
+        "contract_version": RUN_PROVENANCE_CONTRACT_VERSION,
+        "run": run_playback_summary(run, principal),
+        "steps": step_cards,
+        "artifact_tree": artifact_tree,
+        "checkpoints": [],
+        "subagents": [],
+        "graph": {
+            "counts": {
+                "steps": len(step_cards),
+                "artifacts": len(artifact_cards),
+                "checkpoints": 0,
+                "subagents": 0,
+            },
+            "edges": [],
+            "gaps": [],
+        },
     }
 
 
@@ -305,6 +393,8 @@ def run_provenance_snapshot(
     principal: AuthPrincipal,
 ) -> dict[str, object]:
     """Build the public run provenance graph from existing sanitized projections."""
+    if not is_ai_admin(principal):
+        return _ordinary_run_provenance_snapshot(run=run, steps=steps, artifacts=artifacts, principal=principal)
     step_cards = [_provenance_step_card(row, principal=principal) for row in steps]
     artifact_cards = [artifact_card(row, principal=principal) for row in artifacts]
     step_by_id = {str(item["step_id"]): item for item in step_cards}
@@ -532,6 +622,40 @@ def run_checkpoint_audit_snapshot(
     principal: AuthPrincipal,
 ) -> dict[str, object]:
     """Return read-only checkpoint reusable-output and artifact materialization state."""
+    if not is_ai_admin(principal):
+        # Checkpoint identifiers and artifact lineage originate with executor
+        # payloads.  Ordinary users receive only the canonical run summary and
+        # count-only state; detailed checkpoint correlation is private/admin
+        # diagnostics.
+        public_steps = run_step_responses(steps, principal=principal)
+        reused = sum(
+            1
+            for step in public_steps
+            if isinstance(step.get("payload"), dict)
+            and bool(step["payload"].get("checkpoint_reused"))
+        )
+        reuse_pending = sum(
+            1
+            for step in public_steps
+            if isinstance(step.get("payload"), dict)
+            and bool(step["payload"].get("checkpoint_reuse_pending"))
+        )
+        return {
+            "contract_version": RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION,
+            "run": run_playback_summary(run, principal),
+            "counts": {
+                "checkpoints": 0,
+                "resume_reusable": reused,
+                "artifact_materialized": 0,
+                "step_only": 0,
+                "artifact_only": 0,
+                "incomplete": 0,
+                "gaps": 0,
+                "uncheckpointed_reusable_steps": reuse_pending,
+            },
+            "checkpoints": [],
+            "uncheckpointed_reusable_steps": [],
+        }
     raw_terms = _readiness_raw_projection_terms(run)
     checkpoints: dict[str, dict[str, object]] = {}
     step_ids = {str(row["id"]) for row in steps}
@@ -663,22 +787,9 @@ def run_checkpoint_audit_snapshot(
         "gaps": sum(len(item["gaps"]) for item in checkpoint_items) + len(uncheckpointed),
         "uncheckpointed_reusable_steps": len(uncheckpointed),
     }
-    run_summary = run_playback_summary(run, principal)
-    if not is_ai_admin(principal):
-        raw_error_message = run_summary.get("error_message")
-        error_fallback = (
-            "run_failed"
-            if raw_error_message and normalize_run_status(str(run["status"])) == "failed"
-            else ""
-        )
-        run_summary["error_message"] = _readiness_public_text(
-            raw_error_message,
-            fallback=error_fallback,
-            raw_terms=raw_terms,
-        )
     return {
         "contract_version": RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION,
-        "run": run_summary,
+        "run": run_playback_summary(run, principal),
         "counts": counts,
         "checkpoints": checkpoint_items,
         "uncheckpointed_reusable_steps": uncheckpointed,
