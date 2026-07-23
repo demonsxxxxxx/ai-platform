@@ -385,11 +385,7 @@ def _runtime_lease_expected_binding(row: Mapping[str, Any], payload: Mapping[str
     ):
         return None
     provider = str(row.get("provider") or "")
-    lease_identity = (
-        f"docker:{container_name}:{container_id}"
-        if provider == "docker"
-        else f"{provider}:{container_name}"
-    )
+    lease_identity = f"{provider}:{container_name}:{container_id}"
     return {
         "tenant_id": row.get("tenant_id"),
         "workspace_id": row.get("workspace_id"),

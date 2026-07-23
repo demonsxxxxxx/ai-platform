@@ -61,11 +61,7 @@ def signed_runtime_lease(
         image_digest="sha256:" + "a" * 64,
         authorized_skill_scope=governed_egress_authorized_skill_scope(skill_ids=[], mcp_tool_ids=[]),
         authorized_native_tool_scope=governed_egress_authorized_native_tool_scope([]),
-        lease_identity=(
-            f"docker:{container_name}:{container_id}"
-            if provider == "docker"
-            else f"{provider}:{container_name}"
-        ),
+        lease_identity=f"{provider}:{container_name}:{container_id}",
         issued_at=issued_at,
         expires_at=expires_at,
     )

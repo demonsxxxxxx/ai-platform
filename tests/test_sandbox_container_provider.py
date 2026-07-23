@@ -8,6 +8,7 @@ import socket
 import threading
 import time
 import traceback
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -259,9 +260,17 @@ class FakeDockerContainer:
             raise self._remove_error
         self.removed = True
         self.status = "removed"
+        client = getattr(self, "client", None)
+        if client is not None:
+            client.detach_from_all_networks(self)
 
     def reload(self) -> None:
         return None
+
+    def exec_run(self, command: list[str], **kwargs: Any) -> SimpleNamespace:
+        if self._exec_error is not None:
+            raise self._exec_error
+        return SimpleNamespace(exit_code=self._exec_exit_code)
 
 
 class FakeDockerAPI:
@@ -340,28 +349,56 @@ class FakeDockerContainers:
         return containers
 
     def get(self, name: str) -> FakeDockerContainer:
-        return self._client.containers_by_name[name]
+        if name in self._client.containers_by_name:
+            return self._client.containers_by_name[name]
+        for container in self._client.containers_by_name.values():
+            if container.id == name:
+                return container
+        raise KeyError(name)
+
+
+class FakeDockerNetwork(dict):
+    def __init__(self, client: "FakeDockerClient", attrs: dict[str, Any]) -> None:
+        super().__init__(attrs=attrs)
+        self._client = client
+
+    def reload(self) -> None:
+        return None
+
+    def connect(self, container: FakeDockerContainer, aliases: list[str] | None = None) -> None:
+        self._client.attach_to_network(container, self["attrs"]["Name"], aliases=aliases)
+
+    def disconnect(self, container: FakeDockerContainer, force: bool = False) -> None:
+        self._client.detach_from_network(container, self["attrs"]["Name"])
+
+    def remove(self) -> None:
+        if self["attrs"].get("Containers"):
+            raise RuntimeError("network still has members")
+        self._client.networks_by_name.pop(self["attrs"]["Name"], None)
 
 
 class FakeDockerNetworks:
     def __init__(self, client: "FakeDockerClient") -> None:
         self._client = client
 
-    def get(self, name: str) -> dict[str, Any]:
+    def get(self, name: str) -> FakeDockerNetwork:
         if name not in self._client.networks_by_name:
             raise KeyError(name)
         return self._client.networks_by_name[name]
 
-    def create(self, name: str, **kwargs) -> dict[str, Any]:
-        network = {
-            "attrs": {
+    def create(self, name: str, **kwargs) -> FakeDockerNetwork:
+        network = FakeDockerNetwork(
+            self._client,
+            {
                 "Id": f"network-{name}",
                 "Name": name,
                 "Driver": kwargs.get("driver", "bridge"),
                 "Internal": kwargs.get("internal", False),
                 "Options": kwargs.get("options", {}),
+                "Labels": kwargs.get("labels", {}),
+                "Containers": {},
             }
-        }
+        )
         self._client.networks_by_name[name] = network
         self._client.network_create_calls.append((name, kwargs))
         return network
@@ -392,16 +429,19 @@ class FakeDockerClient:
         self.exec_error = exec_error
         self.created: list[dict[str, Any]] = []
         self.containers_by_name: dict[str, FakeDockerContainer] = {}
-        self.networks_by_name: dict[str, dict[str, Any]] = {
-            "ai-platform-sandbox-egress-internal-v1": {
-                "attrs": {
+        self.networks_by_name: dict[str, FakeDockerNetwork] = {
+            "ai-platform-sandbox-egress-internal-v1": FakeDockerNetwork(
+                self,
+                {
                     "Id": "network-internal-v1",
                     "Name": "ai-platform-sandbox-egress-internal-v1",
                     "Driver": "bridge",
                     "Internal": True,
                     "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+                    "Labels": {},
+                    "Containers": {},
                 }
-            }
+            )
         }
         self.network_create_calls: list[tuple[str, dict[str, Any]]] = []
         self.api = FakeDockerAPI(self)
@@ -415,11 +455,14 @@ class FakeDockerClient:
             labels={
                 "ai-platform.release-role": "api",
                 "ai-platform.release-owner": "repo-local-compose",
+                "ai-platform.source-commit": "a" * 40,
             },
             volumes={},
             environment={},
         )
         self.api_container.status = "running"
+        self.api_container.attrs["State"] = {"Health": {"Status": "healthy"}}
+        self.api_container.client = self
         self.attach_to_network(
             self.api_container,
             "ai-platform-sandbox-egress-internal-v1",
@@ -438,12 +481,19 @@ class FakeDockerClient:
         if network is None:
             return
         network_id = str(network["attrs"]["Id"])
-        container.attrs["NetworkSettings"]["Networks"] = {
-            network_name: {
-                "NetworkID": network_id,
-                "Aliases": list(aliases or []),
-            }
-        }
+        networks = container.attrs["NetworkSettings"]["Networks"]
+        networks[network_name] = {"NetworkID": network_id, "Aliases": list(aliases or [])}
+        network["attrs"]["Containers"][container.id] = {"Name": container.name}
+
+    def detach_from_network(self, container: FakeDockerContainer, network_name: str) -> None:
+        container.attrs["NetworkSettings"]["Networks"].pop(network_name, None)
+        network = self.networks_by_name.get(network_name)
+        if network is not None:
+            network["attrs"]["Containers"].pop(container.id, None)
+
+    def detach_from_all_networks(self, container: FakeDockerContainer) -> None:
+        for network_name in tuple(container.attrs["NetworkSettings"]["Networks"]):
+            self.detach_from_network(container, network_name)
 
     def ping(self) -> None:
         self.ping_count += 1
@@ -1639,7 +1689,6 @@ async def test_opensandbox_cached_reuse_cleans_old_lease_when_requested_image_ch
         "ai-platform.executor.requested_image",
         "ai-platform.executor.requested_image_digest",
         "ai-platform.runtime_subject",
-        "ai-platform.governed_egress.proof",
     ],
 )
 async def test_opensandbox_cached_reuse_rejects_each_external_egress_or_runtime_subject_label(monkeypatch, label):
@@ -1679,6 +1728,70 @@ async def test_opensandbox_provider_retains_rotated_cached_lease_when_cleanup_ca
 
     assert provider._sandboxes[lease.container_id] is FakeOpenSandbox.instances[lease.container_id]
     assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_seals_actual_id_and_fails_closed_after_restart_without_duplicate(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    from app.execution_boundary import governed_egress_proof_from_labels
+
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    settings = ExternalEgressCapabilitySettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    first = opensandbox_provider()
+    lease = await first.create_or_reuse(request(), workspace())
+    proof = governed_egress_proof_from_labels(
+        "opensandbox",
+        lease.labels,
+        signing_key=settings.sandbox_egress_proof_signing_key,
+        expected_binding={"lease_identity": f"opensandbox:{lease.container_name}:{lease.container_id}"},
+        now=TEST_CAPABILITY_NOW,
+    )
+
+    assert proof is not None
+    FakeOpenSandboxManager.sandboxes = [FakeOpenSandbox.instances[lease.container_id]]
+    restarted = opensandbox_provider()
+    with pytest.raises(container_provider.ContainerStartFailedError, match="existing credential"):
+        await restarted.create_or_reuse(request(), workspace())
+
+    assert len(FakeOpenSandbox.created) == 1
+    assert FakeOpenSandbox.instances[lease.container_id].killed is False
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_sealed_proof_expiry_is_bounded_by_capability_and_policy(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    from app.execution_boundary import GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS
+
+    settings = ExternalEgressCapabilitySettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    capability = await container_provider._admit_opensandbox_external_egress_capability(
+        settings=settings,
+        fetcher=lambda *_args: external_egress_capability_profile(),
+        now=TEST_CAPABILITY_NOW,
+    )
+    short = capability.governed_egress_proof(
+        signing_key=settings.sandbox_egress_proof_signing_key,
+        request=request(),
+        lease_identity="opensandbox:opensandbox-run-a:osb-run-a",
+        now=TEST_CAPABILITY_NOW,
+    )
+    long_capability = replace(
+        capability,
+        expires_at_utc=TEST_CAPABILITY_NOW + timedelta(seconds=GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS + 60),
+    )
+    bounded = long_capability.governed_egress_proof(
+        signing_key=settings.sandbox_egress_proof_signing_key,
+        request=request(),
+        lease_identity="opensandbox:opensandbox-run-a:osb-run-a",
+        now=TEST_CAPABILITY_NOW,
+    )
+
+    assert short["expires_at"] == capability.expires_at_utc.isoformat().replace("+00:00", "Z")
+    assert bounded["expires_at"] == (
+        TEST_CAPABILITY_NOW + timedelta(seconds=GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS)
+    ).isoformat().replace("+00:00", "Z")
 
 
 @pytest.mark.asyncio
@@ -2843,7 +2956,7 @@ async def test_docker_provider_stop_removes_only_the_owned_short_socket_director
     assert socket_dir.is_dir()
     actual_socket_path.write_text("test socket leaf", encoding="utf-8")
     unrelated_scope = socket_dir.parent / "unrelated-scope"
-    unrelated_scope.mkdir()
+    unrelated_scope.mkdir(exist_ok=True)
     monkeypatch.setattr(container_provider.stat, "S_ISSOCK", lambda _mode: True)
 
     result = await provider.stop(lease, reason="test-complete")
@@ -3722,7 +3835,7 @@ async def test_docker_provider_cached_lease_revalidates_container_scope_labels()
         await provider.create_or_reuse(request(), workspace())
 
     assert len(fake.created) == 1
-    assert fake.containers_by_name["executor-exec-run-a"].removed is True
+    assert fake.containers_by_name["executor-exec-run-a"].removed is False
     assert provider._leases == {}
 
 
@@ -3889,20 +4002,8 @@ async def test_docker_provider_maps_resource_limits_to_docker_create_kwargs_with
         (governed_docker_settings(sandbox_egress_policy_enabled="unknown"), None),
         (governed_docker_settings(sandbox_egress_proof_signing_key="too-short"), None),
         (governed_docker_settings(sandbox_executor_image="ai-platform-executor:mutable"), None),
-        (
-            governed_docker_settings(),
-            {"attrs": {"Id": "network-a", "Name": "ai-platform-sandbox-egress-internal-v1", "Driver": "bridge", "Internal": False, "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"}}},
-        ),
-        (
-            governed_docker_settings(),
-            {"attrs": {"Id": "network-a", "Name": "ai-platform-sandbox-egress-internal-v1", "Driver": "bridge", "Internal": True, "Options": {"com.docker.network.bridge.enable_ip_masquerade": "true"}}},
-        ),
-        (
-            governed_docker_settings(),
-            {"attrs": {"Id": "network-a", "Name": "ai-platform-sandbox-egress-internal-v1", "Driver": "bridge", "Internal": True, "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false", "com.docker.network.bridge.enable_icc": "true"}}},
-        ),
     ),
-    ids=("disabled", "unknown", "weak-key", "mutable-image", "non-internal", "masquerading", "incompatible-option"),
+    ids=("disabled", "unknown", "weak-key", "mutable-image"),
 )
 async def test_docker_provider_fails_closed_before_container_side_effects_without_proven_governed_egress(
     monkeypatch,
@@ -3931,10 +4032,9 @@ async def test_docker_provider_fails_closed_before_container_side_effects_withou
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_requires_operator_provisioned_internal_network(monkeypatch):
+async def test_docker_provider_creates_owned_per_lease_internal_network(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     fake = FakeDockerClient()
-    fake.networks_by_name.clear()
     monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
     provider = container_provider.DockerContainerProvider(
         docker_client_factory=lambda: fake,
@@ -3942,11 +4042,90 @@ async def test_docker_provider_requires_operator_provisioned_internal_network(mo
         identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
     )
 
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert len(fake.network_create_calls) == 1
+    network_name, kwargs = fake.network_create_calls[0]
+    assert network_name == container_provider._governed_docker_network_name(lease)
+    assert kwargs["internal"] is True
+    assert kwargs["options"] == {"com.docker.network.bridge.enable_ip_masquerade": "false"}
+
+
+@pytest.mark.asyncio
+async def test_docker_governed_network_is_per_sandbox_and_contains_only_api_and_lease(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    fake = FakeDockerClient()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+
+    first = await provider.create_or_reuse(request(), workspace())
+    second = await provider.create_or_reuse(
+        request(run_id="run-b", session_id="session-b"),
+        workspace(run_id="run-b", session_id="session-b"),
+    )
+    first_network = container_provider._governed_docker_network_name(first)
+    second_network = container_provider._governed_docker_network_name(second)
+
+    assert first_network != second_network
+    for lease, network_name in ((first, first_network), (second, second_network)):
+        network = fake.networks_by_name[network_name]
+        assert network["attrs"]["Internal"] is True
+        assert network["attrs"]["Labels"]["ai-platform.owner"] == "sandbox-runtime-governed-egress-v2"
+        assert set(network["attrs"]["Containers"]) == {
+            fake.api_container.id,
+            fake.containers_by_name[lease.container_name].id,
+        }
+        assert set(fake.containers_by_name[lease.container_name].attrs["NetworkSettings"]["Networks"]) == {
+            network_name
+        }
+    assert second.container_id not in fake.networks_by_name[first_network]["attrs"]["Containers"]
+
+
+@pytest.mark.asyncio
+async def test_docker_rejects_unreachable_or_stale_api_callback_before_dispatch(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    fake = FakeDockerClient()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+        callback_reachability_probe=lambda *_args: False,
+    )
+
     with pytest.raises(container_provider.GovernedEgressAdmissionError):
         await provider.create_or_reuse(request(), workspace())
 
-    assert fake.created == []
-    assert fake.network_create_calls == []
+    assert fake.containers_by_name["executor-exec-run-a"].removed is True
+    assert all("executor-exec-run-a" not in name for name in fake.networks_by_name)
+    fake.api_container.attrs["State"]["Health"]["Status"] = "unhealthy"
+    with pytest.raises(container_provider.GovernedEgressAdmissionError):
+        await provider.create_or_reuse(request(run_id="run-c"), workspace(run_id="run-c"))
+
+
+@pytest.mark.asyncio
+async def test_docker_remembered_identity_mismatch_preserves_same_name_container(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    fake = FakeDockerClient()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+    lease = await provider.create_or_reuse(request(), workspace())
+    remote = fake.containers_by_name[lease.container_name]
+    remote.attrs["Id"] = "docker-replaced-container"
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="identity mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert remote.removed is False
+    assert lease.container_id not in provider._leases
 
 
 @pytest.mark.asyncio
@@ -3954,13 +4133,15 @@ async def test_docker_provider_requires_operator_provisioned_internal_network(mo
 async def test_docker_post_create_readback_rejects_unattested_runtime_topology(monkeypatch, failure):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     fake = FakeDockerClient()
-    network_id = fake.networks_by_name["ai-platform-sandbox-egress-internal-v1"]["attrs"]["Id"]
 
     def mutate(container):
+        governed_network_name = next(iter(container.attrs["NetworkSettings"]["Networks"]))
+        governed_network = fake.networks_by_name[governed_network_name]
         if failure == "extra-network":
             container.attrs["NetworkSettings"]["Networks"]["default"] = {"NetworkID": "default-network"}
         elif failure == "wrong-network":
-            container.attrs["NetworkSettings"]["Networks"] = {"default": {"NetworkID": network_id}}
+            governed_network["attrs"]["Containers"].pop(container.id, None)
+            container.attrs["NetworkSettings"]["Networks"] = {"default": {"NetworkID": "default-network"}}
         elif failure == "container-id":
             container.attrs["Id"] = "docker-forged-id"
         else:
@@ -3999,16 +4180,39 @@ async def test_docker_requires_exact_single_attested_api_callback_endpoint(monke
             labels={
                 "ai-platform.release-role": "api",
                 "ai-platform.release-owner": "repo-local-compose",
+                "ai-platform.source-commit": "a" * 40,
             },
             volumes={},
             environment={},
         )
+        duplicate.status = "running"
+        duplicate.attrs["State"] = {"Health": {"Status": "healthy"}}
         fake.attach_to_network(duplicate, network_name, aliases=["api.sandbox.internal"])
         fake.containers_by_name[duplicate.name] = duplicate
     elif failure == "alias-drift":
-        fake.api_container.attrs["NetworkSettings"]["Networks"][network_name]["Aliases"] = ["api-v2.sandbox.internal"]
+        original_attach = fake.attach_to_network
+
+        def attach_with_alias_drift(container, attached_network, *, aliases=None):
+            original_attach(
+                container,
+                attached_network,
+                aliases=(
+                    ["api-v2.sandbox.internal"]
+                    if container is fake.api_container and attached_network.startswith("ai-platform-sandbox-egress-v2-")
+                    else aliases
+                ),
+            )
+
+        fake.attach_to_network = attach_with_alias_drift
     else:
-        fake.api_container.attrs["NetworkSettings"]["Networks"] = {}
+        original_attach = fake.attach_to_network
+
+        def attach_without_callback(container, attached_network, *, aliases=None):
+            if container is fake.api_container and attached_network.startswith("ai-platform-sandbox-egress-v2-"):
+                return
+            original_attach(container, attached_network, aliases=aliases)
+
+        fake.attach_to_network = attach_without_callback
     monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
     provider = container_provider.DockerContainerProvider(docker_client_factory=lambda: fake)
 
@@ -4063,7 +4267,7 @@ async def test_docker_production_factory_uses_authoritative_governed_egress_admi
         lease = await provider.create_or_reuse(request(), workspace())
 
         assert lease.container_id == fake.containers_by_name[lease.container_name].id
-        assert fake.created[0]["network"] == "ai-platform-sandbox-egress-internal-v1"
+        assert fake.created[0]["network"].startswith("ai-platform-sandbox-egress-v2-")
     finally:
         container_provider.reset_container_provider_cache()
 
@@ -4249,7 +4453,7 @@ async def test_docker_cached_egress_drift_stops_before_releasing_tracking(monkey
     )
 
     lease = await provider.create_or_reuse(request(), workspace())
-    fake.api_container.id = "docker-api-drifted"
+    fake.api_container.status = "exited"
 
     with pytest.raises(container_provider.GovernedEgressAdmissionError):
         await provider.create_or_reuse(request(), workspace())
@@ -4273,7 +4477,7 @@ async def test_docker_cached_egress_drift_keeps_tracking_when_stop_cannot_be_con
     lease = await provider.create_or_reuse(request(), workspace())
     fake.containers_by_name[lease.container_name]._stop_error = RuntimeError("stop failed")
     fake.containers_by_name[lease.container_name]._remove_error = RuntimeError("remove failed")
-    fake.api_container.id = "docker-api-drifted"
+    fake.api_container.status = "exited"
 
     with pytest.raises(container_provider.ContainerCleanupFailedError):
         await provider.create_or_reuse(request(), workspace())
@@ -5452,7 +5656,8 @@ async def test_docker_provider_stop_maps_sdk_not_found_to_not_found():
 
     result = await provider.stop(lease, reason="cancel_requested")
 
-    assert result.status == "not_found"
+    assert result.status == "failed"
+    assert lease.container_id in provider._leases
     assert result.container_id == lease.container_id
 
 

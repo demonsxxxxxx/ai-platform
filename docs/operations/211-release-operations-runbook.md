@@ -11,6 +11,12 @@ Use `tools/release_authority.py deploy-main-commit` with the explicit full commi
 fetched from authoritative `origin/main`. This command does not replace the
 readiness and ownership gates defined by the multi-agent workflow.
 
+For governed Docker egress, the command resolves the reviewed backend build to
+its local immutable `sha256:<64-hex>` Docker image ID and passes that value as
+`SANDBOX_EXECUTOR_IMAGE` to API and worker. Do not replace that handoff with a
+mutable `ai-platform:<commit>` tag; an operator must rebuild or resolve the
+target image ID before retrying when it is unavailable locally.
+
 ## Readiness Evidence
 
 Before the workflow grants its release lease, the read-only host packet must

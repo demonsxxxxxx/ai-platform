@@ -432,7 +432,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         authorized_native_tool_scope=governed_egress_authorized_native_tool_scope(
             runtime_request.tool_policy_subjects
         ),
-        lease_identity="opensandbox:opensandbox-run-a",
+        lease_identity="opensandbox:opensandbox-run-a:osb-run-a",
     )
 
     class StubSettings:
@@ -757,7 +757,7 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
                 authorized_native_tool_scope=governed_egress_authorized_native_tool_scope(
                     request.tool_policy_subjects
                 ),
-                lease_identity="opensandbox:opensandbox-run-a",
+                lease_identity="opensandbox:opensandbox-run-a:osb-run-a",
             )
             return ContainerLease(
                 **{

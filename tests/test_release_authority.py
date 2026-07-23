@@ -26,6 +26,7 @@ COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 SANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.sandbox.yml"
 LEGACY_FRONTEND_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.frontend.yml"
 AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
+SANDBOX_IMAGE_ID = "sha256:" + "e" * 64
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
@@ -271,14 +272,14 @@ def test_parity_report_rejects_manual_frontend_and_commit_mismatch():
     repository = AUTHORITATIVE_REPOSITORY
     source = {"commit": commit, "dirty": False}
     images = {
-        "backend": {"id": "sha256:backend", "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "backend"}},
+        "backend": {"id": SANDBOX_IMAGE_ID, "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "backend"}},
         "frontend": {"id": "sha256:frontend", "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
     }
     compose_dir = "/srv/ai-platform-release/deploy/ai-platform"
     common = {"ai-platform.source-commit": commit, "ai-platform.source-dirty": "false", "ai-platform.release-owner": "repo-local-compose", "com.docker.compose.project.working_dir": compose_dir, "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml", "com.docker.compose.project": "ai-platform-phaseb", "com.docker.compose.oneoff": "False", "com.docker.compose.config-hash": "config-hash"}
     containers = {
-        "api": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "api", "com.docker.compose.service": "api"}},
-        "worker": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "worker", "com.docker.compose.service": "worker"}},
+        "api": {"image_id": SANDBOX_IMAGE_ID, "running": True, "labels": {**common, "ai-platform.release-role": "api", "com.docker.compose.service": "api"}},
+        "worker": {"image_id": SANDBOX_IMAGE_ID, "running": True, "labels": {**common, "ai-platform.release-role": "worker", "com.docker.compose.service": "worker"}},
         "frontend": {"image_id": "sha256:frontend", "running": True, "labels": {**common, "ai-platform.release-owner": "manual", "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
     }
     runtime = {
@@ -309,13 +310,13 @@ def test_parity_report_verifies_one_clean_repo_local_compose_commit():
     repository = AUTHORITATIVE_REPOSITORY
     compose_dir = "/srv/ai-platform-release/deploy/ai-platform"
     images = {
-        "backend": {"id": "sha256:backend", "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "backend"}},
+        "backend": {"id": SANDBOX_IMAGE_ID, "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "backend"}},
         "frontend": {"id": "sha256:frontend", "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
     }
     common = {"ai-platform.source-commit": commit, "ai-platform.source-dirty": "false", "ai-platform.release-owner": "repo-local-compose", "com.docker.compose.project.working_dir": compose_dir, "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml", "com.docker.compose.project": "ai-platform-phaseb", "com.docker.compose.oneoff": "False", "com.docker.compose.config-hash": "config-hash"}
     containers = {
-        "api": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "api", "com.docker.compose.service": "api"}},
-        "worker": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "worker", "com.docker.compose.service": "worker"}},
+        "api": {"image_id": SANDBOX_IMAGE_ID, "running": True, "labels": {**common, "ai-platform.release-role": "api", "com.docker.compose.service": "api"}},
+        "worker": {"image_id": SANDBOX_IMAGE_ID, "running": True, "labels": {**common, "ai-platform.release-role": "worker", "com.docker.compose.service": "worker"}},
         "frontend": {"image_id": "sha256:frontend", "running": True, "labels": {**common, "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
     }
 
@@ -376,7 +377,7 @@ def test_parity_report_verifies_exact_ordered_two_file_compose_set_for_all_servi
     }
     images = {
         "backend": {
-            "id": "sha256:backend",
+            "id": SANDBOX_IMAGE_ID,
             "labels": {**image_labels, "ai-platform.release-role": "backend"},
         },
         "frontend": {
@@ -396,7 +397,7 @@ def test_parity_report_verifies_exact_ordered_two_file_compose_set_for_all_servi
     }
     containers = {
         role: {
-            "image_id": "sha256:frontend" if role == "frontend" else "sha256:backend",
+            "image_id": "sha256:frontend" if role == "frontend" else SANDBOX_IMAGE_ID,
             "running": True,
             "labels": {
                 **common,
@@ -568,12 +569,12 @@ def test_parity_report_rejects_stopped_release_container():
         expected_commit=commit,
         source={"commit": commit, "dirty": False},
         images={
-            "backend": {"id": "sha256:backend", "labels": {**image_labels, "ai-platform.release-role": "backend"}},
+            "backend": {"id": SANDBOX_IMAGE_ID, "labels": {**image_labels, "ai-platform.release-role": "backend"}},
             "frontend": {"id": "sha256:frontend", "labels": {**image_labels, "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
         },
         containers={
-            "api": {"image_id": "sha256:backend", "running": False, "labels": {**common, "ai-platform.release-role": "api", "com.docker.compose.service": "api"}},
-            "worker": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "worker", "com.docker.compose.service": "worker"}},
+            "api": {"image_id": SANDBOX_IMAGE_ID, "running": False, "labels": {**common, "ai-platform.release-role": "api", "com.docker.compose.service": "api"}},
+            "worker": {"image_id": SANDBOX_IMAGE_ID, "running": True, "labels": {**common, "ai-platform.release-role": "worker", "com.docker.compose.service": "worker"}},
             "frontend": {"image_id": "sha256:frontend", "running": False, "labels": {**common, "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
         },
         runtime={
@@ -612,12 +613,12 @@ def test_parity_report_rejects_incomplete_compose_identity():
         expected_commit=commit,
         source={"commit": commit, "dirty": False},
         images={
-            "backend": {"id": "sha256:backend", "labels": {**image_labels, "ai-platform.release-role": "backend"}},
+            "backend": {"id": SANDBOX_IMAGE_ID, "labels": {**image_labels, "ai-platform.release-role": "backend"}},
             "frontend": {"id": "sha256:frontend", "labels": {**image_labels, "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
         },
         containers={
             role: {
-                "image_id": "sha256:frontend" if role == "frontend" else "sha256:backend",
+                "image_id": "sha256:frontend" if role == "frontend" else SANDBOX_IMAGE_ID,
                 "running": True,
                 "labels": {**common, "ai-platform.release-role": role, "com.docker.compose.service": role},
             }
@@ -830,7 +831,7 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
         "tools.release_authority._image_record",
         lambda docker, image: {
             "reference": image,
-            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "id": "sha256:frontend" if "frontend" in image else SANDBOX_IMAGE_ID,
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -863,7 +864,7 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
             "name": name,
             "Id": inspected_worker_id if name.endswith("worker") else "c" * 64,
             "Image": (
-                "sha256:frontend" if name.endswith("frontend") else "sha256:backend"
+                "sha256:frontend" if name.endswith("frontend") else SANDBOX_IMAGE_ID
             ),
             "Config": {
                 "Labels": {
@@ -875,12 +876,12 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
                     [
                         "UNRELATED_ENV=private-marker",
                         "TMPDIR=/home/ai-platform/tmp",
-                        f"SANDBOX_EXECUTOR_IMAGE=ai-platform:{commit}",
+                            f"SANDBOX_EXECUTOR_IMAGE={SANDBOX_IMAGE_ID}",
                     ]
                     if name.endswith("worker")
                     else [
                         "PATH=/usr/bin",
-                        f"SANDBOX_EXECUTOR_IMAGE=ai-platform:{commit}",
+                            f"SANDBOX_EXECUTOR_IMAGE={SANDBOX_IMAGE_ID}",
                     ]
                 ),
             },
@@ -1008,7 +1009,7 @@ def test_collect_live_parity_rejects_stale_worker_heartbeat(monkeypatch, tmp_pat
     monkeypatch.setattr(
         "tools.release_authority._image_record",
         lambda docker, image: {
-            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "id": "sha256:frontend" if "frontend" in image else SANDBOX_IMAGE_ID,
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -1021,7 +1022,7 @@ def test_collect_live_parity_rejects_stale_worker_heartbeat(monkeypatch, tmp_pat
     def fake_container_record(docker, name):
         return {
             "name": name,
-            "image_id": "sha256:frontend" if name.endswith("frontend") else "sha256:backend",
+            "image_id": "sha256:frontend" if name.endswith("frontend") else SANDBOX_IMAGE_ID,
             "labels": {**common, "ai-platform.release-role": name.removeprefix("ai-platform-"), "com.docker.compose.service": name.removeprefix("ai-platform-")},
             "running": True,
             "pid": 2222 if name.endswith("worker") else 1111,
@@ -1212,7 +1213,7 @@ def test_deploy_rejects_same_name_manual_frontend_replacement_before_removal(
     monkeypatch.setattr(
         "tools.release_authority._image_record",
         lambda docker, image: {
-            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "id": "sha256:frontend" if "frontend" in image else SANDBOX_IMAGE_ID,
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -1284,7 +1285,7 @@ def test_deploy_removes_revalidated_manual_frontend_by_immutable_id(monkeypatch,
     monkeypatch.setattr(
         "tools.release_authority._image_record",
         lambda docker, image: {
-            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "id": "sha256:frontend" if "frontend" in image else SANDBOX_IMAGE_ID,
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -1357,7 +1358,7 @@ def test_deploy_rejects_missing_or_malformed_manual_frontend_before_removal(
     monkeypatch.setattr(
         "tools.release_authority._image_record",
         lambda docker, image: {
-            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "id": "sha256:frontend" if "frontend" in image else SANDBOX_IMAGE_ID,
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -1423,7 +1424,7 @@ def test_deploy_reuses_valid_existing_commit_tag_without_rebuilding(monkeypatch,
     monkeypatch.setattr(
         "tools.release_authority._image_record",
         lambda docker, image: {
-            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "id": "sha256:frontend" if "frontend" in image else SANDBOX_IMAGE_ID,
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -1495,7 +1496,7 @@ def test_sandbox_executor_preflight_requires_exact_clean_backend_image(monkeypat
     ):
         monkeypatch.setattr(
             "tools.release_authority._image_record",
-            lambda docker, image, labels=stale_labels: {"id": "sha256:backend", "labels": labels},
+            lambda docker, image, labels=stale_labels: {"id": SANDBOX_IMAGE_ID, "labels": labels},
         )
         with pytest.raises(ReleaseAuthorityError, match="sandbox executor image provenance mismatch"):
             release_authority._require_sandbox_executor_image(
@@ -1504,6 +1505,14 @@ def test_sandbox_executor_preflight_requires_exact_clean_backend_image(monkeypat
                 commit=commit,
                 repository=AUTHORITATIVE_REPOSITORY,
             )
+
+
+@pytest.mark.parametrize("image_id", ("ai-platform:" + "7" * 40, "sha256:not-a-digest", ""))
+def test_governed_sandbox_executor_handoff_requires_a_local_immutable_image_id(image_id):
+    assert release_authority._immutable_sandbox_executor_reference({"id": SANDBOX_IMAGE_ID}) == SANDBOX_IMAGE_ID
+
+    with pytest.raises(ReleaseAuthorityError, match="not immutable"):
+        release_authority._immutable_sandbox_executor_reference({"id": image_id})
 
 
 def test_deploy_rejects_executor_preflight_without_compose_mutation(monkeypatch, tmp_path):
@@ -1523,7 +1532,7 @@ def test_deploy_rejects_executor_preflight_without_compose_mutation(monkeypatch,
             if backend_inspections == 2:
                 raise subprocess.CalledProcessError(1, [*docker, "image", "inspect", image])
         return {
-            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "id": "sha256:frontend" if "frontend" in image else SANDBOX_IMAGE_ID,
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -1742,7 +1751,7 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
     commands: list[list[str]] = []
     image_records = {
         f"ai-platform:{commit}": {
-            "id": "sha256:backend",
+            "id": SANDBOX_IMAGE_ID,
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -1788,7 +1797,7 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
     assert compose[:3] == ["sudo", "-n", "env"]
     assert f"AI_PLATFORM_IMAGE=ai-platform:{commit}" in compose
     assert f"AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:{commit}" in compose
-    assert f"SANDBOX_EXECUTOR_IMAGE=ai-platform:{commit}" in compose
+    assert f"SANDBOX_EXECUTOR_IMAGE={SANDBOX_IMAGE_ID}" in compose
     assert compose[compose.index("compose") :] == [
         "compose",
         "-p",
@@ -1812,7 +1821,7 @@ def test_deploy_preserves_exact_two_file_ownership_and_compose_command(monkeypat
     commands: list[list[str]] = []
     image_records = {
         f"ai-platform:{commit}": {
-            "id": "sha256:backend",
+            "id": SANDBOX_IMAGE_ID,
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -1908,7 +1917,7 @@ def test_deploy_accepts_trusted_prior_sibling_ordered_compose_ownership(
     commands: list[list[str]] = []
     image_records = {
         f"ai-platform:{commit}": {
-            "id": "sha256:backend",
+            "id": SANDBOX_IMAGE_ID,
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,

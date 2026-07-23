@@ -169,11 +169,7 @@ class SandboxRuntime:
                 "image_digest": image_digest,
                 "authorized_skill_scope": authorized_skill_scope,
                 "authorized_native_tool_scope": authorized_native_tool_scope,
-                "lease_identity": (
-                    f"docker:{lease.container_name}:{lease.container_id}"
-                    if lease.provider == "docker"
-                    else f"{lease.provider}:{lease.container_name}"
-                ),
+                "lease_identity": f"{lease.provider}:{lease.container_name}:{lease.container_id}",
             },
         )
         if lease.provider in REAL_SANDBOX_PROVIDERS and governed_egress_proof is None:
