@@ -2866,3 +2866,84 @@ def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, t
 
     assert not any("build" in command for command, _ in commands)
     assert sum("compose" in command for command, _ in commands) == 2
+
+
+def test_legacy_deploy_cli_dispatch_does_not_read_auto_strategy(monkeypatch, capsys, tmp_path):
+    observed = {}
+
+    def fake_deploy(repo_root, commit, **kwargs):
+        observed["repo_root"] = repo_root
+        observed["commit"] = commit
+        observed["kwargs"] = kwargs
+        return {"commit": commit}
+
+    monkeypatch.setattr("tools.release_authority.deploy_clean_commit", fake_deploy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py",
+            "deploy",
+            "--repo-root",
+            str(tmp_path),
+            "--commit",
+            "a" * 40,
+            "--env-file",
+            str(tmp_path / ".env"),
+        ],
+    )
+
+    assert release_authority.main() == 0
+    assert observed["repo_root"] == tmp_path
+    assert observed["commit"] == "a" * 40
+    assert "strategy" not in observed["kwargs"]
+    assert json.loads(capsys.readouterr().out) == {"commit": "a" * 40}
+
+
+def test_deploy_main_cli_forwards_explicit_auto_strategy(monkeypatch, capsys, tmp_path):
+    observed = {}
+
+    def fake_deploy_main(release_root, commit, **kwargs):
+        observed["release_root"] = release_root
+        observed["commit"] = commit
+        observed["kwargs"] = kwargs
+        return {"commit": commit}
+
+    monkeypatch.setattr("tools.release_authority.deploy_main_commit", fake_deploy_main)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py",
+            "deploy-main-commit",
+            "--release-root",
+            str(tmp_path / "releases"),
+            "--commit",
+            "b" * 40,
+            "--env-file",
+            str(tmp_path / ".env"),
+            "--strategy",
+            "auto",
+        ],
+    )
+
+    assert release_authority.main() == 0
+    assert observed["release_root"] == tmp_path / "releases"
+    assert observed["commit"] == "b" * 40
+    assert observed["kwargs"]["strategy"] == "auto"
+    assert json.loads(capsys.readouterr().out) == {"commit": "b" * 40}
+
+
+def test_backend_runtime_rebuild_clears_current_subjects_before_target_copies():
+    dockerfile = release_authority._backend_runtime_dockerfile()
+
+    cleanup = "RUN rm -rf /app/app /app/tools /app/scripts /app/skills /app/docs/release-evidence"
+    assert cleanup in dockerfile
+    assert dockerfile.index(cleanup) < dockerfile.index("COPY app /app/app")
+    assert dockerfile.index(cleanup) < dockerfile.index("COPY tools /app/tools")
+    assert dockerfile.index(cleanup) < dockerfile.index("COPY scripts /app/scripts")
+    assert dockerfile.index(cleanup) < dockerfile.index("COPY skills /app/skills")
+    assert dockerfile.index(cleanup) < dockerfile.index("COPY docs/release-evidence /app/docs/release-evidence")
+    assert "/app/docker-entrypoint.sh" in dockerfile.split("COPY app /app/app", 1)[0]
+    assert "/app/.ai-platform-source-snapshot.json" in dockerfile.split("COPY app /app/app", 1)[0]
+    assert not any(token in dockerfile.lower() for token in ("apt", "pip", "pnpm"))

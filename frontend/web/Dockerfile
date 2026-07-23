@@ -4,7 +4,7 @@ ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
 ARG AI_PLATFORM_BUILD_REPOSITORY=unknown
 
-FROM node:22-bookworm AS dependencies
+FROM node:22-bookworm AS build
 
 WORKDIR /workspace
 
@@ -12,8 +12,6 @@ COPY frontend/web/.npmrc frontend/web/package.json frontend/web/pnpm-lock.yaml f
 
 WORKDIR /workspace/frontend/web
 RUN corepack enable && corepack pnpm install --frozen-lockfile
-
-FROM dependencies AS build
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown

@@ -823,6 +823,9 @@ ARG AI_PLATFORM_BUILD_COMMIT
 ARG AI_PLATFORM_BUILD_DIRTY
 ARG AI_PLATFORM_BUILD_REPOSITORY
 USER root
+RUN rm -rf /app/app /app/tools /app/scripts /app/skills /app/docs/release-evidence \\
+    && rm -f /app/docker-entrypoint.sh /app/.ai-platform-source-revision \\
+       /app/.codex-source-revision /app/.source-commit /app/.ai-platform-source-snapshot.json
 COPY app /app/app
 COPY tools /app/tools
 COPY scripts /app/scripts
@@ -1796,7 +1799,6 @@ def main() -> int:
                     expected_manual_frontend_image=args.expected_manual_frontend_image,
                     expected_manual_frontend_image_id=args.expected_manual_frontend_image_id,
                     compose_files=args.compose_files,
-                    strategy=args.strategy,
                 ),
                 None,
             )
@@ -1811,6 +1813,7 @@ def main() -> int:
                     expected_manual_frontend_image=args.expected_manual_frontend_image,
                     expected_manual_frontend_image_id=args.expected_manual_frontend_image_id,
                     compose_files=args.compose_files,
+                    strategy=args.strategy,
                 ),
                 None,
             )

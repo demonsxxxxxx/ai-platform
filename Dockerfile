@@ -1,3 +1,17 @@
+FROM python:3.11-slim AS source-markers
+
+ARG AI_PLATFORM_BUILD_COMMIT=unknown
+ARG AI_PLATFORM_BUILD_DIRTY=unknown
+
+WORKDIR /app
+
+RUN printf '%s\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.ai-platform-source-revision \
+    && printf '%s\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.codex-source-revision \
+    && printf '%s\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.source-commit \
+    && AI_PLATFORM_BUILD_COMMIT="$AI_PLATFORM_BUILD_COMMIT" \
+       AI_PLATFORM_BUILD_DIRTY="$AI_PLATFORM_BUILD_DIRTY" \
+       python -c "import json, os; from pathlib import Path; commit = os.environ.get('AI_PLATFORM_BUILD_COMMIT', 'unknown').strip() or 'unknown'; dirty_text = os.environ.get('AI_PLATFORM_BUILD_DIRTY', 'unknown').strip().lower(); dirty = dirty_text != 'false'; dirty_paths = [] if not dirty else ['unknown_runtime_affecting_dirty_paths']; payload = dict(schema_version='ai-platform.source-snapshot.v1', source_tree_commit_sha=commit, runtime_subject_commit_sha=commit, source_tree_dirty=dirty, runtime_affecting_changes_since_runtime_subject=[], runtime_affecting_dirty_paths=dirty_paths, snapshot_source='dockerfile_build_args'); Path('/app/.ai-platform-source-snapshot.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')"
+
 FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -55,14 +69,10 @@ LABEL ai-platform.source-commit=$AI_PLATFORM_BUILD_COMMIT
 LABEL ai-platform.source-repository=$AI_PLATFORM_BUILD_REPOSITORY
 LABEL ai-platform.release-role=backend
 
+COPY --from=source-markers /app/.ai-platform-source-revision /app/.codex-source-revision /app/.source-commit /app/.ai-platform-source-snapshot.json /app/
+
 RUN chmod -R a+rX /app \
-    && chmod 0755 /app/docker-entrypoint.sh \
-    && printf '%s\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.ai-platform-source-revision \
-    && printf '%s\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.codex-source-revision \
-    && printf '%s\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.source-commit \
-    && AI_PLATFORM_BUILD_COMMIT="$AI_PLATFORM_BUILD_COMMIT" \
-       AI_PLATFORM_BUILD_DIRTY="$AI_PLATFORM_BUILD_DIRTY" \
-       python -c "import json, os; from pathlib import Path; commit = os.environ.get('AI_PLATFORM_BUILD_COMMIT', 'unknown').strip() or 'unknown'; dirty_text = os.environ.get('AI_PLATFORM_BUILD_DIRTY', 'unknown').strip().lower(); dirty = dirty_text != 'false'; dirty_paths = [] if not dirty else ['unknown_runtime_affecting_dirty_paths']; payload = dict(schema_version='ai-platform.source-snapshot.v1', source_tree_commit_sha=commit, runtime_subject_commit_sha=commit, source_tree_dirty=dirty, runtime_affecting_changes_since_runtime_subject=[], runtime_affecting_dirty_paths=dirty_paths, snapshot_source='dockerfile_build_args'); Path('/app/.ai-platform-source-snapshot.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')"
+    && chmod 0755 /app/docker-entrypoint.sh
 
 ENV APP_MODULE=app.main:create_app
 ENV APP_PORT=8020
