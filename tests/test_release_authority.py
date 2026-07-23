@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
+import traceback
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -2812,7 +2814,12 @@ def test_timeout_stage_is_bounded_and_redacted(monkeypatch, tmp_path):
 
     def timeout_run(command, **kwargs):
         seen["timeout"] = kwargs["timeout"]
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output="private-marker", stderr="private-marker")
+        raise subprocess.TimeoutExpired(
+            ["docker", "private-marker"],
+            kwargs["timeout"],
+            output="private-marker",
+            stderr="private-marker",
+        )
 
     monkeypatch.setattr("tools.release_authority._run", timeout_run)
     with pytest.raises(ReleaseAuthorityError, match="^release stage failed: backend-image$") as exc_info:
@@ -2828,13 +2835,17 @@ def test_timeout_stage_is_bounded_and_redacted(monkeypatch, tmp_path):
                 commit="8" * 40,
                 repository=AUTHORITATIVE_REPOSITORY,
                 role="backend",
-                source_only=False,
+                source_only=True,
             ),
         )
 
     assert seen["timeout"] == release_authority.BACKEND_STAGE_TIMEOUT_SECONDS
     assert exc_info.value.stage_events[-1]["status"] == "failed"
     assert "private-marker" not in str(exc_info.value)
+    formatted = "".join(traceback.format_exception(exc_info.type, exc_info.value, exc_info.tb))
+    assert "private-marker" not in formatted
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
 
 
 def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, tmp_path):
@@ -2947,3 +2958,331 @@ def test_backend_runtime_rebuild_clears_current_subjects_before_target_copies():
     assert "/app/docker-entrypoint.sh" in dockerfile.split("COPY app /app/app", 1)[0]
     assert "/app/.ai-platform-source-snapshot.json" in dockerfile.split("COPY app /app/app", 1)[0]
     assert not any(token in dockerfile.lower() for token in ("apt", "pip", "pnpm"))
+
+
+def _wait_for_owned_test_process_exit(pid: int, *, timeout_seconds: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if os.name == "nt":
+            tasklist = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if str(pid) not in tasklist.stdout:
+                return True
+            time.sleep(0.05)
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        time.sleep(0.05)
+    return False
+
+
+def test_run_timeout_terminates_owned_descendant_and_bounds_pipe_wait(tmp_path):
+    pid_file = tmp_path / "owned-descendant.pid"
+    child_code = "import time; time.sleep(60)"
+    parent_code = (
+        "import pathlib, subprocess, sys, time; "
+        f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid), encoding='utf-8'); "
+        "time.sleep(60)"
+    )
+    started = time.monotonic()
+    child_pid: int | None = None
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+            release_authority._run(
+                [sys.executable, "-c", parent_code],
+                timeout=0.25,
+            )
+        elapsed = time.monotonic() - started
+        assert elapsed < 3.0
+        assert exc_info.value.output is None
+        assert exc_info.value.stderr is None
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+        assert _wait_for_owned_test_process_exit(child_pid)
+    finally:
+        if child_pid is not None and not _wait_for_owned_test_process_exit(child_pid, timeout_seconds=0.05):
+            if os.name == "posix":
+                try:
+                    os.kill(child_pid, 9)
+                except ProcessLookupError:
+                    pass
+            else:
+                subprocess.run(
+                    ["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object regression")
+def test_run_timeout_windows_job_kills_pipe_holder_after_direct_parent_exit(monkeypatch, tmp_path):
+    parent_pid_file = tmp_path / "exited-parent.pid"
+    child_pid_file = tmp_path / "orphaned-pipe-holder.pid"
+    child_ready_file = tmp_path / "orphaned-pipe-holder.ready"
+    parent_done_file = tmp_path / "exited-parent.done"
+    child_code = (
+        "import pathlib, time; "
+        f"pathlib.Path({str(child_ready_file)!r}).write_text('ready', encoding='utf-8'); "
+        "time.sleep(30)"
+    )
+    parent_code = (
+        "import os, pathlib, subprocess, sys, time; "
+        f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        f"ready = pathlib.Path({str(child_ready_file)!r}); "
+        "deadline = time.monotonic() + 2; "
+        "exec(\"while not ready.exists() and time.monotonic() < deadline:\\n time.sleep(0.01)\"); "
+        "assert ready.exists(); "
+        f"pathlib.Path({str(parent_pid_file)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8'); "
+        f"pathlib.Path({str(parent_done_file)!r}).write_text('done', encoding='utf-8')"
+    )
+    started = time.monotonic()
+    child_pid: int | None = None
+    parent_returncodes: list[int | None] = []
+    original_terminate = release_authority._terminate_owned_process_tree
+
+    def observe_parent_exit(process, **kwargs):
+        parent_returncodes.append(process.poll())
+        return original_terminate(process, **kwargs)
+
+    monkeypatch.setattr(release_authority, "_terminate_owned_process_tree", observe_parent_exit)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            release_authority._run(
+                [sys.executable, "-c", parent_code],
+                timeout=0.5,
+            )
+        elapsed = time.monotonic() - started
+        assert parent_done_file.read_text(encoding="utf-8") == "done"
+        parent_pid = int(parent_pid_file.read_text(encoding="utf-8"))
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        assert elapsed < 3.0
+        assert parent_returncodes[0] == 0
+        assert _wait_for_owned_test_process_exit(parent_pid)
+        assert _wait_for_owned_test_process_exit(child_pid)
+    finally:
+        if child_pid is not None and not _wait_for_owned_test_process_exit(child_pid, timeout_seconds=0.05):
+            subprocess.run(
+                ["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object regression")
+def test_run_success_closes_job_without_killing_detached_descendant(tmp_path):
+    child_pid_file = tmp_path / "successful-detached-child.pid"
+    child_code = "import time; time.sleep(30)"
+    parent_code = (
+        "import pathlib, subprocess, sys; "
+        f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8')"
+    )
+    child_pid: int | None = None
+    try:
+        result = release_authority._run([sys.executable, "-c", parent_code], timeout=2)
+        assert result.returncode == 0
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        assert not _wait_for_owned_test_process_exit(child_pid, timeout_seconds=0.2)
+    finally:
+        if child_pid is not None and not _wait_for_owned_test_process_exit(child_pid, timeout_seconds=0.05):
+            subprocess.run(
+                ["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+
+def test_run_non_timeout_communicate_error_cleans_tree_and_preserves_exception(monkeypatch, tmp_path):
+    pid_file = tmp_path / "non-timeout-error-child.pid"
+    child_code = (
+        "import os, pathlib, time; "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
+        "time.sleep(60)"
+    )
+    original_communicate = subprocess.Popen.communicate
+    failure = TypeError("write() argument must be str, not bytes")
+    injected = False
+
+    def communicate_once(process, *args, **kwargs):
+        nonlocal injected
+        if not injected:
+            deadline = time.monotonic() + 2
+            while not pid_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if not pid_file.exists():
+                pytest.fail("controlled child did not start before communicate failure")
+            injected = True
+            raise failure
+        return original_communicate(process, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", communicate_once)
+    child_pid: int | None = None
+    try:
+        with pytest.raises(TypeError) as exc_info:
+            release_authority._run(
+                [sys.executable, "-c", child_code],
+                text=True,
+                input=b"binary-input",
+                timeout=5,
+            )
+        assert exc_info.value is failure
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+        assert _wait_for_owned_test_process_exit(child_pid)
+    finally:
+        if child_pid is not None and not _wait_for_owned_test_process_exit(child_pid, timeout_seconds=0.05):
+            if os.name == "posix":
+                try:
+                    os.kill(child_pid, 9)
+                except ProcessLookupError:
+                    pass
+            else:
+                subprocess.run(
+                    ["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+
+def test_run_timeout_redacts_captured_output_from_error():
+    environment = os.environ.copy()
+    environment["RELEASE_AUTHORITY_TEST_SECRET"] = "private-marker"
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        release_authority._run(
+            [
+                sys.executable,
+                "-c",
+                "import os, sys, time; secret = os.environ['RELEASE_AUTHORITY_TEST_SECRET']; print(secret); print(secret, file=sys.stderr); time.sleep(60)",
+            ],
+            env=environment,
+            timeout=0.1,
+        )
+
+    assert "private-marker" not in str(exc_info.value)
+    assert exc_info.value.output is None
+    assert exc_info.value.stderr is None
+
+
+def test_run_returns_normal_completed_process_without_terminating_successful_command(monkeypatch):
+    monkeypatch.setattr(
+        "tools.release_authority._terminate_owned_process_tree",
+        lambda *_args, **_kwargs: pytest.fail("successful command must not be terminated"),
+    )
+    result = release_authority._run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('complete'); print('diagnostic', file=sys.stderr)",
+        ],
+        timeout=2,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "complete\n"
+    assert result.stderr == "diagnostic\n"
+
+
+def test_run_preserves_text_binary_environment_cwd_and_check_contract(tmp_path):
+    environment = os.environ.copy()
+    environment["RELEASE_AUTHORITY_CONTRACT_VALUE"] = "contract-value"
+    text_result = release_authority._run(
+        [
+            sys.executable,
+            "-c",
+            "import json, os, pathlib, sys; print(json.dumps({'cwd': str(pathlib.Path.cwd()), 'env': os.environ['RELEASE_AUTHORITY_CONTRACT_VALUE'], 'input': sys.stdin.read()}))",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        input="text-input",
+    )
+    assert json.loads(text_result.stdout) == {
+        "cwd": str(tmp_path),
+        "env": "contract-value",
+        "input": "text-input",
+    }
+
+    binary_payload = b"\x00binary-input\xff"
+    binary_result = release_authority._run(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+        text=False,
+        input=binary_payload,
+    )
+    assert binary_result.stdout == binary_payload
+    assert binary_result.stderr == b""
+
+    with pytest.raises(TypeError, match="must be str, not bytes"):
+        release_authority._run(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            text=True,
+            input=b"invalid-binary-input",
+        )
+
+    unchecked = release_authority._run(
+        [sys.executable, "-c", "import sys; print('failed-output'); sys.exit(7)"],
+        check=False,
+    )
+    assert unchecked.returncode == 7
+    assert unchecked.stdout == "failed-output\n"
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        release_authority._run(
+            [sys.executable, "-c", "import sys; print('failed-error', file=sys.stderr); sys.exit(8)"],
+        )
+    assert exc_info.value.returncode == 8
+    assert exc_info.value.stderr == "failed-error\n"
+
+
+def test_role_timeouts_distinguish_canonical_dependency_from_source_only(monkeypatch, tmp_path):
+    observed: list[int] = []
+
+    def fake_run(command, **kwargs):
+        observed.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+    common = {
+        "docker": ["docker"],
+        "repo_root": tmp_path,
+        "reference": "ai-platform:" + "a" * 40,
+        "commit": "a" * 40,
+        "repository": AUTHORITATIVE_REPOSITORY,
+    }
+    release_authority._canonical_or_source_build(
+        **common,
+        role="backend",
+        source_only=False,
+    )
+    release_authority._canonical_or_source_build(
+        **common,
+        role="backend",
+        source_only=True,
+    )
+    release_authority._canonical_or_source_build(
+        **common,
+        role="frontend",
+        source_only=True,
+    )
+    release_authority._build_from_verified_role_image(
+        **common,
+        base_reference="ai-platform:" + "b" * 40,
+        role="backend",
+        dockerfile="FROM scratch\n",
+    )
+
+    assert observed == [
+        release_authority.CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+        release_authority.BACKEND_STAGE_TIMEOUT_SECONDS,
+        release_authority.FRONTEND_STAGE_TIMEOUT_SECONDS,
+        release_authority.BACKEND_STAGE_TIMEOUT_SECONDS,
+    ]

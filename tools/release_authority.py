@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -12,8 +13,10 @@ import os
 import posixpath
 import re
 import shlex
+import signal
 import subprocess
 import tarfile
+import threading
 import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -53,6 +56,9 @@ COMPATIBILITY_IMAGE_COMMIT_LABELS = (
 DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
 BACKEND_STAGE_TIMEOUT_SECONDS = 90
 FRONTEND_STAGE_TIMEOUT_SECONDS = 180
+CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 900
+PROCESS_TREE_TERMINATION_GRACE_SECONDS = 1
+WINDOWS_CREATE_SUSPENDED = 0x00000004
 BACKEND_DEPENDENCY_PATHS = frozenset({"pyproject.toml", "Dockerfile"})
 FRONTEND_DEPENDENCY_PATHS = frozenset(
     {
@@ -119,6 +125,184 @@ class _ComposeSelection:
     config_files: str
 
 
+def _create_owned_windows_job() -> int | None:
+    """Create the Windows Job Object that will retain the complete child tree."""
+    if os.name != "nt":
+        return None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_job = kernel32.CreateJobObjectW
+    create_job.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+    create_job.restype = ctypes.c_void_p
+    handle = create_job(None, None)
+    if not handle:
+        raise OSError(ctypes.get_last_error(), "unable to create owned Windows Job Object")
+    return int(handle)
+
+
+def _close_owned_windows_job(job_handle: int | None) -> None:
+    """Release an owned Job Object without terminating successful descendants."""
+    if os.name != "nt" or job_handle is None:
+        return
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [ctypes.c_void_p]
+        close_handle.restype = ctypes.c_int
+        close_handle(ctypes.c_void_p(job_handle))
+    except Exception:
+        pass
+
+
+def _assign_owned_windows_job(process: subprocess.Popen[Any], job_handle: int) -> None:
+    """Assign a still-suspended child before it can create untracked descendants."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    assign_process = kernel32.AssignProcessToJobObject
+    assign_process.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    assign_process.restype = ctypes.c_int
+    process_handle = int(getattr(process, "_handle"))
+    if not assign_process(ctypes.c_void_p(job_handle), ctypes.c_void_p(process_handle)):
+        raise OSError(ctypes.get_last_error(), "unable to assign subprocess to owned Windows Job Object")
+
+
+def _resume_owned_windows_process(process: subprocess.Popen[Any]) -> None:
+    """Resume a Windows child only after Job Object assignment is complete."""
+    ntdll = ctypes.WinDLL("ntdll")
+    resume_process = ntdll.NtResumeProcess
+    resume_process.argtypes = [ctypes.c_void_p]
+    resume_process.restype = ctypes.c_long
+    process_handle = int(getattr(process, "_handle"))
+    status = int(resume_process(ctypes.c_void_p(process_handle)))
+    if status != 0:
+        raise OSError(f"unable to resume owned Windows subprocess: NTSTATUS 0x{status & 0xFFFFFFFF:08x}")
+
+
+def _terminate_owned_windows_job(job_handle: int) -> bool:
+    """Force every process assigned to one authority-owned Windows Job Object to exit."""
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        terminate_job = kernel32.TerminateJobObject
+        terminate_job.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        terminate_job.restype = ctypes.c_int
+        return bool(terminate_job(ctypes.c_void_p(job_handle), 1))
+    except Exception:
+        return False
+
+
+def _owned_process_group_kwargs() -> dict[str, Any]:
+    """Start each bounded subprocess in a group that this authority exclusively owns."""
+    if os.name == "posix":
+        return {"start_new_session": True}
+    if os.name == "nt":
+        return {
+            "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | WINDOWS_CREATE_SUSPENDED,
+        }
+    return {}
+
+
+def _terminate_owned_process_tree(
+    process: subprocess.Popen[Any],
+    *,
+    force: bool,
+    windows_job_handle: int | None = None,
+) -> None:
+    """Signal only the process tree/session created by this authority's Popen call."""
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+        else:
+            return
+    if os.name == "nt":
+        if windows_job_handle is not None and _terminate_owned_windows_job(windows_job_handle):
+            return
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS,
+            )
+            if result.returncode == 0:
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        process.kill() if force else process.terminate()
+    except OSError:
+        pass
+
+
+def _close_process_pipes(process: subprocess.Popen[Any]) -> None:
+    """Close authority-owned pipes after bounded cleanup cannot drain them."""
+    streams = [stream for stream in (process.stdin, process.stdout, process.stderr) if stream is not None]
+
+    def close_stream(stream: Any) -> None:
+        if os.name == "nt":
+            try:
+                import msvcrt
+
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                cancel_io = kernel32.CancelIoEx
+                cancel_io.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                cancel_io.restype = ctypes.c_int
+                os_handle = msvcrt.get_osfhandle(stream.fileno())
+                cancel_io(ctypes.c_void_p(os_handle), None)
+            except Exception:
+                pass
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
+
+    if os.name == "nt":
+        closers = [threading.Thread(target=close_stream, args=(stream,), daemon=True) for stream in streams]
+        for closer in closers:
+            closer.start()
+        deadline = time.monotonic() + PROCESS_TREE_TERMINATION_GRACE_SECONDS
+        for closer in closers:
+            closer.join(max(0.0, deadline - time.monotonic()))
+        return
+    for stream in streams:
+        close_stream(stream)
+
+
+def _terminate_and_drain_owned_process(
+    process: subprocess.Popen[Any],
+    *,
+    windows_job_handle: int | None = None,
+) -> None:
+    """Terminate an owned tree and bound every post-timeout pipe-drain attempt."""
+    _terminate_owned_process_tree(
+        process,
+        force=False,
+        windows_job_handle=windows_job_handle,
+    )
+    try:
+        process.communicate(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
+        return
+    except BaseException:
+        pass
+    _terminate_owned_process_tree(
+        process,
+        force=True,
+        windows_job_handle=windows_job_handle,
+    )
+    try:
+        process.communicate(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
+        return
+    except BaseException:
+        _close_process_pipes(process)
+        try:
+            process.wait(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
+        except BaseException:
+            pass
+
+
 def _run(
     command: Sequence[str],
     *,
@@ -129,16 +313,63 @@ def _run(
     timeout: int = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
     input: str | bytes | None = None,
 ) -> subprocess.CompletedProcess[Any]:
-    return subprocess.run(
-        list(command),
-        cwd=cwd,
-        check=check,
-        capture_output=True,
-        text=text,
-        env=env,
-        timeout=timeout,
-        input=input,
-    )
+    arguments = list(command)
+    windows_job_handle = _create_owned_windows_job()
+    process: subprocess.Popen[Any] | None = None
+    windows_job_assigned = False
+    try:
+        try:
+            process = subprocess.Popen(
+                arguments,
+                cwd=cwd,
+                stdin=subprocess.PIPE if input is not None else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=text,
+                env=env,
+                **_owned_process_group_kwargs(),
+            )
+            if windows_job_handle is not None:
+                _assign_owned_windows_job(process, windows_job_handle)
+                windows_job_assigned = True
+                _resume_owned_windows_process(process)
+        except BaseException:
+            if process is not None:
+                try:
+                    _terminate_and_drain_owned_process(
+                        process,
+                        windows_job_handle=windows_job_handle if windows_job_assigned else None,
+                    )
+                except BaseException:
+                    pass
+            raise
+
+        try:
+            stdout, stderr = process.communicate(input=input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                _terminate_and_drain_owned_process(
+                    process,
+                    windows_job_handle=windows_job_handle if windows_job_assigned else None,
+                )
+            except BaseException:
+                pass
+            raise subprocess.TimeoutExpired(arguments, timeout) from None
+        except BaseException:
+            try:
+                _terminate_and_drain_owned_process(
+                    process,
+                    windows_job_handle=windows_job_handle if windows_job_assigned else None,
+                )
+            except BaseException:
+                pass
+            raise
+        result = subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+        if check:
+            result.check_returncode()
+        return result
+    finally:
+        _close_owned_windows_job(windows_job_handle)
 
 
 def _git(repo_root: Path, *args: str, text: bool = True) -> str | bytes:
@@ -280,9 +511,10 @@ def _stage(
 ) -> Any:
     """Run one bounded release stage and retain compact, redacted timing evidence."""
     started = time.monotonic()
+    stage_error: ReleaseAuthorityError | None = None
     try:
         value = operation()
-    except (OSError, subprocess.SubprocessError, ReleaseAuthorityError) as exc:
+    except (OSError, subprocess.SubprocessError, ReleaseAuthorityError):
         events.append(
             {
                 "stage": name,
@@ -292,9 +524,10 @@ def _stage(
                 "wall_time_seconds": round(time.monotonic() - started, 3),
             }
         )
-        error = ReleaseAuthorityError(f"release stage failed: {name}")
-        setattr(error, "stage_events", tuple(events))
-        raise error from exc
+        stage_error = ReleaseAuthorityError(f"release stage failed: {name}")
+        setattr(stage_error, "stage_events", tuple(events))
+    if stage_error is not None:
+        raise stage_error from None
     events.append(
         {
             "stage": name,
@@ -847,7 +1080,10 @@ def _build_args(commit: str, repository: str) -> list[str]:
     ]
 
 
-def _role_timeout(role: str) -> int:
+def _role_timeout(role: str, *, canonical_dependency: bool = False) -> int:
+    """Return the bounded timeout for one role action without widening fast-path SLOs."""
+    if canonical_dependency:
+        return CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
     if role == "backend":
         return BACKEND_STAGE_TIMEOUT_SECONDS
     if role == "frontend":
@@ -870,7 +1106,11 @@ def _canonical_or_source_build(
     if source_only:
         command.extend(["--target", "runtime"])
     command.extend(["-f", dockerfile, "."])
-    _run(command, cwd=repo_root, timeout=_role_timeout(role))
+    _run(
+        command,
+        cwd=repo_root,
+        timeout=_role_timeout(role, canonical_dependency=not source_only),
+    )
 
 
 def _build_from_verified_role_image(
