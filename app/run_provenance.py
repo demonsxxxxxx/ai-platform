@@ -273,6 +273,24 @@ def _artifact_tree_parent(
     return None, None
 
 
+def _ordinary_run_summary_error_message(
+    run: dict[str, object],
+    terminal_projection: dict[str, object] | None,
+) -> str:
+    """Keep persisted nonterminal diagnostics private behind the summary seam."""
+    if terminal_projection is not None:
+        return str(terminal_projection["message"])
+    # A nonterminal ``error_message`` is executor diagnostics.  It is not a
+    # public progress field, even when generic text sanitization leaves it
+    # syntax-safe.  Resolve raw Skill/agent terms here so every consumer crosses
+    # the same known-term policy before the value is deliberately withheld.
+    _readiness_public_text(
+        run.get("error_message"),
+        raw_terms=_readiness_raw_projection_terms(run),
+    )
+    return ""
+
+
 def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> dict[str, object]:
     raw_skill_id = str(run["skill_id"])
     raw_agent_id = str(run["agent_id"])
@@ -309,9 +327,9 @@ def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> di
             )
         ),
         "error_message": (
-            str(terminal_projection["message"])
-            if terminal_projection is not None
-            else sanitize_public_text(run.get("error_message"))
+            sanitize_public_text(run.get("error_message"))
+            if show_raw_skill
+            else _ordinary_run_summary_error_message(run, terminal_projection)
         ),
     }
 
@@ -769,22 +787,9 @@ def run_checkpoint_audit_snapshot(
         "gaps": sum(len(item["gaps"]) for item in checkpoint_items) + len(uncheckpointed),
         "uncheckpointed_reusable_steps": len(uncheckpointed),
     }
-    run_summary = run_playback_summary(run, principal)
-    if not is_ai_admin(principal):
-        raw_error_message = run_summary.get("error_message")
-        error_fallback = (
-            "run_failed"
-            if raw_error_message and normalize_run_status(str(run["status"])) == "failed"
-            else ""
-        )
-        run_summary["error_message"] = _readiness_public_text(
-            raw_error_message,
-            fallback=error_fallback,
-            raw_terms=raw_terms,
-        )
     return {
         "contract_version": RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION,
-        "run": run_summary,
+        "run": run_playback_summary(run, principal),
         "counts": counts,
         "checkpoints": checkpoint_items,
         "uncheckpointed_reusable_steps": uncheckpointed,

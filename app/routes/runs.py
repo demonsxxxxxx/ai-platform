@@ -356,39 +356,23 @@ def run_resume_manifest_snapshot(
     authorized_source_run_ids: set[str] | None = None,
 ) -> dict[str, object]:
     """Return read-only checkpoint reuse intent for a copied run."""
-    if not is_ai_admin(principal):
+    show_raw_skill = is_ai_admin(principal)
+    if not show_raw_skill:
         manifest_steps = [_ordinary_resume_manifest_step(step) for step in run_step_responses(steps, principal=principal)]
-        counts = {
-            "total": len(manifest_steps),
-            "reuse_pending": sum(1 for item in manifest_steps if item["reuse_intent"] == "reuse_pending"),
-            "rerun": sum(1 for item in manifest_steps if item["reuse_intent"] == "rerun"),
-            "pending": sum(1 for item in manifest_steps if item["status"] == "pending"),
-            "running": sum(1 for item in manifest_steps if item["status"] == "running"),
-            "succeeded": sum(1 for item in manifest_steps if item["status"] == "succeeded"),
-            "failed": sum(1 for item in manifest_steps if item["status"] == "failed"),
-            "cancelled": sum(1 for item in manifest_steps if item["status"] == "cancelled"),
-        }
-        return {
-            "contract_version": RUN_RESUME_MANIFEST_CONTRACT_VERSION,
-            "run": run_playback_summary(run, principal),
-            "source_run_id": None,
-            "resume_enabled": counts["reuse_pending"] > 0,
-            "reason": "reuse_pending" if counts["reuse_pending"] > 0 else "no_reuse_pending",
-            "counts": counts,
-            "steps": manifest_steps,
-        }
-    raw_terms = readiness_raw_projection_terms(run)
-    manifest_steps = [
-        _resume_manifest_step(
-            row,
-            principal,
-            raw_terms=raw_terms,
-            authorized_source_run_ids=authorized_source_run_ids or set(),
-        )
-        for row in steps
-    ]
-    source_run_ids = sorted({str(item["source_run_id"]) for item in manifest_steps if item.get("source_run_id")})
-    source_run_id = source_run_ids[0] if len(source_run_ids) == 1 else None
+        source_run_id = None
+    else:
+        raw_terms = readiness_raw_projection_terms(run)
+        manifest_steps = [
+            _resume_manifest_step(
+                row,
+                principal,
+                raw_terms=raw_terms,
+                authorized_source_run_ids=authorized_source_run_ids or set(),
+            )
+            for row in steps
+        ]
+        source_run_ids = sorted({str(item["source_run_id"]) for item in manifest_steps if item.get("source_run_id")})
+        source_run_id = source_run_ids[0] if len(source_run_ids) == 1 else None
     counts = {
         "total": len(manifest_steps),
         "reuse_pending": sum(1 for item in manifest_steps if item["reuse_intent"] == "reuse_pending"),
@@ -399,23 +383,10 @@ def run_resume_manifest_snapshot(
         "failed": sum(1 for item in manifest_steps if item["status"] == "failed"),
         "cancelled": sum(1 for item in manifest_steps if item["status"] == "cancelled"),
     }
-    run_summary = run_playback_summary(run, principal)
-    if not is_ai_admin(principal):
-        raw_error_message = run_summary.get("error_message")
-        error_fallback = (
-            "run_failed"
-            if raw_error_message and normalize_run_status(str(run["status"])) == "failed"
-            else ""
-        )
-        run_summary["error_message"] = readiness_public_text(
-            raw_error_message,
-            fallback=error_fallback,
-            raw_terms=raw_terms,
-        )
     resume_enabled = counts["reuse_pending"] > 0
     return {
         "contract_version": RUN_RESUME_MANIFEST_CONTRACT_VERSION,
-        "run": run_summary,
+        "run": run_playback_summary(run, principal),
         "source_run_id": source_run_id,
         "resume_enabled": resume_enabled,
         "reason": "reuse_pending" if resume_enabled else "no_reuse_pending",

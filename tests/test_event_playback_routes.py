@@ -239,6 +239,7 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
     )
     active_run = run_row()
     active_run["status"] = "running"
+    active_run["error_message"] = f"{raw_terms[4]} is waiting for {raw_terms[5]}"
     failed_event = event_row(
         event_id="evt-step-failed",
         sequence=4,
@@ -341,6 +342,7 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
     assert event["payload"] == {}
     playback = playback_response.json()
     assert playback["run"]["status"] == "running"
+    assert playback["run"]["error_message"] == ""
     assert playback["events"][0] == event
     assert playback["artifacts"][0]["artifact_id"] == "artifact-a"
     snapshot = playback["multi_agent"]
@@ -855,7 +857,9 @@ def test_run_playback_projection_redacts_ordinary_user_timeline(monkeypatch):
 def test_run_provenance_snapshot_links_steps_checkpoints_and_artifacts(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
-        return run_row()
+        row = run_row()
+        row["error_message"] = "qa-file-reviewer is waiting for qa-word-review"
+        return row
 
     async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
         return [artifact_row()]
@@ -887,6 +891,7 @@ def test_run_provenance_snapshot_links_steps_checkpoints_and_artifacts(monkeypat
     assert body["contract_version"] == "ai-platform.run-provenance.v1"
     assert body["run"]["run_id"] == "run-a"
     assert body["run"]["skill_id"] is None
+    assert body["run"]["error_message"] == ""
     assert body["graph"]["counts"] == {
         "steps": 1,
         "artifacts": 1,

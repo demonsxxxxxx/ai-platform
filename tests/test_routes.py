@@ -710,14 +710,17 @@ def test_run_playback_summary_projects_public_agent_id_for_ordinary_user():
             "skill_id": "qa-file-reviewer",
             "status": "running",
             "error_code": None,
-            "error_message": None,
+            "error_message": "qa-file-reviewer is waiting for qa-word-review; executor note opaque-4711",
         },
         principal=principal(),
     )
 
     assert summary["agent_id"] == "document-review"
     assert summary["capability_id"] == "document_review"
+    assert summary["error_message"] == ""
+    assert "qa-file-reviewer" not in str(summary)
     assert "qa-word-review" not in str(summary)
+    assert "opaque-4711" not in str(summary)
 
 
 @pytest.mark.asyncio
@@ -2661,14 +2664,9 @@ async def test_control_readiness_and_resume_manifest_omit_unmapped_executor_depe
         "sequence": 2,
         "status": "pending",
         "depends_on": [],
-        "dependency_statuses": [
-            {"step_key": None, "status": "hidden", "reason": "unsafe_dependency"},
-            {"step_key": None, "status": "hidden", "reason": "unsafe_dependency"},
-            {"step_key": None, "status": "hidden", "reason": "unsafe_dependency"},
-        ],
+        "dependency_statuses": [],
         "ready": False,
         "blocked_reason": "hidden_dependencies",
-        "source": "recorded",
     }
     assert readiness["multi_agent"]["counts"]["hidden_dependencies"] == 3
     assert manifest["steps"][1] == {

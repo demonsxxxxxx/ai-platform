@@ -154,6 +154,8 @@ def _ordinary_multi_agent_readiness_snapshot(
     public_steps = run_step_responses(steps, principal=principal)
     status_by_step_id = {str(step["step_id"]): str(step["status"]) for step in public_steps}
     readiness_steps: list[dict[str, object]] = []
+    missing_dependencies = 0
+    hidden_dependencies = 0
     for public_step in public_steps:
         payload = public_step.get("payload") if isinstance(public_step.get("payload"), dict) else {}
         mapped_dependencies = payload.get("depends_on") if isinstance(payload.get("depends_on"), list) else []
@@ -182,6 +184,16 @@ def _ordinary_multi_agent_readiness_snapshot(
         status = str(public_step["status"])
         blocked_reason = multi_agent_blocked_reason(status, dependency_state)
         ready = status == "pending" and blocked_reason is None
+        missing_dependencies += sum(
+            1
+            for dependency in dependency_state
+            if dependency.get("status") == "missing"
+        )
+        hidden_dependencies += sum(
+            1
+            for dependency in dependency_state
+            if dependency.get("status") == "hidden"
+        )
         readiness_steps.append(
             {
                 "step_key": str(public_step["step_id"]),
@@ -191,24 +203,11 @@ def _ordinary_multi_agent_readiness_snapshot(
                 "sequence": int(public_step.get("sequence") or 0),
                 "status": status,
                 "depends_on": mapped_dependencies if complete_mapping else [],
-                "dependency_statuses": dependency_state,
+                "dependency_statuses": dependency_state if complete_mapping else [],
                 "ready": ready,
                 "blocked_reason": blocked_reason,
-                "source": "recorded",
             }
         )
-    missing_dependencies = sum(
-        1
-        for item in readiness_steps
-        for dependency in item["dependency_statuses"]
-        if isinstance(dependency, dict) and dependency.get("status") == "missing"
-    )
-    hidden_dependencies = sum(
-        1
-        for item in readiness_steps
-        for dependency in item["dependency_statuses"]
-        if isinstance(dependency, dict) and dependency.get("status") == "hidden"
-    )
     blocked = sum(
         1
         for item in readiness_steps
@@ -604,18 +603,9 @@ def run_control_readiness_snapshot(
 
     retry_enabled = status in RUN_CONTROL_RETRY_PREVIEW_STATUSES
     retry_reason = "retry_available" if retry_enabled else "status_not_retryable"
-    run_summary = run_playback_summary(run, principal)
-    if not is_ai_admin(principal):
-        raw_error_message = run_summary.get("error_message")
-        error_fallback = "run_failed" if raw_error_message and status == "failed" else ""
-        run_summary["error_message"] = readiness_public_text(
-            raw_error_message,
-            fallback=error_fallback,
-            raw_terms=raw_terms,
-        )
     return {
         "contract_version": RUN_CONTROL_READINESS_CONTRACT_VERSION,
-        "run": run_summary,
+        "run": run_playback_summary(run, principal),
         "actions": {
             "cancel": _control_action(
                 enabled=cancel_enabled,
