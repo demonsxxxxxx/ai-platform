@@ -840,19 +840,33 @@ class GatewayApplication:
         raise GatewayError(503, "reservation_reconciliation_ambiguous")
 
     def _delete_upstream_and_verify(self, sandbox_id: str) -> bool:
-        result = self.lifecycle.request("DELETE", f"/v1/sandboxes/{sandbox_id}")
-        if result.status not in (200, 202, 204, 404):
+        deadline = operation_deadline(self.config.request_timeout_seconds)
+        try:
+            with deadline_scope(deadline):
+                result = self.lifecycle.request("DELETE", f"/v1/sandboxes/{sandbox_id}")
+                if result.status not in (200, 202, 204, 404):
+                    return False
+                for attempt in range(8):
+                    current = self.lifecycle.request("GET", f"/v1/sandboxes/{sandbox_id}")
+                    if current.status == 404:
+                        return True
+                    if current.status != 200:
+                        return False
+                    if attempt != 7:
+                        time.sleep(min(0.05, deadline.remaining()))
+        except (DeadlineExceeded, GatewayError):
             return False
-        return self.lifecycle.request("GET", f"/v1/sandboxes/{sandbox_id}").status == 404
+        return False
 
-    def _cleanup_pending(self, record: LeaseRecord) -> None:
+    def _cleanup_pending(self, record: LeaseRecord) -> bool:
         if not self._delete_upstream_and_verify(record.sandbox_id):
-            return
+            return False
         self.runtime.stop_relay(record)
         self.runtime.cleanup_mailbox(record)
         record.state = "deleted"
         record.signature = self._sign_record(record)
         self.store.save(record)
+        return True
 
     def _get(self, sandbox_id: str) -> Response:
         record, upstream = self._attest(sandbox_id)
@@ -916,22 +930,12 @@ class GatewayApplication:
         if record is None or record.state == "deleted":
             return Response(204, {"content-length": "0"}, b"")
         self._verify_record(record)
-        try:
-            self.runtime.verify(record)
-        except GatewayError:
-            # A missing upstream object is still safe to close because the signed
-            # record fixes the exact target; drift is never silently accepted.
-            current = self.lifecycle.request("GET", f"/v1/sandboxes/{sandbox_id}")
-            if current.status != 404:
-                raise
-        result = self.lifecycle.request("DELETE", f"/v1/sandboxes/{sandbox_id}")
-        if result.status not in (200, 202, 204, 404):
-            raise GatewayError(502, "upstream_delete_failed")
-        self.runtime.stop_relay(record)
-        self.runtime.cleanup_mailbox(record)
-        record.state = "deleted"
-        record.signature = self._sign_record(record)
-        self.store.save(record)
+        if record.state != "cleanup_pending":
+            record.state = "cleanup_pending"
+            record.signature = self._sign_record(record)
+            self.store.save(record)
+        if not self._cleanup_pending(record):
+            raise GatewayError(503, "cleanup_pending")
         return Response(204, {"content-length": "0"}, b"")
 
     def _endpoint(self, sandbox_id: str, port: int, query: str) -> Response:

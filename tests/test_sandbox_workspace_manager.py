@@ -12,6 +12,7 @@ def request(**overrides) -> SandboxRuntimeRequest:
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "attempt-a",
         "agent_id": "general-agent",
         "skill_ids": ["general-chat"],
         "input_message": "hello",

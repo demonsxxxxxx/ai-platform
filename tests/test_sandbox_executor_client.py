@@ -45,6 +45,7 @@ def test_callback_running_new_message_maps_to_assistant_delta():
     callback = ExecutorCallbackEvent(
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         callback_token_id="cbt_run-a",
         status="running",
         progress=20,
@@ -63,6 +64,7 @@ def test_callback_current_step_maps_to_tool_call_delta():
     callback = ExecutorCallbackEvent(
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         callback_token_id="cbt_run-a",
         status="running",
         progress=35,
@@ -82,6 +84,7 @@ def test_callback_terminal_status_does_not_map_to_authoritative_run_event(status
     callback = ExecutorCallbackEvent(
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         callback_token_id="cbt_run-a",
         status=status,
         progress=100 if status == "completed" else 60,
@@ -99,6 +102,7 @@ def test_callback_typed_events_are_appended_after_compatibility_events():
     callback = ExecutorCallbackEvent(
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         callback_token_id="cbt_run-a",
         status="running",
         progress=45,
@@ -145,6 +149,7 @@ async def test_executor_client_posts_task_request(monkeypatch):
     request = ExecutorTaskRequest(
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         prompt="hello",
         callback_url="http://callback",
         callback_token_id="cbt_run-a",
@@ -180,6 +185,7 @@ async def test_executor_client_uses_normal_deadline_without_permission_wait(monk
     request = ExecutorTaskRequest(
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         prompt="hello",
         callback_url="http://callback",
         callback_token_id="cbt_run-a",
@@ -205,6 +211,7 @@ async def test_executor_client_connects_to_pinned_ip_without_transmitting_privat
     request = ExecutorTaskRequest(
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         prompt="hello",
         callback_url="http://callback",
         callback_token_id="cbt_run-a",
@@ -259,6 +266,7 @@ async def test_executor_client_rejects_unsafe_private_connect_metadata_without_d
     request = ExecutorTaskRequest(
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         prompt="hello",
         callback_url="http://callback",
         callback_token_id="cbt_run-a",
@@ -292,6 +300,7 @@ async def test_executor_client_allows_explicit_timeout_override():
     request = ExecutorTaskRequest(
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         prompt="hello",
         callback_url="http://callback",
         callback_token_id="cbt_run-a",
@@ -310,6 +319,7 @@ async def test_executor_client_deadline_and_cancellation_never_return_an_accepte
     request = ExecutorTaskRequest(
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         prompt="hello",
         callback_url="http://callback",
         callback_token_id="cbt_run-a",

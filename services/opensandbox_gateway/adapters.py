@@ -736,7 +736,7 @@ class MailboxBroker:
             return self._poll_until(deadline)
 
     def _poll_until(self, deadline) -> int:
-        records = list(self.store.list({}))
+        records = list(self.store.list({"state": "active"}))
         if not records:
             self._rotation = 0
             return 0
@@ -797,9 +797,10 @@ class MailboxBroker:
         now: float,
     ) -> tuple[int, int, list[tuple[str, int, int, int, int]]]:
         descriptors = self._open_record_mailbox(record)
-        workspace_fd, _mailbox_fd, request_fd, response_fd = descriptors
+        workspace_fd, _mailbox_fd, request_fd, claim_fd, response_fd = descriptors
         try:
             _revalidate_workspace_fd(workspace_fd, record.workspace_host_path)
+            self._prune_claims(claim_fd)
             self._prune_responses(response_fd)
             candidates = sorted(
                 name for name in os.listdir(request_fd) if re.fullmatch(r"[0-9a-f]{32}\.json", name)
@@ -835,16 +836,22 @@ class MailboxBroker:
         overflow: bool,
     ) -> bool:
         descriptors = self._open_record_mailbox(record)
-        workspace_fd, _mailbox_fd, request_fd, response_fd = descriptors
+        workspace_fd, _mailbox_fd, request_fd, claim_fd, response_fd = descriptors
         name = entry[0]
+        claimed = None
+        finished = False
         try:
             _revalidate_workspace_fd(workspace_fd, record.workspace_host_path)
+            claimed = self._claim_request(request_fd, claim_fd, entry)
+            if claimed is None:
+                self.store.record_deny("mailbox-broker", "broker_request_changed")
+                return False
             if overflow:
                 self.store.record_deny("mailbox-broker", "broker_backlog_exceeded")
                 response = self._error_response(429, "broker_backlog_exceeded")
             else:
                 try:
-                    response = self._process(request_fd, name, entry)
+                    response = self._process(claim_fd, claimed[0], claimed)
                 except DeadlineExceeded:
                     raise
                 except GatewayError as exc:
@@ -853,14 +860,12 @@ class MailboxBroker:
                 except Exception:
                     self.store.record_deny("mailbox-broker", "broker_internal_error")
                     response = self._error_response(500, "broker_internal_error")
-            if not self._request_identity_matches(request_fd, entry):
-                self.store.record_deny("mailbox-broker", "broker_request_changed")
-                return False
             self._write_response(response_fd, name, response)
-            if not self._unlink_request_if_identity(request_fd, entry):
+            if not self._unlink_request_if_identity(claim_fd, claimed):
                 self._unlink_response_if_regular(response_fd, name)
                 self.store.record_deny("mailbox-broker", "broker_request_changed")
                 return False
+            finished = True
             return True
         except DeadlineExceeded:
             raise
@@ -868,21 +873,28 @@ class MailboxBroker:
             self.store.record_deny("mailbox-broker", "broker_response_write_failed")
             return False
         finally:
+            if claimed is not None and not finished:
+                try:
+                    self._unlink_request_if_identity(claim_fd, claimed)
+                except OSError:
+                    pass
             self._close_mailbox(descriptors)
 
-    def _open_record_mailbox(self, record: LeaseRecord) -> tuple[int, int, int, int]:
-        workspace_fd = mailbox_fd = request_fd = response_fd = None
+    def _open_record_mailbox(self, record: LeaseRecord) -> tuple[int, int, int, int, int]:
+        workspace_fd = mailbox_fd = request_fd = claim_fd = response_fd = None
         try:
             workspace_fd = _open_workspace_dirfd(self.workspace_root, record.workspace_host_path)
             mailbox_fd = os.open(".opensandbox-gateway", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=workspace_fd)
             request_fd = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
+            claim_fd = os.open("claims", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
             response_fd = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
             _require_directory(mailbox_fd, uid=0, gid=0, mode=0o711)
             _require_directory(request_fd, uid=1000, gid=os.getgid(), mode=0o2770)
+            _require_directory(claim_fd, uid=os.getuid(), gid=os.getgid(), mode=0o700)
             _require_directory(response_fd, uid=os.getuid(), gid=os.getgid(), mode=0o755)
-            return workspace_fd, mailbox_fd, request_fd, response_fd
+            return workspace_fd, mailbox_fd, request_fd, claim_fd, response_fd
         except Exception:
-            self._close_mailbox((workspace_fd, mailbox_fd, request_fd, response_fd))
+            self._close_mailbox((workspace_fd, mailbox_fd, request_fd, claim_fd, response_fd))
             raise
 
     @staticmethod
@@ -950,6 +962,8 @@ class MailboxBroker:
         if not target.hostname:
             raise GatewayError(500, "broker_policy_invalid")
         allowed_headers = {"authorization", "content-type", "accept", "anthropic-version", "x-api-key", "user-agent"}
+        if kind == "callback":
+            allowed_headers.add("x-ai-platform-callback-token")
         outbound_headers = {str(k).lower(): str(v) for k, v in headers.items() if str(k).lower() in allowed_headers}
         deadline = operation_deadline(self.timeout_seconds)
         connection = _PinnedHTTPSConnection(target.hostname, target.port or 443, ips, deadline)
@@ -996,6 +1010,26 @@ class MailboxBroker:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
+
+    @classmethod
+    def _claim_request(
+        cls,
+        request_fd: int,
+        claim_fd: int,
+        expected: tuple[str, int, int, int, int],
+    ) -> tuple[str, int, int, int, int] | None:
+        if not cls._request_identity_matches(request_fd, expected):
+            return None
+        claimed_name = f"{expected[0]}.{secrets.token_hex(16)}.claim"
+        try:
+            os.rename(expected[0], claimed_name, src_dir_fd=request_fd, dst_dir_fd=claim_fd)
+            claimed = (claimed_name, expected[1], expected[2], expected[3], expected[4])
+            if cls._request_identity_matches(claim_fd, claimed):
+                return claimed
+            cls._unlink_response_if_regular(claim_fd, claimed_name)
+        except OSError:
+            pass
+        return None
 
     @classmethod
     def _unlink_request_if_identity(
@@ -1061,6 +1095,21 @@ class MailboxBroker:
                 if stat.S_ISREG(evidence.st_mode) and evidence.st_mtime < cutoff:
                     cls._unlink_response_if_regular(response_fd, name)
                     removed += 1
+            except FileNotFoundError:
+                continue
+
+    @classmethod
+    def _prune_claims(cls, claim_fd: int) -> None:
+        cutoff = time.time() - cls.REQUEST_TTL_SECONDS
+        removed = 0
+        for name in sorted(os.listdir(claim_fd)):
+            if removed >= cls.EXPIRED_SWEEP_LIMIT or not re.fullmatch(r"[0-9a-f]{32}\.json\.[0-9a-f]{32}\.claim", name):
+                continue
+            try:
+                evidence = os.stat(name, dir_fd=claim_fd, follow_symlinks=False)
+                identity = (name, evidence.st_dev, evidence.st_ino, evidence.st_size, evidence.st_mtime_ns)
+                if stat.S_ISREG(evidence.st_mode) and evidence.st_mtime < cutoff:
+                    removed += int(cls._unlink_request_if_identity(claim_fd, identity))
             except FileNotFoundError:
                 continue
 
@@ -1185,19 +1234,25 @@ def _prepare_mailbox(workspace_fd: int, workspace_path: str, broker_uid: int, br
         os.fchown(mailbox_fd, 0, 0)
         os.fchmod(mailbox_fd, 0o711)
         os.mkdir("requests", mode=0o700, dir_fd=mailbox_fd)
+        os.mkdir("claims", mode=0o700, dir_fd=mailbox_fd)
         os.mkdir("responses", mode=0o700, dir_fd=mailbox_fd)
         request_fd = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
+        claim_fd = os.open("claims", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
         response_fd = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
         try:
             os.fchown(request_fd, 1000, broker_gid)
             os.fchmod(request_fd, 0o2770)
+            os.fchown(claim_fd, broker_uid, broker_gid)
+            os.fchmod(claim_fd, 0o700)
             os.fchown(response_fd, broker_uid, broker_gid)
             os.fchmod(response_fd, 0o755)
             _require_directory(mailbox_fd, uid=0, gid=0, mode=0o711)
             _require_directory(request_fd, uid=1000, gid=broker_gid, mode=0o2770)
+            _require_directory(claim_fd, uid=broker_uid, gid=broker_gid, mode=0o700)
             _require_directory(response_fd, uid=broker_uid, gid=broker_gid, mode=0o755)
         finally:
             os.close(response_fd)
+            os.close(claim_fd)
             os.close(request_fd)
     finally:
         os.close(mailbox_fd)

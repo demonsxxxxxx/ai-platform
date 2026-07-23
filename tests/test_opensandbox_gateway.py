@@ -42,6 +42,7 @@ from services.opensandbox_gateway.gateway import (
     CAPABILITY_VERSION,
     CONTRACT_VERSION,
     ROUTE_HEADER,
+    DeadlineExceeded,
     GatewayApplication,
     GatewayConfig,
     GatewayError,
@@ -593,6 +594,81 @@ def test_list_requires_scope_and_cancel_delete_are_idempotent() -> None:
     assert sum(method == "DELETE" for method, _, _ in lifecycle.requests) == 1
 
 
+def test_async_delete_keeps_durable_ownership_until_authoritative_not_found() -> None:
+    class AsyncDelete(InMemoryLifecycleTransport):
+        present_gets = 9
+
+        def request(self, method: str, path: str, body: bytes = b"") -> Response:
+            if method == "DELETE" and path.startswith("/v1/sandboxes/"):
+                self.requests.append((method, path, body))
+                return Response(202, {"content-length": "0"}, b"")
+            if method == "GET" and path.startswith("/v1/sandboxes/") and self.present_gets > 0:
+                self.requests.append((method, path, body))
+                self.present_gets -= 1
+                sandbox_id = path.rsplit("/", 1)[1]
+                return Response.json(200, self.sandboxes[sandbox_id])
+            if method == "GET" and path.startswith("/v1/sandboxes/"):
+                self.sandboxes.pop(path.rsplit("/", 1)[1], None)
+            return super().request(method, path, body)
+
+    class TrackingRuntime(InMemoryRuntimeAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mailbox_cleanups: list[str] = []
+
+        def cleanup_mailbox(self, record) -> None:
+            self.mailbox_cleanups.append(record.sandbox_id)
+
+    lifecycle = AsyncDelete()
+    runtime = TrackingRuntime()
+    store = InMemoryStateStore()
+    app = GatewayApplication(gateway_config(), lifecycle, runtime, store)
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "async-delete")))["id"]
+
+    pending = call(app, "DELETE", f"/v1/sandboxes/{sandbox_id}")
+    assert pending.status == 503
+    assert decoded(pending)["error"]["code"] == "cleanup_pending"
+    assert store.get(sandbox_id).state == "cleanup_pending"
+    assert sandbox_id in runtime.relays
+    assert runtime.mailbox_cleanups == []
+
+    completed = call(app, "DELETE", f"/v1/sandboxes/{sandbox_id}")
+    assert completed.status == 204
+    assert store.get(sandbox_id).state == "deleted"
+    assert sandbox_id not in runtime.relays
+    assert runtime.mailbox_cleanups == [sandbox_id]
+    assert call(app, "DELETE", f"/v1/sandboxes/{sandbox_id}").status == 204
+
+
+def test_uncertain_delete_survives_restart_and_broker_excludes_pending(tmp_path) -> None:
+    class UncertainDelete(InMemoryLifecycleTransport):
+        available = False
+
+        def request(self, method: str, path: str, body: bytes = b"") -> Response:
+            if method == "DELETE" and path.startswith("/v1/sandboxes/") and not self.available:
+                raise GatewayError(502, "upstream_unavailable")
+            return super().request(method, path, body)
+
+    lifecycle = UncertainDelete()
+    runtime = InMemoryRuntimeAdapter()
+    state_path = tmp_path / "async-delete.sqlite3"
+    store = SQLiteStateStore(str(state_path))
+    app = GatewayApplication(gateway_config(), lifecycle, runtime, store)
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "restart-delete")))["id"]
+
+    assert call(app, "DELETE", f"/v1/sandboxes/{sandbox_id}").status == 503
+    assert store.get(sandbox_id).state == "cleanup_pending"
+    broker = MailboxBroker(store, SimpleNamespace(targets={}), 0.1, 1024)
+    assert broker.poll_once() == 0
+
+    lifecycle.available = True
+    restarted_runtime = InMemoryRuntimeAdapter()
+    restarted_runtime.relays.add(sandbox_id)
+    restarted = GatewayApplication(gateway_config(), lifecycle, restarted_runtime, SQLiteStateStore(str(state_path)))
+    assert restarted.store.get(sandbox_id).state == "deleted"
+    assert sandbox_id not in restarted_runtime.relays
+
+
 def test_capability_auth_schema_signature_and_broker_policy() -> None:
     app, _, _, _ = application()
     assert app.handle(Request("GET", "/v1/capabilities/external-egress", {}, b"")).status == 401
@@ -897,8 +973,11 @@ def test_absolute_request_deadline_closes_slowloris_and_releases_slot(partial: b
     started = time.monotonic()
     try:
         chunks = []
-        while chunk := slow.recv(4096):
-            chunks.append(chunk)
+        try:
+            while chunk := slow.recv(4096):
+                chunks.append(chunk)
+        except ConnectionResetError:
+            pass
         timed_out = b"".join(chunks)
         assert timed_out == b"" or (b"408 Request Timeout" in timed_out and b"request_timeout" in timed_out)
         assert time.monotonic() - started < 0.8
@@ -1318,8 +1397,10 @@ def test_mailbox_poll_consumes_one_shared_absolute_budget(monkeypatch) -> None:
     broker = MailboxBroker(store, SimpleNamespace(targets={}), 0.1, 1024)
     entries = [(name, 1, index + 1, 10, index + 1) for index, name in enumerate(names)]
     broker._snapshot_record = lambda *_: (len(entries), 20, entries)
-    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4)
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
     broker._close_mailbox = lambda _descriptors: None
+    broker._claim_request = lambda _request_fd, _claim_fd, entry: entry
+    broker._prune_claims = lambda _claim_fd: None
     broker._request_identity_matches = lambda *_: True
     broker._unlink_request_if_identity = lambda *_: True
     processed: list[str] = []
@@ -1587,6 +1668,90 @@ def test_mailbox_request_inode_change_fails_closed(monkeypatch) -> None:
         broker._process(6, "0" * 32 + ".json")
 
 
+def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(monkeypatch) -> None:
+    captured: list[tuple[str, dict[str, str]]] = []
+
+    class FakeResponse:
+        status = 200
+
+        @staticmethod
+        def read(_limit):
+            return b"{}"
+
+        @staticmethod
+        def getheaders():
+            return [("content-type", "application/json")]
+
+    class FakeConnection:
+        sock = None
+
+        def __init__(self, *_args):
+            pass
+
+        def request(self, _method, path, *, body, headers):
+            del body
+            captured.append((path, dict(headers)))
+
+        @staticmethod
+        def getresponse():
+            return FakeResponse()
+
+        @staticmethod
+        def close():
+            return None
+
+    monkeypatch.setattr(gateway_adapters, "_PinnedHTTPSConnection", FakeConnection)
+    monkeypatch.setattr(gateway_adapters.os, "open", lambda *_, **__: 7)
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _fd: None)
+    monkeypatch.setattr(gateway_adapters.os, "getgid", lambda: 4321, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    policy = SimpleNamespace(
+        targets={
+            "callback": ("https://api.internal.example", ("10.56.1.20",)),
+            "openai": ("https://models.internal.example/openai/v1", ("10.56.1.21",)),
+            "anthropic": ("https://models.internal.example/anthropic/v1", ("10.56.1.22",)),
+        }
+    )
+    broker = MailboxBroker(SimpleNamespace(), policy, 1.0, 1024)
+
+    def forward(path: str) -> dict[str, str]:
+        raw = json.dumps(
+            {
+                "version": 1,
+                "method": "POST",
+                "path": path,
+                "headers": {
+                    "X-AI-Platform-Callback-Token": "attempt-bound-token",
+                    "Content-Type": "application/json",
+                },
+                "body": "e30=",
+            }
+        ).encode()
+        evidence = SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o640,
+            st_size=len(raw),
+            st_uid=1000,
+            st_gid=4321,
+            st_dev=1,
+            st_ino=2,
+            st_mtime_ns=3,
+            st_ctime_ns=4,
+        )
+        chunks = iter((raw, b""))
+        monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _fd: evidence)
+        monkeypatch.setattr(gateway_adapters.os, "read", lambda *_: next(chunks))
+        broker._process(6, "0" * 32 + ".json")
+        return captured[-1][1]
+
+    callback_headers = forward("/api/ai/runtime/callbacks/executor")
+    context_headers = forward("/api/ai/runtime/callbacks/context-retrieval")
+    model_headers = forward("/model/openai/chat/completions")
+
+    assert callback_headers["x-ai-platform-callback-token"] == "attempt-bound-token"
+    assert context_headers["x-ai-platform-callback-token"] == "attempt-bound-token"
+    assert "x-ai-platform-callback-token" not in model_headers
+
+
 def test_mailbox_poll_isolates_bad_requests_and_bounds_each_sandbox(monkeypatch) -> None:
     records = [
         SimpleNamespace(workspace_host_path="/data/opensandbox/workspaces/one"),
@@ -1606,8 +1771,10 @@ def test_mailbox_poll_isolates_bad_requests_and_bounds_each_sandbox(monkeypatch)
         records[1].workspace_host_path: (1, 10, [(second_names[0], 2, 2, 10, 2)]),
     }
     broker._snapshot_record = lambda record, _now: snapshots[record.workspace_host_path]
-    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4)
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
     broker._close_mailbox = lambda _descriptors: None
+    broker._claim_request = lambda _request_fd, _claim_fd, entry: entry
+    broker._prune_claims = lambda _claim_fd: None
     broker._request_identity_matches = lambda *_: True
     broker._unlink_request_if_identity = lambda *_: True
 
@@ -1646,8 +1813,10 @@ def test_mailbox_per_sandbox_backlog_caps_fail_closed_without_outbound(monkeypat
     monkeypatch.setattr(gateway_adapters.os, "name", "posix")
     monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
     broker._snapshot_record = lambda *_: (snapshot[0], snapshot[1], [entry])
-    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4)
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
     broker._close_mailbox = lambda _descriptors: None
+    broker._claim_request = lambda _request_fd, _claim_fd, entry: entry
+    broker._prune_claims = lambda _claim_fd: None
     broker._request_identity_matches = lambda *_: True
     broker._unlink_request_if_identity = lambda *_: True
     broker._process = lambda *_: (_ for _ in ()).throw(AssertionError("overflow must not reach upstream"))
@@ -1672,8 +1841,10 @@ def test_mailbox_global_backlog_cap_fails_closed_for_every_sandbox(monkeypatch) 
         return 60, 600, [(f"{index:032x}.json", index + 1, index + 2, 10, index + 3)]
 
     broker._snapshot_record = snapshot
-    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4)
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
     broker._close_mailbox = lambda _descriptors: None
+    broker._claim_request = lambda _request_fd, _claim_fd, entry: entry
+    broker._prune_claims = lambda _claim_fd: None
     broker._request_identity_matches = lambda *_: True
     broker._unlink_request_if_identity = lambda *_: True
     broker._process = lambda *_: (_ for _ in ()).throw(AssertionError("global overflow must not reach upstream"))
@@ -1691,8 +1862,10 @@ def test_mailbox_expired_requests_are_reclaimed_with_bounded_identity_delete(mon
     broker = MailboxBroker(store, SimpleNamespace(targets={}), 1.0, 1024)
     names = [f"{index:032x}.json" for index in range(2)]
     old = time.time() - broker.REQUEST_TTL_SECONDS - 1
-    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4)
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
     broker._close_mailbox = lambda _descriptors: None
+    broker._claim_request = lambda _request_fd, _claim_fd, entry: entry
+    broker._prune_claims = lambda _claim_fd: None
     broker._prune_responses = lambda _fd: None
     monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
     monkeypatch.setattr(gateway_adapters.os, "listdir", lambda _fd: names)
@@ -1727,6 +1900,94 @@ def test_mailbox_named_inode_swap_is_rejected_before_response_and_delete(monkeyp
     monkeypatch.setattr(gateway_adapters.os, "close", lambda _fd: None)
 
     assert broker._request_identity_matches(3, entry) is False
+
+
+def test_mailbox_claim_is_unpredictable_atomic_and_revalidates_moved_inode(monkeypatch) -> None:
+    entry = ("1" * 32 + ".json", 11, 22, 33, 44)
+    renames: list[tuple[str, str, int, int]] = []
+    checks = iter((True, True))
+    monkeypatch.setattr(gateway_adapters.secrets, "token_hex", lambda _size: "a" * 32)
+    monkeypatch.setattr(
+        MailboxBroker,
+        "_request_identity_matches",
+        classmethod(lambda _cls, _fd, _entry: next(checks)),
+    )
+    monkeypatch.setattr(
+        gateway_adapters.os,
+        "rename",
+        lambda source, target, *, src_dir_fd, dst_dir_fd: renames.append(
+            (source, target, src_dir_fd, dst_dir_fd)
+        ),
+    )
+
+    claimed = MailboxBroker._claim_request(3, 4, entry)
+
+    assert claimed == (f"{entry[0]}.{'a' * 32}.claim", *entry[1:])
+    assert renames == [(entry[0], claimed[0], 3, 4)]
+
+    checks = iter((True, False))
+    cleaned: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        MailboxBroker,
+        "_request_identity_matches",
+        classmethod(lambda _cls, _fd, _entry: next(checks)),
+    )
+    monkeypatch.setattr(
+        MailboxBroker,
+        "_unlink_response_if_regular",
+        lambda fd, name: cleaned.append((fd, name)),
+    )
+    assert MailboxBroker._claim_request(3, 4, entry) is None
+    assert cleaned == [(4, f"{entry[0]}.{'a' * 32}.claim")]
+
+
+def test_mailbox_claim_is_cleaned_when_processing_deadline_expires(monkeypatch) -> None:
+    broker = MailboxBroker(SimpleNamespace(record_deny=lambda *_: None), SimpleNamespace(targets={}), 1.0, 1024)
+    entry = ("1" * 32 + ".json", 1, 2, 10, 3)
+    claimed = (entry[0] + "." + "a" * 32 + ".claim", *entry[1:])
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
+    broker._close_mailbox = lambda _descriptors: None
+    broker._claim_request = lambda *_args: claimed
+    broker._process = lambda *_args: (_ for _ in ()).throw(DeadlineExceeded("expired"))
+    removed: list[tuple[int, tuple[str, int, int, int, int]]] = []
+    broker._unlink_request_if_identity = lambda fd, identity: removed.append((fd, identity)) or True
+    monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
+
+    with pytest.raises(DeadlineExceeded):
+        broker._handle_entry(SimpleNamespace(workspace_host_path="/workspace"), entry, False)
+
+    assert removed == [(4, claimed)]
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
+    reason="real broker-owned claim permissions require a root-capable POSIX release gate",
+)
+def test_mailbox_claim_moves_request_into_real_broker_owned_posix_directory(tmp_path) -> None:
+    workspace_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        gateway_adapters._prepare_mailbox(workspace_fd, str(tmp_path), os.getuid(), os.getgid())
+    finally:
+        os.close(workspace_fd)
+    mailbox = tmp_path / ".opensandbox-gateway"
+    request_path = mailbox / "requests" / ("1" * 32 + ".json")
+    request_path.write_text("{}", encoding="utf-8")
+    os.chown(request_path, 1000, os.getgid())
+    os.chmod(request_path, 0o640)
+    request_fd = os.open(mailbox / "requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    claim_fd = os.open(mailbox / "claims", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        evidence = os.stat(request_path, follow_symlinks=False)
+        entry = (request_path.name, evidence.st_dev, evidence.st_ino, evidence.st_size, evidence.st_mtime_ns)
+        claimed = MailboxBroker._claim_request(request_fd, claim_fd, entry)
+        assert claimed is not None
+        assert not request_path.exists()
+        assert os.stat(claimed[0], dir_fd=claim_fd, follow_symlinks=False).st_ino == evidence.st_ino
+        claim_dir = os.fstat(claim_fd)
+        assert claim_dir.st_uid == os.getuid() and stat.S_IMODE(claim_dir.st_mode) == 0o700
+    finally:
+        os.close(claim_fd)
+        os.close(request_fd)
 
 
 def test_broker_loop_isolates_iteration_exception_and_continues() -> None:
@@ -1889,7 +2150,8 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
         eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; STATE=$ROOT/systemctl; ACTIONS=$ROOT/actions
-        DEPLOY_STATE=$ROOT/deploy; AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha; mkdir -p "$DEPLOY_STATE"
+        DEPLOY_STATE=$ROOT/deploy; AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence; mkdir -p "$DEPLOY_STATE"
         mkdir -p "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$STATE"
         printf 'acl-before\n' > "$ROOT/acl.current"
         require_root_tree() { test -d "$1" && test ! -L "$1"; }
@@ -1897,7 +2159,11 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
         verify_manifest() { test -f "$1/MANIFEST.sha256"; }
         validate_release() { is_commit "$1"; }
         chown() { :; }
-        stat() { test "$1" = -c && { echo 0; return; }; command stat "$@"; }
+        stat() {
+          test "$1" = -c && test "${@: -1}" = "$DEPLOY_STATE" && { echo 0:0:700; return; }
+          test "$1" = -c && { echo 0; return; }
+          command stat "$@"
+        }
         install() {
           if test "$1" = -d; then mkdir -p "${@: -1}"; else cp "${@: -2:1}" "${@: -1}"; fi
         }
@@ -1927,6 +2193,7 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         test ! -e "$CONFIG_DIR" && test ! -e "$CURRENT_LINK"
         test ! -e "$AUTHORITY_SHA_STATE"
+        test ! -e "$AUTHORITY_EVIDENCE_STATE"
         grep -qx acl-before "$ROOT/acl.current"
         test ! -e "$STATE/opensandbox-gateway.service.active" && test ! -e "$STATE/opensandbox-gateway.service.enabled"
         test ! -e "$STATE/opensandbox-gateway-helper.service.active" && test ! -e "$STATE/opensandbox-gateway-helper.service.enabled"
@@ -1956,12 +2223,14 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; STATE=$ROOT/systemctl; ACTIONS=$ROOT/actions
-        DEPLOY_STATE=$ROOT/deploy; AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha; mkdir -p "$DEPLOY_STATE"
+        DEPLOY_STATE=$ROOT/deploy; AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence; mkdir -p "$DEPLOY_STATE"
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$STATE"
         printf 'old-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'old-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'old-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-old\n' > "$ROOT/acl.current"
         printf '{old}\n' > "$AUTHORITY_SHA_STATE"
+        printf 'ls-remote-old\n' > "$AUTHORITY_EVIDENCE_STATE"
         rm -f "$CURRENT_LINK"; ln -s releases/{old} "$CURRENT_LINK"
         : > "$STATE/opensandbox-gateway.service.active"; : > "$STATE/opensandbox-gateway.service.enabled"
         : > "$STATE/opensandbox-gateway-helper.service.active"; : > "$STATE/opensandbox-gateway-helper.service.enabled"
@@ -1972,7 +2241,11 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         chown() {{ :; }}
         stat() {{
           if test "$1" = -c; then
-            test "${{@: -1}}" = "$AUTHORITY_SHA_STATE" && echo 0:0:600 || echo 0
+            case "${{@: -1}}" in
+              "$DEPLOY_STATE") echo 0:0:700 ;;
+              "$AUTHORITY_SHA_STATE"|"$AUTHORITY_EVIDENCE_STATE") echo 0:0:600 ;;
+              *) echo 0 ;;
+            esac
             return
           fi
           command stat "$@"
@@ -1995,6 +2268,7 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         grep -qx old-config "$CONFIG_DIR/gateway.env"; grep -qx acl-old "$ROOT/acl.current"
         test "$(readlink "$CURRENT_LINK")" = releases/{old}
         grep -qx '{old}' "$AUTHORITY_SHA_STATE"
+        grep -qx 'ls-remote-old' "$AUTHORITY_EVIDENCE_STATE"
         grep '^restart:.*:releases/{new}$' "$ACTIONS" >/dev/null
         ''',
     )
@@ -2029,14 +2303,16 @@ def test_release_validation_enforces_commit_owner_symlink_manifest_and_main(tmp_
         printf 'one\n' > "$ROOT/source/payload"; git -C "$ROOT/source" add payload; git -C "$ROOT/source" commit -m one >/dev/null
         git -C "$ROOT/source" branch -M main; git -C "$ROOT/source" remote add origin "$ROOT/remote.git"; git -C "$ROOT/source" push -u origin main >/dev/null
         COMMIT=$(git -C "$ROOT/source" rev-parse HEAD); RELEASES=$ROOT/releases; mkdir -p "$RELEASES/$COMMIT"
+        EXPECTED_AUTHORITY_SHA=$COMMIT; AUTHORITY_EVIDENCE_ID=ls-remote-initial
         printf '%s\n' "$COMMIT" > "$RELEASES/$COMMIT/SOURCE_COMMIT"
         printf '%s\n' "$ROOT/source" > "$RELEASES/$COMMIT/SOURCE_ROOT"
         printf 'origin/main\n' > "$RELEASES/$COMMIT/AUTHORITY_REF"
         printf '%s\n' "$COMMIT" > "$RELEASES/$COMMIT/AUTHORITY_COMMIT"
+        printf '%s\n' "$AUTHORITY_EVIDENCE_ID" > "$RELEASES/$COMMIT/AUTHORITY_EVIDENCE_ID"
         printf 'sealed\n' > "$RELEASES/$COMMIT/payload"
         chown() { :; }; require_root_tree() { test -d "$1" && test ! -L "$1"; }
         write_manifest "$RELEASES/$COMMIT"; validate_release "$COMMIT" exact
-        test "$(require_exact_authority_head "$ROOT/source" origin/main)" = "$COMMIT"
+        test "$(require_exact_authority_head "$ROOT/source" origin/main "$COMMIT")" = "$COMMIT"
         printf 'tampered\n' >> "$RELEASES/$COMMIT/payload"; ! validate_release "$COMMIT"
         printf 'sealed\n' > "$RELEASES/$COMMIT/payload"; write_manifest "$RELEASES/$COMMIT"
         git -C "$ROOT/source" checkout -- payload
@@ -2051,9 +2327,122 @@ def test_release_validation_enforces_commit_owner_symlink_manifest_and_main(tmp_
         printf '%s\n' "$ROOT/source" > "$RELEASES/$UNPUSHED/SOURCE_ROOT"
         printf 'origin/main\n' > "$RELEASES/$UNPUSHED/AUTHORITY_REF"
         printf '%s\n' "$UNPUSHED" > "$RELEASES/$UNPUSHED/AUTHORITY_COMMIT"
+        printf 'ls-remote-unpushed\n' > "$RELEASES/$UNPUSHED/AUTHORITY_EVIDENCE_ID"
         printf 'sealed\n' > "$RELEASES/$UNPUSHED/payload"
         write_manifest "$RELEASES/$UNPUSHED"; ! validate_release "$UNPUSHED"
-        ! require_exact_authority_head "$ROOT/source" origin/main
+        CURRENT_AUTHORITY=$(git -C "$ROOT/source" rev-parse refs/remotes/origin/main)
+        ! require_exact_authority_head "$ROOT/source" origin/main "$CURRENT_AUTHORITY"
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_installer_requires_fresh_expected_authority_and_records_evidence(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        git init --bare "$ROOT/remote.git" >/dev/null
+        git init "$ROOT/source" >/dev/null
+        git -C "$ROOT/source" config user.email gateway@example.invalid
+        git -C "$ROOT/source" config user.name gateway-test
+        printf 'one\n' > "$ROOT/source/payload"; git -C "$ROOT/source" add payload
+        git -C "$ROOT/source" commit -m one >/dev/null; git -C "$ROOT/source" branch -M main
+        git -C "$ROOT/source" remote add origin "$ROOT/remote.git"; git -C "$ROOT/source" push -u origin main >/dev/null
+        FIRST=$(git -C "$ROOT/source" rev-parse HEAD)
+        test "$(require_exact_authority_head "$ROOT/source" origin/main "$FIRST")" = "$FIRST"
+
+        git clone -b main "$ROOT/remote.git" "$ROOT/publisher" >/dev/null
+        git -C "$ROOT/publisher" config user.email gateway@example.invalid
+        git -C "$ROOT/publisher" config user.name gateway-test
+        printf 'two\n' >> "$ROOT/publisher/payload"; git -C "$ROOT/publisher" commit -am two >/dev/null
+        git -C "$ROOT/publisher" push origin main >/dev/null
+        FRESH=$(git -C "$ROOT/source" ls-remote origin refs/heads/main | awk 'NR == 1 {print $1}')
+        ! require_exact_authority_head "$ROOT/source" origin/main "$FRESH"
+        git -C "$ROOT/source" fetch origin main >/dev/null
+        ! require_exact_authority_head "$ROOT/source" origin/main "$FRESH"
+        git -C "$ROOT/source" checkout --detach "$FRESH" >/dev/null
+        test "$(require_exact_authority_head "$ROOT/source" origin/main "$FRESH")" = "$FRESH"
+
+        DEPLOY_STATE=$ROOT/deploy; mkdir "$DEPLOY_STATE"
+        AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
+        chown() { :; }; chmod() { :; }
+        record_authority_state "$FRESH" "ls-remote-20260724T010203Z-$FRESH"
+        grep -qx "$FRESH" "$AUTHORITY_SHA_STATE"
+        grep -qx "ls-remote-20260724T010203Z-$FRESH" "$AUTHORITY_EVIDENCE_STATE"
+        ! record_authority_state "$FRESH" 'invalid evidence with spaces'
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_installer_restore_failure_preserves_backup_and_stops_partial_mutation(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        BACKUP=$ROOT/unique-backup; STAGE=$ROOT/stage; RESTORE_FROM=$BACKUP; SUCCESS=0
+        mkdir "$BACKUP" "$STAGE"
+        restore_snapshot() { return 1; }
+        set +e; ( cleanup_install ) >/dev/null 2>&1; STATUS=$?; set -e
+        test "$STATUS" -eq 125
+        test -d "$BACKUP" && test -d "$STAGE"
+
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        SYSTEMD_DIR=$ROOT/systemd; CONFIG_DIR=$ROOT/config; WORKSPACE_ROOT=$ROOT/workspaces
+        CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; DEPLOY_STATE=$ROOT/deploy
+        AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
+        mkdir -p "$SYSTEMD_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$DEPLOY_STATE"
+        ACTIONS=$ROOT/actions; : > "$ACTIONS"
+        preflight_snapshot() { :; }
+        rm() {
+          printf 'rm:%s\n' "$*" >> "$ACTIONS"
+          case "$*" in *opensandbox-gateway-helper.service*) return 1;; esac
+        }
+        setfacl() { printf 'setfacl\n' >> "$ACTIONS"; }
+        systemctl() { printf 'systemctl:%s\n' "$*" >> "$ACTIONS"; }
+        set +e; restore_snapshot "$BACKUP"; STATUS=$?; set -e
+        test "$STATUS" -ne 0
+        test "$(grep -c '^rm:' "$ACTIONS")" -eq 2
+        ! grep -q '^setfacl\|^systemctl' "$ACTIONS"
+        test -d "$BACKUP"
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_rollback_preflight_rejects_corrupt_historical_release_before_mutation(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/rollback-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        eval "$(sed '/^rollback_main "\$@"$/d' "$SCRIPT")"
+        SNAPSHOT=$ROOT/snapshot; mkdir "$SNAPSHOT"
+        for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
+          : > "$SNAPSHOT/$unit.absent"; : > "$SNAPSHOT/$unit.inactive"; : > "$SNAPSHOT/$unit.disabled"
+        done
+        : > "$SNAPSHOT/config.absent"; printf 'acl\n' > "$SNAPSHOT/workspaces.acl"
+        printf 'releases/1111111111111111111111111111111111111111\n' > "$SNAPSHOT/current"
+        printf '1111111111111111111111111111111111111111\n' > "$SNAPSHOT/authority-sha"
+        printf 'ls-remote-corrupt\n' > "$SNAPSHOT/authority-evidence"
+        : > "$SNAPSHOT/MANIFEST.sha256"
+        require_root_tree() { :; }; verify_manifest() { :; }; validate_release() { return 1; }
+        MUTATED=$ROOT/mutated
+        if preflight_snapshot "$SNAPSHOT"; then : > "$MUTATED"; fi
+        test ! -e "$MUTATED"
         ''',
     )
     assert result.returncode == 0, result.stderr or result.stdout
@@ -2072,6 +2461,7 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         CURRENT_LINK=$ROOT/current; RELEASES=$ROOT/releases; DEPLOY_STATE=$ROOT/deploy
         ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot; STATE=$ROOT/systemctl
         AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
+        AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
         SNAPSHOT_ID=.rollback.contract; SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$RELEASES" "$SNAPSHOT" "$STATE"
         printf '%s\n' "$SNAPSHOT_ID" > "$ROLLBACK_POINTER"
@@ -2081,12 +2471,14 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         : > "$SNAPSHOT/opensandbox-gateway-helper.service.inactive"
         : > "$SNAPSHOT/opensandbox-gateway.service.disabled"
         : > "$SNAPSHOT/opensandbox-gateway-helper.service.disabled"
-        : > "$SNAPSHOT/config.absent"; : > "$SNAPSHOT/authority-sha.absent"; printf 'acl-original\n' > "$SNAPSHOT/workspaces.acl"
+        : > "$SNAPSHOT/config.absent"; : > "$SNAPSHOT/authority-sha.absent"
+        : > "$SNAPSHOT/authority-evidence.absent"; printf 'acl-original\n' > "$SNAPSHOT/workspaces.acl"
         : > "$SNAPSHOT/current.absent"; : > "$SNAPSHOT/MANIFEST.sha256"
         printf 'new-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'new-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-new\n' > "$ROOT/acl.current"
         printf '%040d\n' 1 > "$AUTHORITY_SHA_STATE"
+        printf 'current-evidence\n' > "$AUTHORITY_EVIDENCE_STATE"
         id() { test "$1" = -u && echo 0; }
         stat() { target=${@: -1}; case "$target" in "$DEPLOY_STATE") echo 0:0:700;; "$ROLLBACK_POINTER") echo 0:0:600;; *) command stat "$@";; esac; }
         flock() { :; }; require_root_tree() { test -d "$1" && test ! -L "$1"; }; verify_manifest() { test -f "$1/MANIFEST.sha256"; }
@@ -2099,6 +2491,7 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         test ! -e "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         test ! -e "$CONFIG_DIR" && test ! -e "$CURRENT_LINK"
         test ! -e "$AUTHORITY_SHA_STATE"
+        test ! -e "$AUTHORITY_EVIDENCE_STATE"
         grep -qx acl-original "$ROOT/acl.current"
         ''',
     )

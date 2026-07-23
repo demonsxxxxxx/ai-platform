@@ -6,6 +6,7 @@ CURRENT_LINK=/opt/opensandbox-gateway/current
 DEPLOY_STATE=/var/lib/opensandbox-gateway-deploy
 ROLLBACK_POINTER=$DEPLOY_STATE/previous-snapshot
 AUTHORITY_SHA_STATE=$DEPLOY_STATE/current-authority-sha
+AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
 SYSTEMD_DIR=/etc/systemd/system
 CONFIG_DIR=/etc/opensandbox-gateway
 WORKSPACE_ROOT=/data/opensandbox/workspaces
@@ -13,6 +14,11 @@ WORKSPACE_ROOT=/data/opensandbox/workspaces
 is_commit() {
   test "${#1}" -eq 40 || return 1
   case "$1" in *[!0-9a-f]*) return 1 ;; esac
+}
+
+is_authority_evidence_id() {
+  test -n "$1" && test "${#1}" -le 128 || return 1
+  case "$1" in *[!A-Za-z0-9._:-]*) return 1 ;; esac
 }
 
 require_root_tree() {
@@ -29,23 +35,64 @@ verify_manifest() {
 
 validate_release() {
   commit=$1
-  is_commit "$commit"
+  is_commit "$commit" || return 1
   release=$RELEASES/$commit
-  test "$(readlink -f "$release")" = "$(readlink -f "$RELEASES")/$commit"
-  require_root_tree "$release"
-  test "$(cat "$release/SOURCE_COMMIT")" = "$commit"
-  verify_manifest "$release"
-  source_root=$(cat "$release/SOURCE_ROOT")
-  authority_ref=$(cat "$release/AUTHORITY_REF")
-  authority_commit=$(cat "$release/AUTHORITY_COMMIT")
-  is_commit "$authority_commit"
-  test "$authority_commit" = "$commit"
-  test "$(readlink -f "$source_root")" = "$source_root"
-  require_root_tree "$source_root"
-  git -C "$source_root" show-ref --verify --quiet "refs/remotes/$authority_ref"
-  current_authority=$(git -C "$source_root" rev-parse --verify "refs/remotes/$authority_ref^{commit}")
-  is_commit "$current_authority"
+  test "$(readlink -f "$release")" = "$(readlink -f "$RELEASES")/$commit" || return 1
+  require_root_tree "$release" || return 1
+  test "$(cat "$release/SOURCE_COMMIT")" = "$commit" || return 1
+  verify_manifest "$release" || return 1
+  source_root=$(cat "$release/SOURCE_ROOT") || return 1
+  authority_ref=$(cat "$release/AUTHORITY_REF") || return 1
+  authority_commit=$(cat "$release/AUTHORITY_COMMIT") || return 1
+  authority_evidence=$(cat "$release/AUTHORITY_EVIDENCE_ID") || return 1
+  is_commit "$authority_commit" || return 1
+  is_authority_evidence_id "$authority_evidence" || return 1
+  test "$authority_commit" = "$commit" || return 1
+  test "$(readlink -f "$source_root")" = "$source_root" || return 1
+  require_root_tree "$source_root" || return 1
+  git -C "$source_root" show-ref --verify --quiet "refs/remotes/$authority_ref" || return 1
+  current_authority=$(git -C "$source_root" rev-parse --verify "refs/remotes/$authority_ref^{commit}") || return 1
+  is_commit "$current_authority" || return 1
   git -C "$source_root" merge-base --is-ancestor "$commit" "$current_authority"
+}
+
+require_marker_pair() {
+  if test -f "$1"; then
+    test ! -e "$2"
+  else
+    test -f "$2"
+  fi
+}
+
+preflight_snapshot() {
+  snapshot=$1
+  require_root_tree "$snapshot" || return 1
+  verify_manifest "$snapshot" || return 1
+  for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
+    require_marker_pair "$snapshot/$unit.present" "$snapshot/$unit.absent" || return 1
+    test ! -f "$snapshot/$unit.present" || test -f "$snapshot/$unit" || return 1
+    require_marker_pair "$snapshot/$unit.active" "$snapshot/$unit.inactive" || return 1
+    require_marker_pair "$snapshot/$unit.enabled" "$snapshot/$unit.disabled" || return 1
+  done
+  require_marker_pair "$snapshot/config.present" "$snapshot/config.absent" || return 1
+  test ! -f "$snapshot/config.present" || test -d "$snapshot/etc-opensandbox-gateway" || return 1
+  test -f "$snapshot/workspaces.acl" || return 1
+  require_marker_pair "$snapshot/authority-sha" "$snapshot/authority-sha.absent" || return 1
+  require_marker_pair "$snapshot/authority-evidence" "$snapshot/authority-evidence.absent" || return 1
+  require_marker_pair "$snapshot/current" "$snapshot/current.absent" || return 1
+  if test -f "$snapshot/current"; then
+    previous=$(cat "$snapshot/current")
+    case "$previous" in releases/*) previous_commit=${previous#releases/} ;; *) return 1 ;; esac
+    validate_release "$previous_commit" || return 1
+    test -f "$snapshot/authority-sha" && test "$(cat "$snapshot/authority-sha")" = "$previous_commit" || return 1
+    test -f "$snapshot/authority-evidence" || return 1
+  else
+    test -f "$snapshot/authority-sha.absent" && test -f "$snapshot/authority-evidence.absent" || return 1
+  fi
+  if test -f "$snapshot/authority-sha"; then
+    is_commit "$(cat "$snapshot/authority-sha")" || return 1
+    is_authority_evidence_id "$(cat "$snapshot/authority-evidence")" || return 1
+  fi
 }
 
 rollback_main() {
@@ -61,6 +108,13 @@ SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
 test "$(readlink -f "$SNAPSHOT")" = "$(readlink -f "$DEPLOY_STATE/snapshots")/$SNAPSHOT_ID"
 require_root_tree "$SNAPSHOT"
 verify_manifest "$SNAPSHOT"
+preflight_snapshot "$SNAPSHOT"
+
+PREVIOUS=
+if test -f "$SNAPSHOT/current"; then
+  PREVIOUS=$(cat "$SNAPSHOT/current")
+  previous_commit=${PREVIOUS#releases/}
+fi
 
 for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
   if test -f "$SNAPSHOT/$unit.present"; then
@@ -80,17 +134,11 @@ if test -f "$SNAPSHOT/authority-sha"; then
   authority_sha=$(cat "$SNAPSHOT/authority-sha")
   is_commit "$authority_sha"
   install -o root -g root -m 0600 "$SNAPSHOT/authority-sha" "$AUTHORITY_SHA_STATE"
+  install -o root -g root -m 0600 "$SNAPSHOT/authority-evidence" "$AUTHORITY_EVIDENCE_STATE"
 elif test -f "$SNAPSHOT/authority-sha.absent"; then
-  rm -f "$AUTHORITY_SHA_STATE"
+  rm -f "$AUTHORITY_SHA_STATE" "$AUTHORITY_EVIDENCE_STATE"
 else
   exit 1
-fi
-PREVIOUS=
-if test -f "$SNAPSHOT/current"; then
-  previous=$(cat "$SNAPSHOT/current")
-  case "$previous" in releases/*) previous_commit=${previous#releases/} ;; *) exit 1 ;; esac
-  validate_release "$previous_commit"
-  PREVIOUS=$previous
 fi
 systemctl daemon-reload
 for unit in opensandbox-gateway-helper.service opensandbox-gateway.service; do

@@ -69,17 +69,28 @@ stat -c '%a %U:%G %n' /etc/opensandbox-gateway/secrets/* /etc/opensandbox-gatewa
 
 The first command must return no matches. The installer accepts only an exact
 40-character lowercase commit from a clean, root-owned, non-symlink Git tree.
-For a new install or upgrade, `HEAD` must equal the commit currently stored at
-`refs/remotes/origin/main`; being an older ancestor is not sufficient. Unset
-`OPENSANDBOX_GATEWAY_AUTHORITY_REF` unless an explicitly reviewed equivalent
-remote ref is required. Prepare and verify the checkout, then deploy:
+For a new install or upgrade, the release owner must freshly resolve the exact
+remote `main` SHA before the checkout is sealed root-only. `HEAD`, the local
+`refs/remotes/origin/main`, and that explicit 40-hex SHA must all match; a stale
+local ref or older ancestor is insufficient. The root installer never fetches or
+receives repository credentials. Unset `OPENSANDBOX_GATEWAY_AUTHORITY_REF`
+unless an explicitly reviewed equivalent remote ref is required:
 
 ```sh
+# Run these credentialed operations as the release owner, before root sealing.
+EXPECTED_AUTHORITY_SHA=$(git -C /path/to/reviewed/ai-platform ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 {print $1}')
+test "${#EXPECTED_AUTHORITY_SHA}" -eq 40
+git -C /path/to/reviewed/ai-platform fetch origin main
+test "$(git -C /path/to/reviewed/ai-platform rev-parse 'refs/remotes/origin/main^{commit}')" = "$EXPECTED_AUTHORITY_SHA"
+AUTHORITY_EVIDENCE_ID="ls-remote-$(date -u +%Y%m%dT%H%M%SZ)-$EXPECTED_AUTHORITY_SHA"
+
+# Seal the reviewed checkout root-only using the approved host procedure, then deploy.
 sudo test "$(git -C /path/to/reviewed/ai-platform rev-parse --verify 'HEAD^{commit}')" = "$(git -C /path/to/reviewed/ai-platform rev-parse HEAD)"
 sudo git -C /path/to/reviewed/ai-platform diff-index --quiet HEAD --
 sudo test -z "$(git -C /path/to/reviewed/ai-platform ls-files --others --exclude-standard)"
-sudo test "$(git -C /path/to/reviewed/ai-platform rev-parse 'HEAD^{commit}')" = "$(git -C /path/to/reviewed/ai-platform rev-parse 'refs/remotes/origin/main^{commit}')"
-sudo deploy/opensandbox/install-s72.sh /path/to/reviewed/ai-platform
+sudo env OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA="$EXPECTED_AUTHORITY_SHA" \
+  OPENSANDBOX_GATEWAY_AUTHORITY_EVIDENCE_ID="$AUTHORITY_EVIDENCE_ID" \
+  deploy/opensandbox/install-s72.sh /path/to/reviewed/ai-platform
 systemctl status --no-pager opensandbox-gateway.service
 journalctl -u opensandbox-gateway.service --since '-5 minutes' --no-pager
 ```
@@ -92,9 +103,11 @@ cannot access it. Writable SQLite runtime state remains separately under
 manifest, reloads and restarts both units, verifies their absolute release
 working directories and source readback, and only then atomically switches
 `/opt/opensandbox-gateway/current` and the root-only rollback descriptor. It
-records the exact authority SHA in both the immutable release and
-`/var/lib/opensandbox-gateway-deploy/current-authority-sha`, reads it back before
-success, and restores that state (or its prior absence) after any failed install.
+records the exact expected authority SHA and fresh-resolution evidence ID in the
+immutable release and root-only deployment state, reads both back before
+success, and restores both values (or their prior absence) after any failed
+install. A failed automatic restore hard-fails while preserving its unique
+recovery snapshot for operator inspection.
 
 ## Mandatory remote smoke gate
 
@@ -122,8 +135,8 @@ sudo deploy/opensandbox/rollback-s72.sh
 ```
 
 Rollback verifies the root-only descriptor, snapshot manifest, exact 40-hex
-release, realpath confinement, source ownership and the recorded authority SHA
-before mutation. Only this rollback path may accept a previously recorded
+release, realpath confinement, source ownership, authority SHA and authority
+evidence ID before mutation. Only this rollback path may accept a previously recorded
 release that is a verified ancestor of the current authoritative main ref. It
 restores the previous unit files, configuration, ACL, authority-SHA state,
 enable/active state and release pointer exactly; a first-install rollback
