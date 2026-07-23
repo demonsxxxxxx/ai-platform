@@ -3527,8 +3527,11 @@ def test_run_resume_manifest_redacts_raw_skill_ids_from_public_scalars(monkeypat
 
 def test_run_resume_manifest_rejects_unsafe_source_run_id_and_public_scalars(monkeypatch):
     fingerprint = "a" * 64
+    calls = []
 
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        calls.append((tenant_id, user_id, run_id))
+        assert run_id == "run-resume"
         return resume_manifest_run_row()
 
     async def fake_list_run_steps(conn, *, tenant_id, run_id):
@@ -3566,12 +3569,13 @@ def test_run_resume_manifest_rejects_unsafe_source_run_id_and_public_scalars(mon
     body = response.json()
     assert body["source_run_id"] is None
     assert body["resume_enabled"] is True
+    assert calls == [("default", "user-a", "run-resume")]
     assert body["steps"] == [
         {
             "step_id": "step-unsafe",
             "step_key": "step-unsafe",
             "status": "pending",
-            "title": "step-unsafe",
+            "title": "等待执行",
             "role": None,
             "sequence": 1,
             "depends_on": [],
@@ -3586,15 +3590,15 @@ def test_run_resume_manifest_rejects_unsafe_source_run_id_and_public_scalars(mon
     assert "/home/" not in public_dump
 
 
-def test_run_resume_manifest_hides_safe_shaped_unauthorized_source_run_id(monkeypatch):
+def test_run_resume_manifest_ordinary_hides_source_without_lookup_while_admin_authorized_lookup_is_retained(monkeypatch):
     calls = []
 
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         calls.append((tenant_id, user_id, run_id))
         if run_id == "run-resume":
             return resume_manifest_run_row()
-        if run_id == "run-other-user":
-            return None
+        if run_id == "run-other-user" and user_id == "admin-a":
+            return {**resume_manifest_run_row(status="failed"), "id": "run-other-user"}
         raise AssertionError(f"unexpected authorized run lookup: {run_id}")
 
     async def fake_list_run_steps(conn, *, tenant_id, run_id):
@@ -3632,11 +3636,21 @@ def test_run_resume_manifest_hides_safe_shaped_unauthorized_source_run_id(monkey
     body = response.json()
     assert calls == [
         ("default", "user-a", "run-resume"),
-        ("default", "user-a", "run-other-user"),
     ]
     assert body["source_run_id"] is None
     assert body["steps"][0]["source_run_id"] is None
     assert "run-other-user" not in str(body)
+
+    admin_response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=admin_headers())
+
+    assert admin_response.status_code == 200
+    assert admin_response.json()["source_run_id"] == "run-other-user"
+    assert admin_response.json()["steps"][0]["source_run_id"] == "run-other-user"
+    assert calls == [
+        ("default", "user-a", "run-resume"),
+        ("default", "admin-a", "run-resume"),
+        ("default", "admin-a", "run-other-user"),
+    ]
 
 
 def test_run_resume_manifest_keeps_non_failed_error_message_empty_after_redaction(monkeypatch):
