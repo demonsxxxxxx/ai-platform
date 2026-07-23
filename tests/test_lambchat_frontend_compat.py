@@ -1210,17 +1210,63 @@ def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_relo
 
 
 @pytest.mark.parametrize(
-    ("event_type", "expected_stage", "expected_message"),
+    (
+        "raw_event_type",
+        "expected_event_type",
+        "expected_stage",
+        "expected_message",
+        "expected_payload",
+        "expected_progress_kind",
+        "event_payload",
+    ),
     [
-        ("agent_step_failed", "activity", "当前计划步骤未完成，正在整理可操作错误"),
-        ("subagent_failed", "agent", "协同处理未能完成"),
+        (
+            "agent_step_failed",
+            "agent_step_failed",
+            "activity",
+            "当前计划步骤未完成，正在整理可操作错误",
+            {},
+            "failed",
+            {},
+        ),
+        (
+            "subagent_failed",
+            "subagent_failed",
+            "agent",
+            "协同处理未能完成",
+            {},
+            "failed",
+            {},
+        ),
+        (
+            "intent_detected",
+            "intent_detected",
+            "preparation",
+            "正在准备受控运行请求。",
+            {"activity": {"category": "preparation", "status": "running"}},
+            "active",
+            {},
+        ),
+        (
+            "run_started",
+            "heartbeat",
+            "liveness",
+            "任务仍在运行。",
+            {"activity": {"category": "liveness", "status": "running", "meaningful": False}},
+            "active",
+            {"heartbeat": True},
+        ),
     ],
 )
-def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_reload(
+def test_lambchat_progress_uses_canonical_safe_projection_for_sse_and_exact_run_reload(
     monkeypatch,
-    event_type,
+    raw_event_type,
+    expected_event_type,
     expected_stage,
     expected_message,
+    expected_payload,
+    expected_progress_kind,
+    event_payload,
 ):
     raw_terms = (
         "command=render-report --private-param=amber",
@@ -1256,12 +1302,12 @@ def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_rel
                 "trace_id": "trace_run_a",
                 "schema_version": "ai-platform.event-envelope.v1",
                 "sequence": 1,
-                "event_type": event_type,
+                "event_type": raw_event_type,
                 "stage": raw_terms[1],
                 "message": raw_terms[0],
-                "severity": "error",
+                "severity": "error" if expected_progress_kind == "failed" else "info",
                 "visible_to_user": True,
-                "error_code": raw_terms[2],
+                "error_code": raw_terms[2] if expected_progress_kind == "failed" else None,
                 "payload_json": {
                     "error": raw_terms[0],
                     "error_code": raw_terms[1],
@@ -1272,6 +1318,7 @@ def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_rel
                         "subagent_id": raw_terms[5],
                     },
                     "visible_to_user": True,
+                    **event_payload,
                 },
                 "created_at": "2026-07-23T00:00:00Z",
             }
@@ -1324,17 +1371,24 @@ def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_rel
         for line in stream_response.text.splitlines()
         if line.startswith("data: ")
     ]
-    stream_event = next(payload for payload in stream_payloads if payload.get("event_type") == event_type)
+    stream_event = next(
+        payload for payload in stream_payloads if payload.get("event_type") == expected_event_type
+    )
     history_event = next(
         event
         for event in history_response.json()["events"]
-        if event["event_type"] == event_type
+        if event["event_type"] == expected_event_type
     )
+    assert stream_event["type"] == expected_event_type
     assert stream_event["stage"] == expected_stage
-    assert stream_event["payload"] == {}
+    assert stream_event["payload"] == expected_payload
     assert stream_event["message"] == expected_message
+    assert stream_event["progress_kind"] == expected_progress_kind
+    assert history_event["type"] == expected_event_type
     assert history_event["data"]["stage"] == expected_stage
-    assert history_event["payload"] == {}
+    assert history_event["data"]["message"] == expected_message
+    assert history_event["data"]["progress_kind"] == expected_progress_kind
+    assert history_event["payload"] == expected_payload
     for rendered in (stream_response.text, history_response.text):
         assert all(term not in rendered for term in raw_terms)
 

@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from fastapi import HTTPException
 import pytest
 
@@ -312,10 +314,10 @@ def test_run_started_heartbeat_is_liveness_not_meaningful_progress():
     }
 
 
-def test_event_bridge_maps_progress_and_fails_closed_for_admin_and_unknown_events():
-    progress = AgentEvent.model_construct(
-        type="skill_selected",
-        message="Authorized Skills are ready",
+def test_event_bridge_maps_valid_events_and_fails_closed_for_admin_and_unknown_events():
+    progress = AgentEvent(
+        type="run_started",
+        message="Runtime started",
         payload={"visible_to_user": True},
         admin_only=False,
     )
@@ -325,7 +327,7 @@ def test_event_bridge_maps_progress_and_fails_closed_for_admin_and_unknown_event
         payload={"container_id": "private-container"},
         admin_only=True,
     )
-    unknown = AgentEvent.model_construct(
+    unknown = SimpleNamespace(
         type="future_executor_private_event",
         message="secret executor message",
         payload={"runtime_path": "C:\\private\\runtime", "token": "secret-token"},
@@ -333,9 +335,9 @@ def test_event_bridge_maps_progress_and_fails_closed_for_admin_and_unknown_event
     )
 
     assert agent_event_to_executor_event(progress) == {
-        "event_type": "skill_selected",
-        "stage": "skills",
-        "message": "Authorized Skills are ready",
+        "event_type": "run_started",
+        "stage": "runtime",
+        "message": "Runtime started",
         "payload": {"visible_to_user": True},
     }
     assert agent_event_to_executor_event(private)["payload"] == {
@@ -343,7 +345,7 @@ def test_event_bridge_maps_progress_and_fails_closed_for_admin_and_unknown_event
         "visible_to_user": False,
         "admin_only": True,
     }
-    assert agent_event_to_executor_event(unknown) == {
+    assert agent_event_to_executor_event(unknown) == {  # type: ignore[arg-type]
         "event_type": "executor_private_event",
         "stage": "runtime",
         "message": "",
