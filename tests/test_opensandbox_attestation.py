@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 import yaml
 
@@ -228,6 +229,7 @@ def test_attestor_factory_accepts_only_canonical_loopback_http_or_https_endpoint
         ("https", "100.64.0.1:8080"),
         ("https", "[::ffff:127.0.0.1]:8080"),
         ("https", "[::ffff:8.8.8.8]:8080"),
+        ("https", "[fec0::1]:8080"),
         ("http", "0x7f000001:8080"),
         ("http", "2130706433:8080"),
         ("http", "127.1:8080"),
@@ -254,6 +256,50 @@ def test_attestor_factory_rejects_unsafe_or_ambiguous_endpoint_before_transport(
 
     assert probe is None
     assert calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "domain"),
+    [
+        ("https", "opensandbox.internal:443"),
+        ("http", "127.0.0.1:80"),
+        ("https", "opensandbox.internal:8443"),
+    ],
+)
+async def test_attestor_accepts_matching_effective_ports_after_httpx_url_normalization(
+    protocol: str,
+    domain: str,
+) -> None:
+    def transport(url: str, *_args: Any):
+        return response(attestation_payload(), url=str(httpx.URL(url)))
+
+    probe = opensandbox_attestation.build_opensandbox_attestation_probe(
+        attestation_settings(opensandbox_protocol=protocol, opensandbox_domain=domain),
+        transport=transport,
+    )
+
+    assert probe is not None
+    assert await probe(
+        capability(), runtime_request(), "sandbox-a", {"id": "sandbox-a"}
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_attestor_rejects_changed_nondefault_port_after_httpx_url_normalization() -> None:
+    def transport(url: str, *_args: Any):
+        changed_port_url = url.replace(":8443/", ":9443/")
+        return response(attestation_payload(), url=str(httpx.URL(changed_port_url)))
+
+    probe = opensandbox_attestation.build_opensandbox_attestation_probe(
+        attestation_settings(opensandbox_domain="opensandbox.internal:8443"),
+        transport=transport,
+    )
+
+    assert probe is not None
+    assert await probe(
+        capability(), runtime_request(), "sandbox-a", {"id": "sandbox-a"}
+    ) is False
 
 
 @pytest.mark.asyncio

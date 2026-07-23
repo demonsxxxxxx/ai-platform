@@ -157,6 +157,7 @@ def _canonical_endpoint_host(netloc: str, hostname: str, port: int | None) -> tu
         or address.is_link_local
         or address.is_multicast
         or address.is_reserved
+        or (isinstance(address, ipaddress.IPv6Address) and address.is_site_local)
         or special_use
         or not (explicitly_private or address.is_global)
     ):
@@ -198,12 +199,18 @@ def _lifecycle_base_url(protocol: object, domain: object) -> str:
     return urlunsplit((scheme, netloc, "", "", ""))
 
 
+def _effective_port(scheme: str, port: int | None) -> int | None:
+    if port is not None:
+        return port
+    return {"http": 80, "https": 443}.get(scheme)
+
+
 def _same_endpoint(actual_url: str, expected_url: str) -> bool:
     try:
         actual = urlsplit(actual_url)
         expected = urlsplit(expected_url)
-        actual_port = actual.port
-        expected_port = expected.port
+        actual_port = _effective_port(actual.scheme, actual.port)
+        expected_port = _effective_port(expected.scheme, expected.port)
     except (TypeError, ValueError):
         return False
     return (
