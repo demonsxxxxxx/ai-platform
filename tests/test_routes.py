@@ -2385,6 +2385,73 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["queued", "running"])
+async def test_get_run_nonterminal_reload_uses_canonical_result_allowlist_and_preserves_admin_diagnostics(
+    monkeypatch,
+    status,
+):
+    diagnostic = "qa-file-reviewer agent qa-word-review executor diagnostic opaque-981"
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": status,
+            "input_json": {},
+            "result_json": {
+                "message": diagnostic,
+                "sdk_error": diagnostic,
+                "error": {"message": diagnostic},
+                "multi_agent": {"steps": [{"step_key": "qa-file-reviewer-step", "output": diagnostic}]},
+            },
+            "error_code": "executor_failure",
+            "error_message": diagnostic,
+        }
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_events(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_steps(conn, *, tenant_id, run_id):
+        return []
+
+    async def queue_position(*, tenant_id, run_id):
+        return 1
+
+    async def queue_insight_for_status(status, tenant_id, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", empty_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", empty_steps)
+    monkeypatch.setattr("app.routes.runs.get_run_queue_position", queue_position)
+    monkeypatch.setattr("app.routes.runs.queue_insight_for_status", queue_insight_for_status)
+
+    ordinary = await get_run("run-a", principal=principal())
+    admin = await get_run("run-a", principal=principal(roles=["admin"]))
+
+    assert ordinary.result == {}
+    assert ordinary.error_code == "run_failed"
+    assert ordinary.error_message == ""
+    assert ordinary.agent_id == "document-review"
+    assert diagnostic not in ordinary.model_dump_json()
+    assert "qa-file-reviewer" not in ordinary.model_dump_json()
+    assert "qa-word-review" not in ordinary.model_dump_json()
+    assert admin.result["message"] == diagnostic
+    assert admin.result["sdk_error"] == diagnostic
+    assert admin.result["error"] == {"message": diagnostic}
+    assert admin.error_code == "executor_failure"
+    assert admin.error_message == diagnostic
+
+
+@pytest.mark.asyncio
 async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnostics(monkeypatch):
     raw_terms = (
         "command=render-report --private-param=amber",

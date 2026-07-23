@@ -58,6 +58,7 @@ from app.run_projection import (
     executor_result_schema_version,
     multi_agent_snapshot_from_steps,
     normalize_run_status,
+    ordinary_nonterminal_run_result,
     progress_for_status,
     public_text_or_fallback,
     public_terminal_projection,
@@ -2031,7 +2032,6 @@ async def get_run(
     contract_version = run_contract_version(run)
     executor_schema_version = executor_result_schema_version(run)
     result = run["result_json"] if isinstance(run["result_json"], dict) else {}
-    result_payload = dict(result)
     raw_skill_id = str(run["skill_id"])
     raw_agent_id = str(run["agent_id"])
     show_raw_skill = is_ai_admin(principal)
@@ -2045,23 +2045,23 @@ async def get_run(
         if not show_raw_skill
         else None
     )
-    multi_agent_snapshot = (
-        None
-        if terminal_projection is not None
-        else multi_agent_snapshot_from_steps(run_id, steps, principal=principal)
-    )
-    if multi_agent_snapshot is not None and terminal_projection is None:
-        result_payload["multi_agent"] = multi_agent_snapshot
     input_payload = run["input_json"] if isinstance(run["input_json"], dict) else {}
     if show_raw_skill:
         input_payload = sanitize_public_payload(input_payload)
-        result_payload = sanitize_public_payload(result_payload)
+        result_payload = sanitize_public_payload(result)
+        multi_agent_snapshot = multi_agent_snapshot_from_steps(run_id, steps, principal=principal)
+        if multi_agent_snapshot is not None:
+            result_payload["multi_agent"] = multi_agent_snapshot
     else:
         input_payload = sanitize_user_control_input(input_payload)
         result_payload = (
             dict(terminal_projection["result"])
             if terminal_projection is not None
-            else sanitize_public_payload(redact_raw_skill_references(result_payload))
+            else (
+                ordinary_nonterminal_run_result(run_id=run_id, step_rows=steps)
+                if normalize_run_status(run_status) in {"queued", "running"}
+                else sanitize_public_payload(redact_raw_skill_references(result))
+            )
         )
     if not isinstance(input_payload, dict):
         input_payload = {}
@@ -2073,12 +2073,13 @@ async def get_run(
         error_code = terminal_projection["error_code"]
         error_message = str(terminal_projection["message"])
     else:
-        error_code = (
-            sanitize_public_text(run.get("error_code"))
-            if show_raw_skill
-            else ("run_failed" if run.get("error_code") else None)
-        )
-        error_message = sanitize_public_text(run.get("error_message"))
+        if show_raw_skill:
+            error_code = sanitize_public_text(run.get("error_code"))
+            error_message = sanitize_public_text(run.get("error_message"))
+        else:
+            public_summary = run_playback_summary(run, principal)
+            error_code = public_summary["error_code"]
+            error_message = str(public_summary["error_message"])
     context_ref = (
         run_context_ref_from_snapshot_row(bound_context_snapshot)
         if isinstance(bound_context_snapshot, dict)

@@ -3828,6 +3828,10 @@ def test_run_checkpoint_audit_projects_materialization_without_private_payload(m
     assert "resource_limits" not in public_dump
     assert "sandbox_mode" not in public_dump
     assert "private_payload" not in public_dump
+    assert '"checkpoint-a"' not in json.dumps(body)
+    assert "step-code" not in public_dump
+    assert "artifact-report" not in public_dump
+    assert "source_step_id" not in public_dump
     assert "/tmp/" not in public_dump
     assert "C:/runtime" not in public_dump
     assert "qa-file-reviewer" not in public_dump
@@ -3885,7 +3889,7 @@ def test_run_checkpoint_audit_reports_artifact_only_and_uncheckpointed_step_gaps
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -3913,7 +3917,7 @@ def test_run_checkpoint_audit_reports_artifact_only_and_uncheckpointed_step_gaps
     ]
 
 
-def test_run_checkpoint_audit_redacts_raw_skill_reference_in_checkpoint_id(monkeypatch):
+def test_run_checkpoint_audit_admin_retains_raw_skill_checkpoint_correlation(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return resume_manifest_run_row(status="failed")
 
@@ -3968,26 +3972,28 @@ def test_run_checkpoint_audit_redacts_raw_skill_reference_in_checkpoint_id(monke
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     body = response.json()
-    assert body["checkpoints"] == []
-    assert body["uncheckpointed_reusable_steps"] == [
+    assert body["checkpoints"] == [
         {
-            "step_id": "step-unsafe",
-            "step_key": "step-unsafe",
-            "status": "succeeded",
-            "reason": "missing_checkpoint_id",
+            "checkpoint_id": "checkpoint-qa-file-reviewer",
+            "audit_state": "materialized",
+            "resume_reusable": True,
+            "artifact_materialized": True,
+            "step_ids": ["step-unsafe"],
+            "artifact_ids": ["artifact-unsafe"],
+            "reuse": {"pending": 0, "reused": 0},
+            "gaps": [],
         }
     ]
-    public_dump = str(body)
-    assert "qa-file-reviewer" not in public_dump
-    assert "checkpoint-qa-file-reviewer" not in public_dump
-    assert "reusable output" not in public_dump
+    assert body["uncheckpointed_reusable_steps"] == []
+    assert "qa-file-reviewer" in str(body)
+    assert "reusable output" not in str(body)
 
 
-def test_run_checkpoint_audit_redacts_fingerprint_step_key_for_ordinary_user(monkeypatch):
+def test_run_checkpoint_audit_admin_retains_fingerprint_step_key_for_correlation(monkeypatch):
     unsafe_hash = "a" * 64
     unsafe_step_key = f"build-{unsafe_hash}"
 
@@ -4023,22 +4029,20 @@ def test_run_checkpoint_audit_redacts_fingerprint_step_key_for_ordinary_user(mon
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     body = response.json()
     assert body["uncheckpointed_reusable_steps"] == [
         {
             "step_id": "step-build",
-            "step_key": "step-build",
+            "step_key": unsafe_step_key,
             "status": "succeeded",
             "reason": "missing_checkpoint_id",
         }
     ]
-    public_dump = str(body)
-    assert unsafe_step_key not in public_dump
-    assert unsafe_hash not in public_dump
-    assert "reusable output" not in public_dump
+    assert unsafe_step_key in str(body)
+    assert "reusable output" not in str(body)
 
 
 def test_run_checkpoint_audit_reports_step_only_incomplete_and_producer_mismatch(monkeypatch):
@@ -4138,7 +4142,7 @@ def test_run_checkpoint_audit_reports_step_only_incomplete_and_producer_mismatch
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     checkpoints = {item["checkpoint_id"]: item for item in response.json()["checkpoints"]}
@@ -4233,7 +4237,7 @@ def test_run_checkpoint_audit_requires_valid_artifact_source_step_for_materializ
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     assert response.json()["checkpoints"] == [
@@ -4302,7 +4306,7 @@ def test_run_checkpoint_audit_missing_producer_does_not_materialize_existing_che
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     client = TestClient(create_app())
 
-    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
 
     assert response.status_code == 200
     assert response.json()["checkpoints"] == [

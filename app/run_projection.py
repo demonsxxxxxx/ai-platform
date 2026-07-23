@@ -128,6 +128,21 @@ def public_terminal_detail(status: object, error_code: object = None) -> dict[st
     }
 
 
+def ordinary_nonterminal_run_result(
+    *,
+    run_id: str,
+    step_rows: list[dict[str, object]],
+) -> dict[str, object]:
+    """Build the complete ordinary-user result for a queued or running run.
+
+    Executor-owned ``result_json`` is not a public progress contract.  The
+    existing multi-agent snapshot is retained because it is reconstructed from
+    durable step rows by this module's server-owned allowlist.
+    """
+    multi_agent = _ordinary_multi_agent_snapshot(run_id, step_rows)
+    return {"multi_agent": multi_agent} if multi_agent is not None else {}
+
+
 PUBLIC_ARTIFACT_TYPES = frozenset(
     {
         "docx",
