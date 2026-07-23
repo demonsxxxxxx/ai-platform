@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from app import repositories
 from app.db import transaction
+from app.execution_boundary import governed_egress_proof_from_labels
 from app.executors.base import RunExecutionOwner
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import ContainerProvider, create_container_provider
@@ -142,6 +143,7 @@ class SandboxRuntime:
             and runtime_workspace_container_path
         ):
             raise ValueError("incomplete_runtime_handle")
+        governed_egress_proof = governed_egress_proof_from_labels(lease.provider, lease.labels)
         lease_payload = {
             "source": "sandbox_runtime",
             "evidence_class": "runtime_lease_projection",
@@ -153,9 +155,17 @@ class SandboxRuntime:
             "labels": {
                 str(key): str(value)
                 for key, value in lease.labels.items()
-                if not str(key).startswith("ai-platform.executor.")
+                if not str(key).startswith(
+                    (
+                        "ai-platform.executor.",
+                        "ai-platform.external_egress.",
+                        "ai-platform.governed_egress.",
+                    )
+                )
             },
         }
+        if governed_egress_proof is not None:
+            lease_payload["governed_egress_proof"] = governed_egress_proof
         async with transaction() as conn:
             row = await repositories.create_sandbox_lease(
                 conn,

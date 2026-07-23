@@ -397,6 +397,15 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
 @pytest.mark.asyncio
 async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_handle(tmp_path, monkeypatch):
     calls = []
+    from app.execution_boundary import build_governed_egress_proof, governed_egress_proof_label
+
+    governed_egress_proof = build_governed_egress_proof(
+        provider="opensandbox",
+        runtime_subject="runtime-subject-a",
+        policy_subject="gateway-policy-subject-a",
+        callback_subject="callback-boundary-subject-a",
+        denial_subject="gateway-deny-subject-a",
+    )
 
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
@@ -419,6 +428,8 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
                         "ai-platform.executor.uid": "10001",
                         "ai-platform.executor.gid": "10001",
                         "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+                        "ai-platform.external_egress.endpoint": "http://127.0.0.1:18081/private-capability",
+                        "ai-platform.governed_egress.proof": governed_egress_proof_label(governed_egress_proof),
                     },
                 }
             )
@@ -457,6 +468,8 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
     assert create_kwargs["lease_payload_json"]["container_id"] == "osb-run-a"
     assert "executor_headers" not in create_kwargs["lease_payload_json"]
     assert create_kwargs["lease_payload_json"]["labels"] == {"ai-platform.run_id": "run-a"}
+    assert create_kwargs["lease_payload_json"]["governed_egress_proof"] == governed_egress_proof
+    assert "private-capability" not in repr(create_kwargs["lease_payload_json"])
     assert calls[1] == ("release", "lease-created-a", "dispatch_completed")
 
 

@@ -36,6 +36,12 @@ from app.runtime.sandbox.contracts import (
     WorkspaceLease,
     build_trusted_callback_target,
 )
+from app.execution_boundary import (
+    GOVERNED_EGRESS_PROOF_LABEL,
+    build_governed_egress_proof,
+    governed_egress_proof_label,
+    is_governed_egress_proof,
+)
 from app.settings import get_settings
 from app.runtime.sandbox.executor_client import (
     EXECUTOR_CONNECT_BASE_URL_METADATA,
@@ -68,6 +74,13 @@ class OpenSandboxCapabilityAdmissionError(SandboxRuntimeError):
 
     def __init__(self, message: str = "OpenSandbox external-egress capability admission failed") -> None:
         super().__init__("opensandbox_capability_admission_failed", message)
+
+
+class GovernedEgressAdmissionError(SandboxRuntimeError):
+    """Raised before sandbox side effects when default-deny egress cannot be proven."""
+
+    def __init__(self) -> None:
+        super().__init__("sandbox_egress_unavailable", "Governed sandbox egress is unavailable; contact an operator.")
 
 
 class DockerPermissionDeniedError(SandboxRuntimeError):
@@ -311,6 +324,7 @@ def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> boo
             str(key).startswith("ai-platform.egress.")
             or str(key).startswith("ai-platform.executor.")
             or str(key).startswith("ai-platform.external_egress.")
+            or str(key).startswith("ai-platform.governed_egress.")
             or str(key).startswith("ai-platform.skill_mount.")
             or str(key) == "ai-platform.runtime_subject"
         ) and str(labels.get(key) or "") != expected:
@@ -926,6 +940,7 @@ CAPABILITY_PROFILE_MAX_REQUEST_SECONDS = 2.0
 CAPABILITY_PROFILE_MAX_RESPONSE_BYTES = 64 * 1024
 CAPABILITY_PROFILE_MAX_TOKEN_BYTES = 4096
 CapabilityProfileFetcher = Callable[[str, dict[str, str], float], dict[str, Any]]
+DockerEgressAdmissionVerifier = Callable[[Any, Any], dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -946,11 +961,21 @@ class OpenSandboxExternalEgressCapability:
     issued_at_utc: datetime
     expires_at_utc: datetime
 
+    def governed_egress_proof(self) -> dict[str, object]:
+        """Project the authenticated capability into the shared redacted proof contract."""
+        return build_governed_egress_proof(
+            provider="opensandbox",
+            runtime_subject=self.runtime_subject,
+            policy_subject=self.gateway_policy_subject,
+            callback_subject=self.callback_boundary_subject,
+            denial_subject=f"{self.deny_audit_subject}:{self.deny_counter_subject}",
+        )
+
     def lease_labels(self) -> dict[str, str]:
+        proof = self.governed_egress_proof()
         return {
             "ai-platform.external_egress.profile_version": "v1",
             "ai-platform.external_egress.profile_id": self.profile_id,
-            "ai-platform.external_egress.endpoint": self.endpoint,
             "ai-platform.external_egress.runtime_identity": self.runtime_identity,
             "ai-platform.runtime_subject": self.runtime_subject,
             "ai-platform.external_egress.gateway_policy_subject": self.gateway_policy_subject,
@@ -960,6 +985,7 @@ class OpenSandboxExternalEgressCapability:
             "ai-platform.external_egress.profile_requested_image": self.requested_image,
             "ai-platform.external_egress.profile_requested_image_digest": self.requested_image_digest,
             "ai-platform.external_egress.profile_expires_at": self.expires_at,
+            GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
         }
 
 
@@ -1469,62 +1495,50 @@ def _docker_network_has_no_masquerade(network: Any) -> bool:
     return options.get("com.docker.network.bridge.enable_ip_masquerade") == "false"
 
 
-def _is_network_not_found_error(exc: BaseException) -> bool:
-    if isinstance(exc, KeyError):
-        return True
-    if docker is not None:
-        not_found_error = getattr(getattr(docker, "errors", None), "NotFound", None)
-        if not_found_error is not None and isinstance(exc, not_found_error):
-            return True
-    message = str(exc).lower()
-    return "not found" in message or "no such network" in message or "404" in message
+@dataclass(frozen=True)
+class _DockerGovernedEgressAdmission:
+    create_kwargs: dict[str, Any]
+    lease_labels: dict[str, str]
 
 
-def _docker_egress_network_kwargs(client: Any, settings: Any) -> dict[str, Any]:
+def _admit_docker_governed_egress(
+    client: Any,
+    settings: Any,
+    verifier: DockerEgressAdmissionVerifier | None,
+) -> _DockerGovernedEgressAdmission:
     if getattr(settings, "sandbox_egress_policy_enabled", False) is not True:
-        return {}
+        raise GovernedEgressAdmissionError() from None
     network_name = str(getattr(settings, "sandbox_egress_network_name", "") or "").strip()
     if not network_name:
-        raise ContainerStartFailedError()
+        raise GovernedEgressAdmissionError() from None
     networks = getattr(client, "networks", None)
     if networks is None:
-        raise ContainerStartFailedError()
+        raise GovernedEgressAdmissionError() from None
     try:
         network = networks.get(network_name)
-    except Exception as exc:
-        if not _is_network_not_found_error(exc):
-            raise ContainerStartFailedError() from exc
-        try:
-            network = networks.create(
-                network_name,
-                driver="bridge",
-                options={"com.docker.network.bridge.enable_ip_masquerade": "false"},
-            )
-        except Exception as create_exc:
-            raise ContainerStartFailedError() from create_exc
+    except Exception:
+        raise GovernedEgressAdmissionError() from None
     if not _docker_network_has_no_masquerade(network):
-        raise ContainerStartFailedError()
+        raise GovernedEgressAdmissionError() from None
+    if verifier is None:
+        # Docker bridge no-masquerade plus labels or a host-gateway mapping does
+        # not prove a policy-bound allow/deny rule. A controlled enforcement
+        # adapter must supply the shared proof before an executor is admitted.
+        raise GovernedEgressAdmissionError() from None
+    try:
+        proof = verifier(client, settings)
+    except Exception:
+        raise GovernedEgressAdmissionError() from None
+    if not is_governed_egress_proof(proof, provider="docker"):
+        raise GovernedEgressAdmissionError() from None
     callback_host = str(getattr(settings, "sandbox_callback_host_gateway", "") or "").strip()
-    kwargs: dict[str, Any] = {"network": network_name}
+    create_kwargs: dict[str, Any] = {"network": network_name}
     if callback_host:
-        kwargs["extra_hosts"] = {callback_host: "host-gateway"}
-    return kwargs
-
-
-def _egress_policy_labels(settings: Any) -> dict[str, str]:
-    if getattr(settings, "sandbox_egress_policy_enabled", False) is not True:
-        return {}
-    network_name = str(getattr(settings, "sandbox_egress_network_name", "") or "").strip()
-    callback_host = str(getattr(settings, "sandbox_callback_host_gateway", "") or "").strip()
-    if not network_name:
-        return {}
-    labels = {
-        "ai-platform.egress.policy": "default-deny-no-masq",
-        "ai-platform.egress.network": network_name,
-    }
-    if callback_host:
-        labels["ai-platform.egress.callback_host"] = callback_host
-    return labels
+        create_kwargs["extra_hosts"] = {callback_host: "host-gateway"}
+    return _DockerGovernedEgressAdmission(
+        create_kwargs=create_kwargs,
+        lease_labels={GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof)},
+    )
 
 
 def _is_permission_denied(message: str) -> bool:
@@ -1788,6 +1802,7 @@ class DockerContainerProvider:
         health_probe: Callable[..., bool] | None = None,
         identity_probe: Callable[..., dict[str, int]] | None = None,
         native_tool_probe: Callable[[Any], bool] | None = None,
+        docker_egress_admission_verifier: DockerEgressAdmissionVerifier | None = None,
         monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._leases: dict[str, ContainerLease] = {}
@@ -1795,6 +1810,7 @@ class DockerContainerProvider:
         self._health_probe = health_probe or default_executor_health_probe
         self._identity_probe = identity_probe or default_executor_identity_probe
         self._native_tool_probe = native_tool_probe or _default_native_tool_probe
+        self._docker_egress_admission_verifier = docker_egress_admission_verifier
         self._monotonic = monotonic or time.monotonic
         self._client: Any | None = None
 
@@ -2203,8 +2219,6 @@ class DockerContainerProvider:
         workspace: WorkspaceLease,
     ) -> ContainerLease:
         settings = get_settings()
-        skill_mount = _prepare_trusted_skill_mount(request, workspace)
-        skill_mount_labels = _skill_mount_labels(skill_mount)
         endpoint = _resolve_executor_published_endpoint(settings.sandbox_executor_published_host)
         client = self._get_client()
         container_id = f"exec-{request.run_id}"
@@ -2215,7 +2229,16 @@ class DockerContainerProvider:
             if normalized_exc is not None:
                 raise normalized_exc from exc
             raise DockerUnavailableError("Docker daemon is unavailable") from exc
-        expected_egress_labels = _egress_policy_labels(settings)
+        # This runs before staged Skill scrubbing, cached-lease acceptance, or
+        # either executor/native-tool container can be created or reused.
+        egress_admission = _admit_docker_governed_egress(
+            client,
+            settings,
+            self._docker_egress_admission_verifier,
+        )
+        skill_mount = _prepare_trusted_skill_mount(request, workspace)
+        skill_mount_labels = _skill_mount_labels(skill_mount)
+        expected_egress_labels = egress_admission.lease_labels
         native_tool_required = _native_tool_required(request)
         native_tool_admission_evidence = (
             _native_tool_admission_evidence(workspace) if native_tool_required else {}
@@ -2362,7 +2385,7 @@ class DockerContainerProvider:
                     native_tool_socket=_NATIVE_TOOL_SOCKET if native_tool_required else "",
                 ),
                 ports={"18000/tcp": (endpoint.bind_ip, None)},
-                **_docker_egress_network_kwargs(client, settings),
+                **egress_admission.create_kwargs,
                 **_docker_security_kwargs(),
                 user=workspace_user,
                 **_docker_resource_kwargs(request.resource_limits),
@@ -2848,7 +2871,6 @@ class OpenSandboxContainerProvider:
     ) -> ContainerLease:
         settings = get_settings()
         self._ensure_symbols()
-        skill_mount = _prepare_trusted_skill_mount(request, workspace)
         try:
             capability = await _admit_opensandbox_external_egress_capability(
                 settings=settings,
@@ -2858,6 +2880,7 @@ class OpenSandboxContainerProvider:
         except OpenSandboxCapabilityAdmissionError:
             await self._cleanup_cached_lease_after_capability_rejection(request)
             raise
+        skill_mount = _prepare_trusted_skill_mount(request, workspace)
         cached = self._leases.get(f"opensandbox-{request.run_id}")
         if cached is not None and cached.container_id in self._sandboxes:
             sandbox = self._sandboxes[cached.container_id]

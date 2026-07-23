@@ -66,13 +66,21 @@ def test_non_claude_adapter_keeps_adapter_managed_execution():
     assert decision.fail_closed is False
 
 
-def test_real_runtime_lease_requires_provider_source_and_evidence_class():
+def test_real_runtime_lease_requires_canonical_governed_egress_proof():
     module = _module()
+    proof = module.build_governed_egress_proof(
+        provider="docker",
+        runtime_subject="runtime-subject-a",
+        policy_subject="policy-subject-a",
+        callback_subject="callback-subject-a",
+        denial_subject="denial-subject-a",
+    )
     real = {
         "provider": "docker",
         "lease_payload_json": {
             "source": "sandbox_runtime",
             "evidence_class": "runtime_lease_projection",
+            "governed_egress_proof": proof,
         },
     }
 
@@ -82,8 +90,50 @@ def test_real_runtime_lease_requires_provider_source_and_evidence_class():
         {
             **real,
             "lease_payload_json": {
+                "source": "sandbox_runtime",
+                "evidence_class": "runtime_lease_projection",
+                "labels": {module.GOVERNED_EGRESS_PROOF_LABEL: module.governed_egress_proof_label(proof)},
+            },
+        }
+    ) is False
+    assert module.is_accepted_runtime_lease(
+        {
+            **real,
+            "lease_payload_json": {
                 "source": "sdk_only_lifecycle_placeholder",
                 "evidence_class": "sdk_only_lifecycle_placeholder",
             },
         }
     ) is False
+
+
+def test_runtime_lease_rejects_legacy_and_forged_governed_egress_proofs():
+    module = _module()
+    legacy = {
+        "provider": "opensandbox",
+        "lease_payload_json": {
+            "source": "sandbox_runtime",
+            "evidence_class": "runtime_lease_projection",
+        },
+    }
+    forged = {
+        **legacy,
+        "lease_payload_json": {
+            **legacy["lease_payload_json"],
+            "governed_egress_proof": {
+                "schema_version": module.GOVERNED_EGRESS_PROOF_SCHEMA,
+                "provider": "opensandbox",
+                "default_deny_outbound": True,
+                "governed_callback_exception": True,
+                "policy_bound_enforcement": True,
+                "runtime_subject_sha256": "a" * 64,
+                "policy_subject_sha256": "b" * 64,
+                "callback_subject_sha256": "c" * 64,
+                "denial_subject_sha256": "d" * 64,
+                "unredacted_callback_url": "http://private.test/callback",
+            },
+        },
+    }
+
+    assert module.is_accepted_runtime_lease(legacy) is False
+    assert module.is_accepted_runtime_lease(forged) is False
