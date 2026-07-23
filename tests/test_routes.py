@@ -33,9 +33,11 @@ from app.routes.runs import (
     copy_run,
     create_run,
     get_run,
+    get_run_control_readiness,
     get_run_events,
     get_run_playback,
     get_run_provenance,
+    get_run_resume_manifest,
     get_run_steps,
     multi_agent_snapshot_from_steps,
     progress_for_status,
@@ -444,7 +446,7 @@ def test_run_event_response_uses_standard_envelope():
         "run-a",
         {
             "id": "evt-a",
-            "trace_id": "trace_run_a",
+            "trace_id": "request-id=orchid",
             "schema_version": "ai-platform.event-envelope.v1",
             "sequence": 3,
             "event_type": "queued",
@@ -509,7 +511,8 @@ def test_run_event_response_redacts_dispatch_control_metadata_for_ordinary_user(
         principal=principal(),
     )
 
-    assert event["payload"] == {"visible_to_user": True, "step_key": "code"}
+    assert event["message"] == "已安排协同任务。"
+    assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     public_dump = str(event)
     assert "dispatch-code" not in public_dump
     assert "run-parent" not in public_dump
@@ -550,7 +553,8 @@ def test_run_event_response_aliases_multi_agent_child_created_for_ordinary_user(
     assert event["event_type"] == "run_child_created"
     assert event["type"] == "run_child_created"
     assert admin_event["event_type"] == "run_multi_agent_child_created"
-    assert event["payload"] == {"visible_to_user": True, "step_key": "code"}
+    assert event["message"] == "已安排协同任务。"
+    assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     public_dump = str(event)
     assert "dispatch-code" not in public_dump
     assert "run-parent" not in public_dump
@@ -621,7 +625,7 @@ def test_run_event_response_redacts_runtime_private_error_code_for_ordinary_user
         "run-a",
         {
             "id": "evt-a",
-            "trace_id": "trace_run_a",
+            "trace_id": "request-id=orchid",
             "schema_version": "ai-platform.event-envelope.v1",
             "event_type": "error",
             "stage": "worker",
@@ -946,7 +950,8 @@ def test_run_event_response_sanitizes_runtime_envelope_for_ordinary_user():
     assert event["event_type"] == "status"
     assert event["type"] == "status"
     assert event["stage"] == "status"
-    assert event["message"] == ""
+    assert event["message"] == "任务状态已更新。"
+    assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     assert "runtime211" not in str(event)
     assert "worker" not in str(event)
     assert "qa-review-queue-runtime" not in str(event)
@@ -1026,39 +1031,8 @@ def test_run_event_response_redacts_secret_like_payload_for_ordinary_user():
     )
 
     serialized = str(event)
-    assert event["message"] == (
-        "callback authorization=[redacted-secret] [redacted-email] "
-        "https://example.com/doc clientsecret=[redacted-secret] "
-        "passwordhash=[redacted-secret] secretkey=[redacted-secret] "
-        "clientcredentialblob=[redacted-secret] "
-        "secretarysecret=[redacted-secret] "
-        "authorizationbearer=[redacted-secret] "
-        "privatekey=[redacted-secret] "
-        "bearer=[redacted-secret] "
-        "authkey=[redacted-secret]"
-    )
-    assert event["payload"] == {
-        "note": (
-            "api_key=[redacted-secret] client_secret=[redacted-secret] githubtoken=[redacted-secret] "
-            "passworddigest=[redacted-secret] secretvalue=[redacted-secret] "
-            "servicecredentialsjson=[redacted-secret] "
-            "awsaccesskeyid=[redacted-secret]"
-        ),
-        "url": "https://example.com/doc",
-        "homepage": "http://example.com/home",
-        "headers": {},
-        "authstatus": "approved",
-        "input_token_count": 12,
-        "output_token_count": 8,
-        "total_token_count": 20,
-        "remaining_token_budget": 100,
-        "oauth_authorization_status": "approved",
-        "secretary_name": "Jane",
-        "client_secretary_name": "Jane Doe",
-        "tokenizer": "cl100k_base",
-        "publickey": "public-key-visible",
-        "safe": "done",
-    }
+    assert event["message"] == "任务状态已更新。"
+    assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     assert "bearer-token-123" not in serialized
     assert "nested-bearer-token" not in serialized
     assert "user@example.com" not in serialized
@@ -1095,8 +1069,8 @@ def test_run_event_response_redacts_secret_like_payload_for_ordinary_user():
     assert "auth-key-compact" not in serialized
     assert "auth-header-compact" not in serialized
     assert "auth-value-compact" not in serialized
-    assert "approved" in serialized
-    assert "public-key-visible" in serialized
+    assert "approved" not in serialized
+    assert "public-key-visible" not in serialized
     assert "client-credential-secret-compact" not in serialized
     assert "service-credentials-secret-compact" not in serialized
     assert "authorization-header-compact" not in serialized
@@ -2228,7 +2202,7 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
             **RUN_SCHEMA_FIELDS,
             "agent_id": "qa-word-review",
             "skill_id": "qa-file-reviewer",
-            "trace_id": "trace_run_a",
+            "trace_id": "request-id=orchid",
             "schema_version": "ai-platform.run.v1",
             "status": "running",
             "input_json": {
@@ -2393,6 +2367,7 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
     assert "runtime_path" not in public_dump
     assert "used_skills_source" not in public_dump
     assert "executor_hook" not in public_dump
+    assert "request-id=orchid" not in public_dump
     assert "skill_id" not in response.events[0]["payload"]
     assert "skill_ids" not in response.events[0]["payload"]
     assert "skill_ids" not in response.steps[0]
@@ -2570,21 +2545,146 @@ async def test_get_run_reprojects_terminal_multi_agent_steps_without_trusting_ex
     assert ordinary_failed_step["step_key"] == "step-failed"
     assert ordinary_failed_step["payload"] == {
         "dependency_count": 1,
+        "depends_on": ["step-plan"],
         "missing_dependency_count": 1,
         "artifact_count": 1,
         "progress": 50,
     }
     assert ordinary_failed_step["title"] == "步骤未完成"
     assert ordinary_failed_step["role"] is None
+    assert ordinary.steps[0]["step_id"] == "step-plan"
+    assert ordinary.steps[0]["step_key"] == "step-plan"
+    assert ordinary.steps[0]["title"] == "步骤已完成"
+    assert ordinary.steps[0]["role"] is None
     assert ordinary.steps[0]["payload"] == {
         "artifact_count": 0,
         "progress": 25,
-        "public_note": "公开的计划进度",
     }
     assert all(term not in ordinary.model_dump_json() for term in raw_terms)
     assert admin.steps[1]["title"] == "qa-file-reviewer"
     assert admin.steps[1]["payload"]["error"] == raw_terms[0]
     assert admin.steps[1]["payload"]["output"] == raw_terms[2]
+
+
+@pytest.mark.asyncio
+async def test_control_readiness_and_resume_manifest_omit_unmapped_executor_dependencies(monkeypatch):
+    raw_terms = ("qa-file-reviewer", "qa-word-review", "unmapped-safe-id", "checkpoint-safe-id", "source-run-private")
+    run = {
+        "id": "run-a",
+        "session_id": "ses-a",
+        **RUN_SCHEMA_FIELDS,
+        "agent_id": raw_terms[1],
+        "skill_id": raw_terms[0],
+        "status": "running",
+        "trace_id": "trace-a",
+        "input_json": {
+            "input": {
+                "execution_mode": "multi_agent",
+                "multi_agent_steps": [
+                    {"step_key": raw_terms[0]},
+                    {"step_key": raw_terms[1], "depends_on": [raw_terms[0], raw_terms[2]]},
+                ],
+            }
+        },
+        "result_json": {},
+        "error_code": None,
+        "error_message": None,
+    }
+    steps = [
+        {
+            "id": "step-plan",
+            "run_id": "run-a",
+            "step_key": raw_terms[0],
+            "step_kind": "agent",
+            "status": "succeeded",
+            "title": raw_terms[0],
+            "role": raw_terms[1],
+            "sequence": 1,
+            "payload_json": {"public_note": "safe-looking executor note", "artifact_count": 1, "progress": 100},
+            "started_at": None,
+            "finished_at": None,
+            "created_at": None,
+            "updated_at": None,
+        },
+        {
+            "id": "step-unsafe",
+            "run_id": "run-a",
+            "step_key": raw_terms[1],
+            "step_kind": "agent",
+            "status": "pending",
+            "title": raw_terms[1],
+            "role": raw_terms[0],
+            "sequence": 2,
+            "payload_json": {
+                "depends_on": [raw_terms[0], raw_terms[2]],
+                "missing_dependencies": [raw_terms[1]],
+                "checkpoint_id": raw_terms[3],
+                "source_step_id": raw_terms[0],
+                "subagent_id": raw_terms[1],
+                "checkpoint_reuse_pending": True,
+                "copied_from_run_id": raw_terms[4],
+                "public_note": "safe-looking executor note",
+                "artifact_count": 2,
+                "progress": 25,
+            },
+            "started_at": None,
+            "finished_at": None,
+            "created_at": None,
+            "updated_at": None,
+        },
+    ]
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
+        return run
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+        return steps
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+
+    readiness = await get_run_control_readiness("run-a", principal=principal())
+    manifest = await get_run_resume_manifest("run-a", principal=principal())
+
+    public_steps = readiness["multi_agent"]["steps"]
+    assert public_steps[0]["step_key"] == "step-plan"
+    assert public_steps[0]["title"] == "步骤已完成"
+    assert public_steps[0]["role"] is None
+    assert public_steps[1] == {
+        "step_key": "step-unsafe",
+        "step_id": "step-unsafe",
+        "title": "等待执行",
+        "role": None,
+        "sequence": 2,
+        "status": "pending",
+        "depends_on": [],
+        "dependency_statuses": [
+            {"step_key": None, "status": "hidden", "reason": "unsafe_dependency"},
+            {"step_key": None, "status": "hidden", "reason": "unsafe_dependency"},
+            {"step_key": None, "status": "hidden", "reason": "unsafe_dependency"},
+        ],
+        "ready": False,
+        "blocked_reason": "hidden_dependencies",
+        "source": "recorded",
+    }
+    assert readiness["multi_agent"]["counts"]["hidden_dependencies"] == 3
+    assert manifest["steps"][1] == {
+        "step_id": "step-unsafe",
+        "step_key": "step-unsafe",
+        "status": "pending",
+        "title": "等待执行",
+        "role": None,
+        "sequence": 2,
+        "depends_on": [],
+        "reuse_intent": "reuse_pending",
+        "source_run_id": None,
+    }
+    public_dump = str({"readiness": readiness, "manifest": manifest})
+    assert all(term not in public_dump for term in raw_terms)
+    assert "safe-looking executor note" not in public_dump
 
 
 @pytest.mark.asyncio

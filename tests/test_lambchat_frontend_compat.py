@@ -2834,7 +2834,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     assert event["event_type"] == "capability_selected"
     assert event["sequence"] == 37
     assert "sequence" not in event["data"]
-    assert event["payload"]["capability_id"] == "document_review"
+    assert event["payload"] == {}
     assert event["data"] == {
         "projection_version": "ai-platform.chat-public-projection.v1",
         "event_id": "evt_a",
@@ -2845,7 +2845,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
         "severity": "info",
         "progress_kind": "completed",
         "wait_reason": None,
-        "payload": {"capability_id": "document_review"},
+        "payload": {},
         "created_at": None,
         "content": "已加载授权处理能力，下一步将按所选流程分析请求",
         "status": "planning",

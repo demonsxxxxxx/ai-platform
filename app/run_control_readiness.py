@@ -11,6 +11,7 @@ from app.run_projection import (
     normalize_step_status,
     public_text_or_fallback,
     run_step_response,
+    run_step_responses,
 )
 from app.run_provenance import (
     contains_raw_projection_term,
@@ -35,12 +36,13 @@ def _checkpoint_candidate_from_step(
     principal: AuthPrincipal,
     *,
     raw_terms: set[str],
+    public_step: dict[str, object] | None = None,
 ) -> dict[str, object] | None:
     payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
     status = normalize_step_status(row.get("status"))
     if status != "succeeded" or payload.get("output") is None:
         return None
-    public_step = run_step_response(row, principal=principal)
+    public_step = public_step or run_step_response(row, principal=principal)
     step_id = str(public_step["step_id"])
     step_key = str(public_step["step_key"])
     title = public_step.get("title")
@@ -139,6 +141,106 @@ def multi_agent_blocked_reason(status: str, dependency_statuses: list[dict[str, 
     return None
 
 
+def _ordinary_multi_agent_readiness_snapshot(
+    *,
+    run: dict[str, object],
+    steps: list[dict[str, object]],
+    principal: AuthPrincipal,
+) -> dict[str, object] | None:
+    execution_input = run_execution_input(run)
+    if str(execution_input.get("execution_mode") or "") != "multi_agent":
+        return None
+    configured_steps = configured_multi_agent_steps(run)
+    public_steps = run_step_responses(steps, principal=principal)
+    status_by_step_id = {str(step["step_id"]): str(step["status"]) for step in public_steps}
+    readiness_steps: list[dict[str, object]] = []
+    for public_step in public_steps:
+        payload = public_step.get("payload") if isinstance(public_step.get("payload"), dict) else {}
+        mapped_dependencies = payload.get("depends_on") if isinstance(payload.get("depends_on"), list) else []
+        mapped_dependencies = [str(item) for item in mapped_dependencies if isinstance(item, str)]
+        dependency_count = int(payload.get("dependency_count") or 0)
+        missing_dependency_count = int(payload.get("missing_dependency_count") or 0)
+        complete_mapping = dependency_count == len(mapped_dependencies) and missing_dependency_count == 0
+        if complete_mapping:
+            dependency_state = [
+                {
+                    "step_key": dependency,
+                    "status": status_by_step_id.get(dependency, "missing"),
+                    "reason": None,
+                }
+                for dependency in mapped_dependencies
+            ]
+        else:
+            unresolved_count = (
+                max(dependency_count - len(mapped_dependencies), 0)
+                + missing_dependency_count
+            )
+            dependency_state = [
+                {"step_key": None, "status": "hidden", "reason": "unsafe_dependency"}
+                for _ in range(unresolved_count)
+            ]
+        status = str(public_step["status"])
+        blocked_reason = multi_agent_blocked_reason(status, dependency_state)
+        ready = status == "pending" and blocked_reason is None
+        readiness_steps.append(
+            {
+                "step_key": str(public_step["step_id"]),
+                "step_id": str(public_step["step_id"]),
+                "title": public_step.get("title"),
+                "role": None,
+                "sequence": int(public_step.get("sequence") or 0),
+                "status": status,
+                "depends_on": mapped_dependencies if complete_mapping else [],
+                "dependency_statuses": dependency_state,
+                "ready": ready,
+                "blocked_reason": blocked_reason,
+                "source": "recorded",
+            }
+        )
+    missing_dependencies = sum(
+        1
+        for item in readiness_steps
+        for dependency in item["dependency_statuses"]
+        if isinstance(dependency, dict) and dependency.get("status") == "missing"
+    )
+    hidden_dependencies = sum(
+        1
+        for item in readiness_steps
+        for dependency in item["dependency_statuses"]
+        if isinstance(dependency, dict) and dependency.get("status") == "hidden"
+    )
+    blocked = sum(
+        1
+        for item in readiness_steps
+        if item["status"] == "pending"
+        and not item["ready"]
+        and item["blocked_reason"] in {"waiting_on_dependencies", "missing_dependencies", "hidden_dependencies"}
+    )
+    ready_count = sum(1 for item in readiness_steps if item["ready"])
+    run_status = normalize_run_status(str(run.get("status") or ""))
+    if run_status not in RUN_CONTROL_ACTIVE_STATUSES:
+        dispatch_gate = _control_action(enabled=False, reason="run_not_dispatchable", method=None, href=None)
+    elif ready_count <= 0:
+        dispatch_gate = _control_action(enabled=False, reason="no_ready_steps", method=None, href=None)
+    else:
+        dispatch_gate = _control_action(enabled=False, reason="admin_only_dispatch", method=None, href=None)
+    return {
+        "enabled": True,
+        "execution_mode": "multi_agent",
+        "steps": readiness_steps,
+        "counts": {
+            "configured": len(configured_steps),
+            "recorded": len(public_steps),
+            "completed": sum(1 for item in readiness_steps if item["status"] == "succeeded"),
+            "ready": ready_count,
+            "blocked": blocked,
+            "missing_dependencies": missing_dependencies,
+            "hidden_dependencies": hidden_dependencies,
+        },
+        "gates": {"dispatch": dispatch_gate},
+    }
+
+
 def multi_agent_readiness_snapshot(
     *,
     run: dict[str, object],
@@ -146,6 +248,8 @@ def multi_agent_readiness_snapshot(
     principal: AuthPrincipal,
 ) -> dict[str, object] | None:
     """Return public dependency readiness without opening autonomous dispatch."""
+    if not is_ai_admin(principal):
+        return _ordinary_multi_agent_readiness_snapshot(run=run, steps=steps, principal=principal)
     configured_steps = configured_multi_agent_steps(run)
     execution_input = run_execution_input(run)
     execution_mode = str(execution_input.get("execution_mode") or "")
@@ -463,9 +567,20 @@ def run_control_readiness_snapshot(
     run_id = str(run["id"])
     status = normalize_run_status(str(run["status"]))
     raw_terms = readiness_raw_projection_terms(run)
+    public_steps_by_id = {
+        str(step["step_id"]): step for step in run_step_responses(steps, principal=principal)
+    }
     checkpoint_candidates = [
         item
-        for item in (_checkpoint_candidate_from_step(row, principal, raw_terms=raw_terms) for row in steps)
+        for item in (
+            _checkpoint_candidate_from_step(
+                row,
+                principal,
+                raw_terms=raw_terms,
+                public_step=public_steps_by_id.get(str(row["id"])),
+            )
+            for row in steps
+        )
         if item is not None
     ]
     cancel_requested = bool(run.get("cancel_requested_at"))

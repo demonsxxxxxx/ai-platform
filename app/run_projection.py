@@ -14,8 +14,6 @@ from app.control_plane_contracts import (
     sanitize_public_text,
     standard_trace_id,
 )
-from app.projection_redaction import redact_raw_skill_references, sanitize_user_control_input
-from app.tool_permission_projection import tool_permission_public_event_payload
 
 
 def normalize_run_status(status: str) -> str:
@@ -80,28 +78,6 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "tool_permission_denied": "tool_permission_denied",
 }
 
-PUBLIC_FAILED_ACTIVITY_EVENT_DETAILS = {
-    "agent_step_failed": {
-        "message": "当前计划步骤未完成。请调整请求后重试。",
-        "stage": "agent",
-        "error_code": "step_failed",
-        "severity": "error",
-    },
-    "agent_step_blocked": {
-        "message": "当前计划步骤正在等待前置条件。",
-        "stage": "agent",
-        "error_code": "step_blocked",
-        "severity": "warning",
-    },
-    "subagent_failed": {
-        "message": "协同处理步骤未完成。请调整请求后重试。",
-        "stage": "subagent",
-        "error_code": "subagent_failed",
-        "severity": "error",
-    },
-}
-
-
 def public_terminal_projection(
     status: object,
     error_code: object = None,
@@ -152,17 +128,88 @@ def public_terminal_detail(status: object, error_code: object = None) -> dict[st
     }
 
 
+PUBLIC_ARTIFACT_TYPES = frozenset(
+    {
+        "docx",
+        "json",
+        "pdf",
+        "project",
+        "report_txt",
+        "result_docx",
+        "result_json",
+        "reveal_project",
+        "reviewed_docx",
+        "test_json",
+        "translated_docx",
+        "txt",
+        "xlsx",
+    }
+)
+PUBLIC_ARTIFACT_CONTENT_TYPES = frozenset(
+    {
+        "application/json",
+        "application/octet-stream",
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/plain",
+    }
+)
+
+
+def _public_artifact_type(value: object) -> str:
+    artifact_type = str(value or "").strip().lower()
+    return artifact_type if artifact_type in PUBLIC_ARTIFACT_TYPES else "file"
+
+
+def _public_artifact_content_type(value: object) -> str:
+    content_type = str(value or "").split(";", 1)[0].strip().lower()
+    return content_type if content_type in PUBLIC_ARTIFACT_CONTENT_TYPES else "application/octet-stream"
+
+
+def _bounded_nonnegative_int(value: object) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return min(max(value, 0), 100_000_000)
+    return 0
+
+
+def _ordinary_artifact_card(row: dict[str, object]) -> dict[str, object]:
+    """Project server-owned artifact facts without executor manifest or lineage."""
+    artifact_id = str(row["id"])
+    artifact_type = _public_artifact_type(row.get("artifact_type"))
+    content_type = _public_artifact_content_type(row.get("content_type"))
+    xlsx_identity = xlsx_preview_identity_from_metadata(row)
+    return {
+        "id": artifact_id,
+        "artifact_id": artifact_id,
+        "artifact_type": artifact_type,
+        "label": artifact_type,
+        "content_type": content_type,
+        "size_bytes": _bounded_nonnegative_int(row.get("size_bytes")),
+        "download_url": artifact_download_url(artifact_id),
+        "preview_url": (
+            artifact_preview_url(artifact_id)
+            if artifact_preview_allowed(content_type)
+            and (not xlsx_identity.has_xlsx_content_type or xlsx_identity.eligible)
+            else None
+        ),
+        "status": "available",
+        "lineage": {},
+        "manifest": {},
+        "created_at": row.get("created_at"),
+    }
+
+
 def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None) -> dict[str, object]:
+    if principal is not None and not is_ai_admin(principal):
+        return _ordinary_artifact_card(row)
     artifact_id = str(row["id"])
     artifact_type = str(row["artifact_type"])
     content_type = str(row.get("content_type") or "application/octet-stream")
     xlsx_identity = xlsx_preview_identity_from_metadata(row)
     manifest = row.get("manifest_json") if isinstance(row.get("manifest_json"), dict) else {}
-    if principal is not None and not is_ai_admin(principal):
-        manifest = redact_raw_skill_references(manifest)
-        label = public_text_or_fallback(row.get("label"), artifact_type)
-    else:
-        label = public_text_or_fallback(row.get("label"), artifact_type)
+    label = public_text_or_fallback(row.get("label"), artifact_type)
     lineage = artifact_lineage_contract(manifest, row=row)
     lineage.pop("source_run_id", None)
     return {
@@ -213,6 +260,293 @@ PUBLIC_STAGE_ALIASES = {
 }
 
 
+def _ordinary_event_details(
+    event_types: tuple[str, ...],
+    *,
+    stage: str,
+    message: str,
+    status: str,
+    severity: str = "info",
+    event_type: str | None = None,
+    error_code: str | None = None,
+) -> dict[str, dict[str, str | None]]:
+    return {
+        raw_event_type: {
+            "event_type": event_type or raw_event_type,
+            "stage": stage,
+            "message": message,
+            "category": stage,
+            "status": status,
+            "severity": severity,
+            "error_code": error_code,
+        }
+        for raw_event_type in event_types
+    }
+
+
+PUBLIC_ORDINARY_EVENT_DETAILS: dict[str, dict[str, str | None]] = {}
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("queued",),
+        stage="queue",
+        message="任务正在排队。",
+        status="waiting",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("worker_started", "run_started"),
+        stage="execution",
+        message="已完成请求准备，正在执行任务。",
+        status="running",
+        event_type="run_started",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("agent_step_started", "agent_step_reused", "agent_step_completed"),
+        stage="agent",
+        message="当前计划步骤正在处理中。",
+        status="running",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS["agent_step_reused"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["agent_step_reused"],
+    "message": "已复用可信阶段结果，正在继续后续步骤。",
+    "status": "completed",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS["agent_step_completed"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["agent_step_completed"],
+    "message": "当前计划步骤已完成，正在继续后续处理。",
+    "status": "completed",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("agent_step_blocked",),
+        stage="agent",
+        message="当前计划步骤正在等待前置条件。",
+        status="blocked",
+        severity="warning",
+        error_code="step_blocked",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("agent_step_failed",),
+        stage="agent",
+        message="当前计划步骤未完成。请调整请求后重试。",
+        status="failed",
+        severity="error",
+        error_code="step_failed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("subagent_started", "subagent_completed", "subagent_failed"),
+        stage="subagent",
+        message="正在协同处理。",
+        status="running",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS["subagent_completed"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["subagent_completed"],
+    "message": "协同处理已完成。",
+    "status": "completed",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS["subagent_failed"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["subagent_failed"],
+    "message": "协同处理步骤未完成。请调整请求后重试。",
+    "status": "failed",
+    "severity": "error",
+    "error_code": "subagent_failed",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("mcp_tool_call_started", "tool_call_started"),
+        stage="tool",
+        message="正在执行受控处理步骤。",
+        status="running",
+        event_type="tool_call_started",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("mcp_tool_call_completed", "tool_call_completed"),
+        stage="tool",
+        message="受控处理步骤已完成。",
+        status="completed",
+        event_type="tool_call_completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("mcp_tool_denied", "tool_denied", "tool_permission_denied"),
+        stage="policy",
+        message="当前处理步骤未获授权，正在等待权限调整。",
+        status="blocked",
+        severity="warning",
+        event_type="tool_denied",
+        error_code="tool_permission_denied",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("tool_permission_requested", "tool_permission_decided", "tool_permission_terminalized"),
+        stage="policy",
+        message="权限决策状态已更新。",
+        status="waiting",
+        event_type="tool_permission_card",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_decided"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_decided"],
+    "message": "权限决策已记录。",
+    "status": "completed",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_terminalized"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_terminalized"],
+    "message": "权限请求已结束。",
+    "status": "completed",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("capability_selected", "skill_selected"),
+        stage="capability",
+        message="已加载授权处理能力。",
+        status="completed",
+        event_type="capability_selected",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("intent_detected", "intent_confirmed"),
+        stage="planning",
+        message="已确认处理方式，正在准备下一步。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("context_snapshot_created", "checkpoint_created", "file_bound", "memory_record_created"),
+        stage="context",
+        message="已更新任务上下文。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("artifact_created",),
+        stage="artifact",
+        message="已生成结果文件，正在完成可用性检查。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("assistant_delta", "assistant_message_created"),
+        stage="answer",
+        message="正在整理公开结果。",
+        status="running",
+        event_type="activity",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS["assistant_message_created"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["assistant_message_created"],
+    "message": "已整理公开结果。",
+    "status": "completed",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        (
+            "cancel_requested",
+            "cancel_requested_but_completed",
+            "event_replayed",
+            "heartbeat",
+            "legacy_runtime211_direct_executor_denied",
+            "multi_agent_dispatch_enqueue_failed",
+            "multi_agent_dispatch_handoff",
+            "multi_agent_dispatch_parent_parked",
+            "multi_agent_dispatch_reconciled",
+            "multi_agent_parent_finalized",
+            "run_completed",
+            "run_created",
+            "run_multi_agent_child_created",
+            "run_succeeded",
+            "sandbox_lease_created",
+            "sandbox_lease_released",
+            "sandbox_lease_renewed",
+            "skip",
+            "status",
+        ),
+        stage="status",
+        message="任务状态已更新。",
+        status="running",
+        event_type="status",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS["cancel_requested"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["cancel_requested"],
+    "message": "正在取消任务。",
+    "status": "waiting",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS["cancel_requested_but_completed"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["cancel_requested_but_completed"],
+    "message": "任务已在取消前完成。",
+    "status": "completed",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS["run_completed"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["run_completed"],
+    "message": "任务已完成。",
+    "status": "completed",
+    "event_type": "run_completed",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS["run_succeeded"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["run_succeeded"],
+    "message": "任务已完成。",
+    "status": "completed",
+    "event_type": "run_completed",
+}
+PUBLIC_ORDINARY_EVENT_DETAILS["run_multi_agent_child_created"] = {
+    **PUBLIC_ORDINARY_EVENT_DETAILS["run_multi_agent_child_created"],
+    "message": "已安排协同任务。",
+    "status": "running",
+    "event_type": "run_child_created",
+}
+
+PUBLIC_ORDINARY_GENERIC_EVENT_DETAIL = {
+    "event_type": "activity",
+    "stage": "status",
+    "message": "任务正在处理中。",
+    "category": "status",
+    "status": "running",
+    "severity": "info",
+    "error_code": None,
+}
+
+# Terminal envelopes retain a stable event class, but their user-facing text
+# and code remain wholly owned by ``public_terminal_projection``.
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("error", "run_failed"),
+        stage="status",
+        message="任务未能完成。",
+        status="failed",
+        severity="error",
+        event_type="error",
+        error_code="run_failed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("run_cancelled", "run_canceled"),
+        stage="status",
+        message="任务已停止。",
+        status="completed",
+        event_type="run_cancelled",
+    )
+)
+
+
 def public_event_type(value: object, principal: AuthPrincipal | None = None) -> str:
     raw = str(value or "status")
     if principal is None or is_ai_admin(principal):
@@ -251,7 +585,69 @@ def executor_result_schema_version(run: dict[str, object]) -> str:
     )
 
 
+def _ordinary_event_payload(detail: dict[str, str | None]) -> dict[str, object]:
+    if detail["status"] in {"blocked", "failed"}:
+        return {}
+    return {
+        "activity": {
+            "category": str(detail["category"]),
+            "status": str(detail["status"]),
+        }
+    }
+
+
+def _ordinary_run_event_response(run_id: str, row: dict[str, object]) -> dict[str, object]:
+    """Build the complete ordinary-user event envelope from fixed event policy."""
+    raw_event_type = str(row.get("event_type") or "")
+    terminal_projection = None
+    if raw_event_type in {"error", "run_failed"}:
+        terminal_projection = public_terminal_projection("failed", row.get("error_code"))
+    elif raw_event_type in {"run_cancelled", "run_canceled"}:
+        terminal_projection = public_terminal_projection("cancelled")
+    detail = PUBLIC_ORDINARY_EVENT_DETAILS.get(raw_event_type, PUBLIC_ORDINARY_GENERIC_EVENT_DETAIL)
+    payload = _ordinary_event_payload(detail)
+    message = str(detail["message"])
+    error_code = detail["error_code"]
+    if terminal_projection is not None:
+        payload = dict(terminal_projection["event_payload"])
+        message = str(terminal_projection["message"])
+        error_code = terminal_projection["error_code"]
+    latency_value = row.get("latency_ms")
+    latency_ms = _bounded_nonnegative_int(latency_value) if isinstance(latency_value, int) else None
+    return {
+        "id": str(row["id"]),
+        "schema_version": required_schema_version(
+            row,
+            "schema_version",
+            EVENT_ENVELOPE_SCHEMA_VERSION,
+            "invalid_event_schema_version",
+        ),
+        "event_id": str(row["id"]),
+        "sequence": _bounded_nonnegative_int(row.get("sequence")),
+        "run_id": run_id,
+        "trace_id": standard_trace_id(run_id),
+        "event_type": str(detail["event_type"]),
+        "type": str(detail["event_type"]),
+        "stage": str(detail["stage"]),
+        "message": message,
+        "severity": str(detail["severity"]),
+        "visible_to_user": bool(row.get("visible_to_user", True)),
+        "error_code": error_code,
+        "latency_ms": latency_ms,
+        "token_counts": {
+            "input": _bounded_nonnegative_int(row.get("input_token_count")),
+            "output": _bounded_nonnegative_int(row.get("output_token_count")),
+            "total": _bounded_nonnegative_int(row.get("total_token_count")),
+        },
+        "cost": {"estimated_cost_minor": _bounded_nonnegative_int(row.get("estimated_cost_minor"))},
+        "payload": payload,
+        "created_at": row.get("created_at"),
+    }
+
+
 def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrincipal | None = None) -> dict[str, object]:
+    if principal is not None and not is_ai_admin(principal):
+        return _ordinary_run_event_response(run_id, row)
     raw_event_type = str(row["event_type"])
     payload = row.get("payload_json") or {}
     if not isinstance(payload, dict):
@@ -259,18 +655,6 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
     payload = sanitize_public_payload(payload)
     if not isinstance(payload, dict):
         payload = {}
-    if principal is not None and not is_ai_admin(principal):
-        payload = sanitize_user_control_input(payload)
-        if raw_event_type in {
-            "tool_permission_requested",
-            "tool_permission_decided",
-            "tool_permission_terminalized",
-        }:
-            payload = tool_permission_public_event_payload(
-                run_id=run_id,
-                event_type=raw_event_type,
-                payload=payload,
-            )
     severity = str(row.get("severity") or payload.get("severity") or ("error" if row.get("event_type") == "error" else "info"))
     if severity not in {"info", "warning", "error"}:
         severity = "info"
@@ -280,26 +664,6 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
     message = sanitize_public_text(row.get("message"))
     sanitized_error_code = sanitize_public_text(row.get("error_code"))
     error_code = sanitized_error_code or (None if not row.get("error_code") else "run_failed")
-    if principal is not None and not is_ai_admin(principal):
-        terminal_projection = None
-        if raw_event_type in {"error", "run_failed"}:
-            terminal_projection = public_terminal_projection("failed", row.get("error_code"))
-        elif raw_event_type in {"run_cancelled", "run_canceled"}:
-            terminal_projection = public_terminal_projection("cancelled")
-        if terminal_projection is not None:
-            # Replace, rather than selectively redact, nested executor failure
-            # fields such as result/message/error/sdk_error.
-            payload = dict(terminal_projection["event_payload"])
-            message = str(terminal_projection["message"])
-            error_code = terminal_projection["error_code"]
-        elif failed_activity := PUBLIC_FAILED_ACTIVITY_EVENT_DETAILS.get(raw_event_type):
-            # A failed step is useful progress, not evidence that the whole run
-            # is terminal.  Its executor text and payload are never public.
-            payload = {}
-            message = str(failed_activity["message"])
-            error_code = str(failed_activity["error_code"])
-            stage = str(failed_activity["stage"])
-            severity = str(failed_activity["severity"])
     return {
         "id": str(row["id"]),
         "schema_version": required_schema_version(
@@ -414,12 +778,6 @@ def _public_step_payload(
         value = raw_payload.get(key)
         if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100_000:
             payload[key] = value
-    # Existing public progress is retained only for nonfailed steps.  Failed
-    # steps never copy an executor message, output, error, or metadata scalar.
-    if status != "failed":
-        public_note = sanitize_public_text(raw_payload.get("public_note"))
-        if public_note:
-            payload["public_note"] = public_note
     return payload
 
 
@@ -494,6 +852,17 @@ def run_step_response(row: dict[str, object], principal: AuthPrincipal | None = 
     return response
 
 
+def run_step_responses(
+    rows: list[dict[str, object]],
+    principal: AuthPrincipal | None = None,
+) -> list[dict[str, object]]:
+    """Project complete step rows through one canonical ordinary-user mapping."""
+    if principal is not None and not is_ai_admin(principal):
+        step_id_mapping = _ordinary_step_id_mapping(rows)
+        return [_ordinary_run_step_response(row, step_id_mapping=step_id_mapping) for row in rows]
+    return [run_step_response(row, principal=principal) for row in rows]
+
+
 def _multi_agent_snapshot_from_step_responses(
     run_id: str,
     steps: list[dict[str, object]],
@@ -530,8 +899,8 @@ def multi_agent_snapshot_from_steps(
     principal: AuthPrincipal | None = None,
 ) -> dict[str, object] | None:
     if principal is not None and not is_ai_admin(principal):
-        return _ordinary_multi_agent_snapshot(run_id, rows)
+        return _multi_agent_snapshot_from_step_responses(run_id, run_step_responses(rows, principal=principal))
     return _multi_agent_snapshot_from_step_responses(
         run_id,
-        [run_step_response(row, principal=principal) for row in rows],
+        run_step_responses(rows, principal=principal),
     )

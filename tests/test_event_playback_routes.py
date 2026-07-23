@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
@@ -219,8 +220,12 @@ def test_run_event_response_keeps_nonterminal_public_activity():
 
     projected = run_event_response("run-a", row, principal=principal)
 
-    assert projected["message"] == "公开进度"
-    assert projected["payload"] == row["payload_json"]
+    assert projected["event_type"] == "activity"
+    assert projected["stage"] == "answer"
+    assert projected["message"] == "正在整理公开结果。"
+    assert projected["payload"] == {"activity": {"category": "answer", "status": "running"}}
+    assert "公开进度" not in str(projected)
+    assert "worker_answer_delta_v1" not in str(projected)
 
 
 def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagnostics(monkeypatch):
@@ -363,7 +368,6 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
     assert snapshot["steps"][0]["payload"] == {
         "artifact_count": 0,
         "progress": 25,
-        "public_note": "公开的计划进度",
     }
     assert "event: multi_agent_snapshot" in stream_response.text
     for rendered in (events_response.text, stream_response.text, playback_response.text):
@@ -440,6 +444,12 @@ def test_subagent_failed_event_routes_use_fixed_public_activity(monkeypatch):
     assert event["message"] == "协同处理步骤未完成。请调整请求后重试。"
     assert event["payload"] == {}
     assert playback_response.json()["events"][0] == event
+    native_payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in stream_response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert event in native_payloads
     for rendered in (events_response.text, stream_response.text, playback_response.text):
         assert all(term not in rendered for term in raw_terms)
 
@@ -519,6 +529,128 @@ def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnost
     assert playback["run"]["error_code"] == "model_service_unavailable"
     assert playback["run"]["error_message"] == event["message"]
     assert playback["events"][0] == event
+    for rendered in (events_response.text, stream_response.text, playback_response.text):
+        assert all(term not in rendered for term in raw_terms)
+
+
+def test_ordinary_activity_routes_use_fixed_envelopes_for_syntax_safe_executor_values(monkeypatch):
+    raw_terms = (
+        "qa-file-reviewer",
+        "qa-word-review",
+        "stage-note=amber-lantern",
+        "https://executor.internal.example.invalid/progress",
+    )
+    active_run = run_row()
+    active_run["status"] = "running"
+    activity_events = [
+        event_row(
+            event_id="evt-started",
+            sequence=1,
+            event_type="agent_step_started",
+            stage=raw_terms[2],
+            payload={
+                "step_key": raw_terms[0],
+                "public_note": raw_terms[2],
+                "source": raw_terms[3],
+            },
+            message=raw_terms[2],
+        ),
+        event_row(
+            event_id="evt-completed",
+            sequence=2,
+            event_type="agent_step_completed",
+            stage=raw_terms[2],
+            payload={
+                "step_key": raw_terms[1],
+                "public_note": raw_terms[2],
+                "output": raw_terms[3],
+            },
+            message=raw_terms[2],
+        ),
+        event_row(
+            event_id="evt-checkpoint",
+            sequence=3,
+            event_type="checkpoint_created",
+            stage=raw_terms[2],
+            payload={
+                "checkpoint_id": raw_terms[0],
+                "source_step_id": raw_terms[1],
+                "public_note": raw_terms[2],
+            },
+            message=raw_terms[2],
+        ),
+        event_row(
+            event_id="evt-subagent",
+            sequence=4,
+            event_type="subagent_completed",
+            stage=raw_terms[2],
+            payload={
+                "subagent_id": raw_terms[0],
+                "source": raw_terms[3],
+                "public_note": raw_terms[2],
+            },
+            message=raw_terms[2],
+        ),
+        event_row(
+            event_id="evt-unknown",
+            sequence=5,
+            event_type="executor_safe_progress",
+            stage=raw_terms[2],
+            payload={"public_note": raw_terms[2], "source": raw_terms[3]},
+            message=raw_terms[2],
+        ),
+    ]
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return active_run
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        return activity_events
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_steps(conn, *, tenant_id, run_id):
+        return []
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", empty_steps)
+    monkeypatch.setattr(
+        "app.routes.runs.get_settings",
+        lambda: type("StreamSettings", (), {"run_event_stream_max_heartbeats": 1})(),
+    )
+    monkeypatch.setattr("app.routes.runs.asyncio.sleep", no_sleep)
+    client = TestClient(create_app())
+
+    events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
+    stream_response = client.get("/api/ai/runs/run-a/events/stream", headers=headers())
+    playback_response = client.get("/api/ai/runs/run-a/playback", headers=headers())
+
+    assert events_response.status_code == 200
+    assert stream_response.status_code == 200
+    assert playback_response.status_code == 200
+    events = events_response.json()["events"]
+    assert [(event["event_type"], event["stage"], event["message"], event["payload"]) for event in events] == [
+        ("agent_step_started", "agent", "当前计划步骤正在处理中。", {"activity": {"category": "agent", "status": "running"}}),
+        ("agent_step_completed", "agent", "当前计划步骤已完成，正在继续后续处理。", {"activity": {"category": "agent", "status": "completed"}}),
+        ("checkpoint_created", "context", "已更新任务上下文。", {"activity": {"category": "context", "status": "completed"}}),
+        ("subagent_completed", "subagent", "协同处理已完成。", {"activity": {"category": "subagent", "status": "completed"}}),
+        ("activity", "status", "任务正在处理中。", {"activity": {"category": "status", "status": "running"}}),
+    ]
+    assert playback_response.json()["events"] == events
+    native_payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in stream_response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert all(event in native_payloads for event in events)
     for rendered in (events_response.text, stream_response.text, playback_response.text):
         assert all(term not in rendered for term in raw_terms)
 
@@ -698,20 +830,9 @@ def test_run_playback_projection_redacts_ordinary_user_timeline(monkeypatch):
         "checkpoint_created",
         "subagent_completed",
     ]
-    assert body["events"][1]["payload"] == {
-        "capability_id": "document_review",
-        "checkpoint_id": "checkpoint-a",
-        "source_step_id": "step-a",
-        "subagent_id": "subagent-a",
-        "visible_to_user": True,
-    }
-    assert body["events"][2]["payload"] == {
-        "capability_id": "document_review",
-        "role": "reviewer",
-        "source_step_id": "step-a",
-        "subagent_id": "subagent-a",
-        "visible_to_user": True,
-    }
+    assert body["events"][0]["payload"] == {"activity": {"category": "capability", "status": "completed"}}
+    assert body["events"][1]["payload"] == {"activity": {"category": "context", "status": "completed"}}
+    assert body["events"][2]["payload"] == {"activity": {"category": "subagent", "status": "completed"}}
     public_dump = str(body)
     assert "evt-9" not in public_dump
     assert "storage_key" not in public_dump
@@ -723,18 +844,12 @@ def test_run_playback_projection_redacts_ordinary_user_timeline(monkeypatch):
     assert ".claude/skills" not in public_dump
     assert "/tmp/" not in public_dump
     assert "qa-file-reviewer" not in public_dump
-    assert body["steps"][0]["payload"] == {"public_note": "正在审核"}
+    assert body["steps"][0]["payload"] == {}
     assert body["artifacts"][0]["download_url"] == "/api/ai/artifacts/artifact-a/download"
     assert body["artifacts"][0]["preview_url"] == "/api/ai/artifacts/artifact-a/preview"
-    assert body["artifacts"][0]["lineage"] == {
-        "source_event_id": "evt-6",
-        "source_step_id": "step-a",
-        "source_file_id": "file-a",
-        "producer_kind": "subagent",
-        "producer_role": "reviewer",
-        "checkpoint_id": "checkpoint-a",
-        "subagent_id": "subagent-a",
-    }
+    assert body["artifacts"][0]["label"] == "docx"
+    assert body["artifacts"][0]["lineage"] == {}
+    assert body["artifacts"][0]["manifest"] == {}
 
 
 def test_run_provenance_snapshot_links_steps_checkpoints_and_artifacts(monkeypatch):
@@ -775,33 +890,17 @@ def test_run_provenance_snapshot_links_steps_checkpoints_and_artifacts(monkeypat
     assert body["graph"]["counts"] == {
         "steps": 1,
         "artifacts": 1,
-        "checkpoints": 1,
-        "subagents": 1,
+        "checkpoints": 0,
+        "subagents": 0,
     }
-    assert body["subagents"] == [
-        {
-            "subagent_id": "subagent-a",
-            "role": None,
-            "step_ids": [],
-            "statuses": [],
-            "checkpoint_ids": [],
-            "artifact_ids": ["artifact-a"],
-        }
-    ]
-    assert body["checkpoints"] == [
-        {
-            "checkpoint_id": "checkpoint-a",
-            "step_ids": [],
-            "artifact_ids": ["artifact-a"],
-            "reused": False,
-        }
-    ]
+    assert body["subagents"] == []
+    assert body["checkpoints"] == []
     assert "checkpoint_id" not in body["steps"][0]["payload"]
     assert "subagent_id" not in body["steps"][0]["payload"]
     assert body["artifact_tree"][0]["artifact_id"] == "artifact-a"
-    assert body["artifact_tree"][0]["produced_by_step_id"] == "step-a"
-    assert body["artifact_tree"][0]["checkpoint_id"] == "checkpoint-a"
-    assert body["artifact_tree"][0]["subagent_id"] == "subagent-a"
+    assert body["artifact_tree"][0]["produced_by_step_id"] is None
+    assert body["artifact_tree"][0]["checkpoint_id"] is None
+    assert body["artifact_tree"][0]["subagent_id"] is None
     public_dump = str(body)
     assert "storage_key" not in public_dump
     assert "command_sha256" not in public_dump
@@ -848,33 +947,21 @@ def test_run_provenance_snapshot_projects_operational_artifact_tree(monkeypatch)
             "node_kind": "artifact",
             "artifact_id": "artifact-a",
             "artifact_type": "docx",
-            "label": "reviewed.docx",
-            "produced_by_step_id": "step-a",
-            "source_step_id": "step-a",
-            "parent_id": "step-a",
-            "parent_kind": "step",
+            "label": "docx",
+            "produced_by_step_id": None,
+            "source_step_id": None,
+            "parent_id": None,
+            "parent_kind": None,
             "children_ids": [],
-            "producer_kind": "subagent",
-            "producer_role": "reviewer",
-            "checkpoint_id": "checkpoint-a",
-            "subagent_id": "subagent-a",
-            "lineage": {
-                "source_event_id": "evt-6",
-                "source_step_id": "step-a",
-                "source_file_id": "file-a",
-                "producer_kind": "subagent",
-                "producer_role": "reviewer",
-                "checkpoint_id": "checkpoint-a",
-                "subagent_id": "subagent-a",
-            },
+            "producer_kind": None,
+            "producer_role": None,
+            "checkpoint_id": None,
+            "subagent_id": None,
+            "lineage": {},
             "gaps": [],
         }
     ]
-    assert body["graph"]["edges"] == [
-        {"source_id": "step-a", "target_id": "artifact-a", "edge_kind": "produced_artifact"},
-        {"source_id": "checkpoint-a", "target_id": "artifact-a", "edge_kind": "checkpoint_artifact"},
-        {"source_id": "subagent-a", "target_id": "artifact-a", "edge_kind": "subagent_artifact"},
-    ]
+    assert body["graph"]["edges"] == []
     assert body["graph"]["gaps"] == []
 
 
@@ -911,17 +998,13 @@ def test_run_provenance_snapshot_reports_artifact_tree_gaps(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["artifact_tree"][0]["artifact_id"] == "artifact-orphan"
-    assert body["artifact_tree"][0]["source_step_id"] == "step-missing"
+    assert body["artifact_tree"][0]["source_step_id"] is None
     assert body["artifact_tree"][0]["produced_by_step_id"] is None
-    assert body["artifact_tree"][0]["parent_id"] == "checkpoint-orphan"
-    assert body["artifact_tree"][0]["parent_kind"] == "checkpoint"
-    assert body["artifact_tree"][0]["gaps"] == ["producer_step_missing"]
-    assert body["graph"]["gaps"] == [
-        {"node_id": "artifact-orphan", "node_kind": "artifact", "gaps": ["producer_step_missing"]}
-    ]
-    assert body["graph"]["edges"] == [
-        {"source_id": "checkpoint-orphan", "target_id": "artifact-orphan", "edge_kind": "checkpoint_artifact"}
-    ]
+    assert body["artifact_tree"][0]["parent_id"] is None
+    assert body["artifact_tree"][0]["parent_kind"] is None
+    assert body["artifact_tree"][0]["gaps"] == []
+    assert body["graph"]["gaps"] == []
+    assert body["graph"]["edges"] == []
     public_dump = str(body)
     assert "storage_key" not in public_dump
     assert "qa-file-reviewer" not in public_dump
@@ -981,30 +1064,16 @@ def test_run_provenance_snapshot_fail_closes_dirty_artifact_lineage_graph_ids(mo
             "parent_id": None,
             "parent_kind": None,
             "children_ids": [],
-            "producer_kind": "agent",
+            "producer_kind": None,
             "producer_role": None,
             "checkpoint_id": None,
             "subagent_id": None,
-            "lineage": {"producer_kind": "agent"},
-            "gaps": [
-                "artifact_checkpoint_unsafe",
-                "artifact_source_step_unsafe",
-                "artifact_subagent_unsafe",
-            ],
+            "lineage": {},
+            "gaps": [],
         }
     ]
     assert body["graph"]["edges"] == []
-    assert body["graph"]["gaps"] == [
-        {
-            "node_id": "artifact-a",
-            "node_kind": "artifact",
-            "gaps": [
-                "artifact_checkpoint_unsafe",
-                "artifact_source_step_unsafe",
-                "artifact_subagent_unsafe",
-            ],
-        }
-    ]
+    assert body["graph"]["gaps"] == []
     public_dump = str(body)
     assert "qa-file-reviewer" not in public_dump
     assert "storage_key" not in public_dump
@@ -1056,7 +1125,7 @@ def test_run_provenance_snapshot_rejects_unsafe_step_graph_ids(monkeypatch):
     }
     assert body["checkpoints"] == []
     assert body["subagents"] == []
-    assert body["steps"][0]["payload"] == {"public_note": "正在审核"}
+    assert body["steps"][0]["payload"] == {"checkpoint_reused": True}
     public_dump = str(body)
     assert unsafe_hash not in public_dump
     assert "qa-file-reviewer" not in public_dump
@@ -1139,20 +1208,9 @@ def test_run_playback_projects_tool_permission_card_for_ordinary_user(monkeypatc
     assert response.status_code == 200
     body = response.json()
     assert body["events"][0]["event_type"] == "tool_permission_card"
-    card = body["events"][0]["payload"]["tool_permission_card"]
-    assert card == {
-        "schema_version": "ai-platform.tool-permission-card.v1",
-        "permission_request_id": "tpr-a",
-        "run_id": "run-a",
-        "tool_id": "bash",
-        "tool_call_id": "call-a",
-        "action": "execute",
-        "risk_level": "high",
-        "write_capable": True,
-        "reason": "需要运行写入命令",
-        "status": "pending",
-        "decision": None,
-    }
+    assert body["events"][0]["stage"] == "policy"
+    assert body["events"][0]["message"] == "权限决策状态已更新。"
+    assert body["events"][0]["payload"] == {"activity": {"category": "policy", "status": "waiting"}}
     public_dump = str(body)
     assert "write_business_system" not in public_dump
     assert "command_sha256" not in public_dump
@@ -1247,11 +1305,9 @@ def test_run_events_projects_tool_permission_decision_card_for_ordinary_user(mon
     assert response.status_code == 200
     body = response.json()
     assert body["events"][0]["event_type"] == "tool_permission_card"
-    card = body["events"][0]["payload"]["tool_permission_card"]
-    assert card["risk_level"] == "high"
-    assert card["write_capable"] is True
-    assert card["status"] == "decided"
-    assert card["decision"] == "allow_once"
+    assert body["events"][0]["stage"] == "policy"
+    assert body["events"][0]["message"] == "权限决策已记录。"
+    assert body["events"][0]["payload"] == {"activity": {"category": "policy", "status": "completed"}}
     public_dump = str(body)
     assert "write_business_system" not in public_dump
     assert "command_sha256" not in public_dump
