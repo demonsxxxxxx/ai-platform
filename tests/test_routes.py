@@ -2461,6 +2461,88 @@ async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnosti
 
 
 @pytest.mark.asyncio
+async def test_get_run_reprojects_terminal_multi_agent_steps_without_trusting_executor_payload(monkeypatch):
+    raw_terms = (
+        "command=render-report --private-param=amber",
+        "provider-model=solstice-3 sdk diagnostic",
+        "reasoning-draft request-id=orchid digest=0123456789abcdef",
+        "url=https://executor.internal.example.invalid/v1",
+    )
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "failed",
+            "input_json": {},
+            "result_json": {"multi_agent": {"steps": [{"output": raw_terms[0]}]}},
+            "error_code": "claude_agent_sdk_runtime_error",
+            "error_message": raw_terms[3],
+        }
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def empty_events(conn, *, tenant_id, run_id):
+        return []
+
+    async def failed_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-failed",
+                "run_id": run_id,
+                "step_key": "execute",
+                "step_kind": "agent",
+                "status": "failed",
+                "title": raw_terms[0],
+                "role": raw_terms[1],
+                "sequence": 2,
+                "payload_json": {
+                    "depends_on": ["plan"],
+                    "artifact_count": 1,
+                    "progress": 50,
+                    "error": raw_terms[0],
+                    "error_code": raw_terms[1],
+                    "output": raw_terms[2],
+                    "metadata": {"url": raw_terms[3]},
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", empty_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", failed_steps)
+
+    ordinary = await get_run("run-a", principal=principal())
+    admin = await get_run("run-a", principal=principal(roles=["admin"]))
+
+    snapshot = ordinary.result["multi_agent"]
+    assert snapshot["counts"]["failed"] == 1
+    assert snapshot["steps"][0]["status"] == "failed"
+    assert snapshot["steps"][0]["payload"] == {
+        "depends_on": ["plan"],
+        "artifact_count": 1,
+        "progress": 50,
+    }
+    assert ordinary.steps[0]["payload"] == snapshot["steps"][0]["payload"]
+    assert ordinary.steps[0]["title"] == "步骤未完成"
+    assert ordinary.steps[0]["role"] is None
+    assert all(term not in ordinary.model_dump_json() for term in raw_terms)
+    assert admin.steps[0]["title"] == raw_terms[0]
+    assert admin.steps[0]["payload"]["error"] == raw_terms[0]
+    assert admin.steps[0]["payload"]["output"] == raw_terms[2]
+
+
+@pytest.mark.asyncio
 async def test_get_run_redacts_ragflow_internal_reference_ids_for_ordinary_user(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {
@@ -3621,7 +3703,7 @@ def test_multi_agent_snapshot_redacts_parent_finalized_private_payload():
 
     assert snapshot["counts"]["succeeded"] == 1
     dumped = json.dumps(snapshot, ensure_ascii=False)
-    assert "safe output" in dumped
+    assert "safe output" not in dumped
     assert "private_payload" not in dumped
     assert "storage_key" not in dumped
     assert "/app/private.py" not in dumped

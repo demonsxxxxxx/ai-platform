@@ -223,6 +223,122 @@ def test_run_event_response_keeps_nonterminal_public_activity():
     assert projected["payload"] == row["payload_json"]
 
 
+def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagnostics(monkeypatch):
+    raw_terms = (
+        "command=render-report --private-param=amber",
+        "provider-model=solstice-3 sdk diagnostic",
+        "reasoning-draft request-id=orchid digest=0123456789abcdef",
+        "url=https://executor.internal.example.invalid/v1",
+    )
+    active_run = run_row()
+    active_run["status"] = "running"
+    failed_event = event_row(
+        event_id="evt-step-failed",
+        sequence=4,
+        event_type="agent_step_failed",
+        stage=raw_terms[1],
+        payload={
+            "error": raw_terms[0],
+            "error_code": raw_terms[1],
+            "output": raw_terms[2],
+            "metadata": {"url": raw_terms[3]},
+            "visible_to_user": True,
+        },
+        message=raw_terms[0],
+    )
+    failed_event["severity"] = "error"
+    failed_event["error_code"] = raw_terms[2]
+    failed_step = {
+        "id": "step-failed",
+        "run_id": "run-a",
+        "step_key": "execute",
+        "step_kind": "agent",
+        "status": "failed",
+        "title": raw_terms[0],
+        "role": raw_terms[1],
+        "sequence": 2,
+        "payload_json": {
+            "depends_on": ["plan"],
+            "artifact_count": 1,
+            "progress": 50,
+            "error": raw_terms[0],
+            "error_code": raw_terms[1],
+            "output": raw_terms[2],
+            "metadata": {"url": raw_terms[3]},
+        },
+        "started_at": None,
+        "finished_at": None,
+        "created_at": None,
+        "updated_at": None,
+    }
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return active_run
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        return [failed_event]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [artifact_row()]
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [failed_step]
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr(
+        "app.routes.runs.get_settings",
+        lambda: type("StreamSettings", (), {"run_event_stream_max_heartbeats": 1})(),
+    )
+    monkeypatch.setattr("app.routes.runs.asyncio.sleep", no_sleep)
+    client = TestClient(create_app())
+
+    events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
+    stream_response = client.get("/api/ai/runs/run-a/events/stream", headers=headers())
+    playback_response = client.get("/api/ai/runs/run-a/playback", headers=headers())
+
+    assert events_response.status_code == 200
+    assert stream_response.status_code == 200
+    assert playback_response.status_code == 200
+    event = events_response.json()["events"][0]
+    assert event["event_type"] == "agent_step_failed"
+    assert event["stage"] == "agent"
+    assert event["error_code"] == "step_failed"
+    assert event["message"] == "当前计划步骤未完成。请调整请求后重试。"
+    assert event["payload"] == {}
+    playback = playback_response.json()
+    assert playback["run"]["status"] == "running"
+    assert playback["events"][0] == event
+    assert playback["artifacts"][0]["artifact_id"] == "artifact-a"
+    snapshot = playback["multi_agent"]
+    assert snapshot["counts"] == {
+        "total": 1,
+        "pending": 0,
+        "succeeded": 0,
+        "failed": 1,
+        "running": 0,
+        "cancelled": 0,
+        "reused": 0,
+        "blocked": 0,
+    }
+    assert snapshot["steps"][0]["status"] == "failed"
+    assert snapshot["steps"][0]["payload"] == {
+        "depends_on": ["plan"],
+        "artifact_count": 1,
+        "progress": 50,
+    }
+    assert "event: multi_agent_snapshot" in stream_response.text
+    for rendered in (events_response.text, stream_response.text, playback_response.text):
+        assert all(term not in rendered for term in raw_terms)
+
+
 def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnostics(monkeypatch):
     raw_terms = (
         "command=render-report --private-param=amber",

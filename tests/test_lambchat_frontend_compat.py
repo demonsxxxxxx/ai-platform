@@ -1183,6 +1183,118 @@ def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_relo
         assert all(term not in rendered for term in raw_terms)
 
 
+def test_lambchat_failed_step_uses_local_safe_activity_for_sse_and_exact_run_reload(monkeypatch):
+    raw_terms = (
+        "command=render-report --private-param=amber",
+        "provider-model=solstice-3 sdk diagnostic",
+        "reasoning-draft request-id=orchid digest=0123456789abcdef",
+        "url=https://executor.internal.example.invalid/v1",
+    )
+    run = {
+        "id": "run_a",
+        "session_id": "ses_a",
+        "trace_id": "trace_run_a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+        "result_json": {},
+        "error_code": None,
+        "error_message": None,
+    }
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run_a")
+        return run
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "evt-step-failed",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 1,
+                "event_type": "agent_step_failed",
+                "stage": raw_terms[1],
+                "message": raw_terms[0],
+                "severity": "error",
+                "visible_to_user": True,
+                "error_code": raw_terms[2],
+                "payload_json": {
+                    "error": raw_terms[0],
+                    "error_code": raw_terms[1],
+                    "output": raw_terms[2],
+                    "metadata": {"url": raw_terms[3]},
+                    "visible_to_user": True,
+                },
+                "created_at": "2026-07-23T00:00:00Z",
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.get_settings",
+        lambda: SimpleNamespace(run_event_stream_max_heartbeats=1),
+    )
+    monkeypatch.setattr("app.routes.lambchat_compat.asyncio.sleep", no_sleep)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        fake_list_run_artifacts,
+    )
+    client = TestClient(create_app())
+
+    stream_response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=auth_headers(),
+    )
+    history_response = client.get(
+        "/api/sessions/ses_a/events?run_id=run_a",
+        headers=auth_headers(),
+    )
+
+    assert stream_response.status_code == 200
+    assert history_response.status_code == 200
+    stream_payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in stream_response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    stream_event = next(payload for payload in stream_payloads if payload.get("event_type") == "agent_step_failed")
+    history_event = next(
+        event
+        for event in history_response.json()["events"]
+        if event["event_type"] == "agent_step_failed"
+    )
+    assert stream_event["stage"] == "activity"
+    assert stream_event["payload"] == {}
+    assert stream_event["message"] == "当前计划步骤未完成，正在整理可操作错误"
+    assert history_event["data"]["stage"] == "activity"
+    assert history_event["payload"] == {}
+    for rendered in (stream_response.text, history_response.text):
+        assert all(term not in rendered for term in raw_terms)
+
+
 @pytest.mark.parametrize(
     ("agent_id", "skill_id", "message", "expected_content"),
     [

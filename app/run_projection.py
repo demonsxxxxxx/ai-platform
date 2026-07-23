@@ -4,6 +4,7 @@ from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
 from app.control_plane_contracts import (
+    ARTIFACT_LINEAGE_PRODUCER_ROLES,
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     EVENT_ENVELOPE_SCHEMA_VERSION,
     EXECUTOR_RESULT_SCHEMA_VERSION,
@@ -16,6 +17,7 @@ from app.control_plane_contracts import (
 )
 from app.projection_redaction import redact_raw_skill_references, sanitize_user_control_input
 from app.tool_permission_projection import tool_permission_public_event_payload
+from app.validation import assert_safe_id
 
 
 def normalize_run_status(status: str) -> str:
@@ -80,18 +82,39 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "tool_permission_denied": "tool_permission_denied",
 }
 
+PUBLIC_FAILED_ACTIVITY_EVENT_DETAILS = {
+    "agent_step_failed": {
+        "message": "当前计划步骤未完成。请调整请求后重试。",
+        "stage": "agent",
+        "error_code": "step_failed",
+        "severity": "error",
+    },
+    "agent_step_blocked": {
+        "message": "当前计划步骤正在等待前置条件。",
+        "stage": "agent",
+        "error_code": "step_blocked",
+        "severity": "warning",
+    },
+    "subagent_failed": {
+        "message": "协同处理步骤未完成。请调整请求后重试。",
+        "stage": "subagent",
+        "error_code": "subagent_failed",
+        "severity": "error",
+    },
+}
+
 
 def public_terminal_projection(
     status: object,
     error_code: object = None,
     *,
-    multi_agent: dict[str, object] | None = None,
+    run_id: str | None = None,
+    step_rows: list[dict[str, object]] | None = None,
 ) -> dict[str, object] | None:
     """Build the sole ordinary-user projection for failed or cancelled terminals.
 
-    The optional ``multi_agent`` value must already be a public step projection.
-    It is the only preserved structured activity: raw executor ``result_json``
-    is never copied into a terminal response.
+    The optional raw step rows are reprojected internally.  Callers cannot
+    assert that an arbitrary ``multi_agent`` dictionary is public.
     """
     normalized_status = normalize_run_status(str(status or ""))
     if normalized_status == "cancelled":
@@ -105,8 +128,10 @@ def public_terminal_projection(
         return None
     message = PUBLIC_TERMINAL_DETAIL_MESSAGES[detail_code]
     result: dict[str, object] = {"message": message}
-    if isinstance(multi_agent, dict):
-        result["multi_agent"] = multi_agent
+    if run_id and step_rows:
+        multi_agent = _ordinary_multi_agent_snapshot(run_id, step_rows)
+        if multi_agent is not None:
+            result["multi_agent"] = multi_agent
     return {
         "detail_kind": detail_kind,
         "detail_code": detail_code,
@@ -269,6 +294,14 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
             payload = dict(terminal_projection["event_payload"])
             message = str(terminal_projection["message"])
             error_code = terminal_projection["error_code"]
+        elif failed_activity := PUBLIC_FAILED_ACTIVITY_EVENT_DETAILS.get(raw_event_type):
+            # A failed step is useful progress, not evidence that the whole run
+            # is terminal.  Its executor text and payload are never public.
+            payload = {}
+            message = str(failed_activity["message"])
+            error_code = str(failed_activity["error_code"])
+            stage = str(failed_activity["stage"])
+            severity = str(failed_activity["severity"])
     return {
         "id": str(row["id"]),
         "schema_version": required_schema_version(
@@ -300,15 +333,96 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
     }
 
 
+PUBLIC_STEP_KINDS = frozenset({"agent", "artifact", "checkpoint", "subagent", "tool", "worker"})
+PUBLIC_STEP_STATUSES = frozenset({"pending", "running", "succeeded", "failed", "cancelled"})
+PUBLIC_STEP_TITLES = {
+    "pending": "等待执行",
+    "running": "正在执行",
+    "succeeded": "步骤已完成",
+    "failed": "步骤未完成",
+    "cancelled": "步骤已取消",
+}
+
+
+def _public_step_identifier(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        return assert_safe_id(candidate, "step_projection_id")
+    except ValueError:
+        return None
+
+
+def _public_step_identifiers(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [identifier for item in value if (identifier := _public_step_identifier(item)) is not None]
+
+
+def _public_step_payload(raw_payload: dict[str, object], status: str) -> dict[str, object]:
+    """Allowlist only structured ordinary-user step progress from persisted rows."""
+    payload: dict[str, object] = {}
+    for key in ("depends_on", "missing_dependencies"):
+        identifiers = _public_step_identifiers(raw_payload.get(key))
+        if identifiers:
+            payload[key] = identifiers
+    for key in ("checkpoint_id", "source_step_id", "subagent_id"):
+        if identifier := _public_step_identifier(raw_payload.get(key)):
+            payload[key] = identifier
+    for key in ("checkpoint_reused", "checkpoint_reuse_pending"):
+        if isinstance(raw_payload.get(key), bool):
+            payload[key] = raw_payload[key]
+    for key in ("artifact_count", "progress"):
+        value = raw_payload.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100_000:
+            payload[key] = value
+    # Existing public progress is retained only for nonfailed steps.  Failed
+    # steps never copy an executor message, output, error, or metadata scalar.
+    if status != "failed":
+        public_note = sanitize_public_text(raw_payload.get("public_note"))
+        if public_note:
+            payload["public_note"] = public_note
+    return payload
+
+
+def _ordinary_run_step_response(row: dict[str, object]) -> dict[str, object]:
+    raw_payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+    raw_status = normalize_step_status(row.get("status"))
+    status = raw_status if raw_status in PUBLIC_STEP_STATUSES else "pending"
+    raw_step_kind = str(row.get("step_kind") or "")
+    step_kind = raw_step_kind if raw_step_kind in PUBLIC_STEP_KINDS else "agent"
+    raw_role = str(row.get("role") or "")
+    role = raw_role if raw_role in ARTIFACT_LINEAGE_PRODUCER_ROLES else None
+    return {
+        "id": str(row["id"]),
+        "step_id": str(row["id"]),
+        "run_id": str(row["run_id"]),
+        "step_key": _public_step_identifier(row.get("step_key")) or "step",
+        "step_kind": step_kind,
+        "status": status,
+        "title": PUBLIC_STEP_TITLES[status],
+        "role": role,
+        "sequence": int(row.get("sequence") or 0),
+        "payload": _public_step_payload(raw_payload, status),
+        "started_at": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
 def run_step_response(row: dict[str, object], principal: AuthPrincipal | None = None) -> dict[str, object]:
+    if principal is not None and not is_ai_admin(principal):
+        return _ordinary_run_step_response(row)
     raw_payload = row.get("payload_json") or {}
     if not isinstance(raw_payload, dict):
         raw_payload = {}
     payload = sanitize_public_payload(raw_payload)
     if not isinstance(payload, dict):
         payload = {}
-    if principal is not None and not is_ai_admin(principal):
-        payload = sanitize_user_control_input(raw_payload)
     show_runtime_controls = principal is None or is_ai_admin(principal)
     skill_ids = raw_payload.get("skill_ids")
     mcp_tool_ids = raw_payload.get("mcp_tool_ids")
@@ -317,11 +431,6 @@ def run_step_response(row: dict[str, object], principal: AuthPrincipal | None = 
     browser_enabled = raw_payload.get("browser_enabled")
     title = sanitize_public_text(row.get("title"))
     role = sanitize_public_text(row.get("role")) if row.get("role") is not None else None
-    if principal is not None and not is_ai_admin(principal):
-        title = public_text_or_fallback(title, row.get("step_key")) or "step"
-        if role is not None:
-            role = public_text_or_fallback(role) or None
-
     response = {
         "id": str(row["id"]),
         "step_id": str(row["id"]),
@@ -347,12 +456,10 @@ def run_step_response(row: dict[str, object], principal: AuthPrincipal | None = 
     return response
 
 
-def multi_agent_snapshot_from_steps(
+def _multi_agent_snapshot_from_step_responses(
     run_id: str,
-    rows: list[dict[str, object]],
-    principal: AuthPrincipal | None = None,
+    steps: list[dict[str, object]],
 ) -> dict[str, object] | None:
-    steps = [run_step_response(row, principal=principal) for row in rows]
     if not steps:
         return None
     counts = {
@@ -366,3 +473,26 @@ def multi_agent_snapshot_from_steps(
         "blocked": sum(1 for item in steps if bool(item["payload"].get("missing_dependencies"))),
     }
     return {"run_id": run_id, "steps": steps, "counts": counts}
+
+
+def _ordinary_multi_agent_snapshot(
+    run_id: str,
+    rows: list[dict[str, object]],
+) -> dict[str, object] | None:
+    return _multi_agent_snapshot_from_step_responses(
+        run_id,
+        [_ordinary_run_step_response(row) for row in rows],
+    )
+
+
+def multi_agent_snapshot_from_steps(
+    run_id: str,
+    rows: list[dict[str, object]],
+    principal: AuthPrincipal | None = None,
+) -> dict[str, object] | None:
+    if principal is not None and not is_ai_admin(principal):
+        return _ordinary_multi_agent_snapshot(run_id, rows)
+    return _multi_agent_snapshot_from_step_responses(
+        run_id,
+        [run_step_response(row, principal=principal) for row in rows],
+    )

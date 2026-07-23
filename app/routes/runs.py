@@ -2025,15 +2025,20 @@ async def get_run(
     raw_skill_id = str(run["skill_id"])
     raw_agent_id = str(run["agent_id"])
     show_raw_skill = is_ai_admin(principal)
-    multi_agent_snapshot = multi_agent_snapshot_from_steps(run_id, steps, principal=principal)
     terminal_projection = (
         public_terminal_projection(
             run_status,
             run.get("error_code"),
-            multi_agent=multi_agent_snapshot,
+            run_id=run_id,
+            step_rows=steps,
         )
         if not show_raw_skill
         else None
+    )
+    multi_agent_snapshot = (
+        None
+        if terminal_projection is not None
+        else multi_agent_snapshot_from_steps(run_id, steps, principal=principal)
     )
     if multi_agent_snapshot is not None and terminal_projection is None:
         result_payload["multi_agent"] = multi_agent_snapshot
