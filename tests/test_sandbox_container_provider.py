@@ -4152,6 +4152,47 @@ async def test_docker_dispatch_rejects_and_tracks_an_extra_governed_network_peer
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", ("bridge", "api-witness"))
+async def test_docker_dispatch_binds_current_topology_to_the_signed_proof(monkeypatch, replacement):
+    """A compliant replacement with the same name cannot reuse stale proof evidence."""
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    fake = FakeDockerClient()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+    sandbox_request = request()
+    leased_workspace = workspace()
+    lease = await provider.create_or_reuse(sandbox_request, leased_workspace)
+    await provider.validate_for_dispatch(lease, sandbox_request, leased_workspace)
+    network_name = container_provider._governed_docker_network_name(lease)
+    network = fake.networks_by_name[network_name]
+    primary = fake.containers_by_name[lease.container_name]
+
+    if replacement == "bridge":
+        replacement_id = "network-replacement"
+        network["attrs"]["Id"] = replacement_id
+        fake.api_container.attrs["NetworkSettings"]["Networks"][network_name]["NetworkID"] = replacement_id
+        primary.attrs["NetworkSettings"]["Networks"][network_name]["NetworkID"] = replacement_id
+    else:
+        prior_id = fake.api_container.id
+        replacement_id = "api-witness-replacement"
+        fake.api_container.id = replacement_id
+        fake.api_container.attrs["Id"] = replacement_id
+        members = network["attrs"]["Containers"]
+        members.pop(prior_id)
+        members[replacement_id] = {"Name": fake.api_container.name}
+
+    with pytest.raises(container_provider.GovernedEgressAdmissionError):
+        await provider.validate_for_dispatch(lease, sandbox_request, leased_workspace)
+
+    assert primary.removed is True
+    assert lease.container_id not in provider._leases
+
+
+@pytest.mark.asyncio
 async def test_docker_rejects_unreachable_or_stale_api_callback_before_dispatch(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     fake = FakeDockerClient()

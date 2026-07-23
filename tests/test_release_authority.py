@@ -98,10 +98,15 @@ def test_sandbox_compose_overlay_preserves_live_docker_provider_and_mounts():
 def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract():
     text = RUNBOOK.read_text(encoding="utf-8")
 
-    assert "<release-root>/deploy/ai-platform/docker-compose.sandbox.yml" in text
     assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
     assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
-    assert "SANDBOX_EXECUTOR_IMAGE=sha256:<64-lowercase-hex-image-id>" in text
+    assert "python3 tools/release_authority.py deploy-main-commit" in text
+    assert "--release-root <release-root>" in text
+    assert "--env-file <release-root>/deploy/ai-platform/.env" in text
+    assert "--compose-file deploy/ai-platform/docker-compose.yml" in text
+    assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" in text
+    assert "ai-platform-phaseb" in text
+    assert "docker compose --env-file <release-root>/deploy/ai-platform/.env" not in text
 
 
 def test_backend_and_frontend_images_publish_release_authority_labels():

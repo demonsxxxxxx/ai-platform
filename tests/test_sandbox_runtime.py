@@ -131,7 +131,22 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
 
 
 @pytest.mark.asyncio
-async def test_runtime_revalidates_provider_evidence_immediately_before_dispatch(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("sandbox_mode", "cancelled", "reason"),
+    (
+        ("ephemeral", False, "dispatch_validation_failed"),
+        ("persistent", False, "dispatch_validation_failed"),
+        ("ephemeral", True, "dispatch_validation_cancelled"),
+        ("persistent", True, "dispatch_validation_cancelled"),
+    ),
+)
+async def test_runtime_revalidates_provider_evidence_immediately_before_dispatch(
+    tmp_path,
+    monkeypatch,
+    sandbox_mode,
+    cancelled,
+    reason,
+):
     """A proof/topology change after lease persistence must block executor I/O."""
     calls: list[tuple[str, str]] = []
 
@@ -142,6 +157,8 @@ async def test_runtime_revalidates_provider_evidence_immediately_before_dispatch
     class DriftedProvider(FakeContainerProvider):
         async def validate_for_dispatch(self, lease, runtime_request, leased_workspace):
             calls.append(("validate", lease.container_id))
+            if cancelled:
+                raise asyncio.CancelledError()
             raise RuntimeError("governed egress changed after acquisition")
 
         async def stop(self, lease, *, reason):
@@ -161,15 +178,54 @@ async def test_runtime_revalidates_provider_evidence_immediately_before_dispatch
         release_lease=lambda _lease, reason, *_args: calls.append(("release", reason)),
     )
 
-    with pytest.raises(RuntimeError, match="egress changed"):
-        await runtime.submit(request(sandbox_mode="ephemeral"))
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await runtime.submit(request(sandbox_mode=sandbox_mode))
+    else:
+        with pytest.raises(RuntimeError, match="egress changed"):
+            await runtime.submit(request(sandbox_mode=sandbox_mode))
 
     assert calls == [
         ("record", "lease"),
         ("validate", "exec-run-a"),
-        ("stop", "dispatch_failed"),
-        ("release", "dispatch_failed"),
+        ("stop", reason),
+        ("release", reason),
     ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_validation_cleanup_failure_keeps_persistent_lease_fail_closed(tmp_path, monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class StopFailedProvider(FakeContainerProvider):
+        async def validate_for_dispatch(self, lease, runtime_request, leased_workspace):
+            raise RuntimeError("governed egress changed after acquisition")
+
+        async def stop(self, lease, *, reason):
+            calls.append(("stop", reason))
+            return StopResult(container_id=lease.container_id, status="failed", message="still tracked")
+
+    async def execute(*_args, **_kwargs):
+        raise AssertionError("executor dispatch must not occur after evidence drift")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StopFailedProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: "lease-a",
+        release_lease=lambda _lease, reason, *_args: calls.append(("release", reason)),
+    )
+
+    with pytest.raises(RuntimeError, match="sandbox_runtime_cleanup_failed"):
+        await runtime.submit(request(sandbox_mode="persistent"))
+
+    assert calls == [("stop", "dispatch_validation_failed")]
 
 
 @pytest.mark.asyncio

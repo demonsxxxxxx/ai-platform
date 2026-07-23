@@ -38,18 +38,20 @@ read only for signed `released` or `expired` history; active acquisition and
 dispatch require the current key and a fresh proof. Keep the raw values in the
 host environment file only.
 
-Use the sandbox overlay explicitly; the placeholders below are contracts, not
-real paths, images, commits, or credentials:
+Use the standard release authority for the sandbox overlay; the placeholders
+below are contracts, not real paths, images, commits, or credentials. The
+authority retains the `ai-platform-phaseb` Compose project, resolves the
+immutable executor image itself, and is the only permitted mutation path:
 
 ```bash
 cd <release-root>
-sudo -n env \
-  AI_PLATFORM_IMAGE=<reviewed-api-worker-image> \
-  SANDBOX_EXECUTOR_IMAGE=sha256:<64-lowercase-hex-image-id> \
-  docker compose --env-file <release-root>/deploy/ai-platform/.env \
-  -f <release-root>/deploy/ai-platform/docker-compose.yml \
-  -f <release-root>/deploy/ai-platform/docker-compose.sandbox.yml \
-  up -d --no-build api worker workspace-init
+python3 tools/release_authority.py deploy-main-commit \
+  --release-root <release-root> \
+  --commit <40-lowercase-hex-commit> \
+  --docker-cmd "sudo -n docker" \
+  --env-file <release-root>/deploy/ai-platform/.env \
+  --compose-file deploy/ai-platform/docker-compose.yml \
+  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
 ```
 
 Before allowing untrusted execution, verify that the API is healthy with the

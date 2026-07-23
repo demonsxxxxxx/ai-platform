@@ -1970,6 +1970,7 @@ def _docker_complete_governed_network_members(
     lease: ContainerLease,
     network_id: str,
     network_name: str,
+    callback_base_url: str,
     expected_source: str,
 ) -> tuple[Any, Any]:
     """Prove a governed bridge has exactly its current API witness and primary lease."""
@@ -1994,7 +1995,7 @@ def _docker_complete_governed_network_members(
         client,
         network_name=network_name,
         network_id=network_id,
-        callback_base_url=_docker_governed_callback_target(get_settings()).base_url,
+        callback_base_url=callback_base_url,
         expected_source=expected_source,
     )
     return primary, api_container
@@ -2025,6 +2026,7 @@ def _seal_docker_governed_egress_after_readback(
         lease=lease,
         network_id=network_id,
         network_name=network_name,
+        callback_base_url=admission.callback_base_url,
         expected_source=admission.runtime_commit,
     )
     callback_subject = _docker_callback_endpoint_subject(
@@ -3518,16 +3520,9 @@ class DockerContainerProvider:
                 ),
                 "lease_identity": f"docker:{lease.container_name}:{lease.container_id}",
             }
-            proof = governed_egress_proof_from_labels(
-                "docker",
-                lease.labels,
-                signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
-                signing_key_id=_governed_egress_proof_key_id(settings),
-                expected_binding=expected_binding,
-            )
-            if proof is None:
-                raise GovernedEgressAdmissionError()
             client = self._get_client()
+            callback = _docker_governed_callback_target(settings)
+            runtime_commit = _runtime_release_commit(settings)
             network_name = _governed_docker_network_name(lease)
             network = client.networks.get(network_name)
             network_id, verified_name = _docker_owned_governed_network(network, lease)
@@ -3539,13 +3534,40 @@ class DockerContainerProvider:
                 lease=lease,
                 network_id=network_id,
                 network_name=network_name,
-                expected_source=_runtime_release_commit(settings),
+                callback_base_url=callback.base_url,
+                expected_source=runtime_commit,
             )
+            callback_subject = _docker_callback_endpoint_subject(
+                client,
+                network_name=network_name,
+                network_id=network_id,
+                callback_base_url=callback.base_url,
+                expected_source=runtime_commit,
+            )
+            expected_binding.update(
+                {
+                    "runtime_subject": "docker-internal-bridge",
+                    "policy_subject": f"{network_id}:{network_name}:internal",
+                    "callback_subject": callback_subject,
+                    "denial_subject": f"{network_id}:internal-default-deny",
+                    "network_id": network_id,
+                    "network_name": network_name,
+                }
+            )
+            proof = governed_egress_proof_from_labels(
+                "docker",
+                lease.labels,
+                signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
+                signing_key_id=_governed_egress_proof_key_id(settings),
+                expected_binding=expected_binding,
+            )
+            if proof is None:
+                raise GovernedEgressAdmissionError()
             if not await asyncio.to_thread(
                 self._callback_reachability_probe,
                 primary,
-                _docker_governed_callback_target(settings).base_url,
-                _runtime_release_commit(settings),
+                callback.base_url,
+                runtime_commit,
             ):
                 raise GovernedEgressAdmissionError()
         except Exception as exc:

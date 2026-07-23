@@ -240,13 +240,14 @@ class SandboxRuntime:
                 reason=reason,
             )
 
-    async def _stop_and_release_ephemeral_lease(
+    async def _stop_and_release_recorded_lease(
         self,
         lease: ContainerLease,
         *,
         reason: str,
         lease_record_id: str | None,
     ) -> None:
+        """Confirm provider stop before releasing one recorded runtime lease."""
         stop_result = await self.provider.stop(lease, reason=reason)
         if stop_result.status == "failed":
             raise SandboxRuntimeCleanupError(reason=reason, stop_result=stop_result)
@@ -292,6 +293,8 @@ class SandboxRuntime:
                 raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
             raise
         externally_stopped = False
+        validation_started = False
+        validation_succeeded = False
 
         async def stop_owned_runtime(reason: str) -> bool:
             nonlocal externally_stopped
@@ -337,15 +340,26 @@ class SandboxRuntime:
                 governed_permission_wait=request.governed_permission_wait,
                 config=task_config,
             )
+            validation_started = True
             await self.provider.validate_for_dispatch(lease, request, workspace)
+            validation_succeeded = True
             dispatch_started_at = time.monotonic()
             response = await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
         except BaseException as exc:
-            if request.sandbox_mode == "ephemeral" and not externally_stopped:
-                reason = "dispatch_cancelled" if isinstance(exc, asyncio.CancelledError) else "dispatch_failed"
+            validation_rejected = validation_started and not validation_succeeded
+            if not externally_stopped and (request.sandbox_mode == "ephemeral" or validation_rejected):
+                reason = (
+                    "dispatch_validation_cancelled"
+                    if validation_rejected and isinstance(exc, asyncio.CancelledError)
+                    else "dispatch_validation_failed"
+                    if validation_rejected
+                    else "dispatch_cancelled"
+                    if isinstance(exc, asyncio.CancelledError)
+                    else "dispatch_failed"
+                )
                 try:
-                    await self._stop_and_release_ephemeral_lease(lease, reason=reason, lease_record_id=lease_record_id)
+                    await self._stop_and_release_recorded_lease(lease, reason=reason, lease_record_id=lease_record_id)
                 except SandboxRuntimeCleanupError as cleanup_exc:
                     raise cleanup_exc from exc
             raise
@@ -360,7 +374,7 @@ class SandboxRuntime:
                 if terminal_status in {"cancelled", "canceled"}
                 else "dispatch_completed"
             )
-            await self._stop_and_release_ephemeral_lease(
+            await self._stop_and_release_recorded_lease(
                 lease,
                 reason=release_reason,
                 lease_record_id=lease_record_id,
