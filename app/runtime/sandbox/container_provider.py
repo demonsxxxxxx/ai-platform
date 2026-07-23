@@ -1015,6 +1015,19 @@ def _opensandbox_governed_runtime_subject(runtime_identity: str, runtime_subject
     )
 
 
+def _opensandbox_governed_denial_subject(deny_audit_subject: str, deny_counter_subject: str) -> str:
+    """Injectively bind the governed denial audit and counter subjects."""
+
+    return json.dumps(
+        {
+            "deny_audit_subject": deny_audit_subject,
+            "deny_counter_subject": deny_counter_subject,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 @dataclass(frozen=True)
 class OpenSandboxExternalEgressCapability:
     """Validated, non-secret profile values bound to an OpenSandbox lease."""
@@ -1048,7 +1061,10 @@ class OpenSandboxExternalEgressCapability:
             ),
             "policy_subject": self.gateway_policy_subject,
             "callback_subject": self.callback_boundary_subject,
-            "denial_subject": f"{self.deny_audit_subject}:{self.deny_counter_subject}",
+            "denial_subject": _opensandbox_governed_denial_subject(
+                self.deny_audit_subject,
+                self.deny_counter_subject,
+            ),
             "network_id": self.profile_id,
             "network_name": self.endpoint,
             "tenant_id": request.tenant_id,
@@ -1688,7 +1704,10 @@ def _opensandbox_cleanup_expected_binding(
             "runtime_subject": _opensandbox_governed_runtime_subject(runtime_identity, runtime_subject),
             "policy_subject": gateway_policy_subject,
             "callback_subject": callback_boundary_subject,
-            "denial_subject": f"{deny_audit_subject}:{deny_counter_subject}",
+            "denial_subject": _opensandbox_governed_denial_subject(
+                deny_audit_subject,
+                deny_counter_subject,
+            ),
             "network_id": profile_id,
             "tenant_id": lease.tenant_id,
             "workspace_id": lease.workspace_id,
@@ -4552,13 +4571,34 @@ class OpenSandboxContainerProvider:
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         settings = get_settings()
         sandbox = self._sandboxes.get(lease.container_id)
-        try:
-            if sandbox is None:
+        if sandbox is None:
+            try:
+                connection_config = self._connection_config(settings)
+            except Exception:
+                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                return StopResult(
+                    container_id=lease.container_id,
+                    status="failed",
+                    message="OpenSandbox sandbox stop failed",
+                )
+            try:
                 sandbox = await self._connect(
                     lease.container_id,
-                    self._connection_config(settings),
+                    connection_config,
                     skip_health_check=True,
                 )
+            except Exception as exc:
+                if _is_authoritative_opensandbox_not_found_error(exc):
+                    self._leases.pop(f"opensandbox-{lease.run_id}", None)
+                    self._sandboxes.pop(lease.container_id, None)
+                    return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                return StopResult(
+                    container_id=lease.container_id,
+                    status="failed",
+                    message="OpenSandbox sandbox stop failed",
+                )
+        try:
             if hasattr(sandbox, "get_info"):
                 info = await _maybe_await(sandbox.get_info())
             else:
@@ -4585,21 +4625,24 @@ class OpenSandboxContainerProvider:
                     status="failed",
                     message="OpenSandbox sandbox stop failed",
                 )
-            if not await self._cleanup_started_sandbox(
-                sandbox,
-                propagate_authoritative_not_found=True,
-            ):
+            try:
+                cleanup_confirmed = await self._cleanup_started_sandbox(
+                    sandbox,
+                    propagate_authoritative_not_found=True,
+                )
+            except Exception as exc:
+                if _is_authoritative_opensandbox_not_found_error(exc):
+                    self._leases.pop(f"opensandbox-{lease.run_id}", None)
+                    self._sandboxes.pop(lease.container_id, None)
+                    return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+                raise
+            if not cleanup_confirmed:
                 self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
                 self._sandboxes[lease.container_id] = sandbox
                 return StopResult(container_id=lease.container_id, status="failed", message="OpenSandbox sandbox stop failed")
-        except Exception as exc:
-            if _is_authoritative_opensandbox_not_found_error(exc):
-                self._leases.pop(f"opensandbox-{lease.run_id}", None)
-                self._sandboxes.pop(lease.container_id, None)
-                return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+        except Exception:
             self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
-            if sandbox is not None:
-                self._sandboxes[lease.container_id] = sandbox
+            self._sandboxes[lease.container_id] = sandbox
             return StopResult(container_id=lease.container_id, status="failed", message="OpenSandbox sandbox stop failed")
         self._leases.pop(f"opensandbox-{lease.run_id}", None)
         self._sandboxes.pop(lease.container_id, None)

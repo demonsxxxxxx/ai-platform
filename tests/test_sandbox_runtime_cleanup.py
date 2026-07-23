@@ -228,7 +228,10 @@ async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_production_opensandbox_cleanup_retains_db_lease_when_capability_identity_is_ambiguous(monkeypatch):
+@pytest.mark.parametrize("failure_mode", ("ambiguous-identity", "get-info-404"))
+async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unconfirmed(monkeypatch, failure_mode):
+    from opensandbox.exceptions import SandboxApiException
+
     from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
     from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
 
@@ -271,6 +274,8 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_capability_i
     )
 
     def get_info():
+        if failure_mode == "get-info-404":
+            raise SandboxApiException("sandbox metadata is unavailable", status_code=404)
         return {
             "id": remote.id,
             "metadata": dict(remote.metadata),
