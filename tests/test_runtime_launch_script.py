@@ -356,10 +356,11 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
         "SANDBOX_EXECUTOR_IMAGE=ai-platform:local",
         "SANDBOX_EXECUTOR_PUBLISHED_HOST=host.docker.internal",
         "SANDBOX_WORKSPACE_ROOT=/tmp/ai-platform-sandbox-workspaces",
-        "SANDBOX_CALLBACK_BASE_URL=http://host.docker.internal:8020",
+        "SANDBOX_CALLBACK_BASE_URL=http://api.sandbox.internal:8020",
         "SANDBOX_EGRESS_POLICY_ENABLED=false",
-        "SANDBOX_EGRESS_NETWORK_NAME=ai-platform-sandbox-egress",
-        "SANDBOX_CALLBACK_HOST_GATEWAY=host.docker.internal",
+        "SANDBOX_EGRESS_NETWORK_NAME=ai-platform-sandbox-egress-internal-v1",
+        "SANDBOX_EGRESS_PROOF_SIGNING_KEY=replace_me_with_a_random_32_byte_minimum_value",
+        "SANDBOX_CALLBACK_HOST_GATEWAY=",
     ]:
         assert expected in env_example_text
 
@@ -371,10 +372,22 @@ def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():
         service_text = compose_service_text(compose_text, service_name)
         for expected in [
             "SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}",
-            "SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress}",
-            "SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-host.docker.internal}",
+            "SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress-internal-v1}",
+            "SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:-}",
+            "SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-}",
         ]:
             assert expected in service_text
+
+
+def test_compose_defines_new_internal_egress_network_for_api_callback_only():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    api_text = compose_service_text(compose_text, "api")
+
+    assert "name: ai-platform-sandbox-egress-internal-v1" in compose_text
+    assert "internal: true" in compose_text
+    assert 'com.docker.network.bridge.enable_ip_masquerade: "false"' in compose_text
+    assert "api.sandbox.internal" in api_text
+    assert compose_text.count("sandbox_egress_internal_v1:") == 2
 
 
 def test_compose_requires_core_production_secrets():

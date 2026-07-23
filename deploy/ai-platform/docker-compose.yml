@@ -144,14 +144,15 @@ services:
       SANDBOX_CONTAINER_PROVIDER: ${SANDBOX_CONTAINER_PROVIDER:-fake}
       SANDBOX_EXECUTOR_IMAGE: ${SANDBOX_EXECUTOR_IMAGE:-ai-platform:local}
       SANDBOX_EXECUTOR_PUBLISHED_HOST: ${SANDBOX_EXECUTOR_PUBLISHED_HOST:-host.docker.internal}
-      SANDBOX_CALLBACK_BASE_URL: ${SANDBOX_CALLBACK_BASE_URL:-http://10.56.0.211:8020}
+      SANDBOX_CALLBACK_BASE_URL: ${SANDBOX_CALLBACK_BASE_URL:-http://api.sandbox.internal:8020}
       SANDBOX_CALLBACK_TOKEN: ${SANDBOX_CALLBACK_TOKEN:?set SANDBOX_CALLBACK_TOKEN}
       SANDBOX_WORKSPACE_ROOT: ${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}
       SANDBOX_CONTAINER_START_TIMEOUT_SECONDS: ${SANDBOX_CONTAINER_START_TIMEOUT_SECONDS:-30}
       SANDBOX_EXECUTOR_HEALTH_TIMEOUT_SECONDS: ${SANDBOX_EXECUTOR_HEALTH_TIMEOUT_SECONDS:-60}
       SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}
-      SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress}
-      SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-host.docker.internal}
+      SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress-internal-v1}
+      SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:-}
+      SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-}
       OPENSANDBOX_DOMAIN: ${OPENSANDBOX_DOMAIN:-localhost:8080}
       OPENSANDBOX_PROTOCOL: ${OPENSANDBOX_PROTOCOL:-http}
       OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:-}
@@ -169,6 +170,11 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ai_platform_sandbox_workspaces:/tmp/ai-platform-sandbox-workspaces
+    networks:
+      default: {}
+      sandbox_egress_internal_v1:
+        aliases:
+          - api.sandbox.internal
     depends_on:
       workspace-init:
         condition: service_completed_successfully
@@ -260,14 +266,15 @@ services:
       SANDBOX_CONTAINER_PROVIDER: ${SANDBOX_CONTAINER_PROVIDER:-fake}
       SANDBOX_EXECUTOR_IMAGE: ${SANDBOX_EXECUTOR_IMAGE:-ai-platform:local}
       SANDBOX_EXECUTOR_PUBLISHED_HOST: ${SANDBOX_EXECUTOR_PUBLISHED_HOST:-host.docker.internal}
-      SANDBOX_CALLBACK_BASE_URL: ${SANDBOX_CALLBACK_BASE_URL:-http://10.56.0.211:8020}
+      SANDBOX_CALLBACK_BASE_URL: ${SANDBOX_CALLBACK_BASE_URL:-http://api.sandbox.internal:8020}
       SANDBOX_CALLBACK_TOKEN: ${SANDBOX_CALLBACK_TOKEN:?set SANDBOX_CALLBACK_TOKEN}
       SANDBOX_WORKSPACE_ROOT: ${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}
       SANDBOX_CONTAINER_START_TIMEOUT_SECONDS: ${SANDBOX_CONTAINER_START_TIMEOUT_SECONDS:-30}
       SANDBOX_EXECUTOR_HEALTH_TIMEOUT_SECONDS: ${SANDBOX_EXECUTOR_HEALTH_TIMEOUT_SECONDS:-60}
       SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}
-      SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress}
-      SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-host.docker.internal}
+      SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress-internal-v1}
+      SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:-}
+      SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-}
       OPENSANDBOX_DOMAIN: ${OPENSANDBOX_DOMAIN:-localhost:8080}
       OPENSANDBOX_PROTOCOL: ${OPENSANDBOX_PROTOCOL:-http}
       OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:-}
@@ -318,3 +325,11 @@ volumes:
   ai_platform_redis:
   ai_platform_minio:
   ai_platform_sandbox_workspaces:
+
+networks:
+  sandbox_egress_internal_v1:
+    name: ai-platform-sandbox-egress-internal-v1
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"

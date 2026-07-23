@@ -7,7 +7,12 @@ from typing import Any, Awaitable, Callable
 
 from app import repositories
 from app.db import transaction
-from app.execution_boundary import governed_egress_proof_from_labels
+from app.execution_boundary import (
+    REAL_SANDBOX_PROVIDERS,
+    governed_egress_authorized_native_tool_scope,
+    governed_egress_authorized_skill_scope,
+    governed_egress_proof_from_labels,
+)
 from app.executors.base import RunExecutionOwner
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import ContainerProvider, create_container_provider
@@ -143,7 +148,32 @@ class SandboxRuntime:
             and runtime_workspace_container_path
         ):
             raise ValueError("incomplete_runtime_handle")
-        governed_egress_proof = governed_egress_proof_from_labels(lease.provider, lease.labels)
+        image_subject = str(lease.labels.get("ai-platform.executor.requested_image") or "").strip()
+        image_digest = str(lease.labels.get("ai-platform.executor.requested_image_digest") or "").strip()
+        authorized_skill_scope = governed_egress_authorized_skill_scope(
+            skill_ids=request.skill_ids,
+            mcp_tool_ids=request.mcp_tool_ids,
+        )
+        authorized_native_tool_scope = governed_egress_authorized_native_tool_scope(request.tool_policy_subjects)
+        governed_egress_proof = governed_egress_proof_from_labels(
+            lease.provider,
+            lease.labels,
+            signing_key=getattr(get_settings(), "sandbox_egress_proof_signing_key", ""),
+            expected_binding={
+                "tenant_id": lease.tenant_id,
+                "workspace_id": lease.workspace_id,
+                "user_id": lease.user_id,
+                "session_id": lease.session_id,
+                "run_id": lease.run_id,
+                "image_subject": image_subject,
+                "image_digest": image_digest,
+                "authorized_skill_scope": authorized_skill_scope,
+                "authorized_native_tool_scope": authorized_native_tool_scope,
+                "lease_identity": f"{lease.provider}:{lease.container_name}",
+            },
+        )
+        if lease.provider in REAL_SANDBOX_PROVIDERS and governed_egress_proof is None:
+            raise ValueError("governed_egress_proof_invalid")
         lease_payload = {
             "source": "sandbox_runtime",
             "evidence_class": "runtime_lease_projection",
@@ -166,6 +196,13 @@ class SandboxRuntime:
         }
         if governed_egress_proof is not None:
             lease_payload["governed_egress_proof"] = governed_egress_proof
+            for proof_field in (
+                "image_subject_sha256",
+                "image_digest_sha256",
+                "authorized_skill_scope_sha256",
+                "authorized_native_tool_scope_sha256",
+            ):
+                lease_payload[f"governed_egress_{proof_field}"] = governed_egress_proof[proof_field]
         async with transaction() as conn:
             row = await repositories.create_sandbox_lease(
                 conn,

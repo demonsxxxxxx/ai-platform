@@ -10,6 +10,78 @@ from app.runtime.sandbox.contracts import ContainerStatus, StopResult
 from app.settings import Settings
 
 
+ADMIN_PROOF_KEY = "admin-runtime-proof-key-with-enough-entropy-2026"
+
+
+@pytest.fixture(autouse=True)
+def signed_runtime_proof_key(monkeypatch):
+    monkeypatch.setattr(
+        "app.execution_boundary.get_settings",
+        lambda: Settings(sandbox_egress_proof_signing_key=ADMIN_PROOF_KEY),
+    )
+
+
+def signed_runtime_lease(*, run_id: str, provider: str = "docker", tenant_id: str = "default") -> dict:
+    from app.execution_boundary import (
+        build_governed_egress_proof,
+        governed_egress_authorized_native_tool_scope,
+        governed_egress_authorized_skill_scope,
+    )
+
+    workspace_id = "workspace-a"
+    user_id = "user-a"
+    session_id = f"session-{run_id}"
+    container_id = f"exec-{run_id}"
+    container_name = f"executor-{container_id}"
+    image = "registry.test/executor@sha256:" + "a" * 64
+    proof = build_governed_egress_proof(
+        signing_key=ADMIN_PROOF_KEY,
+        provider=provider,
+        runtime_subject="docker-internal-bridge" if provider == "docker" else "runsc",
+        policy_subject="network-a:internal" if provider == "docker" else "gateway-policy-a",
+        callback_subject="http://api.sandbox.internal:8020",
+        denial_subject="network-a:default-deny" if provider == "docker" else "deny-a",
+        network_id="network-a" if provider == "docker" else "profile-a",
+        network_name="ai-platform-sandbox-egress-internal-v1" if provider == "docker" else "opensandbox-a",
+        network_internal=provider == "docker",
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        session_id=session_id,
+        run_id=run_id,
+        image_subject=image,
+        image_digest="sha256:" + "a" * 64,
+        authorized_skill_scope=governed_egress_authorized_skill_scope(skill_ids=[], mcp_tool_ids=[]),
+        authorized_native_tool_scope=governed_egress_authorized_native_tool_scope([]),
+        lease_identity=f"{provider}:{container_name}",
+    )
+    return {
+        "tenant_id": tenant_id,
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "session_id": session_id,
+        "run_id": run_id,
+        "provider": provider,
+        "lease_payload_json": {
+            "source": "sandbox_runtime",
+            "evidence_class": "runtime_lease_projection",
+            "container_id": container_id,
+            "container_name": container_name,
+            "labels": {},
+            **{
+                f"governed_egress_{field}": proof[field]
+                for field in (
+                    "image_subject_sha256",
+                    "image_digest_sha256",
+                    "authorized_skill_scope_sha256",
+                    "authorized_native_tool_scope_sha256",
+                )
+            },
+            "governed_egress_proof": proof,
+        },
+    }
+
+
 def admin_headers():
     return {
         "X-AI-User-ID": "dev-admin",
@@ -71,23 +143,14 @@ def patch_real_leases(monkeypatch, *run_ids):
         assert tenant_id == "default"
         return [
             {
+                **signed_runtime_lease(run_id=run_id, tenant_id=tenant_id),
                 "id": f"lease-{run_id}",
-                "tenant_id": tenant_id,
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": f"session-{run_id}",
-                "run_id": run_id,
                 "trace_id": f"trace-{run_id}",
                 "sandbox_mode": "ephemeral",
-                "provider": "docker",
                 "status": "active",
                 "browser_enabled": False,
                 "resource_limits_json": {},
                 "user_visible_payload_json": {"workspace": "/workspace"},
-                "lease_payload_json": {
-                    "source": "sandbox_runtime",
-                    "evidence_class": "runtime_lease_projection",
-                },
             }
             for run_id in run_ids
         ]
@@ -422,6 +485,7 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
                     "evidence_class": "runtime_lease_projection",
                 },
                 "release_reason": "",
+                **signed_runtime_lease(run_id="run-a"),
             },
             {
                 "id": "lease-placeholder",
@@ -544,7 +608,7 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
                 "run_id": "run-a",
                 "trace_id": "trace-a",
                 "sandbox_mode": "ephemeral",
-                    "provider": "docker",
+                "provider": "docker",
                 "status": "active",
                 "browser_enabled": False,
                 "resource_limits_json": {},
@@ -555,6 +619,7 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
                     "evidence_class": "runtime_lease_projection",
                 },
                 "release_reason": "",
+                **signed_runtime_lease(run_id="run-a"),
             }
         ]
 
@@ -619,6 +684,7 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
                     "evidence_class": "runtime_lease_projection",
                 },
                 "release_reason": "expired",
+                **signed_runtime_lease(run_id="run-a"),
             },
             {
                 "id": "lease-placeholder-history",
@@ -694,16 +760,13 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
                 "run_id": "run-a",
                 "trace_id": "trace-a",
                 "sandbox_mode": "ephemeral",
-                    "provider": "docker",
+                "provider": "docker",
                 "status": "active",
                 "browser_enabled": False,
                 "resource_limits_json": {},
                 "user_visible_payload_json": {},
-                    "lease_payload_json": {
-                        "source": "sandbox_runtime",
-                        "evidence_class": "runtime_lease_projection",
-                    },
                 "release_reason": "",
+                **signed_runtime_lease(run_id="run-a"),
             },
             {
                 "id": "lease-foreign",
@@ -714,15 +777,15 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
                 "run_id": "run-b",
                 "trace_id": "trace-b",
                 "sandbox_mode": "ephemeral",
-                    "provider": "docker",
+                "provider": "docker",
                 "status": "active",
                 "browser_enabled": False,
                 "resource_limits_json": {},
                 "user_visible_payload_json": {},
-                    "lease_payload_json": {
-                        "source": "sandbox_runtime",
-                        "evidence_class": "runtime_lease_projection",
-                    },
+                "lease_payload_json": {
+                    "source": "sandbox_runtime",
+                    "evidence_class": "runtime_lease_projection",
+                },
                 "release_reason": "",
             },
         ]
@@ -1014,58 +1077,37 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
             return [
                 {
                     "id": "lease-active",
-                    "tenant_id": "default",
-                    "run_id": "run-a",
-                    "provider": "docker",
                     "status": "active",
-                    "lease_payload_json": {
-                        "source": "sandbox_runtime",
-                        "evidence_class": "runtime_lease_projection",
-                    },
+                    **signed_runtime_lease(run_id="run-a"),
                 }
             ]
         return [
-                {
-                    "id": "lease-active",
-                    "tenant_id": "default",
-                    "provider": "docker",
-                    "status": "active",
-                    "lease_payload_json": {
-                        "source": "sandbox_runtime",
-                        "evidence_class": "runtime_lease_projection",
-                    },
+            {
+                "id": "lease-active",
+                "status": "active",
+                **signed_runtime_lease(run_id="run-a"),
+            },
+            {
+                "id": "lease-released",
+                "status": "released",
+                **signed_runtime_lease(run_id="run-a"),
+            },
+            {
+                "id": "lease-expired",
+                "status": "expired",
+                **signed_runtime_lease(run_id="run-a", provider="opensandbox"),
+            },
+            {
+                "id": "lease-foreign",
+                "tenant_id": "tenant-b",
+                "provider": "docker",
+                "status": "active",
+                "lease_payload_json": {
+                    "source": "sandbox_runtime",
+                    "evidence_class": "runtime_lease_projection",
                 },
-                {
-                    "id": "lease-released",
-                    "tenant_id": "default",
-                    "provider": "docker",
-                    "status": "released",
-                    "lease_payload_json": {
-                        "source": "sandbox_runtime",
-                        "evidence_class": "runtime_lease_projection",
-                    },
-                },
-                {
-                    "id": "lease-expired",
-                    "tenant_id": "default",
-                    "provider": "opensandbox",
-                    "status": "expired",
-                    "lease_payload_json": {
-                        "source": "sandbox_runtime",
-                        "evidence_class": "runtime_lease_projection",
-                    },
-                },
-                {
-                    "id": "lease-foreign",
-                    "tenant_id": "tenant-b",
-                    "provider": "docker",
-                    "status": "active",
-                    "lease_payload_json": {
-                        "source": "sandbox_runtime",
-                        "evidence_class": "runtime_lease_projection",
-                    },
-                },
-            ]
+            },
+        ]
 
     async def fake_get_queue_status():
         calls.append(("queue_status",))

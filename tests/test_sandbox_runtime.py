@@ -59,6 +59,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
+        sandbox_egress_proof_signing_key = "runtime-test-proof-key-with-enough-entropy-2026"
 
     async def execute(executor_url, task_request):
         sent.append((executor_url, task_request))
@@ -397,19 +398,47 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
 @pytest.mark.asyncio
 async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_handle(tmp_path, monkeypatch):
     calls = []
-    from app.execution_boundary import build_governed_egress_proof, governed_egress_proof_label
+    from app.execution_boundary import (
+        build_governed_egress_proof,
+        governed_egress_authorized_native_tool_scope,
+        governed_egress_authorized_skill_scope,
+        governed_egress_proof_label,
+    )
+
+    signing_key = "runtime-test-proof-key-with-enough-entropy-2026"
+    runtime_request = request(sandbox_mode="ephemeral", trace_id="trace-run-a")
 
     governed_egress_proof = build_governed_egress_proof(
+        signing_key=signing_key,
         provider="opensandbox",
         runtime_subject="runtime-subject-a",
         policy_subject="gateway-policy-subject-a",
         callback_subject="callback-boundary-subject-a",
         denial_subject="gateway-deny-subject-a",
+        network_id="profile-a",
+        network_name="opensandbox.local:8080",
+        network_internal=False,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        image_subject="registry.example/ai-platform@sha256:" + "a" * 64,
+        image_digest="sha256:" + "a" * 64,
+        authorized_skill_scope=governed_egress_authorized_skill_scope(
+            skill_ids=runtime_request.skill_ids,
+            mcp_tool_ids=runtime_request.mcp_tool_ids,
+        ),
+        authorized_native_tool_scope=governed_egress_authorized_native_tool_scope(
+            runtime_request.tool_policy_subjects
+        ),
+        lease_identity="opensandbox:opensandbox-run-a",
     )
 
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
+        sandbox_egress_proof_signing_key = signing_key
 
     class OpenSandboxProvider(FakeContainerProvider):
         async def create_or_reuse(self, request, workspace):
@@ -428,6 +457,8 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
                         "ai-platform.executor.uid": "10001",
                         "ai-platform.executor.gid": "10001",
                         "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+                        "ai-platform.executor.requested_image": "registry.example/ai-platform@sha256:" + "a" * 64,
+                        "ai-platform.executor.requested_image_digest": "sha256:" + "a" * 64,
                         "ai-platform.external_egress.endpoint": "http://127.0.0.1:18081/private-capability",
                         "ai-platform.governed_egress.proof": governed_egress_proof_label(governed_egress_proof),
                     },
@@ -457,7 +488,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         callback_token_resolver=lambda token_id: "secret-token",
     )
 
-    await runtime.submit(request(sandbox_mode="ephemeral", trace_id="trace-run-a"))
+    await runtime.submit(runtime_request)
 
     create_kwargs = calls[0][1]
     assert create_kwargs["provider"] == "opensandbox"
@@ -470,7 +501,108 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
     assert create_kwargs["lease_payload_json"]["labels"] == {"ai-platform.run_id": "run-a"}
     assert create_kwargs["lease_payload_json"]["governed_egress_proof"] == governed_egress_proof
     assert "private-capability" not in repr(create_kwargs["lease_payload_json"])
+    assert "registry.example" not in repr(create_kwargs["lease_payload_json"])
     assert calls[1] == ("release", "lease-created-a", "dispatch_completed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "replayed_binding",
+    ("tenant", "workspace", "user", "session", "run", "image", "skill", "tool"),
+)
+async def test_runtime_rejects_signed_proof_replayed_across_request_bindings(
+    tmp_path,
+    monkeypatch,
+    replayed_binding,
+):
+    from app.execution_boundary import (
+        build_governed_egress_proof,
+        governed_egress_authorized_native_tool_scope,
+        governed_egress_authorized_skill_scope,
+        governed_egress_proof_label,
+    )
+
+    signing_key = "runtime-test-proof-key-with-enough-entropy-2026"
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_egress_proof_signing_key = signing_key
+
+    runtime_request = request(sandbox_mode="ephemeral")
+    image = "registry.example/ai-platform@sha256:" + "a" * 64
+    proof_scope = {
+        "tenant_id": runtime_request.tenant_id,
+        "workspace_id": runtime_request.workspace_id,
+        "user_id": runtime_request.user_id,
+        "session_id": runtime_request.session_id,
+        "run_id": runtime_request.run_id,
+        "image_subject": image,
+        "image_digest": "sha256:" + "a" * 64,
+        "authorized_skill_scope": governed_egress_authorized_skill_scope(
+            skill_ids=runtime_request.skill_ids,
+            mcp_tool_ids=runtime_request.mcp_tool_ids,
+        ),
+        "authorized_native_tool_scope": governed_egress_authorized_native_tool_scope(
+            runtime_request.tool_policy_subjects
+        ),
+    }
+    replacements = {
+        "tenant": ("tenant_id", "tenant-b"),
+        "workspace": ("workspace_id", "workspace-b"),
+        "user": ("user_id", "user-b"),
+        "session": ("session_id", "session-b"),
+        "run": ("run_id", "run-b"),
+        "image": ("image_subject", "registry.example/ai-platform@sha256:" + "b" * 64),
+        "skill": (
+            "authorized_skill_scope",
+            governed_egress_authorized_skill_scope(skill_ids=["other-skill"], mcp_tool_ids=[]),
+        ),
+        "tool": (
+            "authorized_native_tool_scope",
+            governed_egress_authorized_native_tool_scope([{"identity": "Bash"}]),
+        ),
+    }
+    changed_field, changed_value = replacements[replayed_binding]
+    proof_scope[changed_field] = changed_value
+    proof = build_governed_egress_proof(
+        signing_key=signing_key,
+        provider="docker",
+        runtime_subject="docker-internal-bridge",
+        policy_subject="network-a:internal",
+        callback_subject="http://api.sandbox.internal:8020",
+        denial_subject="network-a:default-deny",
+        network_id="network-a",
+        network_name="ai-platform-sandbox-egress-internal-v1",
+        network_internal=True,
+        lease_identity="docker:executor-exec-run-a",
+        **proof_scope,
+    )
+    lease = ContainerLease(
+        container_id="exec-run-a",
+        container_name="executor-exec-run-a",
+        provider="docker",
+        executor_url="http://executor.test",
+        tenant_id=runtime_request.tenant_id,
+        workspace_id=runtime_request.workspace_id,
+        user_id=runtime_request.user_id,
+        session_id=runtime_request.session_id,
+        run_id=runtime_request.run_id,
+        sandbox_mode=runtime_request.sandbox_mode,
+        browser_enabled=runtime_request.browser_enabled,
+        workspace_host_path=str(tmp_path / "workspace"),
+        labels={
+            "ai-platform.executor.requested_image": image,
+            "ai-platform.executor.requested_image_digest": "sha256:" + "a" * 64,
+            "ai-platform.governed_egress.proof": governed_egress_proof_label(proof),
+        },
+    )
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(workspace_root=tmp_path, provider=FakeContainerProvider(executor_url="http://executor.test"))
+    workspace = runtime.workspace_manager.prepare(runtime_request)
+
+    with pytest.raises(ValueError, match="governed_egress_proof_invalid"):
+        await runtime._record_runtime_lease(lease, runtime_request, workspace)
 
 
 @pytest.mark.asyncio
@@ -589,10 +721,44 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
+        sandbox_egress_proof_signing_key = "runtime-test-proof-key-with-enough-entropy-2026"
 
     class HeaderProvider(FakeContainerProvider):
         async def create_or_reuse(self, request, workspace):
+            from app.execution_boundary import (
+                build_governed_egress_proof,
+                governed_egress_authorized_native_tool_scope,
+                governed_egress_authorized_skill_scope,
+                governed_egress_proof_label,
+            )
+
             lease = await super().create_or_reuse(request, workspace)
+            image = "registry.example/ai-platform@sha256:" + "a" * 64
+            proof = build_governed_egress_proof(
+                signing_key=StubSettings.sandbox_egress_proof_signing_key,
+                provider="opensandbox",
+                runtime_subject="runsc",
+                policy_subject="gateway-a",
+                callback_subject="callback-a",
+                denial_subject="deny-a",
+                network_id="profile-a",
+                network_name="opensandbox-a",
+                network_internal=False,
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                image_subject=image,
+                image_digest="sha256:" + "a" * 64,
+                authorized_skill_scope=governed_egress_authorized_skill_scope(
+                    skill_ids=request.skill_ids, mcp_tool_ids=request.mcp_tool_ids
+                ),
+                authorized_native_tool_scope=governed_egress_authorized_native_tool_scope(
+                    request.tool_policy_subjects
+                ),
+                lease_identity="opensandbox:opensandbox-run-a",
+            )
             return ContainerLease(
                 **{
                     **lease.model_dump(),
@@ -601,6 +767,12 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
                     "provider": "opensandbox",
                     "executor_url": "http://opensandbox-executor.test",
                     "executor_headers": {"OPENSANDBOX-EGRESS-AUTH": "opensandbox-secret"},
+                    "labels": {
+                        **lease.labels,
+                        "ai-platform.executor.requested_image": image,
+                        "ai-platform.executor.requested_image_digest": "sha256:" + "a" * 64,
+                        "ai-platform.governed_egress.proof": governed_egress_proof_label(proof),
+                    },
                 }
             )
 
