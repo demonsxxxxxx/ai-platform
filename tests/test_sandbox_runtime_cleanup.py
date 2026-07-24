@@ -16,6 +16,12 @@ TEST_PROOF_KEY = "cleanup-test-proof-key-with-enough-entropy-2026"
 TEST_PROOF_NOW = datetime(2026, 7, 14, 16, 0, tzinfo=timezone.utc)
 
 
+class CleanupProofSettings:
+    sandbox_egress_proof_signing_key = TEST_PROOF_KEY
+    sandbox_egress_proof_key_id = "current"
+    sandbox_egress_proof_previous_keys_json = ""
+
+
 def opensandbox_cleanup_proof():
     return build_governed_egress_proof(
         signing_key=TEST_PROOF_KEY,
@@ -32,6 +38,7 @@ def opensandbox_cleanup_proof():
         user_id="user-a",
         session_id="session-a",
         run_id="run-a",
+        attempt_id="attempt-a",
         image_subject="registry.example/ai-platform@sha256:" + "a" * 64,
         image_digest="sha256:" + "a" * 64,
         authorized_skill_scope="cleanup-skill-scope",
@@ -109,7 +116,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_relea
 
 
 @pytest.mark.asyncio
-async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_not_lease_payload(monkeypatch):
+async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_and_canonical_attempt(monkeypatch):
     from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 
     calls = []
@@ -130,6 +137,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_not_l
                 "ai-platform.provider_backend": "opensandbox",
                 "ai-platform.egress.policy": "opensandbox-network-policy",
             },
+            "attempt_id": "attempt-a",
             "governed_egress_proof": proof,
         },
     )
@@ -166,6 +174,10 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_not_l
         "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
         fake_release_stopped_sandbox_leases,
     )
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.get_settings",
+        lambda: CleanupProofSettings(),
+    )
 
     cleaned = await cleanup_expired_sandbox_runtime_leases(
         object(),
@@ -182,7 +194,10 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_not_l
         "http://opensandbox-executor.test:18000",
         "",
         "/workspace",
-        {GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof)},
+        {
+            "ai-platform.attempt_id": "attempt-a",
+            GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
+        },
         "expired",
     )
     assert calls[1] == ("release", "tenant-a", "expired", ["lease-a"], None)
@@ -197,7 +212,10 @@ async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeyp
         runtime_container_id="osb-run-a",
         runtime_container_name="opensandbox-run-a",
         runtime_executor_url="http://opensandbox-executor.test:18000",
-        lease_payload_json={"labels": {"ai-platform.owner": "sandbox-runtime"}},
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "labels": {"ai-platform.owner": "sandbox-runtime"},
+        },
     )
     releases = []
 
@@ -228,7 +246,50 @@ async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_mode", ("ambiguous-identity", "get-info-404"))
+@pytest.mark.parametrize("attempt_id", (None, "", "../attempt-a"))
+async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(monkeypatch, attempt_id):
+    from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
+
+    lease_payload = {"governed_egress_proof": opensandbox_cleanup_proof()}
+    if attempt_id is not None:
+        lease_payload["attempt_id"] = attempt_id
+    row = expired_lease_row(
+        provider="opensandbox",
+        runtime_container_id="osb-run-a",
+        runtime_container_name="opensandbox-run-a",
+        runtime_executor_url="http://opensandbox-executor.test:18000",
+        lease_payload_json=lease_payload,
+    )
+    releases = []
+
+    async def fake_list_expired_active_sandbox_leases(conn, *, tenant_id=None, limit=100):
+        return [row]
+
+    async def fake_release_stopped_sandbox_leases(conn, **kwargs):
+        releases.append(kwargs)
+        return [row]
+
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        fake_list_expired_active_sandbox_leases,
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        fake_release_stopped_sandbox_leases,
+    )
+
+    with pytest.raises(SandboxRuntimeCleanupError):
+        await cleanup_expired_sandbox_runtime_leases(
+            object(),
+            tenant_id="tenant-a",
+            provider_factory=lambda _provider_name: pytest.fail("provider must not receive an unbound lease"),
+        )
+
+    assert releases == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ("attempt-mismatch", "ambiguous-identity", "get-info-404"))
 async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unconfirmed(monkeypatch, failure_mode):
     from opensandbox.exceptions import SandboxApiException
 
@@ -272,8 +333,10 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         kill_calls=0,
         close_calls=0,
     )
+    remote_trace = []
 
     def get_info():
+        remote_trace.append("get_info")
         if failure_mode == "get-info-404":
             raise SandboxApiException("sandbox metadata is unavailable", status_code=404)
         return {
@@ -296,23 +359,28 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         @classmethod
         def connect(cls, sandbox_id, **_kwargs):
             assert sandbox_id == remote.id
+            remote_trace.append("connect")
             return remote
 
     class FakeConnectionConfig:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-    class Settings:
-        sandbox_egress_proof_signing_key = TEST_PROOF_KEY
-        sandbox_egress_proof_key_id = "current"
-        sandbox_egress_proof_previous_keys_json = ""
+    class Settings(CleanupProofSettings):
         opensandbox_api_key = ""
         opensandbox_domain = "opensandbox.local:8080"
         opensandbox_protocol = "http"
         opensandbox_request_timeout_seconds = 30
         opensandbox_use_server_proxy = False
 
-    provider = OpenSandboxContainerProvider(
+    received_leases = []
+
+    class RecordingOpenSandboxContainerProvider(OpenSandboxContainerProvider):
+        async def stop(self, lease, *, reason):
+            received_leases.append(lease)
+            return await super().stop(lease, reason=reason)
+
+    provider = RecordingOpenSandboxContainerProvider(
         sandbox_class=FakeSandboxClass,
         connection_config_class=FakeConnectionConfig,
         utcnow=lambda: TEST_PROOF_NOW + timedelta(days=1),
@@ -322,7 +390,10 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         runtime_container_id="osb-run-a",
         runtime_container_name="opensandbox-run-a",
         runtime_executor_url="http://opensandbox-executor.test:18000",
-        lease_payload_json={"governed_egress_proof": proof},
+        lease_payload_json={
+            "attempt_id": "attempt-b" if failure_mode == "attempt-mismatch" else "attempt-a",
+            "governed_egress_proof": proof,
+        },
     )
     releases = []
 
@@ -334,6 +405,7 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         return [row]
 
     monkeypatch.setattr("app.runtime.sandbox.container_provider.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: Settings())
     monkeypatch.setattr(
         "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
@@ -343,17 +415,35 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         fake_release_stopped_sandbox_leases,
     )
 
-    with pytest.raises(SandboxRuntimeCleanupError):
+    with pytest.raises(SandboxRuntimeCleanupError) as exc_info:
         await cleanup_expired_sandbox_runtime_leases(
             object(),
             tenant_id="tenant-a",
             provider_factory=lambda _provider_name: provider,
         )
 
+    if failure_mode == "attempt-mismatch":
+        assert received_leases == []
+        assert remote_trace == []
+        expected_failure = {
+            "container_id": "lease-a",
+            "message": "Unsupported sandbox provider: opensandbox",
+        }
+    else:
+        assert len(received_leases) == 1
+        assert received_leases[0].labels == {
+            "ai-platform.attempt_id": "attempt-a",
+            GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
+        }
+        assert remote_trace == ["connect", "get_info"]
+        expected_failure = {
+            "container_id": "osb-run-a",
+            "message": "OpenSandbox sandbox stop failed",
+        }
+    assert exc_info.value.failures == [expected_failure]
     assert remote.kill_calls == 0
     assert remote.close_calls == 0
     assert releases == []
-    assert provider._leases["opensandbox-run-a"].container_id == "osb-run-a"
 
 
 @pytest.mark.asyncio

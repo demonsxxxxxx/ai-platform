@@ -142,6 +142,7 @@ def _write_runtime_marker(workspace_root: Path, request: ExecutorTaskRequest) ->
     marker_payload = {
         "session_id": request.session_id,
         "run_id": request.run_id,
+        "attempt_id": request.attempt_id,
         "prompt_length": len(request.prompt),
         "permission_mode": request.permission_mode,
         "config": safe_config,
@@ -871,13 +872,16 @@ def _validate_executor_request_scope(
     *,
     expected_session_id: str,
     expected_run_id: str,
+    expected_attempt_id: str,
     trusted_callback_base_url: str | None,
 ) -> None:
-    if not expected_session_id or not expected_run_id:
+    if not expected_session_id or not expected_run_id or not expected_attempt_id:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="executor_scope_not_configured")
     if request.session_id != expected_session_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_executor_scope")
     if request.run_id != expected_run_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_executor_scope")
+    if request.attempt_id != expected_attempt_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_executor_scope")
     try:
         trusted_callback_target = _trusted_callback_target(trusted_callback_base_url)
@@ -912,6 +916,7 @@ def _context_retrieval_for_request(
         callback_url=callback_target.context_retrieval_url,
         callback_token_id=request.callback_token_id,
         callback_token=request.callback_token,
+        attempt_id=request.attempt_id,
         scope=scope,
     )
     identity = ScopedContextRetrievalIdentity(
@@ -1066,6 +1071,7 @@ def create_executor_app(
     executor_auth_token: str | None = None,
     expected_session_id: str | None = None,
     expected_run_id: str | None = None,
+    expected_attempt_id: str | None = None,
     trusted_callback_base_url: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="AI Platform Sandbox Executor", version="0.1.0")
@@ -1074,6 +1080,7 @@ def create_executor_app(
     configured_executor_auth_token = _configured_executor_auth_token(executor_auth_token)
     configured_expected_session_id = _configured_expected_value(expected_session_id, "AI_PLATFORM_SESSION_ID")
     configured_expected_run_id = _configured_expected_value(expected_run_id, "AI_PLATFORM_RUN_ID")
+    configured_expected_attempt_id = _configured_expected_value(expected_attempt_id, "AI_PLATFORM_ATTEMPT_ID")
     execute_claimed = {"value": False}
 
     async def default_executor_runner(
@@ -1121,6 +1128,7 @@ def create_executor_app(
             request,
             expected_session_id=configured_expected_session_id,
             expected_run_id=configured_expected_run_id,
+            expected_attempt_id=configured_expected_attempt_id,
             trusted_callback_base_url=trusted_callback_base_url,
         )
         if execute_claimed["value"]:
@@ -1134,6 +1142,7 @@ def create_executor_app(
         running_event = ExecutorCallbackEvent(
             session_id=request.session_id,
             run_id=request.run_id,
+            attempt_id=request.attempt_id,
             callback_token_id=request.callback_token_id,
             status="running",
             progress=5,
@@ -1179,6 +1188,7 @@ def create_executor_app(
             callback_event = ExecutorCallbackEvent(
                 session_id=request.session_id,
                 run_id=request.run_id,
+                attempt_id=request.attempt_id,
                 callback_token_id=request.callback_token_id,
                 status="running",
                 progress=35 if agent_event.type.startswith("tool_call") else 60 if agent_event.type == "artifact_created" else 20,
@@ -1264,6 +1274,7 @@ def create_executor_app(
         execution_observation = ExecutorCallbackEvent(
             session_id=request.session_id,
             run_id=request.run_id,
+            attempt_id=request.attempt_id,
             callback_token_id=request.callback_token_id,
             status="running",
             progress=99,

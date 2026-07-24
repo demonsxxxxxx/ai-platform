@@ -37,6 +37,7 @@ def task_payload(
     return {
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "qat-attempt-a",
         "prompt": "hello executor",
         "callback_url": callback_url,
         "callback_token_id": "cbt_run-a",
@@ -52,6 +53,7 @@ def task_payload(
             "mcp_tool_ids": [],
             "input_files": [],
             "materialized_file_names": [],
+            "context_manifest": {"queue_attempt_id": "qat-attempt-a"},
         },
     }
 
@@ -72,6 +74,7 @@ def sensitive_task_payload(callback_url: str = TRUSTED_CALLBACK_URL) -> dict[str
         "env_overrides": {"OPENAI_API_KEY": "secret-key"},
         "headers": {"Authorization": "Bearer secret"},
         "host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a",
+        "context_manifest": {"queue_attempt_id": "qat-attempt-a"},
     }
     return payload
 
@@ -87,6 +90,7 @@ def create_test_client(tmp_path, **kwargs) -> TestClient:
             executor_auth_token=EXECUTOR_AUTH_TOKEN,
             expected_session_id="session-a",
             expected_run_id="run-a",
+            expected_attempt_id="qat-attempt-a",
             trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
             **kwargs,
         )
@@ -983,6 +987,7 @@ time.sleep(10)
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
         expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
     endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
@@ -1127,6 +1132,7 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
 
     payload = task_payload()
     payload["config"]["context_manifest"] = {
+        "queue_attempt_id": "qat-attempt-a",
         "schema_version": "ai-platform.context-manifest.v1",
         "available_retrieval_tools": ["read_context_file"],
     }
@@ -1218,6 +1224,7 @@ async def test_default_executor_preparses_dimensionless_xlsx_and_forwards_typed_
             "materialized_file_names": ["book.xlsx"],
             "tool_policy_subjects": context_stage_policy(),
             "context_manifest": {
+                "queue_attempt_id": "qat-attempt-a",
                 "schema_version": "ai-platform.context-manifest.v1",
                 "available_retrieval_tools": ["stage_context_file_to_workspace"],
                 "files": [{"file_id": "file-a"}],
@@ -1331,6 +1338,7 @@ async def test_default_executor_keeps_duplicate_xlsx_basenames_bound_to_distinct
             "materialized_file_names": ["book.xlsx", "book.xlsx"],
             "tool_policy_subjects": context_stage_policy(),
             "context_manifest": {
+                "queue_attempt_id": "qat-attempt-a",
                 "schema_version": "ai-platform.context-manifest.v1",
                 "files": [{"file_id": "file-a"}, {"file_id": "file-b"}],
                 "attachment_preprocessing": build_attachment_preprocessing_contract(
@@ -1402,6 +1410,7 @@ async def test_default_executor_fails_before_sdk_for_malformed_xlsx(tmp_path, mo
             "materialized_file_names": ["book.xlsx"],
             "tool_policy_subjects": context_stage_policy(),
             "context_manifest": {
+                "queue_attempt_id": "qat-attempt-a",
                 "schema_version": "ai-platform.context-manifest.v1",
                 "files": [{"file_id": "file-a"}],
                 "attachment_preprocessing": build_attachment_preprocessing_contract(
@@ -1451,6 +1460,7 @@ async def test_default_executor_requires_server_context_stage_subject_for_xlsx(t
             "input_files": ["file-a"],
             "materialized_file_names": ["book.xlsx"],
             "context_manifest": {
+                "queue_attempt_id": "qat-attempt-a",
                 "schema_version": "ai-platform.context-manifest.v1",
                 "files": [{"file_id": "file-a"}],
                 "attachment_preprocessing": build_attachment_preprocessing_contract(
@@ -1500,6 +1510,7 @@ async def test_default_executor_rejects_parser_file_absent_from_dispatched_manif
             "materialized_file_names": ["book.xlsx"],
             "tool_policy_subjects": context_stage_policy(),
             "context_manifest": {
+                "queue_attempt_id": "qat-attempt-a",
                 "schema_version": "ai-platform.context-manifest.v1",
                 "files": [{"file_id": "file-other"}],
                 "available_retrieval_tools": ["stage_context_file_to_workspace"],
@@ -1537,6 +1548,7 @@ def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path
 
     payload = task_payload()
     payload["config"]["context_manifest"] = {
+        "queue_attempt_id": "qat-attempt-a",
         "schema_version": "ai-platform.context-manifest.v1",
         "available_retrieval_tools": ["read_context_file"],
     }
@@ -1560,6 +1572,7 @@ def test_executor_execute_rejects_context_scope_for_different_run(tmp_path, monk
 
     payload = task_payload()
     payload["config"]["context_manifest"] = {
+        "queue_attempt_id": "qat-attempt-a",
         "schema_version": "ai-platform.context-manifest.v1",
         "available_retrieval_tools": ["read_context_file"],
     }
@@ -1700,6 +1713,7 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
         expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
     endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
@@ -1775,6 +1789,7 @@ async def test_executor_deadline_reports_cleanup_timeout_without_waiting_forever
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
         expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
     endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
@@ -1908,6 +1923,7 @@ async def test_executor_execute_rejects_invalid_deadline_without_invoking_runner
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
         expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
     endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
@@ -2027,6 +2043,7 @@ async def test_executor_execute_preserves_caller_cancellation(tmp_path):
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
         expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
     endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
@@ -2059,6 +2076,7 @@ async def test_executor_execute_reports_cleanup_failure_when_caller_cancellation
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
         expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
     endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")

@@ -12,6 +12,7 @@ def request(**overrides) -> SandboxRuntimeRequest:
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "attempt-a",
         "agent_id": "general-agent",
         "skill_ids": ["general-chat"],
         "input_message": "hello",
@@ -39,6 +40,8 @@ def expected_run_root(root: Path) -> Path:
         / "session-a"
         / "runs"
         / "run-a"
+        / "attempts"
+        / "attempt-a"
     )
 
 
@@ -63,6 +66,7 @@ def test_prepare_creates_platform_workspace_namespace(tmp_path):
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "attempt-a",
         "sandbox_mode": "ephemeral",
         "browser_enabled": True,
     }
@@ -79,6 +83,17 @@ def test_workspace_lease_paths_match_platform_namespace(tmp_path):
     assert Path(lease.inputs_host_path) == run_root / "workspace" / "inputs"
     assert Path(lease.logs_host_path) == run_root / "logs"
     assert lease.workspace_container_path == "/workspace"
+
+
+def test_same_run_attempts_receive_distinct_workspace_authority(tmp_path):
+    manager = SandboxWorkspaceManager(root=tmp_path)
+
+    first = manager.prepare(request(attempt_id="attempt-a"))
+    second = manager.prepare(request(attempt_id="attempt-b"))
+
+    assert first.workspace_host_path != second.workspace_host_path
+    assert Path(first.workspace_host_path).parts[-3:] == ("attempts", "attempt-a", "workspace")
+    assert Path(second.workspace_host_path).parts[-3:] == ("attempts", "attempt-b", "workspace")
 
 
 def test_user_visible_payload_hides_host_root_and_uses_workspace_mount(tmp_path):

@@ -1,9 +1,13 @@
+import concurrent.futures
+
 import pytest
 
 from app.executors.base import RunPayload
-from app.executors.embedded_poco import EmbeddedPocoAdapter, build_run_context
+from app.executors.embedded_poco import EmbeddedPocoAdapter, build_run_context, build_step_sandbox_request
+from app.runtime.embedded_poco_kernel import AgentStepExecutionContext
 from app.runtime.event_bridge import EVENT_STAGE_MAP, agent_event_to_executor_event
 from app.runtime.kernel_contracts import SUPPORTED_AGENT_EVENT_TYPES, AgentEvent
+from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
@@ -91,6 +95,7 @@ def run_payload(**overrides):
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "attempt-a",
         "agent_id": "general-agent",
         "skill_id": skill_id,
         "file_ids": [],
@@ -117,6 +122,58 @@ def test_build_run_context_uses_platform_identity_and_new_api_model_gateway():
     assert context.model == "deepseek-v4-flash"
     assert context.model_gateway == "new-api"
     assert context.permissions == ["chat.respond"]
+    assert context.metadata["authoritative_attempt_id"] == "attempt-a"
+
+
+def test_multi_agent_step_attempts_are_parent_bound_parallel_safe_and_retry_stable(monkeypatch):
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test/"
+
+    monkeypatch.setattr("app.settings.get_settings", lambda: StubSettings())
+    context = build_run_context(
+        run_payload(
+            attempt_id="queue-attempt-7",
+            input={"message": "hello", "model": "deepseek-v4-flash", "execution_mode": "multi_agent"},
+        )
+    )
+
+    def step(key: str, index: int) -> AgentStepExecutionContext:
+        return AgentStepExecutionContext(
+            step_key=key,
+            role=key,
+            step_index=index,
+            depends_on=[],
+            skill_ids=["general-chat"],
+            mcp_tool_ids=[],
+            resource_limits={"max_seconds": 30},
+            sandbox_mode="ephemeral",
+            browser_enabled=False,
+        )
+
+    first = step("coding", 1)
+    second = step("testing", 2)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        coding, testing = list(
+            pool.map(
+                lambda item: build_step_sandbox_request(context=context, step=item),
+                (first, second),
+            )
+        )
+    coding_retry = build_step_sandbox_request(context=context, step=first)
+
+    assert coding.attempt_id == coding_retry.attempt_id
+    assert coding.attempt_id != testing.attempt_id
+    assert coding.attempt_id.startswith("step-") and len(coding.attempt_id) == 69
+    assert coding.callback_token_id == callback_token_id_for_binding(
+        CallbackTokenBinding(run_id="run-a", attempt_id=coding.attempt_id)
+    )
+    assert testing.callback_token_id == callback_token_id_for_binding(
+        CallbackTokenBinding(run_id="run-a", attempt_id=testing.attempt_id)
+    )
+
+    missing_parent = context.model_copy(update={"metadata": {}})
+    with pytest.raises(ValueError, match="authoritative parent attempt_id"):
+        build_step_sandbox_request(context=missing_parent, step=first)
 
 
 def test_embedded_adapter_message_aggregates_multiple_deltas():
@@ -224,13 +281,14 @@ async def test_embedded_adapter_uses_sandbox_runtime_for_ephemeral_mode(monkeypa
     assert result.capabilities["sandbox"] is True
     assert result.result == {"message": "Sandbox run accepted", "sandbox_mode": "ephemeral"}
     assert len(submitted) == 1
+    assert submitted[0].attempt_id == "attempt-a"
     assert submitted[0].sandbox_mode == "ephemeral"
     assert submitted[0].browser_enabled is True
     assert submitted[0].permissions == ["chat.respond", "sandbox.execute"]
     assert submitted[0].resource_limits["max_tool_calls"] == 9
     assert submitted[0].file_ids == ["file-a"]
     assert submitted[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
-    assert submitted[0].callback_token_id == "cbt_run-a"
+    assert submitted[0].callback_token_id == "cbt:run-a:attempt-a"
     assert [event["event_type"] for event in events] == ["run_started", "assistant_delta", "run_completed"]
     assert events[1]["payload"]["delta"] == "sandbox delta"
 

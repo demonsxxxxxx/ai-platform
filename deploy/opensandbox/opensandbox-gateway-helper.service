@@ -1,0 +1,39 @@
+[Unit]
+Description=AI Platform OpenSandbox narrow Docker helper v1
+After=docker.service opensandbox.service
+Requires=docker.service opensandbox.service
+
+[Service]
+Type=simple
+User=root
+Group=opensandbox-gateway
+SupplementaryGroups=docker
+WorkingDirectory=/opt/opensandbox-gateway/current
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/opensandbox-gateway/gateway.env
+RuntimeDirectory=opensandbox-gateway
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/python3 -m services.opensandbox_gateway.helper
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/run/docker.sock
+ReadWritePaths=/var/lib/opensandbox-gateway /data/opensandbox/workspaces /run/opensandbox-gateway
+
+[Install]
+WantedBy=multi-user.target

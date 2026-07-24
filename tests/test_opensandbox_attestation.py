@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 import time
 from copy import deepcopy
@@ -18,6 +20,7 @@ COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 ENV_EXAMPLE = ROOT / "deploy" / "ai-platform" / ".env.example"
 IMAGE_DIGEST = "sha256:" + "a" * 64
 IMAGE_SUBJECT = f"registry.example/team/ai-platform@{IMAGE_DIGEST}"
+PROOF_SIGNING_KEY = "attestation-proof-signing-key-with-enough-entropy-2026"
 
 
 def attestation_settings(**overrides: Any) -> SimpleNamespace:
@@ -34,6 +37,7 @@ def attestation_settings(**overrides: Any) -> SimpleNamespace:
         "opensandbox_external_egress_gateway_policy_subject": "gateway-policy-subject-a",
         "opensandbox_external_egress_callback_boundary_subject": "callback-boundary-subject-a",
         "sandbox_egress_proof_key_id": "proof-key-a",
+        "sandbox_egress_proof_signing_key": PROOF_SIGNING_KEY,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -62,6 +66,7 @@ def runtime_request(**overrides: Any) -> SimpleNamespace:
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "qat-attempt-a",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -78,7 +83,8 @@ def attestation_payload(**overrides: Any) -> dict[str, Any]:
             "user_id": "user-a",
             "session_id": "session-a",
             "run_id": "run-a",
-            "lease_id": "opensandbox:opensandbox-run-a:sandbox-a",
+            "attempt_id": "qat-attempt-a",
+            "lease_id": "opensandbox:opensandbox-run-a-qat-attempt-a:sandbox-a",
         },
         "runtime": {
             "identity": "runsc",
@@ -90,6 +96,9 @@ def attestation_payload(**overrides: Any) -> dict[str, Any]:
         },
         "security": {
             "no_new_privileges": True,
+            "user": "1000:1000",
+            "uid": "1000",
+            "gid": "1000",
         },
         "image": {
             "subject": IMAGE_SUBJECT,
@@ -112,6 +121,11 @@ def attestation_payload(**overrides: Any) -> dict[str, Any]:
             "proof_key_id": "proof-key-a",
         },
     }
+    payload["signed_profile"]["profile_signature"] = hmac.new(
+        PROOF_SIGNING_KEY.encode("utf-8"),
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
     payload.update(overrides)
     return payload
 

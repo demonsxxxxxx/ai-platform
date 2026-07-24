@@ -18,6 +18,7 @@ def request_payload(**overrides):
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "attempt-a",
         "agent_id": "general-agent",
         "skill_ids": ["general-chat"],
         "mcp_tool_ids": [],
@@ -251,6 +252,7 @@ def test_callback_event_rejects_unknown_status():
             {
                 "session_id": "session-a",
                 "run_id": "run-a",
+                "attempt_id": "attempt-a",
                 "status": "paused",
                 "progress": 5,
                 "new_message": None,
@@ -266,6 +268,7 @@ def test_callback_event_accepts_typed_agent_events():
         {
             "session_id": "session-a",
             "run_id": "run-a",
+            "attempt_id": "attempt-a",
             "callback_token_id": "cbt_run-a",
             "status": "running",
             "progress": 40,
@@ -293,6 +296,7 @@ def test_callback_event_rejects_unknown_typed_agent_event_type():
             {
                 "session_id": "session-a",
                 "run_id": "run-a",
+                "attempt_id": "attempt-a",
                 "callback_token_id": "cbt_run-a",
                 "status": "running",
                 "progress": 40,

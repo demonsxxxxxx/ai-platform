@@ -52,6 +52,7 @@ from app.runtime.sandbox.container_provider import (
     FakeContainerProvider,
     OpenSandboxContainerProvider,
 )
+from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeRequest
 from app.runtime.sandbox.runtime import SandboxRuntime
 from app.runtime.event_bridge import agent_event_to_executor_event
@@ -1159,6 +1160,8 @@ class ClaudeAgentWorkerAdapter:
             prepared.attachment_metadata,
             allow_file_content_tools=_requires_typed_attachment_preprocessing(payload),
         )
+        runtime_context_manifest = dict(runtime_context_manifest or {})
+        runtime_context_manifest["queue_attempt_id"] = payload.attempt_id
         if attachment_requirements:
             if context_manifest is None:
                 return self._attachment_parser_failure_result(
@@ -1185,6 +1188,7 @@ class ClaudeAgentWorkerAdapter:
             user_id=payload.user_id,
             session_id=payload.session_id,
             run_id=payload.run_id,
+            attempt_id=payload.attempt_id,
             agent_id=payload.agent_id,
             skill_ids=_runtime_request_skill_ids(payload, prepared),
             mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),
@@ -1203,7 +1207,9 @@ class ClaudeAgentWorkerAdapter:
             queue_wait_ms=_payload_queue_wait_ms(payload),
             trace_id=payload.trace_id or standard_trace_id(payload.run_id),
             callback_url=_sandbox_callback_url(settings),
-            callback_token_id=f"cbt_{payload.run_id}",
+            callback_token_id=callback_token_id_for_binding(
+                CallbackTokenBinding(run_id=payload.run_id, attempt_id=payload.attempt_id)
+            ),
             context_manifest=runtime_context_manifest,
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=sdk_session_id_for_run(payload.run_id),

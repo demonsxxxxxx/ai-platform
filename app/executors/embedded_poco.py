@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 from typing import Any
 
@@ -44,7 +45,10 @@ class EmbeddedPocoAdapter:
 
                 runtime = SandboxRuntime()
 
-            await runtime.submit(build_sandbox_request(context), bridge_event)
+            await runtime.submit(
+                build_sandbox_request(context, attempt_id=payload.attempt_id),
+                bridge_event,
+            )
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="embedded-poco-adapter/0.2.0",
@@ -95,6 +99,7 @@ def build_run_context(payload: RunPayload) -> RunContext:
         resource_limits["max_parallel_steps"] = int(input_payload["max_parallel_steps"])
     metadata = {
         "executor_type": "embedded-poco-kernel",
+        "authoritative_attempt_id": payload.attempt_id,
         "agent_id": payload.agent_id,
         "skill_id": payload.skill_id,
         "file_count": len(payload.file_ids),
@@ -208,7 +213,8 @@ def _kernel_for_context(context: RunContext, sandbox_runtime=None) -> InProcessE
     )
 
 
-def build_sandbox_request(context: RunContext):
+def build_sandbox_request(context: RunContext, *, attempt_id: str):
+    from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
     from app.runtime.sandbox.contracts import SandboxRuntimeRequest
     from app.settings import get_settings
 
@@ -220,6 +226,7 @@ def build_sandbox_request(context: RunContext):
         user_id=context.user_id,
         session_id=context.session_id,
         run_id=context.run_id,
+        attempt_id=attempt_id,
         agent_id=context.agent_id,
         skill_ids=context.skill_ids,
         mcp_tool_ids=context.mcp_tool_ids,
@@ -232,21 +239,26 @@ def build_sandbox_request(context: RunContext):
         permissions=permissions,
         resource_limits=context.resource_limits,
         callback_url=f"{settings.sandbox_callback_base_url.rstrip('/')}/api/ai/runtime/callbacks/executor",
-        callback_token_id=f"cbt_{context.run_id}",
+        callback_token_id=callback_token_id_for_binding(
+            CallbackTokenBinding(run_id=context.run_id, attempt_id=attempt_id)
+        ),
     )
 
 
 def build_step_sandbox_request(*, context: RunContext, step: AgentStepExecutionContext) -> SandboxRuntimeRequest:
+    from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
     from app.settings import get_settings
 
     settings = get_settings()
     permissions = list(dict.fromkeys([*context.permissions, "sandbox.execute"]))
+    attempt_id = _step_attempt_id(context, step)
     return SandboxRuntimeRequest(
         tenant_id=context.tenant_id,
         workspace_id=context.workspace_id,
         user_id=context.user_id,
         session_id=context.session_id,
         run_id=context.run_id,
+        attempt_id=attempt_id,
         agent_id=context.agent_id,
         skill_ids=step.skill_ids,
         mcp_tool_ids=step.mcp_tool_ids,
@@ -259,8 +271,18 @@ def build_step_sandbox_request(*, context: RunContext, step: AgentStepExecutionC
         permissions=permissions,
         resource_limits=step.resource_limits,
         callback_url=f"{settings.sandbox_callback_base_url.rstrip('/')}/api/ai/runtime/callbacks/executor",
-        callback_token_id=f"cbt_{context.run_id}_{step.step_key}",
+        callback_token_id=callback_token_id_for_binding(
+            CallbackTokenBinding(run_id=context.run_id, attempt_id=attempt_id)
+        ),
     )
+
+
+def _step_attempt_id(context: RunContext, step: AgentStepExecutionContext) -> str:
+    parent_attempt = context.metadata.get("authoritative_attempt_id")
+    if not isinstance(parent_attempt, str) or not parent_attempt:
+        raise ValueError("authoritative parent attempt_id is required for sandbox step")
+    material = b"embedded-poco-step-attempt-v1\0" + parent_attempt.encode("utf-8") + b"\0" + step.step_key.encode("utf-8")
+    return "step-" + hashlib.sha256(material).hexdigest()
 
 
 def _uses_sandbox(context: RunContext) -> bool:

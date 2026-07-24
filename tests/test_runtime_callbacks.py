@@ -1,13 +1,16 @@
 import hashlib
 import hmac
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app import repositories
 from app.main import create_app
-from app.runtime.sandbox.contracts import ExecutorCallbackEvent
+from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
+from app.runtime.sandbox.contracts import ExecutorCallbackEvent, ExecutorToolPermissionRequest
 
 
-def derived_callback_token(secret: str, token_id: str = "cbt_run-a") -> str:
+def derived_callback_token(secret: str, token_id: str = "cbt:run-a:attempt-a") -> str:
     return hmac.new(secret.encode("utf-8"), token_id.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
@@ -15,7 +18,8 @@ def callback_payload(**overrides):
     payload = {
         "session_id": "session-a",
         "run_id": "run-a",
-        "callback_token_id": "cbt_run-a",
+        "attempt_id": "attempt-a",
+        "callback_token_id": "cbt:run-a:attempt-a",
         "status": "running",
         "progress": 20,
         "new_message": {"type": "assistant", "delta": "hello"},
@@ -38,6 +42,155 @@ def patch_callback_settings(monkeypatch, settings_obj):
         monkeypatch.setattr("app.settings.get_settings", lambda: settings_obj)
     else:
         monkeypatch.setattr(runtime_callbacks, "get_settings", lambda: settings_obj)
+
+
+def patch_active_attempt(monkeypatch, runtime_callbacks, attempt_id="attempt-a"):
+    active_attempt = attempt_id
+
+    async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
+        if attempt_id != active_attempt:
+            return []
+        return [{"lease_payload_json": {"attempt_id": active_attempt}}]
+
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        list_current_leases,
+    )
+
+
+def test_parallel_same_run_attempts_each_use_their_exact_lease_and_token(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    lease_checks = []
+    events = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
+        lease_checks.append((tenant_id, run_id, attempt_id))
+        if attempt_id not in {"attempt-a", "attempt-b"}:
+            return []
+        return [{"lease_payload_json": {"attempt_id": attempt_id}}]
+
+    async def append_event(conn, **kwargs):
+        events.append(kwargs)
+        return f"evt-{len(events)}"
+
+    import app.routes.runtime_callbacks as runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "list_current_sandbox_runtime_leases_for_attempt", exact_lease)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", append_event)
+    client = TestClient(create_app())
+
+    first = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(new_message=None, state_patch={}),
+    )
+    second_token_id = "cbt:run-a:attempt-b"
+    second = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret", second_token_id)},
+        json=callback_payload(
+            attempt_id="attempt-b",
+            callback_token_id=second_token_id,
+            new_message=None,
+            state_patch={},
+        ),
+    )
+    crossed = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(attempt_id="attempt-b", callback_token_id="cbt:run-a:attempt-a"),
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert crossed.status_code == 401
+    assert lease_checks == [
+        ("tenant-a", "run-a", "attempt-a"),
+        ("tenant-a", "run-a", "attempt-a"),
+        ("tenant-a", "run-a", "attempt-b"),
+        ("tenant-a", "run-a", "attempt-b"),
+    ]
+    assert [event["payload"]["attempt_id"] for event in events] == ["attempt-a", "attempt-b"]
+
+
+@pytest.mark.asyncio
+async def test_current_runtime_lease_query_locks_only_the_exact_attempt():
+    observed = []
+
+    class Cursor:
+        async def fetchall(self):
+            return [{"id": "lease-attempt-b"}]
+
+    class Connection:
+        async def execute(self, query, parameters):
+            observed.append((query, parameters))
+            return Cursor()
+
+    rows = await repositories.list_current_sandbox_runtime_leases_for_attempt(
+        Connection(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-b",
+    )
+
+    assert rows == [{"id": "lease-attempt-b"}]
+    query, parameters = observed[0]
+    assert "lease_payload_json ->> 'attempt_id' = %s" in query
+    assert "status = 'active'" in query and "for update" in query
+    assert parameters == ("tenant-a", "run-a", "attempt-b")
+
+
+def test_executor_callback_rejects_duplicate_exact_attempt_leases(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def duplicate_leases(conn, *, tenant_id, run_id, attempt_id):
+        lease = {"lease_payload_json": {"attempt_id": attempt_id}}
+        return [lease, dict(lease)]
+
+    async def fail_append_event(*args, **kwargs):
+        raise AssertionError("ambiguous exact attempt must not append events")
+
+    import app.routes.runtime_callbacks as runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        duplicate_leases,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "sandbox_runtime_attempt_inactive"}
 
 
 def test_executor_callback_requires_valid_token(monkeypatch):
@@ -70,8 +223,8 @@ def test_executor_callback_rejects_cross_run_token_id(monkeypatch):
 
     response = client.post(
         "/api/ai/runtime/callbacks/executor",
-        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret", "cbt_other_run")},
-        json=callback_payload(callback_token_id="cbt_run-a"),
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret", "cbt:other-run:attempt-a")},
+        json=callback_payload(callback_token_id="cbt:run-a:attempt-a"),
     )
 
     assert response.status_code == 401
@@ -91,8 +244,22 @@ def test_executor_callback_rejects_valid_foreign_run_token_pair(monkeypatch):
 
     response = client.post(
         "/api/ai/runtime/callbacks/executor",
-        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret", "cbt_run-a")},
-        json=callback_payload(run_id="run-b", session_id="session-b", callback_token_id="cbt_run-a"),
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret", "cbt:run-a:attempt-a")},
+        json=callback_payload(run_id="run-b", session_id="session-b", callback_token_id="cbt:run-a:attempt-a"),
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_callback_token"}
+
+
+def test_executor_callback_rejects_valid_token_for_prefix_extended_binding(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    extended = "cbt:run-a:attempt-a:container-a"
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret", extended)},
+        json=callback_payload(callback_token_id=extended),
     )
 
     assert response.status_code == 401
@@ -112,6 +279,113 @@ def test_executor_callback_requires_callback_token_id(monkeypatch):
     )
 
     assert response.status_code == 422
+
+
+def test_executor_callback_requires_attempt_id(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    payload = callback_payload()
+    payload.pop("attempt_id")
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=payload,
+    )
+
+    assert response.status_code == 422
+
+
+def test_callback_token_id_rotates_for_each_exact_attempt():
+    first = callback_token_id_for_binding(CallbackTokenBinding(run_id="run-a", attempt_id="attempt-a"))
+    second = callback_token_id_for_binding(CallbackTokenBinding(run_id="run-a", attempt_id="attempt-b"))
+
+    assert first == "cbt:run-a:attempt-a"
+    assert second == "cbt:run-a:attempt-b"
+    assert first != second
+    assert derived_callback_token("secret", first) != derived_callback_token("secret", second)
+
+
+def test_executor_callback_rejects_stale_attempt_before_event_action(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    calls = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
+        calls.append((tenant_id, run_id, attempt_id))
+        return [{"lease_payload_json": {"attempt_id": "attempt-b"}}]
+
+    async def fail_append_event(*args, **kwargs):
+        raise AssertionError("stale attempt must not append an event")
+
+    import app.routes.runtime_callbacks as runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        list_current_leases,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "sandbox_runtime_attempt_mismatch"}
+    assert calls == [("tenant-a", "run-a", "attempt-a")]
+
+
+def test_executor_callback_rejects_released_attempt_before_event_action(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def no_current_leases(conn, *, tenant_id, run_id, attempt_id):
+        return []
+
+    async def fail_append_event(*args, **kwargs):
+        raise AssertionError("released attempt must not append an event")
+
+    import app.routes.runtime_callbacks as runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        no_current_leases,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "sandbox_runtime_attempt_inactive"}
 
 
 def test_executor_callback_rejects_when_token_not_configured(monkeypatch):
@@ -164,7 +438,8 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     assert isinstance(recorded[0], ExecutorCallbackEvent)
     assert recorded[0].session_id == "session-a"
     assert recorded[0].run_id == "run-a"
-    assert recorded[0].callback_token_id == "cbt_run-a"
+    assert recorded[0].attempt_id == "attempt-a"
+    assert recorded[0].callback_token_id == "cbt:run-a:attempt-a"
 
 
 def test_runtime_tool_permission_callback_is_retired_without_resolver_access(monkeypatch):
@@ -179,6 +454,7 @@ def test_runtime_tool_permission_callback_is_retired_without_resolver_access(mon
 
     assert response.status_code == 410
     assert response.json()["detail"] == "tool_permission_runtime_approval_removed"
+    assert ExecutorToolPermissionRequest.model_fields["attempt_id"].is_required()
 
 def test_executor_callback_rejects_terminal_status_before_persisting_public_events(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
@@ -204,6 +480,7 @@ def test_executor_callback_rejects_terminal_status_before_persisting_public_even
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
     client = TestClient(create_app())
 
     response = client.post(
@@ -244,6 +521,7 @@ def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeyp
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda: FakeProvider(), raising=False)
     client = TestClient(create_app())
 
@@ -354,6 +632,7 @@ def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatc
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
     client = TestClient(create_app())
 
     response = client.post(
@@ -422,6 +701,7 @@ def test_executor_callback_typed_admin_only_event_stays_hidden(monkeypatch):
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
     client = TestClient(create_app())
 
     response = client.post(

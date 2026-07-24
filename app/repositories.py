@@ -6564,6 +6564,33 @@ async def list_active_sandbox_leases_for_run(
     return list(await cursor.fetchall())
 
 
+async def list_current_sandbox_runtime_leases_for_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> list[dict[str, Any]]:
+    """Lock exact-attempt unexpired active runtime leases for one authoritative run."""
+
+    cursor = await conn.execute(
+        """
+        select *
+        from sandbox_leases
+        where tenant_id = %s
+          and run_id = %s
+          and lease_payload_json ->> 'attempt_id' = %s
+          and status = 'active'
+          and expires_at is not null
+          and expires_at > clock_timestamp()
+        order by created_at asc
+        for update
+        """,
+        (tenant_id, run_id, attempt_id),
+    )
+    return list(await cursor.fetchall())
+
+
 async def list_sandbox_leases_for_run(
     conn: AsyncConnection,
     *,

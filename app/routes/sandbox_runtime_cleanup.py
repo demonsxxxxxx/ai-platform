@@ -1,9 +1,17 @@
 from collections.abc import Callable
 from typing import Any
 
-from app.execution_boundary import GOVERNED_EGRESS_PROOF_LABEL, governed_egress_proof_label
+from app.execution_boundary import (
+    GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
+    GOVERNED_EGRESS_PROOF_LABEL,
+    governed_egress_previous_signing_keys,
+    governed_egress_proof_label,
+    is_governed_egress_proof,
+)
+from app.settings import get_settings
 from app.runtime.sandbox.container_provider import ContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease
+from app.validation import assert_safe_id
 from app import repositories
 from app.db import transaction
 
@@ -42,10 +50,32 @@ def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
         lease_payload = row.get("lease_payload_json")
         if not isinstance(lease_payload, dict):
             lease_payload = row.get("lease_payload")
+        attempt_id = lease_payload.get("attempt_id") if isinstance(lease_payload, dict) else None
+        if not isinstance(attempt_id, str):
+            return None
         proof = lease_payload.get("governed_egress_proof") if isinstance(lease_payload, dict) else None
         try:
+            labels["ai-platform.attempt_id"] = assert_safe_id(attempt_id, "attempt_id")
             labels[GOVERNED_EGRESS_PROOF_LABEL] = governed_egress_proof_label(proof)
         except ValueError:
+            return None
+        settings = get_settings()
+        if not is_governed_egress_proof(
+            proof,
+            provider="opensandbox",
+            signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
+            signing_key_id=getattr(
+                settings,
+                "sandbox_egress_proof_key_id",
+                GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
+            ),
+            previous_signing_keys=governed_egress_previous_signing_keys(
+                getattr(settings, "sandbox_egress_proof_previous_keys_json", "")
+            ),
+            allow_previous_keys=True,
+            expected_binding={"attempt_id": attempt_id},
+            require_fresh=False,
+        ):
             return None
     return ContainerLease(
         container_id=container_id,

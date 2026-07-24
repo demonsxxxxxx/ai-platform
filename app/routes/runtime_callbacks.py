@@ -11,7 +11,11 @@ from app.context_retrieval import (
     RepositoryContextRetrievalRepository,
 )
 from app.db import transaction
-from app.runtime.sandbox.callback_tokens import callback_token_id_belongs_to_run, callback_token_matches
+from app.runtime.sandbox.callback_tokens import (
+    CallbackTokenBinding,
+    callback_token_id_matches_binding,
+    callback_token_matches,
+)
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent, ExecutorContextRetrievalRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.runtime.event_bridge import agent_event_to_executor_event
@@ -133,6 +137,12 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
         if str(run_identity.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
             raise HTTPException(status_code=409, detail="run_already_terminal")
         tenant_id = str(run_identity["tenant_id"])
+        await _require_current_runtime_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=callback.run_id,
+            attempt_id=callback.attempt_id,
+        )
         await repositories.append_event(
             conn,
             tenant_id=tenant_id,
@@ -142,6 +152,7 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
             message=f"Executor callback: {callback.status}",
             payload={
                 "callback_status": callback.status,
+                "attempt_id": callback.attempt_id,
                 "callback_token_id": callback.callback_token_id,
                 "progress": callback.progress,
                 "sdk_session_id": callback.sdk_session_id,
@@ -161,17 +172,52 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
                 message=str(executor_event["message"]),
                 payload=executor_payload,
             )
+        await _require_current_runtime_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=callback.run_id,
+            attempt_id=callback.attempt_id,
+        )
     return {"accepted": True, "event_count": 1 + len(events)}
 
 
-def _require_valid_callback_token(provided_token: str | None, callback_token_id: str, run_id: str) -> None:
+async def _require_current_runtime_attempt(
+    conn,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> dict[str, Any]:
+    leases = await repositories.list_current_sandbox_runtime_leases_for_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+    )
+    if len(leases) != 1:
+        raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
+    lease = leases[0]
+    payload = lease.get("lease_payload_json") if isinstance(lease, dict) else None
+    if not isinstance(payload, dict) or str(payload.get("attempt_id") or "") != attempt_id:
+        raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_mismatch")
+    return lease
+
+
+def _require_valid_callback_token(
+    provided_token: str | None,
+    callback_token_id: str,
+    *,
+    run_id: str,
+    attempt_id: str,
+) -> None:
     expected_token = get_settings().sandbox_callback_token
     if not expected_token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="callback_token_not_configured",
         )
-    if not callback_token_id_belongs_to_run(callback_token_id, run_id):
+    binding = CallbackTokenBinding(run_id=run_id, attempt_id=attempt_id)
+    if not callback_token_id_matches_binding(callback_token_id, binding):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid_callback_token",
@@ -192,7 +238,12 @@ async def executor_callback(
     callback: ExecutorCallbackEvent,
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
 ) -> dict[str, object]:
-    _require_valid_callback_token(callback_token, callback.callback_token_id, callback.run_id)
+    _require_valid_callback_token(
+        callback_token,
+        callback.callback_token_id,
+        run_id=callback.run_id,
+        attempt_id=callback.attempt_id,
+    )
     return await record_executor_callback(callback)
 
 
@@ -203,10 +254,15 @@ async def executor_context_retrieval_callback(
 ) -> dict[str, object]:
     """Broker one exact snapshot-authorized retrieval without exposing backend credentials."""
 
-    _require_valid_callback_token(callback_token, request.callback_token_id, request.run_id)
+    _require_valid_callback_token(
+        callback_token,
+        request.callback_token_id,
+        run_id=request.run_id,
+        attempt_id=request.attempt_id,
+    )
     arguments = _context_arguments(request)
     async with transaction() as conn:
-        run_identity = await repositories.get_run_identity(conn, run_id=request.run_id)
+        run_identity = await repositories.get_run_identity(conn, run_id=request.run_id, for_update=True)
         if run_identity is None:
             raise HTTPException(status_code=404, detail="run_not_found")
         if str(run_identity.get("session_id") or "") != request.session_id:
@@ -217,6 +273,12 @@ async def executor_context_retrieval_callback(
         workspace_id = str(run_identity.get("workspace_id") or "")
         user_id = str(run_identity.get("user_id") or "")
         agent_id = str(run_identity.get("agent_id") or "")
+        await _require_current_runtime_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+        )
         snapshot = await repositories.get_bound_executor_context_snapshot(
             conn,
             tenant_id=tenant_id,
@@ -275,6 +337,12 @@ async def executor_context_retrieval_callback(
                 "result": "allowed",
                 "visible_to_user": False,
             },
+        )
+        await _require_current_runtime_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
         )
     return {"result": result}
 

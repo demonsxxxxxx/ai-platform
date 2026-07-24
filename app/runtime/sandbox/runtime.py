@@ -24,7 +24,11 @@ from app.runtime.sandbox.contracts import (
     WorkspaceLease,
     build_trusted_callback_target,
 )
-from app.runtime.sandbox.callback_tokens import derive_callback_token
+from app.runtime.sandbox.callback_tokens import (
+    CallbackTokenBinding,
+    callback_token_id_for_binding,
+    derive_callback_token,
+)
 from app.runtime.sandbox.event_normalizer import container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
@@ -166,6 +170,7 @@ class SandboxRuntime:
                 "user_id": lease.user_id,
                 "session_id": lease.session_id,
                 "run_id": lease.run_id,
+                "attempt_id": request.attempt_id,
                 "image_subject": image_subject,
                 "image_digest": image_digest,
                 "authorized_skill_scope": authorized_skill_scope,
@@ -178,6 +183,7 @@ class SandboxRuntime:
         lease_payload = {
             "source": "sandbox_runtime",
             "evidence_class": "runtime_lease_projection",
+            "attempt_id": request.attempt_id,
             "container_id": runtime_container_id,
             "container_name": runtime_container_name,
             "executor_url": runtime_executor_url,
@@ -269,8 +275,10 @@ class SandboxRuntime:
             extra_hosts=[getattr(self.settings, "sandbox_callback_host_gateway", "")],
         )
 
-    def _lease_callback_token_id(self, lease: ContainerLease) -> str:
-        return f"cbt_{lease.run_id}_{lease.container_id}"
+    def _lease_callback_token_id(self, lease: ContainerLease, *, attempt_id: str) -> str:
+        return callback_token_id_for_binding(
+            CallbackTokenBinding(run_id=lease.run_id, attempt_id=attempt_id)
+        )
 
     async def submit(
         self,
@@ -327,13 +335,15 @@ class SandboxRuntime:
             if request.context_retrieval_scope is not None:
                 task_config["context_retrieval_scope"] = request.context_retrieval_scope.model_dump()
 
+            callback_token_id = self._lease_callback_token_id(lease, attempt_id=request.attempt_id)
             task_request = ExecutorTaskRequest(
                 session_id=request.session_id,
                 run_id=request.run_id,
+                attempt_id=request.attempt_id,
                 prompt=request.input_message,
                 callback_url=trusted_callback_target.callback_url,
-                callback_token_id=self._lease_callback_token_id(lease),
-                callback_token=self.callback_token_resolver(self._lease_callback_token_id(lease)),
+                callback_token_id=callback_token_id,
+                callback_token=self.callback_token_resolver(callback_token_id),
                 callback_base_url=trusted_callback_target.base_url,
                 sdk_session_id=request.sdk_session_id,
                 permission_mode="default",

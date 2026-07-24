@@ -2,6 +2,8 @@ import importlib
 import importlib.util
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 
 PROOF_KEY = "proof-key-for-tests-with-enough-independent-entropy-2026"
 
@@ -77,6 +79,7 @@ def _real_runtime_lease(module, *, signing_key=PROOF_KEY, key_id="current", **ov
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "qat-attempt-a",
         "image_subject": "registry.test/executor@sha256:" + "a" * 64,
         "image_digest": "sha256:" + "a" * 64,
         "authorized_skill_scope": module.governed_egress_authorized_skill_scope(
@@ -106,7 +109,7 @@ def _real_runtime_lease(module, *, signing_key=PROOF_KEY, key_id="current", **ov
             "evidence_class": "runtime_lease_projection",
             "container_id": "exec-run-a",
             "container_name": "executor-exec-run-a",
-            "labels": {},
+            "labels": {"ai-platform.attempt_id": scope["attempt_id"]},
             **{
                 f"governed_egress_{field}": proof[field]
                 for field in (
@@ -176,6 +179,7 @@ def test_runtime_lease_rejects_legacy_shape_tamper_replay_and_expiry():
         user_id="user-a",
         session_id="session-a",
         run_id="run-a",
+        attempt_id="qat-attempt-a",
         image_subject="registry.test/executor@sha256:" + "a" * 64,
         image_digest="sha256:" + "a" * 64,
         authorized_skill_scope=module.governed_egress_authorized_skill_scope(
@@ -205,6 +209,55 @@ def test_runtime_lease_rejects_legacy_shape_tamper_replay_and_expiry():
     ) is True
     assert module.has_governed_egress_signing_key("") is False
     assert module.has_governed_egress_signing_key("too-short") is False
+
+
+def test_governed_egress_attempt_is_required_signed_and_exactly_bound():
+    module = _module()
+    real = _real_runtime_lease(module)
+    proof = real["lease_payload_json"]["governed_egress_proof"]
+    legacy = dict(proof)
+    legacy.pop("attempt_id_sha256")
+
+    assert module.is_governed_egress_proof(
+        proof,
+        provider="docker",
+        signing_key=PROOF_KEY,
+        expected_binding={"attempt_id": "qat-attempt-a"},
+    ) is True
+    assert module.is_governed_egress_proof(
+        proof,
+        provider="docker",
+        signing_key=PROOF_KEY,
+        expected_binding={"attempt_id": "qat-attempt-b"},
+    ) is False
+    assert module.is_governed_egress_proof(
+        legacy,
+        provider="docker",
+        signing_key=PROOF_KEY,
+    ) is False
+    with pytest.raises(ValueError, match="governed_egress_subject_invalid"):
+        module.build_governed_egress_proof(
+            signing_key=PROOF_KEY,
+            provider="docker",
+            runtime_subject="docker-internal-bridge",
+            policy_subject="network-id:network-name:internal",
+            callback_subject="http://api.sandbox.internal:8020",
+            denial_subject="network-id:internal-default-deny",
+            network_id="network-id",
+            network_name="ai-platform-sandbox-egress-internal-v1",
+            network_internal=True,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id="",
+            image_subject="registry.test/executor@sha256:" + "a" * 64,
+            image_digest="sha256:" + "a" * 64,
+            authorized_skill_scope="[]",
+            authorized_native_tool_scope="[]",
+            lease_identity="docker:executor-exec-run-a:exec-run-a",
+        )
 
 
 def test_runtime_lease_key_rotation_allows_only_bounded_previous_terminal_history():

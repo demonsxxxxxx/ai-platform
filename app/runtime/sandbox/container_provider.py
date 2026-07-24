@@ -146,6 +146,10 @@ def _matches_filters(status: ContainerStatus, filters: dict[str, str]) -> bool:
         actual = getattr(status, key, None)
         if actual is None:
             detail_value = status.detail.get(key)
+            if detail_value is None and key == "attempt_id":
+                labels = status.detail.get("labels")
+                if isinstance(labels, dict):
+                    detail_value = labels.get("ai-platform.attempt_id")
             if detail_value is None or str(detail_value) != str(expected):
                 return False
             continue
@@ -252,7 +256,10 @@ def _lease_from_request(
         browser_enabled=request.browser_enabled,
         workspace_host_path=workspace.workspace_host_path,
         workspace_container_path=workspace.workspace_container_path,
-        labels={"ai-platform.run_id": request.run_id},
+        labels={
+            "ai-platform.run_id": request.run_id,
+            "ai-platform.attempt_id": request.attempt_id,
+        },
         timings=timings or {},
     )
 
@@ -411,6 +418,7 @@ def _lease_matches_request_workspace(
         and lease.user_id == request.user_id == workspace.user_id
         and lease.session_id == request.session_id == workspace.session_id
         and lease.run_id == request.run_id == workspace.run_id
+        and lease.labels.get("ai-platform.attempt_id") == request.attempt_id
         and lease.sandbox_mode == request.sandbox_mode
         and lease.browser_enabled == request.browser_enabled
         and lease.workspace_host_path == workspace.workspace_host_path
@@ -869,6 +877,7 @@ def _executor_environment(
         "APP_PORT": "18000",
         "AI_PLATFORM_SESSION_ID": request.session_id,
         "AI_PLATFORM_RUN_ID": request.run_id,
+        "AI_PLATFORM_ATTEMPT_ID": request.attempt_id,
         "AI_PLATFORM_CALLBACK_BASE_URL": trusted_callback.base_url,
         "SANDBOX_CALLBACK_BASE_URL": trusted_callback.base_url,
         "AI_PLATFORM_EXECUTOR_AUTH_TOKEN": executor_auth_token,
@@ -1001,6 +1010,23 @@ CAPABILITY_PROFILE_MAX_REQUEST_SECONDS = 2.0
 CAPABILITY_PROFILE_MAX_RESPONSE_BYTES = 64 * 1024
 CAPABILITY_PROFILE_MAX_TOKEN_BYTES = 4096
 CapabilityProfileFetcher = Callable[[str, dict[str, str], float], dict[str, Any]]
+_OPENSANDBOX_CAPABILITY_PROFILE_FIELDS = {
+    "schema_version",
+    "profile_id",
+    "provider",
+    "issued_at",
+    "expires_at",
+    "opensandbox_endpoint",
+    "runtime_identity",
+    "ai_platform_runtime_subject",
+    "gateway_policy_subject",
+    "callback_boundary_subject",
+    "deny_audit_subject",
+    "deny_counter_subject",
+    "executor_image_digest",
+    "proof_key_id",
+    "profile_signature",
+}
 
 
 def _opensandbox_governed_runtime_subject(runtime_identity: str, runtime_subject: str) -> str:
@@ -1073,6 +1099,7 @@ class OpenSandboxExternalEgressCapability:
             "user_id": request.user_id,
             "session_id": request.session_id,
             "run_id": request.run_id,
+            "attempt_id": request.attempt_id,
             "image_subject": self.requested_image,
             "image_digest": self.requested_image_digest,
             "authorized_skill_scope": governed_egress_authorized_skill_scope(
@@ -1336,6 +1363,23 @@ def _validate_opensandbox_external_egress_profile(
 ) -> OpenSandboxExternalEgressCapability:
     if not isinstance(profile, dict):
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile is malformed") from None
+    if set(profile) != _OPENSANDBOX_CAPABILITY_PROFILE_FIELDS:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile shape is invalid") from None
+    proof_key_id = _required_capability_value(profile.get("proof_key_id"), field="proof_key_id")
+    if proof_key_id != _governed_egress_proof_key_id(settings):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile proof key mismatch") from None
+    signature = profile.get("profile_signature")
+    signing_key = str(getattr(settings, "sandbox_egress_proof_signing_key", "") or "")
+    if not has_governed_egress_signing_key(signing_key) or not isinstance(signature, str) or re.fullmatch(r"[0-9a-f]{64}", signature) is None:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile signature is invalid") from None
+    unsigned = {key: value for key, value in profile.items() if key != "profile_signature"}
+    expected_signature = hmac.new(
+        signing_key.encode("utf-8"),
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile signature is invalid") from None
     if profile.get("schema_version") != OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_SCHEMA_VERSION:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile schema is unsupported") from None
     if profile.get("provider") != "opensandbox":
@@ -1452,6 +1496,7 @@ def _platform_metadata(request: SandboxRuntimeRequest) -> dict[str, str]:
         "ai-platform.user_id": request.user_id,
         "ai-platform.session_id": request.session_id,
         "ai-platform.run_id": request.run_id,
+        "ai-platform.attempt_id": request.attempt_id,
         "ai-platform.sandbox_mode": request.sandbox_mode,
         "ai-platform.browser_enabled": "true" if request.browser_enabled else "false",
     }
@@ -1630,9 +1675,14 @@ def _opensandbox_status_from_info(info: Any) -> ContainerStatus | None:
         sandbox_mode = None
     sandbox_id = _opensandbox_id(info)
     run_id = metadata.get("ai-platform.run_id")
+    attempt_id = metadata.get("ai-platform.attempt_id")
     return ContainerStatus(
         container_id=sandbox_id,
-        container_name=f"opensandbox-{run_id or sandbox_id}",
+        container_name=(
+            _opensandbox_container_name(run_id, attempt_id)
+            if run_id and attempt_id
+            else f"opensandbox-{sandbox_id}"
+        ),
         provider="opensandbox",
         status=_opensandbox_status_from_state(_opensandbox_state(info)),
         tenant_id=metadata.get("ai-platform.tenant_id"),
@@ -1715,6 +1765,7 @@ def _opensandbox_cleanup_expected_binding(
             "user_id": lease.user_id,
             "session_id": lease.session_id,
             "run_id": lease.run_id,
+            "attempt_id": str(labels.get("ai-platform.attempt_id") or ""),
             "image_subject": requested_image,
             "image_digest": requested_image_digest,
             "lease_identity": f"opensandbox:{lease.container_name}:{lease.container_id}",
@@ -2231,6 +2282,7 @@ def _seal_docker_governed_egress_after_readback(
             user_id=request.user_id,
             session_id=request.session_id,
             run_id=request.run_id,
+            attempt_id=request.attempt_id,
             image_subject=admission.lease_labels["ai-platform.executor.requested_image"],
             image_digest=admission.lease_labels["ai-platform.executor.requested_image_digest"],
             authorized_skill_scope=governed_egress_authorized_skill_scope(
@@ -3698,6 +3750,7 @@ class DockerContainerProvider:
                 "user_id": request.user_id,
                 "session_id": request.session_id,
                 "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
                 "image_subject": lease.labels.get("ai-platform.executor.requested_image", ""),
                 "image_digest": lease.labels.get("ai-platform.executor.requested_image_digest", ""),
                 "authorized_skill_scope": governed_egress_authorized_skill_scope(
@@ -3918,6 +3971,25 @@ def _load_opensandbox_symbols() -> dict[str, Any]:
     }
 
 
+def _opensandbox_cache_key(run_id: str, attempt_id: str) -> tuple[str, str]:
+    """Return the exact in-process identity of one OpenSandbox execution attempt."""
+
+    return run_id, attempt_id
+
+
+def _opensandbox_container_name(run_id: str, attempt_id: str) -> str:
+    """Return the attestation-compatible local name for one exact attempt."""
+
+    return f"opensandbox-{run_id}-{attempt_id}"
+
+
+def _opensandbox_cache_key_for_lease(lease: ContainerLease) -> tuple[str, str] | None:
+    attempt_id = lease.labels.get("ai-platform.attempt_id")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        return None
+    return _opensandbox_cache_key(lease.run_id, attempt_id)
+
+
 class OpenSandboxContainerProvider:
     """ContainerProvider implementation backed by the OpenSandbox API/SDK."""
 
@@ -3956,7 +4028,7 @@ class OpenSandboxContainerProvider:
         self._utcnow = utcnow or _utcnow
         self._monotonic = monotonic or time.monotonic
         self._sandboxes: dict[str, Any] = {}
-        self._leases: dict[str, ContainerLease] = {}
+        self._leases: dict[tuple[str, str], ContainerLease] = {}
 
     def _ensure_symbols(self) -> None:
         if self._sandbox_class is not None:
@@ -4015,6 +4087,61 @@ class OpenSandboxContainerProvider:
         if close is not None:
             await _maybe_await(close())
 
+    @staticmethod
+    def _pagination_value(pagination: Any, snake_name: str, camel_name: str) -> Any:
+        if isinstance(pagination, dict):
+            return pagination.get(snake_name, pagination.get(camel_name))
+        return getattr(pagination, snake_name, None)
+
+    async def _list_all_sandbox_infos(self, manager: Any, metadata_filter: dict[str, str]) -> list[Any]:
+        """Exhaust the real SDK page contract with strict bounded progress guards."""
+
+        if not (hasattr(manager, "list_sandbox_infos") and self._sandbox_filter_class is not None):
+            infos = list(await _maybe_await(manager.list_sandboxes(metadata=metadata_filter)) or [])
+            if len(infos) > 10000:
+                raise ContainerStartFailedError("OpenSandbox inventory exceeded bounded pages")
+            seen: set[str] = set()
+            for info in infos:
+                status = _opensandbox_status_from_info(info)
+                if status is None or status.container_id in seen:
+                    raise ContainerStartFailedError("OpenSandbox inventory pagination is ambiguous")
+                seen.add(status.container_id)
+            return infos
+        collected: list[Any] = []
+        seen: set[str] = set()
+        for page in range(1, 101):
+            paged = await _maybe_await(
+                manager.list_sandbox_infos(
+                    self._sandbox_filter_class(metadata=metadata_filter, page=page, page_size=100)
+                )
+            )
+            infos = getattr(paged, "sandbox_infos", None)
+            pagination = getattr(paged, "pagination", None)
+            if isinstance(paged, dict):
+                infos = paged.get("sandbox_infos")
+                pagination = paged.get("pagination")
+            actual_page = self._pagination_value(pagination, "page", "page")
+            actual_size = self._pagination_value(pagination, "page_size", "pageSize")
+            has_next = self._pagination_value(pagination, "has_next_page", "hasNextPage")
+            if (
+                not isinstance(infos, list)
+                or type(actual_page) is not int
+                or actual_page != page
+                or type(actual_size) is not int
+                or actual_size != 100
+                or type(has_next) is not bool
+            ):
+                raise ContainerStartFailedError("OpenSandbox inventory pagination is ambiguous")
+            for info in infos:
+                status = _opensandbox_status_from_info(info)
+                if status is None or status.container_id in seen:
+                    raise ContainerStartFailedError("OpenSandbox inventory pagination is ambiguous")
+                seen.add(status.container_id)
+                collected.append(info)
+            if not has_next:
+                return collected
+        raise ContainerStartFailedError("OpenSandbox inventory exceeded bounded pages")
+
     async def _write_and_verify_sentinel(
         self,
         sandbox: Any,
@@ -4030,6 +4157,7 @@ class OpenSandboxContainerProvider:
                 "user_id": request.user_id,
                 "session_id": request.session_id,
                 "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
             },
             sort_keys=True,
         )
@@ -4097,7 +4225,7 @@ class OpenSandboxContainerProvider:
             return
         lease = ContainerLease(
             container_id=sandbox_id,
-            container_name=f"opensandbox-{request.run_id}",
+            container_name=_opensandbox_container_name(request.run_id, request.attempt_id),
             provider="opensandbox",
             executor_url="",
             executor_headers=_executor_auth_headers(executor_auth_token),
@@ -4113,7 +4241,7 @@ class OpenSandboxContainerProvider:
             labels=_provider_lease_labels(metadata),
         )
         self._sandboxes[sandbox_id] = sandbox
-        self._leases[f"opensandbox-{request.run_id}"] = lease
+        self._leases[_opensandbox_cache_key(request.run_id, request.attempt_id)] = lease
 
     async def _cleanup_new_sandbox_or_track(
         self,
@@ -4139,7 +4267,7 @@ class OpenSandboxContainerProvider:
     async def _cleanup_cached_lease_after_capability_rejection(self, request: SandboxRuntimeRequest) -> None:
         """Remove a tracked lease when its next admission profile has drifted or expired."""
 
-        cache_key = f"opensandbox-{request.run_id}"
+        cache_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
         cached = self._leases.get(cache_key)
         if cached is None:
             return
@@ -4196,14 +4324,15 @@ class OpenSandboxContainerProvider:
             await self._cleanup_cached_lease_after_capability_rejection(request)
             raise
         skill_mount = _prepare_trusted_skill_mount(request, workspace)
-        cached = self._leases.get(f"opensandbox-{request.run_id}")
+        cache_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
+        cached = self._leases.get(cache_key)
         if cached is not None and cached.container_id in self._sandboxes:
             sandbox = self._sandboxes[cached.container_id]
             if not _lease_matches_request_workspace(cached, request, workspace):
                 if not await self._cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed")
                 self._sandboxes.pop(cached.container_id, None)
-                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                self._leases.pop(cache_key, None)
                 raise ContainerStartFailedError("cached lease scope mismatch")
             try:
                 info = await _maybe_await(sandbox.get_info())
@@ -4301,19 +4430,19 @@ class OpenSandboxContainerProvider:
                 if not await self._cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
-                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                self._leases.pop(cache_key, None)
                 raise
             except OpenSandboxCapabilityAdmissionError as exc:
                 if not await self._cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
-                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                self._leases.pop(cache_key, None)
                 raise
             except Exception as exc:
                 if not await self._cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
-                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                self._leases.pop(cache_key, None)
                 if isinstance(exc, ContainerStartFailedError):
                     raise
                 raise ContainerStartFailedError("executor identity unavailable") from exc
@@ -4326,7 +4455,7 @@ class OpenSandboxContainerProvider:
                 if not await self._cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
-                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                self._leases.pop(cache_key, None)
                 raise
             return cached
 
@@ -4340,6 +4469,7 @@ class OpenSandboxContainerProvider:
                 "user_id": request.user_id,
                 "session_id": request.session_id,
                 "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
             }
         )
         if remote_statuses:
@@ -4465,7 +4595,7 @@ class OpenSandboxContainerProvider:
 
         lease = ContainerLease(
             container_id=sandbox_id,
-            container_name=f"opensandbox-{request.run_id}",
+            container_name=_opensandbox_container_name(request.run_id, request.attempt_id),
             provider="opensandbox",
             executor_url=executor_url,
             executor_headers=_executor_auth_headers(executor_auth_token, executor_headers),
@@ -4484,7 +4614,7 @@ class OpenSandboxContainerProvider:
                     request,
                     capability,
                     skill_mount,
-                    lease_identity=f"opensandbox:opensandbox-{request.run_id}:{sandbox_id}",
+                    lease_identity=f"opensandbox:{_opensandbox_container_name(request.run_id, request.attempt_id)}:{sandbox_id}",
                     now=self._utcnow(),
                 )
             ),
@@ -4509,7 +4639,7 @@ class OpenSandboxContainerProvider:
                 raise cleanup_exc from exc
             raise
         self._sandboxes[lease.container_id] = sandbox
-        self._leases[f"opensandbox-{request.run_id}"] = lease
+        self._leases[cache_key] = lease
         return lease
 
     async def validate_for_dispatch(
@@ -4571,12 +4701,32 @@ class OpenSandboxContainerProvider:
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         settings = get_settings()
+        cache_key = _opensandbox_cache_key_for_lease(lease)
+        tracked_keys = [
+            key
+            for key, tracked in self._leases.items()
+            if tracked.container_id == lease.container_id and tracked.run_id == lease.run_id
+        ]
+        if len(tracked_keys) == 1:
+            if cache_key is not None and cache_key != tracked_keys[0]:
+                return StopResult(
+                    container_id=lease.container_id,
+                    status="failed",
+                    message="OpenSandbox sandbox stop failed",
+                )
+            cache_key = tracked_keys[0]
+        elif tracked_keys or cache_key is None:
+            return StopResult(
+                container_id=lease.container_id,
+                status="failed",
+                message="OpenSandbox sandbox stop failed",
+            )
         sandbox = self._sandboxes.get(lease.container_id)
         if sandbox is None:
             try:
                 connection_config = self._connection_config(settings)
             except Exception:
-                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                self._leases.setdefault(cache_key, lease)
                 return StopResult(
                     container_id=lease.container_id,
                     status="failed",
@@ -4590,10 +4740,10 @@ class OpenSandboxContainerProvider:
                 )
             except Exception as exc:
                 if _is_authoritative_opensandbox_not_found_error(exc):
-                    self._leases.pop(f"opensandbox-{lease.run_id}", None)
+                    self._leases.pop(cache_key, None)
                     self._sandboxes.pop(lease.container_id, None)
                     return StopResult(container_id=lease.container_id, status="not_found", message=reason)
-                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                self._leases.setdefault(cache_key, lease)
                 return StopResult(
                     container_id=lease.container_id,
                     status="failed",
@@ -4619,7 +4769,7 @@ class OpenSandboxContainerProvider:
                     now=self._utcnow(),
                 )
             ):
-                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                self._leases.setdefault(cache_key, lease)
                 self._sandboxes[lease.container_id] = sandbox
                 return StopResult(
                     container_id=lease.container_id,
@@ -4633,19 +4783,19 @@ class OpenSandboxContainerProvider:
                 )
             except Exception as exc:
                 if _is_authoritative_opensandbox_not_found_error(exc):
-                    self._leases.pop(f"opensandbox-{lease.run_id}", None)
+                    self._leases.pop(cache_key, None)
                     self._sandboxes.pop(lease.container_id, None)
                     return StopResult(container_id=lease.container_id, status="not_found", message=reason)
                 raise
             if not cleanup_confirmed:
-                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                self._leases.setdefault(cache_key, lease)
                 self._sandboxes[lease.container_id] = sandbox
                 return StopResult(container_id=lease.container_id, status="failed", message="OpenSandbox sandbox stop failed")
         except Exception:
-            self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+            self._leases.setdefault(cache_key, lease)
             self._sandboxes[lease.container_id] = sandbox
             return StopResult(container_id=lease.container_id, status="failed", message="OpenSandbox sandbox stop failed")
-        self._leases.pop(f"opensandbox-{lease.run_id}", None)
+        self._leases.pop(cache_key, None)
         self._sandboxes.pop(lease.container_id, None)
         return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
@@ -4656,20 +4806,10 @@ class OpenSandboxContainerProvider:
             metadata_filter = {
                 f"ai-platform.{key}": value
                 for key, value in filters.items()
-                if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "sandbox_mode"}
+                if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id", "sandbox_mode"}
             }
             metadata_filter["ai-platform.owner"] = "sandbox-runtime"
-            if hasattr(manager, "list_sandbox_infos") and self._sandbox_filter_class is not None:
-                paged = await _maybe_await(
-                    manager.list_sandbox_infos(
-                        self._sandbox_filter_class(metadata=metadata_filter, page_size=100)
-                    )
-                )
-                infos = getattr(paged, "sandbox_infos", None)
-                if infos is None and isinstance(paged, dict):
-                    infos = paged.get("sandbox_infos")
-            else:
-                infos = await _maybe_await(manager.list_sandboxes(metadata=metadata_filter))
+            infos = await self._list_all_sandbox_infos(manager, metadata_filter)
             statuses = [
                 status
                 for info in (infos or [])
@@ -4684,31 +4824,24 @@ class OpenSandboxContainerProvider:
             return await self._list_remote_statuses(filters)
         except OpenSandboxUnavailableError:
             raise
-        except Exception:
-            statuses = [_status_from_lease(lease, status="running") for lease in self._leases.values()]
-            return [status for status in statuses if _matches_filters(status, filters)]
+        except ContainerStartFailedError:
+            raise
+        except Exception as exc:
+            raise ContainerStartFailedError("OpenSandbox inventory failed") from exc
 
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
+        if not all(isinstance(filters.get(key), str) and filters[key] for key in ("tenant_id", "attempt_id")):
+            raise ContainerCleanupFailedError("OpenSandbox cleanup requires exact tenant and attempt scope")
         settings = get_settings()
         manager = await self._manager(self._connection_config(settings))
         try:
             metadata_filter = {
                 f"ai-platform.{key}": value
                 for key, value in filters.items()
-                if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "sandbox_mode"}
+                if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id", "sandbox_mode"}
             }
             metadata_filter["ai-platform.owner"] = "sandbox-runtime"
-            if hasattr(manager, "list_sandbox_infos") and self._sandbox_filter_class is not None:
-                paged = await _maybe_await(
-                    manager.list_sandbox_infos(
-                        self._sandbox_filter_class(metadata=metadata_filter, page_size=100)
-                    )
-                )
-                infos = getattr(paged, "sandbox_infos", None)
-                if infos is None and isinstance(paged, dict):
-                    infos = paged.get("sandbox_infos")
-            else:
-                infos = await _maybe_await(manager.list_sandboxes(metadata=metadata_filter))
+            infos = await self._list_all_sandbox_infos(manager, metadata_filter)
             results: list[StopResult] = []
             for info in infos or []:
                 status = _opensandbox_status_from_info(info)

@@ -69,6 +69,7 @@ async def test_worker_submit_monitor_preserves_normal_terminal_result():
         user_id="user-a",
         session_id="session-a",
         run_id="run-a",
+        attempt_id="qat-test-attempt",
         agent_id="general-agent",
         skill_id="general-chat",
         file_ids=[],
@@ -94,6 +95,78 @@ async def test_worker_submit_monitor_preserves_normal_terminal_result():
 
     assert result.status == "succeeded"
     assert cancel_checks <= 1
+
+
+@pytest.mark.asyncio
+async def test_worker_submit_monitor_external_cancellation_stops_registered_owner():
+    started = asyncio.Event()
+    calls: list[tuple[str, str] | tuple[str]] = []
+
+    class OwnedAdapter:
+        async def submit_run(self, payload, event_sink=None, execution_owner=None):
+            async def stop_remote(reason: str):
+                calls.append(("stop", reason))
+                return True
+
+            execution_owner.register_stop(stop_remote)
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                calls.append(("adapter_cancelled",))
+                raise
+
+    skill_version = "hash-general-chat"
+    payload = RunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="qat-test-attempt",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        file_ids=[],
+        input={},
+        skill_version=skill_version,
+        release_decision=release_decision(skill_version),
+        skill_manifests=[primary_manifest("general-chat", skill_version)],
+    )
+
+    task = asyncio.create_task(
+        worker_module._submit_run_until_cancelled(
+            OwnedAdapter(),
+            payload,
+            event_sink=None,
+            cancel_requested=lambda: _async_false(),
+            poll_interval_seconds=0.01,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert calls == [("stop", "worker_interrupted"), ("adapter_cancelled",)]
+
+
+async def _async_false() -> bool:
+    return False
+
+
+def test_authoritative_leased_envelope_extracts_attempt_before_extra_forbid():
+    raw = base_payload()
+    raw["_queue_attempt_id"] = "qat-test-attempt"
+
+    envelope = worker_module.parse_leased_queue_envelope(raw)
+
+    assert envelope.attempt_id == "qat-test-attempt"
+    assert envelope.payload.run_id == "run-a"
+    assert "_queue_attempt_id" not in envelope.payload.model_dump()
+    with pytest.raises(worker_module.InvalidLeasedQueueEnvelope):
+        worker_module.parse_leased_queue_envelope({key: value for key, value in raw.items() if key != "_queue_attempt_id"})
+    with pytest.raises(worker_module.InvalidLeasedQueueEnvelope):
+        worker_module.parse_leased_queue_envelope({**raw, "_queue_attempt_id": ""})
 
 
 @pytest.mark.asyncio
@@ -233,6 +306,7 @@ async def test_worker_submit_monitor_emits_truthful_silent_progress_without_assi
         user_id="user-a",
         session_id="session-a",
         run_id="run-a",
+        attempt_id="qat-test-attempt",
         agent_id="general-agent",
         skill_id="general-chat",
         file_ids=[],
@@ -317,6 +391,7 @@ def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile
     )
     payload = parse_queue_payload(
         base_payload(
+            _leased=False,
             skill_id="native-review",
             skill_version="hash-native",
             skill_manifests=[
@@ -384,6 +459,7 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
     )
     payload = parse_queue_payload(
         base_payload(
+            _leased=False,
             skill_id="general-chat",
             skill_version="hash-general",
             skill_manifests=[primary],
@@ -418,6 +494,7 @@ def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
     dependency["builtin_tool_identities"] = ["Bash", "Write"]
     payload = parse_queue_payload(
         base_payload(
+            _leased=False,
             skill_id="native-review",
             skill_version="hash-native",
             skill_manifests=[manifest, dependency],
@@ -899,6 +976,7 @@ async def test_non_pending_step_event_clears_checkpoint_reuse_pending(monkeypatc
 
 
 def base_payload(**overrides):
+    leased = overrides.pop("_leased", True)
     skill_id = overrides.get("skill_id", "qa-file-reviewer")
     default_version = f"hash-{skill_id}"
     payload = {
@@ -925,6 +1003,8 @@ def base_payload(**overrides):
             "memory_record_count": 0,
         },
     }
+    if leased:
+        payload["_queue_attempt_id"] = "qat-test-attempt"
     payload.update(overrides)
     manifests = payload.get("skill_manifests") or []
     if "skill_version" not in overrides:
@@ -940,7 +1020,7 @@ def base_payload(**overrides):
 
 def test_worker_propagates_exact_authorized_mcp_subject_without_permission_lookup_or_consume():
     payload = QueueRunPayload.model_validate(
-        base_payload(input={"mode": "file", "mcp_tool_ids": ["corp-search"]})
+        {key: value for key, value in base_payload(input={"mode": "file", "mcp_tool_ids": ["corp-search"]}).items() if key != "_queue_attempt_id"}
     )
     tool = {
         "tool_id": "corp-search",
@@ -1048,7 +1128,9 @@ async def test_registry_entry_returns_tenant_scoped_external_mcp_runtime_metadat
 
 
 def locked_run_from_payload(payload):
-    validated = QueueRunPayload.model_validate(payload).model_dump(mode="json")
+    validated = QueueRunPayload.model_validate(
+        {key: value for key, value in payload.items() if key != "_queue_attempt_id"}
+    ).model_dump(mode="json")
     return {
         "id": validated["run_id"],
         "tenant_id": validated["tenant_id"],
@@ -1666,7 +1748,7 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
 
     class CaptureAdapter:
         async def submit_run(self, payload, event_sink=None):
-            calls.append(("model", payload.model_id, payload.model_value))
+            calls.append(("model", payload.model_id, payload.model_value, payload.attempt_id))
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="capture/1",
@@ -1702,7 +1784,7 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
     )
 
     assert outcome.status == "succeeded"
-    assert calls == [("model", "pro-tier", "deepseek-v4-pro")]
+    assert calls == [("model", "pro-tier", "deepseek-v4-pro", "qat-test-attempt")]
 
 
 @pytest.mark.asyncio
@@ -5153,7 +5235,10 @@ async def test_worker_rejects_bad_queue_payload_without_touching_database(monkey
 
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
 
-    outcome = await process_run_payload({"run_id": "../bad"}, AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(
+        {"run_id": "../bad", "_queue_attempt_id": "qat-test-attempt"},
+        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+    )
 
     assert outcome.status == "dead_letter"
     assert outcome.error_code == "invalid_queue_payload"

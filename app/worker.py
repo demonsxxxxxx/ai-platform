@@ -44,6 +44,7 @@ from app.principal_authority import (
     PrincipalAuthorityDenied,
     resolve_current_principal,
 )
+from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.skills.catalog import (
     AuthorizedSkillCatalogBinding,
@@ -57,7 +58,7 @@ from app.skills.execution_profiles import canonical_skill_execution_profile
 from app.settings import get_settings
 from app.tool_policy import evaluate_tool_policy
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
-from app.validation import SAFE_ID_PATTERN
+from app.validation import SAFE_ID_PATTERN, assert_safe_id
 
 
 class _WorkerClock:
@@ -256,6 +257,33 @@ def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
 
 def parse_queue_payload(raw: dict[str, Any]) -> QueueRunPayload:
     return QueueRunPayload.model_validate(raw)
+
+
+class InvalidLeasedQueueEnvelope(ValueError):
+    """The queue-private lease identity is missing or cannot be trusted."""
+
+
+@dataclass(frozen=True)
+class LeasedQueueEnvelope:
+    """Validated business payload paired with its immutable queue attempt."""
+
+    payload: QueueRunPayload
+    attempt_id: str
+
+
+def parse_leased_queue_envelope(raw: dict[str, Any]) -> LeasedQueueEnvelope:
+    """Validate queue authority before removing its private attempt field."""
+
+    attempt_id = raw.get(QUEUE_ATTEMPT_ID_FIELD)
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise InvalidLeasedQueueEnvelope("Queue lease attempt identity is required.")
+    try:
+        assert_safe_id(attempt_id, "attempt_id")
+    except ValueError as exc:
+        raise InvalidLeasedQueueEnvelope("Queue lease attempt identity is invalid.") from exc
+    parseable_raw = dict(raw)
+    parseable_raw.pop(QUEUE_ATTEMPT_ID_FIELD)
+    return LeasedQueueEnvelope(payload=parse_queue_payload(parseable_raw), attempt_id=attempt_id)
 
 
 async def _reconcile_multi_agent_child_terminal_state(
@@ -2134,7 +2162,14 @@ async def process_run_payload(
     worker_id: str | None = None,
 ) -> WorkerOutcome:
     try:
-        payload = parse_queue_payload(raw)
+        envelope = parse_leased_queue_envelope(raw)
+    except InvalidLeasedQueueEnvelope as exc:
+        return WorkerOutcome(
+            status="dead_letter",
+            run_id=None,
+            error_code="invalid_queue_attempt",
+            error_message=str(exc),
+        )
     except ValidationError as exc:
         return WorkerOutcome(
             status="dead_letter",
@@ -2142,6 +2177,8 @@ async def process_run_payload(
             error_code="invalid_queue_payload",
             error_message=str(exc),
         )
+    payload = envelope.payload
+    attempt_id = envelope.attempt_id
     trace_id = standard_trace_id(payload.run_id)
 
     adapter_registry = registry if registry is not None else AdapterRegistry()
@@ -2516,6 +2553,7 @@ async def process_run_payload(
         user_id=run_identity["user_id"],
         session_id=run_identity["session_id"],
         run_id=run_identity["run_id"],
+        attempt_id=attempt_id,
         agent_id=run_identity["agent_id"],
         skill_id=run_identity["skill_id"],
         file_ids=payload.file_ids,
