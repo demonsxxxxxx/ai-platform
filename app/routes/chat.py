@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from typing import Any
 from uuid import UUID
@@ -13,6 +14,10 @@ from starlette.responses import PlainTextResponse
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.capability_distribution import (
+    CapabilityAccessDecision,
+    CapabilityAuthorizationDenial,
+)
 from app.context_builder import record_initial_context_snapshot
 from app.db import transaction
 from app.intent_router import FileSummary, fallback_to_general_chat, route_intent
@@ -113,6 +118,69 @@ def _submission_code(detail: object, fallback: str = "chat_submission_rejected")
     if isinstance(detail, str) and detail:
         return detail
     return fallback
+
+
+def _rejected_mcp_selector_identity_digest(tool_ids: list[str] | None) -> str:
+    """Digest the canonical selector identity without retaining rejected tool IDs."""
+
+    state = "omitted" if tool_ids is None else "clear" if not tool_ids else "explicit"
+    digest = hashlib.sha256()
+    digest.update(b"ai-platform.chat-rejected-mcp-selector.v1\x00")
+    digest.update(state.encode("ascii"))
+    digest.update(b"\x00")
+    for tool_id in sorted(item.strip() for item in (tool_ids or [])):
+        encoded_tool_id = tool_id.encode("utf-8")
+        digest.update(len(encoded_tool_id).to_bytes(8, "big"))
+        digest.update(encoded_tool_id)
+    return digest.hexdigest()
+
+
+def _canonical_pre_persistence_rejection_fingerprint(
+    *,
+    request: ChatStreamRequest,
+    principal: AuthPrincipal,
+    query_agent_id: str | None,
+    code: str,
+) -> str:
+    """Fingerprint a rejection without retaining rejected selectors or private input."""
+
+    selected_mcp_tool_ids = request.selected_mcp_tool_ids
+    selected_mcp_state = (
+        "omitted"
+        if selected_mcp_tool_ids is None
+        else "clear"
+        if not selected_mcp_tool_ids
+        else "explicit"
+    )
+    canonical_rejection = {
+        "schema": "ai-platform.chat-rejection-fingerprint.v2",
+        "code": code,
+        "message_sha256": hashlib.sha256(request.message.encode("utf-8")).hexdigest(),
+        "workspace_id": request.workspace_id,
+        "session_id": request.session_id,
+        "query_agent_present": query_agent_id is not None,
+        "agent_selector_present": request.agent_id is not None,
+        "raw_skill_selector_present": request.skill_id is not None,
+        "selected_skill_present": request.selected_skill is not None,
+        "model_selector_present": bool(
+            isinstance(request.agent_options, dict)
+            and request.agent_options.get("model_id") is not None
+        ),
+        "selected_mcp_state": selected_mcp_state,
+        "selected_mcp_count": len(selected_mcp_tool_ids or []),
+        "selected_mcp_identity_sha256": _rejected_mcp_selector_identity_digest(
+            selected_mcp_tool_ids
+        ),
+        "legacy_mcp_selector_present": _has_legacy_client_mcp_selector(request.input),
+        "input_keys": sorted(str(key) for key in request.input),
+        "attachment_count": len(request.attachments),
+        "file_count": len(request.file_ids),
+    }
+    return repositories.chat_submission_fingerprint(
+        {"rejection": canonical_rejection},
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+    )
 
 
 def _chat_stream_response_from_submission(row: dict[str, Any]) -> ChatStreamResponse:
@@ -278,8 +346,18 @@ async def _persist_pre_persistence_rejection(
             workspace_id=effective_workspace_id,
             request_fingerprint_sha256=request_fingerprint,
         )
+        if not created and _is_preledger_recovery_tombstone(row, principal=principal):
+            raise _chat_submission_http_error(
+                status_code=409,
+                code=_PRELEDGER_RECOVERY_REJECTION_CODE,
+            )
         if not created and row.get("request_fingerprint_sha256") != request_fingerprint:
-            return
+            raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+        if not created and row.get("state") == "rejected_before_persist":
+            raise _chat_submission_http_error(
+                status_code=409,
+                code=str(row.get("rejection_code") or "chat_submission_rejected"),
+            )
         if created or row.get("state") == "resolving":
             await repositories.finalize_chat_submission(
                 conn,
@@ -526,12 +604,33 @@ async def _audit_capability_denial(
 ) -> None:
     if error.denial is None:
         return
+    audit_error = error
+    denial = error.denial
+    if denial.capability_kind == "mcp_tool":
+        digest = hashlib.sha256()
+        digest.update(b"ai-platform.chat-mcp-denial-audit.v1\x00")
+        digest.update(denial.capability_id.encode("utf-8"))
+        public_capability_id = f"mcp_tool_sha256:{digest.hexdigest()}"
+        audit_error = repositories.RepositoryAuthorizationError(
+            str(error),
+            denial=CapabilityAuthorizationDenial(
+                capability_kind=denial.capability_kind,
+                capability_id=public_capability_id,
+                actor_department_id=denial.actor_department_id,
+                actor_roles=denial.actor_roles,
+                department_scope_ids=denial.department_scope_ids,
+                role_scope_ids=denial.role_scope_ids,
+                scope_mode=denial.scope_mode,
+                decision_reason=denial.decision_reason,
+                admin_bypass=denial.admin_bypass,
+            ),
+        )
     async with transaction() as conn:
         await repositories.append_capability_authorization_denial_audit(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
-            error=error,
+            error=audit_error,
             source=source,
         )
 
@@ -625,6 +724,21 @@ def _file_ids_from_request(request: ChatStreamRequest) -> list[str]:
         if isinstance(value, str) and value.startswith("file_"):
             file_ids.append(value)
     return file_ids
+
+
+def _has_legacy_client_mcp_selector(value: object) -> bool:
+    """Reject client-owned nested MCP selectors; Chat accepts the structured field only."""
+
+    if not isinstance(value, dict):
+        return False
+    if "mcp_tool_ids" in value or "mcpToolIds" in value:
+        return True
+    steps = value.get("multi_agent_steps")
+    return isinstance(steps, list) and any(
+        isinstance(step, dict)
+        and ("mcp_tool_ids" in step or "mcpToolIds" in step)
+        for step in steps
+    )
 
 
 def _requested_model_selection(request: ChatStreamRequest) -> dict[str, str] | None:
@@ -948,20 +1062,15 @@ async def chat_stream(
         raise HTTPException(status_code=400, detail="invalid_principal_user_id") from exc
     query_agent_id = _normalized_query_agent_id(agent_id)
     submission_id = str(request.submission_id) if request.submission_id is not None else None
-    request_fingerprint = (
-        repositories.chat_submission_fingerprint(
-            {
-                "request": request.model_dump(mode="json", exclude={"submission_id"}),
-                "query_agent_id": query_agent_id,
-            },
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-        )
-        if submission_id is not None
-        else None
-    )
+    request_fingerprint = None
     requested_agent_id = request.agent_id or query_agent_id or "general-agent"
     if request.skill_id and not is_ai_admin(principal):
+        request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+            request=request,
+            principal=principal,
+            query_agent_id=query_agent_id,
+            code="raw_skill_selector_forbidden",
+        )
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -975,6 +1084,12 @@ async def chat_stream(
         raise HTTPException(status_code=403, detail="raw_skill_selector_forbidden")
     requested_skill_id = request.skill_id if is_ai_admin(principal) else None
     if request.selected_skill is not None and request.skill_id:
+        request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+            request=request,
+            principal=principal,
+            query_agent_id=query_agent_id,
+            code="skill_selector_conflict",
+        )
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -997,6 +1112,12 @@ async def chat_stream(
         requested_model_selection = _requested_model_selection(request)
     except HTTPException as exc:
         code = _submission_code(exc.detail)
+        request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+            request=request,
+            principal=principal,
+            query_agent_id=query_agent_id,
+            code=code,
+        )
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -1011,24 +1132,102 @@ async def chat_stream(
     requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
     requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
     resolved_file_ids = _file_ids_from_request(request)
-    try:
-        run_input = _strip_server_owned_control_metadata(
-            {"message": request.message, **request.input},
-            redact_public=not is_ai_admin(principal),
+    if _has_legacy_client_mcp_selector(request.input):
+        code = "selected_mcp_tool_ids_required"
+        request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+            request=request,
+            principal=principal,
+            query_agent_id=query_agent_id,
+            code=code,
         )
-    except repositories.RepositoryAuthorizationError as exc:
-        await _audit_capability_denial(principal, exc, source="chat_stream")
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request_fingerprint=request_fingerprint,
             workspace_id=request.workspace_id,
             session_id=request.session_id,
-            code="capability_not_authorized",
+            code=code,
         )
         if submission_id is not None:
-            raise _chat_submission_http_error(status_code=403, code="capability_not_authorized") from exc
-        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+            raise _chat_submission_http_error(status_code=400, code=code)
+        raise HTTPException(status_code=400, detail=code)
+    try:
+        run_input = _strip_server_owned_control_metadata(
+            {"message": request.message, **request.input},
+            redact_public=not is_ai_admin(principal),
+        )
+        if request.selected_mcp_tool_ids is not None:
+            run_input["mcp_tool_ids"] = list(request.selected_mcp_tool_ids)
+    except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="chat_stream")
+        denial = getattr(exc, "denial", None)
+        error_code = (
+            "mcp_tool_not_available"
+            if denial is not None and denial.capability_kind == "mcp_tool"
+            else "capability_not_authorized"
+        )
+        request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+            request=request,
+            principal=principal,
+            query_agent_id=query_agent_id,
+            code=error_code,
+        )
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request_fingerprint=request_fingerprint,
+            workspace_id=request.workspace_id,
+            session_id=request.session_id,
+            code=error_code,
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=403, code=error_code) from exc
+        raise HTTPException(status_code=403, detail=error_code) from exc
+    if request.selected_mcp_tool_ids is not None:
+        try:
+            async with transaction() as conn:
+                await repositories.authorize_selected_chat_mcp_tools(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    tool_ids=list(request.selected_mcp_tool_ids),
+                    principal_department_id=principal.department_id,
+                    principal_roles=principal.roles,
+                    is_admin=is_ai_admin(principal),
+                    permissions=principal.permissions,
+                )
+        except repositories.RepositoryAuthorizationError as exc:
+            await _audit_capability_denial(principal, exc, source="chat_stream")
+            request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+                request=request,
+                principal=principal,
+                query_agent_id=query_agent_id,
+                code="mcp_tool_not_available",
+            )
+            await _persist_pre_persistence_rejection(
+                principal=principal,
+                submission_id=submission_id,
+                request_fingerprint=request_fingerprint,
+                workspace_id=request.workspace_id,
+                session_id=request.session_id,
+                code="mcp_tool_not_available",
+            )
+            if submission_id is not None:
+                raise _chat_submission_http_error(
+                    status_code=403,
+                    code="mcp_tool_not_available",
+                ) from exc
+            raise HTTPException(status_code=403, detail="mcp_tool_not_available") from exc
+    if submission_id is not None and (
+        request.session_id is None or request.selected_mcp_tool_ids is not None
+    ):
+        request_fingerprint = repositories.chat_submission_fingerprint(
+            {
+                "request": request.model_dump(mode="json", exclude={"submission_id"}),
+                "query_agent_id": query_agent_id,
+            },
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+        )
     existing_submission = await _load_existing_chat_submission(
         principal=principal,
         submission_id=submission_id,
@@ -1039,9 +1238,10 @@ async def chat_stream(
     pending_submission_response: ChatStreamResponse | None = None
     locked_skill_label: str | None = None
     effective_workspace_id = request.workspace_id
+    inherited_mcp_selection = False
     try:
         async with transaction() as conn:
-            if submission_id is not None and request_fingerprint is not None:
+            if submission_id is not None:
                 await repositories.ensure_submission_principal(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -1049,6 +1249,9 @@ async def chat_stream(
                     display_name=principal.display_name,
                 )
             continuation_session = None
+            continuation_prior_runs: list[dict[str, Any]] = []
+            continuation_latest_input_json: dict[str, Any] | None = None
+            admission_lock_acquired = False
             preserve_continuation_skill = bool(
                 request.session_id
                 and request.selected_skill is None
@@ -1080,6 +1283,85 @@ async def chat_stream(
                 # or switch the session to another agent.
                 requested_agent_id = str(continuation_session["agent_id"])
 
+            requires_locked_continuation = bool(
+                request.session_id
+                and (
+                    preserve_continuation_skill
+                    or request.selected_mcp_tool_ids is None
+                )
+            )
+            if requires_locked_continuation:
+                # Preserve the repository-wide lock order while binding the
+                # inherited selection and later run generation to one locked
+                # continuation fact.
+                await repositories.acquire_user_active_run_admission_lock(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                )
+                admission_lock_acquired = True
+                locked_continuation_session = await repositories.get_authorized_session(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    session_id=request.session_id,
+                    workspace_id=effective_workspace_id,
+                    for_update=True,
+                )
+                if locked_continuation_session is None:
+                    raise HTTPException(status_code=404, detail="session_not_found")
+                continuation_session = locked_continuation_session
+                requested_agent_id = str(continuation_session["agent_id"])
+                if request.selected_mcp_tool_ids is None:
+                    continuation_latest_input_json = (
+                        await repositories.get_latest_authorized_session_run_input(
+                            conn,
+                            tenant_id=principal.tenant_id,
+                            workspace_id=effective_workspace_id,
+                            user_id=principal.user_id,
+                            session_id=request.session_id,
+                        )
+                    )
+
+            if request.session_id and request.selected_mcp_tool_ids is None:
+                prior_input = (
+                    continuation_latest_input_json.get("input")
+                    if isinstance(continuation_latest_input_json, dict)
+                    else None
+                )
+                if isinstance(prior_input, dict) and "mcp_tool_ids" in prior_input:
+                    run_input["mcp_tool_ids"] = repositories.extract_run_mcp_tool_ids(prior_input)
+                    inherited_mcp_selection = True
+
+            if inherited_mcp_selection:
+                await repositories.authorize_selected_chat_mcp_tools(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    tool_ids=list(run_input.get("mcp_tool_ids") or []),
+                    principal_department_id=principal.department_id,
+                    principal_roles=principal.roles,
+                    is_admin=is_ai_admin(principal),
+                    permissions=principal.permissions,
+                )
+
+            if submission_id is not None:
+                fingerprint_request = request.model_dump(
+                    mode="json",
+                    exclude={"submission_id"},
+                )
+                if request.selected_mcp_tool_ids is None and "mcp_tool_ids" in run_input:
+                    fingerprint_request["selected_mcp_tool_ids"] = list(
+                        run_input.get("mcp_tool_ids") or []
+                    )
+                request_fingerprint = repositories.chat_submission_fingerprint(
+                    {
+                        "request": fingerprint_request,
+                        "query_agent_id": query_agent_id,
+                    },
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                )
+
             if submission_id is not None and request_fingerprint is not None:
                 claimed_submission, created_submission = await repositories.claim_chat_submission(
                     conn,
@@ -1099,33 +1381,15 @@ async def chat_stream(
                         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
                     return _chat_stream_response_from_submission(claimed_submission)
 
-            # One order for explicit and implicit chat creation: acquire the
-            # user admission advisory before any exact continuation-session row
-            # lock. The limit count is deliberately checked only after the
-            # established intent/capability/parameter errors below.
-            await repositories.acquire_user_active_run_admission_lock(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-            )
-
-            if preserve_continuation_skill:
-                # After the idempotency claim proves this is new work, hold the
-                # exact session scope through the prior-Skill read and the
-                # create_run generation allocation below.
-                locked_continuation_session = await repositories.get_authorized_session(
+            if not admission_lock_acquired:
+                await repositories.acquire_user_active_run_admission_lock(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
-                    session_id=request.session_id,
-                    workspace_id=effective_workspace_id,
-                    for_update=True,
                 )
-                if locked_continuation_session is None:
-                    raise HTTPException(status_code=404, detail="session_not_found")
-                continuation_session = locked_continuation_session
-                requested_agent_id = str(continuation_session["agent_id"])
-                prior_runs = await repositories.list_authorized_session_runs(
+
+            if preserve_continuation_skill:
+                continuation_prior_runs = await repositories.list_authorized_session_runs(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
@@ -1134,7 +1398,11 @@ async def chat_stream(
                     limit=1,
                 )
                 prior_skill_id = str(
-                    _row_value(prior_runs[0] if prior_runs else {}, "skill_id") or ""
+                    _row_value(
+                        continuation_prior_runs[0] if continuation_prior_runs else {},
+                        "skill_id",
+                    )
+                    or ""
                 ).strip()
                 requested_skill_id = prior_skill_id or None
 
@@ -1267,6 +1535,26 @@ async def chat_stream(
                 skill = await repositories.authorize_run_capabilities(
                     conn,
                     **authorization_kwargs,
+                )
+            if (
+                repositories.extract_run_mcp_tool_ids(run_input)
+                and str(skill.get("executor_type") or "") != "claude-agent-worker"
+            ):
+                raise repositories.RepositoryAuthorizationError(
+                    "mcp_tool_not_available",
+                    denial=CapabilityAuthorizationDenial.from_decision(
+                        decision=CapabilityAccessDecision(
+                            visible=False,
+                            usable=False,
+                            manageable=False,
+                            admin_bypass=False,
+                            decision_reason="mcp_sandbox_executor_required",
+                        ),
+                        actor_department_id=principal.department_id,
+                        actor_roles=principal.roles,
+                        capability_kind="mcp_tool",
+                        capability_id=repositories.extract_run_mcp_tool_ids(run_input)[0],
+                    ),
                 )
             if "docx" in (skill.get("input_modes") or []) and not resolved_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
@@ -1504,6 +1792,13 @@ async def chat_stream(
                 )
     except HTTPException as exc:
         code = _submission_code(exc.detail)
+        if request_fingerprint is None:
+            request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+                request=request,
+                principal=principal,
+                query_agent_id=query_agent_id,
+                code=code,
+            )
         if 400 <= exc.status_code < 500:
             await _persist_pre_persistence_rejection(
                 principal=principal,
@@ -1518,19 +1813,39 @@ async def chat_stream(
         raise
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
+        denial = getattr(exc, "denial", None)
+        error_code = (
+            "mcp_tool_not_available"
+            if denial is not None and denial.capability_kind == "mcp_tool"
+            else "capability_not_authorized"
+        )
+        if request_fingerprint is None:
+            request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+                request=request,
+                principal=principal,
+                query_agent_id=query_agent_id,
+                code=error_code,
+            )
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request_fingerprint=request_fingerprint,
             workspace_id=effective_workspace_id,
             session_id=request.session_id,
-            code="capability_not_authorized",
+            code=error_code,
         )
         if submission_id is not None:
-            raise _chat_submission_http_error(status_code=403, code="capability_not_authorized") from exc
-        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+            raise _chat_submission_http_error(status_code=403, code=error_code) from exc
+        raise HTTPException(status_code=403, detail=error_code) from exc
     except RepositoryNotFoundError as exc:
         code = str(exc)
+        if request_fingerprint is None:
+            request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+                request=request,
+                principal=principal,
+                query_agent_id=query_agent_id,
+                code=code,
+            )
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -1544,6 +1859,13 @@ async def chat_stream(
         raise HTTPException(status_code=404, detail=code) from exc
     except SkillVersionMaterializationError as exc:
         code = str(exc)
+        if request_fingerprint is None:
+            request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+                request=request,
+                principal=principal,
+                query_agent_id=query_agent_id,
+                code=code,
+            )
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -1557,6 +1879,13 @@ async def chat_stream(
         raise HTTPException(status_code=409, detail=code) from exc
     except RepositoryConflictError as exc:
         code = str(exc)
+        if request_fingerprint is None:
+            request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+                request=request,
+                principal=principal,
+                query_agent_id=query_agent_id,
+                code=code,
+            )
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,

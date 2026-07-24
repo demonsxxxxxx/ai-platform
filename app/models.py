@@ -783,6 +783,7 @@ class ChatStreamRequest(BaseModel):
     disabled_skills: list[str] = Field(default_factory=list)
     enabled_skills: list[str] | None = None
     disabled_mcp_tools: list[str] = Field(default_factory=list)
+    selected_mcp_tool_ids: list[str] | None = None
     user_timezone: str | None = None
     confirmed_capability_id: str | None = None
     submission_id: UUID | None = None
@@ -806,6 +807,19 @@ class ChatStreamRequest(BaseModel):
     @classmethod
     def validate_chat_file_ids(cls, value: list[str]):
         return [assert_safe_id(item, "file_ids") for item in value]
+
+    @field_validator("selected_mcp_tool_ids")
+    @classmethod
+    def validate_selected_mcp_tool_ids(cls, value: list[str] | None):
+        if value is None:
+            return None
+        normalized: list[str] = []
+        for item in value:
+            tool_id = assert_safe_id(item.strip(), "selected_mcp_tool_ids")
+            if tool_id in normalized:
+                raise ValueError("selected_mcp_tool_ids contains duplicates")
+            normalized.append(tool_id)
+        return normalized
 
 
 class ChatStreamResponse(BaseModel):

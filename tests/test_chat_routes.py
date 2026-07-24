@@ -17,6 +17,8 @@ from app.repositories import RepositoryConflictError
 from app.settings import Settings
 from app.routes.chat import (
     _admit_chat_submission,
+    _audit_capability_denial,
+    _canonical_pre_persistence_rejection_fingerprint,
     _preledger_recovery_fingerprint,
     _validate_queue_payload_for_enqueue,
     chat_stream,
@@ -31,6 +33,9 @@ from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
 
 
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
+_ORIGINAL_GET_LATEST_AUTHORIZED_SESSION_RUN_INPUT = (
+    repository_module.get_latest_authorized_session_run_input
+)
 
 
 @asynccontextmanager
@@ -189,6 +194,176 @@ def test_file_row_scope_uses_effective_continuation_workspace():
     )
 
 
+def test_chat_mcp_selection_model_preserves_omitted_clear_and_explicit_contract():
+    assert ChatStreamRequest(message="hello").selected_mcp_tool_ids is None
+    assert ChatStreamRequest(message="hello", selected_mcp_tool_ids=[]).selected_mcp_tool_ids == []
+    assert ChatStreamRequest(
+        message="hello",
+        selected_mcp_tool_ids=[" tenant-search ", "tenant-write"],
+    ).selected_mcp_tool_ids == ["tenant-search", "tenant-write"]
+    with pytest.raises(ValueError):
+        ChatStreamRequest(
+            message="hello",
+            selected_mcp_tool_ids=["tenant-search", "tenant-search"],
+        )
+    with pytest.raises(ValueError):
+        ChatStreamRequest(message="hello", selected_mcp_tool_ids=["not safe!"])
+
+
+@pytest.mark.asyncio
+async def test_latest_session_run_input_read_is_principal_and_workspace_scoped():
+    class Cursor:
+        async def fetchone(self):
+            return {"input_json": {"input": {"mcp_tool_ids": ["locked-search"]}}}
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = ()
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return Cursor()
+
+    conn = Connection()
+
+    latest_input = await _ORIGINAL_GET_LATEST_AUTHORIZED_SESSION_RUN_INPUT(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+    )
+
+    assert latest_input == {"input": {"mcp_tool_ids": ["locked-search"]}}
+    assert conn.params == ("tenant-a", "workspace-a", "user-a", "session-a")
+    assert "sessions.status = 'active'" in conn.sql
+    assert "runs.tenant_id = %s" in conn.sql
+    assert "runs.workspace_id = %s" in conn.sql
+    assert "runs.user_id = %s" in conn.sql
+    assert "runs.session_id = %s" in conn.sql
+
+
+def test_rejection_fingerprint_is_stable_safe_and_principal_session_scoped():
+    request = ChatStreamRequest(
+        message="reject selected tool",
+        session_id="session-a",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        selected_mcp_tool_ids=[" unauthorized-private-tool ", "second-private-tool"],
+        input={
+            "endpoint": "https://private.example.test/mcp",
+            "credential": "private-credential",
+        },
+    )
+
+    fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+        request=request,
+        principal=principal(),
+        query_agent_id=None,
+        code="mcp_tool_not_available",
+    )
+    reordered_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+        request=request.model_copy(
+            update={
+                "selected_mcp_tool_ids": [
+                    "second-private-tool",
+                    "unauthorized-private-tool",
+                ]
+            }
+        ),
+        principal=principal(),
+        query_agent_id=None,
+        code="mcp_tool_not_available",
+    )
+    different_same_count_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+        request=request.model_copy(
+            update={
+                "selected_mcp_tool_ids": [
+                    "unauthorized-private-tool",
+                    "different-private-tool",
+                ]
+            }
+        ),
+        principal=principal(),
+        query_agent_id=None,
+        code="mcp_tool_not_available",
+    )
+    replay_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+        request=request,
+        principal=principal(),
+        query_agent_id=None,
+        code="mcp_tool_not_available",
+    )
+    other_user_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+        request=request,
+        principal=principal(user_id="user-b"),
+        query_agent_id=None,
+        code="mcp_tool_not_available",
+    )
+    other_session_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+        request=request.model_copy(update={"session_id": "session-b"}),
+        principal=principal(),
+        query_agent_id=None,
+        code="mcp_tool_not_available",
+    )
+
+    assert fingerprint == replay_fingerprint
+    assert fingerprint == reordered_fingerprint
+    assert fingerprint != different_same_count_fingerprint
+    assert fingerprint != other_user_fingerprint
+    assert fingerprint != other_session_fingerprint
+    assert len(fingerprint) == 64
+    assert "unauthorized-private-tool" not in fingerprint
+    assert "private.example.test" not in fingerprint
+    assert "private-credential" not in fingerprint
+
+
+@pytest.mark.asyncio
+async def test_mcp_denial_audit_redacts_raw_identity_and_correlates_deterministically(monkeypatch):
+    audit_params = []
+
+    class AuditConnection:
+        async def execute(self, _sql, params):
+            audit_params.append(params)
+
+    @asynccontextmanager
+    async def audit_transaction():
+        yield AuditConnection()
+
+    raw_tool_id = "unauthorized-private-tool"
+    denial = CapabilityAuthorizationDenial(
+        capability_kind="mcp_tool",
+        capability_id=raw_tool_id,
+        actor_department_id="finance",
+        actor_roles=("user",),
+        department_scope_ids=("qa",),
+        role_scope_ids=("qa_operator",),
+        scope_mode="allowlist",
+        decision_reason="capability_not_available",
+    )
+    error = repository_module.RepositoryAuthorizationError(
+        "mcp_tool_not_available",
+        denial=denial,
+    )
+
+    monkeypatch.setattr("app.routes.chat.transaction", audit_transaction)
+
+    await _audit_capability_denial(principal(), error, source="chat_stream")
+    await _audit_capability_denial(principal(), error, source="chat_stream")
+
+    target_ids = [params[5] for params in audit_params]
+    payloads = [json.loads(params[8]) for params in audit_params]
+    assert target_ids[0] == target_ids[1]
+    assert target_ids[0].startswith("mcp_tool_sha256:")
+    assert payloads[0]["capability_id"] == target_ids[0]
+    assert payloads[1]["capability_id"] == target_ids[1]
+    serialized_records = json.dumps(audit_params, sort_keys=True)
+    assert raw_tool_id not in serialized_records
+    assert "private.example.test" not in serialized_records
+    assert "private-credential" not in serialized_records
+
+
 @pytest.fixture(autouse=True)
 def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
     async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
@@ -219,6 +394,16 @@ def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
 
     monkeypatch.setattr(repository_module, "authorize_files_for_run", authorize_files, raising=False)
     monkeypatch.setattr(repository_module, "ensure_workspace_belongs_to_tenant", ensure_workspace, raising=False)
+
+    async def no_latest_run_input(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        repository_module,
+        "get_latest_authorized_session_run_input",
+        no_latest_run_input,
+        raising=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -309,7 +494,7 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
         tenant_id="tenant-a",
         user_id="user-a",
     )
-    calls: list[str] = []
+    calls: list[object] = []
 
     async def no_existing_submission(*_args, **_kwargs):
         return None
@@ -318,18 +503,30 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
         calls.append("provision")
         return {"id": "user-a", "tenant_id": "tenant-a"}
 
-    async def owned_session(*_args, **_kwargs):
-        calls.append("session")
+    async def owned_session(*_args, **kwargs):
+        calls.append(("session", kwargs.get("for_update", False)))
         return {
             "id": "session-owned",
             "workspace_id": "workspace-owned",
             "agent_id": "general-agent",
         }
 
+    async def latest_input(*_args, **_kwargs):
+        calls.append("latest_input")
+        return None
+
     async def claim_submission(*_args, **kwargs):
         calls.append("claim")
-        assert calls == ["provision", "session", "claim"]
+        assert calls == [
+            "provision",
+            ("session", False),
+            "admission_lock",
+            ("session", True),
+            "latest_input",
+            "claim",
+        ]
         assert kwargs["workspace_id"] == "workspace-owned"
+        assert kwargs["request_fingerprint_sha256"] == fingerprint
         return (
             {
                 "submission_id": str(request.submission_id),
@@ -345,25 +542,140 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
             False,
         )
 
-    async def forbidden_admission(*_args, **_kwargs):
-        raise AssertionError("duplicate submission must return before taking the user admission lock")
+    async def admission_lock(*_args, **_kwargs):
+        calls.append("admission_lock")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission, raising=False)
     monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal, raising=False)
     monkeypatch.setattr(repository_module, "get_authorized_session", owned_session, raising=False)
+    monkeypatch.setattr(
+        repository_module,
+        "get_latest_authorized_session_run_input",
+        latest_input,
+        raising=False,
+    )
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission, raising=False)
     monkeypatch.setattr(
         repository_module,
-        "enforce_user_active_run_admission",
-        forbidden_admission,
+        "acquire_user_active_run_admission_lock",
+        admission_lock,
         raising=False,
     )
 
     response = await chat_stream(request, principal=principal())
 
     assert response.session_id == "session-owned"
-    assert calls == ["provision", "session", "claim"]
+    assert calls == [
+        "provision",
+        ("session", False),
+        "admission_lock",
+        ("session", True),
+        "latest_input",
+        "claim",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection_before_claim(monkeypatch):
+    request = ChatStreamRequest(
+        message="continue with selected tool",
+        session_id="session-owned",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    calls: list[object] = []
+
+    async def no_existing_submission(*_args, **_kwargs):
+        return None
+
+    async def provision_principal(*_args, **_kwargs):
+        calls.append("provision")
+
+    async def owned_session(*_args, **kwargs):
+        for_update = kwargs.get("for_update", False)
+        calls.append(("session", for_update))
+        return {
+            "id": "session-owned",
+            "workspace_id": "workspace-owned",
+            "agent_id": "general-agent",
+            "latest_run_input_json": {
+                "input": {
+                    "mcp_tool_ids": [
+                        "locked-search" if for_update else "stale-unlocked-search"
+                    ]
+                }
+            },
+        }
+
+    async def admission_lock(*_args, **_kwargs):
+        calls.append("admission_lock")
+
+    async def latest_input(*_args, **_kwargs):
+        calls.append("latest_input")
+        return {"input": {"mcp_tool_ids": ["locked-search"]}}
+
+    async def authorize_tools(*_args, **kwargs):
+        calls.append(("authorize", kwargs["tool_ids"]))
+        assert kwargs["tool_ids"] == ["locked-search"]
+        return [{"tool_id": "locked-search"}]
+
+    async def claim_submission(*_args, **kwargs):
+        calls.append(("claim", kwargs["request_fingerprint_sha256"]))
+        fingerprint_request = request.model_dump(mode="json", exclude={"submission_id"})
+        fingerprint_request["selected_mcp_tool_ids"] = ["locked-search"]
+        assert kwargs["request_fingerprint_sha256"] == repository_module.chat_submission_fingerprint(
+            {"request": fingerprint_request, "query_agent_id": None},
+            tenant_id="tenant-a",
+            user_id="user-a",
+        )
+        return (
+            {
+                "request_fingerprint_sha256": kwargs["request_fingerprint_sha256"],
+                "state": "queued",
+                "outcome_json": {
+                    "session_id": "session-owned",
+                    "run_id": "run-owned",
+                    "status": "queued",
+                    "submission_id": str(request.submission_id),
+                },
+            },
+            False,
+        )
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission)
+    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
+    monkeypatch.setattr(repository_module, "get_authorized_session", owned_session)
+    monkeypatch.setattr(
+        repository_module,
+        "get_latest_authorized_session_run_input",
+        latest_input,
+    )
+    monkeypatch.setattr(
+        repository_module,
+        "acquire_user_active_run_admission_lock",
+        admission_lock,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repository_module,
+        "authorize_selected_chat_mcp_tools",
+        authorize_tools,
+    )
+    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
+
+    response = await chat_stream(request, principal=principal())
+
+    assert response.run_id == "run-owned"
+    assert calls[:6] == [
+        "provision",
+        ("session", False),
+        "admission_lock",
+        ("session", True),
+        "latest_input",
+        ("authorize", ["locked-search"]),
+    ]
+    assert calls[6][0] == "claim"
 
 
 @pytest.mark.asyncio
@@ -388,10 +700,13 @@ async def test_keyed_rejection_provisions_principal_before_saved_workspace_ledge
             "agent_id": "general-agent",
         }
 
+    fingerprints = []
+
     async def claim_submission(*_args, **kwargs):
         calls.append("claim")
         assert calls == ["provision", "session", "claim"]
         assert kwargs["workspace_id"] == "workspace-owned"
+        fingerprints.append(kwargs["request_fingerprint_sha256"])
         return ({"state": "resolving"}, True)
 
     async def finalize_submission(*_args, **kwargs):
@@ -411,6 +726,78 @@ async def test_keyed_rejection_provisions_principal_before_saved_workspace_ledge
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail["code"] == "raw_skill_selector_forbidden"
     assert calls == ["provision", "session", "claim", "finalize"]
+    assert len(fingerprints[0]) == 64
+    assert "raw-skill-forbidden-to-user" not in fingerprints[0]
+
+
+@pytest.mark.asyncio
+async def test_keyed_legacy_mcp_rejection_is_durable_replay_safe_and_payload_mismatch_safe(monkeypatch):
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+    ledger: dict[str, object] = {}
+    claims: list[str] = []
+    finalizations = []
+
+    async def provision_principal(*_args, **_kwargs):
+        return {"id": "user-a", "tenant_id": "tenant-a"}
+
+    async def claim_submission(*_args, **kwargs):
+        fingerprint = kwargs["request_fingerprint_sha256"]
+        claims.append(fingerprint)
+        if ledger:
+            return dict(ledger), False
+        ledger.update(
+            state="resolving",
+            request_fingerprint_sha256=fingerprint,
+            workspace_id=kwargs["workspace_id"],
+        )
+        return dict(ledger), True
+
+    async def finalize_submission(*_args, **kwargs):
+        finalizations.append(dict(kwargs))
+        ledger.update(
+            state=kwargs["state"],
+            submission_disposition=kwargs["submission_disposition"],
+            rejection_code=kwargs["rejection_code"],
+        )
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
+    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_submission)
+
+    def rejected_request(message: str) -> ChatStreamRequest:
+        return ChatStreamRequest(
+            message=message,
+            submission_id=submission_id,
+            input={
+                "mcp_tool_ids": ["unauthorized-private-tool"],
+                "endpoint": "https://private.example.test/mcp",
+                "credential": "private-credential",
+            },
+        )
+
+    with pytest.raises(HTTPException) as first_info:
+        await chat_stream(rejected_request("same rejected payload"), principal=principal())
+    assert first_info.value.status_code == 400
+    assert first_info.value.detail["code"] == "selected_mcp_tool_ids_required"
+
+    with pytest.raises(HTTPException) as replay_info:
+        await chat_stream(rejected_request("same rejected payload"), principal=principal())
+    assert replay_info.value.status_code == 409
+    assert replay_info.value.detail["code"] == "selected_mcp_tool_ids_required"
+
+    with pytest.raises(HTTPException) as mismatch_info:
+        await chat_stream(rejected_request("different rejected payload"), principal=principal())
+
+    assert mismatch_info.value.status_code == 409
+    assert mismatch_info.value.detail == "submission_payload_mismatch"
+    assert len(set(claims[:2])) == 1
+    assert claims[2] != claims[0]
+    assert len(finalizations) == 1
+    serialized_ledger = json.dumps(ledger, sort_keys=True)
+    assert "unauthorized-private-tool" not in serialized_ledger
+    assert "private.example.test" not in serialized_ledger
+    assert "private-credential" not in serialized_ledger
 
 
 @pytest.mark.asyncio
@@ -1712,7 +2099,7 @@ async def test_chat_stream_direct_ragflow_without_explicit_selector_uses_unified
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_invalid_mcp_selector_type_returns_controlled_403_before_create(monkeypatch):
+async def test_chat_stream_legacy_nested_mcp_selector_returns_controlled_400_before_create(monkeypatch):
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("invalid MCP selector must fail before create_run")
 
@@ -1727,8 +2114,128 @@ async def test_chat_stream_invalid_mcp_selector_type_returns_controlled_403_befo
             principal=principal(roles=["admin"]),
         )
 
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "selected_mcp_tool_ids_required"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_create(monkeypatch):
+    calls = []
+
+    async def deny_selection(*_args, **kwargs):
+        calls.append(("authorize", kwargs["tool_ids"]))
+        raise repository_module.RepositoryAuthorizationError("mcp_tool_not_available")
+
+    async def fail_create_run(*_args, **_kwargs):
+        raise AssertionError("unauthorized MCP selection must fail before create_run")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        repository_module,
+        "authorize_selected_chat_mcp_tools",
+        deny_selection,
+    )
+    monkeypatch.setattr(repository_module, "create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                message="run",
+                selected_mcp_tool_ids=["tenant-search"],
+            ),
+            principal=principal(),
+        )
+
     assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "capability_not_authorized"
+    assert exc_info.value.detail == "mcp_tool_not_available"
+    assert calls == [("authorize", ["tenant-search"])]
+
+
+@pytest.mark.asyncio
+async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_ledger_data(monkeypatch):
+    ledger = {}
+    claims = []
+    finalizations = []
+
+    async def deny_selection(*_args, **_kwargs):
+        raise repository_module.RepositoryAuthorizationError("mcp_tool_not_available")
+
+    async def provision_principal(*_args, **_kwargs):
+        return {"id": "user-a", "tenant_id": "tenant-a"}
+
+    async def claim_submission(*_args, **kwargs):
+        claims.append(kwargs["request_fingerprint_sha256"])
+        if ledger:
+            return dict(ledger), False
+        ledger.update(
+            request_fingerprint_sha256=kwargs["request_fingerprint_sha256"],
+            workspace_id=kwargs["workspace_id"],
+            state="resolving",
+        )
+        return dict(ledger), True
+
+    async def finalize_submission(*_args, **kwargs):
+        finalizations.append(kwargs["rejection_code"])
+        ledger.update(
+            state=kwargs["state"],
+            submission_disposition=kwargs["submission_disposition"],
+            rejection_code=kwargs["rejection_code"],
+        )
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", deny_selection)
+    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
+    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_submission)
+
+    def rejected_request(tool_ids):
+        return ChatStreamRequest(
+            message="run unavailable tool",
+            submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+            selected_mcp_tool_ids=tool_ids,
+            input={
+                "endpoint": "https://private.example.test/mcp",
+                "credential": "private-credential",
+            },
+        )
+
+    with pytest.raises(HTTPException) as first_info:
+        await chat_stream(
+            rejected_request([" unauthorized-private-tool ", "second-private-tool"]),
+            principal=principal(),
+        )
+
+    with pytest.raises(HTTPException) as replay_info:
+        await chat_stream(
+            rejected_request(["second-private-tool", "unauthorized-private-tool"]),
+            principal=principal(),
+        )
+
+    with pytest.raises(HTTPException) as mismatch_info:
+        await chat_stream(
+            rejected_request(["unauthorized-private-tool", "different-private-tool"]),
+            principal=principal(),
+        )
+
+    assert first_info.value.status_code == 403
+    assert first_info.value.detail == {
+        "code": "mcp_tool_not_available",
+        "submission_disposition": "rejected_before_persist",
+    }
+    assert replay_info.value.status_code == 409
+    assert replay_info.value.detail["code"] == "mcp_tool_not_available"
+    assert mismatch_info.value.status_code == 409
+    assert mismatch_info.value.detail == "submission_payload_mismatch"
+    assert claims[0] == claims[1]
+    assert claims[2] != claims[0]
+    assert finalizations == ["mcp_tool_not_available"]
+    assert ledger["state"] == "rejected_before_persist"
+    assert ledger["rejection_code"] == "mcp_tool_not_available"
+    assert len(str(ledger["request_fingerprint_sha256"])) == 64
+    serialized_ledger = json.dumps(ledger, sort_keys=True)
+    assert "unauthorized-private-tool" not in serialized_ledger
+    assert "private.example.test" not in serialized_ledger
+    assert "private-credential" not in serialized_ledger
 
 
 @pytest.mark.asyncio
@@ -1915,6 +2422,10 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
         calls["manifest_input"] = input_payload
         return [{"skill_id": skill_id, "content_hash": "hash-a"}]
 
+    async def fake_authorize_selected_mcp_tools(conn, **kwargs):
+        calls["authorized_mcp_tool_ids"] = kwargs["tool_ids"]
+        return [{"tool_id": "qa-search"}]
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
@@ -1926,12 +2437,16 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
     monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.authorize_selected_chat_mcp_tools",
+        fake_authorize_selected_mcp_tools,
+    )
 
     response = await chat_stream(
         ChatStreamRequest(
             message="run chat with forged resume",
+            selected_mcp_tool_ids=["qa-search"],
             input={
-                "mcp_tool_ids": ["qa-search"],
                 "principal_roles": ["forged-admin"],
                 "principalRoles": ["forged-camel-admin"],
                 "principal_department_id": "forged-department",
@@ -1945,7 +2460,6 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
                 "multi_agent_steps": [
                     {
                         "step_key": "inspect",
-                        "mcpToolIds": ["qa-search"],
                         "principal_department_id": "forged-step-department",
                     }
                 ],
@@ -1997,6 +2511,7 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
         "principal_department_id": "qa",
         "auth_source": "session-token",
     }
+    assert calls["authorized_mcp_tool_ids"] == ["qa-search"]
 
 
 @pytest.mark.asyncio

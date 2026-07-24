@@ -1351,6 +1351,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             disabled_mcp_tools:
               (sessionData.metadata?.disabled_mcp_tools as string[]) ||
               undefined,
+            selected_mcp_tool_ids:
+              (sessionData.metadata?.selected_mcp_tool_ids as string[]) ||
+              undefined,
           };
 
           // Event history determines the exact latest run before its status is
@@ -1842,9 +1845,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           sessionApi.markRead(requestSessionId).catch(() => {});
         }
 
-        // 获取当前禁用的 skills 和 mcp_tools
+        // Keep the legacy Skill blacklist while MCP uses an explicit
+        // canonical selection with omitted/clear/select tri-state semantics.
         const disabledSkills = options?.getDisabledSkills?.() || [];
-        const disabledMcpTools = options?.getDisabledMcpTools?.() || [];
+        const selectedMcpToolIds = options?.getDisabledMcpTools?.();
 
         // Merge session-level agent options (e.g. model) with ChatInput values
         const fullAgentOptions = {
@@ -1879,10 +1883,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           fullAgentOptions,
           attachments,
           disabledSkills,
-          disabledMcpTools,
+          undefined,
           selectedSkill,
           submissionId,
           requestAgentId,
+          selectedMcpToolIds,
         );
 
         if (!isCurrentRequestSession()) {
@@ -1989,7 +1994,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             agent_id: routedAgentId,
             agent_options: fullAgentOptions,
             disabled_skills: disabledSkills,
-            disabled_mcp_tools: disabledMcpTools,
+            selected_mcp_tool_ids: selectedMcpToolIds,
           };
           const newSession: BackendSession = {
             id: newSessionId,
@@ -2038,7 +2043,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             agent_id: routedAgentId,
             agent_options: fullAgentOptions,
             disabled_skills: disabledSkills,
-            disabled_mcp_tools: disabledMcpTools,
+            selected_mcp_tool_ids: selectedMcpToolIds,
           };
 
           setNewlyCreatedSession((prev) =>
