@@ -16,6 +16,12 @@ TEST_PROOF_KEY = "cleanup-test-proof-key-with-enough-entropy-2026"
 TEST_PROOF_NOW = datetime(2026, 7, 14, 16, 0, tzinfo=timezone.utc)
 
 
+class CleanupProofSettings:
+    sandbox_egress_proof_signing_key = TEST_PROOF_KEY
+    sandbox_egress_proof_key_id = "current"
+    sandbox_egress_proof_previous_keys_json = ""
+
+
 def opensandbox_cleanup_proof():
     return build_governed_egress_proof(
         signing_key=TEST_PROOF_KEY,
@@ -168,6 +174,10 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_and_c
         "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
         fake_release_stopped_sandbox_leases,
     )
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.get_settings",
+        lambda: CleanupProofSettings(),
+    )
 
     cleaned = await cleanup_expired_sandbox_runtime_leases(
         object(),
@@ -279,7 +289,7 @@ async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(mo
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_mode", ("ambiguous-identity", "get-info-404"))
+@pytest.mark.parametrize("failure_mode", ("attempt-mismatch", "ambiguous-identity", "get-info-404"))
 async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unconfirmed(monkeypatch, failure_mode):
     from opensandbox.exceptions import SandboxApiException
 
@@ -356,10 +366,7 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-    class Settings:
-        sandbox_egress_proof_signing_key = TEST_PROOF_KEY
-        sandbox_egress_proof_key_id = "current"
-        sandbox_egress_proof_previous_keys_json = ""
+    class Settings(CleanupProofSettings):
         opensandbox_api_key = ""
         opensandbox_domain = "opensandbox.local:8080"
         opensandbox_protocol = "http"
@@ -384,7 +391,7 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         runtime_container_name="opensandbox-run-a",
         runtime_executor_url="http://opensandbox-executor.test:18000",
         lease_payload_json={
-            "attempt_id": "attempt-a",
+            "attempt_id": "attempt-b" if failure_mode == "attempt-mismatch" else "attempt-a",
             "governed_egress_proof": proof,
         },
     )
@@ -398,6 +405,7 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         return [row]
 
     monkeypatch.setattr("app.runtime.sandbox.container_provider.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: Settings())
     monkeypatch.setattr(
         "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
@@ -414,15 +422,25 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
             provider_factory=lambda _provider_name: provider,
         )
 
-    assert len(received_leases) == 1
-    assert received_leases[0].labels == {
-        "ai-platform.attempt_id": "attempt-a",
-        GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
-    }
-    assert remote_trace == ["connect", "get_info"]
-    assert exc_info.value.failures == [
-        {"container_id": "osb-run-a", "message": "OpenSandbox sandbox stop failed"}
-    ]
+    if failure_mode == "attempt-mismatch":
+        assert received_leases == []
+        assert remote_trace == []
+        expected_failure = {
+            "container_id": "lease-a",
+            "message": "Unsupported sandbox provider: opensandbox",
+        }
+    else:
+        assert len(received_leases) == 1
+        assert received_leases[0].labels == {
+            "ai-platform.attempt_id": "attempt-a",
+            GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
+        }
+        assert remote_trace == ["connect", "get_info"]
+        expected_failure = {
+            "container_id": "osb-run-a",
+            "message": "OpenSandbox sandbox stop failed",
+        }
+    assert exc_info.value.failures == [expected_failure]
     assert remote.kill_calls == 0
     assert remote.close_calls == 0
     assert releases == []
