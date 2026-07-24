@@ -293,8 +293,7 @@ class _BuildProgressClassifier:
             instruction = stage_instruction + b" " + instruction
         instruction_category = self._classify_instruction(instruction.strip())
         if instruction_category == "unknown":
-            if label is not None:
-                self._latest_structural_step_unclassifiable = True
+            self._latest_structural_step_unclassifiable = True
             return
         self._latest_structural_step_unclassifiable = False
         self._steps[ordinal] = _BuildProgressStep(

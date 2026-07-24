@@ -4042,6 +4042,15 @@ def test_build_progress_latest_unclassifiable_or_truncated_tail_invalidates_prio
     assert capture.classify() == {"build_progress_status": "unknown"}
 
 
+def test_build_progress_unlabeled_unknown_header_invalidates_prior_step():
+    capture = release_authority._BoundedBuildProgressCapture()
+    capture.feed(b"#8 [runtime 4/9] RUN apt-get update\n")
+    capture.feed(b"#9 RUN arbitrary hostile command\n")
+    capture.finish()
+
+    assert capture.classify() == {"build_progress_status": "unknown"}
+
+
 def test_build_progress_advancing_requires_increasing_recognized_units():
     timestamp_only = release_authority._BoundedBuildProgressCapture()
     timestamp_only.feed(b"#8 [runtime 4/9] RUN apt-get update\n")
