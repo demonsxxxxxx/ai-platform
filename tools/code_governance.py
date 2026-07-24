@@ -1,0 +1,779 @@
+"""Evaluate one Git change range against the ai-platform code-governance policy."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import re
+import subprocess
+import sys
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+REPORT_SCHEMA_VERSION = "ai-platform.code-governance-report.v1"
+EXCEPTION_SCHEMA_VERSION = "ai-platform.code-governance-exception.v1"
+EXCEPTION_PATH = ".code-governance-exception.json"
+FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+
+PRODUCTION_FILE_LIMIT = 12
+PRODUCTION_NET_LOC_LIMIT = 800
+PRODUCTION_SUBSYSTEM_LIMIT = 2
+HOT_FILE_LINES = 1500
+HOT_FILE_NET_GROWTH_LIMIT = 100
+FUNCTIONAL_HOT_FILE_LINES = 3000
+FUNCTIONAL_HOT_FILE_NET_GROWTH_LIMIT = 0
+TEST_HOT_FILE_LINES = 2500
+TEST_HOT_FILE_NET_GROWTH_LIMIT = 100
+
+FUNCTIONAL_SUFFIXES = frozenset({
+    ".c", ".cc", ".cpp", ".css", ".go", ".html", ".java", ".js", ".jsx",
+    ".mjs", ".py", ".rs", ".scss", ".sh", ".sql", ".ts", ".tsx",
+})
+DOCUMENTATION_SUFFIXES = frozenset({
+    ".bmp", ".gif", ".jpeg", ".jpg", ".md", ".pdf", ".png", ".rst",
+    ".svg", ".txt", ".webp",
+})
+NON_EXEMPTIBLE_CODES = {"ruff_failed", "ruff_unavailable"}
+
+
+class GovernanceError(RuntimeError):
+    """Describe an input, repository, or exception-contract failure."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class _GovernanceArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise GovernanceError("invalid_cli", message)
+
+
+@dataclass(frozen=True)
+class _CommandResult:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+class _CommandRunner:
+    def run(self, command: Sequence[str], *, cwd: Path) -> _CommandResult:
+        completed = subprocess.run(
+            list(command),
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return _CommandResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+@dataclass(frozen=True)
+class _ChangedFile:
+    status: str
+    old_path: str | None
+    new_path: str | None
+    additions: int
+    deletions: int
+    binary: bool
+    old_lines: int
+    new_lines: int
+
+    @property
+    def path(self) -> str:
+        return self.new_path or self.old_path or ""
+
+    @property
+    def net_loc(self) -> int:
+        return self.additions - self.deletions
+
+    @property
+    def is_test(self) -> bool:
+        return _is_test_path(self.path)
+
+    @property
+    def is_production(self) -> bool:
+        return _is_production_path(self.path)
+
+    @property
+    def is_functional(self) -> bool:
+        return PurePosixPath(self.path).suffix.lower() in FUNCTIONAL_SUFFIXES
+
+    @property
+    def is_move_only(self) -> bool:
+        return self.status.startswith("R") and self.additions == 0 and self.deletions == 0
+
+    @property
+    def is_behavior_change(self) -> bool:
+        return self.is_production and not self.is_move_only
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "additions": self.additions,
+            "binary": self.binary,
+            "deletions": self.deletions,
+            "new_lines": self.new_lines,
+            "new_path": self.new_path,
+            "old_lines": self.old_lines,
+            "old_path": self.old_path,
+            "path": self.path,
+            "role": _change_role(self),
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class Violation:
+    """One deterministic policy violation emitted by the evaluator."""
+
+    code: str
+    message: str
+    path: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "details": self.details,
+            "message": self.message,
+            "path": self.path,
+        }
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    """Stable result returned across the code-governance seam."""
+
+    base_ref: str
+    head_ref: str
+    status: str
+    mode: str
+    changes: tuple[_ChangedFile, ...]
+    metrics: dict[str, Any]
+    ruff: dict[str, Any]
+    exception: dict[str, Any]
+    violations: tuple[Violation, ...]
+    exempted_violations: tuple[Violation, ...]
+
+    @property
+    def exit_code(self) -> int:
+        return 0 if self.status == "pass" else 2
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "base_ref": self.base_ref,
+            "changes": [change.as_dict() for change in self.changes],
+            "exception": self.exception,
+            "exempted_violations": [item.as_dict() for item in self.exempted_violations],
+            "head_ref": self.head_ref,
+            "metrics": self.metrics,
+            "mode": self.mode,
+            "policy": _policy_as_dict(),
+            "reserved_gates": {
+                "typed_payloads": "phase_2b_not_enforced",
+                "error_taxonomy": "phase_2b_not_enforced",
+            },
+            "ruff": self.ruff,
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "status": self.status,
+            "violations": [item.as_dict() for item in self.violations],
+        }
+
+
+@dataclass(frozen=True)
+class _GitRange:
+    base: str
+    head: str
+    changes: tuple[_ChangedFile, ...]
+
+
+class _GitChangeReader:
+    """Translate exact Git commits into normalized changed-file records."""
+
+    def __init__(self, repo_root: Path, runner: _CommandRunner) -> None:
+        self.repo_root = repo_root
+        self.runner = runner
+
+    def read(self, base_ref: str, head_ref: str) -> _GitRange:
+        base = self._resolve_full_commit(base_ref, "base_ref")
+        head = self._resolve_full_commit(head_ref, "head_ref")
+        self._assert_ancestor(base, head)
+        records = _parse_name_status(
+            self._git(
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--name-status",
+                "-z",
+                "--find-renames=50%",
+                base,
+                head,
+                "--",
+            ).stdout
+        )
+        stats = _parse_numstat(
+            self._git(
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--numstat",
+                "-z",
+                "--find-renames=50%",
+                base,
+                head,
+                "--",
+            ).stdout
+        )
+        changes = []
+        for status, old_path, new_path in records:
+            key = (old_path or new_path or "", new_path or old_path or "")
+            additions, deletions, binary = stats.get(key, (0, 0, False))
+            changes.append(
+                _ChangedFile(
+                    status=status,
+                    old_path=old_path,
+                    new_path=new_path,
+                    additions=additions,
+                    deletions=deletions,
+                    binary=binary,
+                    old_lines=self._blob_line_count(base, old_path) if old_path is not None else 0,
+                    new_lines=self._blob_line_count(head, new_path) if new_path is not None else 0,
+                )
+            )
+        return _GitRange(
+            base=base,
+            head=head,
+            changes=tuple(sorted(changes, key=lambda item: (item.path, item.old_path or "", item.status))),
+        )
+
+    def load_exception(self, head: str) -> dict[str, Any] | None:
+        probe = self.runner.run(["git", "cat-file", "-e", f"{head}:{EXCEPTION_PATH}"], cwd=self.repo_root)
+        if probe.returncode != 0:
+            return None
+        content = self._git("show", f"{head}:{EXCEPTION_PATH}").stdout
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise GovernanceError("invalid_exception", f"{EXCEPTION_PATH} is not valid JSON: {exc.msg}") from exc
+
+    def _resolve_full_commit(self, value: str, label: str) -> str:
+        if FULL_SHA.fullmatch(value) is None:
+            raise GovernanceError("invalid_ref", f"{label} must be a full 40-hex commit id")
+        resolved = self._git("rev-parse", "--verify", f"{value}^{{commit}}").stdout.strip().lower()
+        if resolved != value.lower():
+            raise GovernanceError("invalid_ref", f"{label} did not resolve to the exact supplied commit id")
+        return resolved
+
+    def _assert_ancestor(self, base: str, head: str) -> None:
+        result = self.runner.run(["git", "merge-base", "--is-ancestor", base, head], cwd=self.repo_root)
+        if result.returncode == 1:
+            raise GovernanceError("non_ancestor_range", "base_ref must be an ancestor of head_ref")
+        if result.returncode != 0:
+            raise GovernanceError("git_failed", _command_failure("git merge-base", result))
+
+    def _blob_line_count(self, commit: str, path: str) -> int:
+        result = self.runner.run(["git", "show", f"{commit}:{path}"], cwd=self.repo_root)
+        if result.returncode != 0:
+            raise GovernanceError("git_failed", _command_failure(f"git show {commit}:{path}", result))
+        return len(result.stdout.splitlines())
+
+    def _git(self, *arguments: str) -> _CommandResult:
+        result = self.runner.run(["git", *arguments], cwd=self.repo_root)
+        if result.returncode != 0:
+            raise GovernanceError("git_failed", _command_failure("git " + " ".join(arguments), result))
+        return result
+
+
+class CodeGovernanceEvaluator:
+    """Hide Git, classification, size, exception, and Ruff mechanics behind evaluate()."""
+
+    def __init__(
+        self,
+        repo_root: Path,
+        *,
+        runner: _CommandRunner | None = None,
+        today: date | None = None,
+    ) -> None:
+        self._repo_root = repo_root.resolve()
+        self._runner = runner or _CommandRunner()
+        self._today = today or datetime.now(UTC).date()
+        self._git_reader = _GitChangeReader(self._repo_root, self._runner)
+
+    def evaluate(self, base_ref: str, head_ref: str) -> Evaluation:
+        """Evaluate one exact commit range and return a deterministic result."""
+        self._assert_repository()
+        git_range = self._git_reader.read(base_ref, head_ref)
+        changes = git_range.changes
+        violations, metrics = self._evaluate_policy(changes)
+        ruff, ruff_violation = self._evaluate_ruff(changes)
+        if ruff_violation is not None:
+            violations.append(ruff_violation)
+
+        ordered = _sort_violations(violations)
+        exception_contract = self._git_reader.load_exception(git_range.head)
+        if exception_contract is not None:
+            _validate_exception_payload(exception_contract, self._today)
+        active, exempted, exception_summary = self._apply_exception(ordered, exception_contract)
+        mode = _evaluation_mode(changes)
+        return Evaluation(
+            base_ref=git_range.base,
+            head_ref=git_range.head,
+            status="pass" if not active else "violation",
+            mode=mode,
+            changes=changes,
+            metrics=metrics,
+            ruff=ruff,
+            exception=exception_summary,
+            violations=tuple(active),
+            exempted_violations=tuple(exempted),
+        )
+
+    def _assert_repository(self) -> None:
+        result = self._runner.run(["git", "rev-parse", "--show-toplevel"], cwd=self._repo_root)
+        if result.returncode != 0:
+            raise GovernanceError("not_git_repository", "current directory is not inside a Git repository")
+        discovered = Path(result.stdout.strip()).resolve()
+        if discovered != self._repo_root:
+            self._repo_root = discovered
+            self._git_reader = _GitChangeReader(self._repo_root, self._runner)
+
+    def _evaluate_policy(self, changes: Sequence[_ChangedFile]) -> tuple[list[Violation], dict[str, Any]]:
+        behavior_files = [item for item in changes if item.is_behavior_change]
+        move_only_files = [item for item in changes if item.is_production and item.is_move_only]
+        test_files = [item for item in changes if item.is_test]
+        subsystems = sorted({_production_subsystem(item.path) for item in behavior_files})
+        net_loc = sum(item.net_loc for item in behavior_files)
+        violations: list[Violation] = []
+
+        if len(behavior_files) > PRODUCTION_FILE_LIMIT:
+            violations.append(
+                Violation(
+                    "production_file_count",
+                    f"behavior-changing production files must be <= {PRODUCTION_FILE_LIMIT}",
+                    details={"actual": len(behavior_files), "limit": PRODUCTION_FILE_LIMIT},
+                )
+            )
+        if net_loc >= PRODUCTION_NET_LOC_LIMIT:
+            violations.append(
+                Violation(
+                    "production_net_loc",
+                    f"net behavior-changing production LOC must be < {PRODUCTION_NET_LOC_LIMIT}",
+                    details={"actual": net_loc, "limit_exclusive": PRODUCTION_NET_LOC_LIMIT},
+                )
+            )
+        if behavior_files and len(subsystems) >= PRODUCTION_SUBSYSTEM_LIMIT:
+            violations.append(
+                Violation(
+                    "production_subsystem_count",
+                    f"normal behavior changes must touch < {PRODUCTION_SUBSYSTEM_LIMIT} production subsystems",
+                    details={"actual": len(subsystems), "limit_exclusive": PRODUCTION_SUBSYSTEM_LIMIT, "subsystems": subsystems},
+                )
+            )
+
+        for item in changes:
+            peak_lines = max(item.old_lines, item.new_lines)
+            if item.is_production and peak_lines > HOT_FILE_LINES and item.net_loc > HOT_FILE_NET_GROWTH_LIMIT:
+                violations.append(
+                    Violation(
+                        "hot_file_growth",
+                        f"production files over {HOT_FILE_LINES} lines may grow by at most {HOT_FILE_NET_GROWTH_LIMIT} net lines",
+                        path=item.path,
+                        details={"net_loc": item.net_loc, "peak_lines": peak_lines},
+                    )
+                )
+            if (
+                item.is_production
+                and item.is_functional
+                and peak_lines > FUNCTIONAL_HOT_FILE_LINES
+                and item.net_loc > FUNCTIONAL_HOT_FILE_NET_GROWTH_LIMIT
+            ):
+                violations.append(
+                    Violation(
+                        "functional_hot_file_growth",
+                        f"functional production files over {FUNCTIONAL_HOT_FILE_LINES} lines may not grow",
+                        path=item.path,
+                        details={"net_loc": item.net_loc, "peak_lines": peak_lines},
+                    )
+                )
+            if item.is_test and peak_lines > TEST_HOT_FILE_LINES and item.net_loc > TEST_HOT_FILE_NET_GROWTH_LIMIT:
+                violations.append(
+                    Violation(
+                        "test_hot_file_growth",
+                        f"test files over {TEST_HOT_FILE_LINES} lines may grow by at most {TEST_HOT_FILE_NET_GROWTH_LIMIT} net lines",
+                        path=item.path,
+                        details={"net_loc": item.net_loc, "peak_lines": peak_lines},
+                    )
+                )
+
+        changed_test_paths = sorted(item.path for item in test_files if item.new_path is not None)
+        for item in behavior_files:
+            if item.new_path is None or not item.is_functional or item.additions <= 0:
+                continue
+            mirrors = [path for path in changed_test_paths if _test_mirrors_production(path, item.path)]
+            if not mirrors:
+                violations.append(
+                    Violation(
+                        "test_responsibility_mirror",
+                        "behavior-changing functional production code must have a changed test with the same responsibility stem",
+                        path=item.path,
+                        details={"changed_test_paths": changed_test_paths, "responsibility": _responsibility_stem(item.path)},
+                    )
+                )
+
+        metrics = {
+            "behavior_production_files": len(behavior_files),
+            "changed_files": len(changes),
+            "changed_test_files": len(test_files),
+            "move_only_production_files": len(move_only_files),
+            "production_net_loc": net_loc,
+            "production_subsystems": subsystems,
+        }
+        return violations, metrics
+
+    def _evaluate_ruff(self, changes: Sequence[_ChangedFile]) -> tuple[dict[str, Any], Violation | None]:
+        paths = sorted(
+            {
+                item.new_path
+                for item in changes
+                if item.new_path is not None and PurePosixPath(item.new_path).suffix.lower() == ".py"
+            }
+        )
+        display_command = ["python", "-m", "ruff", "check", "--", *paths]
+        if not paths:
+            return {"command": display_command, "paths": [], "returncode": None, "status": "not_applicable"}, None
+        try:
+            available = importlib.util.find_spec("ruff") is not None
+        except (ImportError, ValueError):
+            available = False
+        if not available:
+            return (
+                {"command": display_command, "paths": paths, "returncode": None, "status": "unavailable"},
+                Violation(
+                    "ruff_unavailable",
+                    "Ruff is required for changed Python files and was not importable by the active Python interpreter",
+                    details={"command": display_command},
+                ),
+            )
+        actual_command = [sys.executable, "-m", "ruff", "check", "--", *paths]
+        result = self._runner.run(actual_command, cwd=self._repo_root)
+        summary = {
+            "command": display_command,
+            "paths": paths,
+            "returncode": result.returncode,
+            "status": "pass" if result.returncode == 0 else "failed",
+            "stderr": result.stderr.strip(),
+            "stdout": result.stdout.strip(),
+        }
+        if result.returncode == 0:
+            return summary, None
+        return (
+            summary,
+            Violation(
+                "ruff_failed",
+                "Ruff failed for changed Python files",
+                details={"command": display_command, "returncode": result.returncode},
+            ),
+        )
+
+    def _apply_exception(
+        self,
+        violations: Sequence[Violation],
+        payload: dict[str, Any] | None,
+    ) -> tuple[list[Violation], list[Violation], dict[str, Any]]:
+        if payload is None:
+            return list(violations), [], {"path": EXCEPTION_PATH, "status": "absent"}
+        requested = {(item["code"], item["path"]) for item in payload["violations"]}
+        blocked = sorted(code for code, _path in requested if code in NON_EXEMPTIBLE_CODES)
+        if blocked:
+            raise GovernanceError("invalid_exception", f"non-exemptible violation codes requested: {', '.join(blocked)}")
+        exempted = [item for item in violations if (item.code, item.path) in requested]
+        active = [item for item in violations if (item.code, item.path) not in requested]
+        matched = {(item.code, item.path) for item in exempted}
+        unused = sorted(requested - matched, key=lambda item: (item[0], item[1] or ""))
+        if unused:
+            rendered = ", ".join(f"{code}:{path or '<global>'}" for code, path in unused)
+            raise GovernanceError("invalid_exception", f"exception entries must match current violations exactly: {rendered}")
+        summary = {
+            "expires_on": payload["expires_on"],
+            "owner": payload["owner"],
+            "path": EXCEPTION_PATH,
+            "reason": payload["reason"],
+            "schema_version": payload["schema_version"],
+            "status": "applied",
+        }
+        return active, exempted, summary
+
+
+def _parse_name_status(output: str) -> list[tuple[str, str | None, str | None]]:
+    tokens = iter(filter(None, output.split("\0")))
+    records: list[tuple[str, str | None, str | None]] = []
+    try:
+        for token in tokens:
+            if "\t" in token:
+                status, first_path = token.split("\t", 1)
+            else:
+                status, first_path = token, next(tokens)
+            kind = status[0]
+            if kind in {"R", "C"}:
+                records.append((status, first_path, next(tokens)))
+            elif kind == "A":
+                records.append((status, None, first_path))
+            elif kind == "D":
+                records.append((status, first_path, None))
+            else:
+                records.append((status, first_path, first_path))
+    except StopIteration as exc:
+        raise GovernanceError("git_output_invalid", "malformed git --name-status output") from exc
+    return records
+
+
+def _parse_numstat(output: str) -> dict[tuple[str, str], tuple[int, int, bool]]:
+    tokens = iter(filter(None, output.split("\0")))
+    records: dict[tuple[str, str], tuple[int, int, bool]] = {}
+    try:
+        for record in tokens:
+            fields = record.split("\t")
+            if len(fields) != 3:
+                raise GovernanceError("git_output_invalid", "malformed git --numstat output")
+            additions_raw, deletions_raw, path = fields
+            binary = additions_raw == "-" or deletions_raw == "-"
+            additions = 0 if binary else int(additions_raw)
+            deletions = 0 if binary else int(deletions_raw)
+            if path:
+                records[(path, path)] = (additions, deletions, binary)
+            else:
+                records[(next(tokens), next(tokens))] = (additions, deletions, binary)
+    except (StopIteration, ValueError) as exc:
+        raise GovernanceError("git_output_invalid", "malformed git --numstat output") from exc
+    return records
+
+
+def _is_test_path(path: str) -> bool:
+    pure = PurePosixPath(path)
+    parts = {part.lower() for part in pure.parts[:-1]}
+    name = pure.name.lower()
+    return (
+        "tests" in parts
+        or "test" in parts
+        or "__tests__" in parts
+        or name.startswith("test_")
+        or ".test." in name
+        or ".spec." in name
+    )
+
+
+def _is_production_path(path: str) -> bool:
+    pure = PurePosixPath(path)
+    if path == EXCEPTION_PATH or _is_test_path(path):
+        return False
+    if pure.parts and pure.parts[0].lower() in {"assets", "docs"}:
+        return False
+    return pure.suffix.lower() not in DOCUMENTATION_SUFFIXES
+
+
+def _change_role(change: _ChangedFile) -> str:
+    if change.is_test:
+        return "test"
+    if not change.is_production:
+        return "non_production"
+    if change.is_move_only:
+        return "move_only_production"
+    return "behavior_production"
+
+
+def _production_subsystem(path: str) -> str:
+    pure = PurePosixPath(path)
+    parts = list(pure.parts)
+    if not parts:
+        return "root"
+    if parts[0] == "app":
+        if len(parts) >= 4 and parts[1:3] == ["runtime", "sandbox"]:
+            return "app/runtime/sandbox"
+        if len(parts) >= 3:
+            return "/".join(parts[:2])
+        return "app"
+    if parts[0] == "frontend" and len(parts) >= 5 and parts[2] == "src":
+        return "/".join(parts[:4])
+    if parts[0] in {"deploy", "skills"} and len(parts) >= 2:
+        return "/".join(parts[:2])
+    if len(parts) >= 2:
+        return parts[0]
+    return f"root/{pure.stem or pure.name}"
+
+
+def _responsibility_stem(path: str) -> str:
+    stem = PurePosixPath(path).stem.lower()
+    stem = stem.removeprefix("test_")
+    for suffix in ("_test", ".test", ".spec"):
+        stem = stem.removesuffix(suffix)
+    return re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
+
+
+def _test_mirrors_production(test_path: str, production_path: str) -> bool:
+    production = _responsibility_stem(production_path)
+    test = _responsibility_stem(test_path)
+    if not production or not test:
+        return False
+    return production == test or (len(production) >= 4 and production in test) or (len(test) >= 4 and test in production)
+
+
+def _evaluation_mode(changes: Sequence[_ChangedFile]) -> str:
+    behavior = any(item.is_behavior_change for item in changes)
+    move_only = any(item.is_production and item.is_move_only for item in changes)
+    if behavior and move_only:
+        return "mixed"
+    if behavior:
+        return "behavior_fix"
+    if move_only:
+        return "move_only"
+    return "non_production_only"
+
+
+def _sort_violations(violations: Iterable[Violation]) -> list[Violation]:
+    return sorted(violations, key=lambda item: (item.code, item.path or "", item.message))
+
+
+def _policy_as_dict() -> dict[str, Any]:
+    return {
+        "functional_hot_file_lines_exclusive": FUNCTIONAL_HOT_FILE_LINES,
+        "functional_hot_file_net_growth_max": FUNCTIONAL_HOT_FILE_NET_GROWTH_LIMIT,
+        "hot_file_lines_exclusive": HOT_FILE_LINES,
+        "hot_file_net_growth_max": HOT_FILE_NET_GROWTH_LIMIT,
+        "production_file_count_max": PRODUCTION_FILE_LIMIT,
+        "production_net_loc_max_exclusive": PRODUCTION_NET_LOC_LIMIT,
+        "production_subsystem_count_max_exclusive": PRODUCTION_SUBSYSTEM_LIMIT,
+        "test_hot_file_lines_exclusive": TEST_HOT_FILE_LINES,
+        "test_hot_file_net_growth_max": TEST_HOT_FILE_NET_GROWTH_LIMIT,
+        "test_responsibility_mirror": "required_for_behavior-changing_functional_additions",
+    }
+
+
+def _validate_exception_payload(payload: Any, today: date) -> None:
+    if not isinstance(payload, dict):
+        raise GovernanceError("invalid_exception", "exception payload must be a JSON object")
+    expected = {"schema_version", "expires_on", "owner", "reason", "violations"}
+    if set(payload) != expected:
+        raise GovernanceError("invalid_exception", f"exception keys must be exactly: {', '.join(sorted(expected))}")
+    if payload["schema_version"] != EXCEPTION_SCHEMA_VERSION:
+        raise GovernanceError("invalid_exception", f"schema_version must equal {EXCEPTION_SCHEMA_VERSION}")
+    for key in ("owner", "reason"):
+        if not isinstance(payload[key], str) or not payload[key].strip():
+            raise GovernanceError("invalid_exception", f"{key} must be a non-empty string")
+    expiry = _exception_expiry(payload["expires_on"])
+    if expiry < today:
+        raise GovernanceError("invalid_exception", "exception has expired")
+    entries = payload["violations"]
+    if not isinstance(entries, list) or not entries:
+        raise GovernanceError("invalid_exception", "violations must be a non-empty list")
+    seen: set[tuple[str, str | None]] = set()
+    for entry in entries:
+        key = _exception_key(entry)
+        if key in seen:
+            raise GovernanceError("invalid_exception", "exception violation entries must be unique")
+        seen.add(key)
+
+
+def _exception_expiry(value: Any) -> date:
+    if not isinstance(value, str):
+        raise GovernanceError("invalid_exception", "expires_on must be an ISO date string")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise GovernanceError("invalid_exception", "expires_on must be an ISO date string") from exc
+
+
+def _exception_key(entry: Any) -> tuple[str, str | None]:
+    if not isinstance(entry, dict) or set(entry) != {"code", "path"}:
+        raise GovernanceError("invalid_exception", "each violation exception must contain exactly code and path")
+    code, path = entry["code"], entry["path"]
+    if not isinstance(code, str) or not code.strip():
+        raise GovernanceError("invalid_exception", "exception violation code must be a non-empty string")
+    if path is not None and (not isinstance(path, str) or not path.strip() or "\\" in path):
+        raise GovernanceError("invalid_exception", "exception violation path must be null or a non-empty POSIX path")
+    return code, path
+
+
+def _command_failure(label: str, result: _CommandResult) -> str:
+    detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+    return f"{label} failed: {detail}"
+
+
+def _render_text(evaluation: Evaluation) -> str:
+    lines = [
+        f"code-governance: {evaluation.status.upper()}",
+        f"schema: {REPORT_SCHEMA_VERSION}",
+        f"base: {evaluation.base_ref}",
+        f"head: {evaluation.head_ref}",
+        f"mode: {evaluation.mode}",
+        f"behavior production files: {evaluation.metrics['behavior_production_files']}",
+        f"move-only production files: {evaluation.metrics['move_only_production_files']}",
+        f"production net LOC: {evaluation.metrics['production_net_loc']}",
+        f"production subsystems: {', '.join(evaluation.metrics['production_subsystems']) or 'none'}",
+        f"Ruff: {evaluation.ruff['status']}",
+    ]
+    lines.append("violations:" if evaluation.violations else "violations: none")
+    lines.extend(_violation_text(item) for item in evaluation.violations)
+    if evaluation.exempted_violations:
+        lines.append("exempted violations:")
+        lines.extend(_violation_text(item) for item in evaluation.exempted_violations)
+    return "\n".join(lines)
+
+
+def _violation_text(item: Violation) -> str:
+    location = f" [{item.path}]" if item.path else ""
+    return f"- {item.code}{location}: {item.message}"
+
+
+def _error_payload(error: GovernanceError) -> dict[str, Any]:
+    return {
+        "error": {"code": error.code, "message": str(error)},
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "status": "error",
+    }
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = _GovernanceArgumentParser(description="Evaluate ai-platform code-governance gates.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    check = subparsers.add_parser("check", help="check one exact commit range")
+    check.add_argument("--base-ref", required=True)
+    check.add_argument("--head-ref", required=True)
+    check.add_argument("--format", choices=("text", "json"), default="text")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the command-line interface and return 0, 2, or 3."""
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    requested_format = "json" if _requested_json(arguments) else "text"
+    try:
+        args = _build_parser().parse_args(arguments)
+        evaluation = CodeGovernanceEvaluator(Path.cwd()).evaluate(args.base_ref, args.head_ref)
+    except GovernanceError as error:
+        if requested_format == "json":
+            print(json.dumps(_error_payload(error), ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(f"code-governance: ERROR\n{error.code}: {error}")
+        return 3
+    if args.format == "json":
+        print(json.dumps(evaluation.as_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(_render_text(evaluation))
+    return evaluation.exit_code
+
+
+def _requested_json(arguments: Sequence[str]) -> bool:
+    try:
+        index = arguments.index("--format")
+    except ValueError:
+        return False
+    return index + 1 < len(arguments) and arguments[index + 1] == "json"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
