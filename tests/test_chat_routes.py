@@ -17,6 +17,7 @@ from app.repositories import RepositoryConflictError
 from app.settings import Settings
 from app.routes.chat import (
     _admit_chat_submission,
+    _audit_capability_denial,
     _canonical_pre_persistence_rejection_fingerprint,
     _preledger_recovery_fingerprint,
     _validate_queue_payload_for_enqueue,
@@ -316,6 +317,51 @@ def test_rejection_fingerprint_is_stable_safe_and_principal_session_scoped():
     assert "unauthorized-private-tool" not in fingerprint
     assert "private.example.test" not in fingerprint
     assert "private-credential" not in fingerprint
+
+
+@pytest.mark.asyncio
+async def test_mcp_denial_audit_redacts_raw_identity_and_correlates_deterministically(monkeypatch):
+    audit_params = []
+
+    class AuditConnection:
+        async def execute(self, _sql, params):
+            audit_params.append(params)
+
+    @asynccontextmanager
+    async def audit_transaction():
+        yield AuditConnection()
+
+    raw_tool_id = "unauthorized-private-tool"
+    denial = CapabilityAuthorizationDenial(
+        capability_kind="mcp_tool",
+        capability_id=raw_tool_id,
+        actor_department_id="finance",
+        actor_roles=("user",),
+        department_scope_ids=("qa",),
+        role_scope_ids=("qa_operator",),
+        scope_mode="allowlist",
+        decision_reason="capability_not_available",
+    )
+    error = repository_module.RepositoryAuthorizationError(
+        "mcp_tool_not_available",
+        denial=denial,
+    )
+
+    monkeypatch.setattr("app.routes.chat.transaction", audit_transaction)
+
+    await _audit_capability_denial(principal(), error, source="chat_stream")
+    await _audit_capability_denial(principal(), error, source="chat_stream")
+
+    target_ids = [params[5] for params in audit_params]
+    payloads = [json.loads(params[8]) for params in audit_params]
+    assert target_ids[0] == target_ids[1]
+    assert target_ids[0].startswith("mcp_tool_sha256:")
+    assert payloads[0]["capability_id"] == target_ids[0]
+    assert payloads[1]["capability_id"] == target_ids[1]
+    serialized_records = json.dumps(audit_params, sort_keys=True)
+    assert raw_tool_id not in serialized_records
+    assert "private.example.test" not in serialized_records
+    assert "private-credential" not in serialized_records
 
 
 @pytest.fixture(autouse=True)

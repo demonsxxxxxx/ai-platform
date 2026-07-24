@@ -604,12 +604,33 @@ async def _audit_capability_denial(
 ) -> None:
     if error.denial is None:
         return
+    audit_error = error
+    denial = error.denial
+    if denial.capability_kind == "mcp_tool":
+        digest = hashlib.sha256()
+        digest.update(b"ai-platform.chat-mcp-denial-audit.v1\x00")
+        digest.update(denial.capability_id.encode("utf-8"))
+        public_capability_id = f"mcp_tool_sha256:{digest.hexdigest()}"
+        audit_error = repositories.RepositoryAuthorizationError(
+            str(error),
+            denial=CapabilityAuthorizationDenial(
+                capability_kind=denial.capability_kind,
+                capability_id=public_capability_id,
+                actor_department_id=denial.actor_department_id,
+                actor_roles=denial.actor_roles,
+                department_scope_ids=denial.department_scope_ids,
+                role_scope_ids=denial.role_scope_ids,
+                scope_mode=denial.scope_mode,
+                decision_reason=denial.decision_reason,
+                admin_bypass=denial.admin_bypass,
+            ),
+        )
     async with transaction() as conn:
         await repositories.append_capability_authorization_denial_audit(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
-            error=error,
+            error=audit_error,
             source=source,
         )
 
