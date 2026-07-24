@@ -588,11 +588,23 @@ def test_managed_target_owner_or_mode_rejects_before_docker(
     managed_root, release_root, checkout, env_file, commit = (
         _prepare_managed_target_checkout(monkeypatch, tmp_path)
     )
-    unsafe_path = checkout if unsafe_subject == "checkout" else checkout / "tracked.txt"
+    git_config = checkout / ".git" / "config"
+    git_object = checkout / ".git" / "objects" / "aa" / ("b" * 38)
+    git_object.parent.mkdir(parents=True, exist_ok=True)
+    git_object.write_bytes(b"opaque-object")
+    expected_unsafe_paths = {
+        "checkout": checkout,
+        "tracked-file": checkout / "tracked.txt",
+        "git-config": git_config,
+        "git-object": git_object,
+    }
+    unsafe_path = expected_unsafe_paths[unsafe_subject]
+    unsafe_metadata_reads: list[Path] = []
 
     def owner_mode(path):
         candidate = Path(path)
         if candidate == unsafe_path:
+            unsafe_metadata_reads.append(candidate)
             return unsafe_metadata
         if candidate == env_file:
             return (1000, 0o600)
@@ -618,6 +630,7 @@ def test_managed_target_owner_or_mode_rejects_before_docker(
         )
 
     assert managed_root.is_dir()
+    assert unsafe_metadata_reads == [expected_unsafe_paths[unsafe_subject]]
     assert docker_bases == []
 
 
@@ -3179,10 +3192,12 @@ def test_materialize_main_checkout_rejects_unsafe_existing_tree_before_fetch(
         "git-object": git_object,
     }
     unsafe_path = unsafe_paths[unsafe_subject]
+    unsafe_metadata_reads: list[Path] = []
 
     def owner_mode(path):
         candidate = Path(path)
         if candidate == unsafe_path:
+            unsafe_metadata_reads.append(candidate)
             return unsafe_metadata
         return (1000, 0o755 if candidate.is_dir() else 0o644)
 
@@ -3191,6 +3206,7 @@ def test_materialize_main_checkout_rejects_unsafe_existing_tree_before_fetch(
     with pytest.raises(ReleaseAuthorityError, match=rf"^{expected_gate} gate failed:"):
         release_authority.materialize_main_checkout(release_root, commit)
 
+    assert unsafe_metadata_reads == [unsafe_path]
     assert commands == []
 
 
