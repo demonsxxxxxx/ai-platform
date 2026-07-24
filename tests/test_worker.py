@@ -857,8 +857,9 @@ def default_cancel_not_requested(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log, raising=False)
 
     class _DefaultCatalogSnapshot:
-        def __init__(self, skill_id):
+        def __init__(self, skill_id, materialized_skill_ids):
             self.available_skill_ids = (skill_id,)
+            self.materialized_skill_ids = materialized_skill_ids
             self._skill_id = skill_id
 
         def entry(self, skill_id):
@@ -868,8 +869,17 @@ def default_cancel_not_requested(monkeypatch):
 
     class _DefaultCatalogResolution:
         def __init__(self, skill_id, manifests):
-            self.snapshot = _DefaultCatalogSnapshot(skill_id)
             self.manifests = list(manifests)
+            materialized_skill_ids = (
+                tuple(
+                    str(manifest.get("skill_id") or "")
+                    for manifest in self.manifests
+                    if isinstance(manifest, dict) and str(manifest.get("skill_id") or "")
+                )
+                if skill_id != "general-chat"
+                else ()
+            )
+            self.snapshot = _DefaultCatalogSnapshot(skill_id, materialized_skill_ids)
 
         def runtime_input_updates(self):
             return {}

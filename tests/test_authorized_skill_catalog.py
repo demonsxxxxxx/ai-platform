@@ -210,8 +210,18 @@ async def test_catalog_exposes_exact_authorized_metadata_without_general_chat_ma
 @pytest.mark.asyncio
 async def test_catalog_question_does_not_decode_any_full_skill_package(monkeypatch):
     rows = [
-        _skill_row("skill-a", body_marker="BODY_ONLY_A"),
-        _skill_row("skill-b", body_marker="BODY_ONLY_B"),
+        _skill_row(
+            "ctd-32s73-stability-template-fill",
+            dependency_ids=["reference-fact-extraction"],
+            body_marker="BODY_ONLY_CTD",
+        ),
+        _skill_row("reference-fact-extraction", body_marker="BODY_ONLY_REFERENCE"),
+        _skill_row(
+            "qa-file-reviewer",
+            dependency_ids=["minimax-docx"],
+            body_marker="BODY_ONLY_QA",
+        ),
+        _skill_row("minimax-docx", body_marker="BODY_ONLY_MINIMAX"),
     ]
     decoded_skill_ids: list[str] = []
     original_validator = catalog._validated_manifest
@@ -225,10 +235,21 @@ async def test_catalog_question_does_not_decode_any_full_skill_package(monkeypat
     resolution, _ = await _resolve(
         monkeypatch,
         rows=rows,
-        distributions=[_distribution("skill-a"), _distribution("skill-b")],
+        distributions=[_distribution(str(row["skill_id"])) for row in rows],
     )
 
-    assert set(resolution.snapshot.available_skill_ids) == {"skill-a", "skill-b"}
+    assert set(resolution.snapshot.available_skill_ids) == {
+        "ctd-32s73-stability-template-fill",
+        "qa-file-reviewer",
+    }
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="What Skills do I have?",
+        file_names=[],
+        authorized_skill_catalog=resolution.snapshot,
+    )
+    assert "reference-fact-extraction" not in prompt
+    assert "minimax-docx" not in prompt
     assert resolution.manifests == []
     assert decoded_skill_ids == []
 
@@ -295,17 +316,34 @@ async def test_catalog_truncation_is_deterministic_bounded_and_explicit(monkeypa
 
 @pytest.mark.asyncio
 async def test_runtime_catalog_rejects_identity_swap_and_manifest_set_expansion(monkeypatch):
-    rows = [_skill_row("skill-a")]
-    distributions = [_distribution("skill-a")]
-    resolution, _ = await _resolve(monkeypatch, rows=rows, distributions=distributions)
+    rows = [
+        _skill_row(
+            "ctd-32s73-stability-template-fill",
+            dependency_ids=["reference-fact-extraction"],
+        ),
+        _skill_row("reference-fact-extraction"),
+        _skill_row("minimax-docx"),
+    ]
+    distributions = [_distribution(str(row["skill_id"])) for row in rows]
+    binding = _binding(selected_skill_id="ctd-32s73-stability-template-fill")
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=rows,
+        distributions=distributions,
+        binding=binding,
+    )
     runtime_input = resolution.runtime_input_updates()
 
     loaded = load_runtime_authorized_skill_catalog(
         runtime_input,
-        expected_binding=_binding(),
+        expected_binding=binding,
     )
     assert loaded is not None
-    assert loaded.snapshot.available_skill_ids == ("skill-a",)
+    assert loaded.snapshot.available_skill_ids == ("ctd-32s73-stability-template-fill",)
+    assert loaded.materialized_skill_ids == (
+        "ctd-32s73-stability-template-fill",
+        "reference-fact-extraction",
+    )
 
     with pytest.raises(AuthorizedSkillCatalogError, match="binding_mismatch"):
         load_runtime_authorized_skill_catalog(
@@ -315,10 +353,15 @@ async def test_runtime_catalog_rejects_identity_swap_and_manifest_set_expansion(
 
     injected = json.loads(json.dumps(runtime_input))
     injected[catalog.RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY].append(
-        _manifest_from_row(_skill_row("skill-z"))
+        _manifest_from_row(rows[2])
     )
     with pytest.raises(AuthorizedSkillCatalogError, match="materializations_mismatch"):
-        load_runtime_authorized_skill_catalog(injected, expected_binding=_binding())
+        load_runtime_authorized_skill_catalog(injected, expected_binding=binding)
+
+    tampered = json.loads(json.dumps(runtime_input))
+    tampered[catalog.RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY][1]["description"] = "tampered"
+    with pytest.raises(AuthorizedSkillCatalogError, match="materializations_mismatch"):
+        load_runtime_authorized_skill_catalog(tampered, expected_binding=binding)
 
 
 @pytest.mark.asyncio
@@ -361,7 +404,7 @@ class _FakeQueuePayload:
 
 
 @pytest.mark.asyncio
-async def test_worker_overwrites_injected_catalog_and_builds_exact_skill_policy_subject(monkeypatch):
+async def test_worker_overwrites_injected_catalog_without_authorizing_discovery_entries(monkeypatch):
     rows = [_skill_row(f"skill-{suffix}") for suffix in "abcd"]
     distributions = [_distribution(str(row["skill_id"])) for row in rows]
     resolution, _ = await _resolve(monkeypatch, rows=rows, distributions=distributions)
@@ -392,18 +435,22 @@ async def test_worker_overwrites_injected_catalog_and_builds_exact_skill_policy_
         skill={"skill_status": "active"},
         skill_decision=decision,
         authorized_skill_manifests=resolution.manifests,
-        authorized_skill_names=list(resolution.snapshot.available_skill_ids),
+        authorized_skill_names=list(resolution.materialized_skill_ids),
     )
-    skill_subject = next(subject for subject in subjects if subject["identity"] == "Skill")
-    assert skill_subject["allowed_skill_names"] == list(
-        resolution.snapshot.available_skill_ids
-    )
-    assert "skill-z" not in skill_subject["allowed_skill_names"]
+    assert all(subject["identity"] != "Skill" for subject in subjects)
 
 
 @pytest.mark.asyncio
-async def test_worker_dispatch_revalidates_and_propagates_bound_catalog(monkeypatch):
-    rows = [_skill_row(f"skill-{suffix}") for suffix in "abcd"]
+async def test_worker_dispatch_authorizes_only_selected_private_dependency_closure(monkeypatch):
+    rows = [
+        _skill_row(
+            "ctd-32s73-stability-template-fill",
+            dependency_ids=["reference-fact-extraction"],
+        ),
+        _skill_row("reference-fact-extraction"),
+        _skill_row("minimax-docx"),
+        _skill_row("skill-a"),
+    ]
     distributions = [_distribution(str(row["skill_id"])) for row in rows]
     observed: dict[str, Any] = {}
 
@@ -423,7 +470,7 @@ async def test_worker_dispatch_revalidates_and_propagates_bound_catalog(monkeypa
 
     async def resolve_selected(*args, **kwargs):
         return {
-            "skill_id": "general-chat",
+            "skill_id": "ctd-32s73-stability-template-fill",
             "skill_status": "active",
             "executor_type": "claude-agent-worker",
         }
@@ -448,7 +495,7 @@ async def test_worker_dispatch_revalidates_and_propagates_bound_catalog(monkeypa
     monkeypatch.setattr(catalog.repositories, "run_mcp_tool_ids_for_skill", lambda *_args, **_kwargs: [])
     monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", resolve_catalog_with_current_authority)
 
-    primary_manifest = _manifest_from_row(_skill_row("general-chat"))
+    primary_manifest = _manifest_from_row(rows[0])
     primary_version = str(primary_manifest["version"])
     payload = QueueRunPayload(
         tenant_id="tenant-a",
@@ -457,7 +504,7 @@ async def test_worker_dispatch_revalidates_and_propagates_bound_catalog(monkeypa
         session_id="session-a",
         run_id="run-a",
         agent_id="general-agent",
-        skill_id="general-chat",
+        skill_id="ctd-32s73-stability-template-fill",
         executor_type="claude-agent-worker",
         skill_version=primary_version,
         release_decision={
@@ -479,7 +526,7 @@ async def test_worker_dispatch_revalidates_and_propagates_bound_catalog(monkeypa
         "session_id": "session-a",
         "run_id": "run-a",
         "agent_id": "general-agent",
-        "skill_id": "general-chat",
+        "skill_id": "ctd-32s73-stability-template-fill",
     }
 
     async def current_principal(**kwargs):
@@ -504,23 +551,29 @@ async def test_worker_dispatch_revalidates_and_propagates_bound_catalog(monkeypa
     assert authorization.denial is None
     loaded = load_runtime_authorized_skill_catalog(
         authorization.payload.input,
-        expected_binding=_binding(),
+        expected_binding=_binding(selected_skill_id="ctd-32s73-stability-template-fill"),
     )
     assert loaded is not None
     assert set(loaded.snapshot.available_skill_ids) == {
+        "ctd-32s73-stability-template-fill",
         "skill-a",
-        "skill-b",
-        "skill-c",
-        "skill-d",
     }
+    assert loaded.snapshot.entry("reference-fact-extraction") is None
+    assert loaded.snapshot.entry("minimax-docx") is None
+    assert loaded.materialized_skill_ids == (
+        "ctd-32s73-stability-template-fill",
+        "reference-fact-extraction",
+    )
     skill_subject = next(
         subject
         for subject in authorization.payload.input["_runtime_tool_policy_subjects"]
         if subject["identity"] == "Skill"
     )
-    assert skill_subject["allowed_skill_names"] == list(
-        loaded.snapshot.available_skill_ids
-    )
+    assert skill_subject["allowed_skill_names"] == [
+        "ctd-32s73-stability-template-fill",
+        "reference-fact-extraction",
+    ]
+    assert "minimax-docx" not in skill_subject["allowed_skill_names"]
     assert observed["catalog"]["tenant_id"] == "tenant-a"
     assert observed["catalog"]["rollout_key"] == "user-a"
     assert observed["current_authority"] == {
@@ -824,12 +877,12 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
     rows = [
         _skill_row("skill-a", body_marker="BODY_ONLY_A"),
         _skill_row(
-            "qa-file-reviewer",
-            dependency_ids=["minimax-docx"],
-            body_marker="BODY_ONLY_B",
+            "ctd-32s73-stability-template-fill",
+            dependency_ids=["reference-fact-extraction"],
+            body_marker="BODY_ONLY_CTD",
         ),
-        _skill_row("skill-c", body_marker="BODY_ONLY_C"),
-        _skill_row("minimax-docx", body_marker="BODY_ONLY_DEPENDENCY"),
+        _skill_row("reference-fact-extraction", body_marker="BODY_ONLY_REFERENCE"),
+        _skill_row("minimax-docx", body_marker="BODY_ONLY_UNRELATED"),
     ]
     distributions = [_distribution(str(row["skill_id"])) for row in rows]
     decoded_skill_ids: list[str] = []
@@ -844,21 +897,21 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
         monkeypatch,
         rows=rows,
         distributions=distributions,
-        binding=_binding(selected_skill_id="qa-file-reviewer"),
+        binding=_binding(selected_skill_id="ctd-32s73-stability-template-fill"),
     )
     assert resolution.snapshot.available_skill_ids == (
-        "qa-file-reviewer",
+        "ctd-32s73-stability-template-fill",
         "skill-a",
-        "skill-c",
     )
+    assert resolution.snapshot.entry("reference-fact-extraction") is None
     assert resolution.snapshot.entry("minimax-docx") is None
     assert resolution.snapshot.materialized_skill_ids == (
-        "qa-file-reviewer",
-        "minimax-docx",
+        "ctd-32s73-stability-template-fill",
+        "reference-fact-extraction",
     )
     assert [manifest["skill_id"] for manifest in resolution.manifests] == [
-        "qa-file-reviewer",
-        "minimax-docx",
+        "ctd-32s73-stability-template-fill",
+        "reference-fact-extraction",
     ]
 
     settings = types.SimpleNamespace(
@@ -876,7 +929,7 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
         run_id="run-a",
         attempt_id="attempt-a",
         agent_id="general-agent",
-        skill_id="qa-file-reviewer",
+        skill_id="ctd-32s73-stability-template-fill",
         file_ids=[],
         input={"message": "Route this request", **resolution.runtime_input_updates()},
         skill_version=str(selected_manifest["version"]),
@@ -898,16 +951,23 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
 
     assert failure is None
     assert prepared is not None
-    assert prepared.allowed_skill_names == ["qa-file-reviewer", "minimax-docx"]
-    assert prepared.staged_skill_names == ["qa-file-reviewer", "minimax-docx"]
+    assert prepared.allowed_skill_names == [
+        "ctd-32s73-stability-template-fill",
+        "reference-fact-extraction",
+    ]
+    assert prepared.staged_skill_names == [
+        "ctd-32s73-stability-template-fill",
+        "reference-fact-extraction",
+    ]
     assert {child.name for child in (workspace / ".claude" / "skills").iterdir()} == {
-        "qa-file-reviewer",
-        "minimax-docx",
+        "ctd-32s73-stability-template-fill",
+        "reference-fact-extraction",
     }
     assert "BODY_ONLY_A" not in prepared.prompt
-    assert "BODY_ONLY_B" not in prepared.prompt
-    assert "BODY_ONLY_C" not in prepared.prompt
-    assert "BODY_ONLY_DEPENDENCY" not in prepared.prompt
+    assert "BODY_ONLY_CTD" not in prepared.prompt
+    assert "BODY_ONLY_REFERENCE" not in prepared.prompt
+    assert "BODY_ONLY_UNRELATED" not in prepared.prompt
+    assert "reference-fact-extraction" not in prepared.prompt
     assert "minimax-docx" not in prepared.prompt
     diagnostics = project_sdk_turn_diagnostics(
         {
@@ -915,16 +975,25 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
             "last_public_stage": "skills",
         },
         error_code=None,
-        selected_skill_id="qa-file-reviewer",
-        used_skill_ids=["qa-file-reviewer", "minimax-docx"],
+        selected_skill_id="ctd-32s73-stability-template-fill",
+        used_skill_ids=[
+            "ctd-32s73-stability-template-fill",
+            "reference-fact-extraction",
+        ],
         public_skill_metadata=prepared.public_skill_metadata,
     )
-    assert diagnostics["selected_skill"] == prepared.public_skill_metadata["qa-file-reviewer"]
-    assert diagnostics["used_skills"] == [
-        prepared.public_skill_metadata["qa-file-reviewer"]
+    assert diagnostics["selected_skill"] == prepared.public_skill_metadata[
+        "ctd-32s73-stability-template-fill"
     ]
+    assert diagnostics["used_skills"] == [
+        prepared.public_skill_metadata["ctd-32s73-stability-template-fill"]
+    ]
+    assert "reference-fact-extraction" not in str(diagnostics)
     assert "minimax-docx" not in str(diagnostics)
-    assert set(decoded_skill_ids) == {"qa-file-reviewer", "minimax-docx"}
+    assert set(decoded_skill_ids) == {
+        "ctd-32s73-stability-template-fill",
+        "reference-fact-extraction",
+    }
 
 
 @pytest.mark.asyncio
@@ -1107,7 +1176,10 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
 
 
 @pytest.mark.asyncio
-async def test_sdk_explicit_selection_requires_exact_real_skill_tool(monkeypatch, tmp_path):
+async def test_sdk_registers_required_private_dependency_and_denies_unrelated_private_skill(
+    monkeypatch,
+    tmp_path,
+):
     captured: dict[str, Any] = {}
 
     class Message:
@@ -1130,6 +1202,7 @@ async def test_sdk_explicit_selection_requires_exact_real_skill_tool(monkeypatch
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            captured.update(kwargs)
 
     class PermissionResultAllow:
         pass
@@ -1141,14 +1214,26 @@ async def test_sdk_explicit_selection_requires_exact_real_skill_tool(monkeypatch
     async def query(prompt, options):
         messages = [item async for item in prompt]
         captured["prompt"] = messages[0]["message"]["content"]
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "skill-b"},
-            }
+        captured["required_permission"] = await options.kwargs["can_use_tool"](
+            "Skill",
+            {"skill": "reference-fact-extraction"},
         )
+        captured["unrelated_permission"] = await options.kwargs["can_use_tool"](
+            "Skill",
+            {"skill": "minimax-docx"},
+        )
+        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
+        for skill_id in (
+            "ctd-32s73-stability-template-fill",
+            "reference-fact-extraction",
+        ):
+            await hook(
+                {
+                    "hook_event_name": "PostToolUse",
+                    "tool_name": "Skill",
+                    "tool_input": {"skill": skill_id},
+                }
+            )
         yield ResultMessage()
 
     fake_sdk = types.SimpleNamespace(
@@ -1166,17 +1251,40 @@ async def test_sdk_explicit_selection_requires_exact_real_skill_tool(monkeypatch
         "app.executors.claude_agent_sdk_runner.get_settings",
         _sdk_settings,
     )
-    skill_ids = [f"skill-{suffix}" for suffix in "abcd"]
+    skill_ids = [
+        "ctd-32s73-stability-template-fill",
+        "reference-fact-extraction",
+    ]
 
     result = await run_claude_agent_sdk(
         prompt="use selected",
         cwd=Path(tmp_path),
-        skill_id="skill-b",
+        skill_id="ctd-32s73-stability-template-fill",
         skills=skill_ids,
         tool_policy_subjects=[_skill_policy_subject(skill_ids)],
         execution_policy="sandbox_brokered",
+        public_skill_metadata={
+            "ctd-32s73-stability-template-fill": {
+                "name": "CTD stability template fill",
+                "version": "version-a",
+                "availability": "available",
+            }
+        },
     )
 
-    assert 'exactly this input: {"skill":"skill-b"}' in captured["prompt"]
+    assert 'exactly this input: {"skill":"ctd-32s73-stability-template-fill"}' in captured[
+        "prompt"
+    ]
+    assert captured["skills"] == skill_ids
+    assert captured["allowed_tools"] == [
+        "Skill(ctd-32s73-stability-template-fill)",
+        "Skill(reference-fact-extraction)",
+    ]
+    assert isinstance(captured["required_permission"], PermissionResultAllow)
+    assert isinstance(captured["unrelated_permission"], PermissionResultDeny)
+    assert captured["unrelated_permission"].message == "tool_parameters_not_authorized"
     assert result.error is None
-    assert result.used_skills == ["skill-b"]
+    assert result.used_skills == skill_ids
+    assert result.used_skills_source == "executor_hook"
+    assert "reference-fact-extraction" not in str(result.turn_diagnostics)
+    assert "minimax-docx" not in str(result.turn_diagnostics)
