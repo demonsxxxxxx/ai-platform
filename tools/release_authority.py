@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 from collections import OrderedDict, deque
 import ctypes
 from dataclasses import dataclass
@@ -204,6 +205,7 @@ class _BuildProgressClassifier:
         self._buffer = bytearray()
         self._discarding_line = False
         self._unsafe = False
+        self._latest_structural_step_unclassifiable = False
         self._steps: OrderedDict[int, _BuildProgressStep] = OrderedDict()
 
     def feed(self, chunk: str | bytes | None) -> None:
@@ -236,7 +238,7 @@ class _BuildProgressClassifier:
 
     def summary(self) -> dict[str, Any]:
         """Return only fixed allowlist values and bounded numeric progress facts."""
-        if self._unsafe or not self._steps:
+        if self._unsafe or self._latest_structural_step_unclassifiable or not self._steps:
             return {"build_progress_status": "unknown"}
         step = next(reversed(self._steps.values()))
         summary: dict[str, Any] = {
@@ -291,7 +293,10 @@ class _BuildProgressClassifier:
             instruction = stage_instruction + b" " + instruction
         instruction_category = self._classify_instruction(instruction.strip())
         if instruction_category == "unknown":
+            if label is not None:
+                self._latest_structural_step_unclassifiable = True
             return
+        self._latest_structural_step_unclassifiable = False
         self._steps[ordinal] = _BuildProgressStep(
             ordinal=ordinal,
             total=total,
@@ -308,8 +313,6 @@ class _BuildProgressClassifier:
         if step is None:
             return
         timestamp = min(float(match.group("seconds")), 1_000_000_000.0)
-        if step.last_timestamp_seconds is not None and timestamp > step.last_timestamp_seconds:
-            step.advancing = True
         step.last_timestamp_seconds = timestamp
         progress = self._progress_units(payload)
         if progress is not None:
@@ -397,6 +400,8 @@ class _BoundedBuildProgressCapture:
         self._buffer = bytearray()
         self._discarding_line = False
         self._unsafe = False
+        self._utf8_decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        self._utf8_invalid = False
         self._scan_tail = b""
         self._headers: OrderedDict[int, bytes] = OrderedDict()
         self._tail: deque[bytes] = deque(maxlen=BUILD_PROGRESS_MAX_TAIL_LINES)
@@ -405,6 +410,12 @@ class _BoundedBuildProgressCapture:
         """Capture one bytes chunk without decoding partial UTF-8 or growing without bound."""
         if not chunk:
             return
+        if not self._utf8_invalid:
+            try:
+                self._utf8_decoder.decode(chunk, final=False)
+            except UnicodeDecodeError:
+                self._utf8_invalid = True
+                self._unsafe = True
         scan = (self._scan_tail + chunk).lower()
         if any(marker in scan for marker in _BuildProgressClassifier._SECRET_MARKERS):
             self._unsafe = True
@@ -423,13 +434,19 @@ class _BoundedBuildProgressCapture:
                 else:
                     self._buffer.clear()
                     self._discarding_line = True
+                    self._unsafe = True
 
     def finish(self) -> None:
         """Capture a trailing partial line only after the stdout reader has stopped."""
+        if not self._utf8_invalid:
+            try:
+                self._utf8_decoder.decode(b"", final=True)
+            except UnicodeDecodeError:
+                self._utf8_invalid = True
+                self._unsafe = True
         if self._buffer or self._discarding_line:
             self.line_count = min(self.line_count + 1, BUILD_PROGRESS_MAX_LINE_COUNT)
-            if not self._discarding_line:
-                self._capture_line(bytes(self._buffer).rstrip(b"\r"))
+            self._unsafe = True
         self._buffer.clear()
         self._discarding_line = False
         self._scan_tail = b""
@@ -562,6 +579,34 @@ def _communicate_with_bounded_build_progress(
     for reader in (stdout_reader, stderr_reader):
         reader.join(max(0.0, drain_deadline - time.monotonic()))
     drain_complete = not stdout_reader.is_alive() and not stderr_reader.is_alive()
+    if not drain_complete:
+        _terminate_owned_process_tree(
+            process,
+            force=False,
+            windows_job_handle=windows_job_handle,
+        )
+        try:
+            process.wait(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
+        except BaseException:
+            pass
+        drain_deadline = time.monotonic() + PROCESS_TREE_TERMINATION_GRACE_SECONDS
+        for reader in (stdout_reader, stderr_reader):
+            reader.join(max(0.0, drain_deadline - time.monotonic()))
+        drain_complete = not stdout_reader.is_alive() and not stderr_reader.is_alive()
+    if not drain_complete:
+        _terminate_owned_process_tree(
+            process,
+            force=True,
+            windows_job_handle=windows_job_handle,
+        )
+        try:
+            process.wait(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
+        except BaseException:
+            pass
+        drain_deadline = time.monotonic() + PROCESS_TREE_TERMINATION_GRACE_SECONDS
+        for reader in (stdout_reader, stderr_reader):
+            reader.join(max(0.0, drain_deadline - time.monotonic()))
+        drain_complete = not stdout_reader.is_alive() and not stderr_reader.is_alive()
     if not drain_complete:
         _close_process_pipes(process)
         drain_deadline = time.monotonic() + PROCESS_TREE_TERMINATION_GRACE_SECONDS

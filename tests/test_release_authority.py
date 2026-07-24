@@ -4020,10 +4020,50 @@ def test_build_progress_capture_bounds_hostile_large_output_and_counts_lines():
 
     summary = capture.classify()
 
-    assert summary["instruction_category"] == "run-pnpm-install"
-    assert summary["line_count"] == release_authority.BUILD_PROGRESS_MAX_TAIL_LINES * 3 + 2
+    assert summary == {"build_progress_status": "unknown"}
+    assert capture.line_count == release_authority.BUILD_PROGRESS_MAX_TAIL_LINES * 3 + 2
     assert len(capture._tail) <= release_authority.BUILD_PROGRESS_MAX_TAIL_LINES
     assert len(capture._headers) <= release_authority.BUILD_PROGRESS_MAX_TRACKED_STEPS
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b"#9 [runtime 5/9] RUN arbitrary hostile command\n",
+        b"partial utf-8 tail \xf0\x9f\x92",
+    ],
+)
+def test_build_progress_latest_unclassifiable_or_truncated_tail_invalidates_prior_step(tail):
+    capture = release_authority._BoundedBuildProgressCapture()
+    capture.feed(b"#8 [runtime 4/9] RUN apt-get update\n")
+    capture.feed(tail)
+    capture.finish()
+
+    assert capture.classify() == {"build_progress_status": "unknown"}
+
+
+def test_build_progress_advancing_requires_increasing_recognized_units():
+    timestamp_only = release_authority._BoundedBuildProgressCapture()
+    timestamp_only.feed(b"#8 [runtime 4/9] RUN apt-get update\n")
+    timestamp_only.feed(b"#8 1.000 downloading without numeric progress\n")
+    timestamp_only.feed(b"#8 2.000 still downloading without numeric progress\n")
+    timestamp_only.finish()
+
+    equal_progress = release_authority._BoundedBuildProgressCapture()
+    equal_progress.feed(b"#8 [runtime 4/9] RUN apt-get update\n")
+    equal_progress.feed(b"#8 1.000 downloading 1 / 9\n")
+    equal_progress.feed(b"#8 2.000 downloading 1 / 9\n")
+    equal_progress.finish()
+
+    increasing_progress = release_authority._BoundedBuildProgressCapture()
+    increasing_progress.feed(b"#8 [runtime 4/9] RUN apt-get update\n")
+    increasing_progress.feed(b"#8 1.000 downloading 1 / 9\n")
+    increasing_progress.feed(b"#8 2.000 downloading 2 / 9\n")
+    increasing_progress.finish()
+
+    assert timestamp_only.classify()["advancing"] is False
+    assert equal_progress.classify()["advancing"] is False
+    assert increasing_progress.classify()["advancing"] is True
 
 
 def test_run_canonical_nonzero_exit_attaches_bounded_progress_without_raw_stdout():
@@ -4101,6 +4141,71 @@ def test_run_canonical_timeout_cleans_process_before_classification(monkeypatch,
         "last_progress_timestamp_seconds": 1.0,
     }
     assert "/private" not in json.dumps(exc_info.value.safe_build_progress_diagnostic)
+
+
+@pytest.mark.parametrize("exit_code", [0, 23])
+def test_run_canonical_parent_exit_kills_descendant_pipe_holder_before_classification(
+    monkeypatch,
+    tmp_path,
+    exit_code,
+):
+    pid_file = tmp_path / f"build-progress-pipe-holder-{exit_code}.pid"
+    observed: list[int] = []
+    original_classify = release_authority._BoundedBuildProgressCapture.classify
+    child_code = "import time; time.sleep(60)"
+    parent_code = (
+        "import pathlib, subprocess, sys; "
+        f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid), encoding='utf-8'); "
+        "sys.stdout.buffer.write(b'#6 [runtime 3/8] RUN pip install -r requirements\\n'); "
+        f"sys.stdout.flush(); sys.exit({exit_code})"
+    )
+
+    def classify_after_pipe_holder_cleanup(capture):
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+        observed.append(child_pid)
+        assert _wait_for_owned_test_process_exit(child_pid)
+        return original_classify(capture)
+
+    monkeypatch.setattr(
+        release_authority._BoundedBuildProgressCapture,
+        "classify",
+        classify_after_pipe_holder_cleanup,
+    )
+    child_pid: int | None = None
+    try:
+        if exit_code:
+            with pytest.raises(subprocess.CalledProcessError) as exc_info:
+                release_authority._run(
+                    [sys.executable, "-c", parent_code],
+                    timeout=2,
+                    classify_build_progress=True,
+                )
+            assert exc_info.value.returncode == exit_code
+        else:
+            result = release_authority._run(
+                [sys.executable, "-c", parent_code],
+                timeout=2,
+                classify_build_progress=True,
+            )
+            assert result.returncode == 0
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+        assert observed == [child_pid]
+        assert _wait_for_owned_test_process_exit(child_pid)
+    finally:
+        if child_pid is not None and not _wait_for_owned_test_process_exit(child_pid, timeout_seconds=0.05):
+            if os.name == "posix":
+                try:
+                    os.kill(child_pid, 9)
+                except ProcessLookupError:
+                    pass
+            else:
+                subprocess.run(
+                    ["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
 
 
 def test_run_canonical_timeout_partial_utf8_and_hostile_token_fail_closed():
