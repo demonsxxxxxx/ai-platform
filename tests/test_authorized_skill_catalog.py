@@ -23,7 +23,6 @@ from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.skills import catalog
 from app.skills.catalog import (
     AVAILABLE,
-    UNAVAILABLE_DEPENDENCY,
     AuthorizedSkillCatalogBinding,
     AuthorizedSkillCatalogError,
     load_runtime_authorized_skill_catalog,
@@ -167,7 +166,7 @@ async def _resolve(
 
 
 @pytest.mark.asyncio
-async def test_catalog_exposes_and_materializes_exact_authorized_released_enabled_set(monkeypatch):
+async def test_catalog_exposes_exact_authorized_metadata_without_general_chat_materialization(monkeypatch):
     rows = [_skill_row(f"skill-{suffix}") for suffix in "abcdef"]
     rows[-1]["version_status"] = "reviewed"
     distributions = [
@@ -191,9 +190,8 @@ async def test_catalog_exposes_and_materializes_exact_authorized_released_enable
         "skill-c",
         "skill-d",
     }
-    assert {manifest["skill_id"] for manifest in resolution.manifests} == set(
-        resolution.snapshot.available_skill_ids
-    )
+    assert resolution.snapshot.materialized_skill_ids == ()
+    assert resolution.manifests == []
     assert resolution.snapshot.entry("skill-e") is None
     assert resolution.snapshot.entry("skill-f") is None
     assert observed["catalog"] == {
@@ -203,6 +201,32 @@ async def test_catalog_exposes_and_materializes_exact_authorized_released_enable
     }
     assert observed["distributions"]["tenant_id"] == "tenant-a"
     assert observed["distributions"]["include_disabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_catalog_question_does_not_decode_any_full_skill_package(monkeypatch):
+    rows = [
+        _skill_row("skill-a", body_marker="BODY_ONLY_A"),
+        _skill_row("skill-b", body_marker="BODY_ONLY_B"),
+    ]
+    decoded_skill_ids: list[str] = []
+    original_validator = catalog._validated_manifest
+
+    def track_manifest_decode(value):
+        decoded_skill_ids.append(str(value.get("skill_id") or ""))
+        return original_validator(value)
+
+    monkeypatch.setattr(catalog, "_validated_manifest", track_manifest_decode)
+
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=rows,
+        distributions=[_distribution("skill-a"), _distribution("skill-b")],
+    )
+
+    assert set(resolution.snapshot.available_skill_ids) == {"skill-a", "skill-b"}
+    assert resolution.manifests == []
+    assert decoded_skill_ids == []
 
 
 @pytest.mark.asyncio
@@ -225,7 +249,7 @@ async def test_catalog_fails_closed_for_role_scope_and_never_uses_admin_bypass(m
 
 
 @pytest.mark.asyncio
-async def test_authorized_skill_with_unauthorized_dependency_is_actionably_unavailable(monkeypatch):
+async def test_skill_with_unauthorized_dependency_is_absent_from_catalog(monkeypatch):
     rows = [
         _skill_row("qa-file-reviewer", dependency_ids=["minimax-docx"]),
         _skill_row("minimax-docx"),
@@ -238,10 +262,7 @@ async def test_authorized_skill_with_unauthorized_dependency_is_actionably_unava
         distributions=distributions,
     )
 
-    entry = resolution.snapshot.entry("qa-file-reviewer")
-    assert entry is not None
-    assert entry.availability == UNAVAILABLE_DEPENDENCY
-    assert entry.invocation_handle == ""
+    assert resolution.snapshot.entry("qa-file-reviewer") is None
     assert resolution.snapshot.entry("minimax-docx") is None
     assert resolution.manifests == []
 
@@ -736,7 +757,7 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
 
 
 @pytest.mark.asyncio
-async def test_adapter_stages_every_available_catalog_skill_but_prompt_contains_metadata_only(
+async def test_adapter_catalog_question_stages_no_full_skill_but_prompt_contains_metadata_only(
     monkeypatch,
     tmp_path,
 ):
@@ -784,13 +805,106 @@ async def test_adapter_stages_every_available_catalog_skill_but_prompt_contains_
 
     assert failure is None
     assert prepared is not None
-    assert prepared.allowed_skill_names == list(resolution.snapshot.available_skill_ids)
-    assert prepared.staged_skill_names == list(resolution.snapshot.available_skill_ids)
-    assert {
-        child.name for child in (workspace / ".claude" / "skills").iterdir()
-    } == set(resolution.snapshot.available_skill_ids)
+    assert prepared.allowed_skill_names == []
+    assert prepared.staged_skill_names == []
+    assert list((workspace / ".claude" / "skills").iterdir()) == []
     assert "AUTHORIZED_SKILL_CATALOG_JSON=" in prepared.prompt
     assert all(f"BODY_ONLY_{suffix.upper()}" not in prepared.prompt for suffix in "abcd")
+
+
+@pytest.mark.asyncio
+async def test_adapter_stages_only_routed_skill_and_dependency_closure(
+    monkeypatch,
+    tmp_path,
+):
+    rows = [
+        _skill_row("skill-a", body_marker="BODY_ONLY_A"),
+        _skill_row(
+            "qa-file-reviewer",
+            dependency_ids=["minimax-docx"],
+            body_marker="BODY_ONLY_B",
+        ),
+        _skill_row("skill-c", body_marker="BODY_ONLY_C"),
+        _skill_row("minimax-docx", body_marker="BODY_ONLY_DEPENDENCY"),
+    ]
+    distributions = [_distribution(str(row["skill_id"])) for row in rows]
+    decoded_skill_ids: list[str] = []
+    original_validator = catalog._validated_manifest
+
+    def track_manifest_decode(value):
+        decoded_skill_ids.append(str(value.get("skill_id") or ""))
+        return original_validator(value)
+
+    monkeypatch.setattr(catalog, "_validated_manifest", track_manifest_decode)
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=rows,
+        distributions=distributions,
+        binding=_binding(selected_skill_id="qa-file-reviewer"),
+    )
+    assert resolution.snapshot.available_skill_ids == (
+        "qa-file-reviewer",
+        "minimax-docx",
+        "skill-a",
+        "skill-c",
+    )
+    assert resolution.snapshot.materialized_skill_ids == (
+        "qa-file-reviewer",
+        "minimax-docx",
+    )
+    assert [manifest["skill_id"] for manifest in resolution.manifests] == [
+        "qa-file-reviewer",
+        "minimax-docx",
+    ]
+
+    settings = types.SimpleNamespace(
+        platform_skills_root=str(tmp_path / "platform-skills"),
+        claude_agent_workspace_root=str(tmp_path / "workspaces"),
+        skill_staging_subdir=".claude/skills",
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
+    selected_manifest = _manifest_from_row(rows[1])
+    payload = RunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        agent_id="general-agent",
+        skill_id="qa-file-reviewer",
+        file_ids=[],
+        input={"message": "Route this request", **resolution.runtime_input_updates()},
+        skill_version=str(selected_manifest["version"]),
+        release_decision={
+            "schema_version": RELEASE_DECISION_SCHEMA_VERSION,
+            "policy_active": False,
+            "selected_version": str(selected_manifest["version"]),
+            "selected_track": "manifest_pin",
+        },
+        skill_manifests=resolution.manifests,
+    )
+    workspace = tmp_path / "sandbox" / "workspace"
+
+    prepared, failure = await ClaudeAgentWorkerAdapter()._prepare_sdk_run(
+        payload,
+        workspace=workspace,
+        workspace_root=tmp_path / "sandbox",
+    )
+
+    assert failure is None
+    assert prepared is not None
+    assert prepared.allowed_skill_names == ["qa-file-reviewer", "minimax-docx"]
+    assert prepared.staged_skill_names == ["qa-file-reviewer", "minimax-docx"]
+    assert {child.name for child in (workspace / ".claude" / "skills").iterdir()} == {
+        "qa-file-reviewer",
+        "minimax-docx",
+    }
+    assert "BODY_ONLY_A" not in prepared.prompt
+    assert "BODY_ONLY_B" not in prepared.prompt
+    assert "BODY_ONLY_C" not in prepared.prompt
+    assert "BODY_ONLY_DEPENDENCY" not in prepared.prompt
+    assert set(decoded_skill_ids) == {"qa-file-reviewer", "minimax-docx"}
 
 
 @pytest.mark.asyncio
@@ -883,7 +997,7 @@ def _skill_policy_subject(skill_ids: list[str]) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_sdk_implicit_routing_registers_exact_catalog_and_post_tool_use_proves_choice(
+async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_choice(
     monkeypatch,
     tmp_path,
 ):
@@ -950,12 +1064,12 @@ async def test_sdk_implicit_routing_registers_exact_catalog_and_post_tool_use_pr
         "app.executors.claude_agent_sdk_runner.get_settings",
         _sdk_settings,
     )
-    skill_ids = [f"skill-{suffix}" for suffix in "abcd"]
+    skill_ids = ["skill-c"]
 
     result = await run_claude_agent_sdk(
         prompt="route implicitly",
         cwd=Path(tmp_path),
-        skill_id="general-chat",
+        skill_id="skill-c",
         skills=skill_ids,
         tool_policy_subjects=[_skill_policy_subject(skill_ids)],
         execution_policy="sandbox_brokered",
@@ -967,7 +1081,9 @@ async def test_sdk_implicit_routing_registers_exact_catalog_and_post_tool_use_pr
     assert result.error is None
     assert result.used_skills == ["skill-c"]
     assert result.used_skills_source == "executor_hook"
-    assert "Authoritative platform Skill requirement" not in captured["prompt_messages"][0]["message"]["content"]
+    assert 'exactly this input: {"skill":"skill-c"}' in (
+        captured["prompt_messages"][0]["message"]["content"]
+    )
 
 
 @pytest.mark.asyncio

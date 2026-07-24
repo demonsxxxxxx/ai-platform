@@ -2189,6 +2189,13 @@ def _xlsx_prepared_run(tmp_path):
         allowed_skill_names=["qa-rag-skill"],
         staged_skill_names=["qa-rag-skill"],
         prompt="answer from the workbook",
+        public_skill_metadata={
+            "qa-rag-skill": {
+                "name": "Workbook analysis",
+                "version": "version-a",
+                "availability": "available",
+            }
+        },
     )
 
 
@@ -2289,6 +2296,19 @@ def test_worker_accepts_only_exact_required_xlsx_parser_evidence(
                 "sdk_used": True,
                 "used_skills": ["qa-rag-skill"],
                 "used_skills_source": "executor_hook",
+                "sdk_turn_diagnostics": {
+                    "counters": {
+                        "max_turns": 128,
+                        "turns_observed": 4,
+                        "assistant_messages": 2,
+                        "text_blocks": 3,
+                        "result_messages": 1,
+                        "tool_admission_denials": 0,
+                        "skill_invocations": 1,
+                    },
+                    "last_public_stage": "skills",
+                    "private_untrusted_field": "must-not-project",
+                },
                 "attachment_parser_evidence": [evidence],
             },
             timings={},
@@ -2298,6 +2318,21 @@ def test_worker_accepts_only_exact_required_xlsx_parser_evidence(
     assert result.status == expected_status
     if expected_error is None:
         assert result.executor_payload["attachment_parser_evidence"] == [evidence]
+        assert result.result["sdk_turn_diagnostics"]["terminal_class"] == "completed"
+        assert result.result["sdk_turn_diagnostics"]["selected_skill"] == {
+            "name": "Workbook analysis",
+            "version": "version-a",
+            "availability": "available",
+        }
+        assert result.result["sdk_turn_diagnostics"]["used_skills"] == [
+            {
+                "name": "Workbook analysis",
+                "version": "version-a",
+                "availability": "available",
+            }
+        ]
+        assert "qa-rag-skill" not in str(result.result["sdk_turn_diagnostics"])
+        assert "private_untrusted_field" not in str(result.result["sdk_turn_diagnostics"])
         assert result.artifacts == []
     else:
         assert result.result["error_code"] == expected_error
@@ -2560,6 +2595,7 @@ async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypa
     assert result.status == "failed"
     assert result.result["error_code"] == "executor_cancelled"
     assert result.executor_payload["runtime_terminal_status"] == "cancelled"
+    assert result.result["sdk_turn_diagnostics"]["terminal_class"] == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -4220,8 +4256,8 @@ async def test_sdk_runner_records_structured_normal_stop_sequence(monkeypatch, t
     [
         ("assistant_only", "claude_agent_sdk_missing_structured_terminal"),
         ("empty", "claude_agent_sdk_missing_structured_terminal"),
-        ("error_result", "sdk_rejected"),
-        ("exception_stop_sequence", "stop_sequence"),
+        ("error_result", "claude_agent_sdk_upstream_error"),
+        ("exception_stop_sequence", "claude_agent_sdk_upstream_error"),
     ],
 )
 async def test_sdk_runner_fails_closed_without_a_normal_structured_terminal(
@@ -4547,9 +4583,11 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
         session_id=None,
         on_text,
         on_skill_use,
+        public_skill_metadata,
         tool_policy_subjects,
     ):
         captured["model_id"] = model_id
+        captured["public_skill_metadata"] = public_skill_metadata
         return FakeQueryResult()
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
@@ -4571,6 +4609,7 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
 
     assert result.error is None
     assert captured["model_id"] == "deepseek-v4-pro"
+    assert captured["public_skill_metadata"] is None
 
 
 @pytest.mark.asyncio
@@ -5010,7 +5049,8 @@ async def test_sdk_runner_preserves_skill_use_when_query_raises_after_hook(monke
     )
 
     assert result.used_sdk is True
-    assert result.error == "sdk stream disconnected"
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert "sdk stream disconnected" not in str(result.turn_diagnostics)
     assert result.used_skills == ["qa-file-reviewer"]
     assert result.used_skills_source == "executor_hook"
 

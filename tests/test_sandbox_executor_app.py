@@ -376,6 +376,10 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
         ("claude_agent_sdk_selected_skill_not_invoked", True, "claude_agent_sdk_selected_skill_not_invoked"),
         ("claude_agent_sdk_selected_skill_hook_failed", True, "claude_agent_sdk_selected_skill_hook_failed"),
         ("claude_agent_sdk_selected_skill_not_authorized", True, "claude_agent_sdk_selected_skill_not_authorized"),
+        ("claude_agent_sdk_turn_limit_exceeded", True, "claude_agent_sdk_turn_limit_exceeded"),
+        ("claude_agent_sdk_timeout", True, "claude_agent_sdk_timeout"),
+        ("claude_agent_sdk_tool_admission_failed", True, "claude_agent_sdk_tool_admission_failed"),
+        ("claude_agent_sdk_upstream_error", True, "claude_agent_sdk_upstream_error"),
     ],
 )
 def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_codes(
@@ -400,6 +404,10 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
                 "terminal_reason": "end_turn",
                 "used_skills": [],
                 "used_skills_source": "",
+                "turn_diagnostics": {
+                    "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
+                    "terminal_class": "upstream_error",
+                },
             },
         )()
 
@@ -420,6 +428,10 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
     assert body["error_code"] == expected_error_code
     assert body["error_message"] == sdk_error
     assert body["used_skills"] == []
+    assert body["sdk_turn_diagnostics"] == {
+        "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
+        "terminal_class": "upstream_error",
+    }
     assert callbacks[-1]["state_patch"] == {
         "stage": "executor_finished",
         "error_code": expected_error_code,
