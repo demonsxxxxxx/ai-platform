@@ -22,7 +22,7 @@ set -eu
 git -C "$SOURCE" fetch --no-tags origin main:refs/remotes/origin/main
 TARGET="$(git -C "$SOURCE" rev-parse refs/remotes/origin/main)"
 cd "$SOURCE"
-timeout --signal=TERM --kill-after=15s 3900s \
+timeout --signal=INT --kill-after=30s 6000s \
   python3 tools/release_authority.py deploy-main-commit \
   --release-root "$ROOT/releases" \
   --commit "$TARGET" \
@@ -264,14 +264,28 @@ bounded pipe-drain grace before reporting timeout, exit code when available, and
 only a fixed recognized stderr category; raw command output and unrecognized
 stderr remain redacted.
 
-The command-level `timeout --signal=TERM --kill-after=15s 3900s` is the normal
-outer process bound. It leaves room for two worst-case 1800-second role
-dependency builds plus bounded verification and convergence, while remaining
-finite. Configure the enclosing durable runner with a 4200-second deadline so it
-outlives that command-level cleanup window; do not lower it below 3900 seconds or
-replace either timeout with an unlimited value. Retain the compact stage evidence
-and do not expose the environment file or raw command output. The existing
-external lease/fencing gate remains the only overlap guard.
+The normal finite aggregate command budget is 6000 seconds. Its explicit upper
+budget is `2 * 1800 + 8 * 300`: two sequential role dependency builds plus eight
+default-subprocess-timeout slots. Those eight slots cover two post-build image
+verifications, current-runtime/preflight, target materialization/revalidation,
+Compose convergence, final parity, process-tree cleanup scheduling, and terminal
+evidence serialization. This budget is deliberately separate from each
+per-stage bound and does not widen them.
+
+Use exactly `timeout --signal=INT --kill-after=30s 6000s`. `INT`, rather than
+`TERM` or `KILL`, lets Python raise through the active `_run`, whose existing
+`BaseException` path first terminates the authority-owned process group and
+performs its bounded pipe drain. The 30-second hard-kill grace exceeds the
+authority's one-second cleanup operations and remains only a stuck-cleanup
+backstop. A wrapper that initially kills only the Python leader or skips this
+grace is forbidden because it can orphan a mutating Docker child.
+
+Configure the enclosing durable runner with a 6330-second deadline. It must
+equal or exceed the 6000-second command budget plus the 30-second hard-kill grace
+and one additional 300-second terminal-evidence margin. Do not lower either
+deadline or replace a timeout with an unlimited value. Retain the compact stage
+evidence and do not expose the environment file or raw command output. The
+existing external lease/fencing gate remains the only overlap guard.
 
 The local workstation does not provide Docker. The real-211 benchmark gate must
 observe backend-only auto release below 90 seconds, frontend-only below 180

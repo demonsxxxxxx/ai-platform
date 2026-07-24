@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -146,8 +147,28 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert ': "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"' in text
     assert '--release-root "$ROOT/releases"' in text
     assert '--canonical-build-timeout-seconds 1800' in text
-    assert 'timeout --signal=TERM --kill-after=15s 3900s' in text
-    assert "4200-second deadline" in text
+    command_bound = re.search(
+        r"timeout --signal=INT --kill-after=(\d+)s (\d+)s",
+        text,
+    )
+    durable_bound = re.search(r"durable runner with a (\d+)-second deadline", text)
+    assert command_bound is not None
+    assert durable_bound is not None
+    assert "timeout --signal=TERM" not in text
+    kill_grace_seconds = int(command_bound.group(1))
+    command_timeout_seconds = int(command_bound.group(2))
+    durable_timeout_seconds = int(durable_bound.group(1))
+    aggregate_stage_maximum_seconds = (
+        2 * release_authority.CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
+        + 8 * release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+    )
+    assert command_timeout_seconds >= aggregate_stage_maximum_seconds
+    assert kill_grace_seconds > 2 * release_authority.PROCESS_TREE_TERMINATION_GRACE_SECONDS
+    assert durable_timeout_seconds >= (
+        command_timeout_seconds
+        + kill_grace_seconds
+        + release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+    )
     assert "Do not add `--env-file`" in text
     assert "normal flow" in text
     assert "$ROOT/deploy/ai-platform/.env" in text
