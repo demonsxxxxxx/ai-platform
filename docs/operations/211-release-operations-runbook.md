@@ -10,12 +10,15 @@ authority live in `docs/agent-rules/multi-agent-context-workflow.md`.
 The normal 211 release uses exactly this Git-native authority flow with the base
 Compose file and Docker sandbox overlay. Run it only after read-only readiness
 has passed and exactly one project-bound release owner holds the single mutation
-lease. It does not grant a lease or replace the workflow gates.
+lease. It does not grant a lease or replace the workflow gates. Resolve `SOURCE`
+and `ROOT` from the current 211 host mapping in
+`docs/agent-rules/ai-platform-guardrails.md`, the authoritative source for those
+host subjects.
 
 ```bash
 set -eu
-SOURCE=/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform
-ROOT=/home/xinlin.jiang/ai-platform-phaseb
+: "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"
+: "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
 git -C "$SOURCE" fetch --no-tags origin main:refs/remotes/origin/main
 TARGET="$(git -C "$SOURCE" rev-parse refs/remotes/origin/main)"
 cd "$SOURCE"
