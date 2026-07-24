@@ -7894,6 +7894,77 @@ async def test_worker_rejects_external_mcp_before_non_claude_executor_dispatch(m
 
 
 @pytest.mark.asyncio
+async def test_worker_allows_builtin_ragflow_backing_mcp_on_ragflow_executor(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file"},
+    )
+    state["skill"].update(
+        executor_type="ragflow",
+        backing_mcp_tool_id="ragflow-knowledge-search",
+    )
+    state["locked_run"]["input_json"]["executor_type"] = "ragflow"
+    raw["executor_type"] = "ragflow"
+    state["tools"]["ragflow-knowledge-search"] = _task6_tool(
+        "ragflow-knowledge-search",
+        "ragflow-server",
+    )
+    state["distributions"][("mcp_server", "ragflow-server")] = _task6_distribution(
+        "mcp_server",
+        "ragflow-server",
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "succeeded"
+    assert ("tool_lookup", "tenant-a", "ragflow-knowledge-search") in calls
+    registered_input = next(call[1] for call in calls if call[0] == "adapter")
+    assert "mcp_tool_ids" not in registered_input
+    assert any(
+        subject.get("mcp_server") == "ragflow-server"
+        for subject in registered_input["_runtime_tool_policy_subjects"]
+    )
+    assert not any(
+        call[0] == "event"
+        and call[1]["event_type"] == "capability_not_authorized"
+        and call[1]["payload"].get("reason") == "mcp_sandbox_executor_required"
+        for call in calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_pinned_external_mcp_before_non_claude_dispatch(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file"},
+    )
+    manifest = primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")
+    manifest["mcp_tool_ids"] = ["pinned-external"]
+    state["locked_run"]["input_json"]["skill_manifests"] = [manifest]
+    state["tools"]["pinned-external"] = _task6_tool(
+        "pinned-external",
+        "pinned-server",
+    )
+    state["distributions"][("mcp_server", "pinned-server")] = _task6_distribution(
+        "mcp_server",
+        "pinned-server",
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["capability_kind"] == "mcp_tool"
+    assert denied_event["payload"]["reason"] == "mcp_sandbox_executor_required"
+
+
+@pytest.mark.asyncio
 async def test_worker_reauthorizes_historical_ragflow_mcp_after_current_skill_changes_executor(monkeypatch):
     raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch, locked_input={"mode": "file"})
     historical_manifest = primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")
@@ -8070,6 +8141,9 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
         ),
     )
     state["distributions"][("skill", "qa-file-reviewer")]["visible_to_user"] = False
+    state["skill"]["executor_type"] = "claude-agent-worker"
+    state["locked_run"]["input_json"]["executor_type"] = "claude-agent-worker"
+    raw["executor_type"] = "claude-agent-worker"
     state["tools"]["tool-admin"] = _task6_tool("tool-admin", "server-admin")
     state["distributions"][("mcp_server", "server-admin")] = _task6_distribution(
         "mcp_server",

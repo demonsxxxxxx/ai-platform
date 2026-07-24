@@ -11794,6 +11794,44 @@ async def list_authorized_session_runs(
     return list(await cursor.fetchall())
 
 
+async def get_latest_authorized_session_run_input(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Read the latest run input for an active principal-owned session scope."""
+
+    cursor = await conn.execute(
+        """
+        select runs.input_json
+        from runs
+        join sessions on sessions.id = runs.session_id
+          and sessions.tenant_id = runs.tenant_id
+          and sessions.workspace_id = runs.workspace_id
+          and sessions.user_id = runs.user_id
+          and sessions.agent_id = runs.agent_id
+        where runs.tenant_id = %s
+          and runs.workspace_id = %s
+          and runs.user_id = %s
+          and runs.session_id = %s
+          and sessions.status = 'active'
+        order by runs.session_generation desc nulls last,
+                 runs.created_at desc,
+                 runs.id desc
+        limit 1
+        """,
+        (tenant_id, workspace_id, user_id, session_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    input_json = row.get("input_json")
+    return input_json if isinstance(input_json, dict) else None
+
+
 async def append_message(
     conn: AsyncConnection,
     *,

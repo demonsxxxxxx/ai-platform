@@ -1558,6 +1558,7 @@ async def _reauthorize_worker_capabilities(
         )
 
     try:
+        explicit_tool_ids = repositories.extract_run_mcp_tool_ids(payload.input)
         requested_tool_ids = repositories.run_mcp_tool_ids_for_skill(skill, payload.input)
         for tool_id in pinned_mcp_tool_ids or []:
             if tool_id not in requested_tool_ids:
@@ -1688,10 +1689,25 @@ async def _reauthorize_worker_capabilities(
         allowed_entries.append(tool)
         tool_policy_subjects.append(mcp_subject)
 
-    if allowed_entries and payload.executor_type != "claude-agent-worker":
+    backing_tool_id = (
+        str(skill.get("backing_mcp_tool_id") or "").strip()
+        if str(skill.get("executor_type") or "") == "ragflow"
+        else ""
+    )
+    external_tool_ids = {
+        tool_id
+        for tool_id in requested_tool_ids
+        if tool_id != backing_tool_id or tool_id in explicit_tool_ids
+    }
+    external_allowed_entries = [
+        entry
+        for entry in allowed_entries
+        if str(entry.get("tool_id") or "") in external_tool_ids
+    ]
+    if external_allowed_entries and payload.executor_type != "claude-agent-worker":
         denial = _worker_capability_record(
             "mcp_tool",
-            str(allowed_entries[0].get("tool_id") or "mcp_tool"),
+            str(external_allowed_entries[0].get("tool_id") or "mcp_tool"),
             _denied_capability_decision("mcp_sandbox_executor_required"),
         )
         return _WorkerCapabilityAuthorization(
