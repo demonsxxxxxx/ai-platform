@@ -14,6 +14,7 @@ import posixpath
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import tarfile
 import threading
@@ -30,6 +31,8 @@ FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_DIRECTORY_RE = re.compile(r"^[0-9a-f]{7,40}$")
 DOCKER_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_COMPOSE_RELATIVE_PATH = Path("deploy/ai-platform/docker-compose.yml")
+DEFAULT_MANAGED_ENV_RELATIVE_PATH = Path("deploy/ai-platform/.env")
+MANAGED_RELEASE_DIRECTORY_NAME = "releases"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
 PROVIDER_OVERLAY_COMPOSE_SELECTIONS = frozenset(
@@ -404,20 +407,28 @@ def _normalize_commit(value: str) -> str:
 
 
 def assert_clean_commit(repo_root: Path, requested_commit: str) -> str:
-    """Require a clean checkout whose HEAD exactly matches the requested commit."""
+    """Require an immutable target checkout, including an empty ignored-file set."""
     repo_root = repo_root.resolve()
     commit = _normalize_commit(requested_commit)
     head = str(_git(repo_root, "rev-parse", "HEAD")).strip().lower()
     if head != commit:
         raise ReleaseAuthorityError(
-            f"source HEAD {head or 'unknown'} does not match requested commit {commit}"
+            "target-checkout-head gate failed: immutable checkout HEAD "
+            "does not match requested commit; use a newly materialized target checkout"
         )
     status = str(_git(repo_root, "status", "--porcelain", "--untracked-files=all"))
     if status.strip():
-        raise ReleaseAuthorityError("dirty source is forbidden for release deployment")
+        raise ReleaseAuthorityError(
+            "target-checkout-cleanliness gate failed: tracked, staged, or ordinary "
+            "untracked content is present; use a newly materialized immutable target "
+            "checkout rather than modifying or cleaning it"
+        )
     ignored = _git_paths(repo_root, "ls-files", "--others", "--ignored", "--exclude-standard")
     if ignored:
-        raise ReleaseAuthorityError("ignored worktree files are forbidden for release deployment")
+        raise ReleaseAuthorityError(
+            "target-checkout-ignored-content gate failed: ignored content is present; "
+            "use a newly materialized immutable target checkout rather than cleaning or reusing it"
+        )
     return commit
 
 
@@ -569,6 +580,177 @@ def authoritative_repository(repo_root: Path) -> str:
 def _is_link_or_junction(path: Path) -> bool:
     is_junction = getattr(path, "is_junction", None)
     return path.is_symlink() or bool(is_junction and is_junction())
+
+
+def assert_clean_coordination_source(repo_root: Path) -> Path:
+    """Require only tracked, staged, and ordinary untracked coordination cleanliness."""
+    supplied = Path(repo_root)
+    try:
+        absolute = Path(os.path.abspath(supplied))
+        root = supplied.resolve(strict=True)
+    except OSError as exc:
+        raise ReleaseAuthorityError(
+            "coordination-source-path gate failed: run the canonical command from the "
+            "normalized coordination checkout root before requesting the release lease"
+        ) from exc
+    if (
+        not supplied.is_absolute()
+        or absolute != root
+        or not root.is_dir()
+        or _is_link_or_junction(supplied)
+    ):
+        raise ReleaseAuthorityError(
+            "coordination-source-path gate failed: run the canonical command from the "
+            "normalized coordination checkout root before requesting the release lease"
+        )
+    try:
+        top_level_text = str(_git(root, "rev-parse", "--show-toplevel")).strip()
+        status = str(_git(root, "status", "--porcelain", "--untracked-files=all"))
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ReleaseAuthorityError(
+            "coordination-source-path gate failed: the coordination source must be a "
+            "readable Git checkout before requesting the release lease"
+        ) from exc
+    try:
+        top_level = Path(top_level_text).resolve(strict=True)
+    except OSError as exc:
+        raise ReleaseAuthorityError(
+            "coordination-source-path gate failed: run the canonical command from the "
+            "normalized coordination checkout root before requesting the release lease"
+        ) from exc
+    if top_level != root:
+        raise ReleaseAuthorityError(
+            "coordination-source-path gate failed: run the canonical command from the "
+            "normalized coordination checkout root before requesting the release lease"
+        )
+    if status.strip():
+        raise ReleaseAuthorityError(
+            "coordination-source-cleanliness gate failed: tracked, staged, or ordinary "
+            "untracked changes are present; rerun from a clean exact-main coordination "
+            "checkout before requesting the release lease (ignored-only artifacts are allowed)"
+        )
+    return root
+
+
+def _posix_owner_mode(path: Path) -> tuple[int, int]:
+    """Return owner and permission bits on the managed POSIX release host."""
+    if os.name != "posix":
+        raise ReleaseAuthorityError(
+            "managed-env-metadata gate failed: POSIX owner and mode verification is "
+            "unavailable; run the canonical release on the managed POSIX host"
+        )
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise ReleaseAuthorityError(
+            "managed-env-metadata gate failed: owner and mode metadata is unavailable; "
+            "have the managed owner verify the release layout before requesting the release lease"
+        ) from exc
+    return int(metadata.st_uid), stat.S_IMODE(metadata.st_mode)
+
+
+def _managed_root_from_release_root(release_root: Path) -> tuple[Path, Path]:
+    supplied = Path(release_root)
+    if (
+        not supplied.is_absolute()
+        or ".." in supplied.parts
+        or supplied.name != MANAGED_RELEASE_DIRECTORY_NAME
+    ):
+        raise ReleaseAuthorityError(
+            "managed-env-path gate failed: --release-root must be the normalized absolute "
+            "<managed-root>/releases directory"
+        )
+    normalized = Path(os.path.abspath(supplied))
+    managed_root = normalized.parent
+    try:
+        resolved_managed_root = managed_root.resolve(strict=True)
+    except OSError as exc:
+        raise ReleaseAuthorityError(
+            "managed-env-path gate failed: the managed root must already exist as a "
+            "regular directory before requesting the release lease"
+        ) from exc
+    try:
+        resolved_release_root = normalized.resolve(strict=False)
+    except OSError as exc:
+        raise ReleaseAuthorityError(
+            "managed-env-path gate failed: the managed root and release root must be "
+            "normalized non-link directories"
+        ) from exc
+    if (
+        resolved_managed_root != managed_root
+        or not managed_root.is_dir()
+        or _is_link_or_junction(managed_root)
+        or _is_link_or_junction(normalized)
+        or resolved_release_root != normalized
+        or (normalized.exists() and not normalized.is_dir())
+    ):
+        raise ReleaseAuthorityError(
+            "managed-env-path gate failed: the managed root and release root must be "
+            "normalized non-link directories"
+        )
+    return normalized, managed_root
+
+
+def resolve_managed_env_file(release_root: Path, env_file: Path | None) -> Path:
+    """Derive or validate the opaque managed Compose env file without reading it."""
+    _, managed_root = _managed_root_from_release_root(release_root)
+    if env_file is None:
+        candidate = managed_root / DEFAULT_MANAGED_ENV_RELATIVE_PATH
+    else:
+        supplied = Path(env_file)
+        if not supplied.is_absolute() or ".." in supplied.parts:
+            raise ReleaseAuthorityError(
+                "managed-env-path gate failed: an explicit --env-file override must be "
+                "a normalized absolute path"
+            )
+        candidate = Path(os.path.abspath(supplied))
+        if candidate != supplied:
+            raise ReleaseAuthorityError(
+                "managed-env-path gate failed: an explicit --env-file override must be "
+                "a normalized absolute path"
+            )
+
+    if _is_link_or_junction(candidate):
+        raise ReleaseAuthorityError(
+            "managed-env-file-safety gate failed: the environment file must be a regular "
+            "non-link file with no linked parent; have the managed owner provision it before "
+            "requesting the release lease"
+        )
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise ReleaseAuthorityError(
+            "managed-env-file-presence gate failed: provision the managed environment file "
+            "as a regular owner-only file before requesting the release lease"
+        ) from exc
+    try:
+        metadata = candidate.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise ReleaseAuthorityError(
+            "managed-env-file-presence gate failed: provision the managed environment file "
+            "as a regular owner-only file before requesting the release lease"
+        ) from exc
+    if resolved != candidate or not stat.S_ISREG(metadata.st_mode):
+        raise ReleaseAuthorityError(
+            "managed-env-file-safety gate failed: the environment file must be a regular "
+            "non-link file with no linked parent; have the managed owner provision it before "
+            "requesting the release lease"
+        )
+
+    managed_owner, _ = _posix_owner_mode(managed_root)
+    env_owner, env_mode = _posix_owner_mode(candidate)
+    if env_owner != managed_owner:
+        raise ReleaseAuthorityError(
+            "managed-env-file-ownership gate failed: the environment file owner must match "
+            "the managed root owner; have that owner provision the file before requesting "
+            "the release lease"
+        )
+    if env_mode != 0o600:
+        raise ReleaseAuthorityError(
+            "managed-env-file-mode gate failed: the environment file mode must be 0600; "
+            "have the managed owner correct it before requesting the release lease"
+        )
+    return candidate
 
 
 def resolve_compose_files(
@@ -1693,6 +1875,7 @@ def deploy_clean_commit(
     auto_plan: AutoReleasePlan | None = None,
     current_references: dict[str, str] | None = None,
     stage_events: list[dict[str, Any]] | None = None,
+    managed_release_root: Path | None = None,
 ) -> dict[str, Any]:
     """Build immutable images and recreate the repo-local compose release."""
     if strategy not in {"canonical", "auto"}:
@@ -1700,6 +1883,10 @@ def deploy_clean_commit(
     if strategy == "auto" and (auto_plan is None or current_references is None):
         raise ReleaseAuthorityError("auto release plan is required")
     events = stage_events if stage_events is not None else []
+    if managed_release_root is not None:
+        compose_env_file = resolve_managed_env_file(managed_release_root, Path(env_file))
+    else:
+        compose_env_file = Path(env_file).resolve()
     normalized = assert_clean_commit(repo_root, commit)
     selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
@@ -1839,6 +2026,8 @@ def deploy_clean_commit(
     )
     if revalidated_ownership != ownership:
         raise ReleaseAuthorityError("managed container ownership changed during release preflight")
+    if managed_release_root is not None:
+        compose_env_file = resolve_managed_env_file(managed_release_root, compose_env_file)
     if ownership.manual_frontend_id is not None:
         _stage(
             events,
@@ -1879,7 +2068,7 @@ def deploy_clean_commit(
                 "-p",
                 COMPOSE_PROJECT,
                 "--env-file",
-                str(env_file.resolve()),
+                str(compose_env_file),
                 *compose_file_args,
                 "up",
                 "-d",
@@ -1907,28 +2096,33 @@ def deploy_main_commit(
     commit: str,
     *,
     docker_cmd: str,
-    env_file: Path,
+    env_file: Path | None,
     replace_known_manual_frontend: bool,
     expected_manual_frontend_image: str | None = None,
     expected_manual_frontend_image_id: str | None = None,
     compose_files: Sequence[str | Path] | None = None,
     strategy: str = "canonical",
+    coordination_source: Path | None = None,
 ) -> dict[str, Any]:
     """Deploy and verify an exact fetched main commit from an isolated checkout."""
     if strategy not in {"canonical", "auto"}:
         raise ReleaseAuthorityError("release strategy is invalid")
     normalized = _normalize_commit(commit)
+    if coordination_source is not None:
+        assert_clean_coordination_source(coordination_source)
+    managed_env_file = resolve_managed_env_file(release_root, env_file)
     checkout = materialize_main_checkout(release_root, normalized)
     if strategy == "canonical":
         deployment = deploy_clean_commit(
             checkout,
             normalized,
             docker_cmd=docker_cmd,
-            env_file=env_file,
+            env_file=managed_env_file,
             replace_known_manual_frontend=replace_known_manual_frontend,
             expected_manual_frontend_image=expected_manual_frontend_image,
             expected_manual_frontend_image_id=expected_manual_frontend_image_id,
             compose_files=compose_files,
+            managed_release_root=release_root,
         )
         parity = collect_live_parity(
             checkout,
@@ -1967,7 +2161,7 @@ def deploy_main_commit(
             checkout,
             normalized,
             docker_cmd=docker_cmd,
-            env_file=env_file,
+            env_file=managed_env_file,
             replace_known_manual_frontend=replace_known_manual_frontend,
             expected_manual_frontend_image=expected_manual_frontend_image,
             expected_manual_frontend_image_id=expected_manual_frontend_image_id,
@@ -1976,6 +2170,7 @@ def deploy_main_commit(
             auto_plan=plan,
             current_references=current["references"],
             stage_events=events,
+            managed_release_root=release_root,
         )
 
         def final_parity() -> dict[str, Any]:
@@ -2044,7 +2239,14 @@ def main() -> int:
     deploy_main.add_argument("--release-root", type=Path, required=True)
     deploy_main.add_argument("--commit", required=True)
     deploy_main.add_argument("--docker-cmd", default="docker")
-    deploy_main.add_argument("--env-file", type=Path, required=True)
+    deploy_main.add_argument(
+        "--env-file",
+        type=Path,
+        help=(
+            "Optional absolute managed env override; defaults to "
+            "<managed-root>/deploy/ai-platform/.env from --release-root"
+        ),
+    )
     deploy_main.add_argument("--replace-known-manual-frontend", action="store_true")
     deploy_main.add_argument("--expected-manual-frontend-image")
     deploy_main.add_argument("--expected-manual-frontend-image-id")
@@ -2106,6 +2308,7 @@ def main() -> int:
                     expected_manual_frontend_image_id=args.expected_manual_frontend_image_id,
                     compose_files=args.compose_files,
                     strategy=args.strategy,
+                    coordination_source=Path.cwd(),
                 ),
                 None,
             )
