@@ -141,6 +141,19 @@ python3 tools/release_authority.py deploy-main-commit \
   --compose-file deploy/ai-platform/docker-compose.sandbox.yml
 ```
 
+The release authority permits one exact provider-overlay ownership transition:
+the live selection `[docker-compose.yml, docker-compose.sandbox.yml]` may move to
+`[docker-compose.yml, docker-compose.opensandbox.yml]`, and the exact reverse is
+permitted for Docker rollback. It reconstructs the live selection only from the
+three containers' Compose labels and the existing historical checkout, requires
+the same project, role/container identity, release root, and complete ordered
+selection for API, worker, and frontend, and revalidates that ownership before
+Compose mutation. This is not manual adoption. A base-only, reordered, duplicate,
+missing, extra, or arbitrary overlay selection, a caller-selected substitute,
+another project/root/role, or any symlink, junction, or path escape fails closed.
+After `compose up`, terminal parity still requires every managed role to report
+the exact target checkout and target two-file selection.
+
 Before allowing untrusted execution, verify that the API is healthy with the
 same runtime commit, that each lease bridge contains only that API witness and
 its sandbox, and that the proof key material is present but never printed.
