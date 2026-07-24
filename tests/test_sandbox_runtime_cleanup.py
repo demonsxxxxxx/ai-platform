@@ -9,7 +9,7 @@ from app.execution_boundary import (
     governed_egress_proof_label,
 )
 from app.runtime.sandbox.container_provider import _opensandbox_governed_runtime_subject
-from app.runtime.sandbox.contracts import ContainerLease, StopResult
+from app.runtime.sandbox.contracts import StopResult
 
 
 TEST_PROOF_KEY = "cleanup-test-proof-key-with-enough-entropy-2026"
@@ -110,7 +110,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_relea
 
 
 @pytest.mark.asyncio
-async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_not_lease_payload(monkeypatch):
+async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_and_canonical_attempt(monkeypatch):
     from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 
     calls = []
@@ -131,6 +131,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_not_l
                 "ai-platform.provider_backend": "opensandbox",
                 "ai-platform.egress.policy": "opensandbox-network-policy",
             },
+            "attempt_id": "attempt-a",
             "governed_egress_proof": proof,
         },
     )
@@ -183,7 +184,10 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_not_l
         "http://opensandbox-executor.test:18000",
         "",
         "/workspace",
-        {GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof)},
+        {
+            "ai-platform.attempt_id": "attempt-a",
+            GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
+        },
         "expired",
     )
     assert calls[1] == ("release", "tenant-a", "expired", ["lease-a"], None)
@@ -198,7 +202,10 @@ async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeyp
         runtime_container_id="osb-run-a",
         runtime_container_name="opensandbox-run-a",
         runtime_executor_url="http://opensandbox-executor.test:18000",
-        lease_payload_json={"labels": {"ai-platform.owner": "sandbox-runtime"}},
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "labels": {"ai-platform.owner": "sandbox-runtime"},
+        },
     )
     releases = []
 
@@ -223,6 +230,49 @@ async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeyp
             object(),
             tenant_id="tenant-a",
             provider_factory=lambda _provider_name: pytest.fail("provider must not receive an unverifiable lease"),
+        )
+
+    assert releases == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attempt_id", (None, "", "../attempt-a"))
+async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(monkeypatch, attempt_id):
+    from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
+
+    lease_payload = {"governed_egress_proof": opensandbox_cleanup_proof()}
+    if attempt_id is not None:
+        lease_payload["attempt_id"] = attempt_id
+    row = expired_lease_row(
+        provider="opensandbox",
+        runtime_container_id="osb-run-a",
+        runtime_container_name="opensandbox-run-a",
+        runtime_executor_url="http://opensandbox-executor.test:18000",
+        lease_payload_json=lease_payload,
+    )
+    releases = []
+
+    async def fake_list_expired_active_sandbox_leases(conn, *, tenant_id=None, limit=100):
+        return [row]
+
+    async def fake_release_stopped_sandbox_leases(conn, **kwargs):
+        releases.append(kwargs)
+        return [row]
+
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        fake_list_expired_active_sandbox_leases,
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        fake_release_stopped_sandbox_leases,
+    )
+
+    with pytest.raises(SandboxRuntimeCleanupError):
+        await cleanup_expired_sandbox_runtime_leases(
+            object(),
+            tenant_id="tenant-a",
+            provider_factory=lambda _provider_name: pytest.fail("provider must not receive an unbound lease"),
         )
 
     assert releases == []
@@ -316,7 +366,14 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         opensandbox_request_timeout_seconds = 30
         opensandbox_use_server_proxy = False
 
-    provider = OpenSandboxContainerProvider(
+    received_leases = []
+
+    class RecordingOpenSandboxContainerProvider(OpenSandboxContainerProvider):
+        async def stop(self, lease, *, reason):
+            received_leases.append(lease)
+            return await super().stop(lease, reason=reason)
+
+    provider = RecordingOpenSandboxContainerProvider(
         sandbox_class=FakeSandboxClass,
         connection_config_class=FakeConnectionConfig,
         utcnow=lambda: TEST_PROOF_NOW + timedelta(days=1),
@@ -326,34 +383,12 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         runtime_container_id="osb-run-a",
         runtime_container_name="opensandbox-run-a",
         runtime_executor_url="http://opensandbox-executor.test:18000",
-        lease_payload_json={"governed_egress_proof": proof},
-    )
-    attempt_bound_lease = ContainerLease(
-        container_id="osb-run-a",
-        container_name="opensandbox-run-a",
-        provider="opensandbox",
-        executor_url="http://opensandbox-executor.test:18000",
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        run_id="run-a",
-        sandbox_mode="ephemeral",
-        browser_enabled=False,
-        workspace_host_path="",
-        workspace_container_path="/workspace",
-        labels={
-            GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
-            "ai-platform.attempt_id": "attempt-a",
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "governed_egress_proof": proof,
         },
     )
     releases = []
-
-    class ExactAttemptProvider:
-        async def stop(self, lease, *, reason):
-            assert lease.model_dump(exclude={"labels"}) == attempt_bound_lease.model_dump(exclude={"labels"})
-            assert lease.labels == {GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof)}
-            return await provider.stop(attempt_bound_lease, reason=reason)
 
     async def fake_list_expired_active_sandbox_leases(conn, *, tenant_id=None, limit=100):
         return [row]
@@ -376,9 +411,14 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         await cleanup_expired_sandbox_runtime_leases(
             object(),
             tenant_id="tenant-a",
-            provider_factory=lambda _provider_name: ExactAttemptProvider(),
+            provider_factory=lambda _provider_name: provider,
         )
 
+    assert len(received_leases) == 1
+    assert received_leases[0].labels == {
+        "ai-platform.attempt_id": "attempt-a",
+        GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
+    }
     assert remote_trace == ["connect", "get_info"]
     assert exc_info.value.failures == [
         {"container_id": "osb-run-a", "message": "OpenSandbox sandbox stop failed"}
