@@ -139,8 +139,11 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
     assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
     assert text.count("python3 tools/release_authority.py deploy-main-commit") == 1
-    assert 'SOURCE=/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform' in text
-    assert 'ROOT=/home/xinlin.jiang/ai-platform-phaseb' in text
+    assert "Resolve `SOURCE`" in text
+    assert "and `ROOT` from the current 211 host mapping" in text
+    assert "`docs/agent-rules/ai-platform-guardrails.md`, the authoritative source" in text
+    assert ': "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"' in text
+    assert ': "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"' in text
     assert '--release-root "$ROOT/releases"' in text
     assert "Do not add `--env-file`" in text
     assert "normal flow" in text
