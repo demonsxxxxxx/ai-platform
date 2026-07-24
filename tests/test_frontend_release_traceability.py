@@ -437,6 +437,7 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
 
 def test_frontend_packaged_image_files_define_static_proxy_contract():
     dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
+    runtime_dockerfile = dockerfile.split("FROM nginx:1.27-alpine AS runtime", 1)[1]
     npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
     nginx_template = Path("frontend/web/nginx.conf.template").read_text(encoding="utf-8")
     compose_overlay = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
@@ -453,6 +454,21 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "COPY tools ./tools" in dockerfile
     assert "COPY --from=build /workspace/frontend/web/dist" in dockerfile
     assert "nginx.conf.template" in dockerfile
+    mkdir_templates = "RUN mkdir -p /etc/nginx/templates /etc/nginx/templates-opensandbox"
+    copy_full_template = (
+        "COPY frontend/web/nginx.conf.template "
+        "/etc/nginx/templates-opensandbox/default.conf.template"
+    )
+    extract_base_template = "RUN sed '/^# AI_PLATFORM_S72_BRIDGE_BEGIN$/,$d'"
+    assert mkdir_templates in runtime_dockerfile
+    assert copy_full_template in runtime_dockerfile
+    assert extract_base_template in runtime_dockerfile
+    assert runtime_dockerfile.index(mkdir_templates) < runtime_dockerfile.index(
+        copy_full_template
+    )
+    assert runtime_dockerfile.index(copy_full_template) < runtime_dockerfile.index(
+        extract_base_template
+    )
     assert "package-import-method=copy" in npmrc
     assert "AI_PLATFORM_BUILD_COMMIT" in provenance_script
     assert "AI_PLATFORM_BUILD_DIRTY" in provenance_script
