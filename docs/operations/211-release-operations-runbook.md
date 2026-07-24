@@ -50,11 +50,15 @@ mutation; it never reads, copies, or prints contents.
 build context. Its HEAD, tracked/staged/ordinary untracked state, ignored-file
 set, path/link boundaries, and fetched-main provenance remain strictly
 fail-closed. The managed-root owner must own `$ROOT/releases`, the exact checkout,
-and every directory and regular file in the tracked tree; those paths must be
-not group- or world-writable. The exact Git commit/tree is the tracked-source
-manifest: tracked symlinks and non-regular entries are rejected. There is no
-separate manifest artifact. Coordination ignored-file allowance never applies
-there.
+and every regular file and directory in the materialized checkout, including its
+local Git metadata; those paths must be non-links and not group- or
+world-writable. An existing checkout passes this filesystem trust gate before
+any Git command or fetch can read its config or mutate its remote objects. Only
+after that local trust gate does the authority require exact HEAD, clean and
+ignored-file state, fetch main, and revalidate fetched-main provenance plus the
+exact Git tree. That commit/tree is the tracked-source manifest; tracked
+symlinks and non-regular entries are rejected, and there is no separate manifest
+artifact. Coordination ignored-file allowance never applies there.
 
 For governed Docker egress, the command resolves the reviewed backend build to
 its local immutable `sha256:<64-hex>` Docker image ID and passes that value as

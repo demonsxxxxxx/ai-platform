@@ -134,6 +134,7 @@ def test_opensandbox_compose_overlay_disables_docker_egress_policy_for_api_and_w
 
 def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract():
     text = RUNBOOK.read_text(encoding="utf-8")
+    contract_text = " ".join(text.split())
 
     assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
     assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
@@ -148,13 +149,13 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "Ignored-only artifacts" in text
     assert "immutable target checkout" in text
     assert "mode `0600`" in text
-    assert "must equal that exact" in text
-    assert "canonical path after normalization" in text
-    assert "Git commit/tree is the tracked-source" in text
-    assert "manifest: tracked symlinks" in text
-    assert "There is no" in text
-    assert "separate manifest artifact" in text
-    assert "not group- or world-writable" in text
+    assert "must equal that exact canonical path after normalization" in contract_text
+    assert "commit/tree is the tracked-source manifest" in contract_text
+    assert "symlinks and non-regular entries" in contract_text
+    assert "there is no separate manifest" in contract_text
+    assert "world-writable" in contract_text
+    assert "before any Git command or fetch" in contract_text
+    assert "Only after that local trust gate" in contract_text
     assert "--compose-file deploy/ai-platform/docker-compose.yml" in text
     assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" in text
     assert "The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not" in text
@@ -573,6 +574,8 @@ def test_managed_target_checkout_accepts_safe_exact_git_tree(monkeypatch, tmp_pa
         ("checkout", (1000, 0o775), "target-checkout-authority-mode"),
         ("tracked-file", (1001, 0o644), "target-checkout-authority-ownership"),
         ("tracked-file", (1000, 0o666), "target-checkout-authority-mode"),
+        ("git-config", (1001, 0o644), "target-checkout-authority-ownership"),
+        ("git-object", (1000, 0o666), "target-checkout-authority-mode"),
     ],
 )
 def test_managed_target_owner_or_mode_rejects_before_docker(
@@ -3092,6 +3095,11 @@ def _install_checkout_git_runner(
         return result
 
     monkeypatch.setattr("tools.release_authority._run", fake_run)
+    monkeypatch.setattr(
+        release_authority,
+        "_posix_owner_mode",
+        lambda path: (1000, 0o755 if Path(path).is_dir() else 0o644),
+    )
     return commands
 
 
@@ -3126,9 +3134,64 @@ def test_materialize_main_checkout_reuses_only_clean_matching_checkout(monkeypat
     assert release_authority.materialize_main_checkout(release_root, commit) == checkout
 
     git_commands = [command for command, _, _ in commands]
-    assert ["git", "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"] in git_commands
+    fetch_command = ["git", "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"]
+    assert git_commands.count(fetch_command) == 1
+    fetch_index = git_commands.index(fetch_command)
+    assert git_commands[:fetch_index].count(
+        ["git", "status", "--porcelain", "--untracked-files=all"]
+    ) == 1
     assert ["git", "init"] not in git_commands
     assert ["git", "checkout", "--detach", commit] not in git_commands
+
+
+@pytest.mark.parametrize(
+    ("unsafe_subject", "unsafe_metadata", "expected_gate"),
+    [
+        ("checkout", (1001, 0o755), "target-checkout-authority-ownership"),
+        ("checkout", (1000, 0o775), "target-checkout-authority-mode"),
+        ("tracked-file", (1001, 0o644), "target-checkout-authority-ownership"),
+        ("tracked-file", (1000, 0o666), "target-checkout-authority-mode"),
+    ],
+)
+def test_materialize_main_checkout_rejects_unsafe_existing_tree_before_fetch(
+    monkeypatch,
+    tmp_path,
+    unsafe_subject,
+    unsafe_metadata,
+    expected_gate,
+):
+    commit = "4" * 40
+    release_root = tmp_path / "releases"
+    checkout = release_root / commit
+    (checkout / ".git").mkdir(parents=True)
+    tracked = checkout / "tracked.txt"
+    tracked.write_text("tracked\n", encoding="utf-8")
+    git_config = checkout / ".git" / "config"
+    git_config.write_text("[core]\n\trepositoryformatversion = 0\n", encoding="utf-8")
+    git_object = checkout / ".git" / "objects" / "aa" / ("b" * 38)
+    git_object.parent.mkdir(parents=True)
+    git_object.write_bytes(b"opaque-object")
+    commands = _install_checkout_git_runner(monkeypatch, commit=commit)
+    unsafe_paths = {
+        "checkout": checkout,
+        "tracked-file": tracked,
+        "git-config": git_config,
+        "git-object": git_object,
+    }
+    unsafe_path = unsafe_paths[unsafe_subject]
+
+    def owner_mode(path):
+        candidate = Path(path)
+        if candidate == unsafe_path:
+            return unsafe_metadata
+        return (1000, 0o755 if candidate.is_dir() else 0o644)
+
+    monkeypatch.setattr(release_authority, "_posix_owner_mode", owner_mode)
+
+    with pytest.raises(ReleaseAuthorityError, match=rf"^{expected_gate} gate failed:"):
+        release_authority.materialize_main_checkout(release_root, commit)
+
+    assert commands == []
 
 
 def test_materialize_main_checkout_rejects_dirty_or_non_main_reuse(monkeypatch, tmp_path):

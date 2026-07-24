@@ -455,12 +455,11 @@ def _git_tracked_entries(repo_root: Path, commit: str) -> list[tuple[str, str]]:
     return entries
 
 
-def assert_managed_target_checkout(
+def _managed_target_layout(
     repo_root: Path,
     requested_commit: str,
     release_root: Path,
-) -> str:
-    """Validate owner, mode, and exact Git-tree authority for one managed target checkout."""
+) -> tuple[Path, Path, Path, str]:
     normalized_release_root, managed_root = _managed_root_from_release_root(release_root)
     supplied = Path(repo_root)
     commit = _normalize_commit(requested_commit)
@@ -483,38 +482,112 @@ def assert_managed_target_checkout(
             "target-checkout-authority-path gate failed: use the exact normalized managed "
             "release checkout before requesting the release lease"
         )
+    git_dir = checkout / ".git"
+    if _is_link_or_junction(git_dir) or not git_dir.is_dir():
+        raise ReleaseAuthorityError(
+            "target-checkout-authority-path gate failed: the managed target must be an "
+            "isolated non-link Git checkout; have the managed owner materialize a new checkout"
+        )
+    return normalized_release_root, managed_root, checkout, commit
 
-    normalized = assert_clean_commit(checkout, commit)
 
-    def target_owner_mode(path: Path) -> tuple[int, int]:
+def _target_owner_mode(path: Path) -> tuple[int, int]:
+    try:
+        return _posix_owner_mode(path)
+    except ReleaseAuthorityError as exc:
+        raise ReleaseAuthorityError(
+            "target-checkout-authority-metadata gate failed: POSIX owner and mode metadata "
+            "must be available for the managed target; run the canonical release as the "
+            "managed owner on the managed POSIX host"
+        ) from exc
+
+
+def _validate_target_owner_mode(path: Path, managed_owner: int) -> None:
+    owner, mode = _target_owner_mode(path)
+    if owner != managed_owner:
+        raise ReleaseAuthorityError(
+            "target-checkout-authority-ownership gate failed: the managed release root, "
+            "checkout, Git metadata, and materialized tree must be owned by the managed-root "
+            "owner; have that owner materialize a new immutable checkout"
+        )
+    if mode & 0o022:
+        raise ReleaseAuthorityError(
+            "target-checkout-authority-mode gate failed: the managed release root, checkout, "
+            "Git metadata, and materialized tree must not be group/world-writable; have the "
+            "managed owner materialize a new immutable checkout"
+        )
+
+
+def assert_managed_target_pre_fetch_trust(
+    repo_root: Path,
+    requested_commit: str,
+    release_root: Path,
+) -> str:
+    """Trust a managed checkout's local metadata before any Git command or fetch."""
+    normalized_release_root, managed_root, checkout, commit = _managed_target_layout(
+        repo_root,
+        requested_commit,
+        release_root,
+    )
+    managed_owner, _ = _target_owner_mode(managed_root)
+    _validate_target_owner_mode(normalized_release_root, managed_owner)
+
+    pending = [checkout]
+    while pending:
+        current = pending.pop()
+        if _is_link_or_junction(current):
+            raise ReleaseAuthorityError(
+                "target-checkout-authority-type gate failed: links are forbidden in an "
+                "existing managed checkout; have the managed owner materialize a new checkout"
+            )
         try:
-            return _posix_owner_mode(path)
-        except ReleaseAuthorityError as exc:
+            metadata = current.stat(follow_symlinks=False)
+        except OSError as exc:
             raise ReleaseAuthorityError(
-                "target-checkout-authority-metadata gate failed: POSIX owner and mode "
-                "metadata must be available for the managed target; run the canonical "
-                "release as the managed owner on the managed POSIX host"
+                "target-checkout-authority-metadata gate failed: the existing managed checkout "
+                "must be fully readable before Git fetch; have the managed owner materialize a "
+                "new immutable checkout"
             ) from exc
-
-    managed_owner, _ = target_owner_mode(managed_root)
-
-    def validate_owner_mode(path: Path) -> None:
-        owner, mode = target_owner_mode(path)
-        if owner != managed_owner:
+        if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
             raise ReleaseAuthorityError(
-                "target-checkout-authority-ownership gate failed: the managed release root, "
-                "checkout, and tracked tree must be owned by the managed-root owner; use a "
-                "newly materialized checkout from that owner"
+                "target-checkout-authority-type gate failed: only regular files and directories "
+                "are permitted before Git fetch; have the managed owner materialize a new checkout"
             )
-        if mode & 0o022:
-            raise ReleaseAuthorityError(
-                "target-checkout-authority-mode gate failed: the managed release root, "
-                "checkout, and tracked tree must not be group/world-writable; have the "
-                "managed owner provision a new immutable checkout"
-            )
+        _validate_target_owner_mode(current, managed_owner)
+        if stat.S_ISDIR(metadata.st_mode):
+            try:
+                with os.scandir(current) as entries:
+                    pending.extend(Path(entry.path) for entry in entries)
+            except OSError as exc:
+                raise ReleaseAuthorityError(
+                    "target-checkout-authority-metadata gate failed: the existing managed "
+                    "checkout must be fully readable before Git fetch; have the managed owner "
+                    "materialize a new immutable checkout"
+                ) from exc
+    return commit
+
+
+def assert_managed_target_checkout(
+    repo_root: Path,
+    requested_commit: str,
+    release_root: Path,
+) -> str:
+    """Validate owner, mode, and exact Git-tree authority for one managed target checkout."""
+    normalized = assert_managed_target_pre_fetch_trust(
+        repo_root,
+        requested_commit,
+        release_root,
+    )
+    normalized_release_root, managed_root, checkout, _ = _managed_target_layout(
+        repo_root,
+        normalized,
+        release_root,
+    )
+    normalized = assert_clean_commit(checkout, normalized)
+    managed_owner, _ = _target_owner_mode(managed_root)
 
     for path in (normalized_release_root, checkout):
-        validate_owner_mode(path)
+        _validate_target_owner_mode(path, managed_owner)
 
     tracked_entries = _git_tracked_entries(checkout, normalized)
     for git_mode, relative_path in tracked_entries:
@@ -559,7 +632,7 @@ def assert_managed_target_checkout(
                     "target-checkout-git-tree gate failed: tracked path parents must be "
                     "directories; use a newly materialized immutable target checkout"
                 )
-            validate_owner_mode(current)
+            _validate_target_owner_mode(current, managed_owner)
         if _is_link_or_junction(candidate):
             raise ReleaseAuthorityError(
                 "target-checkout-git-tree gate failed: tracked symlinks are forbidden; use a "
@@ -578,7 +651,7 @@ def assert_managed_target_checkout(
                 "target-checkout-git-tree gate failed: tracked entries must be regular files; "
                 "use a newly materialized immutable target checkout"
             )
-        validate_owner_mode(candidate)
+        _validate_target_owner_mode(candidate, managed_owner)
     return normalized
 
 
@@ -1064,10 +1137,11 @@ def materialize_main_checkout(release_root: Path, commit: str) -> Path:
         raise ReleaseAuthorityError("versioned release checkout symlink is forbidden")
 
     if checkout.exists():
+        assert_managed_target_pre_fetch_trust(checkout, normalized, root)
         _assert_standalone_checkout(checkout, root)
         assert_clean_commit(checkout, normalized)
         _fetch_and_verify_main_commit(checkout, normalized)
-        assert_clean_commit(checkout, normalized)
+        assert_managed_target_checkout(checkout, normalized, root)
         return checkout
 
     staging.mkdir(exist_ok=False)
