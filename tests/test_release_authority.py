@@ -34,6 +34,7 @@ SANDBOX_IMAGE_ID = "sha256:" + "e" * 64
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
+OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
 
 
 def test_repo_local_compose_is_the_only_frontend_owner_and_binds_one_commit():
@@ -144,6 +145,9 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "--compose-file deploy/ai-platform/docker-compose.opensandbox.yml" in text
     assert "The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not" in text
     assert "OpenSandbox overlay only after those" in text
+    assert "exact provider-overlay ownership transition" in text
+    assert "base-only, reordered, duplicate" in text
+    assert "missing, extra, or arbitrary overlay" in text
     assert "ai-platform-phaseb" in text
     assert "docker compose --env-file <release-root>/deploy/ai-platform/.env" not in text
 
@@ -194,6 +198,13 @@ def _write_compose_files(repo_root: Path) -> tuple[Path, Path]:
     main.write_text("services: {}\n", encoding="utf-8")
     overlay.write_text("services: {}\n", encoding="utf-8")
     return main, overlay
+
+
+def _write_provider_compose_files(repo_root: Path) -> tuple[Path, Path, Path]:
+    main, sandbox = _write_compose_files(repo_root)
+    opensandbox = sandbox.with_name("docker-compose.opensandbox.yml")
+    opensandbox.write_text("services: {}\n", encoding="utf-8")
+    return main, sandbox, opensandbox
 
 
 def _compose_config_value(*paths: Path) -> str:
@@ -1954,19 +1965,38 @@ def test_deploy_preserves_exact_two_file_ownership_and_compose_command(monkeypat
     ]
 
 
-def test_deploy_accepts_trusted_prior_sibling_ordered_compose_ownership(
+@pytest.mark.parametrize(
+    ("prior_overlay_relative", "target_overlay_relative"),
+    [
+        (SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+        (OPENSANDBOX_COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH),
+    ],
+)
+def test_deploy_accepts_exact_provider_overlay_transition_and_rollback(
     monkeypatch,
     tmp_path,
+    prior_overlay_relative,
+    target_overlay_relative,
 ):
     commit = "7" * 40
     prior_commit = "678d3c46"
     release_root = tmp_path / "releases"
     target = release_root / commit
     prior = release_root / prior_commit
-    target_main, target_sandbox = _write_compose_files(target)
-    prior_main, prior_sandbox = _write_compose_files(prior)
+    target_main, target_sandbox, target_opensandbox = _write_provider_compose_files(target)
+    prior_main, prior_sandbox, prior_opensandbox = _write_provider_compose_files(prior)
+    target_overlays = {
+        SANDBOX_COMPOSE_RELATIVE_PATH: target_sandbox,
+        OPENSANDBOX_COMPOSE_RELATIVE_PATH: target_opensandbox,
+    }
+    prior_overlays = {
+        SANDBOX_COMPOSE_RELATIVE_PATH: prior_sandbox,
+        OPENSANDBOX_COMPOSE_RELATIVE_PATH: prior_opensandbox,
+    }
+    target_overlay = target_overlays[target_overlay_relative]
+    prior_overlay = prior_overlays[prior_overlay_relative]
     assert not (prior / ".git").exists()
-    prior_config = _compose_config_value(prior_main, prior_sandbox)
+    prior_config = _compose_config_value(prior_main, prior_overlay)
     events: list[str] = []
     commands: list[list[str]] = []
     image_records = {
@@ -2026,7 +2056,7 @@ def test_deploy_accepts_trusted_prior_sibling_ordered_compose_ownership(
         docker_cmd="docker",
         env_file=tmp_path / ".env",
         replace_known_manual_frontend=False,
-        compose_files=[COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH],
+        compose_files=[COMPOSE_RELATIVE_PATH, target_overlay_relative],
     )
 
     assert events[:3] == ["container:api", "container:worker", "container:frontend"]
@@ -2041,11 +2071,383 @@ def test_deploy_accepts_trusted_prior_sibling_ordered_compose_ownership(
         "-f",
         str(target_main.resolve()),
         "-f",
-        str(target_sandbox.resolve()),
+        str(target_overlay.resolve()),
         "up",
         "-d",
         "--no-build",
     ]
+
+
+def test_verified_current_runtime_uses_label_derived_historical_provider_selection(
+    monkeypatch,
+    tmp_path,
+):
+    current_commit = "6" * 40
+    target_commit = "7" * 40
+    release_root = tmp_path / "releases"
+    target = release_root / target_commit
+    prior = release_root / "678d3c46"
+    target_main, _, target_opensandbox = _write_provider_compose_files(target)
+    prior_main, prior_sandbox, _ = _write_provider_compose_files(prior)
+    target_selection = release_authority.resolve_compose_files(
+        target,
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
+    )
+    prior_config = _compose_config_value(prior_main, prior_sandbox)
+    parity_calls: list[tuple[Path, str, tuple[str, ...]]] = []
+
+    def fake_container_inspect(docker, name):
+        role = name.removeprefix("ai-platform-")
+        payload = _owned_container_payload(role, prior_main.parent, prior_config)[0]
+        labels = payload["Config"]["Labels"]
+        labels["ai-platform.source-commit"] = current_commit
+        labels["ai-platform.source-dirty"] = "false"
+        return {"labels": labels}, payload
+
+    def fake_parity(repo_root, commit, **kwargs):
+        parity_calls.append((repo_root, commit, tuple(kwargs["compose_files"])))
+        return {"verified": True}
+
+    monkeypatch.setattr(
+        "tools.release_authority._container_inspect_record",
+        fake_container_inspect,
+    )
+    monkeypatch.setattr("tools.release_authority.collect_live_parity", fake_parity)
+
+    current = release_authority._verified_current_runtime(
+        ["docker"],
+        target_selection,
+        docker_cmd="docker",
+    )
+
+    assert target_main.is_file() and target_opensandbox.is_file()
+    assert current["commit"] == current_commit
+    assert parity_calls == [
+        (
+            prior.resolve(),
+            current_commit,
+            (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "invalid_selection",
+    [
+        "base_only_observed",
+        "arbitrary_observed",
+        "reordered_observed",
+        "extra_observed",
+        "missing_observed",
+        "duplicate_observed",
+        "escaped_observed",
+        "linked_observed",
+        "non_sibling_observed",
+        "target_base_only",
+        "caller_selected_target",
+    ],
+)
+def test_provider_overlay_transition_rejects_non_allowlisted_selections(
+    monkeypatch,
+    tmp_path,
+    invalid_selection,
+):
+    commit = "7" * 40
+    release_root = tmp_path / "releases"
+    target = release_root / commit
+    prior = release_root / "678d3c46"
+    target_main, _, target_opensandbox = _write_provider_compose_files(target)
+    prior_main, prior_sandbox, prior_opensandbox = _write_provider_compose_files(prior)
+    target_arbitrary = target_main.with_name("docker-compose.caller-selected.yml")
+    target_arbitrary.write_text("services: {}\n", encoding="utf-8")
+    prior_arbitrary = prior_main.with_name("docker-compose.arbitrary.yml")
+    prior_arbitrary.write_text("services: {}\n", encoding="utf-8")
+    other_root = tmp_path / "other-releases" / "abcdef12"
+    other_main, _, other_opensandbox = _write_provider_compose_files(other_root)
+
+    target_paths = [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH]
+    observed_paths = [prior_main, prior_sandbox]
+    if invalid_selection == "base_only_observed":
+        observed_paths = [prior_main]
+    elif invalid_selection == "arbitrary_observed":
+        observed_paths = [prior_main, prior_arbitrary]
+    elif invalid_selection == "reordered_observed":
+        observed_paths = [prior_sandbox, prior_main]
+    elif invalid_selection == "extra_observed":
+        observed_paths = [prior_main, prior_sandbox, prior_opensandbox]
+    elif invalid_selection == "missing_observed":
+        observed_paths = [prior_main, prior_main.with_name("docker-compose.missing.yml")]
+    elif invalid_selection == "duplicate_observed":
+        observed_paths = [prior_main, prior_main]
+    elif invalid_selection == "escaped_observed":
+        observed_paths = [prior_main, other_opensandbox]
+    elif invalid_selection == "non_sibling_observed":
+        observed_paths = [other_main, other_opensandbox]
+    elif invalid_selection == "target_base_only":
+        target_paths = [COMPOSE_RELATIVE_PATH]
+    elif invalid_selection == "caller_selected_target":
+        target_paths = [
+            COMPOSE_RELATIVE_PATH,
+            "deploy/ai-platform/docker-compose.caller-selected.yml",
+        ]
+
+    target_selection = release_authority.resolve_compose_files(target, target_paths)
+    labels = _owned_container_payload(
+        "api",
+        observed_paths[0].parent,
+        _compose_config_value(*observed_paths),
+    )[0]["Config"]["Labels"]
+    if invalid_selection == "linked_observed":
+        original = release_authority._is_link_or_junction
+        monkeypatch.setattr(
+            "tools.release_authority._is_link_or_junction",
+            lambda path: Path(path) == prior_sandbox or original(Path(path)),
+        )
+
+    assert target_opensandbox.is_file()
+    assert release_authority._compose_ownership_selection(labels, target_selection) is None
+
+
+@pytest.mark.parametrize(
+    "identity_mismatch",
+    ["project", "release_role", "compose_service", "manual_api"],
+)
+def test_provider_overlay_transition_rejects_project_role_or_manual_identity(
+    monkeypatch,
+    tmp_path,
+    identity_mismatch,
+):
+    commit = "7" * 40
+    release_root = tmp_path / "releases"
+    target = release_root / commit
+    prior = release_root / "678d3c46"
+    _write_provider_compose_files(target)
+    prior_main, prior_sandbox, _ = _write_provider_compose_files(prior)
+    selection = release_authority.resolve_compose_files(
+        target,
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
+    )
+    inspected = _owned_container_payload(
+        "api",
+        prior_main.parent,
+        _compose_config_value(prior_main, prior_sandbox),
+    )[0]
+    labels = inspected["Config"]["Labels"]
+    if identity_mismatch == "project":
+        labels["com.docker.compose.project"] = "other-project"
+    elif identity_mismatch == "release_role":
+        labels["ai-platform.release-role"] = "worker"
+    elif identity_mismatch == "compose_service":
+        labels["com.docker.compose.service"] = "worker"
+    else:
+        labels["ai-platform.release-owner"] = "manual"
+
+    monkeypatch.setattr(
+        "tools.release_authority._inspect_optional_container",
+        lambda docker, name: inspected if name == "ai-platform-api" else None,
+    )
+
+    with pytest.raises(ReleaseAuthorityError, match="^api compose ownership mismatch$"):
+        release_authority._preflight_managed_container_ownership(
+            ["docker"],
+            selection,
+            replace_known_manual_frontend=False,
+            expected_manual_frontend_image=None,
+            expected_manual_frontend_image_id=None,
+        )
+
+
+def test_provider_overlay_transition_requires_one_owned_selection_for_all_roles(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "7" * 40
+    release_root = tmp_path / "releases"
+    target = release_root / commit
+    prior = release_root / "678d3c46"
+    _write_provider_compose_files(target)
+    prior_main, prior_sandbox, prior_opensandbox = _write_provider_compose_files(prior)
+    selection = release_authority.resolve_compose_files(
+        target,
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
+    )
+    configs = {
+        "api": _compose_config_value(prior_main, prior_sandbox),
+        "worker": _compose_config_value(prior_main, prior_opensandbox),
+        "frontend": _compose_config_value(prior_main, prior_sandbox),
+    }
+
+    def fake_inspect(docker, name):
+        role = name.removeprefix("ai-platform-")
+        return _owned_container_payload(role, prior_main.parent, configs[role])[0]
+
+    monkeypatch.setattr("tools.release_authority._inspect_optional_container", fake_inspect)
+
+    with pytest.raises(ReleaseAuthorityError, match="^worker compose ownership mismatch$"):
+        release_authority._preflight_managed_container_ownership(
+            ["docker"],
+            selection,
+            replace_known_manual_frontend=False,
+            expected_manual_frontend_image=None,
+            expected_manual_frontend_image_id=None,
+        )
+
+
+@pytest.mark.parametrize("missing_role", ["api", "worker", "frontend"])
+def test_provider_overlay_transition_requires_all_three_compose_owned_roles(
+    monkeypatch,
+    tmp_path,
+    missing_role,
+):
+    commit = "7" * 40
+    release_root = tmp_path / "releases"
+    target = release_root / commit
+    prior = release_root / "678d3c46"
+    _write_provider_compose_files(target)
+    prior_main, prior_sandbox, _ = _write_provider_compose_files(prior)
+    selection = release_authority.resolve_compose_files(
+        target,
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
+    )
+    prior_config = _compose_config_value(prior_main, prior_sandbox)
+
+    def fake_inspect(docker, name):
+        role = name.removeprefix("ai-platform-")
+        if role == missing_role:
+            return None
+        return _owned_container_payload(role, prior_main.parent, prior_config)[0]
+
+    monkeypatch.setattr("tools.release_authority._inspect_optional_container", fake_inspect)
+
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match=rf"^{missing_role} compose ownership mismatch$",
+    ):
+        release_authority._preflight_managed_container_ownership(
+            ["docker"],
+            selection,
+            replace_known_manual_frontend=False,
+            expected_manual_frontend_image=None,
+            expected_manual_frontend_image_id=None,
+        )
+
+
+def test_provider_overlay_transition_forbids_manual_frontend_replacement(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "7" * 40
+    release_root = tmp_path / "releases"
+    target = release_root / commit
+    prior = release_root / "678d3c46"
+    _write_provider_compose_files(target)
+    prior_main, prior_sandbox, _ = _write_provider_compose_files(prior)
+    selection = release_authority.resolve_compose_files(
+        target,
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
+    )
+    prior_config = _compose_config_value(prior_main, prior_sandbox)
+    manual_image = "ai-platform-frontend:manual"
+    manual_image_id = "sha256:" + "1" * 64
+    manual_container_id = "a" * 64
+
+    def fake_inspect(docker, name):
+        role = name.removeprefix("ai-platform-")
+        if role != "frontend":
+            return _owned_container_payload(role, prior_main.parent, prior_config)[0]
+        return {
+            "Id": manual_container_id,
+            "Image": manual_image_id,
+            "Config": {"Image": manual_image, "Labels": {}},
+        }
+
+    monkeypatch.setattr("tools.release_authority._inspect_optional_container", fake_inspect)
+
+    with pytest.raises(ReleaseAuthorityError, match="^frontend compose ownership mismatch$"):
+        release_authority._preflight_managed_container_ownership(
+            ["docker"],
+            selection,
+            replace_known_manual_frontend=True,
+            expected_manual_frontend_image=manual_image,
+            expected_manual_frontend_image_id=manual_image_id,
+        )
+
+
+def test_deploy_rejects_provider_ownership_change_during_preflight_revalidation(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "8" * 40
+    release_root = tmp_path / "releases"
+    target = release_root / commit
+    prior = release_root / "678d3c46"
+    _write_provider_compose_files(target)
+    prior_main, prior_sandbox, prior_opensandbox = _write_provider_compose_files(prior)
+    prior_configs = (
+        _compose_config_value(prior_main, prior_sandbox),
+        _compose_config_value(prior_main, prior_opensandbox),
+    )
+    inspect_count = 0
+    commands: list[list[str]] = []
+    image_records = {
+        f"ai-platform:{commit}": {
+            "id": SANDBOX_IMAGE_ID,
+            "labels": _published_image_labels(commit, "backend"),
+        },
+        f"ai-platform-frontend:{commit}": {
+            "id": "sha256:frontend",
+            "labels": _published_image_labels(commit, "frontend"),
+        },
+    }
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
+    monkeypatch.setattr(
+        "tools.release_authority._git",
+        lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n",
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._image_record",
+        lambda docker, image: image_records[image],
+    )
+
+    def fake_run(command, **kwargs):
+        nonlocal inspect_count
+        command = list(command)
+        commands.append(command)
+        if len(command) >= 3 and command[-3:-1] == ["container", "inspect"]:
+            role = command[-1].removeprefix("ai-platform-")
+            preflight_round = inspect_count // 3
+            inspect_count += 1
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    _owned_container_payload(
+                        role,
+                        prior_main.parent,
+                        prior_configs[preflight_round],
+                    )
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^managed container ownership changed during release preflight$",
+    ):
+        deploy_clean_commit(
+            target,
+            commit,
+            docker_cmd="docker",
+            env_file=tmp_path / ".env",
+            replace_known_manual_frontend=False,
+            compose_files=[COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
+        )
+
+    assert inspect_count == 6
+    assert not any("compose" in command for command in commands)
 
 
 @pytest.mark.parametrize(
@@ -2395,11 +2797,11 @@ def test_materialize_main_checkout_rejects_symlink_release_root(monkeypatch, tmp
         raise AssertionError("a symlink release root must fail closed")
 
 
-def test_deploy_main_commit_delegates_existing_deploy_and_parity_authorities(monkeypatch, tmp_path):
+def test_deploy_main_commit_keeps_target_provider_selection_for_final_parity(monkeypatch, tmp_path):
     commit = "b" * 40
     checkout = tmp_path / "releases" / commit
     calls: list[tuple[str, Path, str, tuple[str, ...]]] = []
-    compose_files = (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH)
+    compose_files = (COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH)
     monkeypatch.setattr(
         "tools.release_authority.materialize_main_checkout",
         lambda root, requested: checkout,

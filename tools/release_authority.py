@@ -30,6 +30,14 @@ FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_DIRECTORY_RE = re.compile(r"^[0-9a-f]{7,40}$")
 DOCKER_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_COMPOSE_RELATIVE_PATH = Path("deploy/ai-platform/docker-compose.yml")
+SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
+OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
+PROVIDER_OVERLAY_COMPOSE_SELECTIONS = frozenset(
+    {
+        (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), SANDBOX_COMPOSE_RELATIVE_PATH),
+        (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+    }
+)
 COMPOSE_PROJECT = "ai-platform-phaseb"
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 WORKER_TMPDIR_EXPANSION_MARKERS = frozenset("*?$`[]{}")
@@ -123,6 +131,15 @@ class _ComposeSelection:
     absolute_paths: tuple[Path, ...]
     working_dir: str
     config_files: str
+
+
+@dataclass(frozen=True)
+class _ManagedContainerOwnership:
+    """One preflight snapshot of existing release-authority container ownership."""
+
+    compose_selection: _ComposeSelection | None
+    compose_roles: tuple[str, ...]
+    manual_frontend_id: str | None
 
 
 def _create_owned_windows_job() -> int | None:
@@ -1202,6 +1219,7 @@ def _compose_ownership_selection(
     labels: dict[str, Any],
     target: _ComposeSelection,
 ) -> _ComposeSelection | None:
+    """Resolve exact or allowlisted provider-transition ownership from live labels."""
     working_dir = labels.get("com.docker.compose.project.working_dir")
     config_files = labels.get("com.docker.compose.project.config_files")
     if not isinstance(working_dir, str) or not isinstance(config_files, str):
@@ -1210,23 +1228,25 @@ def _compose_ownership_selection(
         return target
 
     observed_files = config_files.split(",")
-    if (
-        len(observed_files) != len(target.relative_paths)
-        or not observed_files
-        or any(not value for value in observed_files)
-    ):
+    if not observed_files or any(not value for value in observed_files):
         return None
-    observed_main = Path(observed_files[0])
-    if (
-        not observed_main.is_absolute()
-        or observed_main.as_posix() != observed_files[0]
-        or "\\" in observed_files[0]
-        or any(
-            unicodedata.category(character) in WORKER_TMPDIR_UNICODE_CATEGORIES
-            for character in observed_files[0]
-        )
-    ):
-        return None
+    observed_paths: list[Path] = []
+    for value in observed_files:
+        path = Path(value)
+        if (
+            not path.is_absolute()
+            or path.as_posix() != value
+            or value != unicodedata.normalize("NFC", value)
+            or "\\" in value
+            or any(
+                unicodedata.category(character) in WORKER_TMPDIR_UNICODE_CATEGORIES
+                for character in value
+            )
+        ):
+            return None
+        observed_paths.append(path)
+
+    observed_main = observed_paths[0]
     observed_root = observed_main
     for _ in DEFAULT_COMPOSE_RELATIVE_PATH.parts:
         observed_root = observed_root.parent
@@ -1239,12 +1259,23 @@ def _compose_ownership_selection(
     ):
         return None
     try:
-        observed = resolve_compose_files(observed_root, target.relative_paths)
+        observed_relative_paths = tuple(
+            path.relative_to(observed_root).as_posix() for path in observed_paths
+        )
+    except ValueError:
+        return None
+    try:
+        observed = resolve_compose_files(observed_root, observed_relative_paths)
     except (OSError, ReleaseAuthorityError):
         return None
     if observed.working_dir != working_dir or observed.config_files != config_files:
         return None
-    return observed
+    if observed.relative_paths == target.relative_paths:
+        return observed
+    transition = frozenset({observed.relative_paths, target.relative_paths})
+    if transition == PROVIDER_OVERLAY_COMPOSE_SELECTIONS:
+        return observed
+    return None
 
 
 def _manual_frontend_container_id(inspected: dict[str, Any]) -> str:
@@ -1261,9 +1292,10 @@ def _preflight_managed_container_ownership(
     replace_known_manual_frontend: bool,
     expected_manual_frontend_image: str | None,
     expected_manual_frontend_image_id: str | None,
-) -> str | None:
+) -> _ManagedContainerOwnership:
     manual_frontend_id: str | None = None
-    compose_owner_root: Path | None = None
+    compose_owner_selection: _ComposeSelection | None = None
+    compose_roles: list[str] = []
     for role in ("api", "worker", "frontend"):
         name = f"ai-platform-{role}"
         inspected = _inspect_optional_container(docker, name)
@@ -1282,9 +1314,10 @@ def _preflight_managed_container_ownership(
                 expected_config_files=owned_selection.config_files,
             ):
                 raise ReleaseAuthorityError(f"{role} compose ownership mismatch")
-            if compose_owner_root is not None and compose_owner_root != owned_selection.checkout_root:
+            if compose_owner_selection is not None and compose_owner_selection != owned_selection:
                 raise ReleaseAuthorityError(f"{role} compose ownership mismatch")
-            compose_owner_root = owned_selection.checkout_root
+            compose_owner_selection = owned_selection
+            compose_roles.append(role)
             continue
         if role != "frontend":
             raise ReleaseAuthorityError(f"{role} compose ownership mismatch")
@@ -1306,7 +1339,19 @@ def _preflight_managed_container_ownership(
                 "manual frontend identity mismatch; refusing container removal"
             )
         manual_frontend_id = _manual_frontend_container_id(inspected)
-    return manual_frontend_id
+    required_roles = ("api", "worker", "frontend")
+    if (
+        compose_owner_selection is not None
+        and compose_owner_selection.relative_paths != selection.relative_paths
+        and tuple(compose_roles) != required_roles
+    ):
+        missing_role = next(role for role in required_roles if role not in compose_roles)
+        raise ReleaseAuthorityError(f"{missing_role} compose ownership mismatch")
+    return _ManagedContainerOwnership(
+        compose_selection=compose_owner_selection,
+        compose_roles=tuple(compose_roles),
+        manual_frontend_id=manual_frontend_id,
+    )
 
 
 def _container_inspect_record(
@@ -1659,7 +1704,7 @@ def deploy_clean_commit(
     selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
     repository = authoritative_repository(repo_root)
-    manual_frontend_id = _preflight_managed_container_ownership(
+    ownership = _preflight_managed_container_ownership(
         docker,
         selection,
         replace_known_manual_frontend=replace_known_manual_frontend,
@@ -1785,19 +1830,24 @@ def deploy_clean_commit(
     revalidated = resolve_compose_files(repo_root, selection.relative_paths)
     if revalidated != selection:
         raise ReleaseAuthorityError("compose file selection changed during release preflight")
-    if manual_frontend_id is not None:
-        current_frontend = _inspect_optional_container(docker, "ai-platform-frontend")
-        if (
-            current_frontend is None
-            or _manual_frontend_container_id(current_frontend) != manual_frontend_id
-        ):
-            raise ReleaseAuthorityError("manual frontend changed before removal")
+    revalidated_ownership = _preflight_managed_container_ownership(
+        docker,
+        selection,
+        replace_known_manual_frontend=replace_known_manual_frontend,
+        expected_manual_frontend_image=expected_manual_frontend_image,
+        expected_manual_frontend_image_id=expected_manual_frontend_image_id,
+    )
+    if revalidated_ownership != ownership:
+        raise ReleaseAuthorityError("managed container ownership changed during release preflight")
+    if ownership.manual_frontend_id is not None:
         _stage(
             events,
             name="manual-frontend-removal",
             strategy=strategy,
             action="remove",
-            operation=lambda: _run([*docker, "container", "rm", "-f", manual_frontend_id]),
+            operation=lambda: _run(
+                [*docker, "container", "rm", "-f", ownership.manual_frontend_id]
+            ),
         )
 
     compose_environment = [
