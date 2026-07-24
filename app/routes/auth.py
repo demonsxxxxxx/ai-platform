@@ -23,7 +23,11 @@ from app.auth_sessions import (
 )
 from app.db import transaction
 from app.models import AuthContextBootstrapRequest, LoginRequest, OAuthCallbackRequest, PrincipalResponse
-from app.principal_authority import fetch_company_user_info, resolve_login_principal
+from app.principal_authority import (
+    PrincipalAuthorityDenied,
+    fetch_company_user_info,
+    resolve_login_principal,
+)
 from app.repositories import append_audit_log, ensure_user
 from app.settings import get_settings
 from app.validation import assert_safe_id
@@ -262,13 +266,16 @@ async def _resolve_login_principal(request: LoginRequest) -> AuthPrincipal:
     work_id = str(login_payload.get("workId") or login_payload.get("workid") or login_payload.get("userName") or "").strip()
     if not work_id:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="login_missing_work_id")
-    principal = await resolve_login_principal(
-        work_id=work_id,
-        login_name=request.user_name,
-        display_name=str(login_payload.get("cnName") or login_payload.get("userName") or work_id),
-        user_info_adapter=call_existing_user_info,
-        settings=get_settings(),
-    )
+    try:
+        principal = await resolve_login_principal(
+            work_id=work_id,
+            login_name=request.user_name,
+            display_name=str(login_payload.get("cnName") or login_payload.get("userName") or work_id),
+            user_info_adapter=call_existing_user_info,
+            settings=get_settings(),
+        )
+    except PrincipalAuthorityDenied as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
     return principal
 
 

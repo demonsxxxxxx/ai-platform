@@ -34,6 +34,107 @@ def _adapter(result):
     return fetch
 
 
+async def _resolve(kind, result, *, settings=None, login_name="login-a"):
+    if kind == "login":
+        return await resolve_login_principal(
+            work_id="user-a",
+            login_name=login_name,
+            display_name="User A",
+            user_info_adapter=_adapter(result),
+            settings=settings or _settings(),
+        )
+    return await resolve_current_principal(
+        user_id="user-a",
+        tenant_id="tenant-a",
+        user_info_adapter=_adapter(result),
+        settings=settings or _settings(),
+    )
+
+
+@pytest.mark.parametrize("optional_alias", [None, "", "   "])
+@pytest.mark.asyncio
+async def test_login_and_current_principal_accept_the_observed_legacy_company_record(optional_alias):
+    company_record = {
+        "workid": "user-a",
+        "username": optional_alias,
+        "roles": ["employee"],
+        "department": "研发一部",
+    }
+
+    login = await _resolve("login", company_record)
+    current = await _resolve("current", company_record)
+
+    assert login.user_id == current.user_id == "user-a"
+    assert login.tenant_id == current.tenant_id == "tenant-a"
+    assert login.department_id == current.department_id == ""
+    assert login.roles == current.roles == ["user"]
+    assert login.permissions == current.permissions == list(AI_USER_PERMISSIONS)
+
+
+@pytest.mark.parametrize("kind", ["login", "current"])
+@pytest.mark.parametrize(
+    ("role_aliases", "expected_role"),
+    [
+        pytest.param(
+            {
+                "roles": [" Developer ", "developer"],
+                "roleList": "DEVELOPER",
+                "roleName": "developer",
+            },
+            "admin",
+            id="equivalent-admin-aliases",
+        ),
+        pytest.param(
+            {
+                "roles": ["employee", "user"],
+                "role_list": " USER, employee ",
+            },
+            "user",
+            id="equivalent-user-aliases-reordered",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_login_and_current_principal_accept_semantically_equivalent_role_aliases(
+    kind,
+    role_aliases,
+    expected_role,
+):
+    principal = await _resolve(
+        kind,
+        {
+            "workid": "user-a",
+            "username": None,
+            "active": True,
+            **role_aliases,
+        },
+    )
+
+    assert principal.roles == [expected_role]
+
+
+@pytest.mark.parametrize("kind", ["login", "current"])
+@pytest.mark.parametrize(
+    "role_aliases",
+    [
+        pytest.param({"roles": [], "roleList": ["developer"]}, id="empty-versus-developer"),
+        pytest.param({"roles": ["user"], "roleName": "developer"}, id="user-versus-developer"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_login_and_current_principal_reject_conflicting_role_aliases(kind, role_aliases):
+    with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
+        await _resolve(
+            kind,
+            {
+                "workid": "user-a",
+                "username": None,
+                "active": True,
+                **role_aliases,
+            },
+        )
+
+
 @pytest.mark.asyncio
 async def test_current_principal_uses_current_identity_roles_department_and_derived_permissions():
     principal = await resolve_current_principal(
@@ -91,6 +192,9 @@ async def test_current_principal_recomputes_revoked_admin_role_from_the_same_aut
         ("rd", "rd"),
         ("", ""),
         (None, ""),
+        (42, ""),
+        (["qa"], ""),
+        ("qa,rd", ""),
     ],
 )
 @pytest.mark.asyncio
@@ -115,13 +219,13 @@ async def test_current_principal_honors_current_configured_admin_identity():
         user_info_adapter=_adapter(
             {
                 "workId": "user-a",
-                "userName": "admin-login",
+                "userName": None,
                 "roles": [],
                 "department": "platform",
                 "active": True,
             }
         ),
-        settings=_settings(ai_admin_work_ids="ADMIN-LOGIN"),
+        settings=_settings(ai_admin_work_ids="USER-A"),
     )
 
     assert principal.roles == ["admin"]
@@ -129,12 +233,12 @@ async def test_current_principal_honors_current_configured_admin_identity():
 
 
 @pytest.mark.asyncio
-async def test_current_principal_rejects_missing_eligibility_signal():
+async def test_current_principal_rejects_missing_eligibility_without_nonempty_roles():
     with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
         await resolve_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            user_info_adapter=_adapter({"workId": "user-a", "roles": ["user"]}),
+            user_info_adapter=_adapter({"workId": "user-a", "roles": []}),
             settings=_settings(),
         )
 
@@ -210,8 +314,6 @@ def _http_failure():
         pytest.param({"workId": "user-a", "roles": ["user"], "status": "disabled"}, id="disabled"),
         pytest.param({"workId": "user-a", "roles": ["user"], "eligible": False}, id="ineligible"),
         pytest.param({"workId": "user-a", "roles": {"name": "user"}}, id="malformed-roles"),
-        pytest.param({"workId": "user-a", "roles": ["user"], "department": ["qa"]}, id="malformed-department"),
-        pytest.param({"workId": "user-a", "roles": ["user"], "department": "qa,rd"}, id="unsafe-department"),
     ],
 )
 @pytest.mark.asyncio
@@ -249,30 +351,55 @@ async def test_current_principal_rejects_non_company_tenant_without_calling_adap
     assert called is False
 
 
+@pytest.mark.parametrize("kind", ["login", "current"])
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(RuntimeError("unavailable"), id="network-failure"),
+        pytest.param(_http_failure(), id="endpoint-failure"),
+        pytest.param({"roles": ["user"]}, id="missing-workid"),
+        pytest.param(
+            {"workid": "user-a", "username": "user-b", "roles": ["user"]},
+            id="conflicting-nonempty-alias",
+        ),
+        pytest.param(
+            {"workId": "user-a", "workid": "user-b", "roles": ["user"]},
+            id="conflicting-workids",
+        ),
+        pytest.param(
+            {"workid": "user-a", "username": None, "roles": ["user"], "enabled": False},
+            id="explicitly-disabled",
+        ),
+        pytest.param(
+            {"workid": "user-a", "username": None, "roles": ["user"], "status": "locked"},
+            id="explicitly-locked",
+        ),
+        pytest.param(
+            {"workid": "user-a", "username": None, "roles": ["user"], "tenantId": "tenant-b"},
+            id="tenant-mismatch",
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_login_principal_keeps_missing_user_info_compatibility_through_same_interface():
-    principal = await resolve_login_principal(
-        work_id="user-a",
-        login_name="login-a",
-        display_name="User A",
-        user_info_adapter=_adapter(RuntimeError("unavailable")),
-        settings=_settings(),
-    )
-
-    assert principal.roles == ["user"]
-    assert principal.department_id == ""
-    assert principal.permissions == list(AI_USER_PERMISSIONS)
+async def test_login_and_current_principal_fail_closed_for_untrusted_company_records(kind, result):
+    with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
+        await _resolve(kind, result)
 
 
 @pytest.mark.asyncio
-async def test_login_principal_keeps_login_name_configured_admin_compatibility():
-    principal = await resolve_login_principal(
-        work_id="user-a",
+async def test_unverified_login_name_cannot_bypass_configured_admin_identity():
+    company_record = {
+        "workid": "user-a",
+        "username": None,
+        "roles": ["user"],
+        "active": True,
+    }
+    principal = await _resolve(
+        "login",
+        company_record,
         login_name="admin-login",
-        display_name="User A",
-        user_info_adapter=_adapter({"roles": [], "department": "platform"}),
         settings=_settings(ai_admin_work_ids="ADMIN-LOGIN"),
     )
 
-    assert principal.roles == ["admin"]
-    assert principal.permissions == [*AI_USER_PERMISSIONS, *AI_ADMIN_PERMISSIONS]
+    assert principal.roles == ["user"]
+    assert principal.permissions == list(AI_USER_PERMISSIONS)

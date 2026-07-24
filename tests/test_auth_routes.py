@@ -162,8 +162,15 @@ async def test_company_login_collapses_upstream_roles_to_one_product_role(
 ):
     from app.principal_authority import resolve_login_principal
 
-    async def user_info_adapter(_work_id):
-        return {"roles": upstream_roles}
+    async def user_info_adapter(work_id):
+        user_info = {
+            "workid": work_id,
+            "username": None,
+            "roles": upstream_roles,
+        }
+        if not upstream_roles:
+            user_info["active"] = True
+        return user_info
 
     principal = await resolve_login_principal(
         work_id="synthetic-work-id",
@@ -221,7 +228,12 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
 
     async def fake_user_info(work_id):
         assert work_id == "dev001"
-        return {"roles": ["developer"], "permissions": ["agent:use"]}
+        return {
+            "workid": work_id,
+            "username": None,
+            "roles": ["developer"],
+            "permissions": ["agent:use"],
+        }
 
     async def fake_ensure_user(conn, *, tenant_id, user_id, display_name=None):
         assert user_id == "dev001"
@@ -261,7 +273,12 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
         return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
 
     async def fake_user_info(work_id):
-        return {"roles": ["user"], "permissions": []}
+        return {
+            "workid": work_id,
+            "username": None,
+            "roles": ["user"],
+            "permissions": [],
+        }
 
     async def noop(*args, **kwargs):
         return None
@@ -289,6 +306,27 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
     assert me_response.json()["permissions"] == body["permissions"]
 
 
+def test_company_login_projects_principal_denial_as_existing_safe_failure(monkeypatch):
+    async def fake_login(username, password):
+        return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
+
+    async def fake_user_info(work_id):
+        return {"roles": ["user"]}
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: auth_settings())
+    monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
+    monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
+
+    response = browser_client().post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "company_login_failed"}
+
+
 def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_department_id="qa"):
     from app.routes import skills_marketplace
 
@@ -299,7 +337,7 @@ def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_depart
 
     async def fake_user_info(work_id):
         assert work_id == "user001"
-        return user_info
+        return {"workid": work_id, "username": None, **user_info}
 
     async def noop(*args, **kwargs):
         return None
@@ -510,6 +548,8 @@ def test_company_login_does_not_project_large_enterprise_permissions_into_sessio
 
     async def fake_user_info(work_id):
         return {
+            "workid": work_id,
+            "username": None,
             "roles": ["user"],
             "permissions": [f"TaskManagement:legacy-permission-{index}" for index in range(3000)],
         }
@@ -540,34 +580,22 @@ def test_company_login_does_not_project_large_enterprise_permissions_into_sessio
     assert me_response.json()["permissions"] == body["permissions"]
 
 
-def test_company_login_survives_user_info_failure_as_ordinary_user(monkeypatch):
+def test_compat_login_projects_user_info_failure_as_existing_safe_failure(monkeypatch):
     async def fake_login(username, password):
         return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
 
     async def failing_user_info(work_id):
         raise RuntimeError("user-info unavailable")
 
-    async def noop(*args, **kwargs):
-        return None
-
     monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
     monkeypatch.setattr("app.routes.auth.get_settings", lambda: auth_settings())
     monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
     monkeypatch.setattr("app.routes.auth.call_existing_user_info", failing_user_info)
-    monkeypatch.setattr("app.routes.auth.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.auth.ensure_user", noop)
-    monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
 
     response = TestClient(create_app()).post("/api/auth/login", json={"username": "user001", "password": "pw"})
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["access_token"]
-    assert body["token_type"] == "bearer"
-    token = body["access_token"]
-    me_response = TestClient(create_app()).get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
-    assert me_response.json()["roles"] == ["user"]
-    assert me_response.json()["permissions"] == EXPECTED_COMPANY_USER_PERMISSIONS
+    assert response.status_code == 401
+    assert response.json() == {"detail": "company_login_failed"}
 
 
 def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(monkeypatch):
@@ -575,7 +603,13 @@ def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(
         return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
 
     async def fake_user_info(work_id):
-        return {"roles": [], "permissions": []}
+        return {
+            "workid": work_id,
+            "username": None,
+            "roles": [],
+            "permissions": [],
+            "active": True,
+        }
 
     async def noop(*args, **kwargs):
         return None
@@ -603,12 +637,19 @@ def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(
     assert body["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
 
 
-def test_company_login_admin_allowlist_matches_submitted_username(monkeypatch):
+def test_company_login_submitted_username_does_not_bypass_trusted_workid_admin_allowlist(monkeypatch):
     async def fake_login(username, password):
         return {"workId": "W001", "userName": username, "cnName": "Developer"}
 
     async def fake_user_info(work_id):
-        return {"roles": [], "permissions": []}
+        assert work_id == "W001"
+        return {
+            "workid": "W001",
+            "username": None,
+            "roles": [],
+            "permissions": [],
+            "active": True,
+        }
 
     async def noop(*args, **kwargs):
         return None
@@ -634,8 +675,9 @@ def test_company_login_admin_allowlist_matches_submitted_username(monkeypatch):
     me_response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
 
     assert me_response.status_code == 200
-    assert me_response.json()["roles"] == ["admin"]
-    assert me_response.json()["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
+    assert me_response.json()["roles"] == ["user"]
+    assert me_response.json()["permissions"] == EXPECTED_COMPANY_USER_PERMISSIONS
+    assert "model:admin" not in me_response.json()["permissions"]
 
 
 def test_company_unsuccessful_login_status_returns_401(monkeypatch):
@@ -655,7 +697,12 @@ def test_company_developer_login_gets_admin_ai_permissions(monkeypatch):
         return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
 
     async def fake_user_info(work_id):
-        return {"roles": ["developer"], "permissions": ["custom:business"]}
+        return {
+            "workid": work_id,
+            "username": None,
+            "roles": ["developer"],
+            "permissions": ["custom:business"],
+        }
 
     async def noop(*args, **kwargs):
         return None
@@ -702,7 +749,12 @@ def test_lambchat_auth_aliases_return_bearer_token(monkeypatch):
         return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
 
     async def fake_user_info(work_id):
-        return {"roles": ["developer"], "permissions": ["agent:use"]}
+        return {
+            "workid": work_id,
+            "username": None,
+            "roles": ["developer"],
+            "permissions": ["agent:use"],
+        }
 
     async def noop(*args, **kwargs):
         return None
