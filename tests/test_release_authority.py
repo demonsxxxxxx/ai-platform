@@ -3164,6 +3164,8 @@ def test_materialize_main_checkout_reuses_only_clean_matching_checkout(monkeypat
         ("checkout", (1000, 0o775), "target-checkout-authority-mode"),
         ("tracked-file", (1001, 0o644), "target-checkout-authority-ownership"),
         ("tracked-file", (1000, 0o666), "target-checkout-authority-mode"),
+        ("git-config", (1001, 0o644), "target-checkout-authority-ownership"),
+        ("git-object", (1000, 0o666), "target-checkout-authority-mode"),
     ],
 )
 def test_materialize_main_checkout_rejects_unsafe_existing_tree_before_fetch(
