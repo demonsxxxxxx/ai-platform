@@ -148,6 +148,13 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "Ignored-only artifacts" in text
     assert "immutable target checkout" in text
     assert "mode `0600`" in text
+    assert "must equal that exact" in text
+    assert "canonical path after normalization" in text
+    assert "Git commit/tree is the tracked-source" in text
+    assert "manifest: tracked symlinks" in text
+    assert "There is no" in text
+    assert "separate manifest artifact" in text
+    assert "not group- or world-writable" in text
     assert "--compose-file deploy/ai-platform/docker-compose.yml" in text
     assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" in text
     assert "The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not" in text
@@ -231,6 +238,31 @@ def _prepare_managed_release_layout(monkeypatch, tmp_path: Path) -> tuple[Path, 
         raising=False,
     )
     return managed_root, release_root, env_file
+
+
+def _prepare_managed_target_checkout(
+    monkeypatch,
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path, str]:
+    managed_root = tmp_path / "m"
+    release_root = managed_root / "releases"
+    release_root.mkdir(parents=True)
+    staging = release_root / "staging"
+    commit = _init_repo(staging)
+    checkout = release_root / commit
+    staging.rename(checkout)
+    env_file = managed_root / "deploy" / "ai-platform" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("PRIVATE_VALUE=must-not-be-read\n", encoding="utf-8")
+
+    def owner_mode(path):
+        candidate = Path(path)
+        if candidate == env_file:
+            return (1000, 0o600)
+        return (1000, 0o755 if candidate.is_dir() else 0o644)
+
+    monkeypatch.setattr(release_authority, "_posix_owner_mode", owner_mode)
+    return managed_root, release_root, checkout, env_file, commit
 
 
 def _compose_config_value(*paths: Path) -> str:
@@ -457,7 +489,7 @@ def test_managed_env_owner_and_mode_fail_closed(
         release_authority.resolve_managed_env_file(release_root, None)
 
 
-def test_managed_env_absolute_override_is_validated_without_reading_contents(
+def test_managed_env_external_same_owner_0600_override_is_rejected(
     monkeypatch,
     tmp_path,
 ):
@@ -479,9 +511,111 @@ def test_managed_env_absolute_override_is_validated_without_reading_contents(
         "read_text",
         lambda *args, **kwargs: pytest.fail("managed env contents must never be read"),
     )
+    materialized: list[Path] = []
+    monkeypatch.setattr(
+        release_authority,
+        "materialize_main_checkout",
+        lambda root, requested: materialized.append(Path(root)),
+    )
 
-    assert release_authority.resolve_managed_env_file(release_root, override) == override
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^managed-env-path gate failed:",
+    ):
+        release_authority.deploy_main_commit(
+            release_root,
+            "d" * 40,
+            docker_cmd="docker",
+            env_file=override,
+            replace_known_manual_frontend=False,
+        )
     assert default_env.is_file()
+    assert materialized == []
+
+
+def test_managed_env_exact_canonical_override_is_accepted_without_reading_contents(
+    monkeypatch,
+    tmp_path,
+):
+    _, release_root, canonical_env = _prepare_managed_release_layout(
+        monkeypatch,
+        tmp_path,
+    )
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *args, **kwargs: pytest.fail("managed env contents must never be read"),
+    )
+
+    assert release_authority.resolve_managed_env_file(
+        release_root,
+        canonical_env,
+    ) == canonical_env
+
+
+def test_managed_target_checkout_accepts_safe_exact_git_tree(monkeypatch, tmp_path):
+    _, release_root, checkout, _, commit = _prepare_managed_target_checkout(
+        monkeypatch,
+        tmp_path,
+    )
+
+    assert release_authority.assert_managed_target_checkout(
+        checkout,
+        commit,
+        release_root,
+    ) == commit
+
+
+@pytest.mark.parametrize(
+    ("unsafe_subject", "unsafe_metadata", "expected_gate"),
+    [
+        ("checkout", (1001, 0o755), "target-checkout-authority-ownership"),
+        ("checkout", (1000, 0o775), "target-checkout-authority-mode"),
+        ("tracked-file", (1001, 0o644), "target-checkout-authority-ownership"),
+        ("tracked-file", (1000, 0o666), "target-checkout-authority-mode"),
+    ],
+)
+def test_managed_target_owner_or_mode_rejects_before_docker(
+    monkeypatch,
+    tmp_path,
+    unsafe_subject,
+    unsafe_metadata,
+    expected_gate,
+):
+    managed_root, release_root, checkout, env_file, commit = (
+        _prepare_managed_target_checkout(monkeypatch, tmp_path)
+    )
+    unsafe_path = checkout if unsafe_subject == "checkout" else checkout / "tracked.txt"
+
+    def owner_mode(path):
+        candidate = Path(path)
+        if candidate == unsafe_path:
+            return unsafe_metadata
+        if candidate == env_file:
+            return (1000, 0o600)
+        return (1000, 0o755 if candidate.is_dir() else 0o644)
+
+    monkeypatch.setattr(release_authority, "_posix_owner_mode", owner_mode)
+    docker_bases: list[str] = []
+
+    def forbidden_docker_base(value):
+        docker_bases.append(value)
+        raise AssertionError("unsafe managed target must fail before Docker")
+
+    monkeypatch.setattr("tools.release_authority._docker_base", forbidden_docker_base)
+
+    with pytest.raises(ReleaseAuthorityError, match=rf"^{expected_gate} gate failed:"):
+        deploy_clean_commit(
+            checkout,
+            commit,
+            docker_cmd="docker",
+            env_file=env_file,
+            replace_known_manual_frontend=False,
+            managed_release_root=release_root,
+        )
+
+    assert managed_root.is_dir()
+    assert docker_bases == []
 
 
 def test_managed_env_is_revalidated_before_any_container_or_compose_mutation(
@@ -534,6 +668,11 @@ def test_managed_env_is_revalidated_before_any_container_or_compose_mutation(
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr("tools.release_authority._run", fake_run)
+    monkeypatch.setattr(
+        "tools.release_authority.assert_managed_target_checkout",
+        lambda repo, requested, root: commit,
+        raising=False,
+    )
 
     with pytest.raises(
         ReleaseAuthorityError,

@@ -432,6 +432,156 @@ def assert_clean_commit(repo_root: Path, requested_commit: str) -> str:
     return commit
 
 
+def _git_tracked_entries(repo_root: Path, commit: str) -> list[tuple[str, str]]:
+    raw = bytes(_git(repo_root, "ls-tree", "-r", "-z", commit, text=False))
+    entries: list[tuple[str, str]] = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, path_bytes = record.split(b"\t", 1)
+            mode, object_type, _ = metadata.decode("ascii").split(" ", 2)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ReleaseAuthorityError(
+                "target-checkout-git-tree gate failed: tracked tree metadata is invalid; "
+                "use a newly materialized immutable target checkout"
+            ) from exc
+        if object_type != "blob":
+            raise ReleaseAuthorityError(
+                "target-checkout-git-tree gate failed: tracked tree entries must be regular "
+                "files; use a newly materialized immutable target checkout"
+            )
+        entries.append((mode, path_bytes.decode("utf-8", "surrogateescape")))
+    return entries
+
+
+def assert_managed_target_checkout(
+    repo_root: Path,
+    requested_commit: str,
+    release_root: Path,
+) -> str:
+    """Validate owner, mode, and exact Git-tree authority for one managed target checkout."""
+    normalized_release_root, managed_root = _managed_root_from_release_root(release_root)
+    supplied = Path(repo_root)
+    commit = _normalize_commit(requested_commit)
+    expected = normalized_release_root / commit
+    try:
+        checkout = supplied.resolve(strict=True)
+    except OSError as exc:
+        raise ReleaseAuthorityError(
+            "target-checkout-authority-path gate failed: use the exact normalized managed "
+            "release checkout before requesting the release lease"
+        ) from exc
+    if (
+        not supplied.is_absolute()
+        or checkout != supplied
+        or checkout != expected
+        or not checkout.is_dir()
+        or _is_link_or_junction(supplied)
+    ):
+        raise ReleaseAuthorityError(
+            "target-checkout-authority-path gate failed: use the exact normalized managed "
+            "release checkout before requesting the release lease"
+        )
+
+    normalized = assert_clean_commit(checkout, commit)
+
+    def target_owner_mode(path: Path) -> tuple[int, int]:
+        try:
+            return _posix_owner_mode(path)
+        except ReleaseAuthorityError as exc:
+            raise ReleaseAuthorityError(
+                "target-checkout-authority-metadata gate failed: POSIX owner and mode "
+                "metadata must be available for the managed target; run the canonical "
+                "release as the managed owner on the managed POSIX host"
+            ) from exc
+
+    managed_owner, _ = target_owner_mode(managed_root)
+
+    def validate_owner_mode(path: Path) -> None:
+        owner, mode = target_owner_mode(path)
+        if owner != managed_owner:
+            raise ReleaseAuthorityError(
+                "target-checkout-authority-ownership gate failed: the managed release root, "
+                "checkout, and tracked tree must be owned by the managed-root owner; use a "
+                "newly materialized checkout from that owner"
+            )
+        if mode & 0o022:
+            raise ReleaseAuthorityError(
+                "target-checkout-authority-mode gate failed: the managed release root, "
+                "checkout, and tracked tree must not be group/world-writable; have the "
+                "managed owner provision a new immutable checkout"
+            )
+
+    for path in (normalized_release_root, checkout):
+        validate_owner_mode(path)
+
+    tracked_entries = _git_tracked_entries(checkout, normalized)
+    for git_mode, relative_path in tracked_entries:
+        if git_mode == "120000":
+            raise ReleaseAuthorityError(
+                "target-checkout-git-tree gate failed: tracked symlinks are forbidden; use a "
+                "newly materialized immutable target checkout"
+            )
+        if git_mode not in {"100644", "100755"}:
+            raise ReleaseAuthorityError(
+                "target-checkout-git-tree gate failed: tracked entries must be regular files; "
+                "use a newly materialized immutable target checkout"
+            )
+        pure = PurePosixPath(relative_path)
+        if (
+            pure.is_absolute()
+            or not pure.parts
+            or any(part in {"", ".", ".."} for part in pure.parts)
+        ):
+            raise ReleaseAuthorityError(
+                "target-checkout-git-tree gate failed: tracked tree path metadata is invalid; "
+                "use a newly materialized immutable target checkout"
+            )
+        candidate = checkout.joinpath(*pure.parts)
+        current = checkout
+        for part in pure.parts[:-1]:
+            current = current / part
+            if _is_link_or_junction(current):
+                raise ReleaseAuthorityError(
+                    "target-checkout-git-tree gate failed: tracked symlinks are forbidden; "
+                    "use a newly materialized immutable target checkout"
+                )
+            try:
+                directory_metadata = current.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise ReleaseAuthorityError(
+                    "target-checkout-git-tree gate failed: tracked content is missing or "
+                    "unreadable; use a newly materialized immutable target checkout"
+                ) from exc
+            if not stat.S_ISDIR(directory_metadata.st_mode):
+                raise ReleaseAuthorityError(
+                    "target-checkout-git-tree gate failed: tracked path parents must be "
+                    "directories; use a newly materialized immutable target checkout"
+                )
+            validate_owner_mode(current)
+        if _is_link_or_junction(candidate):
+            raise ReleaseAuthorityError(
+                "target-checkout-git-tree gate failed: tracked symlinks are forbidden; use a "
+                "newly materialized immutable target checkout"
+            )
+        try:
+            resolved = candidate.resolve(strict=True)
+            metadata = candidate.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise ReleaseAuthorityError(
+                "target-checkout-git-tree gate failed: tracked content is missing or unreadable; "
+                "use a newly materialized immutable target checkout"
+            ) from exc
+        if resolved != candidate or not stat.S_ISREG(metadata.st_mode):
+            raise ReleaseAuthorityError(
+                "target-checkout-git-tree gate failed: tracked entries must be regular files; "
+                "use a newly materialized immutable target checkout"
+            )
+        validate_owner_mode(candidate)
+    return normalized
+
+
 def build_image_references(commit: str) -> dict[str, str]:
     """Return immutable backend and frontend image tags for one full commit."""
     normalized = _normalize_commit(commit)
@@ -694,8 +844,9 @@ def _managed_root_from_release_root(release_root: Path) -> tuple[Path, Path]:
 def resolve_managed_env_file(release_root: Path, env_file: Path | None) -> Path:
     """Derive or validate the opaque managed Compose env file without reading it."""
     _, managed_root = _managed_root_from_release_root(release_root)
+    canonical = managed_root / DEFAULT_MANAGED_ENV_RELATIVE_PATH
     if env_file is None:
-        candidate = managed_root / DEFAULT_MANAGED_ENV_RELATIVE_PATH
+        candidate = canonical
     else:
         supplied = Path(env_file)
         if not supplied.is_absolute() or ".." in supplied.parts:
@@ -708,6 +859,12 @@ def resolve_managed_env_file(release_root: Path, env_file: Path | None) -> Path:
             raise ReleaseAuthorityError(
                 "managed-env-path gate failed: an explicit --env-file override must be "
                 "a normalized absolute path"
+            )
+        if candidate != canonical:
+            raise ReleaseAuthorityError(
+                "managed-env-path gate failed: an explicit --env-file override must equal "
+                "the canonical <managed-root>/deploy/ai-platform/.env path; use that managed "
+                "file before requesting the release lease"
             )
 
     if _is_link_or_junction(candidate):
@@ -1887,7 +2044,10 @@ def deploy_clean_commit(
         compose_env_file = resolve_managed_env_file(managed_release_root, Path(env_file))
     else:
         compose_env_file = Path(env_file).resolve()
-    normalized = assert_clean_commit(repo_root, commit)
+    if managed_release_root is not None:
+        normalized = assert_managed_target_checkout(repo_root, commit, managed_release_root)
+    else:
+        normalized = assert_clean_commit(repo_root, commit)
     selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
     repository = authoritative_repository(repo_root)
@@ -2013,7 +2173,10 @@ def deploy_clean_commit(
         repository=repository,
     )
 
-    assert_clean_commit(repo_root, normalized)
+    if managed_release_root is not None:
+        assert_managed_target_checkout(repo_root, normalized, managed_release_root)
+    else:
+        assert_clean_commit(repo_root, normalized)
     revalidated = resolve_compose_files(repo_root, selection.relative_paths)
     if revalidated != selection:
         raise ReleaseAuthorityError("compose file selection changed during release preflight")
@@ -2136,7 +2299,7 @@ def deploy_main_commit(
             raise ReleaseAuthorityError(f"deployed release parity failed: {detail}")
     else:
         events: list[dict[str, Any]] = []
-        assert_clean_commit(checkout, normalized)
+        assert_managed_target_checkout(checkout, normalized, release_root)
         target_selection = resolve_compose_files(checkout, compose_files)
         docker = _docker_base(docker_cmd)
         current = _stage(
@@ -2243,8 +2406,8 @@ def main() -> int:
         "--env-file",
         type=Path,
         help=(
-            "Optional absolute managed env override; defaults to "
-            "<managed-root>/deploy/ai-platform/.env from --release-root"
+            "Compatibility override accepted only when it equals the canonical "
+            "<managed-root>/deploy/ai-platform/.env derived from --release-root"
         ),
     )
     deploy_main.add_argument("--replace-known-manual-frontend", action="store_true")

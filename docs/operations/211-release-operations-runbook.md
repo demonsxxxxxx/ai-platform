@@ -39,15 +39,22 @@ and do not affect the fetched Git object or immutable target checkout.
 normalized absolute `$ROOT/releases` directory. The authority derives the
 operator-held env file as `$ROOT/deploy/ai-platform/.env`; a missing
 `$SOURCE/deploy/ai-platform/.env` is irrelevant. Do not add `--env-file` in the
-normal flow. A specifically authorized override must be a normalized absolute
-path to an existing regular non-symlink file, owned by the managed-root owner
-with mode `0600`. The authority validates metadata before target materialization
-and again before Compose mutation; it never reads, copies, or prints contents.
+normal flow. The compatibility `--env-file` override must equal that exact
+canonical path after normalization; an external file is rejected even if it has
+the same owner and mode. The canonical file must be an existing regular
+non-symlink owned by the managed-root owner with mode `0600`. The authority
+validates metadata before target materialization and again before Compose
+mutation; it never reads, copies, or prints contents.
 
 `$ROOT/releases/$TARGET` is the immutable target checkout and the only target
 build context. Its HEAD, tracked/staged/ordinary untracked state, ignored-file
-set, path/link boundaries, owner/mode/manifest and fetched-main provenance remain
-strictly fail-closed. Coordination ignored-file allowance never applies there.
+set, path/link boundaries, and fetched-main provenance remain strictly
+fail-closed. The managed-root owner must own `$ROOT/releases`, the exact checkout,
+and every directory and regular file in the tracked tree; those paths must be
+not group- or world-writable. The exact Git commit/tree is the tracked-source
+manifest: tracked symlinks and non-regular entries are rejected. There is no
+separate manifest artifact. Coordination ignored-file allowance never applies
+there.
 
 For governed Docker egress, the command resolves the reviewed backend build to
 its local immutable `sha256:<64-hex>` Docker image ID and passes that value as
@@ -178,13 +185,14 @@ identify the publisher and target commits, host and runtime subject, executable
 rollback subject, release-authority state and lock holder, Docker/Compose
 capability, coordination-source tracked/staged/ordinary-untracked cleanliness,
 managed env presence/link/owner/`0600` metadata without contents, strict target
-checkout status including ignored content, per-service ownership and
+checkout status including ignored content, managed-root ownership and
+non-group/world-writable mode for its tracked Git tree, per-service ownership and
 recover/adopt compatibility, and the exact services and method that require
 mutation. Missing or stale fields block release work rather than becoming
 discovery work inside a mutation task. A terminal gate failure is corrected by
-provisioning the managed file or using a separate clean exact-main coordination
-or newly materialized target checkout before requesting a new lease; do not
-clean or mutate an existing checkout to force a pass.
+having the managed owner provision the canonical env file or a new immutable
+target checkout, or by using a separate clean exact-main coordination checkout;
+it never instructs an operator to delete or clean observed source content.
 
 ## Host Command Rules
 
