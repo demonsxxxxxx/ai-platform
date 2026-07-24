@@ -1601,7 +1601,7 @@ async def _reauthorize_worker_capabilities(
             else []
         ),
         authorized_skill_names=(
-            list(authorized_skill_catalog.snapshot.available_skill_ids)
+            list(authorized_skill_catalog.snapshot.materialized_skill_ids)
             if authorized_skill_catalog is not None
             else [run_identity["skill_id"]]
         ),

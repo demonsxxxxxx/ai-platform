@@ -36,6 +36,7 @@ from app.executors.claude_agent_sdk_runner import (
     ScopedContextRetrievalIdentity,
     build_skill_prompt,
     internal_context_tool_policy_subjects,
+    project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
 )
 from app.file_parser_contracts import (
@@ -76,6 +77,14 @@ _SELECTED_SKILL_INVOCATION_ERRORS = {
     "claude_agent_sdk_selected_skill_not_invoked",
     "claude_agent_sdk_selected_skill_hook_failed",
     "claude_agent_sdk_selected_skill_not_authorized",
+}
+_SDK_ACTIONABLE_FAILURE_CODES = {
+    *_SELECTED_SKILL_INVOCATION_ERRORS,
+    "claude_agent_sdk_missing_structured_terminal",
+    "claude_agent_sdk_turn_limit_exceeded",
+    "claude_agent_sdk_timeout",
+    "claude_agent_sdk_tool_admission_failed",
+    "claude_agent_sdk_upstream_error",
 }
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
 _REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
@@ -133,6 +142,7 @@ class PreparedSdkRun:
     allowed_skill_names: list[str]
     staged_skill_names: list[str]
     prompt: str
+    public_skill_metadata: dict[str, dict[str, str]] = field(default_factory=dict)
     attachment_facts: list[MaterializedAttachmentFact] = field(default_factory=list)
     attachment_metadata: list[_AuthorizedAttachmentMetadata] = field(default_factory=list)
     materialized_file_names: list[str] | None = None
@@ -257,6 +267,38 @@ def _runtime_authorized_skill_catalog(
     return load_runtime_authorized_skill_catalog(
         payload.input,
         expected_binding=_authorized_skill_catalog_binding(payload),
+    )
+
+
+def _authorized_catalog_public_skill_metadata(
+    catalog: AuthorizedSkillCatalogResolution | None,
+) -> dict[str, dict[str, str]]:
+    if catalog is None:
+        return {}
+    return {
+        entry.skill_id: {
+            "name": entry.name,
+            "version": entry.version,
+            "availability": entry.availability,
+        }
+        for entry in catalog.snapshot.entries
+    }
+
+
+def _public_sdk_turn_diagnostics(
+    payload: RunPayload,
+    value: object,
+    *,
+    error_code: str | None,
+    used_skill_ids: list[str],
+    public_skill_metadata: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    return project_sdk_turn_diagnostics(
+        value,
+        error_code=error_code,
+        selected_skill_id=(payload.skill_id if payload.skill_id != "general-chat" else ""),
+        used_skill_ids=used_skill_ids,
+        public_skill_metadata=public_skill_metadata,
     )
 
 
@@ -478,6 +520,13 @@ class ClaudeAgentWorkerAdapter:
     async def _run_general_chat(self, payload: RunPayload, event_sink: ExecutorEventSink | None = None) -> ExecutorResult:
         sdk_result = await self._try_run_sdk(payload, event_sink=event_sink)
         if self._sdk_completed_normally(sdk_result):
+            turn_diagnostics = _public_sdk_turn_diagnostics(
+                payload,
+                getattr(sdk_result, "turn_diagnostics", {}),
+                error_code=None,
+                used_skill_ids=list(getattr(sdk_result, "used_skills", []) or []),
+                public_skill_metadata={},
+            )
             return ExecutorResult(
                 status="succeeded",
                 adapter_version=self.adapter_version,
@@ -491,6 +540,7 @@ class ClaudeAgentWorkerAdapter:
                     "sdk_error": None,
                     "delegate_used": False,
                     "worker_boundary": self.executor_type,
+                    "sdk_turn_diagnostics": turn_diagnostics,
                 },
                 artifacts=[],
                 executor_payload={
@@ -500,11 +550,19 @@ class ClaudeAgentWorkerAdapter:
                     "sdk_terminal_reason": self._sdk_terminal_reason(sdk_result),
                     "delegate_used": False,
                     "worker_boundary": self.executor_type,
+                    "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
         error_code = self._sdk_failure_code(sdk_result)
         sdk_used = bool(sdk_result and sdk_result.used_sdk)
         sdk_error = sdk_result.error if sdk_result else "claude_agent_sdk_disabled"
+        turn_diagnostics = _public_sdk_turn_diagnostics(
+            payload,
+            getattr(sdk_result, "turn_diagnostics", {}) if sdk_result else {},
+            error_code=error_code,
+            used_skill_ids=list(getattr(sdk_result, "used_skills", []) or []) if sdk_result else [],
+            public_skill_metadata={},
+        )
         return ExecutorResult(
             status="failed",
             adapter_version=self.adapter_version,
@@ -518,12 +576,14 @@ class ClaudeAgentWorkerAdapter:
                 "sdk_error": sdk_error,
                 "delegate_used": False,
                 "worker_boundary": self.executor_type,
+                "sdk_turn_diagnostics": turn_diagnostics,
             },
             executor_payload={
                 "sdk_used": sdk_used,
                 "sdk_error": sdk_error,
                 "delegate_used": False,
                 "worker_boundary": self.executor_type,
+                "sdk_turn_diagnostics": turn_diagnostics,
             },
         )
 
@@ -531,10 +591,8 @@ class ClaudeAgentWorkerAdapter:
         if sdk_result is None:
             return "claude_agent_sdk_disabled"
         error_text = str(getattr(sdk_result, "error", "") or "")
-        if error_text in _SELECTED_SKILL_INVOCATION_ERRORS:
+        if error_text in _SDK_ACTIONABLE_FAILURE_CODES:
             return error_text
-        if error_text == "claude_agent_sdk_missing_structured_terminal":
-            return "claude_agent_sdk_missing_structured_terminal"
         if error_text.startswith("claude_agent_sdk_unavailable"):
             return "claude_agent_sdk_unavailable"
         if getattr(sdk_result, "used_sdk", False):
@@ -544,9 +602,25 @@ class ClaudeAgentWorkerAdapter:
         return "claude_agent_sdk_required"
 
     def _sdk_failure_message(self, sdk_result) -> str:
-        if self._sdk_failure_code(sdk_result) in _SELECTED_SKILL_INVOCATION_ERRORS:
+        error_code = self._sdk_failure_code(sdk_result)
+        if error_code in _SELECTED_SKILL_INVOCATION_ERRORS:
             return "The selected capability did not complete its required Skill execution. Please retry."
-        return str(getattr(sdk_result, "message", "") or "Claude Agent SDK execution failed")
+        messages = {
+            "claude_agent_sdk_turn_limit_exceeded": (
+                "This run reached its turn limit. Continue in the same session or narrow the request."
+            ),
+            "claude_agent_sdk_timeout": "This run timed out. Retry or split the request.",
+            "claude_agent_sdk_missing_structured_terminal": (
+                "The executor ended without an authoritative terminal result. Please retry."
+            ),
+            "claude_agent_sdk_tool_admission_failed": (
+                "The selected capability or tool was not admitted by platform policy."
+            ),
+            "claude_agent_sdk_upstream_error": (
+                "The execution service failed. Please retry later."
+            ),
+        }
+        return messages.get(error_code, "Claude Agent SDK execution failed")
 
     def _sdk_completed_normally(self, sdk_result) -> bool:
         return bool(
@@ -564,6 +638,13 @@ class ClaudeAgentWorkerAdapter:
         error_code = self._sdk_failure_code(sdk_result)
         sdk_used = bool(sdk_result and sdk_result.used_sdk)
         sdk_error = sdk_result.error if sdk_result else "claude_agent_sdk_disabled"
+        turn_diagnostics = _public_sdk_turn_diagnostics(
+            payload,
+            getattr(sdk_result, "turn_diagnostics", {}) if sdk_result else {},
+            error_code=error_code,
+            used_skill_ids=list(getattr(sdk_result, "used_skills", []) or []) if sdk_result else [],
+            public_skill_metadata={},
+        )
         return ExecutorResult(
             status="failed",
             adapter_version=self.adapter_version,
@@ -578,12 +659,14 @@ class ClaudeAgentWorkerAdapter:
                 "sdk_error": sdk_error,
                 "delegate_used": False,
                 "worker_boundary": self.executor_type,
+                "sdk_turn_diagnostics": turn_diagnostics,
             },
             executor_payload={
                 "sdk_used": sdk_used,
                 "sdk_error": sdk_error,
                 "delegate_used": False,
                 "worker_boundary": self.executor_type,
+                "sdk_turn_diagnostics": turn_diagnostics,
             },
         )
 
@@ -1030,6 +1113,14 @@ class ClaudeAgentWorkerAdapter:
             return None, self._authorized_skill_catalog_failure_result(
                 "authorized_skill_catalog_invalid"
             )
+        if (
+            authorized_catalog is not None
+            and payload.skill_id != "general-chat"
+            and payload.skill_id not in authorized_catalog.materialized_skill_ids
+        ):
+            return None, self._authorized_skill_catalog_failure_result(
+                "authorized_skill_selected_unavailable"
+            )
         skills = (
             []
             if authorized_catalog is not None
@@ -1099,7 +1190,7 @@ class ClaudeAgentWorkerAdapter:
                 event_sink,
                 event_type="skill_selected",
                 stage="skills",
-                message="Authorized Skills are ready",
+                message="Selected authorized Skill is ready",
             )
 
         prompt_context_pack = self._executor_context_pack(payload)
@@ -1130,6 +1221,9 @@ class ClaudeAgentWorkerAdapter:
                 pinned_manifests=pinned_manifests,
                 allowed_skill_names=allowed_skill_names,
                 staged_skill_names=staged_skill_names,
+                public_skill_metadata=_authorized_catalog_public_skill_metadata(
+                    authorized_catalog
+                ),
                 prompt=prompt,
                 attachment_facts=attachment_facts,
                 attachment_metadata=attachment_metadata,
@@ -1393,6 +1487,13 @@ class ClaudeAgentWorkerAdapter:
             used_skill_names,
         )
         if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_skill_error is not None:
+            turn_diagnostics = _public_sdk_turn_diagnostics(
+                payload,
+                executor_response.get("sdk_turn_diagnostics"),
+                error_code=selected_skill_error,
+                used_skill_ids=used_skill_names,
+                public_skill_metadata=prepared.public_skill_metadata,
+            )
             return ExecutorResult(
                 status="failed",
                 adapter_version=self.adapter_version,
@@ -1410,16 +1511,25 @@ class ClaudeAgentWorkerAdapter:
                     "allowed_skills": prepared.allowed_skill_names,
                     "staged_skills": prepared.staged_skill_names,
                     "used_skills": used_skill_names,
+                    "sdk_turn_diagnostics": turn_diagnostics,
                 },
                 artifacts=[],
                 executor_payload={
                     **common_payload,
                     "sdk_error": selected_skill_error,
+                    "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
         if runtime_status == "accepted":
             error_code = "executor_missing_structured_terminal"
             message = "Sandbox executor returned without an authoritative terminal result"
+            turn_diagnostics = _public_sdk_turn_diagnostics(
+                payload,
+                executor_response.get("sdk_turn_diagnostics"),
+                error_code=error_code,
+                used_skill_ids=used_skill_names,
+                public_skill_metadata=prepared.public_skill_metadata,
+            )
             return ExecutorResult(
                 status="failed",
                 adapter_version=self.adapter_version,
@@ -1437,11 +1547,13 @@ class ClaudeAgentWorkerAdapter:
                     "allowed_skills": prepared.allowed_skill_names,
                     "staged_skills": prepared.staged_skill_names,
                     "used_skills": used_skill_names,
+                    "sdk_turn_diagnostics": turn_diagnostics,
                 },
                 artifacts=[],
                 executor_payload={
                     **common_payload,
                     "sdk_error": error_code,
+                    "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
         if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
@@ -1450,15 +1562,20 @@ class ClaudeAgentWorkerAdapter:
                 error_code = "executor_cancelled"
             if not error_code:
                 error_code = "executor_reported_failure"
-            message = str(
-                executor_response.get("error_message")
-                or executor_response.get("message")
-                or ("任务已取消" if runtime_status in {"cancelled", "canceled"} else "Claude Agent SDK execution failed")
+            message = (
+                "任务已取消"
+                if runtime_status in {"cancelled", "canceled"}
+                else self._sdk_failure_message(
+                    type("SdkFailure", (), {"error": error_code})()
+                )
             )
-            sdk_error = str(
-                executor_response.get("error_message")
-                or executor_response.get("error_code")
-                or message
+            sdk_error = error_code
+            turn_diagnostics = _public_sdk_turn_diagnostics(
+                payload,
+                executor_response.get("sdk_turn_diagnostics"),
+                error_code=error_code,
+                used_skill_ids=used_skill_names,
+                public_skill_metadata=prepared.public_skill_metadata,
             )
             return ExecutorResult(
                 status="failed",
@@ -1477,15 +1594,24 @@ class ClaudeAgentWorkerAdapter:
                     "allowed_skills": prepared.allowed_skill_names,
                     "staged_skills": prepared.staged_skill_names,
                     "used_skills": used_skill_names,
+                    "sdk_turn_diagnostics": turn_diagnostics,
                 },
                 artifacts=[],
                 executor_payload={
                     **common_payload,
                     "sdk_error": sdk_error,
+                    "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
 
         artifacts = self._collect_workspace_artifacts(payload, prepared.workspace)
+        turn_diagnostics = _public_sdk_turn_diagnostics(
+            payload,
+            executor_response.get("sdk_turn_diagnostics"),
+            error_code=None,
+            used_skill_ids=used_skill_names,
+            public_skill_metadata=prepared.public_skill_metadata,
+        )
         return ExecutorResult(
             status="succeeded",
             adapter_version=self.adapter_version,
@@ -1503,9 +1629,13 @@ class ClaudeAgentWorkerAdapter:
                 "allowed_skills": prepared.allowed_skill_names,
                 "staged_skills": prepared.staged_skill_names,
                 "used_skills": used_skill_names,
+                "sdk_turn_diagnostics": turn_diagnostics,
             },
             artifacts=artifacts,
-            executor_payload=common_payload,
+            executor_payload={
+                **common_payload,
+                "sdk_turn_diagnostics": turn_diagnostics,
+            },
         )
 
     async def _run_with_staged_skills(
@@ -1562,6 +1692,7 @@ class ClaudeAgentWorkerAdapter:
             file_names=prepared.file_names,
             prompt=prepared.prompt,
             staged_skill_names=prepared.staged_skill_names,
+            public_skill_metadata=prepared.public_skill_metadata,
         )
         if self._sdk_completed_normally(sdk_result):
             artifacts = self._collect_workspace_artifacts(payload, prepared.workspace)
@@ -1579,6 +1710,13 @@ class ClaudeAgentWorkerAdapter:
                 used_skill_names,
             )
             if selected_skill_error is not None:
+                turn_diagnostics = _public_sdk_turn_diagnostics(
+                    payload,
+                    getattr(sdk_result, "turn_diagnostics", {}),
+                    error_code=selected_skill_error,
+                    used_skill_ids=used_skill_names,
+                    public_skill_metadata=prepared.public_skill_metadata,
+                )
                 return ExecutorResult(
                     status="failed",
                     adapter_version=self.adapter_version,
@@ -1596,6 +1734,7 @@ class ClaudeAgentWorkerAdapter:
                         "allowed_skills": prepared.allowed_skill_names,
                         "staged_skills": prepared.staged_skill_names,
                         "used_skills": used_skill_names,
+                        "sdk_turn_diagnostics": turn_diagnostics,
                     },
                     artifacts=[],
                     executor_payload={
@@ -1613,8 +1752,16 @@ class ClaudeAgentWorkerAdapter:
                         "inferred_used_skills": inferred_used_skill_names,
                         "skill_manifests": skill_manifests,
                         "required_artifact_types": list(_required_artifact_types(payload)),
+                        "sdk_turn_diagnostics": turn_diagnostics,
                     },
                 )
+            turn_diagnostics = _public_sdk_turn_diagnostics(
+                payload,
+                getattr(sdk_result, "turn_diagnostics", {}),
+                error_code=None,
+                used_skill_ids=used_skill_names,
+                public_skill_metadata=prepared.public_skill_metadata,
+            )
             return ExecutorResult(
                 status="succeeded",
                 adapter_version=self.adapter_version,
@@ -1632,6 +1779,7 @@ class ClaudeAgentWorkerAdapter:
                     "allowed_skills": prepared.allowed_skill_names,
                     "staged_skills": prepared.staged_skill_names,
                     "used_skills": used_skill_names,
+                    "sdk_turn_diagnostics": turn_diagnostics,
                 },
                 artifacts=artifacts,
                 executor_payload={
@@ -1648,6 +1796,7 @@ class ClaudeAgentWorkerAdapter:
                     "inferred_used_skills": inferred_used_skill_names,
                     "skill_manifests": skill_manifests,
                     "required_artifact_types": list(_required_artifact_types(payload)),
+                    "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
         used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names) if sdk_result else []
@@ -1658,6 +1807,14 @@ class ClaudeAgentWorkerAdapter:
             used_skill_names=used_skill_names,
             pins=prepared.pinned_manifests,
         )
+        failure_code = self._sdk_failure_code(sdk_result)
+        turn_diagnostics = _public_sdk_turn_diagnostics(
+            payload,
+            getattr(sdk_result, "turn_diagnostics", {}) if sdk_result else {},
+            error_code=failure_code,
+            used_skill_ids=used_skill_names,
+            public_skill_metadata=prepared.public_skill_metadata,
+        )
         return ExecutorResult(
             status="failed",
             adapter_version=self.adapter_version,
@@ -1666,7 +1823,7 @@ class ClaudeAgentWorkerAdapter:
             capabilities={**self.capabilities, "platform_skills": True},
             result={
                 "message": self._sdk_failure_message(sdk_result) if sdk_result else "Claude Agent SDK execution failed",
-                "error_code": self._sdk_failure_code(sdk_result),
+                "error_code": failure_code,
                 "sdk_used": bool(sdk_result and sdk_result.used_sdk),
                 "sdk_error": sdk_result.error if sdk_result else "claude_agent_sdk_required",
                 "delegate_used": False,
@@ -1674,6 +1831,7 @@ class ClaudeAgentWorkerAdapter:
                 "allowed_skills": prepared.allowed_skill_names,
                 "staged_skills": prepared.staged_skill_names,
                 "used_skills": used_skill_names,
+                "sdk_turn_diagnostics": turn_diagnostics,
             },
             artifacts=[],
             executor_payload={
@@ -1687,6 +1845,7 @@ class ClaudeAgentWorkerAdapter:
                 "used_skills_source": used_skills_source,
                 "inferred_used_skills": inferred_used_skill_names,
                 "skill_manifests": skill_manifests,
+                "sdk_turn_diagnostics": turn_diagnostics,
             },
         )
 
@@ -1699,6 +1858,7 @@ class ClaudeAgentWorkerAdapter:
         file_names: list[str] | None = None,
         prompt: str | None = None,
         staged_skill_names: list[str] | None = None,
+        public_skill_metadata: dict[str, dict[str, str]] | None = None,
     ):
         settings = get_settings()
         if not settings.claude_agent_sdk_enabled:
@@ -1741,13 +1901,14 @@ class ClaudeAgentWorkerAdapter:
         if not prompt:
             try:
                 authorized_catalog = _runtime_authorized_skill_catalog(payload)
-            except AuthorizedSkillCatalogError as exc:
+            except AuthorizedSkillCatalogError:
                 return type("SdkFailed", (), {
                     "used_sdk": False,
                     "message": "",
                     "session_id": None,
                     "usage": {},
-                    "error": f"authorized_skill_catalog_invalid: {exc}",
+                    "error": "authorized_skill_catalog_invalid",
+                    "turn_diagnostics": {},
                 })()
             prompt = build_skill_prompt(
                 skill_id=payload.skill_id,
@@ -1795,6 +1956,7 @@ class ClaudeAgentWorkerAdapter:
                 "skills": staged_skill_names,
                 "on_text": on_text,
                 "on_skill_use": on_skill_use,
+                "public_skill_metadata": public_skill_metadata,
                 "tool_policy_subjects": _runtime_tool_policy_subjects(
                     payload,
                     _context_manifest_from_pack(context_pack),
@@ -1810,21 +1972,23 @@ class ClaudeAgentWorkerAdapter:
                 message="SDK runtime dispatch is active",
             )
             return await run_claude_agent_sdk(**sdk_kwargs)
-        except ClaudeAgentSdkNotAvailable as exc:
+        except ClaudeAgentSdkNotAvailable:
             return type("SdkUnavailable", (), {
                 "used_sdk": False,
                 "message": "",
                 "session_id": None,
                 "usage": {},
-                "error": f"claude_agent_sdk_unavailable: {exc}",
+                "error": "claude_agent_sdk_unavailable",
+                "turn_diagnostics": {},
             })()
-        except Exception as exc:
+        except Exception:
             return type("SdkFailed", (), {
                 "used_sdk": True,
                 "message": "",
                 "session_id": None,
                 "usage": {},
-                "error": str(exc),
+                "error": "claude_agent_sdk_upstream_error",
+                "turn_diagnostics": {},
             })()
 
     async def _materialize_files(self, payload: RunPayload, workspace: Path) -> list[str]:
@@ -2047,7 +2211,7 @@ def _allowed_skill_names(
     if authorized_catalog is not None:
         return [
             skill_id
-            for skill_id in authorized_catalog.snapshot.available_skill_ids
+            for skill_id in authorized_catalog.materialized_skill_ids
             if skill_id in available
         ]
     requested = _string_list(payload.input.get("skill_ids"))

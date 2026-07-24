@@ -73,6 +73,10 @@ _SDK_PRESERVED_FAILURE_CODES = frozenset(
         "claude_agent_sdk_selected_skill_not_invoked",
         "claude_agent_sdk_selected_skill_hook_failed",
         "claude_agent_sdk_selected_skill_not_authorized",
+        "claude_agent_sdk_turn_limit_exceeded",
+        "claude_agent_sdk_timeout",
+        "claude_agent_sdk_tool_admission_failed",
+        "claude_agent_sdk_upstream_error",
     }
 )
 _SDK_TURN_LIMIT_ERROR_PATTERN = re.compile(r"Reached maximum number of turns \(\d+\)")
@@ -1025,11 +1029,11 @@ async def _default_executor_runner(
             execution_policy="sandbox_brokered",
             attachment_contexts=attachment_contexts,
         )
-    except ClaudeAgentSdkNotAvailable as exc:
+    except ClaudeAgentSdkNotAvailable:
         return {
             "status": "failed",
             "error_code": "claude_agent_sdk_unavailable",
-            "error_message": f"Claude Agent SDK unavailable: {exc}",
+            "error_message": "Claude Agent SDK is unavailable",
             "sdk_used": False,
             "attachment_parser_evidence": parser_evidence,
         }
@@ -1052,6 +1056,7 @@ async def _default_executor_runner(
         "executor_mode": "claude_agent_sdk",
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
+        "sdk_turn_diagnostics": dict(getattr(sdk_result, "turn_diagnostics", {}) or {}),
         "attachment_parser_evidence": parser_evidence,
     }
     if error:
@@ -1318,6 +1323,7 @@ def create_executor_app(
             "executor_mode",
             "used_skills",
             "used_skills_source",
+            "sdk_turn_diagnostics",
             "attachment_parser_evidence",
         ):
             if key in runner_result and runner_result[key] is not None:

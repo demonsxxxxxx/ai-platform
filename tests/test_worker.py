@@ -857,8 +857,9 @@ def default_cancel_not_requested(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log, raising=False)
 
     class _DefaultCatalogSnapshot:
-        def __init__(self, skill_id):
+        def __init__(self, skill_id, materialized_skill_ids):
             self.available_skill_ids = (skill_id,)
+            self.materialized_skill_ids = materialized_skill_ids
             self._skill_id = skill_id
 
         def entry(self, skill_id):
@@ -868,8 +869,17 @@ def default_cancel_not_requested(monkeypatch):
 
     class _DefaultCatalogResolution:
         def __init__(self, skill_id, manifests):
-            self.snapshot = _DefaultCatalogSnapshot(skill_id)
             self.manifests = list(manifests)
+            materialized_skill_ids = (
+                tuple(
+                    str(manifest.get("skill_id") or "")
+                    for manifest in self.manifests
+                    if isinstance(manifest, dict) and str(manifest.get("skill_id") or "")
+                )
+                if skill_id != "general-chat"
+                else ()
+            )
+            self.snapshot = _DefaultCatalogSnapshot(skill_id, materialized_skill_ids)
 
         def runtime_input_updates(self):
             return {}
@@ -1240,6 +1250,37 @@ def test_multi_agent_result_summary_preserves_step_governance_context():
 @pytest.mark.asyncio
 async def test_worker_completes_successful_adapter_run(monkeypatch):
     calls = []
+    diagnostics = {
+        "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
+        "terminal_class": "completed",
+        "error_code": None,
+        "action": "none",
+        "retryable": False,
+        "counters": {
+            "max_turns": 128,
+            "turns_observed": 3,
+            "assistant_messages": 2,
+            "text_blocks": 2,
+            "result_messages": 1,
+            "tool_admission_denials": 0,
+            "skill_invocations": 0,
+        },
+        "last_public_stage": "message",
+        "selected_skill": None,
+        "used_skills": [],
+    }
+
+    class DiagnosticSuccessAdapter(FakeSuccessAdapter):
+        async def submit_run(self, payload, event_sink=None):
+            result = await super().submit_run(payload, event_sink=event_sink)
+            return replace(
+                result,
+                result={**result.result, "sdk_turn_diagnostics": diagnostics},
+                executor_payload={
+                    "sdk_turn_diagnostics": diagnostics,
+                    "private_raw_error": "private-token=must-not-persist",
+                },
+            )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -1258,6 +1299,8 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
             "staged_skills": [],
             "used_skills": [],
         }
+        assert result_json["sdk_turn_diagnostics"] == diagnostics
+        assert "private-token" not in str(result_json)
         calls.append(("complete", result_json["executor"]["adapter_version"]))
         return True
 
@@ -1268,13 +1311,21 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
-    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    outcome = await process_run_payload(
+        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
+        AdapterRegistry({"fake": DiagnosticSuccessAdapter()}),
+    )
 
     assert outcome.status == "succeeded"
     assert ("running", "tenant-a", "run-a") in calls
     assert any(item[0] == "artifact" for item in calls)
     assert ("complete", "fake-adapter/1") in calls
     assert calls[-1] == ("event", "status", "worker", "Run succeeded")
+    assert sum(1 for item in calls if item[0] == "complete") == 1
+    assert not any(
+        item[0] == "event" and item[1] in {"run_failed", "run_cancelled"}
+        for item in calls
+    )
 
 
 @pytest.mark.asyncio
@@ -2343,6 +2394,25 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
 async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_requested(monkeypatch):
     calls = []
     cancel_checks = 0
+    diagnostics = {
+        "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
+        "terminal_class": "cancelled",
+        "error_code": "executor_cancelled",
+        "action": "none",
+        "retryable": False,
+        "counters": {
+            "max_turns": 128,
+            "turns_observed": 1,
+            "assistant_messages": 0,
+            "text_blocks": 0,
+            "result_messages": 0,
+            "tool_admission_denials": 0,
+            "skill_invocations": 0,
+        },
+        "last_public_stage": "runtime",
+        "selected_skill": None,
+        "used_skills": [],
+    }
 
     class CancelAwareFailureAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -2352,8 +2422,17 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
                 executor_type="claude-agent-worker",
                 executor_version="sandbox-runtime/1",
                 capabilities={},
-                result={"message": "executor cancelled after runtime cleanup", "error_code": "executor_failure"},
-                executor_payload={"sandbox_provider": "docker", "runtime_terminal_status": "cancelled"},
+                result={
+                    "message": "任务已取消",
+                    "error_code": "executor_cancelled",
+                    "sdk_turn_diagnostics": diagnostics,
+                },
+                executor_payload={
+                    "sandbox_provider": "docker",
+                    "runtime_terminal_status": "cancelled",
+                    "sdk_turn_diagnostics": diagnostics,
+                    "private_raw_error": "private-token=must-not-persist",
+                },
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
@@ -2427,8 +2506,14 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
     )
 
     assert outcome.status == "cancelled"
-    assert any(item[0] == "cancel" for item in calls)
-    assert not any(item[0] == "event" and item[1] == "run_cancelled" for item in calls)
+    cancel_calls = [item for item in calls if item[0] == "cancel"]
+    assert cancel_calls == [("cancel", "run-a", {"message": "任务已取消"})]
+    assert "private-token" not in str(cancel_calls)
+    assert not any(
+        item[0] == "event"
+        and item[1] in {"run_succeeded", "run_failed", "run_cancelled"}
+        for item in calls
+    )
 
 
 @pytest.mark.asyncio
@@ -5136,8 +5221,27 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_uses_sdk_error_when_adapter_failure_message_is_generic(monkeypatch):
+async def test_worker_preserves_canonical_sdk_failure_diagnostics_without_raw_error(monkeypatch):
     calls = []
+    diagnostics = {
+        "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
+        "terminal_class": "upstream_error",
+        "error_code": "claude_agent_sdk_upstream_error",
+        "action": "retry_later",
+        "retryable": True,
+        "counters": {
+            "max_turns": 128,
+            "turns_observed": 2,
+            "assistant_messages": 1,
+            "text_blocks": 1,
+            "result_messages": 0,
+            "tool_admission_denials": 0,
+            "skill_invocations": 0,
+        },
+        "last_public_stage": "message",
+        "selected_skill": None,
+        "used_skills": [],
+    }
 
     class SdkFailureAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -5148,12 +5252,15 @@ async def test_worker_uses_sdk_error_when_adapter_failure_message_is_generic(mon
                 executor_version="fake/1",
                 capabilities={},
                 result={
-                    "error_code": "claude_agent_sdk_runtime_error",
-                    "message": "Executor reported failure",
-                    "sdk_error": "API Error: 529 upstream overloaded request id: req_abc123",
+                    "error_code": "claude_agent_sdk_upstream_error",
+                    "message": "The execution service failed. Please retry later.",
+                    "sdk_error": "claude_agent_sdk_upstream_error",
+                    "sdk_turn_diagnostics": diagnostics,
                 },
                 executor_payload={
-                    "sdk_error": "API Error: 529 upstream overloaded request id: req_abc123",
+                    "sdk_error": "claude_agent_sdk_upstream_error",
+                    "sdk_turn_diagnostics": diagnostics,
+                    "private_raw_error": "API Error: 529 upstream overloaded request id: req_abc123",
                 },
             )
 
@@ -5175,11 +5282,18 @@ async def test_worker_uses_sdk_error_when_adapter_failure_message_is_generic(mon
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": SdkFailureAdapter()}))
 
     assert outcome.status == "failed"
-    assert outcome.error_code == "claude_agent_sdk_runtime_error"
-    assert outcome.error_message == "API Error: 529 upstream overloaded request id: [redacted-id]"
+    assert outcome.error_code == "claude_agent_sdk_upstream_error"
+    assert outcome.error_message == "The execution service failed. Please retry later."
     fail_call = next(item for item in calls if item[0] == "fail")
-    assert fail_call[2] == "API Error: 529 upstream overloaded request id: [redacted-id]"
-    assert fail_call[3]["sdk_error"] == "API Error: 529 upstream overloaded request id: req_abc123"
+    assert fail_call[2] == "The execution service failed. Please retry later."
+    assert fail_call[3]["sdk_error"] == "claude_agent_sdk_upstream_error"
+    assert fail_call[3]["sdk_turn_diagnostics"] == diagnostics
+    assert "req_abc123" not in str(fail_call[3])
+    assert sum(1 for item in calls if item[0] == "fail") == 1
+    assert not any(
+        item[0] == "event" and item[1] in {"run_succeeded", "run_cancelled"}
+        for item in calls
+    )
 
 
 @pytest.mark.asyncio
