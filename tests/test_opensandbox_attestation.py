@@ -17,6 +17,7 @@ from app.settings import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
+OPENSANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.opensandbox.yml"
 ENV_EXAMPLE = ROOT / "deploy" / "ai-platform" / ".env.example"
 IMAGE_DIGEST = "sha256:" + "a" * 64
 IMAGE_SUBJECT = f"registry.example/team/ai-platform@{IMAGE_DIGEST}"
@@ -492,7 +493,7 @@ def test_attestor_representation_redacts_api_key() -> None:
 
 
 def test_settings_and_compose_wire_complete_opensandbox_contract_for_api_and_worker() -> None:
-    expected_environment = {
+    base_environment = {
         "SANDBOX_CONTAINER_PROVIDER",
         "SANDBOX_EGRESS_PROOF_KEY_ID",
         "SANDBOX_RUNTIME_SUBJECT",
@@ -509,22 +510,30 @@ def test_settings_and_compose_wire_complete_opensandbox_contract_for_api_and_wor
         "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
         "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT",
         "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT",
+    }
+    bridge_environment = {
         "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL",
         "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL",
         "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL",
     }
     compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    opensandbox_compose = yaml.safe_load(OPENSANDBOX_COMPOSE.read_text(encoding="utf-8"))
     for service_name in ("api", "worker"):
         environment = compose["services"][service_name]["environment"]
-        assert expected_environment <= environment.keys()
+        assert base_environment <= environment.keys()
+        assert bridge_environment.isdisjoint(environment)
         assert environment["OPENSANDBOX_API_KEY"] == "${OPENSANDBOX_API_KEY:-}"
         assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN"] == (
             "${OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN:-}"
         )
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "${SANDBOX_CONTAINER_PROVIDER:-fake}"
+        overlay_environment = opensandbox_compose["services"][service_name]["environment"]
+        assert overlay_environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
+        assert bridge_environment <= overlay_environment.keys()
+        assert all(":?set " in overlay_environment[name] for name in bridge_environment)
 
     env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
-    for name in expected_environment:
+    for name in base_environment | bridge_environment:
         assert f"{name}=" in env_example
     assert {
         "opensandbox_attestation_path",

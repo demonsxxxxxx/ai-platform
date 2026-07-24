@@ -51,7 +51,10 @@ ENV AI_PLATFORM_API_UPSTREAM=http://api:8020
 ENV AI_PLATFORM_FRONTEND_MAX_BODY_SIZE=50m
 ENV AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT=300s
 ENV AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT=300s
-COPY frontend/web/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY frontend/web/nginx.conf.template /etc/nginx/templates-opensandbox/default.conf.template
+RUN sed '/^# AI_PLATFORM_S72_BRIDGE_BEGIN$/,$d' \
+      /etc/nginx/templates-opensandbox/default.conf.template \
+      > /etc/nginx/templates/default.conf.template
 COPY --from=build /workspace/frontend/web/dist /usr/share/nginx/html
 
 EXPOSE 8080

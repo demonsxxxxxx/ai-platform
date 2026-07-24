@@ -55,6 +55,13 @@ server {
     }
 }
 
+# AI_PLATFORM_S72_BRIDGE_BEGIN
+server {
+    listen 8443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+}
+
 server {
     listen 8443 ssl;
     server_name ${AI_PLATFORM_S72_BRIDGE_SERVER_NAME};
@@ -72,7 +79,7 @@ server {
     allow ${AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP};
     deny all;
 
-    if ($host != ${AI_PLATFORM_S72_BRIDGE_SERVER_NAME}) {
+    if ($http_host != "${AI_PLATFORM_S72_BRIDGE_SERVER_NAME}:${AI_PLATFORM_S72_BRIDGE_PORT}") {
         return 421;
     }
 

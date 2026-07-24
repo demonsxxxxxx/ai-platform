@@ -64,9 +64,17 @@ key bytes in the image, `.env`, Compose environment, logs, or Git. Provision
 only the non-secret issuing CA certificate to s72 at the app-scoped path in the
 s72 gateway runbook; do not install it in either host's system trust store.
 
+The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not
+publish `8443`, request bridge variables, or mount bridge certificates. The
+frontend image derives its 8080-only default config from the same authoritative
+template. Only `docker-compose.opensandbox.yml`, after every bridge prerequisite
+below is present, selects the full template and adds the bridge configuration.
+
 The frontend keeps its existing `8080` public listener unchanged. The additional
-container `8443`/host `18443` TLS listener has access logging disabled, accepts
-only the configured s72 source IP and matching Host/SNI, and exposes only:
+container `8443`/host `18443` TLS listener has access logging disabled. Its
+default TLS server rejects the handshake for missing or wrong SNI; only the exact
+configured SNI reaches the named server, which separately requires the matching
+HTTP Host and configured s72 source IP. It exposes only:
 
 - exact `POST /api/ai/runtime/callbacks/executor` to the existing API upstream;
 - `/openai/...` to host model port `3002`, stripping only `/openai/`;
@@ -85,7 +93,8 @@ approved s72 source without printing authorization values:
 
 ```bash
 sudo -n docker compose --env-file deploy/ai-platform/.env \
-  -f deploy/ai-platform/docker-compose.yml config >/dev/null
+  -f deploy/ai-platform/docker-compose.yml \
+  -f deploy/ai-platform/docker-compose.opensandbox.yml config >/dev/null
 sudo -n docker exec ai-platform-frontend nginx -t
 curl --fail --silent --show-error \
   --resolve REQUIRED_FIXED_EGRESS_HOSTNAME:18443:10.56.0.211 \
@@ -93,19 +102,35 @@ curl --fail --silent --show-error \
   https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443/healthz
 ```
 
-Also prove from s72 that an unlisted path is `404`, hostname/wrong-CA checks
-fail, each model prefix reaches the expected `/v1/...` path with authorization
+Also prove from s72 that an unlisted path is `404`, missing/wrong SNI fails the
+TLS handshake even with the expected HTTP Host, Host mismatch fails after the
+right SNI, wrong-CA checks fail, each model prefix reaches the expected `/v1/...` path with authorization
 preserved but absent from logs, the exact callback succeeds, and requests from
 any other source IP are denied. These are current runtime gates; local source
 tests do not satisfy them. If any gate fails, keep the Docker provider selected.
 
-Use the standard release authority for the sandbox overlay; the placeholders
-below are contracts, not real paths, images, commits, or credentials. The
+Use the standard release authority with the OpenSandbox overlay only after those
+gates pass; the placeholders below are contracts, not real paths, images,
+commits, or credentials. The
 authority retains the `ai-platform-phaseb` Compose project, resolves the
 immutable executor image itself, and is the only permitted mutation path:
 
 ```bash
 cd <release-root>
+python3 tools/release_authority.py deploy-main-commit \
+  --release-root <release-root> \
+  --commit <40-lowercase-hex-commit> \
+  --strategy auto \
+  --docker-cmd "sudo -n docker" \
+  --env-file <release-root>/deploy/ai-platform/.env \
+  --compose-file deploy/ai-platform/docker-compose.yml \
+  --compose-file deploy/ai-platform/docker-compose.opensandbox.yml
+```
+
+Docker selection and rollback continue to use exactly the base plus Docker
+sandbox overlay, with no bridge certificate or variable dependency:
+
+```bash
 python3 tools/release_authority.py deploy-main-commit \
   --release-root <release-root> \
   --commit <40-lowercase-hex-commit> \

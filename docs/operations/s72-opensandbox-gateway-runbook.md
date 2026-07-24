@@ -81,7 +81,16 @@ only the non-secret CA certificate as
 `/etc/opensandbox-gateway/tls/upstream-ca.pem` on s72. The gateway builds a
 dedicated client trust context from that exact file, retains hostname
 verification and TLS 1.2+, and does not install the CA system-wide or fall back
-to system roots.
+to system roots. At startup it opens the file with no-follow and close-on-exec
+flags where supported, validates the opened descriptor as root-owned regular
+`0640` data with a bounded size, captures the PEM bytes through that descriptor,
+closes it, and loads only the captured `cadata`; it never reopens the path.
+
+Do not select `docker-compose.opensandbox.yml` on 211 until the certificate
+mounts, exact SNI/Host, source-IP allow rule, pinned policy, and this s72 CA file
+have all passed the pre-deployment and remote smoke gates. Base Compose and the
+Docker sandbox overlay remain the rollback path and require none of those bridge
+inputs.
 
 The s72 gateway's own listener certificate is a separate server certificate.
 Its SAN set must contain exactly the literal IP from

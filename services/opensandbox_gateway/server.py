@@ -448,26 +448,44 @@ def _app_scoped_upstream_ca_path(env: Mapping[str, str]) -> str:
 def _load_upstream_tls_context(ca_path: str) -> ssl.SSLContext:
     """Load only the app-scoped CA roots into a hostname-verifying client context."""
 
-    path = pathlib.Path(ca_path)
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    descriptor: int | None = None
     try:
-        evidence = path.lstat()
-    except OSError:
+        descriptor = os.open(ca_path, flags)
+        evidence = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(evidence.st_mode)
+            or evidence.st_uid != 0
+            or stat.S_IMODE(evidence.st_mode) != 0o640
+            or not 0 < evidence.st_size <= 1024 * 1024
+        ):
+            raise ValueError("gateway upstream CA bundle is invalid")
+        remaining = evidence.st_size
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 65536))
+            if not chunk:
+                raise ValueError("gateway upstream CA bundle is invalid")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise ValueError("gateway upstream CA bundle is invalid")
+        pem = b"".join(chunks).decode("ascii")
+    except (OSError, UnicodeDecodeError):
         raise ValueError("gateway upstream CA bundle is invalid") from None
-    if (
-        path.is_symlink()
-        or not stat.S_ISREG(evidence.st_mode)
-        or not 0 < evidence.st_size <= 1024 * 1024
-        or stat.S_IMODE(evidence.st_mode) & 0o022
-    ):
-        raise ValueError("gateway upstream CA bundle is invalid")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.options |= ssl.OP_NO_COMPRESSION
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
     try:
-        context.load_verify_locations(cafile=str(path))
-    except (OSError, ssl.SSLError):
+        context.load_verify_locations(cadata=pem)
+    except (ValueError, ssl.SSLError):
         raise ValueError("gateway upstream CA bundle is invalid") from None
     return context
 

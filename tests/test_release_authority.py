@@ -107,6 +107,9 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "--env-file <release-root>/deploy/ai-platform/.env" in text
     assert "--compose-file deploy/ai-platform/docker-compose.yml" in text
     assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" in text
+    assert "--compose-file deploy/ai-platform/docker-compose.opensandbox.yml" in text
+    assert "The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not" in text
+    assert "OpenSandbox overlay only after those" in text
     assert "ai-platform-phaseb" in text
     assert "docker compose --env-file <release-root>/deploy/ai-platform/.env" not in text
 

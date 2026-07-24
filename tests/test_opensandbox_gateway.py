@@ -26,6 +26,7 @@ import pytest
 from app.runtime.sandbox.opensandbox_attestation import _OpenSandboxAttestor, _TransportResponse
 import services.opensandbox_gateway.adapters as gateway_adapters
 import services.opensandbox_gateway.helper as gateway_helper
+import services.opensandbox_gateway.server as gateway_server
 from services.opensandbox_gateway.adapters import (
     BrokerPolicy,
     DockerRuntimeAdapter,
@@ -1842,9 +1843,39 @@ def test_literal_private_ip_certificate_san_and_workspace_file_proxy_contracts(m
         assert rejected.status == 400
 
 
-def test_gateway_upstream_ca_is_app_scoped_and_builds_the_only_client_trust_context(
-    tmp_path, monkeypatch
-) -> None:
+def _upstream_ca_fd_os(
+    pem: bytes,
+    *,
+    evidence: SimpleNamespace | None = None,
+    open_error: OSError | None = None,
+    after_open=None,
+):
+    reads = iter((pem, b""))
+    opened: list[tuple[str, int]] = []
+    closed: list[int] = []
+
+    def open_file(path: str, flags: int) -> int:
+        opened.append((path, flags))
+        if open_error is not None:
+            raise open_error
+        if after_open is not None:
+            after_open()
+        return 41
+
+    fake_os = SimpleNamespace(
+        O_RDONLY=os.O_RDONLY,
+        O_NOFOLLOW=0x20000,
+        O_CLOEXEC=0x80000,
+        open=open_file,
+        fstat=lambda descriptor: evidence
+        or SimpleNamespace(st_mode=stat.S_IFREG | 0o640, st_uid=0, st_size=len(pem)),
+        read=lambda descriptor, size: next(reads),
+        close=lambda descriptor: closed.append(descriptor),
+    )
+    return fake_os, opened, closed
+
+
+def test_gateway_upstream_ca_is_app_scoped_and_survives_path_swap_after_open(monkeypatch) -> None:
     assert _app_scoped_upstream_ca_path(
         {"OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE": UPSTREAM_CA_BUNDLE_PATH}
     ) == UPSTREAM_CA_BUNDLE_PATH
@@ -1853,9 +1884,13 @@ def test_gateway_upstream_ca_is_app_scoped_and_builds_the_only_client_trust_cont
             {"OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE": "/etc/ssl/certs/ca-certificates.crt"}
         )
 
-    ca_path = tmp_path / "upstream-ca.pem"
-    ca_path.write_text("test-only-ca", encoding="utf-8")
-    ca_path.chmod(0o600)
+    pem = b"-----BEGIN CERTIFICATE-----\nCAPTURED-SNAPSHOT\n-----END CERTIFICATE-----\n"
+    path_generation = ["operator-file"]
+    fake_os, opened, closed = _upstream_ca_fd_os(
+        pem,
+        after_open=lambda: path_generation.__setitem__(0, "attacker-replacement"),
+    )
+    monkeypatch.setattr(gateway_server, "os", fake_os)
     loaded: list[str] = []
 
     class FakeClientContext:
@@ -1864,26 +1899,55 @@ def test_gateway_upstream_ca_is_app_scoped_and_builds_the_only_client_trust_cont
         check_hostname = False
         verify_mode = ssl.CERT_NONE
 
-        def load_verify_locations(self, *, cafile: str) -> None:
-            loaded.append(cafile)
+        def load_verify_locations(self, *, cadata: str) -> None:
+            loaded.append(cadata)
 
     context = FakeClientContext()
-    evidence = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=ca_path.stat().st_size)
-    monkeypatch.setattr(pathlib.Path, "lstat", lambda _path: evidence)
     monkeypatch.setattr(ssl, "SSLContext", lambda _protocol: context)
-    assert _load_upstream_tls_context(str(ca_path)) is context
-    assert loaded == [str(ca_path)]
+    assert _load_upstream_tls_context(UPSTREAM_CA_BUNDLE_PATH) is context
+    assert opened == [(UPSTREAM_CA_BUNDLE_PATH, os.O_RDONLY | 0x20000 | 0x80000)]
+    assert closed == [41]
+    assert path_generation == ["attacker-replacement"]
+    assert loaded == [pem.decode("ascii")]
     assert context.minimum_version == ssl.TLSVersion.TLSv1_2
     assert context.check_hostname is True
     assert context.verify_mode == ssl.CERT_REQUIRED
-
-    bad_ca = tmp_path / "bad-ca.pem"
-    bad_ca.write_text("not a certificate", encoding="utf-8")
-    bad_ca.chmod(0o600)
-    monkeypatch.undo()
-    with pytest.raises(ValueError, match="upstream CA bundle"):
-        _load_upstream_tls_context(str(bad_ca))
+    assert "cafile=" not in inspect.getsource(_load_upstream_tls_context)
     assert "create_default_context" not in inspect.getsource(gateway_adapters._PinnedHTTPSConnection)
+
+
+def test_gateway_upstream_ca_symlink_open_fails_closed_with_no_follow(monkeypatch) -> None:
+    fake_os, opened, closed = _upstream_ca_fd_os(b"unused", open_error=OSError("symlink"))
+    monkeypatch.setattr(gateway_server, "os", fake_os)
+    with pytest.raises(ValueError, match="upstream CA bundle"):
+        _load_upstream_tls_context(UPSTREAM_CA_BUNDLE_PATH)
+    assert opened[0][1] & fake_os.O_NOFOLLOW
+    assert closed == []
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o640, st_uid=1000, st_size=8),
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_size=8),
+        SimpleNamespace(st_mode=stat.S_IFDIR | 0o640, st_uid=0, st_size=8),
+    ),
+)
+def test_gateway_upstream_ca_rejects_wrong_owner_mode_or_type(monkeypatch, evidence) -> None:
+    fake_os, _opened, closed = _upstream_ca_fd_os(b"12345678", evidence=evidence)
+    monkeypatch.setattr(gateway_server, "os", fake_os)
+    with pytest.raises(ValueError, match="upstream CA bundle"):
+        _load_upstream_tls_context(UPSTREAM_CA_BUNDLE_PATH)
+    assert closed == [41]
+
+
+def test_gateway_upstream_ca_invalid_captured_pem_fails_without_path_reopen(monkeypatch) -> None:
+    fake_os, opened, closed = _upstream_ca_fd_os(b"not-a-certificate")
+    monkeypatch.setattr(gateway_server, "os", fake_os)
+    with pytest.raises(ValueError, match="upstream CA bundle"):
+        _load_upstream_tls_context(UPSTREAM_CA_BUNDLE_PATH)
+    assert len(opened) == 1
+    assert closed == [41]
 
 
 def test_workspace_dirfd_identity_and_symlink_leaf_fail_closed(monkeypatch) -> None:
@@ -2523,7 +2587,9 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     env_example = (root / "deploy/opensandbox/gateway.env.example").read_text(encoding="utf-8")
     policy = json.loads((root / "deploy/opensandbox/egress-policy.v1.example.json").read_text(encoding="utf-8"))
     nginx = (root / "frontend/web/nginx.conf.template").read_text(encoding="utf-8")
+    frontend_dockerfile = (root / "frontend/web/Dockerfile").read_text(encoding="utf-8")
     compose = (root / "deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
+    opensandbox_compose = (root / "deploy/ai-platform/docker-compose.opensandbox.yml").read_text(encoding="utf-8")
     assert "docker.sock" not in public_unit and "SupplementaryGroups=docker" not in public_unit
     assert "docker.sock" in helper_unit and "SupplementaryGroups=docker" in helper_unit
     assert all(
@@ -2567,17 +2633,38 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     }
     assert nginx.count("listen 8080;") == 1
     assert nginx.count("listen 8443 ssl;") == 1
+    assert nginx.count("listen 8443 ssl default_server;") == 1
+    assert "server_name _;\n    ssl_reject_handshake on;" in nginx
+    assert nginx.index("ssl_reject_handshake on;") < nginx.index(
+        "server_name ${AI_PLATFORM_S72_BRIDGE_SERVER_NAME};"
+    )
+    assert (
+        'if ($http_host != "${AI_PLATFORM_S72_BRIDGE_SERVER_NAME}:${AI_PLATFORM_S72_BRIDGE_PORT}")'
+        in nginx
+    )
     assert "location = /api/ai/runtime/callbacks/executor" in nginx
     assert "location ^~ /openai/" in nginx and "location ^~ /anthropic/" in nginx
     assert "proxy_pass http://host.docker.internal:3002/;" in nginx
     assert "allow ${AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP};\n    deny all;" in nginx
     assert "access_log off;" in nginx
     assert "location / {\n        return 404;\n    }" in nginx
+    assert "/etc/nginx/templates-opensandbox/default.conf.template" in frontend_dockerfile
+    assert "sed '/^# AI_PLATFORM_S72_BRIDGE_BEGIN$/,$d'" in frontend_dockerfile
     assert "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080" in compose
-    assert "${AI_PLATFORM_S72_BRIDGE_PORT:-18443}:8443" in compose
-    assert compose.count("/etc/nginx/s72-bridge/tls/fullchain.pem:ro") == 1
-    assert compose.count("/etc/nginx/s72-bridge/tls/privkey.pem:ro") == 1
-    assert '"host.docker.internal:host-gateway"' in compose
+    frontend_compose = compose.split("  frontend:\n", 1)[1].split("\nvolumes:\n", 1)[0]
+    assert "AI_PLATFORM_S72_BRIDGE" not in frontend_compose
+    assert ":8443" not in frontend_compose
+    assert "s72-bridge/tls" not in frontend_compose
+    assert "NGINX_ENVSUBST_TEMPLATE_DIR" not in frontend_compose
+    assert "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL" not in compose
+    assert "${AI_PLATFORM_S72_BRIDGE_PORT:-18443}:8443" in opensandbox_compose
+    assert opensandbox_compose.count("/etc/nginx/s72-bridge/tls/fullchain.pem:ro") == 1
+    assert opensandbox_compose.count("/etc/nginx/s72-bridge/tls/privkey.pem:ro") == 1
+    assert '"host.docker.internal:host-gateway"' in opensandbox_compose
+    assert "docker.sock" not in opensandbox_compose
+    assert "NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-opensandbox" in opensandbox_compose
+    assert opensandbox_compose.count("SANDBOX_CONTAINER_PROVIDER: opensandbox") == 2
+    assert opensandbox_compose.count("\n      OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL:") == 2
 
 
 def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: str) -> subprocess.CompletedProcess[str]:
