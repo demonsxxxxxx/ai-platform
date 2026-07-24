@@ -10,7 +10,7 @@
       "expected_ips": ["REQUIRED_PINNED_IP"]
     },
     "anthropic": {
-      "base_url": "https://REQUIRED_MODEL_HOST/anthropic/v1",
+      "base_url": "https://REQUIRED_MODEL_HOST/anthropic",
       "expected_ips": ["REQUIRED_PINNED_IP"]
     }
   }

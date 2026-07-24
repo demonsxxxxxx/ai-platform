@@ -55,6 +55,23 @@ print(json.dumps({"user": f"{uid}:{gid}", "uid": str(uid), "gid": str(gid), "rel
 '''
 
 
+def _exact_deleted_reservation(
+    existing: LeaseRecord,
+    requested: LeaseRecord,
+    deleted_signature: str,
+) -> bool:
+    """Match only the canonical reservation facts that created a tombstone."""
+
+    return (
+        existing.state == "deleted"
+        and bool(deleted_signature)
+        and hmac.compare_digest(existing.signature, deleted_signature)
+        and existing.scope == requested.scope
+        and hmac.compare_digest(existing.canonical_request_hash, requested.canonical_request_hash)
+        and hmac.compare_digest(existing.workspace_host_path, requested.workspace_host_path)
+    )
+
+
 class InMemoryStateStore:
     """Thread-safe ephemeral store for tests and local contract probes."""
 
@@ -77,7 +94,7 @@ class InMemoryStateStore:
         with self._lock:
             self.records[record.sandbox_id] = record
 
-    def reserve(self, record: LeaseRecord) -> ReservationResult:
+    def reserve(self, record: LeaseRecord, deleted_signature: str = "") -> ReservationResult:
         with self._lock:
             existing = self.find_scope(record.scope)
             if existing is not None:
@@ -85,6 +102,12 @@ class InMemoryStateStore:
                 return ReservationResult(outcome, existing, existing.reservation_owner_token)
             if any(item.workspace_host_path == record.workspace_host_path and item.state != "deleted" for item in self.records.values()):
                 return ReservationResult("conflict", record, "")
+            tombstone = self.records.get(record.sandbox_id)
+            if tombstone is not None:
+                if not _exact_deleted_reservation(tombstone, record, deleted_signature):
+                    return ReservationResult("conflict", tombstone, "")
+                self.records[record.sandbox_id] = record
+                return ReservationResult("winner", record, record.reservation_owner_token)
             self.records[record.sandbox_id] = record
             return ReservationResult("winner", record, record.reservation_owner_token)
 
@@ -244,7 +267,7 @@ class SQLiteStateStore:
                 values,
             )
 
-    def reserve(self, record: LeaseRecord) -> ReservationResult:
+    def reserve(self, record: LeaseRecord, deleted_signature: str = "") -> ReservationResult:
         with self._lock, self._connect() as db:
             db.isolation_level = None
             db.execute("BEGIN IMMEDIATE")
@@ -259,6 +282,30 @@ class SQLiteStateStore:
                 if occupied:
                     db.execute("COMMIT")
                     return ReservationResult("conflict", _record_from_json(occupied[0]), "")
+                same_id = db.execute(
+                    "SELECT record_json FROM leases WHERE sandbox_id = ?",
+                    (record.sandbox_id,),
+                ).fetchone()
+                if same_id:
+                    tombstone = _record_from_json(same_id[0])
+                    if not _exact_deleted_reservation(tombstone, record, deleted_signature):
+                        db.execute("COMMIT")
+                        return ReservationResult("conflict", tombstone, "")
+                    changed = db.execute(
+                        "UPDATE leases SET scope_json=?, metadata_json=?, record_json=?, state=?, workspace_host_path=? WHERE sandbox_id=? AND state='deleted'",
+                        (
+                            _json_text(record.scope),
+                            _json_text(record.metadata),
+                            _json_text(asdict(record)),
+                            record.state,
+                            record.workspace_host_path,
+                            record.sandbox_id,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise GatewayError(409, "reservation_state_drift")
+                    db.execute("COMMIT")
+                    return ReservationResult("winner", record, record.reservation_owner_token)
                 db.execute(
                     "INSERT INTO leases VALUES (?, ?, ?, ?, ?, ?)",
                     (

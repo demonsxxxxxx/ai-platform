@@ -23,6 +23,8 @@ class SandboxWorkspaceManager:
             / request.session_id
             / "runs"
             / request.run_id
+            / "attempts"
+            / request.attempt_id
         )
         workspace = run_root / "workspace"
         inputs = workspace / "inputs"
@@ -40,6 +42,7 @@ class SandboxWorkspaceManager:
             "user_id": request.user_id,
             "session_id": request.session_id,
             "run_id": request.run_id,
+            "attempt_id": request.attempt_id,
             "sandbox_mode": request.sandbox_mode,
             "browser_enabled": request.browser_enabled,
         }

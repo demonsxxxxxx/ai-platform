@@ -959,11 +959,18 @@ def external_egress_capability_profile(
     return profile
 
 
-def opensandbox_provider(*, health_probe=None, identity_probe=None, capability_profile_fetcher=None, utcnow=None):
+def opensandbox_provider(
+    *,
+    health_probe=None,
+    identity_probe=None,
+    capability_profile_fetcher=None,
+    utcnow=None,
+    sandbox_class=FakeOpenSandbox,
+):
     from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
 
     return OpenSandboxContainerProvider(
-        sandbox_class=FakeOpenSandbox,
+        sandbox_class=sandbox_class,
         sandbox_manager_class=FakeOpenSandboxManager,
         connection_config_class=FakeConnectionConfig,
         file_class=FakeOpenSandboxFile,
@@ -980,6 +987,7 @@ def opensandbox_provider(*, health_probe=None, identity_probe=None, capability_p
             and info.get("id") == sandbox_id
             and info.get("metadata", {}).get("ai-platform.tenant_id") == runtime_request.tenant_id
             and info.get("metadata", {}).get("ai-platform.run_id") == runtime_request.run_id
+            and info.get("metadata", {}).get("ai-platform.attempt_id") == runtime_request.attempt_id
         ),
         utcnow=utcnow or (lambda: TEST_CAPABILITY_NOW),
     )
@@ -1640,7 +1648,7 @@ async def test_opensandbox_dispatch_accepts_the_current_capability_proof(monkeyp
     )
     sandbox = FakeOpenSandbox.instances[lease.container_id]
     assert sandbox.killed is False
-    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+    assert provider._leases[(lease.run_id, "qat-test-attempt")] is lease
     assert provider._sandboxes[lease.container_id] is sandbox
 
 
@@ -1992,7 +2000,7 @@ async def test_opensandbox_provider_retains_rotated_cached_lease_when_cleanup_ca
         await provider.create_or_reuse(request(), workspace())
 
     assert provider._sandboxes[lease.container_id] is FakeOpenSandbox.instances[lease.container_id]
-    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+    assert provider._leases[(lease.run_id, "qat-test-attempt")] is lease
 
 
 @pytest.mark.asyncio
@@ -2039,7 +2047,7 @@ async def test_opensandbox_sealed_proof_expiry_is_bounded_by_capability_and_poli
     short = capability.governed_egress_proof(
         signing_key=settings.sandbox_egress_proof_signing_key,
         request=request(),
-        lease_identity="opensandbox:opensandbox-run-a:osb-run-a",
+        lease_identity="opensandbox:opensandbox-run-a-qat-test-attempt:osb-run-a",
         now=TEST_CAPABILITY_NOW,
     )
     long_capability = replace(
@@ -2049,7 +2057,7 @@ async def test_opensandbox_sealed_proof_expiry_is_bounded_by_capability_and_poli
     bounded = long_capability.governed_egress_proof(
         signing_key=settings.sandbox_egress_proof_signing_key,
         request=request(),
-        lease_identity="opensandbox:opensandbox-run-a:osb-run-a",
+        lease_identity="opensandbox:opensandbox-run-a-qat-test-attempt:osb-run-a",
         now=TEST_CAPABILITY_NOW,
     )
 
@@ -3602,7 +3610,7 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert sandbox.commands.runs[0][0] == "test -f /workspace/.ai-platform-opensandbox-lease.json"
 
     assert lease.container_id == "osb-run-a"
-    assert lease.container_name == "opensandbox-run-a"
+    assert lease.container_name == "opensandbox-run-a-qat-test-attempt"
     assert lease.provider == "opensandbox"
     assert lease.executor_url == "http://osb-run-a.opensandbox.test:18000"
     assert lease.workspace_host_path == workspace().workspace_host_path
@@ -3623,6 +3631,51 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
         }
         for key in lease.labels
     )
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_tracks_parallel_same_run_attempts_independently(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+
+    class AttemptAwareOpenSandbox(FakeOpenSandbox):
+        @classmethod
+        def create(cls, **kwargs) -> "AttemptAwareOpenSandbox":
+            metadata = kwargs["metadata"]
+            sandbox = cls(
+                sandbox_id=f"osb-{metadata['ai-platform.run_id']}-{metadata['ai-platform.attempt_id']}",
+                metadata=metadata,
+            )
+            cls.created.append(kwargs)
+            cls.instances[sandbox.id] = sandbox
+            return sandbox
+
+    AttemptAwareOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider(sandbox_class=AttemptAwareOpenSandbox)
+    first_request = request(attempt_id="attempt-one")
+    second_request = request(attempt_id="attempt-two")
+    first_workspace = workspace(
+        workspace_host_path="/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/attempt-one/workspace"
+    )
+    second_workspace = workspace(
+        workspace_host_path="/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/attempt-two/workspace"
+    )
+
+    first = await provider.create_or_reuse(first_request, first_workspace)
+    second = await provider.create_or_reuse(second_request, second_workspace)
+
+    assert first.container_id != second.container_id
+    assert first.container_name == "opensandbox-run-a-attempt-one"
+    assert second.container_name == "opensandbox-run-a-attempt-two"
+    assert provider._leases[("run-a", "attempt-one")] is first
+    assert provider._leases[("run-a", "attempt-two")] is second
+    assert first.workspace_host_path != second.workspace_host_path
+
+    assert (await provider.stop(first, reason="parallel-attempt-complete")).status == "stopped"
+    assert ("run-a", "attempt-one") not in provider._leases
+    assert provider._leases[("run-a", "attempt-two")] is second
+    await provider.validate_for_dispatch(second, second_request, second_workspace)
 
 
 @pytest.mark.asyncio
@@ -3888,7 +3941,7 @@ async def test_opensandbox_provider_stop_rejects_scope_mismatch_without_kill(mon
     assert stop_result.status == "failed"
     assert sandbox.killed is False
     assert sandbox.closed is False
-    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+    assert provider._leases[(lease.run_id, "qat-test-attempt")] is lease
     assert provider._sandboxes[lease.container_id] is sandbox
 
 
@@ -4103,7 +4156,7 @@ async def test_opensandbox_provider_stop_rejects_ambiguous_production_cleanup_id
     assert stop_result.status == "failed"
     assert sandbox.killed is False
     assert sandbox.closed is False
-    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+    assert provider._leases[(lease.run_id, "qat-test-attempt")] is lease
     assert provider._sandboxes[lease.container_id] is sandbox
 
 
@@ -4138,7 +4191,7 @@ async def test_opensandbox_provider_stop_rejects_adversarial_denial_metadata_col
     assert stop_result.status == "failed"
     assert sandbox.killed is False
     assert sandbox.closed is False
-    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+    assert provider._leases[(lease.run_id, "qat-test-attempt")] is lease
     assert provider._sandboxes[lease.container_id] is sandbox
 
 
@@ -4193,7 +4246,7 @@ async def test_opensandbox_provider_stop_retains_tracking_for_sdk_not_found_from
     assert stop_result.status == "failed"
     assert sandbox.killed is False
     assert sandbox.closed is False
-    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+    assert provider._leases[(lease.run_id, "qat-test-attempt")] is lease
     assert provider._sandboxes[lease.container_id] is sandbox
 
 
@@ -4236,7 +4289,7 @@ async def test_opensandbox_provider_stop_retains_tracking_for_untrusted_not_foun
     stop_result = await provider.stop(lease, reason="expired")
 
     assert stop_result.status == "failed"
-    assert provider._leases[f"opensandbox-{lease.run_id}"] is lease
+    assert provider._leases[(lease.run_id, "qat-test-attempt")] is lease
 
 
 @pytest.mark.asyncio
@@ -5607,7 +5660,7 @@ async def test_opensandbox_cold_identity_mismatch_tracks_sandbox_when_cleanup_ca
     with pytest.raises(container_provider.ContainerCleanupFailedError):
         await provider.create_or_reuse(request(), workspace())
 
-    tracked = provider._leases["opensandbox-run-a"]
+    tracked = provider._leases[("run-a", "qat-test-attempt")]
     assert tracked.container_id == "osb-run-a"
     assert provider._sandboxes[tracked.container_id] is FakeOpenSandbox.instances["osb-run-a"]
 
@@ -5761,7 +5814,7 @@ async def test_opensandbox_cached_scope_mismatch_retains_tracking_when_cleanup_c
         )
 
     assert exc_info.value.error_code == "container_cleanup_failed"
-    assert provider._leases["opensandbox-run-a"] is first
+    assert provider._leases[("run-a", "qat-test-attempt")] is first
     assert provider._sandboxes[first.container_id] is sandbox
 
 
@@ -5787,7 +5840,7 @@ async def test_opensandbox_cached_identity_mismatch_retains_tracking_when_cleanu
     with pytest.raises(container_provider.ContainerCleanupFailedError):
         await provider.create_or_reuse(request(), workspace())
 
-    assert provider._leases["opensandbox-run-a"] is first
+    assert provider._leases[("run-a", "qat-test-attempt")] is first
     assert provider._sandboxes[first.container_id] is sandbox
 
 
@@ -6472,7 +6525,7 @@ async def test_opensandbox_provider_stop_retains_lease_when_kill_cannot_be_confi
     result = await provider.stop(lease, reason="cancel_requested")
 
     assert result.status == "failed"
-    assert provider._leases["opensandbox-run-a"] is lease
+    assert provider._leases[("run-a", "qat-test-attempt")] is lease
     assert provider._sandboxes[lease.container_id] is sandbox
 
 

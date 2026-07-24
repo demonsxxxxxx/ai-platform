@@ -307,6 +307,8 @@ class GatewayConfig:
             _validate_https_base(base)
         if urllib.parse.urlsplit(self.callback_upstream_base).path not in ("", "/"):
             raise ValueError("callback base must not contain a path")
+        if urllib.parse.urlsplit(self.anthropic_upstream_base).path.rstrip("/").endswith("/v1"):
+            raise ValueError("Anthropic base must not include the SDK version path")
         if not 0.1 <= self.request_timeout_seconds <= 10.0:
             raise ValueError("request timeout is outside the bounded range")
         if not 1.0 <= self.dispatch_timeout_seconds <= 3600.0:
@@ -388,7 +390,7 @@ class StateStore(Protocol):
 
     def get(self, sandbox_id: str) -> LeaseRecord | None: ...
     def find_scope(self, scope: Mapping[str, str]) -> LeaseRecord | None: ...
-    def reserve(self, record: LeaseRecord) -> ReservationResult: ...
+    def reserve(self, record: LeaseRecord, deleted_signature: str = "") -> ReservationResult: ...
     def activate(self, intent_id: str, owner_token: str, record: LeaseRecord) -> None: ...
     def save(self, record: LeaseRecord) -> None: ...
     def list(self, filters: Mapping[str, str]) -> list[LeaseRecord]: ...
@@ -518,7 +520,12 @@ class GatewayApplication:
             reservation_owner_token="reservation-" + secrets.token_hex(32),
         )
         intent.signature = self._sign_record(intent)
-        reserved = self.store.reserve(intent)
+        deleted_signature = ""
+        previous = self.store.get(intent_id)
+        if previous is not None and previous.state == "deleted":
+            self._verify_record(previous)
+            deleted_signature = previous.signature
+        reserved = self.store.reserve(intent, deleted_signature)
         if reserved.outcome == "resume":
             if reserved.record.state == "active" and hmac.compare_digest(reserved.record.canonical_request_hash, accepted["request_hash"]):
                 self._attest(reserved.record.sandbox_id)
@@ -681,7 +688,8 @@ class GatewayApplication:
             raise GatewayError(400, "volume_policy_mismatch")
         expected_workspace = (
             f"{self.config.workspace_root}/tenants/{scope['tenant_id']}/workspaces/{scope['workspace_id']}"
-            f"/users/{scope['user_id']}/sessions/{scope['session_id']}/runs/{scope['run_id']}/workspace"
+            f"/users/{scope['user_id']}/sessions/{scope['session_id']}/runs/{scope['run_id']}"
+            f"/attempts/{scope['attempt_id']}/workspace"
         )
         expected_skill_mount = f"{expected_workspace}/.claude"
         expected_prefix = f"{self.config.workspace_root}/"

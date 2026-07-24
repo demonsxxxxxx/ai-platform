@@ -85,7 +85,7 @@ def gateway_config() -> GatewayConfig:
         deny_counter_subject="s72/gateway/deny-counter-v1",
         callback_upstream_base="https://api.internal.example",
         openai_upstream_base="https://models.internal.example/openai/v1",
-        anthropic_upstream_base="https://models.internal.example/anthropic/v1",
+        anthropic_upstream_base="https://models.internal.example/anthropic",
     )
 
 
@@ -156,7 +156,8 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
                     or (
                         f"/data/opensandbox/workspaces/tenants/{scope['tenant_id']}"
                         f"/workspaces/{scope['workspace_id']}/users/{scope['user_id']}"
-                        f"/sessions/{scope['session_id']}/runs/{scope['run_id']}/workspace"
+                        f"/sessions/{scope['session_id']}/runs/{scope['run_id']}"
+                        f"/attempts/{scope['attempt_id']}/workspace"
                     )
                 },
             }
@@ -316,6 +317,8 @@ def test_auth_size_path_redirect_and_tls_fail_closed() -> None:
     assert store.deny_count(config.deny_audit_subject) >= 4
     with pytest.raises(ValueError, match="HTTPS"):
         replace(config, callback_upstream_base="http://api.internal.example/callback").validate()
+    with pytest.raises(ValueError, match="SDK version path"):
+        replace(config, anthropic_upstream_base="https://models.internal.example/anthropic/v1").validate()
 
 
 @pytest.mark.parametrize(
@@ -503,8 +506,8 @@ def test_runtime_skill_mount_fingerprint_uses_exact_opened_source_inodes(monkeyp
         gateway_adapters._runtime_skill_mount_fingerprint(record, gateway_config().workspace_root)
 
 
-def test_scope_reuse_workspace_conflict_and_idempotent_create() -> None:
-    app, lifecycle, _, _ = application()
+def test_scope_reuse_workspace_conflict_and_parallel_attempt_lifecycle() -> None:
+    app, lifecycle, runtime, store = application()
     config = gateway_config()
     value = create_payload(config)
     first = call(app, "POST", "/v1/sandboxes", value)
@@ -521,10 +524,50 @@ def test_scope_reuse_workspace_conflict_and_idempotent_create() -> None:
     changed_attempt = create_payload(config)
     changed_attempt["metadata"]["ai-platform.attempt_id"] = "attempt-two"
     changed_attempt["env"]["AI_PLATFORM_ATTEMPT_ID"] = "attempt-two"
-    attempt_conflict = call(app, "POST", "/v1/sandboxes", changed_attempt)
-    assert attempt_conflict.status == 409
-    assert decoded(attempt_conflict)["error"]["code"] == "scope_conflict"
-    assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 1
+    changed_attempt["volumes"][0]["host"]["path"] = changed_attempt["volumes"][0]["host"]["path"].replace(
+        "/attempts/attempt-one/", "/attempts/attempt-two/"
+    )
+    parallel = call(app, "POST", "/v1/sandboxes", changed_attempt)
+    assert parallel.status == 201
+    assert decoded(parallel) != decoded(first)
+    assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 2
+
+    first_id = decoded(first)["id"]
+    second_id = decoded(parallel)["id"]
+    first_record = store.get(first_id)
+    second_record = store.get(second_id)
+    assert first_record is not None and second_record is not None
+    assert first_record.workspace_host_path.endswith("/attempts/attempt-one/workspace")
+    assert second_record.workspace_host_path.endswith("/attempts/attempt-two/workspace")
+    assert first_record.workspace_host_path != second_record.workspace_host_path
+    for sandbox_id, attempt_id in ((first_id, "attempt-one"), (second_id, "attempt-two")):
+        endpoint = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/endpoints/18000?use_server_proxy=true")
+        route_token = decoded(endpoint)["headers"][ROUTE_HEADER]
+        task = {
+            "tenant_id": "tenant-one",
+            "workspace_id": "workspace-one",
+            "user_id": "user-one",
+            "session_id": "session-one",
+            "run_id": "run-one",
+            "attempt_id": attempt_id,
+            "callback_base_url": config.callback_upstream_base,
+            "callback_url": config.callback_upstream_base + "/api/ai/runtime/callbacks/executor",
+        }
+        assert call(
+            app,
+            "POST",
+            f"/v1/sandboxes/{sandbox_id}/proxy/18000/v1/tasks/execute",
+            task,
+            {ROUTE_HEADER: route_token},
+        ).status == 200
+
+    assert [json.loads(item[2].body)["attempt_id"] for item in runtime.proxied[-2:]] == [
+        "attempt-one",
+        "attempt-two",
+    ]
+    assert call(app, "DELETE", f"/v1/sandboxes/{first_id}").status == 204
+    assert call(app, "GET", f"/v1/sandboxes/{second_id}/attestation").status == 200
+    assert call(app, "DELETE", f"/v1/sandboxes/{second_id}").status == 204
 
 
 def test_dispatch_revalidates_scope_and_rewrites_callback() -> None:
@@ -873,6 +916,50 @@ def test_sqlite_workspace_reservation_is_cross_tenant_atomic_and_restart_reconci
     active = recovered_store.list({"state": "active"})
     assert len(active) == len(crash_lifecycle.sandboxes) == 1
     assert active[0].sandbox_id in recovered_runtime.relays
+
+
+def test_missing_uncertain_create_tombstone_allows_only_exact_idempotent_retry(tmp_path) -> None:
+    class MissingAfterUncertainCreate(InMemoryLifecycleTransport):
+        fail_next_create = True
+
+        def request(self, method: str, path: str, body: bytes = b"") -> Response:
+            if method == "POST" and path == "/v1/sandboxes" and self.fail_next_create:
+                self.fail_next_create = False
+                self.requests.append((method, path, body))
+                raise OSError("simulated response loss before upstream acceptance")
+            return super().request(method, path, body)
+
+    config = gateway_config()
+    lifecycle = MissingAfterUncertainCreate()
+    state_path = tmp_path / "deleted-intent-retry.sqlite3"
+    store = SQLiteStateStore(str(state_path))
+    payload = create_payload(config, "deleted-retry")
+    first = GatewayApplication(config, lifecycle, InMemoryRuntimeAdapter(), store)
+
+    assert call(first, "POST", "/v1/sandboxes", payload).status == 500
+    intent = store.list({"state": "uncertain_create"})[0]
+    restarted_store = SQLiteStateStore(str(state_path))
+    restarted = GatewayApplication(config, lifecycle, InMemoryRuntimeAdapter(), restarted_store)
+    tombstone = restarted_store.get(intent.sandbox_id)
+    assert tombstone is not None and tombstone.state == "deleted"
+
+    sealed_signature = tombstone.signature
+    tombstone.signature = "0" * 64
+    restarted_store.save(tombstone)
+    rejected = call(restarted, "POST", "/v1/sandboxes", payload)
+    assert rejected.status == 409
+    assert decoded(rejected)["error"]["code"] == "lease_record_signature_invalid"
+    assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 1
+    tombstone.signature = sealed_signature
+    restarted_store.save(tombstone)
+
+    recovered = call(restarted, "POST", "/v1/sandboxes", payload)
+    repeated = call(restarted, "POST", "/v1/sandboxes", payload)
+    assert recovered.status == repeated.status == 201
+    assert decoded(recovered) == decoded(repeated)
+    active = restarted_store.get(decoded(recovered)["id"])
+    assert active is not None and active.state == "active"
+    assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 2
 
 
 def test_cleanup_pending_is_durable_until_delete_is_verified(tmp_path) -> None:
@@ -1706,9 +1793,9 @@ def test_literal_private_ip_certificate_san_and_workspace_file_proxy_contracts(m
     assert len(runtime.proxied) == 2
 
     for alias in (
-        "/data/opensandbox/workspaces/tenants/tenant-one/./workspaces/workspace-one/users/user-one/sessions/session-one/runs/run-one/workspace",
-        "/data/opensandbox/workspaces/tenants/tenant-one//workspaces/workspace-one/users/user-one/sessions/session-one/runs/run-one/workspace",
-        "/data/opensandbox/workspaces/tenants/tenant-one/workspaces/workspace-one/users/user-one/sessions/session-one/runs/run-one/workspace/",
+        "/data/opensandbox/workspaces/tenants/tenant-one/./workspaces/workspace-one/users/user-one/sessions/session-one/runs/run-one/attempts/attempt-one/workspace",
+        "/data/opensandbox/workspaces/tenants/tenant-one//workspaces/workspace-one/users/user-one/sessions/session-one/runs/run-one/attempts/attempt-one/workspace",
+        "/data/opensandbox/workspaces/tenants/tenant-one/workspaces/workspace-one/users/user-one/sessions/session-one/runs/run-one/attempts/attempt-one/workspace/",
     ):
         rejected = call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "one", alias))
         assert rejected.status == 400
@@ -1854,7 +1941,7 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
         targets={
             "callback": ("https://api.internal.example", ("10.56.1.20",)),
             "openai": ("https://models.internal.example/openai/v1", ("10.56.1.21",)),
-            "anthropic": ("https://models.internal.example/anthropic/v1", ("10.56.1.22",)),
+            "anthropic": ("https://models.internal.example/anthropic", ("10.56.1.22",)),
         }
     )
     broker = MailboxBroker(SimpleNamespace(), policy, 1.0, 1024)
@@ -1893,10 +1980,13 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
     callback_headers = forward("/api/ai/runtime/callbacks/executor")
     context_headers = forward("/api/ai/runtime/callbacks/context-retrieval")
     model_headers = forward("/model/openai/chat/completions")
+    anthropic_headers = forward("/model/anthropic/v1/messages")
 
     assert callback_headers["x-ai-platform-callback-token"] == "attempt-bound-token"
     assert context_headers["x-ai-platform-callback-token"] == "attempt-bound-token"
     assert "x-ai-platform-callback-token" not in model_headers
+    assert "x-ai-platform-callback-token" not in anthropic_headers
+    assert captured[-1][0] == "/anthropic/v1/messages"
 
 
 def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_only_shortens(monkeypatch) -> None:
@@ -1955,7 +2045,7 @@ def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_on
         targets={
             "callback": ("https://api.internal.example", ("10.56.1.20",)),
             "openai": ("https://models.internal.example/openai/v1", ("10.56.1.21",)),
-            "anthropic": ("https://models.internal.example/anthropic/v1", ("10.56.1.22",)),
+            "anthropic": ("https://models.internal.example/anthropic", ("10.56.1.22",)),
         }
     )
     broker = MailboxBroker(SimpleNamespace(), policy, 5.0, 1024, dispatch_timeout_seconds=3600.0)

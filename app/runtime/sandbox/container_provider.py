@@ -1675,9 +1675,14 @@ def _opensandbox_status_from_info(info: Any) -> ContainerStatus | None:
         sandbox_mode = None
     sandbox_id = _opensandbox_id(info)
     run_id = metadata.get("ai-platform.run_id")
+    attempt_id = metadata.get("ai-platform.attempt_id")
     return ContainerStatus(
         container_id=sandbox_id,
-        container_name=f"opensandbox-{run_id or sandbox_id}",
+        container_name=(
+            _opensandbox_container_name(run_id, attempt_id)
+            if run_id and attempt_id
+            else f"opensandbox-{sandbox_id}"
+        ),
         provider="opensandbox",
         status=_opensandbox_status_from_state(_opensandbox_state(info)),
         tenant_id=metadata.get("ai-platform.tenant_id"),
@@ -3966,6 +3971,25 @@ def _load_opensandbox_symbols() -> dict[str, Any]:
     }
 
 
+def _opensandbox_cache_key(run_id: str, attempt_id: str) -> tuple[str, str]:
+    """Return the exact in-process identity of one OpenSandbox execution attempt."""
+
+    return run_id, attempt_id
+
+
+def _opensandbox_container_name(run_id: str, attempt_id: str) -> str:
+    """Return the attestation-compatible local name for one exact attempt."""
+
+    return f"opensandbox-{run_id}-{attempt_id}"
+
+
+def _opensandbox_cache_key_for_lease(lease: ContainerLease) -> tuple[str, str] | None:
+    attempt_id = lease.labels.get("ai-platform.attempt_id")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        return None
+    return _opensandbox_cache_key(lease.run_id, attempt_id)
+
+
 class OpenSandboxContainerProvider:
     """ContainerProvider implementation backed by the OpenSandbox API/SDK."""
 
@@ -4004,7 +4028,7 @@ class OpenSandboxContainerProvider:
         self._utcnow = utcnow or _utcnow
         self._monotonic = monotonic or time.monotonic
         self._sandboxes: dict[str, Any] = {}
-        self._leases: dict[str, ContainerLease] = {}
+        self._leases: dict[tuple[str, str], ContainerLease] = {}
 
     def _ensure_symbols(self) -> None:
         if self._sandbox_class is not None:
@@ -4201,7 +4225,7 @@ class OpenSandboxContainerProvider:
             return
         lease = ContainerLease(
             container_id=sandbox_id,
-            container_name=f"opensandbox-{request.run_id}",
+            container_name=_opensandbox_container_name(request.run_id, request.attempt_id),
             provider="opensandbox",
             executor_url="",
             executor_headers=_executor_auth_headers(executor_auth_token),
@@ -4217,7 +4241,7 @@ class OpenSandboxContainerProvider:
             labels=_provider_lease_labels(metadata),
         )
         self._sandboxes[sandbox_id] = sandbox
-        self._leases[f"opensandbox-{request.run_id}"] = lease
+        self._leases[_opensandbox_cache_key(request.run_id, request.attempt_id)] = lease
 
     async def _cleanup_new_sandbox_or_track(
         self,
@@ -4243,7 +4267,7 @@ class OpenSandboxContainerProvider:
     async def _cleanup_cached_lease_after_capability_rejection(self, request: SandboxRuntimeRequest) -> None:
         """Remove a tracked lease when its next admission profile has drifted or expired."""
 
-        cache_key = f"opensandbox-{request.run_id}"
+        cache_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
         cached = self._leases.get(cache_key)
         if cached is None:
             return
@@ -4300,14 +4324,15 @@ class OpenSandboxContainerProvider:
             await self._cleanup_cached_lease_after_capability_rejection(request)
             raise
         skill_mount = _prepare_trusted_skill_mount(request, workspace)
-        cached = self._leases.get(f"opensandbox-{request.run_id}")
+        cache_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
+        cached = self._leases.get(cache_key)
         if cached is not None and cached.container_id in self._sandboxes:
             sandbox = self._sandboxes[cached.container_id]
             if not _lease_matches_request_workspace(cached, request, workspace):
                 if not await self._cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed")
                 self._sandboxes.pop(cached.container_id, None)
-                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                self._leases.pop(cache_key, None)
                 raise ContainerStartFailedError("cached lease scope mismatch")
             try:
                 info = await _maybe_await(sandbox.get_info())
@@ -4405,19 +4430,19 @@ class OpenSandboxContainerProvider:
                 if not await self._cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
-                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                self._leases.pop(cache_key, None)
                 raise
             except OpenSandboxCapabilityAdmissionError as exc:
                 if not await self._cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
-                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                self._leases.pop(cache_key, None)
                 raise
             except Exception as exc:
                 if not await self._cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
-                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                self._leases.pop(cache_key, None)
                 if isinstance(exc, ContainerStartFailedError):
                     raise
                 raise ContainerStartFailedError("executor identity unavailable") from exc
@@ -4430,7 +4455,7 @@ class OpenSandboxContainerProvider:
                 if not await self._cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
-                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                self._leases.pop(cache_key, None)
                 raise
             return cached
 
@@ -4570,7 +4595,7 @@ class OpenSandboxContainerProvider:
 
         lease = ContainerLease(
             container_id=sandbox_id,
-            container_name=f"opensandbox-{request.run_id}",
+            container_name=_opensandbox_container_name(request.run_id, request.attempt_id),
             provider="opensandbox",
             executor_url=executor_url,
             executor_headers=_executor_auth_headers(executor_auth_token, executor_headers),
@@ -4589,7 +4614,7 @@ class OpenSandboxContainerProvider:
                     request,
                     capability,
                     skill_mount,
-                    lease_identity=f"opensandbox:opensandbox-{request.run_id}:{sandbox_id}",
+                    lease_identity=f"opensandbox:{_opensandbox_container_name(request.run_id, request.attempt_id)}:{sandbox_id}",
                     now=self._utcnow(),
                 )
             ),
@@ -4614,7 +4639,7 @@ class OpenSandboxContainerProvider:
                 raise cleanup_exc from exc
             raise
         self._sandboxes[lease.container_id] = sandbox
-        self._leases[f"opensandbox-{request.run_id}"] = lease
+        self._leases[cache_key] = lease
         return lease
 
     async def validate_for_dispatch(
@@ -4676,12 +4701,32 @@ class OpenSandboxContainerProvider:
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         settings = get_settings()
+        cache_key = _opensandbox_cache_key_for_lease(lease)
+        tracked_keys = [
+            key
+            for key, tracked in self._leases.items()
+            if tracked.container_id == lease.container_id and tracked.run_id == lease.run_id
+        ]
+        if len(tracked_keys) == 1:
+            if cache_key is not None and cache_key != tracked_keys[0]:
+                return StopResult(
+                    container_id=lease.container_id,
+                    status="failed",
+                    message="OpenSandbox sandbox stop failed",
+                )
+            cache_key = tracked_keys[0]
+        elif tracked_keys or cache_key is None:
+            return StopResult(
+                container_id=lease.container_id,
+                status="failed",
+                message="OpenSandbox sandbox stop failed",
+            )
         sandbox = self._sandboxes.get(lease.container_id)
         if sandbox is None:
             try:
                 connection_config = self._connection_config(settings)
             except Exception:
-                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                self._leases.setdefault(cache_key, lease)
                 return StopResult(
                     container_id=lease.container_id,
                     status="failed",
@@ -4695,10 +4740,10 @@ class OpenSandboxContainerProvider:
                 )
             except Exception as exc:
                 if _is_authoritative_opensandbox_not_found_error(exc):
-                    self._leases.pop(f"opensandbox-{lease.run_id}", None)
+                    self._leases.pop(cache_key, None)
                     self._sandboxes.pop(lease.container_id, None)
                     return StopResult(container_id=lease.container_id, status="not_found", message=reason)
-                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                self._leases.setdefault(cache_key, lease)
                 return StopResult(
                     container_id=lease.container_id,
                     status="failed",
@@ -4724,7 +4769,7 @@ class OpenSandboxContainerProvider:
                     now=self._utcnow(),
                 )
             ):
-                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                self._leases.setdefault(cache_key, lease)
                 self._sandboxes[lease.container_id] = sandbox
                 return StopResult(
                     container_id=lease.container_id,
@@ -4738,19 +4783,19 @@ class OpenSandboxContainerProvider:
                 )
             except Exception as exc:
                 if _is_authoritative_opensandbox_not_found_error(exc):
-                    self._leases.pop(f"opensandbox-{lease.run_id}", None)
+                    self._leases.pop(cache_key, None)
                     self._sandboxes.pop(lease.container_id, None)
                     return StopResult(container_id=lease.container_id, status="not_found", message=reason)
                 raise
             if not cleanup_confirmed:
-                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                self._leases.setdefault(cache_key, lease)
                 self._sandboxes[lease.container_id] = sandbox
                 return StopResult(container_id=lease.container_id, status="failed", message="OpenSandbox sandbox stop failed")
         except Exception:
-            self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+            self._leases.setdefault(cache_key, lease)
             self._sandboxes[lease.container_id] = sandbox
             return StopResult(container_id=lease.container_id, status="failed", message="OpenSandbox sandbox stop failed")
-        self._leases.pop(f"opensandbox-{lease.run_id}", None)
+        self._leases.pop(cache_key, None)
         self._sandboxes.pop(lease.container_id, None)
         return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
