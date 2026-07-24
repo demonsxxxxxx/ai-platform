@@ -262,7 +262,14 @@ canonical timeout is recorded in the auto plan and every canonical-build stage.
 On timeout the authority terminates its owned process tree and uses a short
 bounded pipe-drain grace before reporting timeout, exit code when available, and
 only a fixed recognized stderr category; raw command output and unrecognized
-stderr remain redacted.
+stderr remain redacted. Canonical-build timeout and nonzero-exit evidence also
+includes a bounded BuildKit progress classifier. Classification happens only
+after exit or owned-tree cleanup and pipe drain. It can report only the last
+recognized step ordinal/total, a fixed stage kind and Dockerfile instruction
+category, bounded line count, last BuildKit progress timestamp, and whether
+progress advanced. Commands, URLs, package names, paths, environment/arguments,
+credentials, file contents, and all other stdout text are never persisted; any
+unsafe or unprovable output reports `build_progress_status: unknown`.
 
 The exact-main authority's conservative longest-path inventory is:
 

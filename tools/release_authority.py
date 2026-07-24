@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict, deque
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -74,6 +75,13 @@ MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 300
 MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 3600
 PROCESS_TREE_TERMINATION_GRACE_SECONDS = 1
 WINDOWS_CREATE_SUSPENDED = 0x00000004
+BUILD_PROGRESS_READ_CHUNK_BYTES = 16 * 1024
+BUILD_PROGRESS_MAX_LINE_BYTES = 4096
+BUILD_PROGRESS_MAX_LINE_COUNT = 1_000_000
+BUILD_PROGRESS_MAX_TRACKED_STEPS = 128
+BUILD_PROGRESS_MAX_STEP_ORDINAL = 9999
+BUILD_PROGRESS_MAX_TAIL_LINES = 512
+BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES = 4096
 BACKEND_DEPENDENCY_PATHS = frozenset({"pyproject.toml", "Dockerfile"})
 FRONTEND_DEPENDENCY_PATHS = frozenset(
     {
@@ -148,6 +156,435 @@ class _ManagedContainerOwnership:
     compose_roles: tuple[str, ...]
     manual_frontend_id: str | None
 
+
+@dataclass
+class _BuildProgressStep:
+    """Bounded allowlisted state retained for one observed BuildKit step."""
+
+    ordinal: int
+    total: int | None
+    stage_kind: str
+    instruction_category: str
+    last_timestamp_seconds: float | None = None
+    last_progress_units: float | None = None
+    advancing: bool = False
+
+
+class _BuildProgressClassifier:
+    """Stream BuildKit stdout into fixed categories without retaining raw output."""
+
+    _ANSI_ESCAPE_RE = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
+    _HEADER_RE = re.compile(
+        rb"^#(?P<ordinal>[1-9][0-9]{0,3})(?:\s+\[(?P<label>[^\]\r\n]{1,1024})\])?\s+",
+    )
+    _TIMESTAMP_RE = re.compile(rb"^#(?P<ordinal>[1-9][0-9]{0,3})\s+(?P<seconds>[0-9]{1,9}(?:\.[0-9]{1,3})?)\s")
+    _BYTE_PROGRESS_RE = re.compile(
+        rb"(?P<current>[0-9]{1,12}(?:\.[0-9]{1,3})?)"
+        rb"\s*(?P<unit>[KMGT]?B)\s*/\s*"
+        rb"(?P<total>[0-9]{1,12}(?:\.[0-9]{1,3})?)\s*(?P=unit)(?:\s|$)",
+        re.IGNORECASE,
+    )
+    _COUNT_PROGRESS_RE = re.compile(
+        rb"(?<![0-9.])(?P<current>[0-9]{1,12})\s*/\s*(?P<total>[0-9]{1,12})(?:\s|$)",
+    )
+    _SECRET_MARKERS = (
+        b"authorization",
+        b"password",
+        b"passwd",
+        b"secret",
+        b"token",
+        b"api_key",
+        b"api-key",
+        b"private key",
+        b"credential",
+    )
+
+    def __init__(self) -> None:
+        self.line_count = 0
+        self._buffer = bytearray()
+        self._discarding_line = False
+        self._unsafe = False
+        self._steps: OrderedDict[int, _BuildProgressStep] = OrderedDict()
+
+    def feed(self, chunk: str | bytes | None) -> None:
+        """Consume one stdout chunk while bounding line memory and parsed state."""
+        if not chunk:
+            return
+        data = chunk.encode("utf-8", errors="replace") if isinstance(chunk, str) else bytes(chunk)
+        for byte in data:
+            if byte == 10:
+                self.line_count = min(self.line_count + 1, BUILD_PROGRESS_MAX_LINE_COUNT)
+                if not self._discarding_line:
+                    self._consume_line(bytes(self._buffer).rstrip(b"\r"))
+                self._buffer.clear()
+                self._discarding_line = False
+            elif not self._discarding_line:
+                if len(self._buffer) < BUILD_PROGRESS_MAX_LINE_BYTES:
+                    self._buffer.append(byte)
+                else:
+                    self._buffer.clear()
+                    self._discarding_line = True
+
+    def finish(self) -> None:
+        """Finalize a trailing partial line after the process pipes have drained."""
+        if self._buffer or self._discarding_line:
+            self.line_count = min(self.line_count + 1, BUILD_PROGRESS_MAX_LINE_COUNT)
+            if not self._discarding_line:
+                self._consume_line(bytes(self._buffer).rstrip(b"\r"))
+        self._buffer.clear()
+        self._discarding_line = False
+
+    def summary(self) -> dict[str, Any]:
+        """Return only fixed allowlist values and bounded numeric progress facts."""
+        if self._unsafe or not self._steps:
+            return {"build_progress_status": "unknown"}
+        step = next(reversed(self._steps.values()))
+        summary: dict[str, Any] = {
+            "build_progress_status": "recognized",
+            "step_ordinal": step.ordinal,
+            "stage_kind": step.stage_kind,
+            "instruction_category": step.instruction_category,
+            "line_count": self.line_count,
+            "advancing": step.advancing,
+        }
+        if step.total is not None:
+            summary["step_total"] = step.total
+        if step.last_timestamp_seconds is not None:
+            summary["last_progress_timestamp_seconds"] = step.last_timestamp_seconds
+        return summary
+
+    def _consume_line(self, line: bytes) -> None:
+        cleaned = self._ANSI_ESCAPE_RE.sub(b"", line).strip()
+        if not cleaned:
+            return
+        lowered = cleaned.lower()
+        if any(marker in lowered for marker in self._SECRET_MARKERS):
+            self._unsafe = True
+            self._steps.clear()
+            return
+        timestamp = self._TIMESTAMP_RE.match(cleaned)
+        if timestamp is not None:
+            self._consume_progress(timestamp, cleaned[timestamp.end() :])
+            return
+        header = self._HEADER_RE.match(cleaned)
+        if header is not None:
+            self._consume_header(header, cleaned[header.end() :].strip())
+
+    def _consume_header(self, match: re.Match[bytes], instruction: bytes) -> None:
+        ordinal = int(match.group("ordinal"))
+        if ordinal > BUILD_PROGRESS_MAX_STEP_ORDINAL:
+            return
+        label = match.group("label")
+        stage_kind = self._classify_stage(label)
+        total: int | None = None
+        if label is not None:
+            total_match = re.search(rb"(?:^|\s)[1-9][0-9]{0,3}/(?P<total>[1-9][0-9]{0,3})(?:\s|$)", label)
+            if total_match is not None:
+                total = min(int(total_match.group("total")), BUILD_PROGRESS_MAX_STEP_ORDINAL)
+            stage_instruction = re.sub(
+                rb"(?:^|\s)[1-9][0-9]{0,3}/[1-9][0-9]{0,3}(?:\s|$)",
+                b" ",
+                label,
+            ).strip()
+            if self._classify_stage(label) != "unknown":
+                stage_instruction = b""
+            instruction = stage_instruction + b" " + instruction
+        instruction_category = self._classify_instruction(instruction.strip())
+        if instruction_category == "unknown":
+            return
+        self._steps[ordinal] = _BuildProgressStep(
+            ordinal=ordinal,
+            total=total,
+            stage_kind=stage_kind,
+            instruction_category=instruction_category,
+        )
+        self._steps.move_to_end(ordinal)
+        while len(self._steps) > BUILD_PROGRESS_MAX_TRACKED_STEPS:
+            self._steps.popitem(last=False)
+
+    def _consume_progress(self, match: re.Match[bytes], payload: bytes) -> None:
+        ordinal = int(match.group("ordinal"))
+        step = self._steps.get(ordinal)
+        if step is None:
+            return
+        timestamp = min(float(match.group("seconds")), 1_000_000_000.0)
+        if step.last_timestamp_seconds is not None and timestamp > step.last_timestamp_seconds:
+            step.advancing = True
+        step.last_timestamp_seconds = timestamp
+        progress = self._progress_units(payload)
+        if progress is not None:
+            if step.last_progress_units is not None and progress > step.last_progress_units:
+                step.advancing = True
+            step.last_progress_units = progress
+        self._steps.move_to_end(ordinal)
+
+    @staticmethod
+    def _classify_stage(label: bytes | None) -> str:
+        if label is None:
+            return "unknown"
+        lowered = re.sub(rb"\s+[1-9][0-9]{0,3}/[1-9][0-9]{0,3}$", b"", label.lower()).strip()
+        if lowered == b"internal":
+            return "internal"
+        if lowered == b"source-markers":
+            return "source-markers"
+        if lowered == b"runtime":
+            return "runtime"
+        if lowered == b"build":
+            return "build"
+        return "unknown"
+
+    @staticmethod
+    def _classify_instruction(instruction: bytes) -> str:
+        normalized = b" ".join(instruction.lower().split())
+        normalized = re.sub(rb"^[1-9][0-9]{0,3}/[1-9][0-9]{0,3}\s+", b"", normalized)
+        for prefix, category in (
+            (b"load build definition", "load-build-definition"),
+            (b"load metadata for", "load-base-metadata"),
+            (b"load .dockerignore", "load-dockerignore"),
+            (b"load build context", "load-build-context"),
+            (b"from ", "from"),
+            (b"workdir ", "workdir"),
+            (b"arg ", "arg"),
+            (b"env ", "env"),
+            (b"label ", "label"),
+            (b"user ", "user"),
+            (b"entrypoint ", "entrypoint"),
+            (b"cmd ", "cmd"),
+            (b"expose ", "expose"),
+            (b"healthcheck ", "healthcheck"),
+        ):
+            if normalized.startswith(prefix):
+                return category
+        if normalized.startswith(b"copy "):
+            if b"pyproject.toml" in normalized or b"package.json" in normalized or b"pnpm-lock.yaml" in normalized:
+                return "copy-manifest"
+            if b"--from=" in normalized:
+                return "copy-from-stage"
+            return "copy-source"
+        if normalized.startswith(b"run "):
+            if b"apt-get" in normalized:
+                return "run-apt"
+            if b"pip install" in normalized:
+                return "run-pip-install"
+            if b"pnpm install" in normalized:
+                return "run-pnpm-install"
+            if b"ci:verify" in normalized:
+                return "run-frontend-verify"
+            return "unknown"
+        return "unknown"
+
+    def _progress_units(self, payload: bytes) -> float | None:
+        byte_progress = self._BYTE_PROGRESS_RE.search(payload)
+        if byte_progress is not None:
+            scale = {b"b": 1.0, b"kb": 1_000.0, b"mb": 1_000_000.0, b"gb": 1_000_000_000.0, b"tb": 1_000_000_000_000.0}
+            return min(
+                float(byte_progress.group("current")) * scale[byte_progress.group("unit").lower()],
+                1_000_000_000_000_000.0,
+            )
+        count_progress = self._COUNT_PROGRESS_RE.search(payload)
+        if count_progress is not None:
+            return min(float(count_progress.group("current")), 1_000_000_000_000.0)
+        return None
+
+
+class _BoundedBuildProgressCapture:
+    """Drain raw build stdout into a fixed-size in-memory window for later classification."""
+
+    _STRUCTURAL_HEADER_RE = re.compile(rb"^#[1-9][0-9]{0,3}(?:\s+\[[^\]\r\n]{1,1024}\])?\s+")
+
+    def __init__(self) -> None:
+        self.line_count = 0
+        self._buffer = bytearray()
+        self._discarding_line = False
+        self._unsafe = False
+        self._scan_tail = b""
+        self._headers: OrderedDict[int, bytes] = OrderedDict()
+        self._tail: deque[bytes] = deque(maxlen=BUILD_PROGRESS_MAX_TAIL_LINES)
+
+    def feed(self, chunk: bytes) -> None:
+        """Capture one bytes chunk without decoding partial UTF-8 or growing without bound."""
+        if not chunk:
+            return
+        scan = (self._scan_tail + chunk).lower()
+        if any(marker in scan for marker in _BuildProgressClassifier._SECRET_MARKERS):
+            self._unsafe = True
+        marker_overlap = max(len(marker) for marker in _BuildProgressClassifier._SECRET_MARKERS) - 1
+        self._scan_tail = scan[-marker_overlap:]
+        for byte in chunk:
+            if byte == 10:
+                self.line_count = min(self.line_count + 1, BUILD_PROGRESS_MAX_LINE_COUNT)
+                if not self._discarding_line:
+                    self._capture_line(bytes(self._buffer).rstrip(b"\r"))
+                self._buffer.clear()
+                self._discarding_line = False
+            elif not self._discarding_line:
+                if len(self._buffer) < BUILD_PROGRESS_MAX_LINE_BYTES:
+                    self._buffer.append(byte)
+                else:
+                    self._buffer.clear()
+                    self._discarding_line = True
+
+    def finish(self) -> None:
+        """Capture a trailing partial line only after the stdout reader has stopped."""
+        if self._buffer or self._discarding_line:
+            self.line_count = min(self.line_count + 1, BUILD_PROGRESS_MAX_LINE_COUNT)
+            if not self._discarding_line:
+                self._capture_line(bytes(self._buffer).rstrip(b"\r"))
+        self._buffer.clear()
+        self._discarding_line = False
+        self._scan_tail = b""
+
+    def classify(self) -> dict[str, Any]:
+        """Classify only after process cleanup/drain, returning no captured raw text."""
+        if self._unsafe:
+            return {"build_progress_status": "unknown"}
+        classifier = _BuildProgressClassifier()
+        for header in self._headers.values():
+            classifier.feed(header + b"\n")
+        for line in self._tail:
+            classifier.feed(line + b"\n")
+        classifier.finish()
+        classifier.line_count = self.line_count
+        return classifier.summary()
+
+    def _capture_line(self, line: bytes) -> None:
+        self._tail.append(line)
+        match = self._STRUCTURAL_HEADER_RE.match(_BuildProgressClassifier._ANSI_ESCAPE_RE.sub(b"", line).strip())
+        if match is None:
+            return
+        ordinal_match = re.match(rb"^#(?P<ordinal>[1-9][0-9]{0,3})", match.group())
+        if ordinal_match is None:
+            return
+        ordinal = int(ordinal_match.group("ordinal"))
+        self._headers[ordinal] = line
+        self._headers.move_to_end(ordinal)
+        while len(self._headers) > BUILD_PROGRESS_MAX_TRACKED_STEPS:
+            self._headers.popitem(last=False)
+
+
+class _BoundedStderrDiagnosticCapture:
+    """Scan stderr into fixed diagnostic phrases without retaining its raw output."""
+
+    def __init__(self) -> None:
+        self._has_data = False
+        self._unsafe = False
+        self._scan_tail = b""
+        self._recognized: set[str] = set()
+
+    def feed(self, chunk: bytes) -> None:
+        """Scan a bounded overlap window so total stderr size never controls memory use."""
+        if not chunk:
+            return
+        self._has_data = True
+        scan = self._scan_tail + chunk
+        lowered = scan.lower()
+        if any(marker in lowered for marker in _BuildProgressClassifier._SECRET_MARKERS):
+            self._unsafe = True
+        text = scan.decode("utf-8", errors="replace")
+        for pattern, summary in _SAFE_STDERR_DIAGNOSTICS:
+            if pattern.search(text):
+                self._recognized.add(summary)
+        self._scan_tail = scan[-BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES:]
+
+    def summary(self) -> dict[str, Any]:
+        """Return the existing fixed stderr diagnostic schema."""
+        if not self._has_data:
+            return {"stderr_status": "empty"}
+        if self._unsafe:
+            return {"stderr_status": "redacted"}
+        for _, summary in _SAFE_STDERR_DIAGNOSTICS:
+            if summary in self._recognized:
+                return {"stderr_status": "recognized", "stderr_summary": summary}
+        return {"stderr_status": "redacted"}
+
+
+def _communicate_with_bounded_build_progress(
+    process: subprocess.Popen[Any],
+    *,
+    timeout: int,
+    text: bool,
+    windows_job_handle: int | None,
+) -> tuple[Any, Any, dict[str, Any], dict[str, Any]]:
+    """Drain build stdout concurrently and classify it only after exit or owned-tree cleanup."""
+    capture = _BoundedBuildProgressCapture()
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stderr_capture = _BoundedStderrDiagnosticCapture()
+    reader_errors: list[BaseException] = []
+
+    def drain_stdout() -> None:
+        try:
+            while True:
+                chunk = process.stdout.read(BUILD_PROGRESS_READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                capture.feed(chunk)
+        except BaseException as exc:
+            reader_errors.append(exc)
+
+    def drain_stderr() -> None:
+        try:
+            while True:
+                chunk = process.stderr.read(BUILD_PROGRESS_READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                stderr_capture.feed(chunk)
+        except BaseException as exc:
+            reader_errors.append(exc)
+
+    stdout_reader = threading.Thread(target=drain_stdout, daemon=True)
+    stderr_reader = threading.Thread(target=drain_stderr, daemon=True)
+    stdout_reader.start()
+    stderr_reader.start()
+    timed_out = False
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _terminate_owned_process_tree(
+            process,
+            force=False,
+            windows_job_handle=windows_job_handle,
+        )
+        try:
+            process.wait(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
+        except BaseException:
+            _terminate_owned_process_tree(
+                process,
+                force=True,
+                windows_job_handle=windows_job_handle,
+            )
+            try:
+                process.wait(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
+            except BaseException:
+                pass
+    drain_deadline = time.monotonic() + PROCESS_TREE_TERMINATION_GRACE_SECONDS
+    for reader in (stdout_reader, stderr_reader):
+        reader.join(max(0.0, drain_deadline - time.monotonic()))
+    drain_complete = not stdout_reader.is_alive() and not stderr_reader.is_alive()
+    if not drain_complete:
+        _close_process_pipes(process)
+        drain_deadline = time.monotonic() + PROCESS_TREE_TERMINATION_GRACE_SECONDS
+        for reader in (stdout_reader, stderr_reader):
+            reader.join(max(0.0, drain_deadline - time.monotonic()))
+    capture.finish()
+    drain_complete = not stdout_reader.is_alive() and not stderr_reader.is_alive()
+    safe_build_progress = (
+        capture.classify()
+        if drain_complete and not reader_errors
+        else {"build_progress_status": "unknown"}
+    )
+    safe_stderr = (
+        stderr_capture.summary()
+        if drain_complete and not reader_errors
+        else {"stderr_status": "redacted"}
+    )
+    if timed_out:
+        timeout_error = subprocess.TimeoutExpired([], timeout)
+        setattr(timeout_error, "safe_stderr_diagnostic", safe_stderr)
+        setattr(timeout_error, "safe_build_progress_diagnostic", safe_build_progress)
+        raise timeout_error from None
+    return ("" if text else b"", "" if text else b"", safe_build_progress, safe_stderr)
 
 def _create_owned_windows_job() -> int | None:
     """Create the Windows Job Object that will retain the complete child tree."""
@@ -335,6 +772,7 @@ def _run(
     env: dict[str, str] | None = None,
     timeout: int = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
     input: str | bytes | None = None,
+    classify_build_progress: bool = False,
 ) -> subprocess.CompletedProcess[Any]:
     if text and isinstance(input, (bytes, bytearray, memoryview)):
         raise TypeError("text mode input must be str, not bytes-like")
@@ -350,7 +788,7 @@ def _run(
                 stdin=subprocess.PIPE if input is not None else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=text,
+                text=text and not classify_build_progress,
                 env=env,
                 **_owned_process_group_kwargs(),
             )
@@ -368,6 +806,55 @@ def _run(
                 except BaseException:
                     pass
             raise
+
+        if classify_build_progress:
+            if input is not None:
+                raise TypeError("build progress classification does not accept stdin")
+            try:
+                stdout, stderr, safe_build_progress_diagnostic, safe_stderr_diagnostic = (
+                    _communicate_with_bounded_build_progress(
+                        process,
+                        timeout=timeout,
+                        text=text,
+                        windows_job_handle=(
+                            windows_job_handle if windows_job_assigned else None
+                        ),
+                    )
+                )
+            except subprocess.TimeoutExpired as exc:
+                timeout_error = subprocess.TimeoutExpired(arguments, timeout)
+                setattr(
+                    timeout_error,
+                    "safe_stderr_diagnostic",
+                    getattr(exc, "safe_stderr_diagnostic", {"stderr_status": "empty"}),
+                )
+                setattr(
+                    timeout_error,
+                    "safe_build_progress_diagnostic",
+                    getattr(exc, "safe_build_progress_diagnostic", {"build_progress_status": "unknown"}),
+                )
+                raise timeout_error from None
+            except BaseException:
+                try:
+                    _terminate_and_drain_owned_process(
+                        process,
+                        windows_job_handle=windows_job_handle if windows_job_assigned else None,
+                    )
+                except BaseException:
+                    pass
+                raise
+            result = subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+            if check and result.returncode:
+                failure = subprocess.CalledProcessError(
+                    result.returncode,
+                    arguments,
+                    output=None,
+                    stderr=stderr,
+                )
+                setattr(failure, "safe_build_progress_diagnostic", safe_build_progress_diagnostic)
+                setattr(failure, "safe_stderr_diagnostic", safe_stderr_diagnostic)
+                raise failure
+            return result
 
         try:
             stdout, stderr = process.communicate(input=input, timeout=timeout)
@@ -874,12 +1361,18 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 "safe_stderr_diagnostic",
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
+            **getattr(exc, "safe_build_progress_diagnostic", {}),
         }
     if isinstance(exc, subprocess.CalledProcessError):
         return {
             "failure_kind": "nonzero-exit",
             "exit_code": exc.returncode,
-            **_redacted_stderr_diagnostic(exc.stderr),
+            **getattr(
+                exc,
+                "safe_stderr_diagnostic",
+                _redacted_stderr_diagnostic(exc.stderr),
+            ),
+            **getattr(exc, "safe_build_progress_diagnostic", {}),
         }
     if isinstance(exc, OSError):
         evidence: dict[str, Any] = {"failure_kind": "os-error"}
@@ -1688,6 +2181,7 @@ def _canonical_or_source_build(
     _run(
         command,
         cwd=repo_root,
+        classify_build_progress=not source_only,
         timeout=_role_timeout(
             role,
             canonical_dependency=not source_only,

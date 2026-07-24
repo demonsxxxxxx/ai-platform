@@ -3963,6 +3963,170 @@ def test_canonical_failure_stage_preserves_safe_exit_diagnostic(stderr, expected
     assert "private-marker" not in json.dumps(event)
 
 
+def test_build_progress_classifier_reports_only_allowlisted_last_active_step():
+    capture = release_authority._BoundedBuildProgressCapture()
+    capture.feed(b"\x1b[1m#7 [runtime 3/12] COPY pyproject.toml /private/path\x1b[0m\n")
+    capture.feed(b"#8 [runtime 4/12] RUN apt-get update && curl https://host/private\n")
+    capture.feed(b"#8 1.250 downloading https://host/private 1.00MB / 9.00MB\n")
+    capture.feed(b"#8 2.500 downloading /private/path 2.00MB / 9.00MB\n")
+    capture.finish()
+
+    summary = capture.classify()
+
+    assert summary == {
+        "build_progress_status": "recognized",
+        "step_ordinal": 8,
+        "step_total": 12,
+        "stage_kind": "runtime",
+        "instruction_category": "run-apt",
+        "line_count": 4,
+        "advancing": True,
+        "last_progress_timestamp_seconds": 2.5,
+    }
+    serialized = json.dumps(summary)
+    assert "https://" not in serialized
+    assert "/private" not in serialized
+    assert "apt-get" not in serialized
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"#4 [runtime 2/9] RUN echo authorization=private-marker\n",
+        b"#4 [runtime 2/9] RUN echo api_key=private-marker\n",
+        b"#4 [runtime 2/9] RUN echo credential=private-marker\n",
+        b"#4 [runtime 2/9] RUN arbitrary hostile command\n",
+        b"\x1b[31mhostile partial utf-8 \xf0\x9f\x92\x1b[0m\n",
+    ],
+)
+def test_build_progress_classifier_fails_closed_for_hostile_or_unprovable_output(payload):
+    capture = release_authority._BoundedBuildProgressCapture()
+    capture.feed(payload)
+    capture.finish()
+
+    summary = capture.classify()
+
+    assert summary == {"build_progress_status": "unknown"}
+    assert "private-marker" not in json.dumps(summary)
+
+
+def test_build_progress_capture_bounds_hostile_large_output_and_counts_lines():
+    capture = release_authority._BoundedBuildProgressCapture()
+    capture.feed(b"x" * (release_authority.BUILD_PROGRESS_MAX_LINE_BYTES * 4) + b"\n")
+    for _ in range(release_authority.BUILD_PROGRESS_MAX_TAIL_LINES * 3):
+        capture.feed(b"arbitrary untrusted build output\n")
+    capture.feed(b"#19 [build 9/9] RUN corepack pnpm install --frozen-lockfile\n")
+    capture.finish()
+
+    summary = capture.classify()
+
+    assert summary["instruction_category"] == "run-pnpm-install"
+    assert summary["line_count"] == release_authority.BUILD_PROGRESS_MAX_TAIL_LINES * 3 + 2
+    assert len(capture._tail) <= release_authority.BUILD_PROGRESS_MAX_TAIL_LINES
+    assert len(capture._headers) <= release_authority.BUILD_PROGRESS_MAX_TRACKED_STEPS
+
+
+def test_run_canonical_nonzero_exit_attaches_bounded_progress_without_raw_stdout():
+    code = (
+        "import sys; "
+        "sys.stdout.buffer.write(b'#3 [runtime 2/8] COPY pyproject.toml /private/manifest\\n'); "
+        "sys.stdout.flush(); sys.stderr.write('permission denied\\n'); sys.exit(17)"
+    )
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        release_authority._run(
+            [sys.executable, "-c", code],
+            classify_build_progress=True,
+        )
+
+    failure = exc_info.value
+    assert failure.returncode == 17
+    assert failure.output is None
+    assert failure.stderr == ""
+    assert failure.safe_build_progress_diagnostic == {
+        "build_progress_status": "recognized",
+        "step_ordinal": 3,
+        "step_total": 8,
+        "stage_kind": "runtime",
+        "instruction_category": "copy-manifest",
+        "line_count": 1,
+        "advancing": False,
+    }
+    evidence = release_authority._stage_failure_evidence(failure)
+    assert evidence["stderr_summary"] == "permission denied"
+    assert "/private" not in json.dumps(evidence)
+
+
+def test_run_canonical_timeout_cleans_process_before_classification(monkeypatch, tmp_path):
+    pid_file = tmp_path / "build-progress-timeout.pid"
+    observed: list[tuple[str, int | None]] = []
+    original_classify = release_authority._BoundedBuildProgressCapture.classify
+    child_code = (
+        "import os, pathlib, sys, time; "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
+        "sys.stdout.buffer.write(b'#6 [runtime 3/8] RUN pip install -r /private/requirements\\n'); "
+        "sys.stdout.buffer.write(b'#6 1.000 downloading 1.0MB / 8.0MB\\n'); sys.stdout.flush(); time.sleep(60)"
+    )
+
+    def classify_after_cleanup(capture):
+        pid = int(pid_file.read_text(encoding="utf-8"))
+        observed.append(("classify", pid))
+        assert _wait_for_owned_test_process_exit(pid)
+        return original_classify(capture)
+
+    monkeypatch.setattr(
+        release_authority._BoundedBuildProgressCapture,
+        "classify",
+        classify_after_cleanup,
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        release_authority._run(
+            [sys.executable, "-c", child_code],
+            timeout=0.2,
+            classify_build_progress=True,
+        )
+
+    child_pid = int(pid_file.read_text(encoding="utf-8"))
+    assert observed == [("classify", child_pid)]
+    assert _wait_for_owned_test_process_exit(child_pid)
+    assert exc_info.value.output is None
+    assert exc_info.value.stderr is None
+    assert exc_info.value.safe_build_progress_diagnostic == {
+        "build_progress_status": "recognized",
+        "step_ordinal": 6,
+        "step_total": 8,
+        "stage_kind": "runtime",
+        "instruction_category": "run-pip-install",
+        "line_count": 2,
+        "advancing": False,
+        "last_progress_timestamp_seconds": 1.0,
+    }
+    assert "/private" not in json.dumps(exc_info.value.safe_build_progress_diagnostic)
+
+
+def test_run_canonical_timeout_partial_utf8_and_hostile_token_fail_closed():
+    code = (
+        "import sys, time; "
+        "sys.stdout.buffer.write(b'#5 [runtime 2/8] RUN apt-get update\\n'); "
+        "sys.stdout.buffer.write(b'authorization=private-marker\\xf0\\x9f\\x92'); "
+        "sys.stdout.flush(); time.sleep(60)"
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        release_authority._run(
+            [sys.executable, "-c", code],
+            timeout=0.1,
+            classify_build_progress=True,
+        )
+
+    assert exc_info.value.output is None
+    assert exc_info.value.stderr is None
+    assert exc_info.value.safe_build_progress_diagnostic == {
+        "build_progress_status": "unknown"
+    }
+    serialized = json.dumps(release_authority._stage_failure_evidence(exc_info.value))
+    assert "private-marker" not in serialized
+    assert "authorization" not in serialized
+
+
 def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, tmp_path):
     target = "9" * 40
     commands, references = _configure_auto_deploy(
@@ -4423,9 +4587,11 @@ def test_run_rejects_bytes_like_text_input_before_popen(monkeypatch, invalid_inp
 
 def test_role_timeouts_distinguish_canonical_dependency_from_source_only(monkeypatch, tmp_path):
     observed: list[int] = []
+    progress_modes: list[bool] = []
 
     def fake_run(command, **kwargs):
         observed.append(kwargs["timeout"])
+        progress_modes.append(kwargs.get("classify_build_progress", False))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr("tools.release_authority._run", fake_run)
@@ -4465,6 +4631,7 @@ def test_role_timeouts_distinguish_canonical_dependency_from_source_only(monkeyp
         release_authority.FRONTEND_STAGE_TIMEOUT_SECONDS,
         release_authority.BACKEND_STAGE_TIMEOUT_SECONDS,
     ]
+    assert progress_modes == [True, False, False, False]
 
 
 @pytest.mark.parametrize(
