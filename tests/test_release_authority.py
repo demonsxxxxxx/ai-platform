@@ -158,11 +158,26 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     kill_grace_seconds = int(command_bound.group(1))
     command_timeout_seconds = int(command_bound.group(2))
     durable_timeout_seconds = int(durable_bound.group(1))
+    default_timeout_slot_counts = {
+        "coordination_source": 2,
+        "materialize_existing_checkout": 11,
+        "initial_managed_target": 4,
+        "current_runtime_and_parity": 14,
+        "runtime_diff": 1,
+        "deploy_and_converge": 22,
+        "final_parity": 11,
+    }
+    assert sum(default_timeout_slot_counts.values()) == 65
     aggregate_stage_maximum_seconds = (
         2 * release_authority.CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
-        + 8 * release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+        + sum(default_timeout_slot_counts.values())
+        * release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+        + 4 * release_authority.HTTP_PROBE_TIMEOUT_SECONDS
     )
     assert command_timeout_seconds >= aggregate_stage_maximum_seconds
+    assert command_timeout_seconds - aggregate_stage_maximum_seconds >= (
+        2 * release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+    )
     assert kill_grace_seconds > 2 * release_authority.PROCESS_TREE_TERMINATION_GRACE_SECONDS
     assert durable_timeout_seconds >= (
         command_timeout_seconds

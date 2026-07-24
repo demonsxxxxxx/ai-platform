@@ -22,7 +22,7 @@ set -eu
 git -C "$SOURCE" fetch --no-tags origin main:refs/remotes/origin/main
 TARGET="$(git -C "$SOURCE" rev-parse refs/remotes/origin/main)"
 cd "$SOURCE"
-timeout --signal=INT --kill-after=30s 6000s \
+timeout --signal=INT --kill-after=30s 24000s \
   python3 tools/release_authority.py deploy-main-commit \
   --release-root "$ROOT/releases" \
   --commit "$TARGET" \
@@ -264,15 +264,27 @@ bounded pipe-drain grace before reporting timeout, exit code when available, and
 only a fixed recognized stderr category; raw command output and unrecognized
 stderr remain redacted.
 
-The normal finite aggregate command budget is 6000 seconds. Its explicit upper
-budget is `2 * 1800 + 8 * 300`: two sequential role dependency builds plus eight
-default-subprocess-timeout slots. Those eight slots cover two post-build image
-verifications, current-runtime/preflight, target materialization/revalidation,
-Compose convergence, final parity, process-tree cleanup scheduling, and terminal
-evidence serialization. This budget is deliberately separate from each
-per-stage bound and does not widen them.
+The exact-main authority's conservative longest-path inventory is:
 
-Use exactly `timeout --signal=INT --kill-after=30s 6000s`. `INT`, rather than
+- 2 default-timeout subprocess slots for coordination-source Git gates;
+- 11 for existing-checkout materialization, fetch, and target verification;
+- 4 for the initial managed-target gate;
+- 14 for current-runtime container inspection and its full parity pass;
+- 1 for runtime-diff classification;
+- 22 for deploy preflights, target-image probes and verifications, sandbox-image
+  revalidation, target revalidation, optional removal, and Compose convergence;
+- 11 for the final full parity pass;
+- 4 HTTP probes at 15 seconds each across current and final parity; and
+- 2 sequential canonical dependency builds at 1800 seconds each.
+
+That is 65 default subprocess slots, four HTTP slots, and two canonical builds:
+`65 * 300 + 4 * 15 + 2 * 1800 = 23160` seconds. The 24000-second command
+deadline rounds this up with an additional 840 seconds for in-process filesystem
+trust walks, scheduling, cleanup dispatch, and evidence serialization. It is a
+conservative finite outer bound, separate from—and never an expansion of—any
+per-operation timeout.
+
+Use exactly `timeout --signal=INT --kill-after=30s 24000s`. `INT`, rather than
 `TERM` or `KILL`, lets Python raise through the active `_run`, whose existing
 `BaseException` path first terminates the authority-owned process group and
 performs its bounded pipe drain. The 30-second hard-kill grace exceeds the
@@ -280,8 +292,8 @@ authority's one-second cleanup operations and remains only a stuck-cleanup
 backstop. A wrapper that initially kills only the Python leader or skips this
 grace is forbidden because it can orphan a mutating Docker child.
 
-Configure the enclosing durable runner with a 6330-second deadline. It must
-equal or exceed the 6000-second command budget plus the 30-second hard-kill grace
+Configure the enclosing durable runner with a 24330-second deadline. It must
+equal or exceed the 24000-second command budget plus the 30-second hard-kill grace
 and one additional 300-second terminal-evidence margin. Do not lower either
 deadline or replace a timeout with an unlimited value. Retain the compact stage
 evidence and do not expose the environment file or raw command output. The

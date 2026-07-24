@@ -65,6 +65,7 @@ COMPATIBILITY_IMAGE_COMMIT_LABELS = (
     "ai_platform_source_tree_commit",
 )
 DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
+HTTP_PROBE_TIMEOUT_SECONDS = 15
 BACKEND_STAGE_TIMEOUT_SECONDS = 90
 FRONTEND_STAGE_TIMEOUT_SECONDS = 180
 DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 1800
@@ -1976,7 +1977,7 @@ def _container_file_commit(docker: list[str], name: str, path: str) -> str:
 
 
 def _http_json(url: str) -> dict[str, Any]:
-    with urlopen(url, timeout=15) as response:
+    with urlopen(url, timeout=HTTP_PROBE_TIMEOUT_SECONDS) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
