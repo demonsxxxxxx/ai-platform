@@ -5,11 +5,63 @@ ai-platform releases on the Docker-capable 211 host. Product/source boundaries
 live in the guardrails; task ownership, readiness, leases, and break-glass
 authority live in `docs/agent-rules/multi-agent-context-workflow.md`.
 
-## Standard Command
+## Canonical Exact-Main Command
 
-Use `tools/release_authority.py deploy-main-commit` with the explicit full commit
-fetched from authoritative `origin/main`. This command does not replace the
-readiness and ownership gates defined by the multi-agent workflow.
+The normal 211 release uses exactly this Git-native authority flow with the base
+Compose file and Docker sandbox overlay. Run it only after read-only readiness
+has passed and exactly one project-bound release owner holds the single mutation
+lease. It does not grant a lease or replace the workflow gates. Resolve `SOURCE`
+and `ROOT` from the current 211 host mapping in
+`docs/agent-rules/ai-platform-guardrails.md`, the authoritative source for those
+host subjects.
+
+```bash
+set -eu
+: "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"
+: "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
+git -C "$SOURCE" fetch --no-tags origin main:refs/remotes/origin/main
+TARGET="$(git -C "$SOURCE" rev-parse refs/remotes/origin/main)"
+cd "$SOURCE"
+python3 tools/release_authority.py deploy-main-commit \
+  --release-root "$ROOT/releases" \
+  --commit "$TARGET" \
+  --strategy auto \
+  --docker-cmd "sudo -n docker" \
+  --compose-file deploy/ai-platform/docker-compose.yml \
+  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
+```
+
+`SOURCE` is the coordination checkout: it supplies the authority executable and
+the freshly fetched authoritative main ref, but it is never the Docker build
+context for the target release. Its tracked, staged, and ordinary untracked
+state must be clean. Ignored-only artifacts such as
+`tools/__pycache__/release_authority.cpython-312.pyc` are allowed, are not copied,
+and do not affect the fetched Git object or immutable target checkout.
+
+`ROOT` is the managed release root contract. `--release-root` must be the
+normalized absolute `$ROOT/releases` directory. The authority derives the
+operator-held env file as `$ROOT/deploy/ai-platform/.env`; a missing
+`$SOURCE/deploy/ai-platform/.env` is irrelevant. Do not add `--env-file` in the
+normal flow. The compatibility `--env-file` override must equal that exact
+canonical path after normalization; an external file is rejected even if it has
+the same owner and mode. The canonical file must be an existing regular
+non-symlink owned by the managed-root owner with mode `0600`. The authority
+validates metadata before target materialization and again before Compose
+mutation; it never reads, copies, or prints contents.
+
+`$ROOT/releases/$TARGET` is the immutable target checkout and the only target
+build context. Its HEAD, tracked/staged/ordinary untracked state, ignored-file
+set, path/link boundaries, and fetched-main provenance remain strictly
+fail-closed. The managed-root owner must own `$ROOT/releases`, the exact checkout,
+and every regular file and directory in the materialized checkout, including its
+local Git metadata; those paths must be non-links and not group- or
+world-writable. An existing checkout passes this filesystem trust gate before
+any Git command or fetch can read its config or mutate its remote objects. Only
+after that local trust gate does the authority require exact HEAD, clean and
+ignored-file state, fetch main, and revalidate fetched-main provenance plus the
+exact Git tree. That commit/tree is the tracked-source manifest; tracked
+symlinks and non-regular entries are rejected, and there is no separate manifest
+artifact. Coordination ignored-file allowance never applies there.
 
 For governed Docker egress, the command resolves the reviewed backend build to
 its local immutable `sha256:<64-hex>` Docker image ID and passes that value as
@@ -19,9 +71,9 @@ target image ID before retrying when it is unavailable locally.
 
 ## Governed Sandbox Overlay Contract
 
-At `<release-root>`, the operator-held environment file must set the exact
-release subject and the governed callback boundary without recording a raw key
-in terminal evidence:
+At `<managed-root>/deploy/ai-platform/.env`, the operator-held environment file
+must set the exact release subject and the governed callback boundary without
+recording a raw key in terminal evidence:
 
 ```text
 AI_PLATFORM_SOURCE_COMMIT=<40-lowercase-hex-commit>
@@ -92,9 +144,9 @@ Before switching the provider, validate on the Docker-capable host and from the
 approved s72 source without printing authorization values:
 
 ```bash
-sudo -n docker compose --env-file deploy/ai-platform/.env \
-  -f deploy/ai-platform/docker-compose.yml \
-  -f deploy/ai-platform/docker-compose.opensandbox.yml config >/dev/null
+sudo -n docker compose --env-file "$ROOT/deploy/ai-platform/.env" \
+  -f "$ROOT/releases/$TARGET/deploy/ai-platform/docker-compose.yml" \
+  -f "$ROOT/releases/$TARGET/deploy/ai-platform/docker-compose.opensandbox.yml" config >/dev/null
 sudo -n docker exec ai-platform-frontend nginx -t
 curl --fail --silent --show-error \
   --resolve REQUIRED_FIXED_EGRESS_HOSTNAME:18443:10.56.0.211 \
@@ -109,37 +161,12 @@ preserved but absent from logs, the exact callback succeeds, and requests from
 any other source IP are denied. These are current runtime gates; local source
 tests do not satisfy them. If any gate fails, keep the Docker provider selected.
 
-Use the standard release authority with the OpenSandbox overlay only after those
-gates pass; the placeholders below are contracts, not real paths, images,
-commits, or credentials. The
-authority retains the `ai-platform-phaseb` Compose project, resolves the
-immutable executor image itself, and is the only permitted mutation path:
-
-```bash
-cd <release-root>
-python3 tools/release_authority.py deploy-main-commit \
-  --release-root <release-root> \
-  --commit <40-lowercase-hex-commit> \
-  --strategy auto \
-  --docker-cmd "sudo -n docker" \
-  --env-file <release-root>/deploy/ai-platform/.env \
-  --compose-file deploy/ai-platform/docker-compose.yml \
-  --compose-file deploy/ai-platform/docker-compose.opensandbox.yml
-```
-
-Docker selection and rollback continue to use exactly the base plus Docker
-sandbox overlay, with no bridge certificate or variable dependency:
-
-```bash
-python3 tools/release_authority.py deploy-main-commit \
-  --release-root <release-root> \
-  --commit <40-lowercase-hex-commit> \
-  --strategy auto \
-  --docker-cmd "sudo -n docker" \
-  --env-file <release-root>/deploy/ai-platform/.env \
-  --compose-file deploy/ai-platform/docker-compose.yml \
-  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
-```
+Use the same release authority with the OpenSandbox overlay only under an
+explicit provider-transition release charter after those gates pass. The normal
+exact-main command above remains base plus Docker sandbox, with no bridge
+certificate or variable dependency. The authority retains the
+`ai-platform-phaseb` Compose project, resolves the immutable executor image
+itself, and remains the only permitted mutation path.
 
 The release authority permits one exact provider-overlay ownership transition:
 the live selection `[docker-compose.yml, docker-compose.sandbox.yml]` may move to
@@ -163,9 +190,16 @@ its sandbox, and that the proof key material is present but never printed.
 Before the workflow grants its release lease, the read-only host packet must
 identify the publisher and target commits, host and runtime subject, executable
 rollback subject, release-authority state and lock holder, Docker/Compose
-capability, per-service ownership and recover/adopt compatibility, and the exact
-services and method that require mutation. Missing or stale fields block release
-work rather than becoming discovery work inside a mutation task.
+capability, coordination-source tracked/staged/ordinary-untracked cleanliness,
+managed env presence/link/owner/`0600` metadata without contents, strict target
+checkout status including ignored content, managed-root ownership and
+non-group/world-writable mode for its tracked Git tree, per-service ownership and
+recover/adopt compatibility, and the exact services and method that require
+mutation. Missing or stale fields block release work rather than becoming
+discovery work inside a mutation task. A terminal gate failure is corrected by
+having the managed owner provision the canonical env file or a new immutable
+target checkout, or by using a separate clean exact-main coordination checkout;
+it never instructs an operator to delete or clean observed source content.
 
 ## Host Command Rules
 
@@ -176,7 +210,8 @@ work rather than becoming discovery work inside a mutation task.
   image with `sudo -n env AI_PLATFORM_IMAGE=<tag> docker compose ...`, not
   `AI_PLATFORM_IMAGE=<tag> sudo -n docker compose ...`.
 - Do not read, copy, export, or quote the real deployment `.env`. Pass it only
-  through the target runtime environment and report redacted evidence.
+  through the canonical authority's derived managed path and report redacted
+  metadata evidence.
 
 ## Offline And Runtime-Only Recovery
 

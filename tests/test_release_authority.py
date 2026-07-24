@@ -134,22 +134,43 @@ def test_opensandbox_compose_overlay_disables_docker_egress_policy_for_api_and_w
 
 def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract():
     text = RUNBOOK.read_text(encoding="utf-8")
+    contract_text = " ".join(text.split())
 
     assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
     assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
-    assert "python3 tools/release_authority.py deploy-main-commit" in text
-    assert "--release-root <release-root>" in text
-    assert "--env-file <release-root>/deploy/ai-platform/.env" in text
+    assert text.count("python3 tools/release_authority.py deploy-main-commit") == 1
+    assert "Resolve `SOURCE`" in text
+    assert "and `ROOT` from the current 211 host mapping" in text
+    assert "`docs/agent-rules/ai-platform-guardrails.md`, the authoritative source" in text
+    assert ': "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"' in text
+    assert ': "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"' in text
+    assert '--release-root "$ROOT/releases"' in text
+    assert "Do not add `--env-file`" in text
+    assert "normal flow" in text
+    assert "$ROOT/deploy/ai-platform/.env" in text
+    assert "tracked, staged, and ordinary untracked" in text
+    assert "Ignored-only artifacts" in text
+    assert "immutable target checkout" in text
+    assert "mode `0600`" in text
+    assert "must equal that exact canonical path after normalization" in contract_text
+    assert "commit/tree is the tracked-source manifest" in contract_text
+    assert "symlinks and non-regular entries" in contract_text
+    assert "there is no separate manifest" in contract_text
+    assert "world-writable" in contract_text
+    assert "before any Git command or fetch" in contract_text
+    assert "Only after that local trust gate" in contract_text
     assert "--compose-file deploy/ai-platform/docker-compose.yml" in text
     assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" in text
-    assert "--compose-file deploy/ai-platform/docker-compose.opensandbox.yml" in text
     assert "The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not" in text
-    assert "OpenSandbox overlay only after those" in text
+    assert "OpenSandbox overlay only under an" in text
+    assert "explicit provider-transition release charter" in text
     assert "exact provider-overlay ownership transition" in text
     assert "base-only, reordered, duplicate" in text
     assert "missing, extra, or arbitrary overlay" in text
     assert "ai-platform-phaseb" in text
-    assert "docker compose --env-file <release-root>/deploy/ai-platform/.env" not in text
+    assert "--env-file <release-root>/deploy/ai-platform/.env" not in text
+    assert "--env-file deploy/ai-platform/.env" not in text
+    assert '--env-file "$ROOT/deploy/ai-platform/.env"' in text
 
 
 def test_backend_and_frontend_images_publish_release_authority_labels():
@@ -207,6 +228,47 @@ def _write_provider_compose_files(repo_root: Path) -> tuple[Path, Path, Path]:
     return main, sandbox, opensandbox
 
 
+def _prepare_managed_release_layout(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path]:
+    managed_root = tmp_path / "managed"
+    release_root = managed_root / "releases"
+    env_file = managed_root / "deploy" / "ai-platform" / ".env"
+    release_root.mkdir(parents=True)
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("PRIVATE_VALUE=must-not-be-read\n", encoding="utf-8")
+    monkeypatch.setattr(
+        release_authority,
+        "_posix_owner_mode",
+        lambda path: (1000, 0o600 if Path(path) == env_file else 0o700),
+        raising=False,
+    )
+    return managed_root, release_root, env_file
+
+
+def _prepare_managed_target_checkout(
+    monkeypatch,
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path, str]:
+    managed_root = tmp_path / "m"
+    release_root = managed_root / "releases"
+    release_root.mkdir(parents=True)
+    staging = release_root / "staging"
+    commit = _init_repo(staging)
+    checkout = release_root / commit
+    staging.rename(checkout)
+    env_file = managed_root / "deploy" / "ai-platform" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("PRIVATE_VALUE=must-not-be-read\n", encoding="utf-8")
+
+    def owner_mode(path):
+        candidate = Path(path)
+        if candidate == env_file:
+            return (1000, 0o600)
+        return (1000, 0o755 if candidate.is_dir() else 0o644)
+
+    monkeypatch.setattr(release_authority, "_posix_owner_mode", owner_mode)
+    return managed_root, release_root, checkout, env_file, commit
+
+
 def _compose_config_value(*paths: Path) -> str:
     return ",".join(path.resolve().as_posix() for path in paths)
 
@@ -243,6 +305,411 @@ def test_clean_commit_and_immutable_image_reference_contract(tmp_path):
     }
 
 
+def test_deploy_main_derives_managed_env_and_allows_ignored_coordination_pyc(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "a" * 40
+    source = tmp_path / "coordination-source"
+    _init_repo(source)
+    (source / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    _git(source, "add", ".gitignore")
+    _git(source, "commit", "-m", "ignore bytecode")
+    ignored = source / "tools" / "__pycache__" / "release_authority.cpython-312.pyc"
+    ignored.parent.mkdir(parents=True)
+    ignored.write_bytes(b"ignored coordination artifact")
+    managed_root, release_root, managed_env = _prepare_managed_release_layout(
+        monkeypatch,
+        tmp_path,
+    )
+    checkout = release_root / commit
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "tools.release_authority.materialize_main_checkout",
+        lambda root, requested: checkout,
+    )
+
+    def fake_deploy(repo_root, requested, **kwargs):
+        observed.update(kwargs)
+        return {"commit": requested}
+
+    monkeypatch.setattr("tools.release_authority.deploy_clean_commit", fake_deploy)
+    monkeypatch.setattr(
+        "tools.release_authority.collect_live_parity",
+        lambda *args, **kwargs: {"verified": True, "mismatches": []},
+    )
+
+    result = release_authority.deploy_main_commit(
+        release_root,
+        commit,
+        docker_cmd="sudo -n docker",
+        env_file=None,
+        coordination_source=source,
+        replace_known_manual_frontend=False,
+    )
+
+    assert result["checkout"] == str(checkout)
+    assert observed["env_file"] == managed_env
+    assert observed["managed_release_root"] == release_root
+    assert not (source / "deploy" / "ai-platform" / ".env").exists()
+    assert managed_root.is_dir()
+
+
+@pytest.mark.parametrize("dirty_kind", ["tracked", "staged", "ordinary-untracked"])
+def test_deploy_main_blocks_coordination_dirt_before_target_materialization(
+    monkeypatch,
+    tmp_path,
+    dirty_kind,
+):
+    source = tmp_path / "coordination-source"
+    _init_repo(source)
+    if dirty_kind == "ordinary-untracked":
+        (source / "ordinary-untracked.txt").write_text("dirty\n", encoding="utf-8")
+    else:
+        (source / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+        if dirty_kind == "staged":
+            _git(source, "add", "tracked.txt")
+    _, release_root, _ = _prepare_managed_release_layout(monkeypatch, tmp_path)
+    materialized: list[Path] = []
+
+    monkeypatch.setattr(
+        "tools.release_authority.materialize_main_checkout",
+        lambda root, requested: materialized.append(Path(root)),
+    )
+
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^coordination-source-cleanliness gate failed:",
+    ):
+        release_authority.deploy_main_commit(
+            release_root,
+            "b" * 40,
+            docker_cmd="docker",
+            env_file=None,
+            coordination_source=source,
+            replace_known_manual_frontend=False,
+        )
+
+    assert materialized == []
+
+
+def test_managed_env_missing_and_relative_override_fail_before_materialization(
+    monkeypatch,
+    tmp_path,
+):
+    managed_root = tmp_path / "managed"
+    release_root = managed_root / "releases"
+    release_root.mkdir(parents=True)
+    materialized: list[Path] = []
+    monkeypatch.setattr(
+        "tools.release_authority.materialize_main_checkout",
+        lambda root, requested: materialized.append(Path(root)),
+    )
+
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^managed-env-file-presence gate failed:",
+    ):
+        release_authority.deploy_main_commit(
+            release_root,
+            "c" * 40,
+            docker_cmd="docker",
+            env_file=None,
+            replace_known_manual_frontend=False,
+        )
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^managed-env-path gate failed:",
+    ):
+        release_authority.deploy_main_commit(
+            release_root,
+            "c" * 40,
+            docker_cmd="docker",
+            env_file=Path("deploy/ai-platform/.env"),
+            replace_known_manual_frontend=False,
+        )
+
+    assert materialized == []
+
+
+def test_managed_env_symlink_is_rejected_without_reading_contents(monkeypatch, tmp_path):
+    managed_root = tmp_path / "managed"
+    release_root = managed_root / "releases"
+    release_root.mkdir(parents=True)
+    actual = managed_root / "operator-held.env"
+    actual.write_text("PRIVATE_VALUE=must-not-be-read\n", encoding="utf-8")
+    linked = managed_root / "deploy" / "ai-platform" / ".env"
+    linked.parent.mkdir(parents=True)
+    try:
+        linked.symlink_to(actual)
+    except OSError:
+        linked.write_text("placeholder\n", encoding="utf-8")
+        original = release_authority._is_link_or_junction
+        monkeypatch.setattr(
+            "tools.release_authority._is_link_or_junction",
+            lambda path: Path(path) == linked or original(Path(path)),
+        )
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *args, **kwargs: pytest.fail("managed env contents must never be read"),
+    )
+
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^managed-env-file-safety gate failed:",
+    ):
+        release_authority.resolve_managed_env_file(release_root, None)
+
+
+@pytest.mark.parametrize(
+    ("env_metadata", "expected_gate"),
+    [
+        ((1001, 0o600), "managed-env-file-ownership"),
+        ((1000, 0o640), "managed-env-file-mode"),
+    ],
+)
+def test_managed_env_owner_and_mode_fail_closed(
+    monkeypatch,
+    tmp_path,
+    env_metadata,
+    expected_gate,
+):
+    managed_root = tmp_path / "managed"
+    release_root = managed_root / "releases"
+    env_file = managed_root / "deploy" / "ai-platform" / ".env"
+    release_root.mkdir(parents=True)
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("PRIVATE_VALUE=must-not-be-read\n", encoding="utf-8")
+    monkeypatch.setattr(
+        release_authority,
+        "_posix_owner_mode",
+        lambda path: env_metadata if Path(path) == env_file else (1000, 0o700),
+        raising=False,
+    )
+
+    with pytest.raises(ReleaseAuthorityError, match=rf"^{expected_gate} gate failed:"):
+        release_authority.resolve_managed_env_file(release_root, None)
+
+
+def test_managed_env_external_same_owner_0600_override_is_rejected(
+    monkeypatch,
+    tmp_path,
+):
+    managed_root, release_root, default_env = _prepare_managed_release_layout(
+        monkeypatch,
+        tmp_path,
+    )
+    override = managed_root / "operator" / "release.env"
+    override.parent.mkdir()
+    override.write_text("PRIVATE_VALUE=must-not-be-read\n", encoding="utf-8")
+    monkeypatch.setattr(
+        release_authority,
+        "_posix_owner_mode",
+        lambda path: (1000, 0o600 if Path(path) == override else 0o700),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *args, **kwargs: pytest.fail("managed env contents must never be read"),
+    )
+    materialized: list[Path] = []
+    monkeypatch.setattr(
+        release_authority,
+        "materialize_main_checkout",
+        lambda root, requested: materialized.append(Path(root)),
+    )
+
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^managed-env-path gate failed:",
+    ):
+        release_authority.deploy_main_commit(
+            release_root,
+            "d" * 40,
+            docker_cmd="docker",
+            env_file=override,
+            replace_known_manual_frontend=False,
+        )
+    assert default_env.is_file()
+    assert materialized == []
+
+
+def test_managed_env_exact_canonical_override_is_accepted_without_reading_contents(
+    monkeypatch,
+    tmp_path,
+):
+    _, release_root, canonical_env = _prepare_managed_release_layout(
+        monkeypatch,
+        tmp_path,
+    )
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *args, **kwargs: pytest.fail("managed env contents must never be read"),
+    )
+
+    assert release_authority.resolve_managed_env_file(
+        release_root,
+        canonical_env,
+    ) == canonical_env
+
+
+def test_managed_target_checkout_accepts_safe_exact_git_tree(monkeypatch, tmp_path):
+    _, release_root, checkout, _, commit = _prepare_managed_target_checkout(
+        monkeypatch,
+        tmp_path,
+    )
+
+    assert release_authority.assert_managed_target_checkout(
+        checkout,
+        commit,
+        release_root,
+    ) == commit
+
+
+@pytest.mark.parametrize(
+    ("unsafe_subject", "unsafe_metadata", "expected_gate"),
+    [
+        ("checkout", (1001, 0o755), "target-checkout-authority-ownership"),
+        ("checkout", (1000, 0o775), "target-checkout-authority-mode"),
+        ("tracked-file", (1001, 0o644), "target-checkout-authority-ownership"),
+        ("tracked-file", (1000, 0o666), "target-checkout-authority-mode"),
+        ("git-config", (1001, 0o644), "target-checkout-authority-ownership"),
+        ("git-object", (1000, 0o666), "target-checkout-authority-mode"),
+    ],
+)
+def test_managed_target_owner_or_mode_rejects_before_docker(
+    monkeypatch,
+    tmp_path,
+    unsafe_subject,
+    unsafe_metadata,
+    expected_gate,
+):
+    managed_root, release_root, checkout, env_file, commit = (
+        _prepare_managed_target_checkout(monkeypatch, tmp_path)
+    )
+    git_config = checkout / ".git" / "config"
+    git_object = checkout / ".git" / "objects" / "aa" / ("b" * 38)
+    git_object.parent.mkdir(parents=True, exist_ok=True)
+    git_object.write_bytes(b"opaque-object")
+    expected_unsafe_paths = {
+        "checkout": checkout,
+        "tracked-file": checkout / "tracked.txt",
+        "git-config": git_config,
+        "git-object": git_object,
+    }
+    unsafe_path = expected_unsafe_paths[unsafe_subject]
+    unsafe_metadata_reads: list[Path] = []
+
+    def owner_mode(path):
+        candidate = Path(path)
+        if candidate == unsafe_path:
+            unsafe_metadata_reads.append(candidate)
+            return unsafe_metadata
+        if candidate == env_file:
+            return (1000, 0o600)
+        return (1000, 0o755 if candidate.is_dir() else 0o644)
+
+    monkeypatch.setattr(release_authority, "_posix_owner_mode", owner_mode)
+    docker_bases: list[str] = []
+
+    def forbidden_docker_base(value):
+        docker_bases.append(value)
+        raise AssertionError("unsafe managed target must fail before Docker")
+
+    monkeypatch.setattr("tools.release_authority._docker_base", forbidden_docker_base)
+
+    with pytest.raises(ReleaseAuthorityError, match=rf"^{expected_gate} gate failed:"):
+        deploy_clean_commit(
+            checkout,
+            commit,
+            docker_cmd="docker",
+            env_file=env_file,
+            replace_known_manual_frontend=False,
+            managed_release_root=release_root,
+        )
+
+    assert managed_root.is_dir()
+    assert unsafe_metadata_reads == [expected_unsafe_paths[unsafe_subject]]
+    assert docker_bases == []
+
+
+def test_managed_env_is_revalidated_before_any_container_or_compose_mutation(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "d" * 40
+    managed_root = tmp_path / "managed"
+    release_root = managed_root / "releases"
+    checkout = release_root / commit
+    env_file = managed_root / "deploy" / "ai-platform" / ".env"
+    _write_compose_files(checkout)
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("PRIVATE_VALUE=must-not-be-read\n", encoding="utf-8")
+    env_metadata_reads = 0
+    commands: list[list[str]] = []
+
+    def owner_mode(path):
+        nonlocal env_metadata_reads
+        if Path(path) != env_file:
+            return (1000, 0o700)
+        env_metadata_reads += 1
+        return (1000, 0o600 if env_metadata_reads == 1 else 0o640)
+
+    monkeypatch.setattr(release_authority, "_posix_owner_mode", owner_mode)
+    monkeypatch.setattr(
+        "tools.release_authority.assert_clean_commit",
+        lambda repo, requested: commit,
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._git",
+        lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n",
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._image_record",
+        lambda docker, image: {
+            "id": "sha256:frontend" if "frontend" in image else SANDBOX_IMAGE_ID,
+            "labels": _published_image_labels(
+                commit,
+                "frontend" if "frontend" in image else "backend",
+            ),
+        },
+    )
+
+    def fake_run(command, **kwargs):
+        command = list(command)
+        commands.append(command)
+        if len(command) >= 3 and command[-3:-1] == ["container", "inspect"]:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+    monkeypatch.setattr(
+        "tools.release_authority.assert_managed_target_checkout",
+        lambda repo, requested, root: commit,
+        raising=False,
+    )
+
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^managed-env-file-mode gate failed:",
+    ):
+        deploy_clean_commit(
+            checkout,
+            commit,
+            docker_cmd="docker",
+            env_file=env_file,
+            replace_known_manual_frontend=False,
+            managed_release_root=release_root,
+        )
+
+    assert env_metadata_reads == 2
+    assert not any("rm" in command or "compose" in command for command in commands)
+
+
 def test_ignored_worktree_file_is_not_clean_and_blocks_deploy_before_docker(
     monkeypatch,
     tmp_path,
@@ -272,7 +739,7 @@ def test_ignored_worktree_file_is_not_clean_and_blocks_deploy_before_docker(
             replace_known_manual_frontend=False,
         )
     except ReleaseAuthorityError as exc:
-        assert "ignored" in str(exc)
+        assert str(exc).startswith("target-checkout-ignored-content gate failed:")
     else:
         raise AssertionError("an ignored worktree file must not be reported clean")
 
@@ -282,7 +749,7 @@ def test_ignored_worktree_file_is_not_clean_and_blocks_deploy_before_docker(
     try:
         assert_clean_commit(repo, commit)
     except ReleaseAuthorityError as exc:
-        assert "dirty source is forbidden" in str(exc)
+        assert str(exc).startswith("target-checkout-cleanliness gate failed:")
     else:
         raise AssertionError("dirty source must be rejected")
 
@@ -2644,6 +3111,11 @@ def _install_checkout_git_runner(
         return result
 
     monkeypatch.setattr("tools.release_authority._run", fake_run)
+    monkeypatch.setattr(
+        release_authority,
+        "_posix_owner_mode",
+        lambda path: (1000, 0o755 if Path(path).is_dir() else 0o644),
+    )
     return commands
 
 
@@ -2678,9 +3150,69 @@ def test_materialize_main_checkout_reuses_only_clean_matching_checkout(monkeypat
     assert release_authority.materialize_main_checkout(release_root, commit) == checkout
 
     git_commands = [command for command, _, _ in commands]
-    assert ["git", "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"] in git_commands
+    fetch_command = ["git", "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"]
+    assert git_commands.count(fetch_command) == 1
+    fetch_index = git_commands.index(fetch_command)
+    assert git_commands[:fetch_index].count(
+        ["git", "status", "--porcelain", "--untracked-files=all"]
+    ) == 1
     assert ["git", "init"] not in git_commands
     assert ["git", "checkout", "--detach", commit] not in git_commands
+
+
+@pytest.mark.parametrize(
+    ("unsafe_subject", "unsafe_metadata", "expected_gate"),
+    [
+        ("checkout", (1001, 0o755), "target-checkout-authority-ownership"),
+        ("checkout", (1000, 0o775), "target-checkout-authority-mode"),
+        ("tracked-file", (1001, 0o644), "target-checkout-authority-ownership"),
+        ("tracked-file", (1000, 0o666), "target-checkout-authority-mode"),
+        ("git-config", (1001, 0o644), "target-checkout-authority-ownership"),
+        ("git-object", (1000, 0o666), "target-checkout-authority-mode"),
+    ],
+)
+def test_materialize_main_checkout_rejects_unsafe_existing_tree_before_fetch(
+    monkeypatch,
+    tmp_path,
+    unsafe_subject,
+    unsafe_metadata,
+    expected_gate,
+):
+    commit = "4" * 40
+    release_root = tmp_path / "releases"
+    checkout = release_root / commit
+    (checkout / ".git").mkdir(parents=True)
+    tracked = checkout / "tracked.txt"
+    tracked.write_text("tracked\n", encoding="utf-8")
+    git_config = checkout / ".git" / "config"
+    git_config.write_text("[core]\n\trepositoryformatversion = 0\n", encoding="utf-8")
+    git_object = checkout / ".git" / "objects" / "aa" / ("b" * 38)
+    git_object.parent.mkdir(parents=True)
+    git_object.write_bytes(b"opaque-object")
+    commands = _install_checkout_git_runner(monkeypatch, commit=commit)
+    unsafe_paths = {
+        "checkout": checkout,
+        "tracked-file": tracked,
+        "git-config": git_config,
+        "git-object": git_object,
+    }
+    unsafe_path = unsafe_paths[unsafe_subject]
+    unsafe_metadata_reads: list[Path] = []
+
+    def owner_mode(path):
+        candidate = Path(path)
+        if candidate == unsafe_path:
+            unsafe_metadata_reads.append(candidate)
+            return unsafe_metadata
+        return (1000, 0o755 if candidate.is_dir() else 0o644)
+
+    monkeypatch.setattr(release_authority, "_posix_owner_mode", owner_mode)
+
+    with pytest.raises(ReleaseAuthorityError, match=rf"^{expected_gate} gate failed:"):
+        release_authority.materialize_main_checkout(release_root, commit)
+
+    assert unsafe_metadata_reads == [unsafe_path]
+    assert commands == []
 
 
 def test_materialize_main_checkout_rejects_dirty_or_non_main_reuse(monkeypatch, tmp_path):
@@ -2693,7 +3225,7 @@ def test_materialize_main_checkout_rejects_dirty_or_non_main_reuse(monkeypatch, 
     try:
         release_authority.materialize_main_checkout(release_root, commit)
     except ReleaseAuthorityError as exc:
-        assert "dirty source" in str(exc)
+        assert str(exc).startswith("target-checkout-cleanliness gate failed:")
     else:
         raise AssertionError("a dirty versioned checkout must not be reused")
 
@@ -2736,7 +3268,7 @@ def test_materialize_main_checkout_rejects_ignored_file_before_reuse(monkeypatch
     try:
         release_authority.materialize_main_checkout(release_root, commit)
     except ReleaseAuthorityError as exc:
-        assert "ignored" in str(exc)
+        assert str(exc).startswith("target-checkout-ignored-content gate failed:")
     else:
         raise AssertionError("a reused checkout with ignored files must fail closed")
 
@@ -2800,6 +3332,8 @@ def test_materialize_main_checkout_rejects_symlink_release_root(monkeypatch, tmp
 def test_deploy_main_commit_keeps_target_provider_selection_for_final_parity(monkeypatch, tmp_path):
     commit = "b" * 40
     checkout = tmp_path / "releases" / commit
+    _, release_root, env_file = _prepare_managed_release_layout(monkeypatch, tmp_path)
+    checkout = release_root / commit
     calls: list[tuple[str, Path, str, tuple[str, ...]]] = []
     compose_files = (COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH)
     monkeypatch.setattr(
@@ -2819,10 +3353,10 @@ def test_deploy_main_commit_keeps_target_provider_selection_for_final_parity(mon
     monkeypatch.setattr("tools.release_authority.collect_live_parity", fake_parity)
 
     result = release_authority.deploy_main_commit(
-        tmp_path / "releases",
+        release_root,
         commit,
         docker_cmd="sudo -n docker",
-        env_file=tmp_path / ".env",
+        env_file=env_file,
         replace_known_manual_frontend=False,
         compose_files=compose_files,
     )
@@ -2837,7 +3371,8 @@ def test_deploy_main_commit_keeps_target_provider_selection_for_final_parity(mon
 
 def test_deploy_main_commit_fails_closed_when_live_parity_does_not_verify(monkeypatch, tmp_path):
     commit = "c" * 40
-    checkout = tmp_path / "releases" / commit
+    _, release_root, env_file = _prepare_managed_release_layout(monkeypatch, tmp_path)
+    checkout = release_root / commit
     monkeypatch.setattr("tools.release_authority.materialize_main_checkout", lambda root, requested: checkout)
     monkeypatch.setattr("tools.release_authority.deploy_clean_commit", lambda *args, **kwargs: {})
     monkeypatch.setattr(
@@ -2847,10 +3382,10 @@ def test_deploy_main_commit_fails_closed_when_live_parity_does_not_verify(monkey
 
     try:
         release_authority.deploy_main_commit(
-            tmp_path / "releases",
+            release_root,
             commit,
             docker_cmd="docker",
-            env_file=tmp_path / ".env",
+            env_file=env_file,
             replace_known_manual_frontend=False,
         )
     except ReleaseAuthorityError as exc:
@@ -3370,8 +3905,6 @@ def test_deploy_main_cli_forwards_explicit_auto_strategy(monkeypatch, capsys, tm
             str(tmp_path / "releases"),
             "--commit",
             "b" * 40,
-            "--env-file",
-            str(tmp_path / ".env"),
             "--strategy",
             "auto",
         ],
@@ -3381,6 +3914,8 @@ def test_deploy_main_cli_forwards_explicit_auto_strategy(monkeypatch, capsys, tm
     assert observed["release_root"] == tmp_path / "releases"
     assert observed["commit"] == "b" * 40
     assert observed["kwargs"]["strategy"] == "auto"
+    assert observed["kwargs"]["env_file"] is None
+    assert observed["kwargs"]["coordination_source"] == Path.cwd()
     assert json.loads(capsys.readouterr().out) == {"commit": "b" * 40}
 
 
