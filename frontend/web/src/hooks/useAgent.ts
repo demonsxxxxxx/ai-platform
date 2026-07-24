@@ -1884,10 +1884,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           attachments,
           disabledSkills,
           undefined,
-          selectedMcpToolIds,
           selectedSkill,
           submissionId,
           requestAgentId,
+          selectedMcpToolIds,
         );
 
         if (!isCurrentRequestSession()) {

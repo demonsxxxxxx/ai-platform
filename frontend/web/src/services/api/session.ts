@@ -533,10 +533,10 @@ export const sessionApi = {
     attachments?: MessageAttachment[],
     disabledSkills?: string[],
     disabledMcpTools?: string[],
-    selectedMcpToolIds?: string[],
     selectedSkill?: SelectedSkillRequest | null,
     submissionId?: string,
     agentId?: string,
+    selectedMcpToolIds?: string[],
   ): Promise<ChatStreamResponse> {
     const body = buildSubmitChatBody({
       message,
