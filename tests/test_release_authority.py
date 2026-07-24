@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -145,6 +146,44 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert ': "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"' in text
     assert ': "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"' in text
     assert '--release-root "$ROOT/releases"' in text
+    assert '--canonical-build-timeout-seconds 1800' in text
+    command_bound = re.search(
+        r"timeout --signal=INT --kill-after=(\d+)s (\d+)s",
+        text,
+    )
+    durable_bound = re.search(r"durable runner with a (\d+)-second deadline", text)
+    assert command_bound is not None
+    assert durable_bound is not None
+    assert "timeout --signal=TERM" not in text
+    kill_grace_seconds = int(command_bound.group(1))
+    command_timeout_seconds = int(command_bound.group(2))
+    durable_timeout_seconds = int(durable_bound.group(1))
+    default_timeout_slot_counts = {
+        "coordination_source": 2,
+        "materialize_existing_checkout": 11,
+        "initial_managed_target": 4,
+        "current_runtime_and_parity": 14,
+        "runtime_diff": 1,
+        "deploy_and_converge": 22,
+        "final_parity": 11,
+    }
+    assert sum(default_timeout_slot_counts.values()) == 65
+    aggregate_stage_maximum_seconds = (
+        2 * release_authority.CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
+        + sum(default_timeout_slot_counts.values())
+        * release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+        + 4 * release_authority.HTTP_PROBE_TIMEOUT_SECONDS
+    )
+    assert command_timeout_seconds >= aggregate_stage_maximum_seconds
+    assert command_timeout_seconds - aggregate_stage_maximum_seconds >= (
+        2 * release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+    )
+    assert kill_grace_seconds > 2 * release_authority.PROCESS_TREE_TERMINATION_GRACE_SECONDS
+    assert durable_timeout_seconds >= (
+        command_timeout_seconds
+        + kill_grace_seconds
+        + release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+    )
     assert "Do not add `--env-file`" in text
     assert "normal flow" in text
     assert "$ROOT/deploy/ai-platform/.env" in text
@@ -3567,6 +3606,8 @@ def test_release_authority_cli_exposes_git_native_main_commit_deploy():
     assert "--commit" in help_text
     assert "--compose-file" in help_text
     assert "--strategy" in help_text
+    assert "--canonical-build-timeout-seconds SECONDS" in help_text
+    assert "default: 1800" in help_text
 
 
 @pytest.mark.parametrize(
@@ -3822,6 +3863,106 @@ def test_timeout_stage_is_bounded_and_redacted(monkeypatch, tmp_path):
     assert exc_info.value.__context__ is None
 
 
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        ("", {"stderr_status": "empty"}),
+        (
+            "BuildKit: failed to solve: no space left on device",
+            {"stderr_status": "recognized", "stderr_summary": "no space left on device"},
+        ),
+        ("authorization=private-marker", {"stderr_status": "redacted"}),
+        (
+            "authorization=private-marker; no space left on device",
+            {"stderr_status": "redacted"},
+        ),
+    ],
+)
+def test_canonical_timeout_stage_records_bounded_redacted_diagnostic(stderr, expected):
+    events: list[dict] = []
+
+    def fail():
+        raise subprocess.TimeoutExpired(
+            ["docker", "build", "--secret", "private-marker"],
+            1800,
+            output="private-marker-output",
+            stderr=stderr,
+        )
+
+    with pytest.raises(ReleaseAuthorityError) as exc_info:
+        release_authority._stage(
+            events,
+            name="backend-image",
+            strategy="auto",
+            action="canonical-build",
+            timeout_seconds=1800,
+            operation=fail,
+        )
+
+    event = exc_info.value.stage_events[-1]
+    assert event == {
+        "stage": "backend-image",
+        "strategy": "auto",
+        "action": "canonical-build",
+        "status": "failed",
+        "wall_time_seconds": event["wall_time_seconds"],
+        "failure_kind": "timeout",
+        "timeout_seconds": 1800,
+        **expected,
+    }
+    serialized = json.dumps(event)
+    assert "private-marker" not in serialized
+    assert "--secret" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        (
+            "BuildKit: failed to solve: permission denied",
+            {
+                "failure_kind": "nonzero-exit",
+                "exit_code": 17,
+                "stderr_status": "recognized",
+                "stderr_summary": "permission denied",
+            },
+        ),
+        (
+            "registry token private-marker",
+            {
+                "failure_kind": "nonzero-exit",
+                "exit_code": 17,
+                "stderr_status": "redacted",
+            },
+        ),
+    ],
+)
+def test_canonical_failure_stage_preserves_safe_exit_diagnostic(stderr, expected):
+    events: list[dict] = []
+
+    with pytest.raises(ReleaseAuthorityError) as exc_info:
+        release_authority._stage(
+            events,
+            name="backend-image",
+            strategy="auto",
+            action="canonical-build",
+            timeout_seconds=1800,
+            operation=lambda: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(
+                    17,
+                    ["docker", "private-marker"],
+                    output="private-marker-output",
+                    stderr=stderr,
+                )
+            ),
+        )
+
+    event = exc_info.value.stage_events[-1]
+    assert {key: event[key] for key in expected} == expected
+    assert event["timeout_seconds"] == 1800
+    assert "private-marker" not in json.dumps(event)
+
+
 def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, tmp_path):
     target = "9" * 40
     commands, references = _configure_auto_deploy(
@@ -3907,6 +4048,8 @@ def test_deploy_main_cli_forwards_explicit_auto_strategy(monkeypatch, capsys, tm
             "b" * 40,
             "--strategy",
             "auto",
+            "--canonical-build-timeout-seconds",
+            "2400",
         ],
     )
 
@@ -3914,8 +4057,35 @@ def test_deploy_main_cli_forwards_explicit_auto_strategy(monkeypatch, capsys, tm
     assert observed["release_root"] == tmp_path / "releases"
     assert observed["commit"] == "b" * 40
     assert observed["kwargs"]["strategy"] == "auto"
+    assert observed["kwargs"]["canonical_dependency_build_timeout_seconds"] == 2400
     assert observed["kwargs"]["env_file"] is None
     assert observed["kwargs"]["coordination_source"] == Path.cwd()
+    assert json.loads(capsys.readouterr().out) == {"commit": "b" * 40}
+
+
+def test_deploy_main_cli_forwards_default_canonical_build_timeout(monkeypatch, capsys, tmp_path):
+    observed = {}
+
+    def fake_deploy_main(release_root, commit, **kwargs):
+        observed.update(kwargs)
+        return {"commit": commit}
+
+    monkeypatch.setattr("tools.release_authority.deploy_main_commit", fake_deploy_main)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py",
+            "deploy-main-commit",
+            "--release-root",
+            str(tmp_path / "releases"),
+            "--commit",
+            "b" * 40,
+        ],
+    )
+
+    assert release_authority.main() == 0
+    assert observed["canonical_dependency_build_timeout_seconds"] == 1800
     assert json.loads(capsys.readouterr().out) == {"commit": "b" * 40}
 
 
@@ -4149,6 +4319,25 @@ def test_run_timeout_redacts_captured_output_from_error():
     assert exc_info.value.stderr is None
 
 
+def test_run_timeout_retains_only_classified_stderr_diagnostic():
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        release_authority._run(
+            [
+                sys.executable,
+                "-c",
+                "import sys, time; print('failed to solve: no space left on device', file=sys.stderr, flush=True); time.sleep(60)",
+            ],
+            timeout=0.1,
+        )
+
+    assert exc_info.value.stderr is None
+    assert exc_info.value.output is None
+    assert exc_info.value.safe_stderr_diagnostic == {
+        "stderr_status": "recognized",
+        "stderr_summary": "no space left on device",
+    }
+
+
 def test_run_returns_normal_completed_process_without_terminating_successful_command(monkeypatch):
     monkeypatch.setattr(
         "tools.release_authority._terminate_owned_process_tree",
@@ -4251,6 +4440,7 @@ def test_role_timeouts_distinguish_canonical_dependency_from_source_only(monkeyp
         **common,
         role="backend",
         source_only=False,
+        canonical_dependency_build_timeout_seconds=2400,
     )
     release_authority._canonical_or_source_build(
         **common,
@@ -4270,8 +4460,98 @@ def test_role_timeouts_distinguish_canonical_dependency_from_source_only(monkeyp
     )
 
     assert observed == [
-        release_authority.CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+        2400,
         release_authority.BACKEND_STAGE_TIMEOUT_SECONDS,
         release_authority.FRONTEND_STAGE_TIMEOUT_SECONDS,
         release_authority.BACKEND_STAGE_TIMEOUT_SECONDS,
     ]
+
+
+@pytest.mark.parametrize(
+    ("value", "accepted"),
+    [
+        (release_authority.MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS, True),
+        (release_authority.MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS, True),
+        (release_authority.MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS - 1, False),
+        (release_authority.MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS + 1, False),
+    ],
+)
+def test_canonical_build_timeout_range_is_finite_and_fail_closed(value, accepted):
+    if accepted:
+        assert release_authority._validate_canonical_dependency_build_timeout(value) == value
+    else:
+        with pytest.raises(ReleaseAuthorityError, match="between 300 and 3600 seconds"):
+            release_authority._validate_canonical_dependency_build_timeout(value)
+
+
+@pytest.mark.parametrize("value", ["299", "3601", "inf", "1.5"])
+def test_deploy_main_cli_rejects_invalid_canonical_build_timeout(value):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/release_authority.py",
+            "deploy-main-commit",
+            "--release-root",
+            "managed/releases",
+            "--commit",
+            "a" * 40,
+            "--canonical-build-timeout-seconds",
+            value,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "canonical-build-timeout-seconds" in result.stderr
+    assert result.stdout == ""
+
+
+def test_canonical_build_timeout_default_and_override_are_recorded_in_plan_and_stage(
+    monkeypatch,
+    tmp_path,
+):
+    current = "c" * 40
+    target = "d" * 40
+    commands, current_refs = _configure_auto_deploy(
+        monkeypatch,
+        tmp_path,
+        current=current,
+        target=target,
+    )
+    plan = release_authority.build_auto_release_plan(
+        current,
+        target,
+        release_authority.classify_runtime_changes(["pyproject.toml"]),
+    )
+
+    deployment = deploy_clean_commit(
+        tmp_path,
+        target,
+        docker_cmd="docker",
+        env_file=tmp_path / ".env",
+        replace_known_manual_frontend=False,
+        strategy="auto",
+        auto_plan=plan,
+        current_references=current_refs,
+        canonical_dependency_build_timeout_seconds=2400,
+    )
+
+    backend_build = next(
+        kwargs
+        for command, kwargs in commands
+        if "build" in command and command[command.index("-f") + 1] == "Dockerfile"
+    )
+    backend_stage = next(
+        event
+        for event in deployment["stages"]
+        if event["stage"] == "backend-image" and event["action"] == "canonical-build"
+    )
+    assert backend_build["timeout"] == 2400
+    assert backend_stage["timeout_seconds"] == 2400
+    assert deployment["plan"]["canonical_dependency_build_timeout_seconds"] == 2400
+    assert (
+        release_authority._plan_as_dict(plan)["canonical_dependency_build_timeout_seconds"]
+        == release_authority.CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
+    )

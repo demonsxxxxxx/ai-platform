@@ -65,9 +65,13 @@ COMPATIBILITY_IMAGE_COMMIT_LABELS = (
     "ai_platform_source_tree_commit",
 )
 DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
+HTTP_PROBE_TIMEOUT_SECONDS = 15
 BACKEND_STAGE_TIMEOUT_SECONDS = 90
 FRONTEND_STAGE_TIMEOUT_SECONDS = 180
-CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 900
+DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 1800
+CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
+MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 300
+MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 3600
 PROCESS_TREE_TERMINATION_GRACE_SECONDS = 1
 WINDOWS_CREATE_SUSPENDED = 0x00000004
 BACKEND_DEPENDENCY_PATHS = frozenset({"pyproject.toml", "Dockerfile"})
@@ -295,7 +299,7 @@ def _terminate_and_drain_owned_process(
     process: subprocess.Popen[Any],
     *,
     windows_job_handle: int | None = None,
-) -> None:
+) -> tuple[Any, Any]:
     """Terminate an owned tree and bound every post-timeout pipe-drain attempt."""
     _terminate_owned_process_tree(
         process,
@@ -303,8 +307,7 @@ def _terminate_and_drain_owned_process(
         windows_job_handle=windows_job_handle,
     )
     try:
-        process.communicate(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
-        return
+        return process.communicate(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
     except BaseException:
         pass
     _terminate_owned_process_tree(
@@ -313,14 +316,14 @@ def _terminate_and_drain_owned_process(
         windows_job_handle=windows_job_handle,
     )
     try:
-        process.communicate(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
-        return
+        return process.communicate(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
     except BaseException:
         _close_process_pipes(process)
         try:
             process.wait(timeout=PROCESS_TREE_TERMINATION_GRACE_SECONDS)
         except BaseException:
             pass
+        return (None, None)
 
 
 def _run(
@@ -368,15 +371,20 @@ def _run(
 
         try:
             stdout, stderr = process.communicate(input=input, timeout=timeout)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            captured_stderr = exc.stderr
             try:
-                _terminate_and_drain_owned_process(
+                _, drained_stderr = _terminate_and_drain_owned_process(
                     process,
                     windows_job_handle=windows_job_handle if windows_job_assigned else None,
                 )
+                captured_stderr = drained_stderr or captured_stderr
             except BaseException:
                 pass
-            raise subprocess.TimeoutExpired(arguments, timeout) from None
+            safe_stderr_diagnostic = _redacted_stderr_diagnostic(captured_stderr)
+            timeout_error = subprocess.TimeoutExpired(arguments, timeout)
+            setattr(timeout_error, "safe_stderr_diagnostic", safe_stderr_diagnostic)
+            raise timeout_error from None
         except BaseException:
             try:
                 _terminate_and_drain_owned_process(
@@ -404,6 +412,39 @@ def _normalize_commit(value: str) -> str:
     if not FULL_COMMIT_RE.fullmatch(commit):
         raise ReleaseAuthorityError("release commit must be a full 40-character lowercase SHA")
     return commit
+
+
+def _validate_canonical_dependency_build_timeout(value: int) -> int:
+    """Require one finite, operationally bounded canonical dependency-build timeout."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ReleaseAuthorityError("canonical dependency build timeout must be an integer number of seconds")
+    if not (
+        MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
+        <= value
+        <= MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
+    ):
+        raise ReleaseAuthorityError(
+            "canonical dependency build timeout must be between "
+            f"{MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS} and "
+            f"{MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS} seconds"
+        )
+    return value
+
+
+def _canonical_dependency_build_timeout_argument(value: str) -> int:
+    """Parse the bounded canonical dependency-build timeout for argparse."""
+    try:
+        parsed = int(value, 10)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "must be an integer number of seconds between "
+            f"{MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS} and "
+            f"{MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS}"
+        ) from exc
+    try:
+        return _validate_canonical_dependency_build_timeout(parsed)
+    except ReleaseAuthorityError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def assert_clean_commit(repo_root: Path, requested_commit: str) -> str:
@@ -729,12 +770,21 @@ def build_auto_release_plan(
     )
 
 
-def _plan_as_dict(plan: AutoReleasePlan) -> dict[str, Any]:
+def _plan_as_dict(
+    plan: AutoReleasePlan,
+    *,
+    canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     """Serialize the compact plan without expanding command or environment details."""
     return {
         "current_commit": plan.current_commit,
         "target_commit": plan.target_commit,
         "no_runtime_change": plan.no_runtime_change,
+        "canonical_dependency_build_timeout_seconds": (
+            _validate_canonical_dependency_build_timeout(
+                canonical_dependency_build_timeout_seconds
+            )
+        ),
         "changes": {
             "backend_dependency": list(plan.changes.backend_dependency),
             "backend_source": list(plan.changes.backend_source),
@@ -754,6 +804,91 @@ def _plan_as_dict(plan: AutoReleasePlan) -> dict[str, Any]:
     }
 
 
+_SAFE_STDERR_DIAGNOSTICS = (
+    (re.compile(r"no space left on device", re.IGNORECASE), "no space left on device"),
+    (
+        re.compile(r"out of memory|cannot allocate memory|oom", re.IGNORECASE),
+        "memory allocation failed",
+    ),
+    (
+        re.compile(r"temporary failure in name resolution|could not resolve host", re.IGNORECASE),
+        "dependency source name resolution failed",
+    ),
+    (re.compile(r"connection refused", re.IGNORECASE), "dependency source connection refused"),
+    (
+        re.compile(r"certificate verify failed|tls handshake|x509", re.IGNORECASE),
+        "TLS or certificate verification failed",
+    ),
+    (re.compile(r"checksum.*mismatch|hash.*mismatch", re.IGNORECASE), "dependency checksum mismatch"),
+    (re.compile(r"permission denied", re.IGNORECASE), "permission denied"),
+    (
+        re.compile(r"context deadline exceeded|i/o timeout|operation timed out", re.IGNORECASE),
+        "dependency operation timed out",
+    ),
+    (re.compile(r"failed to solve", re.IGNORECASE), "Docker build failed to solve"),
+    (
+        re.compile(r"cannot connect to the docker daemon|docker daemon is not running", re.IGNORECASE),
+        "Docker daemon unavailable",
+    ),
+    (re.compile(r"executable file not found", re.IGNORECASE), "required executable not found"),
+)
+
+
+def _redacted_stderr_diagnostic(stderr: str | bytes | None) -> dict[str, Any]:
+    """Classify captured stderr into fixed safe phrases without returning raw output."""
+    if stderr is None or not stderr:
+        return {"stderr_status": "empty"}
+    if isinstance(stderr, bytes):
+        text = stderr.decode("utf-8", errors="replace")
+    else:
+        text = stderr
+    scrubbed = text.lower()
+    if any(
+        marker in scrubbed
+        for marker in (
+            "authorization",
+            "password",
+            "passwd",
+            "secret",
+            "token",
+            "api_key",
+            "api-key",
+            "private key",
+        )
+    ):
+        return {"stderr_status": "redacted"}
+    for pattern, summary in _SAFE_STDERR_DIAGNOSTICS:
+        if pattern.search(text):
+            return {"stderr_status": "recognized", "stderr_summary": summary}
+    return {"stderr_status": "redacted"}
+
+
+def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
+    """Return only bounded, non-secret facts needed to diagnose one failed stage."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return {
+            "failure_kind": "timeout",
+            "timeout_seconds": exc.timeout,
+            **getattr(
+                exc,
+                "safe_stderr_diagnostic",
+                _redacted_stderr_diagnostic(exc.stderr),
+            ),
+        }
+    if isinstance(exc, subprocess.CalledProcessError):
+        return {
+            "failure_kind": "nonzero-exit",
+            "exit_code": exc.returncode,
+            **_redacted_stderr_diagnostic(exc.stderr),
+        }
+    if isinstance(exc, OSError):
+        evidence: dict[str, Any] = {"failure_kind": "os-error"}
+        if isinstance(exc.errno, int):
+            evidence["errno"] = exc.errno
+        return evidence
+    return {"failure_kind": "authority-error"}
+
+
 def _stage(
     events: list[dict[str, Any]],
     *,
@@ -761,35 +896,39 @@ def _stage(
     strategy: str,
     action: str,
     operation: Any,
+    timeout_seconds: int | None = None,
 ) -> Any:
     """Run one bounded release stage and retain compact, redacted timing evidence."""
     started = time.monotonic()
     stage_error: ReleaseAuthorityError | None = None
     try:
         value = operation()
-    except (OSError, subprocess.SubprocessError, ReleaseAuthorityError):
-        events.append(
-            {
-                "stage": name,
-                "strategy": strategy,
-                "action": action,
-                "status": "failed",
-                "wall_time_seconds": round(time.monotonic() - started, 3),
-            }
-        )
+    except (OSError, subprocess.SubprocessError, ReleaseAuthorityError) as exc:
+        event = {
+            "stage": name,
+            "strategy": strategy,
+            "action": action,
+            "status": "failed",
+            "wall_time_seconds": round(time.monotonic() - started, 3),
+            **_stage_failure_evidence(exc),
+        }
+        if timeout_seconds is not None:
+            event["timeout_seconds"] = timeout_seconds
+        events.append(event)
         stage_error = ReleaseAuthorityError(f"release stage failed: {name}")
         setattr(stage_error, "stage_events", tuple(events))
     if stage_error is not None:
         raise stage_error from None
-    events.append(
-        {
-            "stage": name,
-            "strategy": strategy,
-            "action": action,
-            "status": "ok",
-            "wall_time_seconds": round(time.monotonic() - started, 3),
-        }
-    )
+    event = {
+        "stage": name,
+        "strategy": strategy,
+        "action": action,
+        "status": "ok",
+        "wall_time_seconds": round(time.monotonic() - started, 3),
+    }
+    if timeout_seconds is not None:
+        event["timeout_seconds"] = timeout_seconds
+    events.append(event)
     return value
 
 
@@ -1512,10 +1651,17 @@ def _build_args(commit: str, repository: str) -> list[str]:
     ]
 
 
-def _role_timeout(role: str, *, canonical_dependency: bool = False) -> int:
+def _role_timeout(
+    role: str,
+    *,
+    canonical_dependency: bool = False,
+    canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+) -> int:
     """Return the bounded timeout for one role action without widening fast-path SLOs."""
     if canonical_dependency:
-        return CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
+        return _validate_canonical_dependency_build_timeout(
+            canonical_dependency_build_timeout_seconds
+        )
     if role == "backend":
         return BACKEND_STAGE_TIMEOUT_SECONDS
     if role == "frontend":
@@ -1532,6 +1678,7 @@ def _canonical_or_source_build(
     repository: str,
     role: str,
     source_only: bool,
+    canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
 ) -> None:
     dockerfile = "Dockerfile" if role == "backend" else "frontend/web/Dockerfile"
     command = [*docker, "build", *_build_args(commit, repository), "-t", reference]
@@ -1541,7 +1688,13 @@ def _canonical_or_source_build(
     _run(
         command,
         cwd=repo_root,
-        timeout=_role_timeout(role, canonical_dependency=not source_only),
+        timeout=_role_timeout(
+            role,
+            canonical_dependency=not source_only,
+            canonical_dependency_build_timeout_seconds=(
+                canonical_dependency_build_timeout_seconds
+            ),
+        ),
     )
 
 
@@ -1824,7 +1977,7 @@ def _container_file_commit(docker: list[str], name: str, path: str) -> str:
 
 
 def _http_json(url: str) -> dict[str, Any]:
-    with urlopen(url, timeout=15) as response:
+    with urlopen(url, timeout=HTTP_PROBE_TIMEOUT_SECONDS) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -2107,12 +2260,18 @@ def deploy_clean_commit(
     current_references: dict[str, str] | None = None,
     stage_events: list[dict[str, Any]] | None = None,
     managed_release_root: Path | None = None,
+    canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Build immutable images and recreate the repo-local compose release."""
     if strategy not in {"canonical", "auto"}:
         raise ReleaseAuthorityError("release strategy is invalid")
     if strategy == "auto" and (auto_plan is None or current_references is None):
         raise ReleaseAuthorityError("auto release plan is required")
+    canonical_dependency_build_timeout_seconds = (
+        _validate_canonical_dependency_build_timeout(
+            canonical_dependency_build_timeout_seconds
+        )
+    )
     events = stage_events if stage_events is not None else []
     if managed_release_root is not None:
         compose_env_file = resolve_managed_env_file(managed_release_root, Path(env_file))
@@ -2173,7 +2332,11 @@ def deploy_clean_commit(
                         repository=repository,
                         role=role,
                         source_only=False,
+                        canonical_dependency_build_timeout_seconds=(
+                            canonical_dependency_build_timeout_seconds
+                        ),
                     ),
+                    timeout_seconds=canonical_dependency_build_timeout_seconds,
                 )
             elif item.action == "source-build":
                 _stage(
@@ -2324,7 +2487,12 @@ def deploy_clean_commit(
         "stages": events,
     }
     if auto_plan is not None:
-        result["plan"] = _plan_as_dict(auto_plan)
+        result["plan"] = _plan_as_dict(
+            auto_plan,
+            canonical_dependency_build_timeout_seconds=(
+                canonical_dependency_build_timeout_seconds
+            ),
+        )
     return result
 
 
@@ -2340,10 +2508,16 @@ def deploy_main_commit(
     compose_files: Sequence[str | Path] | None = None,
     strategy: str = "canonical",
     coordination_source: Path | None = None,
+    canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Deploy and verify an exact fetched main commit from an isolated checkout."""
     if strategy not in {"canonical", "auto"}:
         raise ReleaseAuthorityError("release strategy is invalid")
+    canonical_dependency_build_timeout_seconds = (
+        _validate_canonical_dependency_build_timeout(
+            canonical_dependency_build_timeout_seconds
+        )
+    )
     normalized = _normalize_commit(commit)
     if coordination_source is not None:
         assert_clean_coordination_source(coordination_source)
@@ -2360,6 +2534,9 @@ def deploy_main_commit(
             expected_manual_frontend_image_id=expected_manual_frontend_image_id,
             compose_files=compose_files,
             managed_release_root=release_root,
+            canonical_dependency_build_timeout_seconds=(
+                canonical_dependency_build_timeout_seconds
+            ),
         )
         parity = collect_live_parity(
             checkout,
@@ -2408,6 +2585,9 @@ def deploy_main_commit(
             current_references=current["references"],
             stage_events=events,
             managed_release_root=release_root,
+            canonical_dependency_build_timeout_seconds=(
+                canonical_dependency_build_timeout_seconds
+            ),
         )
 
         def final_parity() -> dict[str, Any]:
@@ -2462,6 +2642,18 @@ def main() -> int:
     deploy.add_argument("--expected-manual-frontend-image")
     deploy.add_argument("--expected-manual-frontend-image-id")
     deploy.add_argument(
+        "--canonical-build-timeout-seconds",
+        type=_canonical_dependency_build_timeout_argument,
+        default=CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "Per-stage dependency-triggered canonical build timeout "
+            f"({MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS}.."
+            f"{MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS}; "
+            f"default: {CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS})"
+        ),
+    )
+    deploy.add_argument(
         "--compose-file",
         dest="compose_files",
         action="append",
@@ -2487,6 +2679,18 @@ def main() -> int:
     deploy_main.add_argument("--replace-known-manual-frontend", action="store_true")
     deploy_main.add_argument("--expected-manual-frontend-image")
     deploy_main.add_argument("--expected-manual-frontend-image-id")
+    deploy_main.add_argument(
+        "--canonical-build-timeout-seconds",
+        type=_canonical_dependency_build_timeout_argument,
+        default=CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "Per-stage dependency-triggered canonical build timeout "
+            f"({MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS}.."
+            f"{MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS}; "
+            f"default: {CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS})"
+        ),
+    )
     deploy_main.add_argument(
         "--strategy",
         choices=("auto", "canonical"),
@@ -2530,6 +2734,9 @@ def main() -> int:
                     expected_manual_frontend_image=args.expected_manual_frontend_image,
                     expected_manual_frontend_image_id=args.expected_manual_frontend_image_id,
                     compose_files=args.compose_files,
+                    canonical_dependency_build_timeout_seconds=(
+                        args.canonical_build_timeout_seconds
+                    ),
                 ),
                 None,
             )
@@ -2546,6 +2753,9 @@ def main() -> int:
                     compose_files=args.compose_files,
                     strategy=args.strategy,
                     coordination_source=Path.cwd(),
+                    canonical_dependency_build_timeout_seconds=(
+                        args.canonical_build_timeout_seconds
+                    ),
                 ),
                 None,
             )
