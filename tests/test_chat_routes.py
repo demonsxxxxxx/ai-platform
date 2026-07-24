@@ -249,7 +249,7 @@ def test_rejection_fingerprint_is_stable_safe_and_principal_session_scoped():
         message="reject selected tool",
         session_id="session-a",
         submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
-        selected_mcp_tool_ids=["unauthorized-private-tool"],
+        selected_mcp_tool_ids=[" unauthorized-private-tool ", "second-private-tool"],
         input={
             "endpoint": "https://private.example.test/mcp",
             "credential": "private-credential",
@@ -258,6 +258,32 @@ def test_rejection_fingerprint_is_stable_safe_and_principal_session_scoped():
 
     fingerprint = _canonical_pre_persistence_rejection_fingerprint(
         request=request,
+        principal=principal(),
+        query_agent_id=None,
+        code="mcp_tool_not_available",
+    )
+    reordered_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+        request=request.model_copy(
+            update={
+                "selected_mcp_tool_ids": [
+                    "second-private-tool",
+                    "unauthorized-private-tool",
+                ]
+            }
+        ),
+        principal=principal(),
+        query_agent_id=None,
+        code="mcp_tool_not_available",
+    )
+    different_same_count_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+        request=request.model_copy(
+            update={
+                "selected_mcp_tool_ids": [
+                    "unauthorized-private-tool",
+                    "different-private-tool",
+                ]
+            }
+        ),
         principal=principal(),
         query_agent_id=None,
         code="mcp_tool_not_available",
@@ -282,6 +308,8 @@ def test_rejection_fingerprint_is_stable_safe_and_principal_session_scoped():
     )
 
     assert fingerprint == replay_fingerprint
+    assert fingerprint == reordered_fingerprint
+    assert fingerprint != different_same_count_fingerprint
     assert fingerprint != other_user_fingerprint
     assert fingerprint != other_session_fingerprint
     assert len(fingerprint) == 64
@@ -2080,6 +2108,8 @@ async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_cr
 @pytest.mark.asyncio
 async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_ledger_data(monkeypatch):
     ledger = {}
+    claims = []
+    finalizations = []
 
     async def deny_selection(*_args, **_kwargs):
         raise repository_module.RepositoryAuthorizationError("mcp_tool_not_available")
@@ -2088,6 +2118,9 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
         return {"id": "user-a", "tenant_id": "tenant-a"}
 
     async def claim_submission(*_args, **kwargs):
+        claims.append(kwargs["request_fingerprint_sha256"])
+        if ledger:
+            return dict(ledger), False
         ledger.update(
             request_fingerprint_sha256=kwargs["request_fingerprint_sha256"],
             workspace_id=kwargs["workspace_id"],
@@ -2096,6 +2129,7 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
         return dict(ledger), True
 
     async def finalize_submission(*_args, **kwargs):
+        finalizations.append(kwargs["rejection_code"])
         ledger.update(
             state=kwargs["state"],
             submission_disposition=kwargs["submission_disposition"],
@@ -2108,25 +2142,47 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_submission)
 
-    with pytest.raises(HTTPException) as exc_info:
+    def rejected_request(tool_ids):
+        return ChatStreamRequest(
+            message="run unavailable tool",
+            submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+            selected_mcp_tool_ids=tool_ids,
+            input={
+                "endpoint": "https://private.example.test/mcp",
+                "credential": "private-credential",
+            },
+        )
+
+    with pytest.raises(HTTPException) as first_info:
         await chat_stream(
-            ChatStreamRequest(
-                message="run unavailable tool",
-                submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
-                selected_mcp_tool_ids=["unauthorized-private-tool"],
-                input={
-                    "endpoint": "https://private.example.test/mcp",
-                    "credential": "private-credential",
-                },
-            ),
+            rejected_request([" unauthorized-private-tool ", "second-private-tool"]),
             principal=principal(),
         )
 
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == {
+    with pytest.raises(HTTPException) as replay_info:
+        await chat_stream(
+            rejected_request(["second-private-tool", "unauthorized-private-tool"]),
+            principal=principal(),
+        )
+
+    with pytest.raises(HTTPException) as mismatch_info:
+        await chat_stream(
+            rejected_request(["unauthorized-private-tool", "different-private-tool"]),
+            principal=principal(),
+        )
+
+    assert first_info.value.status_code == 403
+    assert first_info.value.detail == {
         "code": "mcp_tool_not_available",
         "submission_disposition": "rejected_before_persist",
     }
+    assert replay_info.value.status_code == 409
+    assert replay_info.value.detail["code"] == "mcp_tool_not_available"
+    assert mismatch_info.value.status_code == 409
+    assert mismatch_info.value.detail == "submission_payload_mismatch"
+    assert claims[0] == claims[1]
+    assert claims[2] != claims[0]
+    assert finalizations == ["mcp_tool_not_available"]
     assert ledger["state"] == "rejected_before_persist"
     assert ledger["rejection_code"] == "mcp_tool_not_available"
     assert len(str(ledger["request_fingerprint_sha256"])) == 64

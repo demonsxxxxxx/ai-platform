@@ -120,6 +120,21 @@ def _submission_code(detail: object, fallback: str = "chat_submission_rejected")
     return fallback
 
 
+def _rejected_mcp_selector_identity_digest(tool_ids: list[str] | None) -> str:
+    """Digest the canonical selector identity without retaining rejected tool IDs."""
+
+    state = "omitted" if tool_ids is None else "clear" if not tool_ids else "explicit"
+    digest = hashlib.sha256()
+    digest.update(b"ai-platform.chat-rejected-mcp-selector.v1\x00")
+    digest.update(state.encode("ascii"))
+    digest.update(b"\x00")
+    for tool_id in sorted(item.strip() for item in (tool_ids or [])):
+        encoded_tool_id = tool_id.encode("utf-8")
+        digest.update(len(encoded_tool_id).to_bytes(8, "big"))
+        digest.update(encoded_tool_id)
+    return digest.hexdigest()
+
+
 def _canonical_pre_persistence_rejection_fingerprint(
     *,
     request: ChatStreamRequest,
@@ -138,7 +153,7 @@ def _canonical_pre_persistence_rejection_fingerprint(
         else "explicit"
     )
     canonical_rejection = {
-        "schema": "ai-platform.chat-rejection-fingerprint.v1",
+        "schema": "ai-platform.chat-rejection-fingerprint.v2",
         "code": code,
         "message_sha256": hashlib.sha256(request.message.encode("utf-8")).hexdigest(),
         "workspace_id": request.workspace_id,
@@ -153,6 +168,9 @@ def _canonical_pre_persistence_rejection_fingerprint(
         ),
         "selected_mcp_state": selected_mcp_state,
         "selected_mcp_count": len(selected_mcp_tool_ids or []),
+        "selected_mcp_identity_sha256": _rejected_mcp_selector_identity_digest(
+            selected_mcp_tool_ids
+        ),
         "legacy_mcp_selector_present": _has_legacy_client_mcp_selector(request.input),
         "input_keys": sorted(str(key) for key in request.input),
         "attachment_count": len(request.attachments),
