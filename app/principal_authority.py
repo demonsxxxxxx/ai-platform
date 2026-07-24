@@ -61,7 +61,8 @@ UserInfoAdapter = Callable[[str], Awaitable[object]]
 
 _ROLE_LIST_KEYS = ("roles", "roleList", "role_list", "RoleList")
 _ROLE_KEYS = ("role", "roleName", "role_name")
-_IDENTITY_KEYS = ("workId", "workid", "userName", "username", "user_name")
+_WORK_ID_KEYS = ("workId", "workid")
+_OPTIONAL_IDENTITY_ALIAS_KEYS = ("userName", "username", "user_name")
 _TENANT_KEYS = ("tenant_id", "tenantId", "tenant")
 _ADMIN_UPSTREAM_ROLES = {"admin", "developer"}
 _ELIGIBLE_STATUS_VALUES = {"active", "enabled", "normal", "success", "successful", "successfully!"}
@@ -103,27 +104,27 @@ async def resolve_login_principal(
     user_info_adapter: UserInfoAdapter | None = None,
     settings: Any | None = None,
 ) -> AuthPrincipal:
-    """Resolve the backward-compatible company-login principal projection."""
+    """Resolve a company-login principal from the current trusted user record."""
 
     effective_settings = settings or get_settings()
     adapter = user_info_adapter or _production_adapter(effective_settings)
     try:
         raw_user_info = await adapter(work_id)
     except Exception:
-        raw_user_info = {}
-    user_info = raw_user_info if isinstance(raw_user_info, dict) else {}
-    roles = _effective_roles(
-        work_id,
-        login_name,
-        user_info,
+        raise PrincipalAuthorityDenied() from None
+    # The submitted login name remains an input compatibility field, never an
+    # independent identity or configured-admin authority source.
+    roles, department_id = _normalize_company_record(
+        expected_work_id=work_id,
+        tenant_id=str(effective_settings.default_tenant_id),
+        raw_user_info=raw_user_info,
         settings=effective_settings,
-        strict=False,
     )
     return AuthPrincipal(
         user_id=work_id,
         display_name=display_name,
         tenant_id=effective_settings.default_tenant_id,
-        department_id=_department_from_user_info(user_info, strict=False),
+        department_id=department_id,
         roles=roles,
         permissions=_effective_permissions(roles),
         source="company-login",
@@ -147,23 +148,12 @@ async def resolve_current_principal(
         raw_user_info = await adapter(user_id)
     except Exception:
         raise PrincipalAuthorityDenied() from None
-    if not isinstance(raw_user_info, dict):
-        raise PrincipalAuthorityDenied()
-
-    identity_aliases = _validated_identity_aliases(raw_user_info)
-    if user_id not in identity_aliases:
-        raise PrincipalAuthorityDenied()
-    _validate_tenant(raw_user_info, tenant_id)
-    _validate_eligibility(raw_user_info)
-    roles = _effective_roles(
-        user_id,
-        "",
-        raw_user_info,
+    roles, department_id = _normalize_company_record(
+        expected_work_id=user_id,
+        tenant_id=tenant_id,
+        raw_user_info=raw_user_info,
         settings=effective_settings,
-        strict=True,
-        identity_aliases=identity_aliases,
     )
-    department_id = _department_from_user_info(raw_user_info, strict=True)
     return AuthPrincipal(
         user_id=user_id,
         display_name=user_id,
@@ -180,6 +170,31 @@ def _production_adapter(settings: Any) -> UserInfoAdapter:
         return await fetch_company_user_info(work_id, settings=settings)
 
     return adapter
+
+
+def _normalize_company_record(
+    *,
+    expected_work_id: str,
+    tenant_id: str,
+    raw_user_info: object,
+    settings: Any,
+) -> tuple[list[str], str]:
+    """Validate one company record and return its bounded product authority."""
+
+    if not isinstance(raw_user_info, dict):
+        raise PrincipalAuthorityDenied()
+
+    identity_aliases = _validated_identity_aliases(raw_user_info, expected_work_id=expected_work_id)
+    _validate_tenant(raw_user_info, tenant_id)
+    upstream_roles = _roles_from_user_info(raw_user_info, strict=True)
+    _validate_eligibility(raw_user_info, legacy_roles=upstream_roles)
+    roles = _effective_roles(
+        expected_work_id,
+        upstream_roles,
+        settings=settings,
+        identity_aliases=identity_aliases,
+    )
+    return roles, _department_from_user_info(raw_user_info)
 
 
 def _as_list(value: object, *, strict: bool) -> list[str]:
@@ -222,18 +237,16 @@ def _configured_admin_ids(settings: Any) -> set[str]:
 
 def _effective_roles(
     work_id: str,
-    login_name: str,
-    user_info: dict[str, Any],
+    upstream_role_values: list[str],
     *,
     settings: Any,
-    strict: bool,
-    identity_aliases: set[str] | None = None,
+    identity_aliases: set[str],
 ) -> list[str]:
-    upstream_roles = set(normalize_roles(_roles_from_user_info(user_info, strict=strict)))
+    upstream_roles = set(normalize_roles(upstream_role_values))
     configured_admin_ids = _configured_admin_ids(settings)
     candidate_admin_ids = {
         value.strip().casefold()
-        for value in (work_id, login_name, *(identity_aliases or set()))
+        for value in (work_id, *identity_aliases)
         if value.strip()
     }
     is_admin = bool(
@@ -250,13 +263,11 @@ def _effective_permissions(roles: list[str]) -> list[str]:
     return permissions
 
 
-def _department_from_user_info(payload: dict[str, Any], *, strict: bool) -> str:
+def _department_from_user_info(payload: dict[str, Any]) -> str:
     if "department" not in payload or payload.get("department") is None:
         return ""
     value = payload.get("department")
     if not isinstance(value, str):
-        if strict:
-            raise PrincipalAuthorityDenied()
         return ""
     candidate = value.strip()
     if not candidate:
@@ -264,22 +275,38 @@ def _department_from_user_info(payload: dict[str, Any], *, strict: bool) -> str:
     try:
         return assert_safe_id(candidate, "department")
     except ValueError:
-        if strict:
-            raise PrincipalAuthorityDenied() from None
+        # Empty is intentionally unscoped: it cannot match a non-empty
+        # department allowlist and never invents authority from display data.
         return ""
 
 
-def _validated_identity_aliases(payload: dict[str, Any]) -> set[str]:
-    values: set[str] = set()
-    for key in _IDENTITY_KEYS:
+def _validated_identity_aliases(payload: dict[str, Any], *, expected_work_id: str) -> set[str]:
+    work_ids: set[str] = set()
+    for key in _WORK_ID_KEYS:
         if key not in payload:
             continue
         value = payload[key]
         if not isinstance(value, str) or not value.strip():
             raise PrincipalAuthorityDenied()
-        values.add(value.strip())
-    if not values:
+        work_ids.add(value.strip())
+    if work_ids != {expected_work_id}:
         raise PrincipalAuthorityDenied()
+
+    values = set(work_ids)
+    for key in _OPTIONAL_IDENTITY_ALIAS_KEYS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise PrincipalAuthorityDenied()
+        candidate = value.strip()
+        if not candidate:
+            continue
+        if candidate != expected_work_id:
+            raise PrincipalAuthorityDenied()
+        values.add(candidate)
     return values
 
 
@@ -292,7 +319,7 @@ def _validate_tenant(payload: dict[str, Any], tenant_id: str) -> None:
             raise PrincipalAuthorityDenied()
 
 
-def _validate_eligibility(payload: dict[str, Any]) -> None:
+def _validate_eligibility(payload: dict[str, Any], *, legacy_roles: list[str]) -> None:
     has_eligibility_signal = False
     for key in ("active", "enabled", "eligible"):
         if key not in payload:
@@ -311,5 +338,8 @@ def _validate_eligibility(payload: dict[str, Any]) -> None:
             raise PrincipalAuthorityDenied()
         if normalized not in _ELIGIBLE_STATUS_VALUES:
             raise PrincipalAuthorityDenied()
-    if not has_eligibility_signal:
+    if not has_eligibility_signal and not legacy_roles:
         raise PrincipalAuthorityDenied()
+    # The trusted legacy company endpoint has no eligibility fields. Absence is
+    # compatible only after exact work-id validation and strict non-empty roles;
+    # every explicit negative or malformed signal above remains fail closed.
