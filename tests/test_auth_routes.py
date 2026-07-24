@@ -261,7 +261,12 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
         return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
 
     async def fake_user_info(work_id):
-        return {"roles": ["user"], "permissions": []}
+        return {
+            "workid": work_id,
+            "username": None,
+            "roles": ["user"],
+            "permissions": [],
+        }
 
     async def noop(*args, **kwargs):
         return None
@@ -287,6 +292,27 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
 
     assert me_response.status_code == 200
     assert me_response.json()["permissions"] == body["permissions"]
+
+
+def test_company_login_projects_principal_denial_as_existing_safe_failure(monkeypatch):
+    async def fake_login(username, password):
+        return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
+
+    async def fake_user_info(work_id):
+        return {"roles": ["user"]}
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: auth_settings())
+    monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
+    monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
+
+    response = browser_client().post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "company_login_failed"}
 
 
 def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_department_id="qa"):
@@ -540,34 +566,22 @@ def test_company_login_does_not_project_large_enterprise_permissions_into_sessio
     assert me_response.json()["permissions"] == body["permissions"]
 
 
-def test_company_login_survives_user_info_failure_as_ordinary_user(monkeypatch):
+def test_compat_login_projects_user_info_failure_as_existing_safe_failure(monkeypatch):
     async def fake_login(username, password):
         return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
 
     async def failing_user_info(work_id):
         raise RuntimeError("user-info unavailable")
 
-    async def noop(*args, **kwargs):
-        return None
-
     monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
     monkeypatch.setattr("app.routes.auth.get_settings", lambda: auth_settings())
     monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
     monkeypatch.setattr("app.routes.auth.call_existing_user_info", failing_user_info)
-    monkeypatch.setattr("app.routes.auth.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.auth.ensure_user", noop)
-    monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
 
     response = TestClient(create_app()).post("/api/auth/login", json={"username": "user001", "password": "pw"})
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["access_token"]
-    assert body["token_type"] == "bearer"
-    token = body["access_token"]
-    me_response = TestClient(create_app()).get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
-    assert me_response.json()["roles"] == ["user"]
-    assert me_response.json()["permissions"] == EXPECTED_COMPANY_USER_PERMISSIONS
+    assert response.status_code == 401
+    assert response.json() == {"detail": "company_login_failed"}
 
 
 def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(monkeypatch):

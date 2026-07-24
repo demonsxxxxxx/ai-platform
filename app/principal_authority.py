@@ -211,23 +211,25 @@ def _as_list(value: object, *, strict: bool) -> list[str]:
 
 def _roles_from_user_info(payload: dict[str, Any], *, strict: bool) -> list[str]:
     recognized = False
-    for key in _ROLE_LIST_KEYS:
+    resolved_roles: list[str] = []
+    semantic_roles: frozenset[str] | None = None
+    for key in (*_ROLE_LIST_KEYS, *_ROLE_KEYS):
         if key not in payload:
             continue
         recognized = True
-        roles = _as_list(payload[key], strict=strict)
-        if roles:
-            return roles
-    for key in _ROLE_KEYS:
-        if key not in payload:
+        normalized_roles = normalize_roles(_as_list(payload[key], strict=strict))
+        current_semantics = frozenset(normalized_roles)
+        if semantic_roles is None:
+            semantic_roles = current_semantics
+            resolved_roles = normalized_roles
             continue
-        recognized = True
-        roles = _as_list(payload[key], strict=strict)
-        if roles:
-            return roles
+        # Every present alias is an authority assertion. Empty, reordered, or
+        # differently cased forms are safe only when their normalized sets agree.
+        if current_semantics != semantic_roles:
+            raise PrincipalAuthorityDenied()
     if strict and not recognized:
         raise PrincipalAuthorityDenied()
-    return []
+    return resolved_roles
 
 
 def _configured_admin_ids(settings: Any) -> set[str]:

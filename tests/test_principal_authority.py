@@ -71,6 +71,70 @@ async def test_login_and_current_principal_accept_the_observed_legacy_company_re
     assert login.permissions == current.permissions == list(AI_USER_PERMISSIONS)
 
 
+@pytest.mark.parametrize("kind", ["login", "current"])
+@pytest.mark.parametrize(
+    ("role_aliases", "expected_role"),
+    [
+        pytest.param(
+            {
+                "roles": [" Developer ", "developer"],
+                "roleList": "DEVELOPER",
+                "roleName": "developer",
+            },
+            "admin",
+            id="equivalent-admin-aliases",
+        ),
+        pytest.param(
+            {
+                "roles": ["employee", "user"],
+                "role_list": " USER, employee ",
+            },
+            "user",
+            id="equivalent-user-aliases-reordered",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_login_and_current_principal_accept_semantically_equivalent_role_aliases(
+    kind,
+    role_aliases,
+    expected_role,
+):
+    principal = await _resolve(
+        kind,
+        {
+            "workid": "user-a",
+            "username": None,
+            "active": True,
+            **role_aliases,
+        },
+    )
+
+    assert principal.roles == [expected_role]
+
+
+@pytest.mark.parametrize("kind", ["login", "current"])
+@pytest.mark.parametrize(
+    "role_aliases",
+    [
+        pytest.param({"roles": [], "roleList": ["developer"]}, id="empty-versus-developer"),
+        pytest.param({"roles": ["user"], "roleName": "developer"}, id="user-versus-developer"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_login_and_current_principal_reject_conflicting_role_aliases(kind, role_aliases):
+    with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
+        await _resolve(
+            kind,
+            {
+                "workid": "user-a",
+                "username": None,
+                "active": True,
+                **role_aliases,
+            },
+        )
+
+
 @pytest.mark.asyncio
 async def test_current_principal_uses_current_identity_roles_department_and_derived_permissions():
     principal = await resolve_current_principal(
