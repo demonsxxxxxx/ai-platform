@@ -37,6 +37,67 @@ rejects redirects, and never accepts a caller-selected remote host. Secrets
 remain in the sandbox request and are neither logged nor persisted in gateway
 state.
 
+## Pinned HTTPS upstream bridge v1
+
+OpenSandbox does not inherit the Docker provider's HTTP callback/model bases.
+Its signed capability, create metadata, and attestation must all carry exactly
+one bridge origin and these path shapes:
+
+```text
+OPENSANDBOX_GATEWAY_CALLBACK_BASE=https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443
+OPENSANDBOX_GATEWAY_OPENAI_BASE=https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443/openai/v1
+OPENSANDBOX_GATEWAY_ANTHROPIC_BASE=https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443/anthropic
+```
+
+The matching `egress-policy.v1.json` pins all three targets to the single
+private address `10.56.0.211`. The broker opens the socket to that literal IP,
+does not consult DNS, sends `REQUIRED_FIXED_EGRESS_HOSTNAME` as TLS SNI, and
+verifies the certificate hostname. Do not add aliases, alternate ports, path
+variants, or a generic proxy target.
+
+Use a dedicated internal CA for the 211 bridge leaf. Keep the CA private key
+offline and never copy it to s72 or 211. The following is an illustrative
+operator workflow; replace placeholders through the approved PKI procedure and
+do not paste generated key material into logs, Git, environment variables, or
+this runbook:
+
+```sh
+# On the approved offline PKI host.
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out bridge-ca.key
+openssl req -x509 -new -sha256 -days 3650 -key bridge-ca.key \
+  -subj '/CN=REQUIRED_AI_PLATFORM_BRIDGE_CA' -out bridge-ca.pem
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out bridge-211.key
+openssl req -new -key bridge-211.key \
+  -subj '/CN=REQUIRED_FIXED_EGRESS_HOSTNAME' -out bridge-211.csr
+printf 'subjectAltName=DNS:REQUIRED_FIXED_EGRESS_HOSTNAME\nextendedKeyUsage=serverAuth\n' > bridge-211.ext
+openssl x509 -req -sha256 -days 825 -in bridge-211.csr \
+  -CA bridge-ca.pem -CAkey bridge-ca.key -CAcreateserial \
+  -extfile bridge-211.ext -out bridge-211.pem
+```
+
+Provision `bridge-211.pem` plus its chain and `bridge-211.key` only into the
+read-only 211 frontend mounts documented in the 211 release runbook. Provision
+only the non-secret CA certificate as
+`/etc/opensandbox-gateway/tls/upstream-ca.pem` on s72. The gateway builds a
+dedicated client trust context from that exact file, retains hostname
+verification and TLS 1.2+, and does not install the CA system-wide or fall back
+to system roots. At startup it opens the file with no-follow and close-on-exec
+flags where supported, validates the opened descriptor as root-owned regular
+`0640` data with a bounded size, captures the PEM bytes through that descriptor,
+closes it, and loads only the captured `cadata`; it never reopens the path.
+
+Do not select `docker-compose.opensandbox.yml` on 211 until the certificate
+mounts, exact SNI/Host, source-IP allow rule, pinned policy, and this s72 CA file
+have all passed the pre-deployment and remote smoke gates. Base Compose and the
+Docker sandbox overlay remain the rollback path and require none of those bridge
+inputs.
+
+The s72 gateway's own listener certificate is a separate server certificate.
+Its SAN set must contain exactly the literal IP from
+`OPENSANDBOX_GATEWAY_PUBLIC_AUTHORITY` (for example `10.56.1.72`) as an IP SAN;
+a DNS SAN or CN is not accepted. The ai-platform client trust for that gateway
+remains separate from the s72 upstream bridge CA.
+
 ## Pre-deployment gate
 
 Do not deploy until all of the following are current on s72:
@@ -54,8 +115,10 @@ Do not deploy until all of the following are current on s72:
    place their values in `gateway.env` or operator output.
 4. `gateway.env` subjects exactly equal the ai-platform configuration and the
    immutable executor reference embeds the same `sha256` digest.
-5. Each egress policy URL exactly equals its matching environment base and each
-   IP is a current, operator-approved address for that hostname.
+5. The three egress policy URLs exactly equal the bridge v1 bases above and all
+   three `expected_ips` arrays contain only `10.56.0.211`.
+6. `/etc/opensandbox-gateway/tls/upstream-ca.pem` is the dedicated bridge CA
+   certificate, not a system CA bundle, leaf certificate, symlink, or CA key.
 
 Copy `gateway.env.example` and `egress-policy.v1.example.json` to their paths
 under `/etc/opensandbox-gateway`, replace every `REQUIRED` marker, place TLS and
@@ -67,7 +130,27 @@ grep -R 'REQUIRED' /etc/opensandbox-gateway/gateway.env /etc/opensandbox-gateway
 stat -c '%a %U:%G %n' /etc/opensandbox-gateway/secrets/* /etc/opensandbox-gateway/tls/*
 ```
 
-The first command must return no matches. The installer accepts only an exact
+The first command must return no matches. Before invoking the installer, make
+the configuration tree root-owned and non-symlinked. Directories are `0750`;
+`gateway.env`, `egress-policy.v1.json`, `tls/fullchain.pem`, and
+`tls/upstream-ca.pem` are `0640`; `tls/privkey.pem` and exactly the three files
+`secrets/lifecycle-api-key`, `secrets/capability-token`, and
+`secrets/record-signing-key` are `0440`. Groups may initially be `root` or
+`opensandbox-gateway`; the installer normalizes the runtime copy to
+`root:opensandbox-gateway` and validates the same contract after rollback.
+Generate the three independent secrets without displaying them, for example:
+
+```sh
+umask 027
+install -d -o root -g opensandbox-gateway -m 0750 /etc/opensandbox-gateway/{secrets,tls}
+openssl rand -hex 32 | sudo tee /etc/opensandbox-gateway/secrets/lifecycle-api-key >/dev/null
+openssl rand -hex 32 | sudo tee /etc/opensandbox-gateway/secrets/capability-token >/dev/null
+openssl rand -hex 48 | sudo tee /etc/opensandbox-gateway/secrets/record-signing-key >/dev/null
+sudo chown root:opensandbox-gateway /etc/opensandbox-gateway/secrets/*
+sudo chmod 0440 /etc/opensandbox-gateway/secrets/*
+```
+
+The installer accepts only an exact
 40-character lowercase commit from a clean, root-owned, non-symlink Git tree.
 For a new install or upgrade, the release owner must freshly resolve the exact
 remote `main` SHA before the checkout is sealed root-only. `HEAD`, the local
@@ -112,10 +195,12 @@ recovery snapshot for operator inspection.
 ## Mandatory remote smoke gate
 
 Before any provider switch, use a disposable test scope and the configured CA
-trust to verify: TLS 1.2+, hostname failure, bad/missing auth, redirect refusal,
-oversize refusal, create/get/list, exact merged attestation, endpoint route
+trust to verify: TLS 1.2+, hostname failure, wrong CA failure, wrong pinned-IP
+failure, bad/missing auth, redirect refusal, non-success status propagation,
+deadline refusal, oversize refusal, create/get/list, exact merged attestation, endpoint route
 token, startup sentinel upload/download/command, executor health and identity,
-one callback, one model request, dispatch scope mismatch, runtime/network/image/
+one callback and one request through each model prefix with the exact rewritten
+upstream path and preserved authorization header, dispatch scope mismatch, runtime/network/image/
 mount drift refusal, cancellation, repeated deletion, and bounded orphan
 cleanup. Confirm from Docker inspect that the sandbox still has runsc,
 `NetworkMode=none`, no-new-privileges, only accepted mounts, and no proxy

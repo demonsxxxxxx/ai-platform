@@ -2,16 +2,16 @@
   "version": 1,
   "targets": {
     "callback": {
-      "base_url": "https://REQUIRED_CALLBACK_HOST",
-      "expected_ips": ["REQUIRED_PINNED_IP"]
+      "base_url": "https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443",
+      "expected_ips": ["10.56.0.211"]
     },
     "openai": {
-      "base_url": "https://REQUIRED_MODEL_HOST/openai/v1",
-      "expected_ips": ["REQUIRED_PINNED_IP"]
+      "base_url": "https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443/openai/v1",
+      "expected_ips": ["10.56.0.211"]
     },
     "anthropic": {
-      "base_url": "https://REQUIRED_MODEL_HOST/anthropic",
-      "expected_ips": ["REQUIRED_PINNED_IP"]
+      "base_url": "https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443/anthropic",
+      "expected_ips": ["10.56.0.211"]
     }
   }
 }

@@ -32,6 +32,59 @@ require_root_tree() {
   test -z "$(find "$1" ! -user root -print -quit)"
 }
 
+require_root_owned_regular() {
+  path=$1
+  mode=$2
+  test -f "$path" && test ! -L "$path" || return 1
+  test "$(stat -c %u "$path")" -eq 0 || return 1
+  case "$(stat -c %G "$path")" in root|opensandbox-gateway) ;; *) return 1 ;; esac
+  test "$(stat -c %a "$path")" = "$mode"
+}
+
+require_root_owned_directory() {
+  path=$1
+  mode=$2
+  test -d "$path" && test ! -L "$path" || return 1
+  test "$(stat -c %u "$path")" -eq 0 || return 1
+  case "$(stat -c %G "$path")" in root|opensandbox-gateway) ;; *) return 1 ;; esac
+  test "$(stat -c %a "$path")" = "$mode"
+}
+
+require_gateway_config_contract() {
+  require_root_owned_directory "$CONFIG_DIR" 750 || return 1
+  require_root_owned_directory "$CONFIG_DIR/secrets" 750 || return 1
+  require_root_owned_directory "$CONFIG_DIR/tls" 750 || return 1
+  test -z "$(find "$CONFIG_DIR/secrets" -mindepth 1 -maxdepth 1 \
+    ! -name lifecycle-api-key ! -name capability-token ! -name record-signing-key -print -quit)" || return 1
+  test -z "$(find "$CONFIG_DIR/tls" -mindepth 1 -maxdepth 1 \
+    ! -name fullchain.pem ! -name privkey.pem ! -name upstream-ca.pem -print -quit)" || return 1
+  require_root_owned_regular "$CONFIG_DIR/gateway.env" 640 || return 1
+  require_root_owned_regular "$CONFIG_DIR/egress-policy.v1.json" 640 || return 1
+  require_root_owned_regular "$CONFIG_DIR/tls/fullchain.pem" 640 || return 1
+  require_root_owned_regular "$CONFIG_DIR/tls/upstream-ca.pem" 640 || return 1
+  require_root_owned_regular "$CONFIG_DIR/tls/privkey.pem" 440 || return 1
+  for secret in lifecycle-api-key capability-token record-signing-key; do
+    require_root_owned_regular "$CONFIG_DIR/secrets/$secret" 440 || return 1
+  done
+  test "$(grep -Fxc 'OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE=/etc/opensandbox-gateway/tls/upstream-ca.pem' "$CONFIG_DIR/gateway.env")" -eq 1
+}
+
+normalize_runtime_config_permissions() {
+  test -d "$CONFIG_DIR" && test ! -L "$CONFIG_DIR" || return 1
+  chown -R root:opensandbox-gateway "$CONFIG_DIR" || return 1
+  chmod 0750 "$CONFIG_DIR" || return 1
+  for directory in "$CONFIG_DIR/secrets" "$CONFIG_DIR/tls"; do
+    test ! -e "$directory" || chmod 0750 "$directory" || return 1
+  done
+  for file in "$CONFIG_DIR/gateway.env" "$CONFIG_DIR/egress-policy.v1.json" \
+    "$CONFIG_DIR/tls/fullchain.pem" "$CONFIG_DIR/tls/upstream-ca.pem"; do
+    test ! -e "$file" || chmod 0640 "$file" || return 1
+  done
+  for file in "$CONFIG_DIR"/secrets/* "$CONFIG_DIR/tls/privkey.pem"; do
+    test ! -e "$file" || chmod 0440 "$file" || return 1
+  done
+}
+
 require_exact_authority_head() {
   source_root=$1
   authority_ref=$2
@@ -256,6 +309,7 @@ restore_snapshot() {
   if test -f "$snapshot/config.present"; then
     rm -rf "$CONFIG_DIR" || return 1
     cp -a "$snapshot/etc-opensandbox-gateway" "$CONFIG_DIR" || return 1
+    normalize_runtime_config_permissions || return 1
   else
     rm -rf "$CONFIG_DIR" || return 1
   fi
@@ -332,11 +386,8 @@ git -C "$SOURCE_REAL" diff-index --quiet HEAD --
 test -z "$(git -C "$SOURCE_REAL" ls-files --others --exclude-standard)"
 AUTHORITY_COMMIT=$(require_exact_authority_head "$SOURCE_REAL" "$AUTHORITY_REF" "$EXPECTED_AUTHORITY_SHA")
 test "$SOURCE_COMMIT" = "$AUTHORITY_COMMIT"
-test -f "$CONFIG_DIR/gateway.env"
-test -f "$CONFIG_DIR/egress-policy.v1.json"
-test -f "$CONFIG_DIR/tls/fullchain.pem"
-test -f "$CONFIG_DIR/tls/privkey.pem"
 require_root_tree "$CONFIG_DIR"
+require_gateway_config_contract
 test "$(systemctl show opensandbox.service -p ActiveState --value)" = active
 test "$(systemctl show opensandbox.service -p FragmentPath --value)" = /etc/systemd/system/opensandbox.service
 ss -ltn | grep -q '127.0.0.1:8080'
@@ -389,10 +440,8 @@ validate_release "$SOURCE_COMMIT" exact
 
 install -o root -g root -m 0644 "$RELEASE_ROOT/config/opensandbox-gateway.service" "$SYSTEMD_DIR/opensandbox-gateway.service"
 install -o root -g root -m 0644 "$RELEASE_ROOT/config/opensandbox-gateway-helper.service" "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
-chown -R root:opensandbox-gateway "$CONFIG_DIR"
-chmod 0750 "$CONFIG_DIR" "$CONFIG_DIR/secrets" "$CONFIG_DIR/tls"
-chmod 0640 "$CONFIG_DIR/gateway.env" "$CONFIG_DIR/egress-policy.v1.json" "$CONFIG_DIR/tls/fullchain.pem"
-chmod 0440 "$CONFIG_DIR"/secrets/* "$CONFIG_DIR/tls/privkey.pem"
+normalize_runtime_config_permissions
+require_gateway_config_contract
 setfacl -m u:opensandbox-gateway:rwx,d:u:opensandbox-gateway:rwx "$WORKSPACE_ROOT"
 systemctl daemon-reload
 systemctl enable opensandbox-gateway-helper.service opensandbox-gateway.service

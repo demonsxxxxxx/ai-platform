@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterator, Mapping, Protocol
 
 CONTRACT_VERSION = "ai-platform.opensandbox.topology-attestation.v1"
 CAPABILITY_VERSION = "ai-platform.opensandbox.external-egress-capability.v1"
+UPSTREAM_BRIDGE_VERSION = "v1"
 API_KEY_HEADER = "OPEN-SANDBOX-API-KEY"
 ROUTE_HEADER = "OPEN-SANDBOX-ROUTE-TOKEN"
 MAX_BODY_BYTES = 1024 * 1024
@@ -80,6 +81,10 @@ ALLOWED_METADATA_KEYS = {
     "ai-platform.external_egress.deny_counter_subject",
     "ai-platform.external_egress.profile_requested_image",
     "ai-platform.external_egress.profile_requested_image_digest",
+    "ai-platform.external_egress.upstream_bridge_version",
+    "ai-platform.external_egress.callback_base_sha256",
+    "ai-platform.external_egress.openai_base_sha256",
+    "ai-platform.external_egress.anthropic_base_sha256",
     "ai-platform.external_egress.profile_expires_at",
     "ai-platform.skill_mount.required",
     "ai-platform.skill_mount.fingerprint",
@@ -303,12 +308,11 @@ class GatewayConfig:
             raise ValueError("workspace root must match the s72 scoped root")
         if not self.executor_entrypoint or any(not isinstance(item, str) or not item or len(item) > 256 for item in self.executor_entrypoint):
             raise ValueError("executor entrypoint is invalid")
-        for base in (self.callback_upstream_base, self.openai_upstream_base, self.anthropic_upstream_base):
-            _validate_https_base(base)
-        if urllib.parse.urlsplit(self.callback_upstream_base).path not in ("", "/"):
-            raise ValueError("callback base must not contain a path")
-        if urllib.parse.urlsplit(self.anthropic_upstream_base).path.rstrip("/").endswith("/v1"):
-            raise ValueError("Anthropic base must not include the SDK version path")
+        _validate_upstream_bridge_bases(
+            self.callback_upstream_base,
+            self.openai_upstream_base,
+            self.anthropic_upstream_base,
+        )
         if not 0.1 <= self.request_timeout_seconds <= 10.0:
             raise ValueError("request timeout is outside the bounded range")
         if not 1.0 <= self.dispatch_timeout_seconds <= 3600.0:
@@ -609,6 +613,16 @@ class GatewayApplication:
             "ai-platform.external_egress.profile_id": self.config.profile_id,
             "ai-platform.external_egress.profile_requested_image": image,
             "ai-platform.external_egress.profile_requested_image_digest": match.group("digest"),
+            "ai-platform.external_egress.upstream_bridge_version": UPSTREAM_BRIDGE_VERSION,
+            "ai-platform.external_egress.callback_base_sha256": hashlib.sha256(
+                self.config.callback_upstream_base.encode("utf-8")
+            ).hexdigest(),
+            "ai-platform.external_egress.openai_base_sha256": hashlib.sha256(
+                self.config.openai_upstream_base.encode("utf-8")
+            ).hexdigest(),
+            "ai-platform.external_egress.anthropic_base_sha256": hashlib.sha256(
+                self.config.anthropic_upstream_base.encode("utf-8")
+            ).hexdigest(),
             "ai-platform.executor.requested_image": image,
             "ai-platform.executor.requested_image_digest": match.group("digest"),
         }
@@ -1105,6 +1119,12 @@ class GatewayApplication:
             },
             "image": {"subject": record.image, "digest": record.image_digest},
             "host_path_policy": {"subject": "scoped-workspace-only", "unscoped_host_paths_allowed": False},
+            "upstream_bridge": {
+                "version": UPSTREAM_BRIDGE_VERSION,
+                "callback_base_url": self.config.callback_upstream_base,
+                "openai_base_url": self.config.openai_upstream_base,
+                "anthropic_base_url": self.config.anthropic_upstream_base,
+            },
             "subjects": {
                 "gateway_policy": self.config.gateway_policy_subject,
                 "callback_boundary": self.config.callback_boundary_subject,
@@ -1137,6 +1157,10 @@ class GatewayApplication:
             "profile_id": self.config.profile_id,
             "deny_audit_subject": self.config.deny_audit_subject,
             "deny_counter_subject": self.config.deny_counter_subject,
+            "upstream_bridge_version": UPSTREAM_BRIDGE_VERSION,
+            "callback_base_url": self.config.callback_upstream_base,
+            "openai_base_url": self.config.openai_upstream_base,
+            "anthropic_base_url": self.config.anthropic_upstream_base,
             "proof_key_id": self.config.proof_key_id,
         }
         value["profile_signature"] = hmac.new(self.config.record_signing_key, _canonical(value), hashlib.sha256).hexdigest()
@@ -1222,10 +1246,41 @@ def _metadata_matches(value: Any, expected: Mapping[str, str]) -> bool:
     return isinstance(value, Mapping) and all(value.get(key) == item for key, item in expected.items())
 
 
-def _validate_https_base(value: str) -> None:
-    parsed = urllib.parse.urlsplit(value)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or parsed.query:
-        raise ValueError("broker upstream bases must be unambiguous HTTPS URLs")
+def _validate_upstream_bridge_bases(callback: str, openai: str, anthropic: str) -> None:
+    """Require one canonical DNS origin and the three bridge v1 path shapes."""
+
+    expected_paths = ((callback, ""), (openai, "/openai/v1"), (anthropic, "/anthropic"))
+    origins: set[tuple[str, int]] = set()
+    hostname_pattern = re.compile(
+        r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
+    )
+    for value, expected_path in expected_paths:
+        try:
+            parsed = urllib.parse.urlsplit(value)
+            port = parsed.port
+        except (TypeError, ValueError):
+            raise ValueError("upstream bridge bases are invalid") from None
+        host = parsed.hostname or ""
+        if (
+            parsed.scheme != "https"
+            or not hostname_pattern.fullmatch(host)
+            or host != host.lower()
+            or parsed.username
+            or parsed.password
+            or parsed.path != expected_path
+            or parsed.fragment
+            or parsed.query
+            or port is None
+            or not 1 <= port <= 65535
+            or parsed.netloc != f"{host}:{port}"
+            or host in {"api.sandbox.internal", "host.docker.internal"}
+            or value != urllib.parse.urlunsplit(("https", f"{host}:{port}", expected_path, "", ""))
+        ):
+            raise ValueError("upstream bridge bases are invalid")
+        origins.add((host, port))
+    if len(origins) != 1:
+        raise ValueError("upstream bridge bases must share one origin")
 
 
 def _now_iso() -> str:

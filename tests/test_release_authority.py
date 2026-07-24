@@ -26,6 +26,7 @@ from tools.release_authority import (
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 SANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.sandbox.yml"
+OPENSANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.opensandbox.yml"
 RUNBOOK = ROOT / "docs" / "operations" / "211-release-operations-runbook.md"
 LEGACY_FRONTEND_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.frontend.yml"
 AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
@@ -97,6 +98,39 @@ def test_sandbox_compose_overlay_preserves_live_docker_provider_and_mounts():
     assert workspace_mount in services["worker"]["volumes"]
 
 
+def test_opensandbox_compose_overlay_disables_docker_egress_policy_for_api_and_worker():
+    base_services = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
+    docker_services = yaml.safe_load(SANDBOX_COMPOSE.read_text(encoding="utf-8"))["services"]
+    opensandbox_services = yaml.safe_load(
+        OPENSANDBOX_COMPOSE.read_text(encoding="utf-8")
+    )["services"]
+
+    for service_name in ("api", "worker"):
+        base_environment = base_services[service_name]["environment"]
+        docker_environment = docker_services[service_name]["environment"]
+        opensandbox_environment = opensandbox_services[service_name]["environment"]
+
+        assert base_environment["SANDBOX_EGRESS_POLICY_ENABLED"] == (
+            "${SANDBOX_EGRESS_POLICY_ENABLED:-false}"
+        )
+        assert "SANDBOX_EGRESS_POLICY_ENABLED" not in docker_environment
+        assert docker_environment["SANDBOX_CONTAINER_PROVIDER"] == "docker"
+        assert opensandbox_environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
+        assert opensandbox_environment["SANDBOX_EGRESS_POLICY_ENABLED"] == "false"
+
+        release_environment = {
+            **base_environment,
+            "SANDBOX_EGRESS_POLICY_ENABLED": "true",
+        }
+        docker_merged_environment = {**release_environment, **docker_environment}
+        opensandbox_merged_environment = {
+            **release_environment,
+            **opensandbox_environment,
+        }
+        assert docker_merged_environment["SANDBOX_EGRESS_POLICY_ENABLED"] == "true"
+        assert opensandbox_merged_environment["SANDBOX_EGRESS_POLICY_ENABLED"] == "false"
+
+
 def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract():
     text = RUNBOOK.read_text(encoding="utf-8")
 
@@ -107,6 +141,9 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "--env-file <release-root>/deploy/ai-platform/.env" in text
     assert "--compose-file deploy/ai-platform/docker-compose.yml" in text
     assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" in text
+    assert "--compose-file deploy/ai-platform/docker-compose.opensandbox.yml" in text
+    assert "The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not" in text
+    assert "OpenSandbox overlay only after those" in text
     assert "ai-platform-phaseb" in text
     assert "docker compose --env-file <release-root>/deploy/ai-platform/.env" not in text
 
