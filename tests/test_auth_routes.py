@@ -162,8 +162,15 @@ async def test_company_login_collapses_upstream_roles_to_one_product_role(
 ):
     from app.principal_authority import resolve_login_principal
 
-    async def user_info_adapter(_work_id):
-        return {"roles": upstream_roles}
+    async def user_info_adapter(work_id):
+        user_info = {
+            "workid": work_id,
+            "username": None,
+            "roles": upstream_roles,
+        }
+        if not upstream_roles:
+            user_info["active"] = True
+        return user_info
 
     principal = await resolve_login_principal(
         work_id="synthetic-work-id",
@@ -221,7 +228,12 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
 
     async def fake_user_info(work_id):
         assert work_id == "dev001"
-        return {"roles": ["developer"], "permissions": ["agent:use"]}
+        return {
+            "workid": work_id,
+            "username": None,
+            "roles": ["developer"],
+            "permissions": ["agent:use"],
+        }
 
     async def fake_ensure_user(conn, *, tenant_id, user_id, display_name=None):
         assert user_id == "dev001"
@@ -325,7 +337,7 @@ def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_depart
 
     async def fake_user_info(work_id):
         assert work_id == "user001"
-        return user_info
+        return {"workid": work_id, "username": None, **user_info}
 
     async def noop(*args, **kwargs):
         return None
@@ -536,6 +548,8 @@ def test_company_login_does_not_project_large_enterprise_permissions_into_sessio
 
     async def fake_user_info(work_id):
         return {
+            "workid": work_id,
+            "username": None,
             "roles": ["user"],
             "permissions": [f"TaskManagement:legacy-permission-{index}" for index in range(3000)],
         }
@@ -589,7 +603,13 @@ def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(
         return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
 
     async def fake_user_info(work_id):
-        return {"roles": [], "permissions": []}
+        return {
+            "workid": work_id,
+            "username": None,
+            "roles": [],
+            "permissions": [],
+            "active": True,
+        }
 
     async def noop(*args, **kwargs):
         return None
@@ -669,7 +689,12 @@ def test_company_developer_login_gets_admin_ai_permissions(monkeypatch):
         return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
 
     async def fake_user_info(work_id):
-        return {"roles": ["developer"], "permissions": ["custom:business"]}
+        return {
+            "workid": work_id,
+            "username": None,
+            "roles": ["developer"],
+            "permissions": ["custom:business"],
+        }
 
     async def noop(*args, **kwargs):
         return None
@@ -716,7 +741,12 @@ def test_lambchat_auth_aliases_return_bearer_token(monkeypatch):
         return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
 
     async def fake_user_info(work_id):
-        return {"roles": ["developer"], "permissions": ["agent:use"]}
+        return {
+            "workid": work_id,
+            "username": None,
+            "roles": ["developer"],
+            "permissions": ["agent:use"],
+        }
 
     async def noop(*args, **kwargs):
         return None
