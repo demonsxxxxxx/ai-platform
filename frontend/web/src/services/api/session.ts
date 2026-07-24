@@ -189,6 +189,7 @@ export function buildSubmitChatBody({
   disabledSkills,
   enabledSkills,
   disabledMcpTools,
+  selectedMcpToolIds,
   userTimezone,
   selectedSkill,
   submissionId,
@@ -200,6 +201,7 @@ export function buildSubmitChatBody({
   disabledSkills?: string[];
   enabledSkills?: string[];
   disabledMcpTools?: string[];
+  selectedMcpToolIds?: string[];
   userTimezone?: string;
   selectedSkill?: SelectedSkillRequest | null;
   submissionId?: string;
@@ -213,6 +215,10 @@ export function buildSubmitChatBody({
     enabled_skills: selectedSkill ? undefined : enabledSkills,
     disabled_mcp_tools: disabledMcpTools,
   };
+
+  if (selectedMcpToolIds !== undefined) {
+    body.selected_mcp_tool_ids = selectedMcpToolIds;
+  }
 
   if (submissionId) {
     body.submission_id = submissionId;
@@ -527,6 +533,7 @@ export const sessionApi = {
     attachments?: MessageAttachment[],
     disabledSkills?: string[],
     disabledMcpTools?: string[],
+    selectedMcpToolIds?: string[],
     selectedSkill?: SelectedSkillRequest | null,
     submissionId?: string,
     agentId?: string,
@@ -538,6 +545,7 @@ export const sessionApi = {
       attachments,
       disabledSkills,
       disabledMcpTools,
+      selectedMcpToolIds,
       userTimezone: getBrowserTimezone(),
       selectedSkill,
       submissionId,

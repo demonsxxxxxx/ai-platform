@@ -70,7 +70,7 @@ def install_mcp_route_fakes(
     }
     if distribution_rows is not None:
         distributions = {str(row["capability_id"]): dict(row) for row in distribution_rows}
-    registry_tools = tool_rows or [
+    registry_tools = (tool_rows if tool_rows is not None else [
         {
             "tool_id": "ragflow-knowledge-search",
             "server_id": "ragflow",
@@ -83,7 +83,7 @@ def install_mcp_route_fakes(
             "risk_level": "low",
             "updated_at": "2026-06-23T00:00:00Z",
         }
-    ]
+    ])
 
     async def fake_list(conn, *, tenant_id, include_disabled=True):
         calls.append(
@@ -97,6 +97,20 @@ def install_mcp_route_fakes(
             )
         )
         return [dict(row) for row in registry_tools]
+
+    async def fake_list_authorized_chat_mcp_tools(conn, **kwargs):
+        calls.append(("list_chat_tools", dict(kwargs)))
+        return [dict(row) for row in registry_tools]
+
+    async def fake_get_authorized_session(conn, **kwargs):
+        calls.append(("get_authorized_session", dict(kwargs)))
+        if kwargs["session_id"] != "session-1":
+            return None
+        selected = [str(registry_tools[0]["tool_id"])] if registry_tools else []
+        return {
+            "id": "session-1",
+            "latest_run_input_json": {"input": {"mcp_tool_ids": selected}},
+        }
 
     async def fake_list_servers(conn, *, tenant_id, include_disabled=True):
         calls.append(
@@ -239,6 +253,16 @@ def install_mcp_route_fakes(
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(mcp, "transaction", fake_transaction)
     monkeypatch.setattr(mcp.repositories, "list_workbench_mcp_tools", fake_list)
+    monkeypatch.setattr(
+        mcp.repositories,
+        "list_authorized_chat_mcp_tools",
+        fake_list_authorized_chat_mcp_tools,
+    )
+    monkeypatch.setattr(
+        mcp.repositories,
+        "get_authorized_session",
+        fake_get_authorized_session,
+    )
     monkeypatch.setattr(mcp.repositories, "list_mcp_server_registry", fake_list_servers, raising=False)
     monkeypatch.setattr(mcp.repositories, "list_tenant_mcp_server_registry", fake_list_servers, raising=False)
     monkeypatch.setattr(mcp.repositories, "list_mcp_server_registry_names", fake_list_server_names, raising=False)
@@ -264,6 +288,60 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp.repositories, "ensure_user", fake_ensure_user)
     monkeypatch.setattr(mcp.repositories, "append_audit_log", fake_append_audit_log)
     return calls
+
+
+def test_chat_mcp_catalog_projects_only_canonical_public_fields_and_session_selection(monkeypatch):
+    calls = install_mcp_route_fakes(
+        monkeypatch,
+        tool_rows=[
+            {
+                "tool_id": "tenant-search",
+                "server_id": "private-server",
+                "name": "Tenant Search",
+                "description": "Search authorized tenant material.",
+                "endpoint": "https://private.example/mcp",
+                "credential_state": "platform-managed-secret",
+            }
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/mcp/chat-tools?session_id=session-1", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "tools": [
+            {
+                "tool_id": "tenant-search",
+                "label": "Tenant Search",
+                "description": "Search authorized tenant material.",
+                "category": "mcp",
+            }
+        ],
+        "count": 1,
+        "selected_mcp_tool_ids": ["tenant-search"],
+    }
+    encoded = response.text
+    assert "private.example" not in encoded
+    assert "platform-managed-secret" not in encoded
+    catalog_call = next(payload for name, payload in calls if name == "list_chat_tools")
+    assert catalog_call["tenant_id"] == "default"
+    assert catalog_call["principal_department_id"] == "qa"
+    assert catalog_call["principal_roles"] == ["user"]
+
+
+def test_chat_mcp_catalog_truthfully_returns_actionable_empty_selection(monkeypatch):
+    install_mcp_route_fakes(monkeypatch, tool_rows=[])
+    client = TestClient(create_app())
+
+    response = client.get("/api/mcp/chat-tools?session_id=session-1", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "tools": [],
+        "count": 0,
+        "selected_mcp_tool_ids": [],
+    }
 
 
 def test_mcp_read_contract_bounds_ordinary_catalog_and_keeps_tool_discovery(monkeypatch):

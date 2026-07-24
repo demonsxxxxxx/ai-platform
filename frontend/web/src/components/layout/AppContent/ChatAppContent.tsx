@@ -88,13 +88,6 @@ export function ChatAppContent({
   } = useApprovals({ sessionId: null });
 
   const {
-    tools,
-    isLoading: toolsLoading,
-    totalCount: totalToolsCount,
-    getDisabledToolNames,
-  } = useTools({ enabled: true });
-
-  const {
     skills,
     isLoading: skillsLoading,
     listError: skillsListError,
@@ -128,7 +121,7 @@ export function ChatAppContent({
 
   const sessionConfigRef = useRef({
     disabledSkills: [] as string[],
-    disabledMcpTools: [] as string[],
+    selectedMcpToolIds: undefined as string[] | undefined,
     agentOptions: {} as Record<string, boolean | string | number>,
   });
 
@@ -161,9 +154,12 @@ export function ChatAppContent({
     onClearApprovals: () => {
       clearApprovals();
     },
-    getEnabledTools: getDisabledToolNames,
     getDisabledSkills: () => sessionConfigRef.current.disabledSkills,
-    getDisabledMcpTools: () => sessionConfigRef.current.disabledMcpTools,
+    // The legacy callback type says ``string[]``. The runtime deliberately
+    // preserves ``undefined`` so an omitted selection can inherit from the
+    // authoritative server session.
+    getDisabledMcpTools: () =>
+      sessionConfigRef.current.selectedMcpToolIds as string[],
     getAgentOptions: () => sessionConfigRef.current.agentOptions,
     onSkillAdded: (
       skillName: string,
@@ -176,6 +172,13 @@ export function ChatAppContent({
       setTimeout(() => fetchSkills(), 500);
     },
   });
+
+  const {
+    tools,
+    serverSelectedToolIds,
+    isLoading: toolsLoading,
+    totalCount: totalToolsCount,
+  } = useTools({ enabled: true, sessionId });
 
   const filteredModels = availableModels ?? null;
 
@@ -190,12 +193,48 @@ export function ChatAppContent({
   const {
     config: sessionConfig,
     toggleMcpTool: toggleSessionMcpTool,
+    setSelectedMcpToolIds,
     setAgentOption: setSessionAgentOption,
     resetToDefaults,
     restoreConfig: restoreSessionConfig,
   } = useSessionConfig({
     getDefaultAgentOptions: () => agentOptionValues,
   });
+
+  const restoredMcpSelectionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (toolsLoading || !sessionId || serverSelectedToolIds === undefined) return;
+    const authorizedIds = new Set(tools.map((tool) => tool.name));
+    const reconciled = serverSelectedToolIds.filter((toolId) =>
+      authorizedIds.has(toolId),
+    );
+    const restoreKey = `${sessionId}:${JSON.stringify(reconciled)}`;
+    if (restoredMcpSelectionRef.current === restoreKey) return;
+    restoredMcpSelectionRef.current = restoreKey;
+    setSelectedMcpToolIds(reconciled);
+  }, [
+    serverSelectedToolIds,
+    sessionId,
+    setSelectedMcpToolIds,
+    tools,
+    toolsLoading,
+  ]);
+
+  useEffect(() => {
+    if (toolsLoading || sessionConfig.selectedMcpToolIds === undefined) return;
+    const authorizedIds = new Set(tools.map((tool) => tool.name));
+    const reconciled = sessionConfig.selectedMcpToolIds.filter((toolId) =>
+      authorizedIds.has(toolId),
+    );
+    if (reconciled.length !== sessionConfig.selectedMcpToolIds.length) {
+      setSelectedMcpToolIds(reconciled);
+    }
+  }, [
+    sessionConfig.selectedMcpToolIds,
+    setSelectedMcpToolIds,
+    tools,
+    toolsLoading,
+  ]);
 
   const [currentModelId, setCurrentModelId] = useState<string>(() => {
     return localStorage.getItem("defaultModelId") || "";
@@ -261,13 +300,12 @@ export function ChatAppContent({
   };
 
   const effectiveTools = useMemo(() => {
-    const sessionDisabled = new Set(sessionConfig.disabledMcpTools);
-    if (sessionDisabled.size === 0) return tools;
+    const selected = new Set(sessionConfig.selectedMcpToolIds ?? []);
     return tools.map((t) => {
       if (t.category !== "mcp") return t;
-      return { ...t, enabled: t.enabled && !sessionDisabled.has(t.name) };
+      return { ...t, enabled: selected.has(t.name) };
     });
-  }, [tools, sessionConfig.disabledMcpTools]);
+  }, [tools, sessionConfig.selectedMcpToolIds]);
 
   const effectiveSkills = useMemo(() => {
     return buildEffectiveSkills({
@@ -296,39 +334,29 @@ export function ChatAppContent({
   const effectiveToggleCategory = useCallback(
     (category: ToolCategory, enabled: boolean) => {
       if (category === "mcp") {
-        tools
-          .filter((t) => t.category === "mcp" && !t.system_disabled)
-          .forEach((t) => {
-            const isInSessionDisabled = sessionConfig.disabledMcpTools.includes(
-              t.name,
-            );
-            if (enabled && isInSessionDisabled) {
-              toggleSessionMcpTool(t.name);
-            } else if (!enabled && !isInSessionDisabled) {
-              toggleSessionMcpTool(t.name);
-            }
-          });
+        setSelectedMcpToolIds(
+          enabled
+            ? tools
+                .filter((t) => t.category === "mcp" && !t.system_disabled)
+                .map((t) => t.name)
+            : [],
+        );
       }
     },
-    [tools, sessionConfig.disabledMcpTools, toggleSessionMcpTool],
+    [setSelectedMcpToolIds, tools],
   );
 
   const effectiveToggleAll = useCallback(
     (enabled: boolean) => {
-      tools
-        .filter((t) => t.category === "mcp" && !t.system_disabled)
-        .forEach((t) => {
-          const isInSessionDisabled = sessionConfig.disabledMcpTools.includes(
-            t.name,
-          );
-          if (enabled && isInSessionDisabled) {
-            toggleSessionMcpTool(t.name);
-          } else if (!enabled && !isInSessionDisabled) {
-            toggleSessionMcpTool(t.name);
-          }
-        });
+      setSelectedMcpToolIds(
+        enabled
+          ? tools
+              .filter((t) => t.category === "mcp" && !t.system_disabled)
+              .map((t) => t.name)
+          : [],
+      );
     },
-    [tools, sessionConfig.disabledMcpTools, toggleSessionMcpTool],
+    [setSelectedMcpToolIds, tools],
   );
 
   const effectiveEnabledToolsCount = useMemo(
@@ -416,6 +444,7 @@ export function ChatAppContent({
       disabled_skills?: string[];
       disabled_mcp_tools?: string[];
       disabled_tools?: string[];
+      selected_mcp_tool_ids?: string[];
     }) => {
       console.log("[AppContent] Restoring session config:", config);
 

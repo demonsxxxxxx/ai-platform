@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from psycopg import AsyncConnection
 
@@ -57,7 +58,7 @@ from app.skills.pinning import (
     build_skill_snapshot_governance,
 )
 from app.skills.release_policy import resolve_rollout_skill_decision
-from app.tool_policy import max_risk
+from app.tool_policy import evaluate_tool_policy, max_risk
 from app.validation import SAFE_ID_PATTERN
 from app.tool_permission_lifecycle import (
     TOOL_PERMISSION_EXPIRY_BATCH_LIMIT,
@@ -1566,6 +1567,277 @@ async def get_mcp_tool_registry_entry(
         else []
     )
     return entry
+
+
+def mcp_runtime_metadata_usable(tool: dict[str, Any]) -> bool:
+    """Return whether a generic MCP registry row can be sandbox-registered."""
+
+    server_id = str(tool.get("server_id") or "")
+    tool_id = str(tool.get("tool_id") or "")
+    allowed_tools = tool.get("allowed_tools")
+    endpoint = str(tool.get("endpoint") or "")
+    parsed = urlsplit(endpoint)
+    return bool(
+        SAFE_ID_PATTERN.fullmatch(server_id)
+        and SAFE_ID_PATTERN.fullmatch(tool_id)
+        and isinstance(allowed_tools, list)
+        and len(allowed_tools) == 1
+        and isinstance(allowed_tools[0], str)
+        and SAFE_ID_PATTERN.fullmatch(allowed_tools[0])
+        and parsed.scheme in {"http", "https"}
+        and parsed.netloc
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+        and str(tool.get("transport_type") or "").lower() in {"http", "streamable_http", "sse"}
+        and str(tool.get("auth_mode") or "").lower() == "none"
+    )
+
+
+async def list_chat_mcp_tool_catalog_entries(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+) -> list[dict[str, Any]]:
+    """Load canonical generic MCP candidates for principal-scoped Chat projection."""
+
+    cursor = await conn.execute(
+        """
+        select
+          mcp_tools.id as tool_id,
+          mcp_tools.server_id,
+          mcp_tools.name,
+          mcp_tools.description,
+          mcp_tools.transport_type,
+          mcp_tools.endpoint,
+          mcp_tools.auth_mode,
+          mcp_tools.allowed_tools,
+          mcp_tools.status as registry_status,
+          mcp_servers.status as server_status,
+          mcp_tools.write_capable as registry_write_capable,
+          mcp_tools.risk_level as registry_risk_level,
+          mcp_tools.visible_to_user as registry_visible_to_user,
+          tool_policies.status as policy_status,
+          tool_policies.write_capable as policy_write_capable,
+          tool_policies.risk_level as policy_risk_level,
+          tool_policies.visible_to_user as policy_visible_to_user
+        from mcp_tools
+        join mcp_servers
+          on mcp_servers.tenant_id = %s
+         and mcp_servers.name = mcp_tools.server_id
+         and mcp_servers.status = 'active'
+        join tool_policies
+          on tool_policies.tenant_id = mcp_servers.tenant_id
+         and tool_policies.tool_id = mcp_tools.id
+         and tool_policies.status = 'active'
+         and tool_policies.visible_to_user = true
+        where mcp_tools.status = 'active'
+          and mcp_tools.visible_to_user = true
+        order by mcp_tools.id asc
+        """,
+        (tenant_id,),
+    )
+    entries: list[dict[str, Any]] = []
+    for row in await cursor.fetchall():
+        record = dict(row)
+        entry = _tool_policy_projection(record, tenant_id=tenant_id)
+        entry.update(
+            server_status=str(record.get("server_status") or "disabled"),
+            transport_type=str(record.get("transport_type") or ""),
+            endpoint=str(record.get("endpoint") or ""),
+            auth_mode=str(record.get("auth_mode") or ""),
+            allowed_tools=(
+                list(record.get("allowed_tools"))
+                if isinstance(record.get("allowed_tools"), list)
+                else []
+            ),
+        )
+        entries.append(entry)
+    return entries
+
+
+def _chat_mcp_access_context(
+    *,
+    tenant_id: str,
+    principal_department_id: str,
+    principal_roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> CapabilityAccessContext:
+    return CapabilityAccessContext(
+        tenant_id=tenant_id,
+        department_id=str(principal_department_id or ""),
+        roles=normalize_roles(principal_roles or []),
+        is_admin=bool(is_admin),
+        permissions=[str(item) for item in permissions or [] if str(item)],
+    )
+
+
+async def _authorize_chat_mcp_tool_entry(
+    conn: AsyncConnection,
+    *,
+    context: CapabilityAccessContext,
+    tenant_id: str,
+    tool: dict[str, Any],
+) -> dict[str, Any]:
+    tool_id = str(tool.get("tool_id") or "").strip()
+    server_id = str(tool.get("server_id") or "").strip()
+    if not tool_id or not server_id or not mcp_runtime_metadata_usable(tool):
+        raise _capability_not_authorized(
+            context=context,
+            capability_kind="mcp_tool",
+            capability_id=tool_id or "mcp_tool",
+        )
+    try:
+        distribution = await get_capability_distribution_row(
+            conn,
+            tenant_id=tenant_id,
+            capability_kind="mcp_server",
+            capability_id=server_id,
+        )
+    except RepositoryConflictError as exc:
+        raise _capability_not_authorized(
+            context=context,
+            capability_kind="mcp_tool",
+            capability_id=tool_id,
+        ) from exc
+    lifecycle_status = (
+        "active"
+        if str(tool.get("effective_status") or "disabled") == "active"
+        and str(tool.get("server_status") or "disabled") == "active"
+        and bool(tool.get("visible_to_user"))
+        else "disabled"
+    )
+    decision = resolve_capability_access(
+        context,
+        CapabilityDistributionSubject(
+            capability_kind="mcp_tool",
+            capability_id=tool_id,
+            lifecycle_status=lifecycle_status,
+            distribution=distribution,
+            inherited_distribution_source=f"mcp_server:{server_id}",
+        ),
+        intent="use",
+    )
+    allowed_tool_name = str((tool.get("allowed_tools") or [""])[0])
+    policy = evaluate_tool_policy(
+        tool={
+            "mcp_server": server_id,
+            "mcp_tool": allowed_tool_name,
+            "registered": True,
+            "declared": True,
+            "active": lifecycle_status == "active",
+            "distributed": decision.usable,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+            "risk_level": str(tool.get("risk_level") or "low"),
+            "write_capable": bool(tool.get("write_capable")),
+        }
+    )
+    if not decision.usable or not policy.allowed:
+        raise _capability_not_authorized(
+            context=context,
+            capability_kind="mcp_tool",
+            capability_id=tool_id,
+            decision=decision,
+        )
+    return tool
+
+
+async def authorize_selected_chat_mcp_tools(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    tool_ids: list[str],
+    principal_department_id: str,
+    principal_roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Authorize a complete canonical Chat MCP selection or fail closed."""
+
+    if len(tool_ids) != len(set(tool_ids)):
+        duplicate_id = next(
+            (tool_id for index, tool_id in enumerate(tool_ids) if tool_id in tool_ids[:index]),
+            "mcp_tool",
+        )
+        duplicate_context = _chat_mcp_access_context(
+            tenant_id=tenant_id,
+            principal_department_id=principal_department_id,
+            principal_roles=principal_roles,
+            is_admin=is_admin,
+            permissions=permissions,
+        )
+        raise _capability_not_authorized(
+            context=duplicate_context,
+            capability_kind="mcp_tool",
+            capability_id=duplicate_id,
+        )
+    context = _chat_mcp_access_context(
+        tenant_id=tenant_id,
+        principal_department_id=principal_department_id,
+        principal_roles=principal_roles,
+        is_admin=is_admin,
+        permissions=permissions,
+    )
+    authorized: list[dict[str, Any]] = []
+    for tool_id in tool_ids:
+        tool = await get_mcp_tool_registry_entry(
+            conn,
+            tenant_id=tenant_id,
+            tool_id=tool_id,
+        )
+        if tool is None or str(tool.get("tool_id") or "").strip() != tool_id:
+            raise _capability_not_authorized(
+                context=context,
+                capability_kind="mcp_tool",
+                capability_id=tool_id,
+            )
+        authorized.append(
+            await _authorize_chat_mcp_tool_entry(
+                conn,
+                context=context,
+                tenant_id=tenant_id,
+                tool=tool,
+            )
+        )
+    return authorized
+
+
+async def list_authorized_chat_mcp_tools(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    principal_department_id: str,
+    principal_roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Return current-principal Chat MCP entries, omitting every unusable row."""
+
+    context = _chat_mcp_access_context(
+        tenant_id=tenant_id,
+        principal_department_id=principal_department_id,
+        principal_roles=principal_roles,
+        is_admin=is_admin,
+        permissions=permissions,
+    )
+    authorized: list[dict[str, Any]] = []
+    for tool in await list_chat_mcp_tool_catalog_entries(conn, tenant_id=tenant_id):
+        try:
+            authorized.append(
+                await _authorize_chat_mcp_tool_entry(
+                    conn,
+                    context=context,
+                    tenant_id=tenant_id,
+                    tool=tool,
+                )
+            )
+        except RepositoryAuthorizationError:
+            continue
+    return authorized
 
 
 def _json_dict_projection(value: Any) -> dict[str, Any]:
@@ -4196,16 +4468,42 @@ async def get_authorized_session(
     params: list[Any] = [tenant_id, session_id, user_id]
     if workspace_id:
         params.append(workspace_id)
+    if for_update:
+        cursor = await conn.execute(
+            f"""
+            select *
+            from sessions
+            where tenant_id = %s
+              and id = %s
+              and user_id = %s
+              and status = 'active'
+              {workspace_filter}
+            {lock_clause}
+            """,
+            tuple(params),
+        )
+        return await cursor.fetchone()
     cursor = await conn.execute(
         f"""
-        select *
+        select sessions.*, latest_run.input_json as latest_run_input_json
         from sessions
-        where tenant_id = %s
-          and id = %s
-          and user_id = %s
-          and status = 'active'
-          {workspace_filter}
-        {lock_clause}
+        left join lateral (
+          select runs.input_json
+          from runs
+          where runs.tenant_id = sessions.tenant_id
+            and runs.workspace_id = sessions.workspace_id
+            and runs.user_id = sessions.user_id
+            and runs.session_id = sessions.id
+          order by runs.session_generation desc nulls last,
+                   runs.created_at desc,
+                   runs.id desc
+          limit 1
+        ) latest_run on true
+        where sessions.tenant_id = %s
+          and sessions.id = %s
+          and sessions.user_id = %s
+          and sessions.status = 'active'
+          {"and sessions.workspace_id = %s" if workspace_id else ""}
         """,
         tuple(params),
     )

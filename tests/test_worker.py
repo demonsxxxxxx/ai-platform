@@ -1034,8 +1034,8 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
     )
     tool = {
         "tool_id": "corp-search",
-        "server_id": "corp:search",
-        "name": "query",
+        "server_id": "corp-search-server",
+        "name": "Corporate Search",
         "registry_status": "active",
         "policy_status": "active",
         "server_status": "active",
@@ -1060,13 +1060,15 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
     assert authorized.input["_runtime_tool_policy_subjects"] == [
         {
             **subject,
-            "identity": "mcp__corp:search__query",
+            "identity": "mcp__corp-search-server__query",
         }
     ]
     assert subject["mcp_server_config"] == {
         "type": "http",
         "url": "https://mcp.example.test/v1",
     }
+    assert subject["public_tool_label"] == "Corporate Search"
+    assert subject["public_tool_category"] == "mcp"
     assert worker_module._mcp_capability_subject(
         {**tool, "endpoint": "https://token@example.test/v1"},
         types.SimpleNamespace(usable=True),
@@ -1099,7 +1101,7 @@ async def test_registry_entry_returns_tenant_scoped_external_mcp_runtime_metadat
         async def fetchone(self):
             return {
                 "tool_id": "corp-search",
-                "server_id": "corp:search",
+                "server_id": "corp-search",
                 "name": "中文展示名",
                 "description": "search",
                 "transport_type": "streamable_http",
@@ -7838,6 +7840,9 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
         ],
     }
     raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch, locked_input=locked_input)
+    state["skill"]["executor_type"] = "claude-agent-worker"
+    state["locked_run"]["input_json"]["executor_type"] = "claude-agent-worker"
+    raw["executor_type"] = "claude-agent-worker"
     state["tools"].update(
         {
             "tool-global": _task6_tool("tool-global", "server-global"),
@@ -7860,6 +7865,32 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
     assert registered_input["mcp_tool_ids"] == ["tool-global"]
     assert registered_input["multi_agent_steps"][0]["mcp_tool_ids"] == ["tool-step"]
     assert "mcpToolIds" not in registered_input
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_external_mcp_before_non_claude_executor_dispatch(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file", "mcp_tool_ids": ["tool-global"]},
+    )
+    state["tools"]["tool-global"] = _task6_tool("tool-global", "server-global")
+    state["distributions"][("mcp_server", "server-global")] = _task6_distribution(
+        "mcp_server",
+        "server-global",
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["capability_kind"] == "mcp_tool"
+    assert denied_event["payload"]["reason"] == "mcp_sandbox_executor_required"
 
 
 @pytest.mark.asyncio
@@ -8177,6 +8208,9 @@ async def test_worker_capability_distribution_audits_synchronous_mcp_risk_write_
         "mcp_server",
         "server-write",
     )
+    state["skill"]["executor_type"] = "claude-agent-worker"
+    state["locked_run"]["input_json"]["executor_type"] = "claude-agent-worker"
+    raw["executor_type"] = "claude-agent-worker"
 
     outcome = await process_run_payload(raw, registry=registry)
 

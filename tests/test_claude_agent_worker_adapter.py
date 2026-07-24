@@ -158,7 +158,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     external_subject = worker_module._mcp_capability_subject(
         {
             "tool_id": "corp-search",
-            "server_id": "corp:search",
+            "server_id": "corp-search",
             "allowed_tools": ["query"],
             "registry_status": "active",
             "policy_status": "active",
@@ -193,10 +193,10 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "Bash",
         "Write",
         "Skill(qa-file-reviewer)",
-        "mcp__corp:search__query",
+        "mcp__corp-search__query",
     ]
     assert captured["mcp_servers"] == {
-        "corp:search": {"type": "http", "url": "https://mcp.example.test/v1"}
+        "corp-search": {"type": "http", "url": "https://mcp.example.test/v1"}
     }
     assert "on_tool_permission" not in captured
     assert captured["pre_invocation_skill_write"].behavior == "deny"
@@ -210,9 +210,9 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert (await can_use("Write", {"file_path": "out.txt", "content": "unsafe"})).behavior == "deny"
     assert (await can_use("Skill", {"skill": "qa-file-reviewer"})).behavior == "allow"
     assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
-    assert (await can_use("mcp__corp:search__query", {"query": "safe"})).behavior == "allow"
-    assert (await can_use("mcp__corp:search__query_extra", {"query": "safe"})).behavior == "deny"
-    assert (await can_use("mcp__corp:search__query", {"query": "safe", "scope": "other"})).behavior == "deny"
+    assert (await can_use("mcp__corp-search__query", {"query": "safe"})).behavior == "allow"
+    assert (await can_use("mcp__corp-search__query_extra", {"query": "safe"})).behavior == "deny"
+    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "deny"
     for endpoint in (
         "https://mcp.example.test/v1?api_key=redacted",
         "https://mcp.example.test/v1?token=redacted",
@@ -220,8 +220,8 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     ):
         assert sdk_runner._mcp_server_options(
             {
-                "mcp__corp:search__query": {
-                    "mcp_server": "corp:search",
+                "mcp__corp-search__query": {
+                    "mcp_server": "corp-search",
                     "mcp_server_config": {"type": "http", "url": endpoint},
                 }
             }
@@ -2081,6 +2081,162 @@ def test_single_run_claude_writing_tiers_require_real_sandbox(execution_tier, sk
             context_pack={"execution_tier": execution_tier},
         )
     ) is True
+
+
+def test_external_mcp_selection_forces_real_sandbox_without_client_execution_tier():
+    assert _ordinary_run_requires_sandbox(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            input={
+                "message": "search with the selected tool",
+                "mcp_tool_ids": ["tenant-search"],
+                "_runtime_tool_policy_subjects": [
+                    {
+                        "identity": "mcp__tenant-server__search",
+                        "mcp_server": "tenant-server",
+                        "public_tool_label": "Tenant Search",
+                        "public_tool_category": "mcp",
+                        "registered": True,
+                        "declared": True,
+                        "active": True,
+                        "distributed": True,
+                        "identity_authorized": True,
+                        "object_authorized": True,
+                        "parameters_authorized": True,
+                    }
+                ],
+            },
+        )
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    events = []
+
+    async def no_files(payload, workspace):
+        return []
+
+    async def event_sink(**event):
+        events.append(event)
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    requests = install_sandbox_runtime(monkeypatch)
+    current_payload = payload(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input={
+            "message": "search with the selected tool",
+            "mcp_tool_ids": ["tenant-search"],
+            "_runtime_tool_policy_subjects": [
+                {
+                    "identity": "mcp__tenant-server__search",
+                    "mcp_server": "tenant-server",
+                    "mcp_tool": "search",
+                    "public_tool_label": "Tenant Search",
+                    "public_tool_category": "mcp",
+                    "registered": True,
+                    "declared": True,
+                    "active": True,
+                    "distributed": True,
+                    "identity_authorized": True,
+                    "object_authorized": True,
+                    "parameters_authorized": True,
+                    "risk_level": "low",
+                    "write_capable": False,
+                    "mcp_server_config": {
+                        "type": "http",
+                        "url": "https://private.example/mcp",
+                    },
+                }
+            ],
+        },
+    )
+
+    result = await adapter.submit_run(current_payload, event_sink=event_sink)
+
+    assert result.status == "succeeded"
+    assert len(requests) == 1
+    assert requests[0].mcp_tool_ids == ["tenant-search"]
+    mcp_events = [event for event in events if event["payload"].get("tool_category") == "mcp"]
+    assert [event["event_type"] for event in mcp_events] == [
+        "tool_call_started",
+        "tool_call_completed",
+    ]
+    encoded = json.dumps(mcp_events)
+    assert "Tenant Search" in encoded
+    assert "private.example" not in encoded
+    assert "mcp__tenant-server__search" not in encoded
+
+
+@pytest.mark.asyncio
+async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatch_raises(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    events = []
+
+    async def no_files(payload, workspace):
+        return []
+
+    async def event_sink(**event):
+        events.append(event)
+
+    class RaisingSandboxRuntime:
+        def __init__(self):
+            self.provider = object.__new__(DockerContainerProvider)
+
+        async def submit(self, request, event_sink=None):
+            raise RuntimeError("private endpoint failed with raw output")
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: RaisingSandboxRuntime(),
+    )
+    current_payload = payload(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input={
+            "message": "search with the selected tool",
+            "mcp_tool_ids": ["tenant-search"],
+            "_runtime_tool_policy_subjects": [
+                {
+                    "identity": "mcp__tenant-server__search",
+                    "mcp_server": "tenant-server",
+                    "public_tool_label": "Tenant Search",
+                    "public_tool_category": "mcp",
+                    "registered": True,
+                    "declared": True,
+                    "active": True,
+                    "distributed": True,
+                    "identity_authorized": True,
+                    "object_authorized": True,
+                    "parameters_authorized": True,
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="private endpoint failed"):
+        await adapter.submit_run(current_payload, event_sink=event_sink)
+
+    mcp_events = [event for event in events if event["payload"].get("tool_category") == "mcp"]
+    assert [event["event_type"] for event in mcp_events] == [
+        "tool_call_started",
+        "tool_call_failed",
+    ]
+    encoded = json.dumps(mcp_events)
+    assert "Tenant Search" in encoded
+    assert "private endpoint" not in encoded
+    assert "raw output" not in encoded
 
 
 @pytest.mark.asyncio

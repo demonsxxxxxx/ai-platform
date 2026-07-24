@@ -140,6 +140,22 @@ test("includes user_timezone in the submit chat body when available", () => {
   );
 });
 
+test("preserves MCP selection tri-state in the structured Chat request", () => {
+  const omitted = buildSubmitChatBody({ message: "inherit" });
+  const cleared = buildSubmitChatBody({
+    message: "clear",
+    selectedMcpToolIds: [],
+  });
+  const selected = buildSubmitChatBody({
+    message: "select",
+    selectedMcpToolIds: ["tenant-search"],
+  });
+
+  assert.equal("selected_mcp_tool_ids" in omitted, false);
+  assert.deepEqual(cleared.selected_mcp_tool_ids, []);
+  assert.deepEqual(selected.selected_mcp_tool_ids, ["tenant-search"]);
+});
+
 test("carries an opaque submission id and resolves its exact status route", () => {
   assert.deepEqual(
     buildSubmitChatBody({

@@ -31,6 +31,12 @@ interface ToolSelectorProps {
   searchSeed?: string;
 }
 
+type LabeledToolState = ToolState & { label?: string };
+
+function publicToolLabel(tool: ToolState): string {
+  return (tool as LabeledToolState).label || tool.name;
+}
+
 const categoryIcons: Record<ToolCategory, typeof Bot> = {
   builtin: Terminal,
   skill: Bot,
@@ -89,6 +95,7 @@ export function ToolSelector({
     return tools.filter(
       (tool) =>
         tool.name.toLowerCase().includes(normalized) ||
+        publicToolLabel(tool).toLowerCase().includes(normalized) ||
         tool.description.toLowerCase().includes(normalized) ||
         tool.category.toLowerCase().includes(normalized) ||
         (tool.server ?? "").toLowerCase().includes(normalized),
@@ -115,7 +122,9 @@ export function ToolSelector({
     const sorted: Record<string, ToolState[]> = {};
     for (const [category, categoryTools] of Object.entries(groupedTools)) {
       sorted[category] = [...categoryTools].sort((a, b) =>
-        a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+        publicToolLabel(a)
+          .toLowerCase()
+          .localeCompare(publicToolLabel(b).toLowerCase()),
       );
     }
     return sorted;
@@ -234,6 +243,17 @@ export function ToolSelector({
 
       {/* Categories */}
       <div className="flex-1 overflow-y-auto p-2.5 sm:p-3 space-y-1.5">
+        {totalCount === 0 && (
+          <div className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5 text-center">
+            <p className="text-sm font-medium text-[var(--theme-text)]">
+              No authorized MCP tools are currently available.
+            </p>
+            <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
+              Ask an administrator to provision and authorize a compatible MCP
+              tool.
+            </p>
+          </div>
+        )}
         {Object.entries(sortedGroupedTools).map(
           ([category, categoryTools]: [string, ToolState[]]) => {
             const cat = category as ToolCategory;
@@ -341,7 +361,7 @@ export function ToolSelector({
                                         : "text-[var(--theme-primary)]"
                                     }`}
                                   >
-                                    {tool.name}
+                                    {publicToolLabel(tool)}
                                   </span>
                                   {tool.server && (
                                     <span className="text-[9px] sm:text-xs px-1.5 py-0.5 rounded-md bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] font-medium">

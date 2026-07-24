@@ -7,7 +7,6 @@ import re
 import time as _time
 from dataclasses import dataclass, replace
 from typing import Any
-from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -1316,20 +1315,15 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
     server_id = str(tool.get("server_id") or "")
     tool_id = str(tool.get("tool_id") or "")
     allowed_tools = tool.get("allowed_tools")
-    if (
-        not SAFE_ID_PATTERN.fullmatch(server_id)
-        or not SAFE_ID_PATTERN.fullmatch(tool_id)
-        or not isinstance(allowed_tools, list)
-        or len(allowed_tools) != 1
-        or not isinstance(allowed_tools[0], str)
-        or not SAFE_ID_PATTERN.fullmatch(allowed_tools[0])
-    ):
+    if not repositories.mcp_runtime_metadata_usable(tool):
         return None
     tool_identifier = allowed_tools[0]
     subject: dict[str, Any] = {
         "identity": f"mcp__{server_id}__{tool_identifier}",
         "mcp_server": server_id,
         "mcp_tool": tool_identifier,
+        "public_tool_label": (sanitize_public_text(tool.get("name")) or tool_id)[:120],
+        "public_tool_category": "mcp",
         "registered": True,
         "declared": True,
         "active": (
@@ -1347,25 +1341,12 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
         "required_parameter_keys": ["query"],
     }
     endpoint = str(tool.get("endpoint") or "")
-    parsed = urlsplit(endpoint)
     transport = str(tool.get("transport_type") or "").lower()
-    auth_mode = str(tool.get("auth_mode") or "").lower()
-    if (
-        parsed.scheme in {"http", "https"}
-        and parsed.netloc
-        and not parsed.username
-        and not parsed.password
-        and not parsed.query
-        and not parsed.fragment
-        and transport in {"http", "streamable_http", "sse"}
-        and auth_mode == "none"
-    ):
-        subject["mcp_server_config"] = {
-            "type": "sse" if transport == "sse" else "http",
-            "url": endpoint,
-        }
-        return subject
-    return None
+    subject["mcp_server_config"] = {
+        "type": "sse" if transport == "sse" else "http",
+        "url": endpoint,
+    }
+    return subject
 
 
 def _canonical_authorized_mcp_scope(
@@ -1588,7 +1569,6 @@ async def _reauthorize_worker_capabilities(
             _denied_capability_decision("invalid_capability_selector"),
         )
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
-
     allowed_entries: list[dict[str, Any]] = []
     tool_policy_subjects = _builtin_capability_subjects(
         payload=payload,
@@ -1707,6 +1687,20 @@ async def _reauthorize_worker_capabilities(
         )
         allowed_entries.append(tool)
         tool_policy_subjects.append(mcp_subject)
+
+    if allowed_entries and payload.executor_type != "claude-agent-worker":
+        denial = _worker_capability_record(
+            "mcp_tool",
+            str(allowed_entries[0].get("tool_id") or "mcp_tool"),
+            _denied_capability_decision("mcp_sandbox_executor_required"),
+        )
+        return _WorkerCapabilityAuthorization(
+            payload,
+            principal,
+            tuple(decisions),
+            denial,
+            tool_policy_audits=tuple(tool_policy_audits),
+        )
 
     authorized_payload = _payload_with_authorized_mcp_registration(
         payload,
@@ -1975,6 +1969,8 @@ def _ordinary_run_uses_runtime_sandbox(
     *,
     context_snapshot: dict[str, Any],
 ) -> bool:
+    if repositories.extract_run_mcp_tool_ids(payload.input):
+        return True
     return decide_execution_boundary(
         executor_type=payload.executor_type,
         execution_mode=str(payload.input.get("execution_mode") or ""),

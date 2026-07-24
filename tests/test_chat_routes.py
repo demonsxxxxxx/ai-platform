@@ -189,6 +189,22 @@ def test_file_row_scope_uses_effective_continuation_workspace():
     )
 
 
+def test_chat_mcp_selection_model_preserves_omitted_clear_and_explicit_contract():
+    assert ChatStreamRequest(message="hello").selected_mcp_tool_ids is None
+    assert ChatStreamRequest(message="hello", selected_mcp_tool_ids=[]).selected_mcp_tool_ids == []
+    assert ChatStreamRequest(
+        message="hello",
+        selected_mcp_tool_ids=[" tenant-search ", "tenant-write"],
+    ).selected_mcp_tool_ids == ["tenant-search", "tenant-write"]
+    with pytest.raises(ValueError):
+        ChatStreamRequest(
+            message="hello",
+            selected_mcp_tool_ids=["tenant-search", "tenant-search"],
+        )
+    with pytest.raises(ValueError):
+        ChatStreamRequest(message="hello", selected_mcp_tool_ids=["not safe!"])
+
+
 @pytest.fixture(autouse=True)
 def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
     async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
@@ -364,6 +380,74 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
 
     assert response.session_id == "session-owned"
     assert calls == ["provision", "session", "claim"]
+
+
+@pytest.mark.asyncio
+async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection_before_claim(monkeypatch):
+    request = ChatStreamRequest(
+        message="continue with selected tool",
+        session_id="session-owned",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    calls: list[object] = []
+
+    async def no_existing_submission(*_args, **_kwargs):
+        return None
+
+    async def provision_principal(*_args, **_kwargs):
+        calls.append("provision")
+
+    async def owned_session(*_args, **_kwargs):
+        calls.append("session")
+        return {
+            "id": "session-owned",
+            "workspace_id": "workspace-owned",
+            "agent_id": "general-agent",
+            "latest_run_input_json": {
+                "input": {"mcp_tool_ids": ["tenant-search"]}
+            },
+        }
+
+    async def authorize_tools(*_args, **kwargs):
+        calls.append(("authorize", kwargs["tool_ids"]))
+        return [{"tool_id": "tenant-search"}]
+
+    async def claim_submission(*_args, **kwargs):
+        calls.append(("claim", kwargs["request_fingerprint_sha256"]))
+        return (
+            {
+                "request_fingerprint_sha256": kwargs["request_fingerprint_sha256"],
+                "state": "queued",
+                "outcome_json": {
+                    "session_id": "session-owned",
+                    "run_id": "run-owned",
+                    "status": "queued",
+                    "submission_id": str(request.submission_id),
+                },
+            },
+            False,
+        )
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission)
+    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
+    monkeypatch.setattr(repository_module, "get_authorized_session", owned_session)
+    monkeypatch.setattr(
+        repository_module,
+        "authorize_selected_chat_mcp_tools",
+        authorize_tools,
+    )
+    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
+
+    response = await chat_stream(request, principal=principal())
+
+    assert response.run_id == "run-owned"
+    assert calls[:3] == [
+        "provision",
+        "session",
+        ("authorize", ["tenant-search"]),
+    ]
+    assert calls[3][0] == "claim"
 
 
 @pytest.mark.asyncio
@@ -1712,7 +1796,7 @@ async def test_chat_stream_direct_ragflow_without_explicit_selector_uses_unified
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_invalid_mcp_selector_type_returns_controlled_403_before_create(monkeypatch):
+async def test_chat_stream_legacy_nested_mcp_selector_returns_controlled_400_before_create(monkeypatch):
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("invalid MCP selector must fail before create_run")
 
@@ -1727,8 +1811,41 @@ async def test_chat_stream_invalid_mcp_selector_type_returns_controlled_403_befo
             principal=principal(roles=["admin"]),
         )
 
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "selected_mcp_tool_ids_required"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_create(monkeypatch):
+    calls = []
+
+    async def deny_selection(*_args, **kwargs):
+        calls.append(("authorize", kwargs["tool_ids"]))
+        raise repository_module.RepositoryAuthorizationError("mcp_tool_not_available")
+
+    async def fail_create_run(*_args, **_kwargs):
+        raise AssertionError("unauthorized MCP selection must fail before create_run")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        repository_module,
+        "authorize_selected_chat_mcp_tools",
+        deny_selection,
+    )
+    monkeypatch.setattr(repository_module, "create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                message="run",
+                selected_mcp_tool_ids=["tenant-search"],
+            ),
+            principal=principal(),
+        )
+
     assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "capability_not_authorized"
+    assert exc_info.value.detail == "mcp_tool_not_available"
+    assert calls == [("authorize", ["tenant-search"])]
 
 
 @pytest.mark.asyncio
@@ -1915,6 +2032,10 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
         calls["manifest_input"] = input_payload
         return [{"skill_id": skill_id, "content_hash": "hash-a"}]
 
+    async def fake_authorize_selected_mcp_tools(conn, **kwargs):
+        calls["authorized_mcp_tool_ids"] = kwargs["tool_ids"]
+        return [{"tool_id": "qa-search"}]
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
@@ -1926,12 +2047,16 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
     monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.authorize_selected_chat_mcp_tools",
+        fake_authorize_selected_mcp_tools,
+    )
 
     response = await chat_stream(
         ChatStreamRequest(
             message="run chat with forged resume",
+            selected_mcp_tool_ids=["qa-search"],
             input={
-                "mcp_tool_ids": ["qa-search"],
                 "principal_roles": ["forged-admin"],
                 "principalRoles": ["forged-camel-admin"],
                 "principal_department_id": "forged-department",
@@ -1945,7 +2070,6 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
                 "multi_agent_steps": [
                     {
                         "step_key": "inspect",
-                        "mcpToolIds": ["qa-search"],
                         "principal_department_id": "forged-step-department",
                     }
                 ],
@@ -1997,6 +2121,7 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
         "principal_department_id": "qa",
         "auth_source": "session-token",
     }
+    assert calls["authorized_mcp_tool_ids"] == ["qa-search"]
 
 
 @pytest.mark.asyncio

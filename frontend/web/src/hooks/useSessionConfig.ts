@@ -1,17 +1,4 @@
-/**
- * useSessionConfig - 对话级别的配置管理
- *
- * 管理当前对话的 skills、tools、agent options 配置
- * 这些配置独立于全局配置，只影响当前对话
- *
- * 架构说明：
- * - 全局配置（/skills, /tools 路由）：用户的默认配置，影响所有新建对话
- * - 对话配置（ChatInput 选择器）：当前对话的临时配置，不影响全局
- *
- * 使用 blacklist（黑名单）模式：
- * - disabled_skills: 被禁用的 skill 列表（空列表 = 全部启用）
- * - disabled_mcp_tools: 被禁用的 MCP tool 列表（空列表 = 全部启用）
- */
+/** Session-scoped Chat configuration. MCP selection is server-authoritative. */
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { SessionConfig } from "./useAgent/types";
@@ -22,254 +9,150 @@ import {
 } from "../utils/sessionConfigStorage";
 
 export interface SessionConfigState {
-  // 当前对话禁用的 skills（名称列表）
   disabledSkills: string[];
-  // 当前对话禁用的 MCP tools（名称列表）
-  disabledMcpTools: string[];
-  // Agent options
+  selectedMcpToolIds: string[] | undefined;
   agentOptions: Record<string, boolean | string | number>;
 }
 
 export interface UseSessionConfigOptions {
-  // 从全局配置获取默认禁用列表
   getDefaultDisabledSkills?: () => string[];
-  getDefaultDisabledMcpTools?: () => string[];
   getDefaultAgentOptions: () => Record<string, boolean | string | number>;
 }
 
-/** Read persisted config from localStorage, returns null if not found or invalid */
-function loadPersistedConfig(): Pick<
-  SessionConfigState,
-  "disabledSkills" | "disabledMcpTools"
-> | null {
+function loadPersistedDisabledSkills(): string[] | null {
   try {
     const raw = readSessionConfigStorage();
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (
-      Array.isArray(parsed.disabledSkills) &&
-      Array.isArray(parsed.disabledMcpTools)
-    ) {
-      return {
-        disabledSkills: parsed.disabledSkills,
-        disabledMcpTools: parsed.disabledMcpTools,
-      };
-    }
+    return Array.isArray(parsed.disabledSkills) ? parsed.disabledSkills : null;
   } catch {
-    /* ignore corrupt data */
+    return null;
   }
-  return null;
 }
 
-/** Persist config to localStorage */
-function persistConfig(
-  state: Pick<
-    SessionConfigState,
-    | "disabledSkills"
-    | "disabledMcpTools"
-  >,
-) {
+function persistDisabledSkills(disabledSkills: string[]) {
   try {
-    writeSessionConfigStorage(JSON.stringify(state));
+    writeSessionConfigStorage(JSON.stringify({ disabledSkills }));
   } catch {
-    /* quota exceeded etc. */
+    /* localStorage is an optional preference seam */
   }
 }
 
 export interface UseSessionConfigReturn {
-  // 当前配置状态
   config: SessionConfigState;
-
-  // 修改配置
   toggleSkill: (skillName: string) => void;
-  toggleMcpTool: (toolName: string) => void;
+  toggleMcpTool: (toolId: string) => void;
   setAgentOption: (key: string, value: boolean | string | number) => void;
-
-  // 批量操作
   setDisabledSkills: (skills: string[]) => void;
-  setDisabledMcpTools: (tools: string[]) => void;
+  setSelectedMcpToolIds: (toolIds: string[] | undefined) => void;
   setAgentOptions: (options: Record<string, boolean | string | number>) => void;
-
-  // 重置为默认配置
   resetToDefaults: () => void;
-
-  // 恢复保存的配置
   restoreConfig: (config: SessionConfig) => void;
-
-  // 检查某个 skill/tool 是否启用
   isSkillEnabled: (skillName: string) => boolean;
-  isMcpToolEnabled: (toolName: string) => boolean;
+  isMcpToolEnabled: (toolId: string) => boolean;
 }
 
-/**
- * 对话配置管理 Hook
- */
 export function useSessionConfig(
   options: UseSessionConfigOptions,
 ): UseSessionConfigReturn {
-  // Track the latest default agent options (derived from agent definitions + stored thinking preference)
-  const defaultAgentOptionsRef = useRef<
-    Record<string, boolean | string | number>
-  >({});
+  const defaultAgentOptionsRef = useRef<Record<string, boolean | string | number>>({});
   defaultAgentOptionsRef.current = options.getDefaultAgentOptions();
 
-  // 对话级别的配置状态
-  // 优先从 localStorage 恢复（跨路由持久化），否则用默认值
-  const [config, setConfig] = useState<SessionConfigState>(() => {
-    const persisted = loadPersistedConfig();
-    return {
-      disabledSkills:
-        persisted?.disabledSkills ?? options.getDefaultDisabledSkills?.() ?? [],
-      disabledMcpTools:
-        persisted?.disabledMcpTools ??
-        options.getDefaultDisabledMcpTools?.() ??
-        [],
-      agentOptions: options.getDefaultAgentOptions(),
-    };
-  });
+  const [config, setConfig] = useState<SessionConfigState>(() => ({
+    disabledSkills:
+      loadPersistedDisabledSkills() ?? options.getDefaultDisabledSkills?.() ?? [],
+    selectedMcpToolIds: undefined,
+    agentOptions: options.getDefaultAgentOptions(),
+  }));
 
-  // Re-sync agentOptions defaults when they change (e.g., user changes default thinking preference).
-  // agentOptions are never persisted to localStorage, so they must always be re-derived.
-  // IMPORTANT: Only re-sync on initial render. After that, effectiveToggleAgentOption
-  // in the parent handles both useAgentOptions and useSessionConfig atomically.
-  // A periodic re-sync would race with user choices because the ref captures stale values.
   const initializedRef = useRef(false);
-
   if (!initializedRef.current) {
     initializedRef.current = true;
-    const nextAgentOptions = defaultAgentOptionsRef.current;
-    setConfig((prev) => ({
-      ...prev,
-      agentOptions: nextAgentOptions,
+    setConfig((previous) => ({
+      ...previous,
+      agentOptions: defaultAgentOptionsRef.current,
     }));
   }
 
-  // Persist to localStorage whenever config changes
   useEffect(() => {
-    persistConfig({
-      disabledSkills: config.disabledSkills,
-      disabledMcpTools: config.disabledMcpTools,
-    });
-  }, [
-    config.disabledSkills,
-    config.disabledMcpTools,
-  ]);
+    persistDisabledSkills(config.disabledSkills);
+  }, [config.disabledSkills]);
 
-  // Toggle skill (add/remove from disabled list)
   const toggleSkill = useCallback((skillName: string) => {
-    setConfig((prev) => {
-      const disabled = new Set(prev.disabledSkills);
+    setConfig((previous) => {
+      const disabled = new Set(previous.disabledSkills);
       if (disabled.has(skillName)) {
         disabled.delete(skillName);
       } else {
         disabled.add(skillName);
       }
-      return {
-        ...prev,
-        disabledSkills: Array.from(disabled),
-      };
+      return { ...previous, disabledSkills: Array.from(disabled) };
     });
   }, []);
 
-  // Toggle MCP tool (add/remove from disabled list)
-  const toggleMcpTool = useCallback((toolName: string) => {
-    setConfig((prev) => {
-      const disabled = new Set(prev.disabledMcpTools);
-      if (disabled.has(toolName)) {
-        disabled.delete(toolName);
+  const toggleMcpTool = useCallback((toolId: string) => {
+    setConfig((previous) => {
+      const selected = new Set(previous.selectedMcpToolIds ?? []);
+      if (selected.has(toolId)) {
+        selected.delete(toolId);
       } else {
-        disabled.add(toolName);
+        selected.add(toolId);
       }
-      return {
-        ...prev,
-        disabledMcpTools: Array.from(disabled),
-      };
+      return { ...previous, selectedMcpToolIds: Array.from(selected) };
     });
   }, []);
 
-  // Set agent option
   const setAgentOption = useCallback(
     (key: string, value: boolean | string | number) => {
-      setConfig((prev) => ({
-        ...prev,
-        agentOptions: {
-          ...prev.agentOptions,
-          [key]: value,
-        },
+      setConfig((previous) => ({
+        ...previous,
+        agentOptions: { ...previous.agentOptions, [key]: value },
       }));
     },
     [],
   );
 
-  // Batch set disabled skills
-  const setDisabledSkills = useCallback((skills: string[]) => {
-    setConfig((prev) => ({
-      ...prev,
-      disabledSkills: skills,
-    }));
+  const setDisabledSkills = useCallback((disabledSkills: string[]) => {
+    setConfig((previous) => ({ ...previous, disabledSkills }));
   }, []);
 
-  // Batch set disabled MCP tools
-  const setDisabledMcpTools = useCallback((tools: string[]) => {
-    setConfig((prev) => ({
-      ...prev,
-      disabledMcpTools: tools,
-    }));
+  const setSelectedMcpToolIds = useCallback((selectedMcpToolIds: string[] | undefined) => {
+    setConfig((previous) => ({ ...previous, selectedMcpToolIds }));
   }, []);
 
-  // Batch set agent options
-  const setAgentOptions = useCallback(
-    (opts: Record<string, boolean | string | number>) => {
-      setConfig((prev) => ({
-        ...prev,
-        agentOptions: opts,
-      }));
-    },
-    [],
-  );
+  const setAgentOptions = useCallback((agentOptions: Record<string, boolean | string | number>) => {
+    setConfig((previous) => ({ ...previous, agentOptions }));
+  }, []);
 
-  // Reset to defaults (new conversation)
   const resetToDefaults = useCallback(() => {
-    const defaults = {
-      disabledSkills: options.getDefaultDisabledSkills?.() || [],
-      disabledMcpTools: options.getDefaultDisabledMcpTools?.() || [],
+    const disabledSkills = options.getDefaultDisabledSkills?.() || [];
+    setConfig({
+      disabledSkills,
+      selectedMcpToolIds: undefined,
       agentOptions: defaultAgentOptionsRef.current,
-    };
-    setConfig(defaults);
-    persistConfig(defaults);
+    });
+    persistDisabledSkills(disabledSkills);
   }, [options]);
 
-  // Restore config from session metadata
   const restoreConfig = useCallback((sessionConfig: SessionConfig) => {
-    console.log("[useSessionConfig] Restoring config:", sessionConfig);
-
-    const restored = {
+    setConfig({
       disabledSkills: sessionConfig.disabled_skills || [],
-      // disabled_tools is a legacy field (pre-split); treat as disabled_mcp_tools if present
-      disabledMcpTools:
-        sessionConfig.disabled_mcp_tools ?? sessionConfig.disabled_tools ?? [],
+      selectedMcpToolIds: (
+        sessionConfig as SessionConfig & { selected_mcp_tool_ids?: string[] }
+      ).selected_mcp_tool_ids,
       agentOptions:
         normalizeAgentOptionValues(sessionConfig.agent_options) ||
         defaultAgentOptionsRef.current,
-    };
-    setConfig(restored);
-    persistConfig(restored);
+    });
   }, []);
 
-  // Check if skill is enabled (not in disabled list)
   const isSkillEnabled = useCallback(
-    (skillName: string) => {
-      return !config.disabledSkills.includes(skillName);
-    },
+    (skillName: string) => !config.disabledSkills.includes(skillName),
     [config.disabledSkills],
   );
-
-  // Check if MCP tool is enabled (not in disabled list)
   const isMcpToolEnabled = useCallback(
-    (toolName: string) => {
-      return !config.disabledMcpTools.includes(toolName);
-    },
-    [config.disabledMcpTools],
+    (toolId: string) => config.selectedMcpToolIds?.includes(toolId) === true,
+    [config.selectedMcpToolIds],
   );
 
   return {
@@ -278,7 +161,7 @@ export function useSessionConfig(
     toggleMcpTool,
     setAgentOption,
     setDisabledSkills,
-    setDisabledMcpTools,
+    setSelectedMcpToolIds,
     setAgentOptions,
     resetToDefaults,
     restoreConfig,

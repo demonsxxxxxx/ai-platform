@@ -16,7 +16,7 @@ from app.capability_distribution import (
     capability_distribution_audit_payload,
     resolve_capability_access,
 )
-from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
+from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.tool_policy import evaluate_tool_policy
 from app.validation import assert_safe_id
@@ -486,6 +486,32 @@ async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, 
     ]
 
 
+async def _chat_tool_catalog(principal: AuthPrincipal) -> list[dict[str, Any]]:
+    """Project only current-principal generic MCP tools usable by Chat runtime."""
+
+    async with transaction() as conn:
+        rows = await repositories.list_authorized_chat_mcp_tools(
+            conn,
+            tenant_id=principal.tenant_id,
+            principal_department_id=principal.department_id,
+            principal_roles=principal.roles,
+            is_admin=is_ai_admin(principal),
+            permissions=principal.permissions,
+        )
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        tool_id = str(row.get("tool_id") or "")
+        items.append(
+            {
+                "tool_id": tool_id,
+                "label": (sanitize_public_text(row.get("name")) or tool_id)[:120],
+                "description": sanitize_public_text(row.get("description"))[:500],
+                "category": "mcp",
+            }
+        )
+    return items
+
+
 async def _write_server(
     principal: AuthPrincipal,
     request: McpServerLifecycleRequest,
@@ -610,6 +636,47 @@ async def list_mcp_servers(
         "skip": skip,
         "limit": limit,
     }
+
+
+@router.get("/mcp/chat-tools")
+async def list_chat_mcp_tools(
+    session_id: str | None = None,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Return the complete authorized canonical MCP selection catalog for Chat."""
+
+    tools = await _chat_tool_catalog(principal)
+    response: dict[str, Any] = {"tools": tools, "count": len(tools)}
+    if session_id is not None:
+        try:
+            canonical_session_id = assert_safe_id(session_id, "session_id")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid_session_id") from exc
+        async with transaction() as conn:
+            session = await repositories.get_authorized_session(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                session_id=canonical_session_id,
+            )
+        if session is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        latest_input_json = session.get("latest_run_input_json")
+        latest_input = (
+            latest_input_json.get("input")
+            if isinstance(latest_input_json, dict)
+            else None
+        )
+        selected = (
+            repositories.extract_run_mcp_tool_ids(latest_input)
+            if isinstance(latest_input, dict) and "mcp_tool_ids" in latest_input
+            else []
+        )
+        authorized_ids = {str(item["tool_id"]) for item in tools}
+        response["selected_mcp_tool_ids"] = [
+            tool_id for tool_id in selected if tool_id in authorized_ids
+        ]
+    return response
 
 
 @router.post("/mcp/")
@@ -812,10 +879,12 @@ async def discover_mcp_tools(
         )
         if not decision.visible:
             continue
+        if bool(row.get("write_capable")) and str(row.get("risk_level") or "low") == "high":
+            continue
         if not evaluate_tool_policy(
             tool={
                 "mcp_server": safe_name,
-                "mcp_tool": str(row.get("name") or ""),
+                "mcp_tool": str(row.get("tool_id") or row.get("id") or ""),
                 "registered": bool(str(row.get("tool_id") or "")),
                 "declared": True,
                 "active": str(row.get("effective_status") or "") == "active",

@@ -18,7 +18,7 @@ _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
 
 from app import repositories
 from app.capabilities import required_artifact_types_for_skill
-from app.control_plane_contracts import artifact_lineage_contract, standard_trace_id
+from app.control_plane_contracts import artifact_lineage_contract, sanitize_public_text, standard_trace_id
 from app.context_builder import executor_context_pack_from_snapshot
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, available_context_retrieval_tools
 from app.context_retrieval import ContextRetrieval, TransactionalContextRetrievalRepository
@@ -121,6 +121,87 @@ async def _emit_public_progress_event(
     )
 
 
+def _external_mcp_subjects(payload: RunPayload) -> list[dict[str, str]]:
+    """Return the public projection of worker-authorized external MCP subjects."""
+
+    raw_subjects = payload.input.get("_runtime_tool_policy_subjects")
+    if not isinstance(raw_subjects, list):
+        return []
+    subjects: list[dict[str, str]] = []
+    for raw in raw_subjects:
+        if not isinstance(raw, dict):
+            continue
+        server_id = str(raw.get("mcp_server") or "")
+        identity = str(raw.get("identity") or "")
+        authorized = all(
+            raw.get(field) is True
+            for field in (
+                "registered",
+                "declared",
+                "active",
+                "distributed",
+                "identity_authorized",
+                "object_authorized",
+                "parameters_authorized",
+            )
+        )
+        if (
+            not authorized
+            or not server_id
+            or server_id == "ai-platform-context"
+            or not identity.startswith("mcp__")
+        ):
+            continue
+        label = sanitize_public_text(raw.get("public_tool_label"))[:120]
+        subjects.append(
+            {
+                "identity": identity,
+                "label": label or "MCP tool",
+                "category": "mcp",
+            }
+        )
+    return subjects
+
+
+async def _emit_external_mcp_activity(
+    event_sink: ExecutorEventSink | None,
+    *,
+    subjects: list[dict[str, str]],
+    status: str,
+) -> None:
+    """Emit a public-safe generic MCP lifecycle without private runtime data."""
+
+    if event_sink is None:
+        return
+    event_type = {
+        "started": "tool_call_started",
+        "completed": "tool_call_completed",
+        "failed": "tool_call_failed",
+    }[status]
+    for subject in subjects:
+        label = subject["label"]
+        await event_sink(
+            event_type=event_type,
+            stage="tools",
+            message=f"MCP tool {status}: {label}",
+            payload={
+                "visible_to_user": True,
+                "severity": "error" if status == "failed" else "info",
+                "tool_label": label,
+                "tool_category": subject["category"],
+                "status": status,
+            },
+        )
+
+
+def _effective_execution_tier(payload: RunPayload) -> str:
+    """Force every external MCP registration through a real sandbox boundary."""
+
+    return _execution_tier(payload) or (
+        "sdk_only_writing" if _external_mcp_subjects(payload) else ""
+    )
+
+
 @dataclass(frozen=True)
 class _AuthorizedAttachmentMetadata:
     """Authorized attachment metadata that never requires reading object bytes."""
@@ -189,7 +270,7 @@ def _ordinary_run_requires_sandbox(payload: RunPayload) -> bool:
     return decide_execution_boundary(
         executor_type="claude-agent-worker",
         execution_mode=str(payload.input.get("execution_mode") or ""),
-        execution_tier=_execution_tier(payload),
+        execution_tier=_effective_execution_tier(payload),
     ).requires_real_sandbox
 
 
@@ -466,7 +547,7 @@ class ClaudeAgentWorkerAdapter:
         decision = decide_execution_boundary(
             executor_type=self.executor_type,
             execution_mode=str(payload.input.get("execution_mode") or ""),
-            execution_tier=_execution_tier(payload),
+            execution_tier=_effective_execution_tier(payload),
         )
         if decision.fail_closed:
             return ExecutorResult(
@@ -1322,11 +1403,40 @@ class ClaudeAgentWorkerAdapter:
             stage="runtime",
             message="Sandbox runtime dispatch is active",
         )
-        runtime_result = await _submit_sandbox_runtime(
-            runtime,
-            request,
-            event_sink=runtime_event_sink,
-            execution_owner=execution_owner,
+        external_mcp_subjects = _external_mcp_subjects(payload)
+        await _emit_external_mcp_activity(
+            event_sink,
+            subjects=external_mcp_subjects,
+            status="started",
+        )
+        try:
+            runtime_result = await _submit_sandbox_runtime(
+                runtime,
+                request,
+                event_sink=runtime_event_sink,
+                execution_owner=execution_owner,
+            )
+        except BaseException:
+            await _emit_external_mcp_activity(
+                event_sink,
+                subjects=external_mcp_subjects,
+                status="failed",
+            )
+            raise
+        runtime_response = getattr(runtime_result, "executor_response", {})
+        runtime_status = str(
+            runtime_response.get("status")
+            if isinstance(runtime_response, dict)
+            else getattr(runtime_result, "status", "")
+        ).strip().lower()
+        await _emit_external_mcp_activity(
+            event_sink,
+            subjects=external_mcp_subjects,
+            status=(
+                "completed"
+                if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES
+                else "failed"
+            ),
         )
         return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
 
@@ -1410,7 +1520,7 @@ class ClaudeAgentWorkerAdapter:
         decision = decide_execution_boundary(
             executor_type=self.executor_type,
             execution_mode=str(payload.input.get("execution_mode") or ""),
-            execution_tier=_execution_tier(payload),
+            execution_tier=_effective_execution_tier(payload),
         )
         if sandbox_provider not in decision.accepted_providers:
             return self._sandbox_provider_required_result(
