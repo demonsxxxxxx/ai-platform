@@ -910,6 +910,9 @@ class OpenSandboxSettings:
     opensandbox_external_egress_capability_token = "capability-test-token"
     opensandbox_external_egress_gateway_policy_subject = "gateway-policy-subject-a"
     opensandbox_external_egress_callback_boundary_subject = "callback-boundary-subject-a"
+    opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
+    opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
+    opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
     opensandbox_executor_image_digest = "sha256:" + "a" * 64
     opensandbox_external_egress_profile_max_ttl_seconds = 300
     opensandbox_external_egress_profile_max_issued_age_seconds = 120
@@ -945,6 +948,10 @@ def external_egress_capability_profile(
         "deny_audit_subject": "gateway-deny-audit-subject-a",
         "deny_counter_subject": "gateway-deny-counter-subject-a",
         "executor_image_digest": "sha256:" + "a" * 64,
+        "upstream_bridge_version": "v1",
+        "callback_base_url": "https://bridge.internal.example:18443",
+        "openai_base_url": "https://bridge.internal.example:18443/openai/v1",
+        "anthropic_base_url": "https://bridge.internal.example:18443/anthropic",
         "proof_key_id": "current",
         "issued_at": (now - timedelta(seconds=10)).isoformat().replace("+00:00", "Z"),
         "expires_at": (now + timedelta(seconds=120)).isoformat().replace("+00:00", "Z"),
@@ -1046,8 +1053,54 @@ async def test_opensandbox_provider_admits_only_authenticated_runsc_external_egr
     assert remote_metadata["ai-platform.external_egress.endpoint_sha256"] == hashlib.sha256(
         b"http://opensandbox.local:8080"
     ).hexdigest()
+    assert remote_metadata["ai-platform.external_egress.upstream_bridge_version"] == "v1"
+    assert FakeOpenSandbox.created[0]["env"]["AI_PLATFORM_CALLBACK_BASE_URL"] == (
+        "https://bridge.internal.example:18443"
+    )
+    assert FakeOpenSandbox.created[0]["env"]["OPENAI_BASE_URL"] == (
+        "https://bridge.internal.example:18443/openai/v1"
+    )
+    assert FakeOpenSandbox.created[0]["env"]["ANTHROPIC_BASE_URL"] == (
+        "https://bridge.internal.example:18443/anthropic"
+    )
     assert "http://opensandbox.local:8080" not in repr(remote_metadata)
     assert "network_policy" not in FakeOpenSandbox.created[0] or FakeOpenSandbox.created[0]["network_policy"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [
+        ("opensandbox_external_egress_callback_base_url", ""),
+        ("opensandbox_external_egress_callback_base_url", "http://bridge.internal.example:18443"),
+        ("opensandbox_external_egress_openai_base_url", "https://bridge.internal.example:18443/openai"),
+        ("opensandbox_external_egress_anthropic_base_url", "https://bridge.internal.example:18443/anthropic/v1"),
+        ("opensandbox_external_egress_callback_base_url", "https://api.sandbox.internal:18443"),
+        ("opensandbox_external_egress_openai_base_url", "https://other.internal.example:18443/openai/v1"),
+    ],
+)
+async def test_opensandbox_provider_rejects_missing_or_drifted_bridge_bases_before_fetch(
+    monkeypatch,
+    setting: str,
+    value: str,
+) -> None:
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = ExternalEgressCapabilitySettings()
+    setattr(settings, setting, value)
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    fetch_calls = 0
+
+    def fetch_profile(*_args):
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return external_egress_capability_profile()
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="bridge"):
+        await opensandbox_provider(capability_profile_fetcher=fetch_profile).create_or_reuse(request(), workspace())
+
+    assert fetch_calls == 0
+    assert FakeOpenSandbox.instances == {}
 
 
 class FakeCapabilityResponse:
@@ -1465,6 +1518,10 @@ async def test_opensandbox_provider_uses_valid_requested_immutable_image(monkeyp
         ({"opensandbox_endpoint": "https://drifted.test"}, "endpoint"),
         ({"gateway_policy_subject": "gateway-policy-subject-b"}, "gateway policy subject"),
         ({"callback_boundary_subject": "callback-boundary-subject-b"}, "callback boundary subject"),
+        ({"upstream_bridge_version": "v2"}, "upstream bridge version"),
+        ({"callback_base_url": "https://other.internal.example:18443"}, "upstream bridge drift"),
+        ({"openai_base_url": "https://other.internal.example:18443/openai/v1"}, "upstream bridge drift"),
+        ({"anthropic_base_url": "https://other.internal.example:18443/anthropic"}, "upstream bridge drift"),
     ],
 )
 async def test_opensandbox_provider_fails_closed_for_missing_stale_or_drifted_external_egress_profile(

@@ -9,6 +9,7 @@ import re
 import signal
 import socket
 import ssl
+import stat
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,7 +32,10 @@ from .gateway import (
 )
 
 
-def load_config(environ: Mapping[str, str] | None = None) -> tuple[GatewayConfig, str, str, str, str, int]:
+UPSTREAM_CA_BUNDLE_PATH = "/etc/opensandbox-gateway/tls/upstream-ca.pem"
+
+
+def load_config(environ: Mapping[str, str] | None = None) -> tuple[GatewayConfig, str, str, str, str, str, int]:
     """Load policy from environment and secret bytes only from named files."""
 
     env = dict(os.environ if environ is None else environ)
@@ -63,6 +67,7 @@ def load_config(environ: Mapping[str, str] | None = None) -> tuple[GatewayConfig
         _required(env, "OPENSANDBOX_GATEWAY_EGRESS_POLICY_FILE"),
         _required(env, "OPENSANDBOX_GATEWAY_TLS_CERT_FILE"),
         _required(env, "OPENSANDBOX_GATEWAY_TLS_KEY_FILE"),
+        _app_scoped_upstream_ca_path(env),
         int(env.get("OPENSANDBOX_GATEWAY_LISTEN_PORT", "8443")),
     )
 
@@ -84,17 +89,18 @@ def build_application(config: GatewayConfig, state_path: str) -> tuple[GatewayAp
 def run() -> None:
     """Run the authenticated HTTPS gateway and host mailbox worker."""
 
-    config, state_path, policy_path, cert_path, key_path, port = load_config()
+    config, state_path, policy_path, cert_path, key_path, upstream_ca_path, port = load_config()
     _verify_certificate_ip_san(cert_path, config.public_authority)
     application, store = build_application(config, state_path)
     policy_value = json.loads(pathlib.Path(policy_path).read_text(encoding="utf-8"))
     policy = BrokerPolicy(policy_value)
+    upstream_tls_context = _load_upstream_tls_context(upstream_ca_path)
     expected_bases = {
         "callback": config.callback_upstream_base,
         "openai": config.openai_upstream_base,
         "anthropic": config.anthropic_upstream_base,
     }
-    if any(policy.targets[name][0] != value.rstrip("/") for name, value in expected_bases.items()):
+    if any(policy.targets[name][0] != value for name, value in expected_bases.items()):
         raise ValueError("egress policy target does not match signed gateway subjects")
     broker = MailboxBroker(
         store,
@@ -103,6 +109,7 @@ def run() -> None:
         config.max_response_bytes,
         config.workspace_root,
         config.dispatch_timeout_seconds,
+        upstream_tls_context=upstream_tls_context,
     )
     stop = threading.Event()
     worker = threading.Thread(target=_broker_loop, args=(broker, stop), name="opensandbox-mailbox-broker", daemon=True)
@@ -429,6 +436,40 @@ def _verify_certificate_ip_san(cert_path: str, public_authority: str) -> None:
     }
     if ip_sans != {expected}:
         raise ValueError("gateway TLS certificate IP SAN does not exactly match public authority")
+
+
+def _app_scoped_upstream_ca_path(env: Mapping[str, str]) -> str:
+    path = _required(env, "OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE")
+    if path != UPSTREAM_CA_BUNDLE_PATH:
+        raise ValueError("gateway upstream CA path is not app-scoped")
+    return path
+
+
+def _load_upstream_tls_context(ca_path: str) -> ssl.SSLContext:
+    """Load only the app-scoped CA roots into a hostname-verifying client context."""
+
+    path = pathlib.Path(ca_path)
+    try:
+        evidence = path.lstat()
+    except OSError:
+        raise ValueError("gateway upstream CA bundle is invalid") from None
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(evidence.st_mode)
+        or not 0 < evidence.st_size <= 1024 * 1024
+        or stat.S_IMODE(evidence.st_mode) & 0o022
+    ):
+        raise ValueError("gateway upstream CA bundle is invalid")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.options |= ssl.OP_NO_COMPRESSION
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    try:
+        context.load_verify_locations(cafile=str(path))
+    except (OSError, ssl.SSLError):
+        raise ValueError("gateway upstream CA bundle is invalid") from None
+    return context
 
 
 def _required(env: Mapping[str, str], name: str) -> str:

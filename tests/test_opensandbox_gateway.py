@@ -50,14 +50,18 @@ from services.opensandbox_gateway.gateway import (
     Request,
     Response,
     RuntimeEvidence,
+    UPSTREAM_BRIDGE_VERSION,
     operation_deadline,
 )
 from services.opensandbox_gateway.helper import _dispatch as helper_dispatch
 from services.opensandbox_gateway.relay import RELAY_SOURCE
 from services.opensandbox_gateway.server import (
+    UPSTREAM_CA_BUNDLE_PATH,
     _BoundedThreadingHTTPServer,
     _GatewayHandler,
+    _app_scoped_upstream_ca_path,
     _broker_loop,
+    _load_upstream_tls_context,
     _verify_certificate_ip_san,
 )
 
@@ -66,6 +70,13 @@ IMAGE = "registry.example/executor@sha256:" + "1" * 64
 API_KEY = "lifecycle-" + "a" * 32
 CAPABILITY_TOKEN = "capability-" + "b" * 32
 PUBLIC_AUTHORITY = "10.56.1.72:8443"
+BRIDGE_ORIGIN = "https://bridge.internal.example:18443"
+
+
+def _test_tls_context() -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
 
 
 def gateway_config() -> GatewayConfig:
@@ -83,9 +94,9 @@ def gateway_config() -> GatewayConfig:
         callback_boundary_subject="ai-platform/callbacks/v1",
         deny_audit_subject="s72/gateway/deny-audit-v1",
         deny_counter_subject="s72/gateway/deny-counter-v1",
-        callback_upstream_base="https://api.internal.example",
-        openai_upstream_base="https://models.internal.example/openai/v1",
-        anthropic_upstream_base="https://models.internal.example/anthropic",
+        callback_upstream_base=BRIDGE_ORIGIN,
+        openai_upstream_base=BRIDGE_ORIGIN + "/openai/v1",
+        anthropic_upstream_base=BRIDGE_ORIGIN + "/anthropic",
     )
 
 
@@ -122,6 +133,16 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
         "ai-platform.external_egress.deny_counter_subject": config.deny_counter_subject,
         "ai-platform.external_egress.profile_requested_image": IMAGE,
         "ai-platform.external_egress.profile_requested_image_digest": IMAGE.rsplit("@", 1)[1],
+        "ai-platform.external_egress.upstream_bridge_version": UPSTREAM_BRIDGE_VERSION,
+        "ai-platform.external_egress.callback_base_sha256": hashlib.sha256(
+            config.callback_upstream_base.encode()
+        ).hexdigest(),
+        "ai-platform.external_egress.openai_base_sha256": hashlib.sha256(
+            config.openai_upstream_base.encode()
+        ).hexdigest(),
+        "ai-platform.external_egress.anthropic_base_sha256": hashlib.sha256(
+            config.anthropic_upstream_base.encode()
+        ).hexdigest(),
         "ai-platform.external_egress.profile_expires_at": expires,
         "ai-platform.skill_mount.required": "false",
         "ai-platform.skill_mount.fingerprint": "",
@@ -247,6 +268,12 @@ def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> No
         "security": {"no_new_privileges": True, "user": "1000:1000", "uid": "1000", "gid": "1000"},
         "image": {"subject": IMAGE, "digest": IMAGE.rsplit("@", 1)[1]},
         "host_path_policy": {"subject": "scoped-workspace-only", "unscoped_host_paths_allowed": False},
+        "upstream_bridge": {
+            "version": UPSTREAM_BRIDGE_VERSION,
+            "callback_base_url": config.callback_upstream_base,
+            "openai_base_url": config.openai_upstream_base,
+            "anthropic_base_url": config.anthropic_upstream_base,
+        },
         "subjects": {
             "gateway_policy": config.gateway_policy_subject,
             "callback_boundary": config.callback_boundary_subject,
@@ -278,6 +305,9 @@ def test_payload_is_accepted_by_merged_ai_platform_attestor() -> None:
         runtime_subject=config.runtime_subject,
         gateway_policy_subject=config.gateway_policy_subject,
         callback_boundary_subject=config.callback_boundary_subject,
+        callback_base_url=config.callback_upstream_base,
+        openai_base_url=config.openai_upstream_base,
+        anthropic_base_url=config.anthropic_upstream_base,
         proof_key_id=config.proof_key_id,
         proof_signing_key=config.record_signing_key.decode(),
         transport=lambda *_: _TransportResponse(200, endpoint, body),
@@ -292,6 +322,10 @@ def test_payload_is_accepted_by_merged_ai_platform_attestor() -> None:
         profile_id=config.profile_id,
         deny_audit_subject=config.deny_audit_subject,
         deny_counter_subject=config.deny_counter_subject,
+        upstream_bridge_version=UPSTREAM_BRIDGE_VERSION,
+        callback_base_url=config.callback_upstream_base,
+        openai_base_url=config.openai_upstream_base,
+        anthropic_base_url=config.anthropic_upstream_base,
     )
     request = SimpleNamespace(
         tenant_id="tenant-one",
@@ -315,10 +349,12 @@ def test_auth_size_path_redirect_and_tls_fail_closed() -> None:
     assert response.status == 502
     assert decoded(response)["error"]["code"] == "upstream_redirect_rejected"
     assert store.deny_count(config.deny_audit_subject) >= 4
-    with pytest.raises(ValueError, match="HTTPS"):
+    with pytest.raises(ValueError, match="upstream bridge bases"):
         replace(config, callback_upstream_base="http://api.internal.example/callback").validate()
-    with pytest.raises(ValueError, match="SDK version path"):
-        replace(config, anthropic_upstream_base="https://models.internal.example/anthropic/v1").validate()
+    with pytest.raises(ValueError, match="upstream bridge bases"):
+        replace(config, anthropic_upstream_base=BRIDGE_ORIGIN + "/anthropic/v1").validate()
+    with pytest.raises(ValueError, match="one origin"):
+        replace(config, openai_upstream_base="https://other.internal.example:18443/openai/v1").validate()
 
 
 @pytest.mark.parametrize(
@@ -836,6 +872,10 @@ def test_capability_auth_schema_signature_and_broker_policy() -> None:
     value = decoded(response)
     assert value["schema_version"] == CAPABILITY_VERSION
     assert value["opensandbox_endpoint"] == f"https://{PUBLIC_AUTHORITY}"
+    assert value["upstream_bridge_version"] == UPSTREAM_BRIDGE_VERSION
+    assert value["callback_base_url"] == BRIDGE_ORIGIN
+    assert value["openai_base_url"] == BRIDGE_ORIGIN + "/openai/v1"
+    assert value["anthropic_base_url"] == BRIDGE_ORIGIN + "/anthropic"
     assert len(value["profile_signature"]) == 64
     with pytest.raises(ValueError, match="pinned HTTPS"):
         BrokerPolicy({"version": 1, "targets": {name: {"base_url": "http://example", "expected_ips": []} for name in ("callback", "openai", "anthropic")}})
@@ -1568,6 +1608,7 @@ def test_pinned_https_connect_uses_approved_ip_without_dns(monkeypatch) -> None:
         443,
         ("10.56.1.20",),
         MonotonicDeadline.after(0.5),
+        _test_tls_context(),
     )
     connection._context = FakeTlsContext()
     connection.connect()
@@ -1801,6 +1842,50 @@ def test_literal_private_ip_certificate_san_and_workspace_file_proxy_contracts(m
         assert rejected.status == 400
 
 
+def test_gateway_upstream_ca_is_app_scoped_and_builds_the_only_client_trust_context(
+    tmp_path, monkeypatch
+) -> None:
+    assert _app_scoped_upstream_ca_path(
+        {"OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE": UPSTREAM_CA_BUNDLE_PATH}
+    ) == UPSTREAM_CA_BUNDLE_PATH
+    with pytest.raises(ValueError, match="app-scoped"):
+        _app_scoped_upstream_ca_path(
+            {"OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE": "/etc/ssl/certs/ca-certificates.crt"}
+        )
+
+    ca_path = tmp_path / "upstream-ca.pem"
+    ca_path.write_text("test-only-ca", encoding="utf-8")
+    ca_path.chmod(0o600)
+    loaded: list[str] = []
+
+    class FakeClientContext:
+        minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+        options = 0
+        check_hostname = False
+        verify_mode = ssl.CERT_NONE
+
+        def load_verify_locations(self, *, cafile: str) -> None:
+            loaded.append(cafile)
+
+    context = FakeClientContext()
+    evidence = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=ca_path.stat().st_size)
+    monkeypatch.setattr(pathlib.Path, "lstat", lambda _path: evidence)
+    monkeypatch.setattr(ssl, "SSLContext", lambda _protocol: context)
+    assert _load_upstream_tls_context(str(ca_path)) is context
+    assert loaded == [str(ca_path)]
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+    bad_ca = tmp_path / "bad-ca.pem"
+    bad_ca.write_text("not a certificate", encoding="utf-8")
+    bad_ca.chmod(0o600)
+    monkeypatch.undo()
+    with pytest.raises(ValueError, match="upstream CA bundle"):
+        _load_upstream_tls_context(str(bad_ca))
+    assert "create_default_context" not in inspect.getsource(gateway_adapters._PinnedHTTPSConnection)
+
+
 def test_workspace_dirfd_identity_and_symlink_leaf_fail_closed(monkeypatch) -> None:
     directory_mode = gateway_adapters.stat.S_IFDIR | 0o700
     monkeypatch.setattr(gateway_adapters.os, "O_DIRECTORY", 0x10000, raising=False)
@@ -1939,12 +2024,14 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
     monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
     policy = SimpleNamespace(
         targets={
-            "callback": ("https://api.internal.example", ("10.56.1.20",)),
-            "openai": ("https://models.internal.example/openai/v1", ("10.56.1.21",)),
-            "anthropic": ("https://models.internal.example/anthropic", ("10.56.1.22",)),
+            "callback": (BRIDGE_ORIGIN, ("10.56.0.211",)),
+            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.56.0.211",)),
+            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.56.0.211",)),
         }
     )
-    broker = MailboxBroker(SimpleNamespace(), policy, 1.0, 1024)
+    broker = MailboxBroker(
+        SimpleNamespace(), policy, 1.0, 1024, upstream_tls_context=_test_tls_context()
+    )
 
     def forward(path: str) -> dict[str, str]:
         raw = json.dumps(
@@ -2043,12 +2130,19 @@ def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_on
     monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
     policy = SimpleNamespace(
         targets={
-            "callback": ("https://api.internal.example", ("10.56.1.20",)),
-            "openai": ("https://models.internal.example/openai/v1", ("10.56.1.21",)),
-            "anthropic": ("https://models.internal.example/anthropic", ("10.56.1.22",)),
+            "callback": (BRIDGE_ORIGIN, ("10.56.0.211",)),
+            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.56.0.211",)),
+            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.56.0.211",)),
         }
     )
-    broker = MailboxBroker(SimpleNamespace(), policy, 5.0, 1024, dispatch_timeout_seconds=3600.0)
+    broker = MailboxBroker(
+        SimpleNamespace(),
+        policy,
+        5.0,
+        1024,
+        dispatch_timeout_seconds=3600.0,
+        upstream_tls_context=_test_tls_context(),
+    )
 
     def process(path: str, requested_timeout: float) -> None:
         raw = json.dumps(
@@ -2428,6 +2522,8 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     rollback = (root / "deploy/opensandbox/rollback-s72.sh").read_text(encoding="utf-8")
     env_example = (root / "deploy/opensandbox/gateway.env.example").read_text(encoding="utf-8")
     policy = json.loads((root / "deploy/opensandbox/egress-policy.v1.example.json").read_text(encoding="utf-8"))
+    nginx = (root / "frontend/web/nginx.conf.template").read_text(encoding="utf-8")
+    compose = (root / "deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     assert "docker.sock" not in public_unit and "SupplementaryGroups=docker" not in public_unit
     assert "docker.sock" in helper_unit and "SupplementaryGroups=docker" in helper_unit
     assert all(
@@ -2449,6 +2545,9 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
             "systemctl restart",
             "WorkingDirectory",
             "CURRENT_LINK.next",
+            "require_gateway_config_contract",
+            "require_root_owned_regular",
+            "upstream-ca.pem",
         )
     )
     assert install.index("systemctl restart") < install.index("CURRENT_LINK.next")
@@ -2461,6 +2560,24 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     callback_base = next(line.split("=", 1)[1] for line in env_example.splitlines() if line.startswith("OPENSANDBOX_GATEWAY_CALLBACK_BASE="))
     assert callback_base == policy["targets"]["callback"]["base_url"]
     assert urllib.parse.urlsplit(callback_base).path == ""
+    assert env_example.count(f"OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE={UPSTREAM_CA_BUNDLE_PATH}") == 1
+    assert {tuple(value["expected_ips"]) for value in policy["targets"].values()} == {("10.56.0.211",)}
+    assert {urllib.parse.urlsplit(value["base_url"]).netloc for value in policy["targets"].values()} == {
+        "REQUIRED_FIXED_EGRESS_HOSTNAME:18443"
+    }
+    assert nginx.count("listen 8080;") == 1
+    assert nginx.count("listen 8443 ssl;") == 1
+    assert "location = /api/ai/runtime/callbacks/executor" in nginx
+    assert "location ^~ /openai/" in nginx and "location ^~ /anthropic/" in nginx
+    assert "proxy_pass http://host.docker.internal:3002/;" in nginx
+    assert "allow ${AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP};\n    deny all;" in nginx
+    assert "access_log off;" in nginx
+    assert "location / {\n        return 404;\n    }" in nginx
+    assert "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080" in compose
+    assert "${AI_PLATFORM_S72_BRIDGE_PORT:-18443}:8443" in compose
+    assert compose.count("/etc/nginx/s72-bridge/tls/fullchain.pem:ro") == 1
+    assert compose.count("/etc/nginx/s72-bridge/tls/privkey.pem:ro") == 1
+    assert '"host.docker.internal:host-gateway"' in compose
 
 
 def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: str) -> subprocess.CompletedProcess[str]:

@@ -861,30 +861,130 @@ def _trusted_callback_target(settings: Any, *, allow_host_gateway: bool = True):
     )
 
 
+OPENSANDBOX_UPSTREAM_BRIDGE_VERSION = "v1"
+_OPENSANDBOX_BRIDGE_PATHS = {
+    "callback": "",
+    "openai": "/openai/v1",
+    "anthropic": "/anthropic",
+}
+_DNS_HOSTNAME = re.compile(
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
+)
+
+
+@dataclass(frozen=True)
+class _ExecutorEgressBases:
+    callback_base_url: str
+    openai_base_url: str
+    anthropic_base_url: str
+
+    def callback_target(self):
+        parsed = urlsplit(self.callback_base_url)
+        return build_trusted_callback_target(
+            self.callback_base_url,
+            extra_hosts=[parsed.hostname or ""],
+        )
+
+
+def _canonical_opensandbox_bridge_base(value: object, *, kind: str) -> str:
+    raw = str(value or "")
+    expected_path = _OPENSANDBOX_BRIDGE_PATHS[kind]
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox upstream bridge base is invalid") from None
+    host = parsed.hostname or ""
+    if (
+        parsed.scheme != "https"
+        or not _DNS_HOSTNAME.fullmatch(host)
+        or host != host.lower()
+        or parsed.username
+        or parsed.password
+        or parsed.path != expected_path
+        or parsed.query
+        or parsed.fragment
+        or port is None
+        or not 1 <= port <= 65535
+        or parsed.netloc != f"{host}:{port}"
+        or host in {"api.sandbox.internal", "host.docker.internal"}
+    ):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox upstream bridge base is invalid") from None
+    canonical = urlunsplit(("https", f"{host}:{port}", expected_path, "", ""))
+    if raw != canonical:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox upstream bridge base is invalid") from None
+    return canonical
+
+
+def _opensandbox_external_egress_bases(settings: Any) -> _ExecutorEgressBases:
+    bases = _ExecutorEgressBases(
+        callback_base_url=_canonical_opensandbox_bridge_base(
+            getattr(settings, "opensandbox_external_egress_callback_base_url", ""),
+            kind="callback",
+        ),
+        openai_base_url=_canonical_opensandbox_bridge_base(
+            getattr(settings, "opensandbox_external_egress_openai_base_url", ""),
+            kind="openai",
+        ),
+        anthropic_base_url=_canonical_opensandbox_bridge_base(
+            getattr(settings, "opensandbox_external_egress_anthropic_base_url", ""),
+            kind="anthropic",
+        ),
+    )
+    origins = {
+        (urlsplit(value).hostname, urlsplit(value).port)
+        for value in (
+            bases.callback_base_url,
+            bases.openai_base_url,
+            bases.anthropic_base_url,
+        )
+    }
+    if len(origins) != 1:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox upstream bridge origin drift detected") from None
+    return bases
+
+
+def executor_callback_target(settings: Any, provider_name: str):
+    """Resolve the provider-specific callback target through one validation path."""
+
+    if str(provider_name or "").strip().lower() == "opensandbox":
+        return _opensandbox_external_egress_bases(settings).callback_target()
+    return _trusted_callback_target(settings)
+
+
+def _docker_executor_egress_bases(settings: Any, *, governed_docker_egress: bool) -> _ExecutorEgressBases:
+    callback = _trusted_callback_target(settings, allow_host_gateway=not governed_docker_egress)
+    return _ExecutorEgressBases(
+        callback_base_url=callback.base_url,
+        openai_base_url=_env_value(settings, "openai_base_url"),
+        anthropic_base_url=_env_value(settings, "anthropic_base_url"),
+    )
+
+
 def _executor_environment(
     request: SandboxRuntimeRequest,
     settings: Any,
     *,
     executor_auth_token: str,
+    egress_bases: _ExecutorEgressBases,
     workspace_container_path: str = "/workspace",
     native_tool_token: str = "",
     native_tool_socket: str = "",
-    governed_docker_egress: bool = False,
 ) -> dict[str, str]:
-    trusted_callback = _trusted_callback_target(settings, allow_host_gateway=not governed_docker_egress)
     environment = {
         "APP_MODULE": "app.runtime.sandbox.executor_app:create_executor_app",
         "APP_PORT": "18000",
         "AI_PLATFORM_SESSION_ID": request.session_id,
         "AI_PLATFORM_RUN_ID": request.run_id,
         "AI_PLATFORM_ATTEMPT_ID": request.attempt_id,
-        "AI_PLATFORM_CALLBACK_BASE_URL": trusted_callback.base_url,
-        "SANDBOX_CALLBACK_BASE_URL": trusted_callback.base_url,
+        "AI_PLATFORM_CALLBACK_BASE_URL": egress_bases.callback_base_url,
+        "SANDBOX_CALLBACK_BASE_URL": egress_bases.callback_base_url,
         "AI_PLATFORM_EXECUTOR_AUTH_TOKEN": executor_auth_token,
-        "OPENAI_BASE_URL": _env_value(settings, "openai_base_url"),
+        "OPENAI_BASE_URL": egress_bases.openai_base_url,
         "OPENAI_API_KEY": _env_value(settings, "openai_api_key"),
         "OPENAI_MODEL": _env_value(settings, "openai_model", "deepseek-v4-flash"),
-        "ANTHROPIC_BASE_URL": _env_value(settings, "anthropic_base_url"),
+        "ANTHROPIC_BASE_URL": egress_bases.anthropic_base_url,
         "ANTHROPIC_AUTH_TOKEN": _env_value(settings, "anthropic_auth_token"),
         "ANTHROPIC_MODEL": _env_value(settings, "anthropic_model", "deepseek-v4-flash"),
         "CLAUDE_AGENT_MODEL": _env_value(settings, "claude_agent_model", "deepseek-v4-flash"),
@@ -1024,6 +1124,10 @@ _OPENSANDBOX_CAPABILITY_PROFILE_FIELDS = {
     "deny_audit_subject",
     "deny_counter_subject",
     "executor_image_digest",
+    "upstream_bridge_version",
+    "callback_base_url",
+    "openai_base_url",
+    "anthropic_base_url",
     "proof_key_id",
     "profile_signature",
 }
@@ -1069,9 +1173,22 @@ class OpenSandboxExternalEgressCapability:
     deny_counter_subject: str
     requested_image: str
     requested_image_digest: str
+    upstream_bridge_version: str
+    callback_base_url: str
+    openai_base_url: str
+    anthropic_base_url: str
     expires_at: str
     issued_at_utc: datetime
     expires_at_utc: datetime
+
+    def executor_egress_bases(self) -> _ExecutorEgressBases:
+        """Return the exact signed bridge bases admitted for executor creation."""
+
+        return _ExecutorEgressBases(
+            callback_base_url=self.callback_base_url,
+            openai_base_url=self.openai_base_url,
+            anthropic_base_url=self.anthropic_base_url,
+        )
 
     def _governed_egress_binding(
         self,
@@ -1169,6 +1286,16 @@ class OpenSandboxExternalEgressCapability:
             "ai-platform.external_egress.deny_counter_subject": self.deny_counter_subject,
             "ai-platform.external_egress.profile_requested_image": self.requested_image,
             "ai-platform.external_egress.profile_requested_image_digest": self.requested_image_digest,
+            "ai-platform.external_egress.upstream_bridge_version": self.upstream_bridge_version,
+            "ai-platform.external_egress.callback_base_sha256": hashlib.sha256(
+                self.callback_base_url.encode("utf-8")
+            ).hexdigest(),
+            "ai-platform.external_egress.openai_base_sha256": hashlib.sha256(
+                self.openai_base_url.encode("utf-8")
+            ).hexdigest(),
+            "ai-platform.external_egress.anthropic_base_sha256": hashlib.sha256(
+                self.anthropic_base_url.encode("utf-8")
+            ).hexdigest(),
             "ai-platform.external_egress.profile_expires_at": self.expires_at,
             GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
         }
@@ -1422,6 +1549,16 @@ def _validate_opensandbox_external_egress_profile(
         field="configured callback boundary subject",
     ):
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile callback boundary subject drift detected") from None
+    configured_bases = _opensandbox_external_egress_bases(settings)
+    if profile.get("upstream_bridge_version") != OPENSANDBOX_UPSTREAM_BRIDGE_VERSION:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability upstream bridge version is unsupported") from None
+    for field, expected in (
+        ("callback_base_url", configured_bases.callback_base_url),
+        ("openai_base_url", configured_bases.openai_base_url),
+        ("anthropic_base_url", configured_bases.anthropic_base_url),
+    ):
+        if _required_capability_value(profile.get(field), field=field) != expected:
+            raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability upstream bridge drift detected") from None
     requested_image, requested_image_digest = _opensandbox_requested_image(settings)
     profile_image_digest = _required_profile_executor_image_digest(profile.get("executor_image_digest"))
     if profile_image_digest != requested_image_digest:
@@ -1437,6 +1574,10 @@ def _validate_opensandbox_external_egress_profile(
         deny_counter_subject=_required_capability_value(profile.get("deny_counter_subject"), field="deny_counter_subject"),
         requested_image=requested_image,
         requested_image_digest=profile_image_digest,
+        upstream_bridge_version=OPENSANDBOX_UPSTREAM_BRIDGE_VERSION,
+        callback_base_url=configured_bases.callback_base_url,
+        openai_base_url=configured_bases.openai_base_url,
+        anthropic_base_url=configured_bases.anthropic_base_url,
         expires_at=expires_at.isoformat().replace("+00:00", "Z"),
         issued_at_utc=issued_at,
         expires_at_utc=expires_at,
@@ -1458,6 +1599,7 @@ async def _admit_opensandbox_external_egress_capability(
         raise OpenSandboxCapabilityAdmissionError(
             "gVisor/runsc OpenSandbox external-egress does not support OpenSandbox networkPolicy"
         ) from None
+    _opensandbox_external_egress_bases(settings)
     capability_url = _required_capability_value(
         getattr(settings, "opensandbox_external_egress_capability_url", ""),
         field="authenticated endpoint",
@@ -1531,6 +1673,16 @@ def _opensandbox_labels(
             "ai-platform.external_egress.deny_counter_subject": capability.deny_counter_subject,
             "ai-platform.external_egress.profile_requested_image": capability.requested_image,
             "ai-platform.external_egress.profile_requested_image_digest": capability.requested_image_digest,
+            "ai-platform.external_egress.upstream_bridge_version": capability.upstream_bridge_version,
+            "ai-platform.external_egress.callback_base_sha256": hashlib.sha256(
+                capability.callback_base_url.encode("utf-8")
+            ).hexdigest(),
+            "ai-platform.external_egress.openai_base_sha256": hashlib.sha256(
+                capability.openai_base_url.encode("utf-8")
+            ).hexdigest(),
+            "ai-platform.external_egress.anthropic_base_sha256": hashlib.sha256(
+                capability.anthropic_base_url.encode("utf-8")
+            ).hexdigest(),
             "ai-platform.external_egress.profile_expires_at": capability.expires_at,
         }
     )
@@ -3539,10 +3691,13 @@ class DockerContainerProvider:
                     request,
                     settings,
                     executor_auth_token=executor_auth_token,
+                    egress_bases=_docker_executor_egress_bases(
+                        settings,
+                        governed_docker_egress=True,
+                    ),
                     workspace_container_path=workspace.workspace_container_path,
                     native_tool_token=native_tool_token,
                     native_tool_socket=_NATIVE_TOOL_SOCKET if native_tool_required else "",
-                    governed_docker_egress=True,
                 ),
                 ports={"18000/tcp": (endpoint.bind_ip, None)},
                 **egress_admission.create_kwargs,
@@ -4485,6 +4640,7 @@ class OpenSandboxContainerProvider:
             request,
             settings,
             executor_auth_token=executor_auth_token,
+            egress_bases=capability.executor_egress_bases(),
             workspace_container_path=workspace.workspace_container_path,
         )
         kwargs = {

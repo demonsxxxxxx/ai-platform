@@ -54,3 +54,74 @@ server {
         try_files $uri $uri/ /index.html;
     }
 }
+
+server {
+    listen 8443 ssl;
+    server_name ${AI_PLATFORM_S72_BRIDGE_SERVER_NAME};
+
+    ssl_certificate /etc/nginx/s72-bridge/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/s72-bridge/tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+
+    access_log off;
+    client_max_body_size 1m;
+    client_body_timeout 10s;
+    send_timeout 10s;
+
+    allow ${AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP};
+    deny all;
+
+    if ($host != ${AI_PLATFORM_S72_BRIDGE_SERVER_NAME}) {
+        return 421;
+    }
+
+    location = /healthz {
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
+    location = /api/ai/runtime/callbacks/executor {
+        limit_except POST {
+            deny all;
+        }
+        proxy_pass ${AI_PLATFORM_API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_pass_request_headers on;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 10s;
+        proxy_send_timeout 10s;
+    }
+
+    location ^~ /openai/ {
+        limit_except GET POST {
+            deny all;
+        }
+        proxy_pass http://host.docker.internal:3002/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $proxy_host;
+        proxy_pass_request_headers on;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location ^~ /anthropic/ {
+        limit_except GET POST {
+            deny all;
+        }
+        proxy_pass http://host.docker.internal:3002/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $proxy_host;
+        proxy_pass_request_headers on;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location / {
+        return 404;
+    }
+}

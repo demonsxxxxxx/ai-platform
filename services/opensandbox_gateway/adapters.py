@@ -36,6 +36,7 @@ from .gateway import (
     RuntimeEvidence,
     deadline_scope,
     operation_deadline,
+    _validate_upstream_bridge_bases,
 )
 from .relay import PROXY_SOURCE, RELAY_SOURCE, STOP_RELAY_SOURCE
 
@@ -891,16 +892,32 @@ class BrokerPolicy:
     def __init__(self, value: Mapping[str, Any]) -> None:
         if set(value) != {"version", "targets"} or value.get("version") != 1 or not isinstance(value.get("targets"), dict):
             raise ValueError("invalid broker policy")
+        if set(value["targets"]) != {"callback", "openai", "anthropic"}:
+            raise ValueError("invalid broker policy")
         self.targets: dict[str, tuple[str, tuple[str, ...]]] = {}
+        bases: dict[str, str] = {}
+        pinned_ips: set[str] = set()
         for kind in ("callback", "openai", "anthropic"):
             item = value["targets"].get(kind)
             if not isinstance(item, dict) or set(item) != {"base_url", "expected_ips"}:
                 raise ValueError("broker target is incomplete")
-            parsed = urllib.parse.urlsplit(item["base_url"])
-            ips = tuple(str(ipaddress.ip_address(value)) for value in item["expected_ips"])
-            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or not ips:
+            if not isinstance(item["base_url"], str) or not isinstance(item["expected_ips"], list):
+                raise ValueError("broker target is incomplete")
+            try:
+                ips = tuple(str(ipaddress.ip_address(address)) for address in item["expected_ips"])
+            except ValueError:
+                raise ValueError("broker target must be pinned HTTPS") from None
+            if len(ips) != 1:
                 raise ValueError("broker target must be pinned HTTPS")
-            self.targets[kind] = (item["base_url"].rstrip("/"), ips)
+            address = ipaddress.ip_address(ips[0])
+            if address.version != 4 or not address.is_private or address.is_loopback or address.is_unspecified:
+                raise ValueError("broker target must be pinned HTTPS")
+            bases[kind] = item["base_url"]
+            pinned_ips.add(ips[0])
+            self.targets[kind] = (item["base_url"], ips)
+        _validate_upstream_bridge_bases(bases["callback"], bases["openai"], bases["anthropic"])
+        if len(pinned_ips) != 1:
+            raise ValueError("broker targets must share one pinned IP")
 
 
 class MailboxBroker:
@@ -921,9 +938,19 @@ class MailboxBroker:
         max_response_bytes: int,
         workspace_root: str = "/data/opensandbox/workspaces",
         dispatch_timeout_seconds: float | None = None,
+        *,
+        upstream_tls_context: ssl.SSLContext | None = None,
     ) -> None:
+        if upstream_tls_context is not None and (
+            not isinstance(upstream_tls_context, ssl.SSLContext)
+            or upstream_tls_context.check_hostname is not True
+            or upstream_tls_context.verify_mode != ssl.CERT_REQUIRED
+            or upstream_tls_context.minimum_version < ssl.TLSVersion.TLSv1_2
+        ):
+            raise ValueError("broker upstream TLS context is invalid")
         self.store = store
         self.policy = policy
+        self.upstream_tls_context = upstream_tls_context
         self.timeout_seconds = timeout_seconds
         self.dispatch_timeout_seconds = (
             timeout_seconds if dispatch_timeout_seconds is None else dispatch_timeout_seconds
@@ -1209,7 +1236,15 @@ class MailboxBroker:
             raise GatewayError(400, "broker_request_invalid")
         remaining = created_at + min(requested_timeout, policy_timeout) - now
         deadline = operation_deadline(remaining)
-        connection = _PinnedHTTPSConnection(target.hostname, target.port or 443, ips, deadline)
+        if self.upstream_tls_context is None:
+            raise GatewayError(500, "broker_upstream_trust_unavailable")
+        connection = _PinnedHTTPSConnection(
+            target.hostname,
+            target.port or 443,
+            ips,
+            deadline,
+            self.upstream_tls_context,
+        )
         timer = deadline.arm(lambda: _close_http_connection(connection))
         try:
             request_path = target.path + (("?" + local.query) if local.query else "")
@@ -1367,8 +1402,15 @@ class MailboxBroker:
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self, hostname: str, port: int, expected_ips: tuple[str, ...], deadline) -> None:
-        super().__init__(hostname, port, timeout=deadline.remaining(), context=ssl.create_default_context())
+    def __init__(
+        self,
+        hostname: str,
+        port: int,
+        expected_ips: tuple[str, ...],
+        deadline,
+        upstream_tls_context: ssl.SSLContext,
+    ) -> None:
+        super().__init__(hostname, port, timeout=deadline.remaining(), context=upstream_tls_context)
         self.expected_ips = expected_ips
         self.deadline = deadline
 

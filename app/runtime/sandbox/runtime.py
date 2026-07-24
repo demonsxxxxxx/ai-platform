@@ -15,14 +15,17 @@ from app.execution_boundary import (
 )
 from app.executors.base import RunExecutionOwner
 from app.runtime.kernel_contracts import AgentEvent
-from app.runtime.sandbox.container_provider import ContainerProvider, create_container_provider
+from app.runtime.sandbox.container_provider import (
+    ContainerProvider,
+    create_container_provider,
+    executor_callback_target,
+)
 from app.runtime.sandbox.contracts import (
     ContainerLease,
     ExecutorTaskRequest,
     SandboxRuntimeRequest,
     StopResult,
     WorkspaceLease,
-    build_trusted_callback_target,
 )
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
@@ -269,11 +272,8 @@ class SandboxRuntime:
             return 0
         return max(parsed, 0)
 
-    def _trusted_callback_target(self):
-        return build_trusted_callback_target(
-            self.settings.sandbox_callback_base_url,
-            extra_hosts=[getattr(self.settings, "sandbox_callback_host_gateway", "")],
-        )
+    def _trusted_callback_target(self, provider_name: str):
+        return executor_callback_target(self.settings, provider_name)
 
     def _lease_callback_token_id(self, lease: ContainerLease, *, attempt_id: str) -> str:
         return callback_token_id_for_binding(
@@ -287,10 +287,13 @@ class SandboxRuntime:
         execution_owner: RunExecutionOwner | None = None,
     ) -> SandboxRuntimeResult:
         total_started_at = time.monotonic()
-        trusted_callback_target = self._trusted_callback_target()
+        configured_provider = str(getattr(self.settings, "sandbox_container_provider", "fake") or "fake")
+        trusted_callback_target = self._trusted_callback_target(configured_provider)
         workspace = self.workspace_manager.prepare(request)
         lease_started_at = time.monotonic()
         lease = await self.provider.create_or_reuse(request, workspace)
+        if lease.provider != configured_provider:
+            trusted_callback_target = self._trusted_callback_target(lease.provider)
         lease_acquire_latency_ms = self._elapsed_ms(lease_started_at)
         lease_record_id: str | None = None
         try:

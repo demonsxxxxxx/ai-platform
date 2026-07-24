@@ -25,7 +25,7 @@ _TRUSTED_CALLBACK_HOSTS = {
     "gateway.docker.internal",
 }
 _TRUSTED_CALLBACK_SUFFIXES = (".test", ".localhost", ".invalid", ".internal")
-_TRUSTED_CALLBACK_PORTS = {80, 443, 8000, 8020}
+_TRUSTED_CALLBACK_PORTS = {80, 443, 8000, 8020, 18443}
 
 
 class CallbackTargetValidationError(ValueError):

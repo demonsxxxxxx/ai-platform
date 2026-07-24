@@ -306,8 +306,11 @@ class _OpenSandboxAttestor:
         "_api_key",
         "_base_url",
         "_callback_boundary_subject",
+        "_callback_base_url",
         "_contract_version",
         "_gateway_policy_subject",
+        "_openai_base_url",
+        "_anthropic_base_url",
         "_path_template",
         "_proof_key_id",
         "_proof_signing_key",
@@ -327,6 +330,9 @@ class _OpenSandboxAttestor:
         runtime_subject: str,
         gateway_policy_subject: str,
         callback_boundary_subject: str,
+        callback_base_url: str,
+        openai_base_url: str,
+        anthropic_base_url: str,
         proof_key_id: str,
         proof_signing_key: str,
         transport: _AttestationTransport,
@@ -339,6 +345,9 @@ class _OpenSandboxAttestor:
         self._runtime_subject = runtime_subject
         self._gateway_policy_subject = gateway_policy_subject
         self._callback_boundary_subject = callback_boundary_subject
+        self._callback_base_url = callback_base_url
+        self._openai_base_url = openai_base_url
+        self._anthropic_base_url = anthropic_base_url
         self._proof_key_id = proof_key_id
         if len(proof_signing_key.encode("utf-8")) < 32:
             raise ValueError("attestation proof signing key is invalid")
@@ -356,11 +365,19 @@ class _OpenSandboxAttestor:
         runtime_subject = _required_text(getattr(capability, "runtime_subject", ""))
         gateway_policy_subject = _required_text(getattr(capability, "gateway_policy_subject", ""))
         callback_boundary_subject = _required_text(getattr(capability, "callback_boundary_subject", ""))
+        upstream_bridge_version = _required_text(getattr(capability, "upstream_bridge_version", ""))
+        callback_base_url = _required_text(getattr(capability, "callback_base_url", ""))
+        openai_base_url = _required_text(getattr(capability, "openai_base_url", ""))
+        anthropic_base_url = _required_text(getattr(capability, "anthropic_base_url", ""))
         if (
             runtime_identity != _ATTESTATION_RUNTIME_IDENTITY
             or runtime_subject != self._runtime_subject
             or gateway_policy_subject != self._gateway_policy_subject
             or callback_boundary_subject != self._callback_boundary_subject
+            or upstream_bridge_version != _ATTESTATION_PROFILE_VERSION
+            or callback_base_url != self._callback_base_url
+            or openai_base_url != self._openai_base_url
+            or anthropic_base_url != self._anthropic_base_url
         ):
             raise ValueError("configured attestation subjects drifted")
         image_subject, image_digest = _immutable_image(
@@ -403,6 +420,12 @@ class _OpenSandboxAttestor:
             "host_path_policy": {
                 "subject": _ATTESTATION_HOST_PATH_POLICY_SUBJECT,
                 "unscoped_host_paths_allowed": False,
+            },
+            "upstream_bridge": {
+                "version": upstream_bridge_version,
+                "callback_base_url": callback_base_url,
+                "openai_base_url": openai_base_url,
+                "anthropic_base_url": anthropic_base_url,
             },
             "subjects": {
                 "gateway_policy": gateway_policy_subject,
@@ -498,6 +521,15 @@ def build_opensandbox_attestation_probe(
             ),
             callback_boundary_subject=_required_text(
                 getattr(settings, "opensandbox_external_egress_callback_boundary_subject", "")
+            ),
+            callback_base_url=_required_text(
+                getattr(settings, "opensandbox_external_egress_callback_base_url", "")
+            ),
+            openai_base_url=_required_text(
+                getattr(settings, "opensandbox_external_egress_openai_base_url", "")
+            ),
+            anthropic_base_url=_required_text(
+                getattr(settings, "opensandbox_external_egress_anthropic_base_url", "")
             ),
             proof_key_id=_required_text(getattr(settings, "sandbox_egress_proof_key_id", "")),
             proof_signing_key=_required_text(getattr(settings, "sandbox_egress_proof_signing_key", "")),

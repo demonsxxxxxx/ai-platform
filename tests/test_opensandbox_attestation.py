@@ -36,6 +36,9 @@ def attestation_settings(**overrides: Any) -> SimpleNamespace:
         "sandbox_runtime_subject": "runtime-subject-a",
         "opensandbox_external_egress_gateway_policy_subject": "gateway-policy-subject-a",
         "opensandbox_external_egress_callback_boundary_subject": "callback-boundary-subject-a",
+        "opensandbox_external_egress_callback_base_url": "https://bridge.internal.example:18443",
+        "opensandbox_external_egress_openai_base_url": "https://bridge.internal.example:18443/openai/v1",
+        "opensandbox_external_egress_anthropic_base_url": "https://bridge.internal.example:18443/anthropic",
         "sandbox_egress_proof_key_id": "proof-key-a",
         "sandbox_egress_proof_signing_key": PROOF_SIGNING_KEY,
     }
@@ -54,6 +57,10 @@ def capability(**overrides: Any) -> SimpleNamespace:
         "deny_counter_subject": "deny-counter-subject-a",
         "requested_image": IMAGE_SUBJECT,
         "requested_image_digest": IMAGE_DIGEST,
+        "upstream_bridge_version": "v1",
+        "callback_base_url": "https://bridge.internal.example:18443",
+        "openai_base_url": "https://bridge.internal.example:18443/openai/v1",
+        "anthropic_base_url": "https://bridge.internal.example:18443/anthropic",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -107,6 +114,12 @@ def attestation_payload(**overrides: Any) -> dict[str, Any]:
         "host_path_policy": {
             "subject": "scoped-workspace-only",
             "unscoped_host_paths_allowed": False,
+        },
+        "upstream_bridge": {
+            "version": "v1",
+            "callback_base_url": "https://bridge.internal.example:18443",
+            "openai_base_url": "https://bridge.internal.example:18443/openai/v1",
+            "anthropic_base_url": "https://bridge.internal.example:18443/anthropic",
         },
         "subjects": {
             "gateway_policy": "gateway-policy-subject-a",
@@ -189,6 +202,9 @@ async def test_authenticated_attestor_accepts_exact_topology_contract() -> None:
         ("opensandbox_attestation_timeout_seconds", 5.1),
         ("opensandbox_external_egress_gateway_policy_subject", ""),
         ("opensandbox_external_egress_callback_boundary_subject", ""),
+        ("opensandbox_external_egress_callback_base_url", ""),
+        ("opensandbox_external_egress_openai_base_url", ""),
+        ("opensandbox_external_egress_anthropic_base_url", ""),
         ("sandbox_runtime_subject", ""),
         ("sandbox_egress_proof_key_id", ""),
     ],
@@ -493,6 +509,9 @@ def test_settings_and_compose_wire_complete_opensandbox_contract_for_api_and_wor
         "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
         "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT",
         "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT",
+        "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL",
+        "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL",
+        "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL",
     }
     compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     for service_name in ("api", "worker"):
@@ -511,4 +530,7 @@ def test_settings_and_compose_wire_complete_opensandbox_contract_for_api_and_wor
         "opensandbox_attestation_path",
         "opensandbox_attestation_contract_version",
         "opensandbox_attestation_timeout_seconds",
+        "opensandbox_external_egress_callback_base_url",
+        "opensandbox_external_egress_openai_base_url",
+        "opensandbox_external_egress_anthropic_base_url",
     } <= Settings.model_fields.keys()

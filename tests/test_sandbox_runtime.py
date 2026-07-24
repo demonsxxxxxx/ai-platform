@@ -3,6 +3,7 @@ import hashlib
 import hmac
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -131,6 +132,48 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert lease_calls[0][2].run_id == "run-a"
     assert lease_calls[1][0] == "release"
     assert lease_calls[1][2] == "dispatch_completed"
+
+
+@pytest.mark.asyncio
+async def test_runtime_uses_opensandbox_external_bridge_callback_without_changing_docker_base(
+    tmp_path, monkeypatch
+):
+    sent = []
+
+    class StubSettings:
+        sandbox_container_provider = "opensandbox"
+        sandbox_callback_base_url = "http://api.sandbox.internal:8020"
+        sandbox_callback_token = "settings-token"
+        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
+        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
+        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+
+    class OpenSandboxProvider(FakeContainerProvider):
+        async def create_or_reuse(self, runtime_request, workspace):
+            lease = await super().create_or_reuse(runtime_request, workspace)
+            return ContainerLease(**{**lease.model_dump(), "provider": "opensandbox"})
+
+    async def execute(_executor_url, task_request):
+        sent.append(task_request)
+        return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=OpenSandboxProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=noop_lease,
+        release_lease=noop_lease,
+    )
+
+    await runtime.submit(request())
+
+    assert sent[0].callback_base_url == "https://bridge.internal.example:18443"
+    assert sent[0].callback_url == (
+        "https://bridge.internal.example:18443/api/ai/runtime/callbacks/executor"
+    )
+    assert StubSettings.sandbox_callback_base_url == "http://api.sandbox.internal:8020"
 
 
 @pytest.mark.asyncio
@@ -550,6 +593,9 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
         sandbox_egress_proof_signing_key = signing_key
+        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
+        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
+        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
 
     class OpenSandboxProvider(FakeContainerProvider):
         async def create_or_reuse(self, request, workspace):
@@ -729,6 +775,9 @@ async def test_runtime_default_db_record_rejects_incomplete_trusted_runtime_hand
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
+        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
+        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
+        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
 
     class IncompleteProvider(FakeContainerProvider):
         async def create_or_reuse(self, request, workspace):
@@ -772,8 +821,17 @@ async def test_runtime_default_db_record_rejects_incomplete_trusted_runtime_hand
 
 
 @pytest.mark.asyncio
-async def test_runtime_records_opensandbox_provider_as_platform_db_lease(tmp_path):
+async def test_runtime_records_opensandbox_provider_as_platform_db_lease(tmp_path, monkeypatch):
     calls = []
+
+    settings = SimpleNamespace(
+        sandbox_callback_base_url="http://platform.test",
+        sandbox_callback_token="settings-token",
+        opensandbox_external_egress_callback_base_url="https://bridge.internal.example:18443",
+        opensandbox_external_egress_openai_base_url="https://bridge.internal.example:18443/openai/v1",
+        opensandbox_external_egress_anthropic_base_url="https://bridge.internal.example:18443/anthropic",
+    )
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: settings)
 
     class OpenSandboxProvider(FakeContainerProvider):
         async def create_or_reuse(self, request, workspace):
@@ -839,6 +897,9 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
         sandbox_egress_proof_signing_key = "runtime-test-proof-key-with-enough-entropy-2026"
+        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
+        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
+        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
 
     class HeaderProvider(FakeContainerProvider):
         async def create_or_reuse(self, request, workspace):
