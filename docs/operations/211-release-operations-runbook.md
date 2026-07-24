@@ -22,10 +22,12 @@ set -eu
 git -C "$SOURCE" fetch --no-tags origin main:refs/remotes/origin/main
 TARGET="$(git -C "$SOURCE" rev-parse refs/remotes/origin/main)"
 cd "$SOURCE"
-python3 tools/release_authority.py deploy-main-commit \
+timeout --signal=TERM --kill-after=15s 3900s \
+  python3 tools/release_authority.py deploy-main-commit \
   --release-root "$ROOT/releases" \
   --commit "$TARGET" \
   --strategy auto \
+  --canonical-build-timeout-seconds 1800 \
   --docker-cmd "sudo -n docker" \
   --compose-file deploy/ai-platform/docker-compose.yml \
   --compose-file deploy/ai-platform/docker-compose.sandbox.yml
@@ -253,12 +255,23 @@ Compose deployment:
 
 Backend source-only/runtime-overlay stages are bounded at 90 seconds and frontend
 source-only stages at 180 seconds. Dependency-triggered canonical builds have a
-separate bounded 900-second bootstrap maximum; this does not widen either
-source-only SLO. On timeout the authority terminates its owned process tree and
-uses a short bounded pipe-drain grace before reporting the redacted failure.
-Retain the compact stage evidence and do not expose the environment file or raw
-command output. The existing external lease/fencing gate remains the only overlap
-guard.
+separate bounded per-stage timeout: `--canonical-build-timeout-seconds` accepts
+only 300 through 3600 seconds and defaults to 1800. The normal 211 invocation
+sets 1800 explicitly. This does not widen either source-only SLO. The effective
+canonical timeout is recorded in the auto plan and every canonical-build stage.
+On timeout the authority terminates its owned process tree and uses a short
+bounded pipe-drain grace before reporting timeout, exit code when available, and
+only a fixed recognized stderr category; raw command output and unrecognized
+stderr remain redacted.
+
+The command-level `timeout --signal=TERM --kill-after=15s 3900s` is the normal
+outer process bound. It leaves room for two worst-case 1800-second role
+dependency builds plus bounded verification and convergence, while remaining
+finite. Configure the enclosing durable runner with a 4200-second deadline so it
+outlives that command-level cleanup window; do not lower it below 3900 seconds or
+replace either timeout with an unlimited value. Retain the compact stage evidence
+and do not expose the environment file or raw command output. The existing
+external lease/fencing gate remains the only overlap guard.
 
 The local workstation does not provide Docker. The real-211 benchmark gate must
 observe backend-only auto release below 90 seconds, frontend-only below 180
