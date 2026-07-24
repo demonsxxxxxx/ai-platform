@@ -9,7 +9,7 @@ from app.execution_boundary import (
     governed_egress_proof_label,
 )
 from app.runtime.sandbox.container_provider import _opensandbox_governed_runtime_subject
-from app.runtime.sandbox.contracts import StopResult
+from app.runtime.sandbox.contracts import ContainerLease, StopResult
 
 
 TEST_PROOF_KEY = "cleanup-test-proof-key-with-enough-entropy-2026"
@@ -273,8 +273,10 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         kill_calls=0,
         close_calls=0,
     )
+    remote_trace = []
 
     def get_info():
+        remote_trace.append("get_info")
         if failure_mode == "get-info-404":
             raise SandboxApiException("sandbox metadata is unavailable", status_code=404)
         return {
@@ -297,6 +299,7 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         @classmethod
         def connect(cls, sandbox_id, **_kwargs):
             assert sandbox_id == remote.id
+            remote_trace.append("connect")
             return remote
 
     class FakeConnectionConfig:
@@ -325,7 +328,32 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         runtime_executor_url="http://opensandbox-executor.test:18000",
         lease_payload_json={"governed_egress_proof": proof},
     )
+    attempt_bound_lease = ContainerLease(
+        container_id="osb-run-a",
+        container_name="opensandbox-run-a",
+        provider="opensandbox",
+        executor_url="http://opensandbox-executor.test:18000",
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        sandbox_mode="ephemeral",
+        browser_enabled=False,
+        workspace_host_path="",
+        workspace_container_path="/workspace",
+        labels={
+            GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
+            "ai-platform.attempt_id": "attempt-a",
+        },
+    )
     releases = []
+
+    class ExactAttemptProvider:
+        async def stop(self, lease, *, reason):
+            assert lease.model_dump(exclude={"labels"}) == attempt_bound_lease.model_dump(exclude={"labels"})
+            assert lease.labels == {GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof)}
+            return await provider.stop(attempt_bound_lease, reason=reason)
 
     async def fake_list_expired_active_sandbox_leases(conn, *, tenant_id=None, limit=100):
         return [row]
@@ -344,13 +372,17 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         fake_release_stopped_sandbox_leases,
     )
 
-    with pytest.raises(SandboxRuntimeCleanupError):
+    with pytest.raises(SandboxRuntimeCleanupError) as exc_info:
         await cleanup_expired_sandbox_runtime_leases(
             object(),
             tenant_id="tenant-a",
-            provider_factory=lambda _provider_name: provider,
+            provider_factory=lambda _provider_name: ExactAttemptProvider(),
         )
 
+    assert remote_trace == ["connect", "get_info"]
+    assert exc_info.value.failures == [
+        {"container_id": "osb-run-a", "message": "OpenSandbox sandbox stop failed"}
+    ]
     assert remote.kill_calls == 0
     assert remote.close_calls == 0
     assert releases == []
