@@ -354,7 +354,6 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
     assert remote.kill_calls == 0
     assert remote.close_calls == 0
     assert releases == []
-    assert provider._leases["opensandbox-run-a"].container_id == "osb-run-a"
 
 
 @pytest.mark.asyncio

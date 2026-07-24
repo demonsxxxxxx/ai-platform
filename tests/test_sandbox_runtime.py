@@ -95,6 +95,8 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         / "session-a"
         / "runs"
         / "run-a"
+        / "attempts"
+        / "qat_test-runtime-attempt"
     )
 
     assert result.status == "accepted"
@@ -482,6 +484,8 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
                         / "session-a"
                         / "runs"
                         / "run-a"
+                        / "attempts"
+                        / "qat_test-runtime-attempt"
                         / "workspace"
                     ),
                     "workspace_container_path": "/workspace",
