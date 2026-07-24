@@ -269,6 +269,65 @@ async def test_sdk_error_terminal_preserves_selected_skill_not_invoked_classific
 
 
 @pytest.mark.asyncio
+async def test_dependency_hook_failure_after_selected_success_is_safe_upstream_error(
+    monkeypatch,
+    tmp_path: Path,
+):
+    async def query(prompt, options):
+        success_hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
+        failure_hook = options.kwargs["hooks"]["PostToolUseFailure"][0].hooks[0]
+        await success_hook(
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "review-skill"},
+                "tool_use_id": "selected-tool-id",
+            }
+        )
+        await failure_hook(
+            {
+                "hook_event_name": "PostToolUseFailure",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "minimax-docx"},
+                "tool_use_id": "dependency-tool-id",
+            }
+        )
+        raise RuntimeError("private dependency command failed")
+        if False:
+            yield None
+
+    _install_sdk(monkeypatch, query)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _settings,
+    )
+    metadata = {
+        "review-skill": {
+            "name": "Document review",
+            "version": "version-a",
+            "availability": "available",
+        }
+    }
+
+    result = await run_claude_agent_sdk(
+        prompt="review",
+        cwd=tmp_path,
+        skill_id="review-skill",
+        skills=["review-skill", "minimax-docx"],
+        public_skill_metadata=metadata,
+    )
+
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.used_skills == ["review-skill"]
+    assert result.used_skills_source == "executor_hook"
+    assert result.turn_diagnostics["terminal_class"] == "upstream_error"
+    assert result.turn_diagnostics["selected_skill"] == metadata["review-skill"]
+    assert result.turn_diagnostics["used_skills"] == [metadata["review-skill"]]
+    assert "minimax-docx" not in str(result.turn_diagnostics)
+    assert "private dependency command failed" not in str(result.turn_diagnostics)
+
+
+@pytest.mark.asyncio
 async def test_generic_upstream_error_never_exposes_private_exception_text(
     monkeypatch,
     tmp_path: Path,

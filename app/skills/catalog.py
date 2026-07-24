@@ -16,7 +16,10 @@ from app.capability_distribution import (
 )
 from app.context_manifest import truncate_utf8_text
 from app.control_plane_contracts import sanitize_public_text
-from app.skills.dependencies import SkillDependencyPolicyError
+from app.skills.dependencies import (
+    INTERNAL_DEPENDENCY_SKILL_IDS,
+    SkillDependencyPolicyError,
+)
 from app.skills.lifecycle import is_user_runnable_status, normalize_skill_version_status
 from app.skills.pinning import (
     MAX_SKILL_SNAPSHOT_FILE_BYTES,
@@ -311,6 +314,8 @@ def parse_authorized_skill_catalog_snapshot(
     skill_ids = [entry.skill_id for entry in entries]
     if len(skill_ids) != len(set(skill_ids)):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_duplicate_skill")
+    if any(skill_id in INTERNAL_DEPENDENCY_SKILL_IDS for skill_id in skill_ids):
+        raise AuthorizedSkillCatalogError("authorized_skill_catalog_private_dependency_exposed")
     truncated = value.get("truncated")
     omitted_count = value.get("omitted_count")
     if (
@@ -339,14 +344,16 @@ def parse_authorized_skill_catalog_snapshot(
     materialized_skill_ids = tuple(raw_materialized_skill_ids)
     available_skill_ids = {entry.skill_id for entry in entries if entry.available}
     if (
-        any(skill_id not in available_skill_ids for skill_id in materialized_skill_ids)
-        or (
+        (
             expected_binding.selected_skill_id == "general-chat"
             and materialized_skill_ids
         )
         or (
             materialized_skill_ids
-            and materialized_skill_ids[0] != expected_binding.selected_skill_id
+            and (
+                materialized_skill_ids[0] != expected_binding.selected_skill_id
+                or expected_binding.selected_skill_id not in available_skill_ids
+            )
         )
     ):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_materialization_invalid")
@@ -486,11 +493,24 @@ def load_runtime_authorized_skill_catalog(
     entry_by_id = {entry.skill_id: entry for entry in snapshot.entries}
     for skill_id, manifest in manifest_by_id.items():
         entry = entry_by_id.get(skill_id)
-        if entry is None or not entry.available or str(manifest.get("version") or "") != entry.version:
+        if entry is not None and (
+            not entry.available or str(manifest.get("version") or "") != entry.version
+        ):
+            raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
+        if entry is None and skill_id not in INTERNAL_DEPENDENCY_SKILL_IDS:
             raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
         dependency_ids = manifest.get("dependency_ids") or []
         if any(dependency_id not in manifest_by_id for dependency_id in dependency_ids):
             raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
+        try:
+            validate_skill_version_dependency_policy(
+                manifest,
+                available_skill_ids=set(manifest_by_id),
+            )
+        except (SkillDependencyPolicyError, SkillVersionMaterializationError, ValueError) as exc:
+            raise AuthorizedSkillCatalogError(
+                "authorized_skill_materializations_mismatch"
+            ) from exc
     if manifest_ids:
         reachable: set[str] = set()
 
@@ -712,27 +732,29 @@ def _bounded_candidates(
 
 
 def _selected_materialization_candidates(
-    selected: list[_Candidate],
+    candidates: dict[str, _Candidate],
     *,
     selected_skill_id: str,
     pinned_by_id: dict[str, dict[str, Any]],
 ) -> list[_Candidate]:
     """Decode only the routed Skill and its authorized dependency closure."""
 
-    if selected_skill_id == "general-chat":
+    if (
+        selected_skill_id == "general-chat"
+        or selected_skill_id in INTERNAL_DEPENDENCY_SKILL_IDS
+    ):
         return []
-    by_id = {candidate.entry.skill_id: candidate for candidate in selected}
-    routed = by_id.get(selected_skill_id)
+    routed = candidates.get(selected_skill_id)
     if routed is None:
         return []
     materialized: list[_Candidate] = []
     materialized_ids: set[str] = set()
-    available_skill_ids = set(by_id)
+    available_skill_ids = set(candidates)
 
     def add(skill_id: str) -> bool:
         if skill_id in materialized_ids:
             return True
-        candidate = by_id.get(skill_id)
+        candidate = candidates.get(skill_id)
         if candidate is None:
             return False
         manifest, availability = _manifest_for_row(
@@ -841,9 +863,14 @@ async def resolve_authorized_skill_catalog(
         if candidate is not None:
             candidates[skill_id] = candidate
     candidates = _exclude_unavailable_dependency_candidates(candidates)
+    discoverable_candidates = {
+        skill_id: candidate
+        for skill_id, candidate in candidates.items()
+        if skill_id not in INTERNAL_DEPENDENCY_SKILL_IDS
+    }
 
     selected, omitted_count = _bounded_candidates(
-        candidates,
+        discoverable_candidates,
         selected_skill_id=binding.selected_skill_id,
     )
     while True:
@@ -864,7 +891,7 @@ async def resolve_authorized_skill_catalog(
     entries = tuple(candidate.entry for candidate in selected)
     truncated = omitted_count > 0
     materialized = _selected_materialization_candidates(
-        selected,
+        candidates,
         selected_skill_id=binding.selected_skill_id,
         pinned_by_id=pinned_by_id,
     )

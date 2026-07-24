@@ -1875,9 +1875,7 @@ async def run_claude_agent_sdk(
     except Exception as exc:
         error_code = _canonical_sdk_error(
             exc,
-            selected_skill_error=(
-                _SDK_SELECTED_SKILL_HOOK_FAILED if failed_skill_names else None
-            ),
+            selected_skill_error=selected_skill_hook_error(),
             tool_admission_denials=diagnostic_counters["tool_admission_denials"],
         )
         return ClaudeAgentSdkRunResult(

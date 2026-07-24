@@ -15,7 +15,11 @@ import pytest
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAccessDecision
 from app.executors.base import RunPayload
-from app.executors.claude_agent_sdk_runner import build_skill_prompt, run_claude_agent_sdk
+from app.executors.claude_agent_sdk_runner import (
+    build_skill_prompt,
+    project_sdk_turn_diagnostics,
+    run_claude_agent_sdk,
+)
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.models import QueueRunPayload
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
@@ -844,10 +848,10 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
     )
     assert resolution.snapshot.available_skill_ids == (
         "qa-file-reviewer",
-        "minimax-docx",
         "skill-a",
         "skill-c",
     )
+    assert resolution.snapshot.entry("minimax-docx") is None
     assert resolution.snapshot.materialized_skill_ids == (
         "qa-file-reviewer",
         "minimax-docx",
@@ -904,6 +908,22 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
     assert "BODY_ONLY_B" not in prepared.prompt
     assert "BODY_ONLY_C" not in prepared.prompt
     assert "BODY_ONLY_DEPENDENCY" not in prepared.prompt
+    assert "minimax-docx" not in prepared.prompt
+    diagnostics = project_sdk_turn_diagnostics(
+        {
+            "counters": {"skill_invocations": 2},
+            "last_public_stage": "skills",
+        },
+        error_code=None,
+        selected_skill_id="qa-file-reviewer",
+        used_skill_ids=["qa-file-reviewer", "minimax-docx"],
+        public_skill_metadata=prepared.public_skill_metadata,
+    )
+    assert diagnostics["selected_skill"] == prepared.public_skill_metadata["qa-file-reviewer"]
+    assert diagnostics["used_skills"] == [
+        prepared.public_skill_metadata["qa-file-reviewer"]
+    ]
+    assert "minimax-docx" not in str(diagnostics)
     assert set(decoded_skill_ids) == {"qa-file-reviewer", "minimax-docx"}
 
 
