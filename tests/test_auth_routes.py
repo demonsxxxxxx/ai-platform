@@ -637,12 +637,19 @@ def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(
     assert body["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
 
 
-def test_company_login_admin_allowlist_matches_submitted_username(monkeypatch):
+def test_company_login_submitted_username_does_not_bypass_trusted_workid_admin_allowlist(monkeypatch):
     async def fake_login(username, password):
         return {"workId": "W001", "userName": username, "cnName": "Developer"}
 
     async def fake_user_info(work_id):
-        return {"roles": [], "permissions": []}
+        assert work_id == "W001"
+        return {
+            "workid": "W001",
+            "username": None,
+            "roles": [],
+            "permissions": [],
+            "active": True,
+        }
 
     async def noop(*args, **kwargs):
         return None
@@ -668,8 +675,9 @@ def test_company_login_admin_allowlist_matches_submitted_username(monkeypatch):
     me_response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
 
     assert me_response.status_code == 200
-    assert me_response.json()["roles"] == ["admin"]
-    assert me_response.json()["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
+    assert me_response.json()["roles"] == ["user"]
+    assert me_response.json()["permissions"] == EXPECTED_COMPANY_USER_PERMISSIONS
+    assert "model:admin" not in me_response.json()["permissions"]
 
 
 def test_company_unsuccessful_login_status_returns_401(monkeypatch):
