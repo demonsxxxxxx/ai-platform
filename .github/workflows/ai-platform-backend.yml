@@ -20,7 +20,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -45,6 +47,34 @@ jobs:
 
       - name: Compile backend sources
         run: python -m compileall -q app tools scripts
+
+      - name: Run code governance
+        if: github.event_name == 'pull_request'
+        env:
+          GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          GOVERNANCE_FETCH_TOKEN: ${{ github.token }}
+          PYTHONSAFEPATH: "1"
+        run: |
+          set -euo pipefail
+          [[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer $GOVERNANCE_FETCH_TOKEN" fetch --no-tags origin "$GOVERNANCE_HEAD_REF"
+          unset GOVERNANCE_FETCH_TOKEN
+          test "$(git rev-parse "$GOVERNANCE_BASE_REF^{commit}")" = "$GOVERNANCE_BASE_REF"
+          test "$(git rev-parse "$GOVERNANCE_HEAD_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+          git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"
+          GOVERNANCE_BASE_WORKTREE="$RUNNER_TEMP/code-governance-base"
+          GOVERNANCE_HEAD_WORKTREE="$RUNNER_TEMP/code-governance-head"
+          git worktree add --detach "$GOVERNANCE_BASE_WORKTREE" "$GOVERNANCE_BASE_REF"
+          git worktree add --detach "$GOVERNANCE_HEAD_WORKTREE" "$GOVERNANCE_HEAD_REF"
+          (
+            cd "$GOVERNANCE_HEAD_WORKTREE"
+            python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check \
+              --base-ref "$GOVERNANCE_BASE_REF" \
+              --head-ref "$GOVERNANCE_HEAD_REF" \
+              --format text
+          )
 
       - name: Run sandbox provider targeted tests
         run: |
