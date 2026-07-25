@@ -1,9 +1,10 @@
 import re
+import tomllib
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
+PYPROJECT = ROOT / "pyproject.toml"
 AGENT_RULES = ROOT / "AGENTS.md"
 ISSUE_WORKFLOW = ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
 
@@ -32,6 +33,17 @@ def test_backend_required_check_runs_on_every_main_push():
     assert "branches:" in push_block
     assert "- main" in push_block
     assert "paths:" not in push_block
+
+
+def test_ruff_is_pinned_in_the_test_extra_without_enabling_broad_linting():
+    with PYPROJECT.open("rb") as handle:
+        pyproject = tomllib.load(handle)
+
+    test_dependencies = pyproject["project"]["optional-dependencies"]["test"]
+    ruff_dependencies = [dependency for dependency in test_dependencies if dependency.startswith("ruff")]
+
+    assert ruff_dependencies == ["ruff==0.11.13"]
+    assert all(not dependency.startswith("ruff") for dependency in pyproject["project"]["dependencies"])
 
 
 def test_backend_required_contract_preserves_high_risk_design_triggers():
