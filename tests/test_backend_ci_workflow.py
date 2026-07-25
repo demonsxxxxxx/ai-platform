@@ -2,7 +2,6 @@ import os
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +38,8 @@ def test_backend_required_check_runs_on_every_main_push():
 
 
 def test_ruff_is_pinned_in_the_test_extra_without_enabling_broad_linting():
+    import tomllib
+
     with PYPROJECT.open("rb") as handle:
         pyproject = tomllib.load(handle)
 
