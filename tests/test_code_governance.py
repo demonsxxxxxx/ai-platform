@@ -376,6 +376,7 @@ def test_missing_ruff_fails_closed_and_command_is_deterministic(
         "-m",
         "ruff",
         "check",
+        "--isolated",
         "--",
         "app/alpha.py",
         "app/zeta.py",
@@ -405,6 +406,47 @@ def test_ruff_failure_is_reported(governance_repo: tuple[Path, str], monkeypatch
 
     assert evaluation.ruff["status"] == "failed"
     assert "ruff_failed" in _codes(evaluation)
+
+
+@pytest.mark.parametrize(
+    ("config_path", "config"),
+    [
+        ("pyproject.toml", "[tool.ruff.lint]\nignore = [\"F401\"]\n"),
+        ("ruff.toml", "[lint]\nignore = [\"F401\"]\n"),
+        (".ruff.toml", "[lint]\nignore = [\"F401\"]\n"),
+    ],
+)
+def test_ruff_isolated_ignores_head_config_suppression(
+    governance_repo: tuple[Path, str], config_path: str, config: str
+) -> None:
+    repo, base = governance_repo
+    _write(repo, "tests/test_alpha.py", "import os\n")
+    _write(repo, config_path, config)
+    head = _commit(repo, f"suppress F401 through {config_path}")
+
+    configured = _run(
+        repo,
+        sys.executable,
+        "-m",
+        "ruff",
+        "check",
+        "--",
+        "tests/test_alpha.py",
+        check=False,
+    )
+    evaluation = code_governance.CodeGovernanceEvaluator(repo, today=date(2026, 7, 25)).evaluate(base, head)
+
+    assert configured.returncode == 0
+    assert "ruff_failed" in _codes(evaluation)
+    assert evaluation.ruff["command"] == [
+        "python",
+        "-m",
+        "ruff",
+        "check",
+        "--isolated",
+        "--",
+        "tests/test_alpha.py",
+    ]
 
 
 def test_json_is_deterministic(governance_repo: tuple[Path, str]) -> None:
