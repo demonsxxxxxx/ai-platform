@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
+FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 AGENT_RULES = ROOT / "AGENTS.md"
 ISSUE_WORKFLOW = ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
@@ -48,6 +49,33 @@ def test_ruff_is_pinned_in_the_test_extra_without_enabling_broad_linting():
 
     assert ruff_dependencies == ["ruff==0.11.13"]
     assert all(not dependency.startswith("ruff") for dependency in pyproject["project"]["dependencies"])
+
+
+def test_frontend_static_contracts_install_only_the_pinned_test_extra_ruff():
+    import tomllib
+
+    workflow = FRONTEND_WORKFLOW.read_text(encoding="utf-8")
+    install_step = workflow.split("- name: Install Python test dependencies", 1)[1].split(
+        "- name: Verify static frontend Python contracts", 1
+    )[0]
+
+    with PYPROJECT.open("rb") as handle:
+        pyproject = tomllib.load(handle)
+
+    ruff_dependencies = [
+        dependency
+        for dependency in pyproject["project"]["optional-dependencies"]["test"]
+        if dependency.startswith("ruff==")
+    ]
+
+    assert ruff_dependencies == ["ruff==0.11.13"]
+    assert 'tomllib.load(handle)["project"]["optional-dependencies"]["test"]' in install_step
+    assert 'dependency.startswith("ruff==")' in install_step
+    assert "if len(ruff_dependencies) != 1:" in install_step
+    assert '"pytest", "pyyaml", ruff_dependencies[0]' in install_step
+    assert "*test_dependencies" not in install_step
+    assert '["project"]["dependencies"]' not in install_step
+    assert "tests/test_backend_ci_workflow.py" in workflow
 
 
 def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():

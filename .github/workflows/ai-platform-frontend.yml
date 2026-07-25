@@ -38,7 +38,27 @@ jobs:
         run: corepack pnpm install --frozen-lockfile
 
       - name: Install Python test dependencies
-        run: python -m pip install pytest pyyaml
+        shell: pwsh
+        run: |
+          @'
+          import subprocess
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as handle:
+              test_dependencies = tomllib.load(handle)["project"]["optional-dependencies"]["test"]
+
+          ruff_dependencies = [dependency for dependency in test_dependencies if dependency.startswith("ruff==")]
+          if len(ruff_dependencies) != 1:
+              raise RuntimeError("expected exactly one pinned Ruff test dependency")
+
+          subprocess.check_call(
+              [sys.executable, "-m", "pip", "install", "pytest", "pyyaml", ruff_dependencies[0]]
+          )
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Verify static frontend Python contracts
         run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py tests/test_release_authority.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp
