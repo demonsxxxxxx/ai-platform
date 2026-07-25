@@ -2,7 +2,12 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
+
+import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
@@ -45,10 +50,31 @@ def test_ruff_is_pinned_in_the_test_extra_without_enabling_broad_linting():
         pyproject = tomllib.load(handle)
 
     test_dependencies = pyproject["project"]["optional-dependencies"]["test"]
-    ruff_dependencies = [dependency for dependency in test_dependencies if dependency.startswith("ruff")]
+    ruff_dependencies = [
+        requirement
+        for dependency in test_dependencies
+        if canonicalize_name((requirement := Requirement(dependency)).name) == "ruff"
+    ]
 
-    assert ruff_dependencies == ["ruff==0.11.13"]
-    assert all(not dependency.startswith("ruff") for dependency in pyproject["project"]["dependencies"])
+    assert [str(requirement) for requirement in ruff_dependencies] == ["ruff==0.11.13"]
+    assert all(
+        canonicalize_name(Requirement(dependency).name) != "ruff"
+        for dependency in pyproject["project"]["dependencies"]
+    )
+
+
+def _frontend_ruff_requirement_resolver():
+    workflow = FRONTEND_WORKFLOW.read_text(encoding="utf-8")
+    install_step = workflow.split("- name: Install Python test dependencies", 1)[1].split(
+        "- name: Verify static frontend Python contracts", 1
+    )[0]
+    install_script = install_step.split("@'\n", 1)[1].split("\n'@ | python -", 1)[0]
+    resolver_source = textwrap.dedent(
+        install_script.split('with open("pyproject.toml", "rb") as handle:', 1)[0]
+    )
+    namespace: dict[str, object] = {}
+    exec(resolver_source, namespace)  # noqa: S102 -- executes only the repository workflow snippet under test.
+    return namespace["resolve_ruff_requirement"]
 
 
 def test_frontend_static_contracts_install_only_the_pinned_test_extra_ruff():
@@ -62,20 +88,58 @@ def test_frontend_static_contracts_install_only_the_pinned_test_extra_ruff():
     with PYPROJECT.open("rb") as handle:
         pyproject = tomllib.load(handle)
 
-    ruff_dependencies = [
-        dependency
-        for dependency in pyproject["project"]["optional-dependencies"]["test"]
-        if dependency.startswith("ruff==")
-    ]
-
-    assert ruff_dependencies == ["ruff==0.11.13"]
+    test_dependencies = pyproject["project"]["optional-dependencies"]["test"]
     assert 'tomllib.load(handle)["project"]["optional-dependencies"]["test"]' in install_step
-    assert 'dependency.startswith("ruff==")' in install_step
-    assert "if len(ruff_dependencies) != 1:" in install_step
-    assert '"pytest", "pyyaml", ruff_dependencies[0]' in install_step
+    assert "from packaging.requirements import InvalidRequirement, Requirement" in install_step
+    assert "from packaging.utils import canonicalize_name" in install_step
+    assert "for dependency in test_dependencies:" in install_step
+    assert 'canonicalize_name(requirement.name) == "ruff"' in install_step
+    assert "if len(ruff_requirements) != 1:" in install_step
+    assert "CANONICAL_RUFF_VERSION.fullmatch(version)" in install_step
+    assert 'return f"ruff=={version}"' in install_step
+    assert '[sys.executable, "-m", "pip", "install", ruff_requirement]' in install_step
     assert "*test_dependencies" not in install_step
     assert '["project"]["dependencies"]' not in install_step
     assert "tests/test_backend_ci_workflow.py" in workflow
+
+    resolver = _frontend_ruff_requirement_resolver()
+    assert resolver(test_dependencies) == "ruff==0.11.13"
+
+
+def test_frontend_ruff_requirement_resolver_normalizes_a_canonical_pin():
+    resolver = _frontend_ruff_requirement_resolver()
+
+    assert resolver(["pytest>=8.2.0", "Ruff == 0.11.13"]) == "ruff==0.11.13"
+
+
+@pytest.mark.parametrize(
+    ("dependencies", "message"),
+    [
+        pytest.param(["ruff"], "exact canonical version pin", id="unpinned"),
+        pytest.param(
+            ["ruff==0.11.13", "ruff @ https://example.invalid/ruff.whl"],
+            "expected exactly one Ruff test dependency",
+            id="multiple-including-url",
+        ),
+        pytest.param(
+            ['ruff==0.11.13; python_version >= "3.11"'],
+            "exact canonical version pin",
+            id="marker",
+        ),
+        pytest.param(["ruff[cli]==0.11.13"], "exact canonical version pin", id="extras"),
+        pytest.param(["ruff===0.11.13"], "exact canonical version pin", id="arbitrary-equals"),
+        pytest.param(["ruff==0.11.*"], "exact canonical version pin", id="wildcard"),
+        pytest.param(["ruff>=0.11.13"], "exact canonical version pin", id="range"),
+        pytest.param(["ruff==00.11.13"], "exact canonical version pin", id="noncanonical-version"),
+    ],
+)
+def test_frontend_ruff_requirement_resolver_rejects_noncanonical_declarations(
+    dependencies: list[str], message: str
+):
+    resolver = _frontend_ruff_requirement_resolver()
+
+    with pytest.raises(RuntimeError, match=message):
+        resolver(["pytest>=8.2.0", *dependencies])
 
 
 def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
