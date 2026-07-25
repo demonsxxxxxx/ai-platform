@@ -461,7 +461,7 @@ class CodeGovernanceEvaluator:
                 if item.new_path is not None and PurePosixPath(item.new_path).suffix.lower() == ".py"
             }
         )
-        display_command = ["python", "-m", "ruff", "check", "--", *paths]
+        display_command = ["python", "-m", "ruff", "check", "--isolated", "--", *paths]
         if not paths:
             return {"command": display_command, "paths": [], "returncode": None, "status": "not_applicable"}, None
         try:
@@ -477,7 +477,7 @@ class CodeGovernanceEvaluator:
                     details={"command": display_command},
                 ),
             )
-        actual_command = [sys.executable, "-m", "ruff", "check", "--", *paths]
+        actual_command = [sys.executable, "-m", "ruff", "check", "--isolated", "--", *paths]
         result = self._runner.run(actual_command, cwd=self._repo_root)
         summary = {
             "command": display_command,
