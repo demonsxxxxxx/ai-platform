@@ -97,20 +97,38 @@ class _ChangedFile:
         return _is_test_path(self.path)
 
     @property
-    def is_production(self) -> bool:
-        return _is_production_path(self.path)
+    def old_is_production(self) -> bool:
+        return self.old_path is not None and _is_production_path(self.old_path)
+
+    @property
+    def new_is_production(self) -> bool:
+        return self.new_path is not None and _is_production_path(self.new_path)
+
+    @property
+    def production_path(self) -> str:
+        return self.new_path if self.new_is_production else self.old_path or ""
+
+    @property
+    def production_net_loc(self) -> int:
+        if self.old_is_production == self.new_is_production:
+            return self.net_loc
+        return self.new_lines if self.new_is_production else -self.old_lines
+
+    @property
+    def production_added_lines(self) -> int:
+        return self.additions if self.old_is_production else (self.new_lines if self.new_is_production else 0)
 
     @property
     def is_functional(self) -> bool:
-        return PurePosixPath(self.path).suffix.lower() in FUNCTIONAL_SUFFIXES
+        return PurePosixPath(self.production_path).suffix.lower() in FUNCTIONAL_SUFFIXES
 
     @property
     def is_move_only(self) -> bool:
-        return self.status.startswith("R") and self.additions == 0 and self.deletions == 0
+        return self.status.startswith("R") and self.additions == 0 and self.deletions == 0 and self.old_is_production and self.new_is_production
 
     @property
     def is_behavior_change(self) -> bool:
-        return self.is_production and not self.is_move_only
+        return (self.old_is_production or self.new_is_production) and not self.is_move_only
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -344,10 +362,10 @@ class CodeGovernanceEvaluator:
 
     def _evaluate_policy(self, changes: Sequence[_ChangedFile]) -> tuple[list[Violation], dict[str, Any]]:
         behavior_files = [item for item in changes if item.is_behavior_change]
-        move_only_files = [item for item in changes if item.is_production and item.is_move_only]
+        move_only_files = [item for item in changes if item.is_move_only]
         test_files = [item for item in changes if item.is_test]
-        subsystems = sorted({_production_subsystem(item.path) for item in behavior_files})
-        net_loc = sum(item.net_loc for item in behavior_files)
+        subsystems = sorted({_production_subsystem(item.production_path) for item in behavior_files})
+        net_loc = sum(item.production_net_loc for item in behavior_files)
         violations: list[Violation] = []
 
         if len(behavior_files) > PRODUCTION_FILE_LIMIT:
@@ -377,27 +395,27 @@ class CodeGovernanceEvaluator:
 
         for item in changes:
             peak_lines = max(item.old_lines, item.new_lines)
-            if item.is_production and peak_lines > HOT_FILE_LINES and item.net_loc > HOT_FILE_NET_GROWTH_LIMIT:
+            if item.is_behavior_change and peak_lines > HOT_FILE_LINES and item.production_net_loc > HOT_FILE_NET_GROWTH_LIMIT:
                 violations.append(
                     Violation(
                         "hot_file_growth",
                         f"production files over {HOT_FILE_LINES} lines may grow by at most {HOT_FILE_NET_GROWTH_LIMIT} net lines",
-                        path=item.path,
-                        details={"net_loc": item.net_loc, "peak_lines": peak_lines},
+                        path=item.production_path,
+                        details={"net_loc": item.production_net_loc, "peak_lines": peak_lines},
                     )
                 )
             if (
-                item.is_production
+                item.is_behavior_change
                 and item.is_functional
                 and peak_lines > FUNCTIONAL_HOT_FILE_LINES
-                and item.net_loc > FUNCTIONAL_HOT_FILE_NET_GROWTH_LIMIT
+                and item.production_net_loc > FUNCTIONAL_HOT_FILE_NET_GROWTH_LIMIT
             ):
                 violations.append(
                     Violation(
                         "functional_hot_file_growth",
                         f"functional production files over {FUNCTIONAL_HOT_FILE_LINES} lines may not grow",
-                        path=item.path,
-                        details={"net_loc": item.net_loc, "peak_lines": peak_lines},
+                        path=item.production_path,
+                        details={"net_loc": item.production_net_loc, "peak_lines": peak_lines},
                     )
                 )
             if item.is_test and peak_lines > TEST_HOT_FILE_LINES and item.net_loc > TEST_HOT_FILE_NET_GROWTH_LIMIT:
@@ -412,7 +430,7 @@ class CodeGovernanceEvaluator:
 
         changed_test_paths = sorted(item.path for item in test_files if item.new_path is not None)
         for item in behavior_files:
-            if item.new_path is None or not item.is_functional or item.additions <= 0:
+            if item.new_path is None or not item.is_functional or item.production_added_lines <= 0:
                 continue
             mirrors = [path for path in changed_test_paths if _test_mirrors_production(path, item.path)]
             if not mirrors:
@@ -577,13 +595,13 @@ def _is_production_path(path: str) -> bool:
 
 
 def _change_role(change: _ChangedFile) -> str:
-    if change.is_test:
-        return "test"
-    if not change.is_production:
-        return "non_production"
     if change.is_move_only:
         return "move_only_production"
-    return "behavior_production"
+    if change.is_behavior_change:
+        return "behavior_production"
+    if change.is_test:
+        return "test"
+    return "non_production"
 
 
 def _production_subsystem(path: str) -> str:
@@ -624,7 +642,7 @@ def _test_mirrors_production(test_path: str, production_path: str) -> bool:
 
 def _evaluation_mode(changes: Sequence[_ChangedFile]) -> str:
     behavior = any(item.is_behavior_change for item in changes)
-    move_only = any(item.is_production and item.is_move_only for item in changes)
+    move_only = any(item.is_move_only for item in changes)
     if behavior and move_only:
         return "mixed"
     if behavior:

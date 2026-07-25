@@ -164,6 +164,50 @@ def test_pure_rename_is_separate_from_behavior_fix_and_delete_is_safe(
     assert initial != source
 
 
+def test_test_to_production_rename_is_behavior_change_and_requires_mirror(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _initial = governance_repo
+    _write(repo, "tests/test_billing_rules.py", "RATE = 2\n")
+    base = _commit(repo, "test source")
+    (repo / "app").mkdir()
+    _git(repo, "mv", "tests/test_billing_rules.py", "app/billing_rules.py")
+    head = _commit(repo, "promote test code")
+
+    evaluation = _evaluate(repo, base, head)
+
+    assert evaluation.exit_code == 2
+    assert evaluation.mode == "behavior_fix"
+    assert evaluation.metrics["behavior_production_files"] == 1
+    assert evaluation.metrics["move_only_production_files"] == 0
+    assert evaluation.metrics["production_net_loc"] == 1
+    assert evaluation.metrics["production_subsystems"] == ["app"]
+    assert _payload(evaluation)["changes"][0]["role"] == "behavior_production"
+    assert _codes(evaluation) == {"test_responsibility_mirror"}
+
+
+def test_production_to_test_rename_counts_production_exit_without_mirror(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _initial = governance_repo
+    _write(repo, "app/billing_rules.py", "RATE = 2\n")
+    base = _commit(repo, "production source")
+    (repo / "tests").mkdir()
+    _git(repo, "mv", "app/billing_rules.py", "tests/test_billing_rules.py")
+    head = _commit(repo, "demote production code")
+
+    evaluation = _evaluate(repo, base, head)
+
+    assert evaluation.exit_code == 0
+    assert evaluation.mode == "behavior_fix"
+    assert evaluation.metrics["behavior_production_files"] == 1
+    assert evaluation.metrics["move_only_production_files"] == 0
+    assert evaluation.metrics["production_net_loc"] == -1
+    assert evaluation.metrics["production_subsystems"] == ["app"]
+    assert _payload(evaluation)["changes"][0]["role"] == "behavior_production"
+    assert "test_responsibility_mirror" not in _codes(evaluation)
+
+
 def test_hot_functional_file_cannot_grow(governance_repo: tuple[Path, str]) -> None:
     repo, _initial = governance_repo
     _write(repo, "app/hot.py", _python_lines(3001))
