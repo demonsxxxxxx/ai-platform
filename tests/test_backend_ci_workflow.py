@@ -59,7 +59,7 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     assert "ref: ${{ github.event.pull_request.head.sha" not in workflow
 
     governance_step = workflow.split("- name: Run code governance", 1)[1].split(
-        "- name: Run sandbox provider targeted tests", 1
+        "- name: Checkout validated pull request head for existing checks", 1
     )[0]
     install_start = workflow.index("- name: Install backend dependencies")
     governance_start = workflow.index("- name: Run code governance")
@@ -125,6 +125,23 @@ def test_code_governance_uses_test_extra_and_propagates_pr_failures():
     assert "set +e" not in governance_step
     assert "ruff check ." not in workflow
     assert "ruff format" not in workflow
+
+
+def test_existing_pr_checks_switch_to_the_validated_head_after_governance():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    governance_start = workflow.index("- name: Run code governance")
+    head_checkout_start = workflow.index("- name: Checkout validated pull request head for existing checks")
+    compile_start = workflow.index("- name: Compile backend sources")
+    pytest_start = workflow.index("- name: Run sandbox provider targeted tests")
+    head_checkout = workflow[head_checkout_start:pytest_start]
+
+    assert governance_start < head_checkout_start < compile_start < pytest_start
+    assert "if: github.event_name == 'pull_request'" in head_checkout
+    assert "VALIDATED_PR_HEAD_REF: ${{ github.event.pull_request.head.sha }}" in head_checkout
+    assert '[[ "$VALIDATED_PR_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]' in head_checkout
+    assert 'test "$(git rev-parse "$VALIDATED_PR_HEAD_REF^{commit}")" = "$VALIDATED_PR_HEAD_REF"' in head_checkout
+    assert 'git checkout --detach "$VALIDATED_PR_HEAD_REF"' in head_checkout
 
 
 def test_backend_required_contract_preserves_high_risk_design_triggers():

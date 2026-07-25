@@ -45,9 +45,6 @@ jobs:
           subprocess.check_call([sys.executable, "-m", "pip", "install", *dependencies])
           PY
 
-      - name: Compile backend sources
-        run: python -m compileall -q app tools scripts
-
       - name: Run code governance
         if: github.event_name == 'pull_request'
         env:
@@ -75,6 +72,19 @@ jobs:
               --head-ref "$GOVERNANCE_HEAD_REF" \
               --format text
           )
+
+      - name: Checkout validated pull request head for existing checks
+        if: github.event_name == 'pull_request'
+        env:
+          VALIDATED_PR_HEAD_REF: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$VALIDATED_PR_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse "$VALIDATED_PR_HEAD_REF^{commit}")" = "$VALIDATED_PR_HEAD_REF"
+          git checkout --detach "$VALIDATED_PR_HEAD_REF"
+
+      - name: Compile backend sources
+        run: python -m compileall -q app tools scripts
 
       - name: Run sandbox provider targeted tests
         run: |
