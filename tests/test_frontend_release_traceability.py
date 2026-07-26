@@ -1,8 +1,10 @@
 import json
+import os
 from pathlib import Path
-import stat
 import subprocess
 import sys
+
+import pytest
 
 from tools.frontend_release_traceability import DIST_BUILD_PROVENANCE_FILENAME
 from tools.frontend_release_traceability import (
@@ -545,26 +547,44 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert missing_plain_dockerfile_copy_sources(dockerfile) == []
 
 
-def test_frontend_healthcheck_file_predicate_fails_closed_for_missing_or_unreadable_assets():
-    healthy_assets = {
-        path: {"exists": True, "size": 1, "mode": 0o644}
-        for path in FRONTEND_HEALTHCHECK_FILE_PATHS
-    }
+def test_frontend_healthcheck_file_predicate_fails_closed_before_http_probes(tmp_path):
+    if sys.platform == "win32":
+        pytest.skip("the production predicate requires a POSIX shell; Linux CI is the shell gate")
 
-    assert frontend_healthcheck_file_predicate_exit_code(healthy_assets) == 0
+    healthcheck_command = frontend_healthcheck_command()
+    file_predicate, http_probes = healthcheck_command.split(" && wget ", 1)
+    assert "wget " not in file_predicate
+    assert http_probes.startswith("-q -O /dev/null http://127.0.0.1:8080/healthz")
+
+    healthy_root = tmp_path / "healthy"
+    write_frontend_healthcheck_files(healthy_root)
+    healthy_result, healthy_http_probe_log = run_frontend_healthcheck_command(
+        healthcheck_command, healthy_root
+    )
+    assert healthy_result.returncode == 0
+    assert healthy_http_probe_log.read_text(encoding="utf-8").splitlines() == ["wget"] * 5
 
     for path in FRONTEND_HEALTHCHECK_FILE_PATHS:
-        missing_assets = {asset_path: probe.copy() for asset_path, probe in healthy_assets.items()}
-        missing_assets[path] = {"exists": False, "size": 0, "mode": 0o000}
-        assert frontend_healthcheck_file_predicate_exit_code(missing_assets) == 1
+        relative_path = Path(path).relative_to("/usr/share/nginx/html")
+        for failure_case in ("missing", "empty", "unreadable", "directory"):
+            failure_root = tmp_path / f"{relative_path.stem}-{failure_case}"
+            write_frontend_healthcheck_files(failure_root)
+            failure_path = failure_root / relative_path
+            if failure_case == "missing":
+                failure_path.unlink()
+            elif failure_case == "empty":
+                failure_path.write_bytes(b"")
+            elif failure_case == "unreadable":
+                failure_path.chmod(0o600)
+            else:
+                failure_path.unlink()
+                failure_path.mkdir()
 
-        unreadable_assets = {asset_path: probe.copy() for asset_path, probe in healthy_assets.items()}
-        unreadable_assets[path]["mode"] = 0o600
-        assert frontend_healthcheck_file_predicate_exit_code(unreadable_assets) == 1
-
-        empty_assets = {asset_path: probe.copy() for asset_path, probe in healthy_assets.items()}
-        empty_assets[path]["size"] = 0
-        assert frontend_healthcheck_file_predicate_exit_code(empty_assets) == 1
+            failure_result, failure_http_probe_log = run_frontend_healthcheck_command(
+                healthcheck_command, failure_root
+            )
+            assert failure_result.returncode != 0
+            assert not failure_http_probe_log.exists()
 
 
 def test_frontend_release_traceability_flags_packaged_delivery_missing_required_contract(tmp_path):
@@ -745,12 +765,47 @@ def missing_plain_dockerfile_copy_sources(dockerfile: str, repo_root: Path | Non
     return missing_sources
 
 
-def frontend_healthcheck_file_predicate_exit_code(asset_probes):
+def frontend_healthcheck_command():
+    dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
+    runtime_dockerfile = dockerfile.split("FROM nginx:1.27-alpine AS runtime", 1)[1]
+    healthcheck = next(
+        line for line in runtime_dockerfile.splitlines() if line.startswith("HEALTHCHECK ")
+    )
+    return healthcheck.split(" CMD ", 1)[1]
+
+
+def write_frontend_healthcheck_files(root):
     for path in FRONTEND_HEALTHCHECK_FILE_PATHS:
-        probe = asset_probes[path]
-        if not probe["exists"] or probe["size"] <= 0 or not probe["mode"] & stat.S_IROTH:
-            return 1
-    return 0
+        asset_path = root / Path(path).relative_to("/usr/share/nginx/html")
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_bytes(b"asset")
+        asset_path.chmod(0o644)
+
+
+def run_frontend_healthcheck_command(healthcheck_command, root):
+    test_root = root / ".healthcheck-test"
+    http_probe_log = test_root / "http-probes.log"
+    bin_root = test_root / "bin"
+    bin_root.mkdir(parents=True)
+    wget = bin_root / "wget"
+    wget.write_text('#!/bin/sh\nprintf "wget\\n" >> "$HTTP_PROBE_LOG"\n', encoding="utf-8")
+    wget.chmod(0o755)
+    environment = os.environ | {
+        "HTTP_PROBE_LOG": str(http_probe_log),
+        "PATH": f"{bin_root}:{os.environ['PATH']}",
+    }
+    result = subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            healthcheck_command.replace("/usr/share/nginx/html", str(root)),
+        ],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+    return result, http_probe_log
 
 
 def initialize_git_repo(repo_root):
