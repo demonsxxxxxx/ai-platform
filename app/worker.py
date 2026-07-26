@@ -6,6 +6,7 @@ import time as _time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from functools import partial as _partial
 from typing import Any
 
 from pydantic import ValidationError
@@ -1210,25 +1211,11 @@ def _mcp_tool_lifecycle_status(tool: dict[str, Any]) -> str:
     return "disabled"
 
 
-def _builtin_capability_subjects(
-    *,
-    payload: QueueRunPayload,
-    run_identity: dict[str, str],
-    skill: dict[str, Any],
-    skill_decision: CapabilityAccessDecision,
-    authorized_skill_manifests: list[dict[str, Any]] | None = None,
-    authorized_skill_names: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    return builtin_capability_subjects(
-        payload=payload,
-        run_identity=run_identity,
-        skill=skill,
-        skill_decision=skill_decision,
-        canonical_manifest=canonical_skill_execution_profile,
-        canonical_identities=repositories.canonical_builtin_tool_identities,
-        authorized_skill_manifests=authorized_skill_manifests,
-        authorized_skill_names=authorized_skill_names,
-    )
+_builtin_capability_subjects = _partial(
+    builtin_capability_subjects,
+    canonical_manifest=canonical_skill_execution_profile,
+    canonical_identities=repositories.canonical_builtin_tool_identities,
+)
 
 
 def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccessDecision) -> dict[str, Any] | None:
@@ -1425,20 +1412,26 @@ async def _reauthorize_worker_capabilities(
             _denied_capability_decision("distribution_scope_invalid"),
         )
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+    skill_subject = CapabilityDistributionSubject(
+        capability_kind="skill",
+        capability_id=run_identity["skill_id"],
+        lifecycle_status=skill_lifecycle_status,
+        distribution=skill_distribution,
+    )
     skill_decision = resolve_capability_access(
         context,
-        CapabilityDistributionSubject(
-            capability_kind="skill",
-            capability_id=run_identity["skill_id"],
-            lifecycle_status=skill_lifecycle_status,
-            distribution=skill_distribution,
-        ),
+        skill_subject,
         intent="use",
     )
     skill_record = _worker_capability_record("skill", run_identity["skill_id"], skill_decision)
     decisions.append(skill_record)
     if not skill_decision.usable:
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), skill_record)
+    required_builtin_distribution = (
+        resolve_capability_access(replace(context, is_admin=False), skill_subject, intent="use")
+        if skill_decision.admin_bypass
+        else skill_decision
+    )
 
     authorized_skill_catalog: AuthorizedSkillCatalogResolution | None = None
     if payload.executor_type == "claude-agent-worker":
@@ -1491,7 +1484,7 @@ async def _reauthorize_worker_capabilities(
         payload=payload,
         run_identity=run_identity,
         skill=skill,
-        skill_decision=skill_decision,
+        skill_decision=required_builtin_distribution,
         authorized_skill_manifests=(
             authorized_skill_catalog.manifests
             if authorized_skill_catalog is not None
@@ -1509,6 +1502,9 @@ async def _reauthorize_worker_capabilities(
         attempt_id=attempt_id or "missing-attempt",
         subjects=tool_policy_subjects,
         admin_bypass=skill_decision.admin_bypass,
+        admin_non_bypass_authorized=(
+            skill_decision.admin_bypass and required_builtin_distribution.usable
+        ),
     )
     if not required_tool_decision.allowed:
         denial = _worker_capability_record(

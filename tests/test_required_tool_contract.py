@@ -12,6 +12,7 @@ from app.required_tool_contract import (
     parse_required_tool_declaration,
     replay_required_tool_authorization,
     required_builtin_capability_subjects,
+    required_tool_authorization_for_run,
     selected_capability_completion_decision,
 )
 
@@ -75,18 +76,28 @@ def test_negative_explanatory_question_and_lookalike_never_create_requirement(me
     assert parse_required_tool_declaration(message) is None
 
 
-def test_declaration_validation_rejects_forgery_and_subject_constructor_is_exact():
+def test_required_builtin_subject_preserves_existing_server_declaration():
     declaration = _declaration()
+    declared_subjects = [{"identity": "Bash", "declared": True}]
     subjects = required_builtin_capability_subjects(
         declaration=declaration,
-        existing_subjects=[],
+        existing_subjects=declared_subjects,
         active=True,
         distributed=True,
     )
 
-    assert [subject["identity"] for subject in subjects] == ["Bash"]
-    assert subjects[0]["required_parameter_keys"] == ["command"]
-    assert subjects[0]["command_isolation"] == "sibling-tool-sandbox-v1"
+    assert subjects is declared_subjects
+
+
+def test_required_builtin_subject_never_mints_undeclared_authority_and_rejects_forgery():
+    declaration = _declaration()
+
+    assert required_builtin_capability_subjects(
+        declaration=declaration,
+        existing_subjects=[],
+        active=True,
+        distributed=True,
+    ) == []
     with pytest.raises(RequiredToolContractError, match="required_tool_declaration_mismatch"):
         required_builtin_capability_subjects(
             declaration=replace(declaration, declaration_sha256="0" * 64),
@@ -158,6 +169,54 @@ def test_current_authorization_replay_has_no_admin_bypass_and_preserves_scope():
     assert allowed.admin_bypass is False
     assert revoked.reason == "required_tool_not_currently_authorized"
     assert foreign.reason == "required_tool_scope_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("admin_non_bypass_authorized", "allowed", "reason"),
+    [
+        (False, False, "required_tool_admin_bypass_forbidden"),
+        (True, True, "required_tool_currently_authorized"),
+    ],
+)
+def test_run_authorization_requires_explicit_non_bypass_proof_for_admin(
+    admin_non_bypass_authorized,
+    allowed,
+    reason,
+):
+    declaration = _declaration()
+    payload = type(
+        "Payload",
+        (),
+        {
+            "input": {REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY: declaration.to_payload()},
+            **{field: value for field, value in _binding().items() if field != "attempt_id"},
+        },
+    )()
+    subject = {
+        "identity": "Bash",
+        "declared_identities": ["Bash"],
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": "high",
+        "write_capable": True,
+    }
+
+    decision = required_tool_authorization_for_run(
+        payload=payload,
+        run_identity={key: value for key, value in _binding().items() if key != "attempt_id"},
+        attempt_id="qat-a",
+        subjects=[subject],
+        admin_bypass=True,
+        admin_non_bypass_authorized=admin_non_bypass_authorized,
+    )
+
+    assert decision.allowed is allowed
+    assert decision.reason == reason
 
 
 def test_completion_is_run_attempt_bound_and_fails_closed_without_exact_evidence():

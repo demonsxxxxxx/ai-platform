@@ -485,25 +485,25 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
     assert container_provider._native_tool_required(runtime_request)
 
 
-def test_worker_integrates_required_bash_subject_and_attempt_bound_completion():
+def test_worker_preserves_declared_bash_subject_and_attempt_bound_completion():
     payload = parse_queue_payload(
         base_payload(
             _leased=False,
             input={"message": "请执行 Bash 命令 pwd"},
-            skill_id="general-chat",
-            skill_version="hash-general",
-            skill_manifests=[primary_manifest("general-chat", "hash-general")],
+            skill_id="qa-file-reviewer",
+            skill_version="hash-qa-file-reviewer",
+            skill_manifests=[primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")],
         )
     )
     subjects = worker_module._builtin_capability_subjects(
         payload=payload,
-        run_identity={"skill_id": "general-chat"},
-        skill={"skill_id": "general-chat", "skill_status": "active"},
+        run_identity={"skill_id": "qa-file-reviewer"},
+        skill={"skill_id": "qa-file-reviewer", "skill_status": "active"},
         skill_decision=types.SimpleNamespace(usable=True),
     )
     by_identity = {subject["identity"]: subject for subject in subjects}
-    assert set(by_identity) == {"Bash", "Skill"}
-    assert by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
+    assert set(by_identity) == {"Bash", "Write", "Skill"}
+    assert by_identity["Bash"]["declared"] is True
     assert by_identity["Bash"]["required_parameter_keys"] == ["command"]
 
     authorization = worker_module.required_tool_authorization_for_run(
@@ -7506,16 +7506,18 @@ def _install_task6_worker_fakes(
     *,
     locked_input=None,
     queue_input=None,
+    skill_id="qa-file-reviewer",
     principal_roles=None,
     principal_department_id="qa",
     auth_source="session-token",
     current_principal: AuthPrincipal | None = None,
 ):
     calls = []
-    skill_id = "qa-file-reviewer"
+    agent_id = "qa-word-review" if skill_id == "qa-file-reviewer" else "general-agent"
+    skill_version = f"hash-{skill_id}"
     state = {
         "skill": {
-            "agent_id": "qa-word-review",
+            "agent_id": agent_id,
             "agent_status": "active",
             "skill_id": skill_id,
             "skill_status": "active",
@@ -7540,7 +7542,7 @@ def _install_task6_worker_fakes(
         "workspace_id": "workspace-a",
         "user_id": "user-a",
         "session_id": "session-a",
-        "agent_id": "qa-word-review",
+        "agent_id": agent_id,
         "skill_id": skill_id,
         "trace_id": "trace-run-a",
         "principal_roles": list(principal_roles or ["qa_operator"]),
@@ -7550,9 +7552,9 @@ def _install_task6_worker_fakes(
             "input": persisted_input,
             "file_ids": ["file-a"],
             "executor_type": "capture",
-            "skill_version": "hash-qa-file-reviewer",
-            "release_decision": release_decision("hash-qa-file-reviewer"),
-            "skill_manifests": [primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")],
+            "skill_version": skill_version,
+            "release_decision": release_decision(skill_version),
+            "skill_manifests": [primary_manifest(skill_id, skill_version)],
             "context_snapshot_id": "ctx-existing",
             "context_snapshot": {
                 "schema_version": "ai-platform.context-snapshot.v1",
@@ -7685,6 +7687,10 @@ def _install_task6_worker_fakes(
 
     raw = base_payload(
         input=dict(queue_input or {"mode": "queue"}),
+        agent_id=agent_id,
+        skill_id=skill_id,
+        skill_version=skill_version,
+        skill_manifests=[primary_manifest(skill_id, skill_version)],
         executor_type="capture",
     )
     return raw, CaptureRegistry(), state, calls
@@ -7692,6 +7698,84 @@ def _install_task6_worker_fakes(
 
 def _task6_assert_no_executor_calls(calls):
     assert not any(call[0] in {"registry_get", "sandbox_create", "adapter"} for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_required_bash_undeclared_by_locked_manifest_fails_before_adapter(monkeypatch):
+    raw, registry, _, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"message": "请执行 Bash 命令 pwd"},
+        skill_id="general-chat",
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "required_tool_unavailable"
+    _task6_assert_no_executor_calls(calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["capability_id"] == "Bash"
+    assert denied_event["payload"]["reason"] == "required_tool_not_currently_authorized"
+
+
+@pytest.mark.asyncio
+async def test_worker_admin_required_declared_bash_uses_independent_ordinary_scope(monkeypatch):
+    raw, registry, _, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"message": "请执行 Bash 命令 pwd"},
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            department_id="qa",
+            roles=["admin", "qa_operator"],
+        ),
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "required_tool_completion_evidence_missing"
+    assert any(call[0] == "registry_get" for call in calls)
+    assert any(call[0] == "adapter" for call in calls)
+
+
+@pytest.mark.parametrize("restriction", ["department", "hidden", "disabled"])
+@pytest.mark.asyncio
+async def test_worker_admin_required_declared_bash_denies_bypass_only_scope_before_adapter(
+    monkeypatch,
+    restriction,
+):
+    department_id = "rd" if restriction == "department" else "qa"
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"message": "请执行 Bash 命令 pwd"},
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            department_id=department_id,
+            roles=["admin", "qa_operator"],
+        ),
+    )
+    if restriction == "hidden":
+        state["distributions"][("skill", "qa-file-reviewer")]["visible_to_user"] = False
+    elif restriction == "disabled":
+        state["distributions"][("skill", "qa-file-reviewer")]["status"] = "disabled"
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "required_tool_unavailable"
+    _task6_assert_no_executor_calls(calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["reason"] == "required_tool_not_currently_authorized"
 
 
 @pytest.mark.asyncio
