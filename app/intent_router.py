@@ -220,10 +220,7 @@ def route_intent(
     polarity = execution_polarity or classify_execution_polarity(message)
     required_tool = parse_required_tool_declaration(message)
     if polarity == "non_execution":
-        return _with_required_tool(
-            fallback_to_general_chat(execution_polarity=polarity),
-            required_tool,
-        )
+        return fallback_to_general_chat(execution_polarity=polarity)
     if confirmed_capability_id:
         return _with_required_tool(
             confirm_capability(confirmed_capability_id),
