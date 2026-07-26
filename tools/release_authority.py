@@ -25,6 +25,27 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Sequence
 from urllib.request import urlopen
 
+if __package__:
+    from .release_plan import (
+        AutoReleasePlan,
+        ReleasePlanError,
+        RolePlan,
+        RuntimeChangeSet,  # noqa: F401 - public compatibility re-export
+        build_auto_release_plan,
+        classify_runtime_changes,
+        is_runtime_neutral_backend_pyproject_change,
+    )
+else:
+    from release_plan import (
+        AutoReleasePlan,
+        ReleasePlanError,
+        RolePlan,
+        RuntimeChangeSet,  # noqa: F401 - public compatibility re-export
+        build_auto_release_plan,
+        classify_runtime_changes,
+        is_runtime_neutral_backend_pyproject_change,
+    )
+
 
 SCHEMA_VERSION = "ai-platform.release-authority.v1"
 PRESERVATION_SCHEMA_VERSION = "ai-platform.release-authority-preservation.v1"
@@ -82,61 +103,8 @@ BUILD_PROGRESS_MAX_TRACKED_STEPS = 128
 BUILD_PROGRESS_MAX_STEP_ORDINAL = 9999
 BUILD_PROGRESS_MAX_TAIL_LINES = 512
 BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES = 4096
-BACKEND_DEPENDENCY_PATHS = frozenset({"pyproject.toml", "Dockerfile"})
-FRONTEND_DEPENDENCY_PATHS = frozenset(
-    {
-        "frontend/web/.npmrc",
-        "frontend/web/package.json",
-        "frontend/web/pnpm-lock.yaml",
-        "frontend/web/pnpm-workspace.yaml",
-        "frontend/web/Dockerfile",
-    }
-)
-BACKEND_SOURCE_PREFIXES = (
-    "app/",
-    "tools/",
-    "scripts/",
-    "skills/",
-    "docs/release-evidence/",
-)
-BACKEND_SOURCE_PATHS = frozenset({"docker-entrypoint.sh"})
-FRONTEND_SOURCE_PREFIX = "frontend/web/"
-
-
 class ReleaseAuthorityError(RuntimeError):
     """Raised when a release-authority invariant is not satisfied."""
-
-
-@dataclass(frozen=True)
-class RuntimeChangeSet:
-    """Classified runtime-affecting paths between a verified live commit and target."""
-
-    backend_dependency: tuple[str, ...]
-    backend_source: tuple[str, ...]
-    frontend_dependency: tuple[str, ...]
-    frontend_source: tuple[str, ...]
-    deployment_only: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class RolePlan:
-    """One deterministic role action selected from a classified change set."""
-
-    role: str
-    change_kind: str
-    action: str
-    paths: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class AutoReleasePlan:
-    """Compact, role-specific release plan for one current-runtime to target transition."""
-
-    current_commit: str
-    target_commit: str
-    changes: RuntimeChangeSet
-    roles: tuple[RolePlan, ...]
-    no_runtime_change: bool
 
 
 @dataclass(frozen=True)
@@ -1235,71 +1203,6 @@ def build_image_references(commit: str) -> dict[str, str]:
     }
 
 
-def classify_runtime_changes(paths: Sequence[str]) -> RuntimeChangeSet:
-    """Classify changed paths by their image/runtime effect without invoking Docker."""
-    categories: dict[str, list[str]] = {
-        "backend_dependency": [],
-        "backend_source": [],
-        "frontend_dependency": [],
-        "frontend_source": [],
-        "deployment_only": [],
-    }
-    for path in sorted(set(paths)):
-        if path in BACKEND_DEPENDENCY_PATHS:
-            categories["backend_dependency"].append(path)
-        elif path in FRONTEND_DEPENDENCY_PATHS:
-            categories["frontend_dependency"].append(path)
-        elif path in BACKEND_SOURCE_PATHS or path.startswith(BACKEND_SOURCE_PREFIXES):
-            categories["backend_source"].append(path)
-        elif path.startswith(FRONTEND_SOURCE_PREFIX):
-            categories["frontend_source"].append(path)
-        else:
-            categories["deployment_only"].append(path)
-    return RuntimeChangeSet(**{name: tuple(value) for name, value in categories.items()})
-
-
-def build_auto_release_plan(
-    current_commit: str,
-    target_commit: str,
-    changes: RuntimeChangeSet,
-) -> AutoReleasePlan:
-    """Plan canonical builds only for dependency changes and promotions for unchanged roles."""
-    current = _normalize_commit(current_commit)
-    target = _normalize_commit(target_commit)
-
-    def role_plan(role: str, dependency: tuple[str, ...], source: tuple[str, ...]) -> RolePlan:
-        if dependency:
-            return RolePlan(role, "dependency", "canonical-build", dependency)
-        if source:
-            action = "runtime-rebuild" if role == "backend" else "source-build"
-            return RolePlan(role, "source", action, source)
-        return RolePlan(
-            role,
-            "unchanged",
-            "reuse" if current == target else "promote",
-            (),
-        )
-
-    roles = (
-        role_plan("backend", changes.backend_dependency, changes.backend_source),
-        role_plan("frontend", changes.frontend_dependency, changes.frontend_source),
-    )
-    return AutoReleasePlan(
-        current_commit=current,
-        target_commit=target,
-        changes=changes,
-        roles=roles,
-        no_runtime_change=not any(
-            (
-                changes.backend_dependency,
-                changes.backend_source,
-                changes.frontend_dependency,
-                changes.frontend_source,
-            )
-        ),
-    )
-
-
 def _plan_as_dict(
     plan: AutoReleasePlan,
     *,
@@ -1480,8 +1383,9 @@ def _is_link_or_junction(path: Path) -> bool:
     return path.is_symlink() or bool(is_junction and is_junction())
 
 
-def assert_clean_coordination_source(repo_root: Path) -> Path:
-    """Require only tracked, staged, and ordinary untracked coordination cleanliness."""
+def assert_clean_coordination_source(repo_root: Path, expected_commit: str | None = None) -> Path:
+    """Require a clean coordination source and, when supplied, its exact authority commit."""
+    normalized_expected = _normalize_commit(expected_commit) if expected_commit is not None else None
     supplied = Path(repo_root)
     try:
         absolute = Path(os.path.abspath(supplied))
@@ -1504,6 +1408,7 @@ def assert_clean_coordination_source(repo_root: Path) -> Path:
     try:
         top_level_text = str(_git(root, "rev-parse", "--show-toplevel")).strip()
         status = str(_git(root, "status", "--porcelain", "--untracked-files=all"))
+        head = str(_git(root, "rev-parse", "HEAD")).strip().lower()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ReleaseAuthorityError(
             "coordination-source-path gate failed: the coordination source must be a "
@@ -1526,6 +1431,11 @@ def assert_clean_coordination_source(repo_root: Path) -> Path:
             "coordination-source-cleanliness gate failed: tracked, staged, or ordinary "
             "untracked changes are present; rerun from a clean exact-main coordination "
             "checkout before requesting the release lease (ignored-only artifacts are allowed)"
+        )
+    if normalized_expected is not None and head != normalized_expected:
+        raise ReleaseAuthorityError(
+            "coordination-source-commit gate failed: the loaded release authority must run "
+            "from the requested exact main commit before target materialization"
         )
     return root
 
@@ -2780,7 +2690,21 @@ def _auto_release_plan(
 ) -> AutoReleasePlan:
     """Classify the verified live-to-target diff from the exact target checkout."""
     paths = _git_paths(repo_root, "diff", "--name-only", f"{current_commit}..{target_commit}")
-    return build_auto_release_plan(current_commit, target_commit, classify_runtime_changes(paths))
+    neutral_paths: tuple[str, ...] = ()
+    if "pyproject.toml" in paths:
+        try:
+            current_pyproject = _git(repo_root, "show", f"{current_commit}:pyproject.toml")
+            target_pyproject = _git(repo_root, "show", f"{target_commit}:pyproject.toml")
+            if is_runtime_neutral_backend_pyproject_change(current_pyproject, target_pyproject):
+                neutral_paths = ("pyproject.toml",)
+        except (OSError, subprocess.CalledProcessError, ReleasePlanError):
+            # An absent, unreadable, malformed, or ambiguous contract is always canonical.
+            neutral_paths = ()
+    changes = classify_runtime_changes(
+        paths,
+        runtime_neutral_backend_dependency_paths=neutral_paths,
+    )
+    return build_auto_release_plan(current_commit, target_commit, changes)
 
 
 def deploy_clean_commit(
@@ -3057,8 +2981,10 @@ def deploy_main_commit(
         )
     )
     normalized = _normalize_commit(commit)
+    authority_commit: str | None = None
     if coordination_source is not None:
-        assert_clean_coordination_source(coordination_source)
+        assert_clean_coordination_source(coordination_source, normalized)
+        authority_commit = normalized
     managed_env_file = resolve_managed_env_file(release_root, env_file)
     checkout = materialize_main_checkout(release_root, normalized)
     if strategy == "canonical":
@@ -3146,12 +3072,15 @@ def deploy_main_commit(
             action="verify",
             operation=final_parity,
         )
-    return {
+    result = {
         "commit": normalized,
         "checkout": str(checkout),
         "deployment": deployment,
         "parity": parity,
     }
+    if authority_commit is not None:
+        result["authority_commit"] = authority_commit
+    return result
 
 
 def _write_json(payload: dict[str, Any], output: Path | None) -> None:
