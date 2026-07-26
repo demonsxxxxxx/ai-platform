@@ -8,6 +8,7 @@ from collections import OrderedDict, deque
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import errno
 import hashlib
 import json
 import os
@@ -22,7 +23,8 @@ import threading
 import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
+from urllib.error import URLError
 from urllib.request import urlopen
 
 if __package__:
@@ -90,6 +92,8 @@ DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
 HTTP_PROBE_TIMEOUT_SECONDS = 15
 BACKEND_STAGE_TIMEOUT_SECONDS = 90
 FRONTEND_STAGE_TIMEOUT_SECONDS = 180
+FINAL_PARITY_CONVERGENCE_TIMEOUT_SECONDS = 45
+FINAL_PARITY_POLL_INTERVAL_SECONDS = 2
 DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 1800
 CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
 MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 300
@@ -103,6 +107,31 @@ BUILD_PROGRESS_MAX_TRACKED_STEPS = 128
 BUILD_PROGRESS_MAX_STEP_ORDINAL = 9999
 BUILD_PROGRESS_MAX_TAIL_LINES = 512
 BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES = 4096
+_TRANSIENT_FINAL_PARITY_ERRNOS = frozenset(
+    {
+        errno.ECONNREFUSED,
+        errno.ECONNRESET,
+        errno.EHOSTUNREACH,
+        errno.ENETUNREACH,
+        errno.ETIMEDOUT,
+        104,
+        10053,
+        10054,
+        10060,
+    }
+)
+_RETRYABLE_FINAL_PARITY_READINESS_ERRORS = frozenset(
+    {
+        "worker runtime heartbeat read failed",
+        "worker runtime heartbeat process is not alive",
+        "worker runtime heartbeat is stale",
+    }
+)
+_FINAL_PARITY_FAILURE_KINDS = frozenset(
+    {"startup-readiness", "transient-io", "unverified-parity"}
+)
+
+
 class ReleaseAuthorityError(RuntimeError):
     """Raised when a release-authority invariant is not satisfied."""
 
@@ -1325,7 +1354,14 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
         if isinstance(exc.errno, int):
             evidence["errno"] = exc.errno
         return evidence
-    return {"failure_kind": "authority-error"}
+    evidence = {"failure_kind": "authority-error"}
+    attempts = getattr(exc, "parity_attempts", None)
+    last_failure_kind = getattr(exc, "parity_last_failure_kind", None)
+    if isinstance(attempts, int) and not isinstance(attempts, bool) and 1 <= attempts <= 10_000:
+        evidence["parity_attempts"] = attempts
+    if isinstance(last_failure_kind, str) and last_failure_kind in _FINAL_PARITY_FAILURE_KINDS:
+        evidence["parity_last_failure_kind"] = last_failure_kind
+    return evidence
 
 
 def _stage(
@@ -2641,6 +2677,48 @@ def collect_live_parity(
     )
 
 
+def _converge_final_parity(
+    collect: Callable[[], dict[str, Any]],
+    *,
+    timeout_seconds: float = FINAL_PARITY_CONVERGENCE_TIMEOUT_SECONDS,
+    poll_interval_seconds: float = FINAL_PARITY_POLL_INTERVAL_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Bound post-Compose read-only parity collection until strict verification succeeds."""
+    if timeout_seconds <= 0 or poll_interval_seconds <= 0:
+        raise ReleaseAuthorityError("final parity convergence configuration is invalid")
+    deadline = monotonic() + timeout_seconds
+    attempts = 0
+    last_failure_kind = "unverified-parity"
+    while True:
+        attempts += 1
+        try:
+            report = collect()
+        except URLError:
+            last_failure_kind = "transient-io"
+        except OSError as exc:
+            if exc.errno not in _TRANSIENT_FINAL_PARITY_ERRNOS:
+                raise
+            last_failure_kind = "transient-io"
+        except ReleaseAuthorityError as exc:
+            if str(exc) not in _RETRYABLE_FINAL_PARITY_READINESS_ERRORS:
+                raise
+            last_failure_kind = "startup-readiness"
+        else:
+            if report.get("verified") is True:
+                return report
+            last_failure_kind = "unverified-parity"
+
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            error = ReleaseAuthorityError("final parity did not converge")
+            setattr(error, "parity_attempts", min(attempts, 10_000))
+            setattr(error, "parity_last_failure_kind", last_failure_kind)
+            raise error
+        sleep(min(poll_interval_seconds, remaining))
+
+
 def _verified_current_runtime(
     docker: list[str],
     target_selection: _ComposeSelection,
@@ -2975,16 +3053,52 @@ def deploy_main_commit(
     """Deploy and verify an exact fetched main commit from an isolated checkout."""
     if strategy not in {"canonical", "auto"}:
         raise ReleaseAuthorityError("release strategy is invalid")
-    canonical_dependency_build_timeout_seconds = (
-        _validate_canonical_dependency_build_timeout(
-            canonical_dependency_build_timeout_seconds
-        )
+    canonical_dependency_build_timeout_seconds = _validate_canonical_dependency_build_timeout(
+        canonical_dependency_build_timeout_seconds
     )
     normalized = _normalize_commit(commit)
     authority_commit: str | None = None
     if coordination_source is not None:
         assert_clean_coordination_source(coordination_source, normalized)
         authority_commit = normalized
+    try:
+        result = _deploy_main_commit_after_authority(
+            release_root,
+            normalized,
+            docker_cmd=docker_cmd,
+            env_file=env_file,
+            replace_known_manual_frontend=replace_known_manual_frontend,
+            expected_manual_frontend_image=expected_manual_frontend_image,
+            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
+            compose_files=compose_files,
+            strategy=strategy,
+            canonical_dependency_build_timeout_seconds=(
+                canonical_dependency_build_timeout_seconds
+            ),
+        )
+    except ReleaseAuthorityError as exc:
+        if authority_commit is not None:
+            setattr(exc, "authority_commit", authority_commit)
+        raise
+    if authority_commit is not None:
+        result["authority_commit"] = authority_commit
+    return result
+
+
+def _deploy_main_commit_after_authority(
+    release_root: Path,
+    normalized: str,
+    *,
+    docker_cmd: str,
+    env_file: Path | None,
+    replace_known_manual_frontend: bool,
+    expected_manual_frontend_image: str | None = None,
+    expected_manual_frontend_image_id: str | None = None,
+    compose_files: Sequence[str | Path] | None = None,
+    strategy: str = "canonical",
+    canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Execute target materialization and deployment after authority provenance is proven."""
     managed_env_file = resolve_managed_env_file(release_root, env_file)
     checkout = materialize_main_checkout(release_root, normalized)
     if strategy == "canonical":
@@ -3054,23 +3168,21 @@ def deploy_main_commit(
             ),
         )
 
-        def final_parity() -> dict[str, Any]:
-            report = collect_live_parity(
+        def collect_final_parity() -> dict[str, Any]:
+            return collect_live_parity(
                 checkout,
                 normalized,
                 docker_cmd=docker_cmd,
                 compose_files=compose_files,
             )
-            if report.get("verified") is not True:
-                raise ReleaseAuthorityError("deployed release parity failed")
-            return report
 
         parity = _stage(
             events,
             name="final-parity",
             strategy=strategy,
             action="verify",
-            operation=final_parity,
+            operation=lambda: _converge_final_parity(collect_final_parity),
+            timeout_seconds=FINAL_PARITY_CONVERGENCE_TIMEOUT_SECONDS,
         )
     result = {
         "commit": normalized,
@@ -3078,8 +3190,6 @@ def deploy_main_commit(
         "deployment": deployment,
         "parity": parity,
     }
-    if authority_commit is not None:
-        result["authority_commit"] = authority_commit
     return result
 
 
@@ -3240,6 +3350,9 @@ def main() -> int:
         stage_events = getattr(exc, "stage_events", None)
         if isinstance(stage_events, tuple):
             payload["stages"] = list(stage_events)
+        authority_commit = getattr(exc, "authority_commit", None)
+        if isinstance(authority_commit, str) and FULL_COMMIT_RE.fullmatch(authority_commit):
+            payload["authority_commit"] = authority_commit
         _write_json(payload, None)
         return 2
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):

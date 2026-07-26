@@ -3573,6 +3573,197 @@ def test_deploy_main_commit_fails_closed_when_live_parity_does_not_verify(monkey
         raise AssertionError("a non-verifying rollout must fail closed")
 
 
+def test_final_parity_convergence_retries_transient_os_error_then_succeeds():
+    attempts: list[int] = []
+    sleeps: list[float] = []
+    outcomes = [OSError(104, "connection reset from https://private.invalid"), {"verified": True}]
+
+    def collect():
+        attempts.append(1)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    report = release_authority._converge_final_parity(
+        collect,
+        timeout_seconds=30,
+        poll_interval_seconds=2,
+        monotonic=lambda: 100.0,
+        sleep=sleeps.append,
+    )
+
+    assert report == {"verified": True}
+    assert attempts == [1, 1]
+    assert sleeps == [2]
+
+
+def test_final_parity_convergence_retries_unverified_report_then_succeeds():
+    attempts: list[int] = []
+    sleeps: list[float] = []
+    outcomes = [
+        {"verified": False, "mismatches": ["api_runtime_commit_mismatch"]},
+        {"verified": True, "mismatches": []},
+    ]
+
+    def collect():
+        attempts.append(1)
+        return outcomes.pop(0)
+
+    report = release_authority._converge_final_parity(
+        collect,
+        timeout_seconds=30,
+        poll_interval_seconds=3,
+        monotonic=lambda: 100.0,
+        sleep=sleeps.append,
+    )
+
+    assert report == {"verified": True, "mismatches": []}
+    assert attempts == [1, 1]
+    assert sleeps == [3]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        ReleaseAuthorityError("worker runtime heartbeat is stale"),
+        release_authority.URLError("connection reset from https://private.invalid"),
+    ),
+)
+def test_final_parity_convergence_retries_explicit_startup_readiness_and_url_errors(failure):
+    attempts: list[int] = []
+    sleeps: list[float] = []
+    outcomes = [failure, {"verified": True}]
+
+    def collect():
+        attempts.append(1)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    report = release_authority._converge_final_parity(
+        collect,
+        timeout_seconds=30,
+        poll_interval_seconds=2,
+        monotonic=lambda: 100.0,
+        sleep=sleeps.append,
+    )
+
+    assert report == {"verified": True}
+    assert attempts == [1, 1]
+    assert sleeps == [2]
+
+
+def test_final_parity_convergence_deadline_is_sanitized_and_bounded():
+    monotonic_values = iter((10.0, 11.0))
+
+    with pytest.raises(ReleaseAuthorityError, match="^final parity did not converge$") as exc_info:
+        release_authority._converge_final_parity(
+            lambda: {
+                "verified": False,
+                "mismatches": ["https://private.invalid/live-parity?token=private-marker"],
+            },
+            timeout_seconds=0.5,
+            poll_interval_seconds=2,
+            monotonic=lambda: next(monotonic_values),
+            sleep=lambda seconds: (_ for _ in ()).throw(AssertionError("must not sleep past deadline")),
+        )
+
+    exc = exc_info.value
+    assert getattr(exc, "parity_attempts") == 1
+    assert getattr(exc, "parity_last_failure_kind") == "unverified-parity"
+    assert "private.invalid" not in str(exc)
+    assert "private-marker" not in str(exc)
+
+
+@pytest.mark.parametrize(
+    "message",
+    ("frontend provenance schema mismatch", "unexpected deterministic parity authority failure"),
+)
+def test_final_parity_convergence_fails_fast_for_structural_authority_errors(message):
+    attempts: list[int] = []
+    sleeps: list[float] = []
+
+    def collect():
+        attempts.append(1)
+        raise ReleaseAuthorityError(message)
+
+    with pytest.raises(ReleaseAuthorityError, match=f"^{re.escape(message)}$"):
+        release_authority._converge_final_parity(
+            collect,
+            timeout_seconds=30,
+            poll_interval_seconds=2,
+            monotonic=lambda: 100.0,
+            sleep=sleeps.append,
+        )
+
+    assert attempts == [1]
+    assert sleeps == []
+
+
+def test_deploy_main_cli_failure_preserves_verified_authority_commit(monkeypatch, capsys, tmp_path):
+    source = tmp_path / "coordination-source"
+    commit = _init_repo(source)
+    _, release_root, env_file = _prepare_managed_release_layout(monkeypatch, tmp_path)
+    checkout = release_root / commit
+    monkeypatch.setattr(release_authority, "materialize_main_checkout", lambda root, requested: checkout)
+    monkeypatch.setattr(release_authority, "deploy_clean_commit", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        release_authority,
+        "collect_live_parity",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ReleaseAuthorityError("later parity failure")),
+    )
+    monkeypatch.chdir(source)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py",
+            "deploy-main-commit",
+            "--release-root",
+            str(release_root),
+            "--commit",
+            commit,
+            "--strategy",
+            "canonical",
+        ],
+    )
+
+    assert release_authority.main() == 2
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["authority_commit"] == commit
+    assert payload["command"] == "deploy-main-commit"
+    assert payload["error"] == "later parity failure"
+    assert env_file.is_file()
+
+
+def test_deploy_main_cli_pre_authority_failure_omits_authority_commit(monkeypatch, capsys, tmp_path):
+    source = tmp_path / "coordination-source"
+    _init_repo(source)
+    monkeypatch.chdir(source)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py",
+            "deploy-main-commit",
+            "--release-root",
+            str(tmp_path / "managed" / "releases"),
+            "--commit",
+            "a" * 40,
+        ],
+    )
+
+    assert release_authority.main() == 2
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["command"] == "deploy-main-commit"
+    assert payload["error"].startswith("coordination-source-commit gate failed:")
+    assert "authority_commit" not in payload
+
+
 def test_image_validation_rejects_stale_underscore_compatibility_aliases():
     commit = "d" * 40
     canonical = {
