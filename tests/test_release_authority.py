@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -140,6 +141,8 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
     assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
     assert text.count("python3 tools/release_authority.py deploy-main-commit") == 1
+    assert text.count("umask 077") == 1
+    assert text.index("umask 077") < text.index("python3 tools/release_authority.py deploy-main-commit")
     assert "Resolve `SOURCE`" in text
     assert "and `ROOT` from the current 211 host mapping" in text
     assert "`docs/agent-rules/ai-platform-guardrails.md`, the authoritative source" in text
@@ -3117,6 +3120,7 @@ def _install_checkout_git_runner(
     status: str = "",
     ancestor_returncode: int = 0,
     ignored_paths: tuple[str, ...] = (),
+    checkout_setup=None,
 ):
     commands: list[tuple[list[str], Path | None, bool]] = []
 
@@ -3139,6 +3143,8 @@ def _install_checkout_git_runner(
             stdout = "\0".join(ignored_paths) + ("\0" if ignored_paths else "")
         elif command[1:3] == ["merge-base", "--is-ancestor"]:
             returncode = ancestor_returncode
+        elif command[1:3] == ["checkout", "--detach"] and checkout_setup is not None:
+            checkout_setup(cwd_path)
         if not text:
             stdout = stdout.encode("utf-8")
             stderr = b""
@@ -3177,6 +3183,96 @@ def test_materialize_main_checkout_fetches_explicit_refspec_into_isolated_commit
     assert ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/origin/main"] in git_commands
     assert ["git", "checkout", "--detach", commit] in git_commands
     assert not any(command[1] in {"archive", "worktree"} for command in git_commands)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX permission bits")
+def test_materialize_main_checkout_new_tree_ignores_permissive_ambient_umask(monkeypatch, tmp_path):
+    commit = "1" * 40
+    release_root = tmp_path / "releases"
+
+    def materialize_content(checkout):
+        (checkout / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+        nested = checkout / "nested"
+        nested.mkdir()
+        (nested / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+        executable = checkout / "bin" / "run-release"
+        executable.parent.mkdir()
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        executable.chmod(0o755)
+
+    _install_checkout_git_runner(monkeypatch, commit=commit, checkout_setup=materialize_content)
+    original_umask = os.umask(0o002)
+    try:
+        checkout = release_authority.materialize_main_checkout(release_root, commit)
+        current_umask = os.umask(0o002)
+        os.umask(current_umask)
+        assert current_umask == 0o002
+    finally:
+        os.umask(original_umask)
+
+    executable = checkout / "bin" / "run-release"
+    protected_paths = (
+        checkout,
+        checkout / ".git",
+        checkout / ".git" / "config",
+        checkout / "nested",
+        checkout / "nested" / "tracked.txt",
+        checkout / "bin",
+        executable,
+    )
+    assert all(stat.S_IMODE(path.stat().st_mode) & 0o022 == 0 for path in protected_paths)
+    assert stat.S_IMODE(executable.stat().st_mode) & 0o111
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX umask semantics")
+def test_materialize_main_checkout_restores_ambient_umask_after_failure(monkeypatch, tmp_path):
+    commit = "2" * 40
+    release_root = tmp_path / "releases"
+
+    def fail_git(*args, **kwargs):
+        raise OSError("forced materialization failure")
+
+    monkeypatch.setattr(release_authority, "_git", fail_git)
+    original_umask = os.umask(0o002)
+    try:
+        with pytest.raises(OSError, match="forced materialization failure"):
+            release_authority.materialize_main_checkout(release_root, commit)
+        current_umask = os.umask(0o002)
+        os.umask(current_umask)
+        assert current_umask == 0o002
+    finally:
+        os.umask(original_umask)
+
+    assert (release_root / f".{commit}.incoming").is_dir()
+    assert not (release_root / commit).exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX permission bits")
+def test_materialize_main_checkout_rejects_insecure_existing_tree_without_normalizing(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "3" * 40
+    release_root = tmp_path / "releases"
+    checkout = release_root / commit
+    (checkout / ".git").mkdir(parents=True)
+    checkout.chmod(0o775)
+    commands = _install_checkout_git_runner(monkeypatch, commit=commit)
+
+    def owner_mode(path):
+        candidate = Path(path)
+        if candidate == checkout:
+            return (1000, 0o775)
+        return (1000, 0o755 if candidate.is_dir() else 0o644)
+
+    monkeypatch.setattr(release_authority, "_posix_owner_mode", owner_mode)
+    monkeypatch.setattr(os, "chmod", lambda *args, **kwargs: pytest.fail("must not normalize existing content"))
+
+    with pytest.raises(ReleaseAuthorityError, match="^target-checkout-authority-mode gate failed:"):
+        release_authority.materialize_main_checkout(release_root, commit)
+
+    assert commands == []
+    assert stat.S_IMODE(checkout.stat().st_mode) & 0o022
 
 
 def test_materialize_main_checkout_reuses_only_clean_matching_checkout(monkeypatch, tmp_path):
