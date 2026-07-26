@@ -1,6 +1,5 @@
 from app.runtime.kernel_contracts import AgentEvent
 
-
 EVENT_STAGE_MAP = {
     "run_queued": "queue",
     "run_started": "runtime",
@@ -9,6 +8,8 @@ EVENT_STAGE_MAP = {
     "tool_call_started": "tool",
     "tool_call_delta": "tool",
     "tool_call_completed": "tool",
+    "capability_completed": "capability",
+    "capability_failed": "capability",
     "tool_permission_requested": "tool_policy",
     "tool_permission_authorized": "tool_policy",
     "tool_permission_denied": "tool_policy",
