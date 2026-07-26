@@ -1098,7 +1098,8 @@ async def chat_stream(
                 if not fingerprint_matches:
                     raise HTTPException(status_code=409, detail="submission_payload_mismatch")
                 return _chat_stream_response_from_submission(existing_submission_row)
-            if fingerprint_matches: return _chat_stream_response_from_submission(existing_submission_row)
+            if fingerprint_matches:
+                return _chat_stream_response_from_submission(existing_submission_row)
     execution_polarity = classify_execution_polarity(request.message)
     allowed = execution_polarity != "non_execution"
     requested_agent_id = request.agent_id or query_agent_id or "general-agent"
