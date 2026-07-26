@@ -120,6 +120,9 @@ export const uploadApi = {
 
         if (onProgress) {
           xhr.upload.addEventListener("progress", (event) => {
+            if (aborted) {
+              return;
+            }
             if (event.lengthComputable) {
               const progress = Math.round((event.loaded / event.total) * 100);
               onProgress(progress, event.loaded, event.total);

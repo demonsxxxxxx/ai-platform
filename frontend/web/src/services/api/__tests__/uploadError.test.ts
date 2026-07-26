@@ -77,7 +77,7 @@ function installInFlightUploadXhr() {
   let abortCalls = 0;
   let abortListenerCount = 0;
   let progressListenerCount = 0;
-  let suppressedLateProgress = 0;
+  let lateProgressDispatches = 0;
   let lateSuccessDispatches = 0;
 
   class InFlightUploadRequest {
@@ -88,8 +88,15 @@ function installInFlightUploadXhr() {
     withCredentials = false;
     private aborted = false;
     private readonly listeners = new Map<string, Array<(event: Event) => void>>();
+    private readonly uploadListeners = new Map<
+      string,
+      Array<(event: Event) => void>
+    >();
     readonly upload = {
-      addEventListener: (type: string, _listener: (event: Event) => void) => {
+      addEventListener: (type: string, listener: (event: Event) => void) => {
+        const listeners = this.uploadListeners.get(type) ?? [];
+        listeners.push(listener);
+        this.uploadListeners.set(type, listeners);
         if (type === "progress") {
           progressListenerCount += 1;
         }
@@ -123,9 +130,22 @@ function installInFlightUploadXhr() {
       this.emit("abort");
     }
 
+    emitProgress(loaded: number, total: number) {
+      const event = new Event("progress");
+      Object.defineProperties(event, {
+        lengthComputable: { value: true },
+        loaded: { value: loaded },
+        total: { value: total },
+      });
+      for (const listener of this.uploadListeners.get("progress") ?? []) {
+        listener(event);
+      }
+    }
+
     emitLateProgress() {
       if (this.aborted) {
-        suppressedLateProgress += 1;
+        lateProgressDispatches += 1;
+        this.emitProgress(3, 4);
       }
     }
 
@@ -173,8 +193,8 @@ function installInFlightUploadXhr() {
     get progressListenerCount() {
       return progressListenerCount;
     },
-    get suppressedLateProgress() {
-      return suppressedLateProgress;
+    get lateProgressDispatches() {
+      return lateProgressDispatches;
     },
     get lateSuccessDispatches() {
       return lateSuccessDispatches;
@@ -184,6 +204,11 @@ function installInFlightUploadXhr() {
       assert.ok(request, "send must create the active XHR request");
       request.emitLateProgress();
       request.emitLateSuccess();
+    },
+    emitProgress(loaded: number, total: number) {
+      const request = InFlightUploadRequest.activeRequest;
+      assert.ok(request, "send must create the active XHR request");
+      request.emitProgress(loaded, total);
     },
     restore() {
       if (original) {
@@ -328,16 +353,29 @@ test(
   async () => {
     const xhr = installInFlightUploadXhr();
     try {
-      let progressCalls = 0;
+      const progressUpdates: Array<[number, number, number]> = [];
+      let afterAbort = false;
+      let lateProgressCalls = 0;
       const handle = uploadApi.uploadFile(
         new File(["fixture"], "fixture.txt", { type: "text/plain" }),
-        { onProgress: () => progressCalls += 1 },
+        {
+          onProgress: (progress, loaded, total) => {
+            if (afterAbort) {
+              lateProgressCalls += 1;
+            } else {
+              progressUpdates.push([progress, loaded, total]);
+            }
+          },
+        },
       );
       await xhr.sent;
       assert.equal(xhr.sendCalls, 1);
       assert.equal(xhr.abortListenerCount, 1);
       assert.equal(xhr.progressListenerCount, 1);
+      xhr.emitProgress(1, 2);
+      assert.deepEqual(progressUpdates, [[50, 1, 2]]);
 
+      afterAbort = true;
       handle.abort();
       const rejection = assert.rejects(
         handle.promise,
@@ -348,9 +386,10 @@ test(
       await rejection;
 
       assert.equal(xhr.abortCalls, 1);
-      assert.equal(xhr.suppressedLateProgress, 1);
+      assert.equal(xhr.lateProgressDispatches, 1);
       assert.equal(xhr.lateSuccessDispatches, 1);
-      assert.equal(progressCalls, 0);
+      assert.equal(lateProgressCalls, 0);
+      assert.deepEqual(progressUpdates, [[50, 1, 2]]);
     } finally {
       xhr.restore();
     }
