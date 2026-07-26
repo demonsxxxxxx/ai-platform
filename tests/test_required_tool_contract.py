@@ -4,6 +4,7 @@ import pytest
 
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
+    RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     RequiredToolContractError,
     completion_decision,
@@ -245,3 +246,72 @@ def test_mcp_envelope_requires_tool_call_bound_proof_without_adding_mcp_behavior
 
     with pytest.raises(RequiredToolContractError, match="required_tool_completion_evidence_mismatch"):
         RequiredCapabilityEvidence.from_payload(evidence)
+
+
+def test_authorized_skill_and_mcp_declarations_keep_distinct_canonical_identities():
+    skill = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="document-reviewer",
+    )
+    mcp = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp",
+        canonical_identity="mcp__github__search_issues",
+    )
+
+    assert skill.canonical_identity == "document-reviewer"
+    assert mcp.canonical_identity == "mcp__github__search_issues"
+    assert skill.declaration_sha256 != mcp.declaration_sha256
+    assert declaration_from_payload(skill.to_payload()) == skill
+    assert declaration_from_payload(mcp.to_payload()) == mcp
+
+
+@pytest.mark.parametrize(
+    ("succeeded", "phase", "status"),
+    [(True, "completed", "succeeded"), (False, "failed", "failed")],
+)
+def test_sdk_hook_evidence_is_exactly_bound_and_contains_no_private_payload(
+    succeeded,
+    phase,
+    status,
+):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp",
+        canonical_identity="mcp__github__search_issues",
+    )
+
+    evidence = RequiredCapabilityEvidence.from_sdk_hook(
+        declaration=declaration,
+        binding=_binding(),
+        tool_call_id="tool-call-a",
+        succeeded=succeeded,
+    )
+    payload = evidence.__dict__
+
+    assert evidence.lifecycle_phase == phase
+    assert evidence.lifecycle_status == status
+    assert evidence.evidence_source == "claude_agent_sdk_hook"
+    assert evidence.trust_basis == "tool_call_bound_invocation"
+    assert RequiredCapabilityEvidence.from_payload(payload) == evidence
+    assert not ({"arguments", "result", "endpoint", "token", "error"} & payload.keys())
+
+
+def test_sdk_hook_evidence_rejects_missing_tool_call_or_attempt_binding():
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="document-reviewer",
+    )
+
+    with pytest.raises(RequiredToolContractError, match="required_tool_completion_evidence_mismatch"):
+        RequiredCapabilityEvidence.from_sdk_hook(
+            declaration=declaration,
+            binding=_binding(),
+            tool_call_id="",
+            succeeded=True,
+        )
+    with pytest.raises(RequiredToolContractError, match="required_tool_completion_evidence_mismatch"):
+        RequiredCapabilityEvidence.from_sdk_hook(
+            declaration=declaration,
+            binding=_binding(attempt_id=""),
+            tool_call_id="tool-call-a",
+            succeeded=True,
+        )

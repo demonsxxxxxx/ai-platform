@@ -48,9 +48,20 @@ _DECLARATION_HASH_FIELDS = (
 _CAPABILITY_KINDS = frozenset({"builtin", "skill", "mcp"})
 _DECLARATION_LIFECYCLE_PHASES = frozenset({"selected"})
 _DECLARATION_LIFECYCLE_STATUSES = frozenset({"required"})
-_EVIDENCE_LIFECYCLE_PHASES = frozenset({"started", "completed"})
-_EVIDENCE_LIFECYCLE_STATUSES = frozenset({"in_progress", "succeeded"})
+_EVIDENCE_LIFECYCLE_PHASES = frozenset({"started", "completed", "failed"})
+_EVIDENCE_LIFECYCLE_STATUSES = frozenset({"in_progress", "succeeded", "failed"})
+_EVIDENCE_LIFECYCLE_PAIRS = frozenset(
+    {
+        ("started", "in_progress"),
+        ("completed", "succeeded"),
+        ("failed", "failed"),
+    }
+)
 _SAFE_PUBLIC_LABEL = "controlled_execution_capability"
+_AUTHORIZED_SUBJECT_EVIDENCE_SOURCE = "server_authorized_subject"
+_AUTHORIZED_SUBJECT_TRUST_BASIS = "server_derived_authorized_subject"
+_SDK_HOOK_EVIDENCE_SOURCE = "claude_agent_sdk_hook"
+_TOOL_CALL_TRUST_BASIS = "tool_call_bound_invocation"
 _AFFIRMATIVE_EXECUTION = re.compile(
     r"(?:请|帮我|麻烦|立即|现在|直接|please\s+)?"
     r"(?:执行|运行|调用|使用|run|execute|invoke|use)"
@@ -83,6 +94,33 @@ class RequiredCapabilityDeclaration:
     public_label: str
     public_status: str
     declaration_sha256: str
+
+    @classmethod
+    def from_authorized_subject(
+        cls,
+        *,
+        capability_kind: str,
+        canonical_identity: str,
+    ) -> RequiredCapabilityDeclaration:
+        """Create one immutable Skill or MCP declaration from server authority."""
+
+        if capability_kind not in {"skill", "mcp"} or not canonical_identity:
+            raise RequiredToolContractError("required_tool_declaration_mismatch")
+        values = {
+            "schema_version": REQUIRED_CAPABILITY_DECLARATION_SCHEMA_VERSION,
+            "capability_kind": capability_kind,
+            "canonical_identity": canonical_identity,
+            "lifecycle_phase": "selected",
+            "lifecycle_status": "required",
+            "evidence_source": _AUTHORIZED_SUBJECT_EVIDENCE_SOURCE,
+            "trust_basis": _AUTHORIZED_SUBJECT_TRUST_BASIS,
+            "public_label": _SAFE_PUBLIC_LABEL,
+            "public_status": "required",
+        }
+        return cls(
+            **values,
+            declaration_sha256=_declaration_digest(values),
+        )
 
     def to_payload(self) -> dict[str, str]:
         """Return the validated carrier stored in the run input snapshot."""
@@ -118,6 +156,45 @@ class RequiredCapabilityEvidence:
     public_label: str
     public_status: str
     declaration_sha256: str
+
+    @classmethod
+    def from_sdk_hook(
+        cls,
+        *,
+        declaration: RequiredCapabilityDeclaration,
+        binding: Mapping[str, object],
+        tool_call_id: str,
+        succeeded: bool,
+    ) -> RequiredCapabilityEvidence:
+        """Create exact invocation evidence from a completed SDK hook callback."""
+
+        _validate_declaration(declaration)
+        if declaration.capability_kind not in {"skill", "mcp"}:
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        values = {
+            field: binding.get(field)
+            for field in _BINDING_FIELDS
+        }
+        if any(not isinstance(value, str) or not value for value in values.values()):
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        lifecycle_phase = "completed" if succeeded else "failed"
+        lifecycle_status = "succeeded" if succeeded else "failed"
+        return cls(
+            schema_version=REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION,
+            **{field: str(values[field]) for field in _BINDING_FIELDS},
+            tool_call_id=tool_call_id,
+            capability_kind=declaration.capability_kind,
+            canonical_identity=declaration.canonical_identity,
+            lifecycle_phase=lifecycle_phase,
+            lifecycle_status=lifecycle_status,
+            evidence_source=_SDK_HOOK_EVIDENCE_SOURCE,
+            trust_basis=_TOOL_CALL_TRUST_BASIS,
+            public_label=_SAFE_PUBLIC_LABEL,
+            public_status=lifecycle_status,
+            declaration_sha256=declaration.declaration_sha256,
+        )
 
     @classmethod
     def from_payload(cls, value: object) -> RequiredCapabilityEvidence:
@@ -165,6 +242,8 @@ class RequiredCapabilityEvidence:
             or not evidence.canonical_identity
             or evidence.lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES
             or evidence.lifecycle_status not in _EVIDENCE_LIFECYCLE_STATUSES
+            or (evidence.lifecycle_phase, evidence.lifecycle_status)
+            not in _EVIDENCE_LIFECYCLE_PAIRS
             or not evidence.evidence_source
             or not evidence.trust_basis
             or evidence.public_label != _SAFE_PUBLIC_LABEL
@@ -180,7 +259,7 @@ class RequiredCapabilityEvidence:
                 evidence.capability_kind == "mcp"
                 and (
                     evidence.tool_call_id is None
-                    or evidence.trust_basis != "tool_call_bound_invocation"
+                    or evidence.trust_basis != _TOOL_CALL_TRUST_BASIS
                 )
             )
         ):
@@ -230,15 +309,25 @@ def _validate_declaration(declaration: RequiredCapabilityDeclaration) -> None:
         raise RequiredToolContractError("required_tool_declaration_mismatch")
     expected = {
         "schema_version": REQUIRED_CAPABILITY_DECLARATION_SCHEMA_VERSION,
-        "capability_kind": "builtin",
-        "canonical_identity": CANONICAL_REQUIRED_TOOL_IDENTITY,
+        "capability_kind": declaration.capability_kind,
+        "canonical_identity": declaration.canonical_identity,
         "lifecycle_phase": "selected",
         "lifecycle_status": "required",
-        "evidence_source": "server_intent_parser",
-        "trust_basis": "server_derived_locked_input",
+        "evidence_source": _AUTHORIZED_SUBJECT_EVIDENCE_SOURCE,
+        "trust_basis": _AUTHORIZED_SUBJECT_TRUST_BASIS,
         "public_label": _SAFE_PUBLIC_LABEL,
         "public_status": "required",
     }
+    if declaration.capability_kind == "builtin":
+        expected.update(
+            {
+                "canonical_identity": CANONICAL_REQUIRED_TOOL_IDENTITY,
+                "evidence_source": "server_intent_parser",
+                "trust_basis": "server_derived_locked_input",
+            }
+        )
+    elif declaration.capability_kind not in {"skill", "mcp"}:
+        raise RequiredToolContractError("required_tool_declaration_mismatch")
     if any(values.get(field) != value for field, value in expected.items()):
         raise RequiredToolContractError("required_tool_declaration_mismatch")
     if declaration.declaration_sha256 != _declaration_digest(values):
@@ -421,7 +510,7 @@ def builtin_capability_subjects(
             )
         )
     try:
-        declaration = declaration_from_input(payload.input)
+        declaration = declaration_from_input(getattr(payload, "input", None))
     except RequiredToolContractError:
         # The authorization replay below owns the terminal fail-closed decision.
         return subjects
