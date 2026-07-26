@@ -1204,36 +1204,97 @@ time.sleep(10)
 
 
 @pytest.mark.asyncio
-async def test_executor_deadline_stops_controlled_runner_descendants_before_terminal_response(tmp_path):
+async def test_executor_deadline_stops_controlled_runner_descendants_before_terminal_response(
+    tmp_path,
+    monkeypatch,
+):
     workspace = Path(tmp_path)
     write_minimal_docx(workspace / "source.docx")
+    runner_entered = asyncio.Event()
+    descendant_entered = asyncio.Event()
+    process_group_assigned = asyncio.Event()
+
+    async def observe_runner_entry(reader, writer):
+        try:
+            subject = await reader.readline()
+            if subject == b"runner\n":
+                runner_entered.set()
+                await process_group_assigned.wait()
+                writer.write(b"go\n")
+                await writer.drain()
+            elif subject == b"descendant\n":
+                descendant_entered.set()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    handshake_server = await asyncio.start_server(observe_runner_entry, "127.0.0.1", 0)
+    handshake_port = handshake_server.sockets[0].getsockname()[1]
     script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
     script.parent.mkdir(parents=True)
     child = script.with_name("late_child.py")
     child.write_text(
-        """import sys
-import time
-from pathlib import Path
-
-time.sleep(0.3)
-output = Path(sys.argv[1])
-output.mkdir(parents=True, exist_ok=True)
-(output / \"translated.docx\").write_bytes(b\"late artifact\")
-""",
-        encoding="utf-8",
-    )
-    script.write_text(
-        """import subprocess
+        f"""import socket
 import sys
 import time
 from pathlib import Path
 
-Path(\"runner-started\").write_text(\"started\", encoding=\"utf-8\")
+with socket.create_connection(("127.0.0.1", {handshake_port}), timeout=1) as handshake:
+    handshake.sendall(b"descendant\\n")
+time.sleep(0.3)
+output = Path(sys.argv[1])
+output.mkdir(parents=True, exist_ok=True)
+(output / \"translated.docx\").write_bytes(b\"late artifact\")
+(output / \"late-marker\").write_text(\"late\", encoding=\"utf-8\")
+""",
+        encoding="utf-8",
+    )
+    script.write_text(
+        f"""import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+with socket.create_connection(("127.0.0.1", {handshake_port}), timeout=1) as handshake:
+    handshake.sendall(b"runner\\n")
+    if handshake.recv(3) != b"go\\n":
+        raise RuntimeError("controlled runner handshake failed")
 subprocess.Popen([sys.executable, str(Path(__file__).with_name(\"late_child.py\")), sys.argv[2]])
 time.sleep(10)
 """,
         encoding="utf-8",
     )
+    original_await_with_deadline = executor_app._await_with_deadline
+    original_assign_windows_process_job = executor_app._assign_windows_process_job
+
+    async def await_after_runner_handshake(awaitable, *, timeout_seconds, on_timeout=None):
+        runner_task = asyncio.ensure_future(awaitable)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(runner_entered.wait(), descendant_entered.wait()),
+                timeout=1.0,
+            )
+        except BaseException:
+            runner_task.cancel()
+            await asyncio.gather(runner_task, return_exceptions=True)
+            raise
+        return await original_await_with_deadline(
+            runner_task,
+            timeout_seconds=timeout_seconds,
+            on_timeout=on_timeout,
+        )
+
+    def assign_windows_process_job(process):
+        job = original_assign_windows_process_job(process)
+        if job is not None:
+            process_group_assigned.set()
+        return job
+
+    if executor_app.os.name != "nt":
+        process_group_assigned.set()
+    monkeypatch.setattr(executor_app, "_assign_windows_process_job", assign_windows_process_job)
+    monkeypatch.setattr(executor_app, "_await_with_deadline", await_after_runner_handshake)
     payload = task_payload()
     payload["config"]["resource_limits"] = {"max_seconds": 0.15}
     payload["config"]["skill_ids"] = ["baoyu-translate"]
@@ -1251,13 +1312,19 @@ time.sleep(10)
     endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
     request = ExecutorTaskRequest.model_validate(payload)
 
-    result = await endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN)
+    try:
+        result = await endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN)
 
-    assert (workspace / "runner-started").is_file()
-    assert result["status"] == "failed"
-    assert result["error_code"] == "executor_deadline_exceeded"
-    await asyncio.sleep(0.45)
-    assert not (workspace / "output" / "translated.docx").exists()
+        assert runner_entered.is_set()
+        assert descendant_entered.is_set()
+        assert result["status"] == "failed"
+        assert result["error_code"] == "executor_deadline_exceeded"
+        await asyncio.sleep(0.45)
+        assert not (workspace / "output" / "translated.docx").exists()
+        assert not (workspace / "output" / "late-marker").exists()
+    finally:
+        handshake_server.close()
+        await handshake_server.wait_closed()
 
 
 def test_executor_fails_closed_without_matching_skill_authorization(tmp_path, monkeypatch):
