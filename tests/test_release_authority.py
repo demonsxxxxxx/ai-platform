@@ -137,12 +137,14 @@ def test_opensandbox_compose_overlay_disables_docker_egress_policy_for_api_and_w
 def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract():
     text = RUNBOOK.read_text(encoding="utf-8")
     contract_text = " ".join(text.split())
+    canonical_invocation = "python3 -B tools/release_authority.py deploy-main-commit"
 
     assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
     assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
-    assert text.count("python3 tools/release_authority.py deploy-main-commit") == 1
+    assert text.count(canonical_invocation) == 1
+    assert "python3 tools/release_authority.py deploy-main-commit" not in text
     assert text.count("umask 077") == 1
-    assert text.index("umask 077") < text.index("python3 tools/release_authority.py deploy-main-commit")
+    assert text.index("umask 077") < text.index(canonical_invocation)
     assert "Resolve `SOURCE`" in text
     assert "and `ROOT` from the current 211 host mapping" in text
     assert "`docs/agent-rules/ai-platform-guardrails.md`, the authoritative source" in text
@@ -221,11 +223,40 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert 'test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=all)"' in command
     assert command.index("fetch --no-tags") < command.index("checkout --detach")
     assert command.index("checkout --detach") < command.index("rev-parse HEAD")
-    assert command.index("rev-parse HEAD") < command.index("python3 tools/release_authority.py")
+    assert command.index("rev-parse HEAD") < command.index(canonical_invocation)
     assert "git -C \"$SOURCE\" clean" not in command
     assert "git -C \"$SOURCE\" reset" not in command
     assert "git -C \"$SOURCE\" stash" not in command
     assert "`authority_commit`" in text
+
+
+def test_direct_release_authority_cli_no_bytecode_flag_leaves_no_sibling_bytecode(tmp_path):
+    isolated_root = tmp_path / "direct-release-cli"
+    isolated_tools = isolated_root / "tools"
+    isolated_tools.mkdir(parents=True)
+    for filename in (
+        "release_authority.py",
+        "release_parity_convergence.py",
+        "release_plan.py",
+    ):
+        (isolated_tools / filename).write_bytes((ROOT / "tools" / filename).read_bytes())
+
+    assert not list(isolated_root.rglob("__pycache__"))
+    assert not list(isolated_root.rglob("*.pyc"))
+    parent_bytecode_flag = sys.dont_write_bytecode
+
+    result = subprocess.run(
+        [sys.executable, "-B", str(isolated_tools / "release_authority.py"), "--help"],
+        cwd=isolated_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "usage:" in result.stdout
+    assert sys.dont_write_bytecode is parent_bytecode_flag
+    assert not list(isolated_root.rglob("__pycache__"))
+    assert not list(isolated_root.rglob("*.pyc"))
 
 
 def test_backend_and_frontend_images_publish_release_authority_labels():
