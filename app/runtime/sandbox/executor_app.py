@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -58,11 +59,40 @@ from app.skills.execution_profiles import PLATFORM_CONTROLLED
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
 CallbackSender = Callable[[str, CallbackPayload, str], Awaitable[CallbackResult] | CallbackResult]
-ExecutorEventEmitter = Callable[[AgentEvent], Awaitable[None]]
+ExecutorEventEmitter = Callable[[AgentEvent], Awaitable[bool]]
 ExecutorRunner = Callable[
     [ExecutorTaskRequest, Path, ExecutorEventEmitter],
     Awaitable[dict[str, Any]] | dict[str, Any],
 ]
+
+
+def _callback_acknowledges_exact_batch(result: object, *, event_count: int) -> bool:
+    """Accept only the runtime-callback receipt for one envelope plus its events."""
+
+    acknowledged_count = result.get("event_count") if isinstance(result, dict) else None
+    return isinstance(result, dict) and result.get("accepted") is True and type(
+        acknowledged_count
+    ) is int and acknowledged_count == 1 + event_count
+
+
+def _public_lifecycle_status(lifecycle_phase: str) -> str:
+    return {"invocation_requested": "invoking", "completed": "completed", "failed": "failed"}[
+        lifecycle_phase
+    ]
+
+
+def _lifecycle_callback_event(
+    *, capability_kind: str, label: str, lifecycle_phase: str
+) -> AgentEvent:
+    status_value = _public_lifecycle_status(lifecycle_phase)
+    return AgentEvent(
+        type=f"capability_{status_value}",
+        message="Capability lifecycle update",
+        payload={
+            "capability": {"kind": capability_kind, "name": label, "status": status_value}
+        },
+    )
+
 
 _CONTROLLED_FILE_SKILLS = {"baoyu-translate", "qa-file-reviewer"}
 _CONTROLLED_FILE_SKILL_CAPABILITIES = {
@@ -785,6 +815,28 @@ async def _cleanup_controlled_process(process: asyncio.subprocess.Process) -> No
         ) from exc
 
 
+def _controlled_skill_result(
+    *,
+    status: str,
+    message: str,
+    error_code: str | None = None,
+    capability_evidence: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    result = {
+        "status": status,
+        "message": message,
+        "sdk_used": False,
+        "executor_mode": "platform_controlled_runner",
+        "used_skills": [],
+        "used_skills_source": "none",
+    }
+    if error_code:
+        result.update(error_code=error_code, error_message=message)
+    if capability_evidence is not None:
+        result["capability_evidence"] = capability_evidence
+    return result
+
+
 async def _run_selected_authorized_file_skill(
     request: ExecutorTaskRequest,
     workspace_root: Path,
@@ -792,16 +844,11 @@ async def _run_selected_authorized_file_skill(
 ) -> dict[str, Any] | None:
     skill_id, authorization_error = _selected_authorized_file_skill_id(request)
     if authorization_error:
-        return {
-            "status": "failed",
-            "message": "Selected file Skill is not authorized for controlled execution",
-            "error_code": authorization_error,
-            "error_message": "Selected file Skill is not authorized for controlled execution",
-            "sdk_used": False,
-            "executor_mode": "platform_controlled_runner",
-            "used_skills": [],
-            "used_skills_source": "none",
-        }
+        return _controlled_skill_result(
+            status="failed",
+            message="Selected file Skill is not authorized for controlled execution",
+            error_code=authorization_error,
+        )
     if skill_id is None:
         return None
     command, command_error = _controlled_file_skill_command(
@@ -811,28 +858,11 @@ async def _run_selected_authorized_file_skill(
         user_message=_user_message_from_skill_prompt(request.prompt),
     )
     if command is None:
-        return {
-            "status": "failed",
-            "message": "Selected file Skill cannot be prepared in the sandbox workspace",
-            "error_code": command_error or "controlled_skill_runner_unavailable",
-            "error_message": "Selected file Skill cannot be prepared in the sandbox workspace",
-            "sdk_used": False,
-            "executor_mode": "platform_controlled_runner",
-            "used_skills": [],
-            "used_skills_source": "none",
-        }
-    await emit_event(
-        AgentEvent(
-            type="tool_call_started",
-            message=f"Controlled file Skill started: {skill_id}",
-            payload={
-                "tool_name": "Skill",
-                "skill_name": skill_id,
-                "source": "platform_controlled_runner",
-            },
-            admin_only=True,
+        return _controlled_skill_result(
+            status="failed",
+            message="Selected file Skill cannot be prepared in the sandbox workspace",
+            error_code=command_error or "controlled_skill_runner_unavailable",
         )
-    )
     try:
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -843,31 +873,56 @@ async def _run_selected_authorized_file_skill(
             **_controlled_runner_process_kwargs(),
         )
     except OSError:
-        return {
-            "status": "failed",
-            "message": "Selected file Skill failed to start",
-            "error_code": "controlled_skill_runner_start_failed",
-            "error_message": "Selected file Skill failed to start",
-            "sdk_used": False,
-            "executor_mode": "platform_controlled_runner",
-            "used_skills": [],
-            "used_skills_source": "none",
-        }
+        return _controlled_skill_result(
+            status="failed",
+            message="Selected file Skill failed to start",
+            error_code="controlled_skill_runner_start_failed",
+        )
     if os.name == "nt":
         job = _assign_windows_process_job(process)
         if job is None:
             await _cleanup_controlled_process(process)
-            return {
-                "status": "failed",
-                "message": "Selected file Skill process group is unavailable",
-                "error_code": "controlled_skill_process_group_unavailable",
-                "error_message": "Selected file Skill process group is unavailable",
-                "sdk_used": False,
-                "executor_mode": "platform_controlled_runner",
-                "used_skills": [],
-                "used_skills_source": "none",
-            }
+            return _controlled_skill_result(
+                status="failed",
+                message="Selected file Skill process group is unavailable",
+                error_code="controlled_skill_process_group_unavailable",
+            )
         process._controlled_job_handle = job
+    invocation_id = f"controlled-{uuid.uuid4().hex}"
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity=skill_id,
+    )
+    capability_evidence: list[dict[str, Any]] = []
+
+    async def publish_lifecycle(lifecycle_phase: str) -> bool:
+        evidence = RequiredCapabilityEvidence.from_controlled_runner(
+            declaration=declaration,
+            binding=_evidence_binding(request),
+            tool_call_id=invocation_id,
+            lifecycle_phase=lifecycle_phase,
+        )
+        label = "Skill"
+        acknowledged = await emit_event(
+            _lifecycle_callback_event(
+                capability_kind="skill",
+                label=label,
+                lifecycle_phase=lifecycle_phase,
+            )
+        )
+        if acknowledged is not True:
+            return False
+        capability_evidence.append(asdict(evidence))
+        return True
+
+    if not await publish_lifecycle("invocation_requested"):
+        await _cleanup_controlled_process(process)
+        return _controlled_skill_result(
+            status="failed",
+            message="Capability lifecycle callback was not acknowledged",
+            error_code="capability_callback_not_acknowledged",
+            capability_evidence=[],
+        )
     try:
         stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=_CONTROLLED_RUNNER_TIMEOUT_SECONDS)
     except asyncio.CancelledError:
@@ -875,29 +930,30 @@ async def _run_selected_authorized_file_skill(
         raise
     except TimeoutError:
         await _cleanup_controlled_process(process)
-        return {
-            "status": "failed",
-            "message": "Selected file Skill exceeded its execution deadline",
-            "error_code": "controlled_skill_execution_timeout",
-            "error_message": "Selected file Skill exceeded its execution deadline",
-            "sdk_used": False,
-            "executor_mode": "platform_controlled_runner",
-            "used_skills": [],
-            "used_skills_source": "none",
-        }
+        await publish_lifecycle("failed")
+        return _controlled_skill_result(
+            status="failed",
+            message="Selected file Skill exceeded its execution deadline",
+            error_code="controlled_skill_execution_timeout",
+            capability_evidence=capability_evidence,
+        )
     if process.returncode != 0:
         await _cleanup_controlled_process(process)
-        return {
-            "status": "failed",
-            "message": "Selected file Skill failed",
-            "error_code": "controlled_skill_execution_failed",
-            "error_message": "Selected file Skill failed",
-            "sdk_used": False,
-            "executor_mode": "platform_controlled_runner",
-            "used_skills": [],
-            "used_skills_source": "none",
-        }
+        await publish_lifecycle("failed")
+        return _controlled_skill_result(
+            status="failed",
+            message="Selected file Skill failed",
+            error_code="controlled_skill_execution_failed",
+            capability_evidence=capability_evidence,
+        )
     await _cleanup_controlled_process(process)
+    if not await publish_lifecycle("completed"):
+        return _controlled_skill_result(
+            status="failed",
+            message="Capability lifecycle callback was not acknowledged",
+            error_code="capability_callback_not_acknowledged",
+            capability_evidence=[],
+        )
     return {
         "status": "completed",
         "message": stdout.decode("utf-8", errors="replace").strip()
@@ -906,6 +962,7 @@ async def _run_selected_authorized_file_skill(
         "executor_mode": "platform_controlled_runner",
         "used_skills": [skill_id],
         "used_skills_source": "platform_controlled_runner",
+        "capability_evidence": capability_evidence,
     }
 
 
@@ -1069,6 +1126,8 @@ async def _default_executor_runner(
         del skill_name, metadata
 
     bound_capability_evidence: list[dict[str, Any]] = []
+    invocation_states: dict[tuple[str, str, str], str] = {}
+    lifecycle_sequence_failed = {"value": False}
 
     async def on_capability_evidence(raw: dict[str, str]) -> None:
         """Bind SDK-hook facts to this request and emit only a safe public event."""
@@ -1084,12 +1143,10 @@ async def _default_executor_runner(
                 declaration=declaration,
                 binding=_evidence_binding(request),
                 tool_call_id=str(raw.get("tool_call_id") or ""),
-                succeeded=raw.get("lifecycle_phase") == "completed"
-                and raw.get("lifecycle_status") == "succeeded",
+                lifecycle_phase=str(raw.get("lifecycle_phase") or ""),
             )
         except RequiredToolContractError:
             return
-        bound_capability_evidence.append(asdict(evidence))
         label = _public_capability_label(
             capability_kind=evidence.capability_kind,
             canonical_identity=evidence.canonical_identity,
@@ -1097,20 +1154,35 @@ async def _default_executor_runner(
         )
         if not label:
             return
-        status_value = "completed" if evidence.lifecycle_phase == "completed" else "failed"
-        await emit_event(
-            AgentEvent(
-                type=f"capability_{status_value}",
-                message="Capability lifecycle update",
-                payload={
-                    "capability": {
-                        "kind": evidence.capability_kind,
-                        "name": label,
-                        "status": status_value,
-                    }
-                },
+        invocation_key = (
+            evidence.capability_kind,
+            evidence.canonical_identity,
+            str(evidence.tool_call_id or ""),
+        )
+        current_state = invocation_states.get(invocation_key)
+        invalid_sequence = (
+            evidence.lifecycle_phase == "invocation_requested" and current_state is not None
+        ) or (
+            evidence.lifecycle_phase != "invocation_requested" and current_state != "invoking"
+        )
+        if invalid_sequence:
+            invocation_states[invocation_key] = "rejected"
+            lifecycle_sequence_failed["value"] = True
+            return
+        acknowledged = await emit_event(
+            _lifecycle_callback_event(
+                capability_kind=evidence.capability_kind,
+                label=label,
+                lifecycle_phase=evidence.lifecycle_phase,
             )
         )
+        if acknowledged is True:
+            bound_capability_evidence.append(asdict(evidence))
+            invocation_states[invocation_key] = (
+                "invoking" if evidence.lifecycle_phase == "invocation_requested" else "terminal"
+            )
+        else:
+            invocation_states[invocation_key] = "rejected"
 
     try:
         sdk_result = await run_claude_agent_sdk(
@@ -1167,6 +1239,11 @@ async def _default_executor_runner(
     elif not used_sdk:
         response["error_code"] = "claude_agent_sdk_disabled"
         response["error_message"] = "Claude Agent SDK is disabled"
+    if lifecycle_sequence_failed["value"]:
+        response["status"] = "failed"
+        response["error_code"] = "capability_lifecycle_sequence_invalid"
+        response["error_message"] = "Capability lifecycle sequence is invalid"
+        response["capability_evidence"] = []
     return response
 
 
@@ -1269,10 +1346,11 @@ def create_executor_app(
         executor_tool_call_latency_ms: int | None = None
         artifact_upload_latency_ms = 0
         runner_events_open = {"value": True}
+        capability_callback_failed = {"value": False}
 
-        async def dispatch_callback_event(event: ExecutorCallbackEvent) -> None:
+        async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
             try:
-                await _dispatch_callback(
+                result = await _dispatch_callback(
                     resolved_callback_sender,
                     request.callback_url,
                     event.model_dump(),
@@ -1280,11 +1358,24 @@ def create_executor_app(
                 )
             except Exception:
                 callback_errors.append(event.status)
+                return False
+            lifecycle_event_count = sum(
+                agent_event.type.startswith("capability_") for agent_event in event.events
+            )
+            if lifecycle_event_count:
+                acknowledged = _callback_acknowledges_exact_batch(
+                    result,
+                    event_count=len(event.events),
+                )
+                if not acknowledged:
+                    callback_errors.append(event.status)
+                return acknowledged
+            return True
 
-        async def emit_runner_event(event: AgentEvent) -> None:
+        async def emit_runner_event(event: AgentEvent) -> bool:
             nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
             if not runner_events_open["value"]:
-                return
+                return False
             agent_event = event if isinstance(event, AgentEvent) else AgentEvent.model_validate(event)
             if agent_event.type == "assistant_delta" and executor_first_token_latency_ms is None:
                 executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
@@ -1303,9 +1394,12 @@ def create_executor_app(
                 events=[agent_event],
             )
             artifact_started_at = time.monotonic() if agent_event.type == "artifact_created" else None
-            await dispatch_callback_event(callback_event)
+            acknowledged = await dispatch_callback_event(callback_event)
+            if agent_event.type.startswith("capability_") and not acknowledged:
+                capability_callback_failed["value"] = True
             if artifact_started_at is not None:
                 artifact_upload_latency_ms += _elapsed_ms(artifact_started_at)
+            return acknowledged
 
         await dispatch_callback_event(running_event)
         runner_result: dict[str, Any] = {}
@@ -1349,6 +1443,12 @@ def create_executor_app(
                         "error_message": str(exc),
                     }
         runner_events_open["value"] = False
+
+        if capability_callback_failed["value"]:
+            runner_result["status"] = "failed"
+            runner_result["error_code"] = "capability_callback_not_acknowledged"
+            runner_result["error_message"] = "Capability lifecycle callback was not acknowledged"
+            runner_result["capability_evidence"] = []
 
         runner_status = str(runner_result.get("status") or "").strip().lower()
         failed = timed_out or runner_status not in {"completed", "succeeded"}
