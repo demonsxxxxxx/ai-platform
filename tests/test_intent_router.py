@@ -41,6 +41,27 @@ def test_non_execution_vetoes_confirmed_capability():
     assert decision.confirmed_by_user is False
 
 
+def test_non_execution_vetoes_required_tool_declaration():
+    decision = route_intent("不要执行 Bash 命令 pwd，只解释它", [])
+
+    assert decision.execution_polarity == "non_execution"
+    assert decision.selected_capability == "general_chat"
+    assert decision.required_tool is None
+
+
+def test_affirmative_confirmed_capability_preserves_required_tool_declaration():
+    decision = route_intent(
+        "请执行 Bash 命令 pwd",
+        [],
+        confirmed_capability_id="general_chat",
+    )
+
+    assert decision.execution_polarity == "affirmative"
+    assert decision.confirmed_by_user is True
+    assert decision.required_tool is not None
+    assert decision.required_tool["canonical_identity"] == "Bash"
+
+
 def test_docx_review_routes_to_document_review():
     decision = route_intent(
         message="帮我审核这个 Word，按 QA 标准审查",
