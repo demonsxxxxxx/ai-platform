@@ -1,7 +1,10 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+
+import pytest
 
 from tools.frontend_release_traceability import DIST_BUILD_PROVENANCE_FILENAME
 from tools.frontend_release_traceability import (
@@ -18,6 +21,13 @@ EXPECTED_CI_VERIFY = (
     "&& node scripts/write-build-provenance.mjs"
 )
 EXPECTED_PYTHON_DEPENDENCIES = "python -m pip install pytest pyyaml"
+FRONTEND_HEALTHCHECK_FILE_PATHS = (
+    "/usr/share/nginx/html/index.html",
+    "/usr/share/nginx/html/manifest.json",
+    "/usr/share/nginx/html/icons/icon.svg",
+    "/usr/share/nginx/html/icons/icon-192.png",
+    "/usr/share/nginx/html/icons/icon-512.png",
+)
 EXPECTED_WORKFLOW_PYTEST = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
@@ -452,7 +462,46 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
     assert "corepack pnpm run ci:verify" in dockerfile
     assert "COPY tools ./tools" in dockerfile
-    assert "COPY --from=build /workspace/frontend/web/dist" in dockerfile
+    copy_dist = "COPY --from=build /workspace/frontend/web/dist /usr/share/nginx/html"
+    assert copy_dist in dockerfile
+    copy_dist_line = next(line for line in runtime_dockerfile.splitlines() if copy_dist in line)
+    assert "--chown" not in copy_dist_line
+    healthcheck = next(
+        line for line in runtime_dockerfile.splitlines() if line.startswith("HEALTHCHECK ")
+    )
+    file_healthcheck_probes = [
+        command
+        for path in FRONTEND_HEALTHCHECK_FILE_PATHS
+        for command in (
+            f"test -f {path}",
+            f"test -s {path}",
+            f"stat -c %a {path} | grep -Eq '[4567]$'",
+        )
+    ]
+    http_healthcheck_probes = [
+        "wget -q -O /dev/null http://127.0.0.1:8080/healthz",
+        "wget -q -O /dev/null http://127.0.0.1:8080/manifest.json",
+        "wget -q -O /dev/null http://127.0.0.1:8080/icons/icon.svg",
+        "wget -q -O /dev/null http://127.0.0.1:8080/icons/icon-192.png",
+        "wget -q -O /dev/null http://127.0.0.1:8080/icons/icon-512.png",
+    ]
+    healthcheck_probes = file_healthcheck_probes + http_healthcheck_probes
+    assert "--interval=30s --timeout=3s --start-period=10s --retries=3" in healthcheck
+    assert all(probe in healthcheck for probe in healthcheck_probes)
+    assert healthcheck.index(file_healthcheck_probes[-1]) < healthcheck.index(
+        http_healthcheck_probes[0]
+    )
+    assert healthcheck.count("&&") == len(healthcheck_probes) - 1
+    assert "||" not in healthcheck
+    assert ";" not in healthcheck
+    assert "test -r" not in healthcheck
+    assert "$" not in healthcheck.replace("'[4567]$'", "")
+    assert healthcheck.count("http://") == len(http_healthcheck_probes)
+    assert "https://" not in healthcheck
+    assert all(
+        f"{current_probe} && {next_probe}" in healthcheck
+        for current_probe, next_probe in zip(healthcheck_probes, healthcheck_probes[1:])
+    )
     assert "nginx.conf.template" in dockerfile
     mkdir_templates = "RUN mkdir -p /etc/nginx/templates /etc/nginx/templates-opensandbox"
     copy_full_template = (
@@ -496,6 +545,46 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "AI_PLATFORM_API_UPSTREAM: ${AI_PLATFORM_API_UPSTREAM:-http://api:8020}" in runtime_compose
     assert "AI_PLATFORM_SOURCE_COMMIT" in runtime_compose
     assert missing_plain_dockerfile_copy_sources(dockerfile) == []
+
+
+def test_frontend_healthcheck_file_predicate_fails_closed_before_http_probes(tmp_path):
+    if sys.platform == "win32":
+        pytest.skip("the production predicate requires a POSIX shell; Linux CI is the shell gate")
+
+    healthcheck_command = frontend_healthcheck_command()
+    file_predicate, http_probes = healthcheck_command.split(" && wget ", 1)
+    assert "wget " not in file_predicate
+    assert http_probes.startswith("-q -O /dev/null http://127.0.0.1:8080/healthz")
+
+    healthy_root = tmp_path / "healthy"
+    write_frontend_healthcheck_files(healthy_root)
+    healthy_result, healthy_http_probe_log = run_frontend_healthcheck_command(
+        healthcheck_command, healthy_root
+    )
+    assert healthy_result.returncode == 0
+    assert healthy_http_probe_log.read_text(encoding="utf-8").splitlines() == ["wget"] * 5
+
+    for path in FRONTEND_HEALTHCHECK_FILE_PATHS:
+        relative_path = Path(path).relative_to("/usr/share/nginx/html")
+        for failure_case in ("missing", "empty", "unreadable", "directory"):
+            failure_root = tmp_path / f"{relative_path.stem}-{failure_case}"
+            write_frontend_healthcheck_files(failure_root)
+            failure_path = failure_root / relative_path
+            if failure_case == "missing":
+                failure_path.unlink()
+            elif failure_case == "empty":
+                failure_path.write_bytes(b"")
+            elif failure_case == "unreadable":
+                failure_path.chmod(0o600)
+            else:
+                failure_path.unlink()
+                failure_path.mkdir()
+
+            failure_result, failure_http_probe_log = run_frontend_healthcheck_command(
+                healthcheck_command, failure_root
+            )
+            assert failure_result.returncode != 0
+            assert not failure_http_probe_log.exists()
 
 
 def test_frontend_release_traceability_flags_packaged_delivery_missing_required_contract(tmp_path):
@@ -674,6 +763,49 @@ def missing_plain_dockerfile_copy_sources(dockerfile: str, repo_root: Path | Non
             if not (root / source).exists():
                 missing_sources.append(source)
     return missing_sources
+
+
+def frontend_healthcheck_command():
+    dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
+    runtime_dockerfile = dockerfile.split("FROM nginx:1.27-alpine AS runtime", 1)[1]
+    healthcheck = next(
+        line for line in runtime_dockerfile.splitlines() if line.startswith("HEALTHCHECK ")
+    )
+    return healthcheck.split(" CMD ", 1)[1]
+
+
+def write_frontend_healthcheck_files(root):
+    for path in FRONTEND_HEALTHCHECK_FILE_PATHS:
+        asset_path = root / Path(path).relative_to("/usr/share/nginx/html")
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_bytes(b"asset")
+        asset_path.chmod(0o644)
+
+
+def run_frontend_healthcheck_command(healthcheck_command, root):
+    test_root = root / ".healthcheck-test"
+    http_probe_log = test_root / "http-probes.log"
+    bin_root = test_root / "bin"
+    bin_root.mkdir(parents=True)
+    wget = bin_root / "wget"
+    wget.write_text('#!/bin/sh\nprintf "wget\\n" >> "$HTTP_PROBE_LOG"\n', encoding="utf-8")
+    wget.chmod(0o755)
+    environment = os.environ | {
+        "HTTP_PROBE_LOG": str(http_probe_log),
+        "PATH": f"{bin_root}:{os.environ['PATH']}",
+    }
+    result = subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            healthcheck_command.replace("/usr/share/nginx/html", str(root)),
+        ],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+    return result, http_probe_log
 
 
 def initialize_git_repo(repo_root):
