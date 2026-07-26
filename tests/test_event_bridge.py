@@ -6,9 +6,13 @@ from app.runtime.kernel_contracts import AgentEvent
 
 @pytest.mark.parametrize(
     ("event_type", "status"),
-    [("capability_completed", "completed"), ("capability_failed", "failed")],
+    [
+        ("capability_invoking", "invoking"),
+        ("capability_completed", "completed"),
+        ("capability_failed", "failed"),
+    ],
 )
-def test_capability_terminal_events_bridge_without_private_fallback(event_type, status):
+def test_capability_lifecycle_events_bridge_without_private_fallback(event_type, status):
     bridged = agent_event_to_executor_event(
         AgentEvent(
             type=event_type,
