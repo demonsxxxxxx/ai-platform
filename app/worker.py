@@ -1246,11 +1246,7 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
         "public_tool_category": "mcp",
         "registered": True,
         "declared": True,
-        "active": (
-            str(tool.get("registry_status") or "") == "active"
-            and str(tool.get("policy_status") or "") == "active"
-            and str(tool.get("server_status") or "") == "active"
-        ),
+        "active": all(str(tool.get(key) or "") == "active" for key in ("registry_status", "policy_status", "server_status")),
         "distributed": distribution.usable,
         "identity_authorized": True,
         "object_authorized": True,
@@ -1260,12 +1256,11 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
         "allowed_parameter_keys": ["query"],
         "required_parameter_keys": ["query"],
     }
-    endpoint = str(tool.get("endpoint") or "")
-    transport = str(tool.get("transport_type") or "").lower()
     subject["mcp_server_config"] = {
-        "type": "sse" if transport == "sse" else "http",
-        "url": endpoint,
+        "type": "sse" if str(tool.get("transport_type") or "").lower() == "sse" else "http",
+        "url": str(tool.get("endpoint") or ""),
     }
+    subject.update(capability_id=tool_id)
     return subject
 
 
@@ -2590,6 +2585,18 @@ async def process_run_payload(
 
         if payload.executor_type != "ragflow":
             return
+        subjects = payload.input.get("_runtime_tool_policy_subjects")
+        backing = next((item for item in subjects if item.get("public_tool_category") == "mcp"), None) if isinstance(subjects, list) else None
+        if not isinstance(backing, dict):
+            raise TypeError("ragflow_backing_mcp_identity_unavailable")
+        backing_identity = {
+            "mcp_tool_id": str(backing.get("capability_id") or ""),
+            "mcp_server_id": str(backing.get("mcp_server") or ""),
+            "mcp_tool_name": str(backing.get("mcp_tool") or ""),
+            "mcp_identity": str(backing.get("identity") or ""),
+        }
+        if not all(backing_identity.values()):
+            raise RuntimeError("ragflow_backing_mcp_identity_unavailable")
         await append_user_event(
             conn,
             tenant_id=payload.tenant_id,
@@ -2597,7 +2604,7 @@ async def process_run_payload(
             event_type="mcp_tool_call_completed",
             stage="tool",
             message="知识库检索完成",
-            payload={"mcp_tool_id": payload.skill_id, "write_capable": False},
+            payload={**backing_identity, "write_capable": False},
         )
         await repositories.append_audit_log(
             conn,
@@ -2605,30 +2612,20 @@ async def process_run_payload(
             user_id=None,
             action="mcp_tool_call_completed",
             target_type="mcp_tool",
-            target_id=payload.skill_id,
+            target_id=backing_identity["mcp_tool_id"],
             trace_id=trace_id,
             payload_json={
                 "run_id": payload.run_id,
                 "session_id": payload.session_id,
                 "agent_id": payload.agent_id,
                 "skill_id": payload.skill_id,
+                **backing_identity,
                 "write_capable": False,
                 **_ragflow_audit_payload(result.executor_payload),
             },
         )
 
     try:
-        if payload.executor_type == "ragflow":
-            async with transaction() as conn:
-                await append_user_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="mcp_tool_call_started",
-                    stage="tool",
-                    message="正在检索知识库",
-                    payload={"mcp_tool_id": payload.skill_id, "write_capable": False},
-                )
         if adapter is None:
             raise RuntimeError("executor_adapter_not_resolved")
 
