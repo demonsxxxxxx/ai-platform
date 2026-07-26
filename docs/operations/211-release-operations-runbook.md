@@ -22,6 +22,13 @@ set -eu
 umask 077
 git -C "$SOURCE" fetch --no-tags origin main:refs/remotes/origin/main
 TARGET="$(git -C "$SOURCE" rev-parse refs/remotes/origin/main)"
+if test -n "$(git -C "$SOURCE" status --porcelain --untracked-files=all)"; then
+  printf '%s\n' "coordination source must be clean before exact-main checkout" >&2
+  exit 1
+fi
+git -C "$SOURCE" checkout --detach "$TARGET"
+test "$(git -C "$SOURCE" rev-parse HEAD)" = "$TARGET"
+test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=all)"
 cd "$SOURCE"
 timeout --signal=INT --kill-after=30s 24000s \
   python3 tools/release_authority.py deploy-main-commit \
@@ -36,8 +43,11 @@ timeout --signal=INT --kill-after=30s 24000s \
 
 `SOURCE` is the coordination checkout: it supplies the authority executable and
 the freshly fetched authoritative main ref, but it is never the Docker build
-context for the target release. Its tracked, staged, and ordinary untracked
-state must be clean. Ignored-only artifacts such as
+context for the target release. Before the authority starts, the canonical command
+requires clean tracked, staged, and ordinary untracked state, detaches `SOURCE` at
+the exact fetched `TARGET`, and proves both `HEAD == TARGET` and clean ordinary
+status. A dirty source fails; this command never cleans, resets, stashes, or
+otherwise preserves source changes. Ignored-only artifacts such as
 `tools/__pycache__/release_authority.cpython-312.pyc` are allowed, are not copied,
 and do not affect the fetched Git object or immutable target checkout.
 
@@ -318,3 +328,6 @@ A release is complete only after the owner reports the exact commit and image,
 container identity and restart counts, API/frontend health, relevant smoke,
 rollback subject, authority terminal state, and final source/runtime parity.
 Historical evidence or a healthy old runtime does not prove the target release.
+For `deploy-main-commit`, the terminal result's non-secret `authority_commit` must
+equal the requested commit; it proves the loaded coordination authority checkout
+was at that exact target before immutable target materialization.

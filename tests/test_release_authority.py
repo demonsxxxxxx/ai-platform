@@ -213,6 +213,19 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "--env-file <release-root>/deploy/ai-platform/.env" not in text
     assert "--env-file deploy/ai-platform/.env" not in text
     assert '--env-file "$ROOT/deploy/ai-platform/.env"' in text
+    canonical_command = re.search(r"```bash\n(?P<command>.*?)```", text, re.DOTALL)
+    assert canonical_command is not None
+    command = canonical_command.group("command")
+    assert 'git -C "$SOURCE" checkout --detach "$TARGET"' in command
+    assert 'test "$(git -C "$SOURCE" rev-parse HEAD)" = "$TARGET"' in command
+    assert 'test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=all)"' in command
+    assert command.index("fetch --no-tags") < command.index("checkout --detach")
+    assert command.index("checkout --detach") < command.index("rev-parse HEAD")
+    assert command.index("rev-parse HEAD") < command.index("python3 tools/release_authority.py")
+    assert "git -C \"$SOURCE\" clean" not in command
+    assert "git -C \"$SOURCE\" reset" not in command
+    assert "git -C \"$SOURCE\" stash" not in command
+    assert "`authority_commit`" in text
 
 
 def test_backend_and_frontend_images_publish_release_authority_labels():
@@ -351,12 +364,13 @@ def test_deploy_main_derives_managed_env_and_allows_ignored_coordination_pyc(
     monkeypatch,
     tmp_path,
 ):
-    commit = "a" * 40
     source = tmp_path / "coordination-source"
     _init_repo(source)
     (source / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
     _git(source, "add", ".gitignore")
     _git(source, "commit", "-m", "ignore bytecode")
+    commit = _git(source, "rev-parse", "HEAD")
+    _git(source, "checkout", "--detach", commit)
     ignored = source / "tools" / "__pycache__" / "release_authority.cpython-312.pyc"
     ignored.parent.mkdir(parents=True)
     ignored.write_bytes(b"ignored coordination artifact")
@@ -392,6 +406,7 @@ def test_deploy_main_derives_managed_env_and_allows_ignored_coordination_pyc(
     )
 
     assert result["checkout"] == str(checkout)
+    assert result["authority_commit"] == commit
     assert observed["env_file"] == managed_env
     assert observed["managed_release_root"] == release_root
     assert not (source / "deploy" / "ai-platform" / ".env").exists()
@@ -427,6 +442,35 @@ def test_deploy_main_blocks_coordination_dirt_before_target_materialization(
         release_authority.deploy_main_commit(
             release_root,
             "b" * 40,
+            docker_cmd="docker",
+            env_file=None,
+            coordination_source=source,
+            replace_known_manual_frontend=False,
+        )
+
+    assert materialized == []
+
+
+def test_deploy_main_rejects_stale_clean_coordination_source_before_materialization(
+    monkeypatch,
+    tmp_path,
+):
+    source = tmp_path / "coordination-source"
+    _init_repo(source)
+    _, release_root, _ = _prepare_managed_release_layout(monkeypatch, tmp_path)
+    materialized: list[Path] = []
+    monkeypatch.setattr(
+        "tools.release_authority.materialize_main_checkout",
+        lambda root, requested: materialized.append(Path(root)),
+    )
+
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^coordination-source-commit gate failed:",
+    ):
+        release_authority.deploy_main_commit(
+            release_root,
+            "a" * 40,
             docker_cmd="docker",
             env_file=None,
             coordination_source=source,
@@ -3696,7 +3740,14 @@ def test_release_authority_cli_exposes_git_native_main_commit_deploy():
         capture_output=True,
         text=True,
     ).stdout
+    package_import = subprocess.run(
+        [sys.executable, "-c", "import tools.release_authority"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
+    assert package_import.stdout == ""
     assert "--release-root" in help_text
     assert "--repo-root" not in help_text
     assert "--commit" in help_text
@@ -3704,32 +3755,6 @@ def test_release_authority_cli_exposes_git_native_main_commit_deploy():
     assert "--strategy" in help_text
     assert "--canonical-build-timeout-seconds SECONDS" in help_text
     assert "default: 1800" in help_text
-
-
-@pytest.mark.parametrize(
-    ("paths", "backend", "frontend", "no_runtime_change"),
-    [
-        (["pyproject.toml"], ("dependency", "canonical-build"), ("unchanged", "promote"), False),
-        (["app/main.py"], ("source", "runtime-rebuild"), ("unchanged", "promote"), False),
-        (["frontend/web/pnpm-lock.yaml"], ("unchanged", "promote"), ("dependency", "canonical-build"), False),
-        (["frontend/web/src/App.tsx"], ("unchanged", "promote"), ("source", "source-build"), False),
-        (["deploy/ai-platform/docker-compose.yml"], ("unchanged", "promote"), ("unchanged", "promote"), True),
-    ],
-)
-def test_auto_strategy_classifies_role_changes_and_no_runtime_plan(
-    paths,
-    backend,
-    frontend,
-    no_runtime_change,
-):
-    plan = release_authority.build_auto_release_plan(
-        "1" * 40,
-        "2" * 40,
-        release_authority.classify_runtime_changes(paths),
-    )
-
-    assert [(item.change_kind, item.action) for item in plan.roles] == [backend, frontend]
-    assert plan.no_runtime_change is no_runtime_change
 
 
 def test_dockerfiles_install_dependencies_before_source_and_provenance_layers():
@@ -3741,6 +3766,49 @@ def test_dockerfiles_install_dependencies_before_source_and_provenance_layers():
     assert backend.index("COPY app /app/app") < backend.index("LABEL ai-platform.source-commit")
     assert frontend.index("pnpm install --frozen-lockfile") < frontend.index("COPY frontend/web/src")
     assert frontend.index("COPY frontend/web/src") < frontend.index("corepack pnpm run ci:verify")
+
+
+def test_auto_release_plan_uses_exact_git_pyproject_blobs_and_fails_closed(tmp_path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    pyproject = repo / "pyproject.toml"
+    app_main = repo / "app" / "main.py"
+    app_main.parent.mkdir()
+    app_main.write_text("value = 1\n", encoding="utf-8")
+    pyproject.write_text(
+        "[project]\nrequires-python = \">=3.11\"\ndependencies = [\"fastapi==0.111.0\"]\n"
+        "[project.optional-dependencies]\ntest = [\"pytest==8.2.0\"]\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "app/main.py", "pyproject.toml")
+    _git(repo, "commit", "-m", "runtime baseline")
+    current = _git(repo, "rev-parse", "HEAD")
+
+    app_main.write_text("value = 2\n", encoding="utf-8")
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8").replace(
+            '"pytest==8.2.0"', '"pytest==8.2.0", "ruff==0.11.13"'
+        ),
+        encoding="utf-8",
+    )
+    _git(repo, "commit", "-am", "test tooling and source")
+    optional_target = _git(repo, "rev-parse", "HEAD")
+
+    optional_plan = release_authority._auto_release_plan(repo, optional_target, current)
+    assert (optional_plan.roles[0].change_kind, optional_plan.roles[0].action) == (
+        "source",
+        "runtime-rebuild",
+    )
+
+    pyproject.write_text("[project\n", encoding="utf-8")
+    _git(repo, "commit", "-am", "malformed project")
+    malformed_target = _git(repo, "rev-parse", "HEAD")
+
+    malformed_plan = release_authority._auto_release_plan(repo, malformed_target, current)
+    assert (malformed_plan.roles[0].change_kind, malformed_plan.roles[0].action) == (
+        "dependency",
+        "canonical-build",
+    )
 
 
 def _configure_auto_deploy(monkeypatch, tmp_path, *, current, target, target_present=False):
