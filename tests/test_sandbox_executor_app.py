@@ -16,13 +16,20 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from app.executors.claude_agent_sdk_runner import build_skill_prompt
-from app.file_parser_contracts import MaterializedAttachmentFact, build_attachment_preprocessing_contract
+from app.file_parser_contracts import (
+    MaterializedAttachmentFact,
+    build_attachment_preprocessing_contract,
+)
+from app.required_tool_contract import RequiredCapabilityDeclaration
 from app.runtime.kernel_contracts import AgentEvent
-from app.runtime.sandbox.contracts import ExecutorTaskRequest
 from app.runtime.sandbox import executor_app
-from app.runtime.sandbox.executor_app import _default_callback_sender, _default_executor_runner, create_executor_app
+from app.runtime.sandbox.contracts import ExecutorTaskRequest
+from app.runtime.sandbox.executor_app import (
+    _default_callback_sender,
+    _default_executor_runner,
+    create_executor_app,
+)
 from app.tool_permission_lifecycle import tool_permission_budget
-
 
 EXECUTOR_AUTH_TOKEN = "executor-secret"
 TRUSTED_CALLBACK_BASE_URL = "http://ai-platform.test"
@@ -310,6 +317,147 @@ def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, 
     assert callbacks[0][1]["progress"] == 5
     assert callbacks[1][1]["progress"] == 99
     assert callbacks[1][1]["state_patch"]["stage"] == "executor_finished"
+
+
+def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tmp_path, monkeypatch):
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind="mcp",
+            canonical_identity="mcp__tenant-server__search",
+        )
+        await kwargs["on_capability_evidence"](
+            {
+                "capability_kind": "mcp",
+                "canonical_identity": "mcp__tenant-server__search",
+                "tool_call_id": "tool-call-1",
+                "lifecycle_phase": "completed",
+                "lifecycle_status": "succeeded",
+                "declaration_sha256": declaration.declaration_sha256,
+            }
+        )
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "done",
+                "session_id": "sdk-session-a",
+                "usage": {},
+                "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
+                "used_skills": [],
+                "used_skills_source": "",
+                "capability_evidence": [],
+            },
+        )()
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return {"accepted": True}
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["mcp_tool_ids"] = ["tenant-search"]
+    raw["config"]["context_retrieval_scope"] = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "agent-a",
+        "context_snapshot_id": "ctx-a",
+        "allowed_message_ids": [],
+        "allowed_file_ids": [],
+        "allowed_artifact_ids": [],
+        "memory_scope": {},
+    }
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "mcp__tenant-server__search",
+            "mcp_server": "tenant-server",
+            "public_tool_label": "Tenant Search",
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+        }
+    ]
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+
+    response = client.post("/v1/tasks/execute", json=raw, headers=auth_headers())
+
+    assert response.status_code == 200
+    evidence = response.json()["capability_evidence"][0]
+    assert evidence["run_id"] == "run-a"
+    assert evidence["attempt_id"] == "qat-attempt-a"
+    assert evidence["tool_call_id"] == "tool-call-1"
+    capability_event = next(item for item in callbacks if item.get("events"))
+    assert capability_event["events"] == [
+        {
+            "type": "capability_completed",
+            "message": "Capability lifecycle update",
+            "payload": {
+                "capability": {"kind": "mcp", "name": "Tenant Search", "status": "completed"}
+            },
+            "admin_only": False,
+        }
+    ]
+    assert "mcp__tenant-server__search" not in json.dumps(capability_event)
+    assert "tool-call-1" not in json.dumps(capability_event)
+
+
+@pytest.mark.asyncio
+async def test_executor_omits_unknown_capability_identity_without_inference(monkeypatch, tmp_path):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        await kwargs["on_capability_evidence"](
+            {
+                "capability_kind": "mcp",
+                "canonical_identity": "mcp__foreign__unknown",
+                "tool_call_id": "tool-call-x",
+                "lifecycle_phase": "completed",
+                "lifecycle_status": "succeeded",
+                "declaration_sha256": "forged",
+            }
+        )
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "done",
+                "session_id": "sdk-session-a",
+                "usage": {},
+                "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    request = ExecutorTaskRequest.model_validate(task_payload())
+    events = []
+
+    result = await _default_executor_runner(request, tmp_path, events.append)
+
+    assert result["status"] == "completed"
+    assert result["capability_evidence"] == []
+    assert events == []
 
 
 def test_executor_execute_fails_closed_after_final_delta_without_structured_terminal(tmp_path, monkeypatch):
