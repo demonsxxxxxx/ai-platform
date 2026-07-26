@@ -5,12 +5,11 @@ import os
 import re
 import shlex
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
-from pathlib import PurePosixPath
-from typing import Any, Awaitable, Callable
+from pathlib import Path, PurePosixPath
+from typing import Any
 from urllib.parse import urlsplit
 
 from app.context_manifest import (
@@ -22,12 +21,20 @@ from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
 from app.control_plane_contracts import sanitize_public_payload
 from app.file_parser_contracts import ParsedAttachmentContext
 from app.public_context_keys import safe_public_context_pack_version
+from app.required_tool_contract import (
+    RequiredCapabilityDeclaration,
+    RequiredCapabilityEvidence,
+    RequiredToolContractError,
+)
 from app.settings import get_settings
 from app.skills.catalog import (
     AuthorizedSkillCatalogSnapshot,
     render_authorized_skill_catalog_prompt,
 )
-from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION, SKILL_WORKSPACE_CONTRACT_VERSION
+from app.skills.execution_profiles import (
+    NATIVE_COMMAND_ISOLATION,
+    SKILL_WORKSPACE_CONTRACT_VERSION,
+)
 from app.tool_policy import evaluate_tool_policy
 
 _SDK_ENV_ALLOWLIST = {
@@ -175,6 +182,7 @@ class ClaudeAgentSdkRunResult:
     used_skills: list[str] = field(default_factory=list)
     used_skills_source: str = ""
     turn_diagnostics: dict[str, Any] = field(default_factory=dict)
+    capability_evidence: list[dict[str, str]] = field(default_factory=list)
 
 
 class ClaudeAgentSdkNotAvailable(RuntimeError):
@@ -598,7 +606,7 @@ def _safe_context_pack_generated_at(value: object) -> str:
     if sanitize_public_payload(text) != text:
         return ""
     try:
-        datetime.fromisoformat(text.replace("Z", "+00:00"))
+        datetime.fromisoformat(text)
     except ValueError:
         return ""
     return text
@@ -858,7 +866,7 @@ def _build_context_retrieval_mcp_server(
             if reason not in {"context_file_too_large", "context_file_size_required"}:
                 reason = "context_scope_denied"
             return _context_retrieval_tool_error(reason, action=audit_action)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return _context_retrieval_tool_error("context_retrieval_failed", action=audit_action)
 
     @sdk_tool(
@@ -1142,10 +1150,9 @@ def _parameters_match_subject(subject: dict[str, Any], tool_name: str, tool_inpu
         if not requested:
             return False
     expected_objects = subject.get("object_constraints")
-    if isinstance(expected_objects, dict):
-        if any(tool_input.get(key) != value for key, value in expected_objects.items()):
-            return False
-    return True
+    return not isinstance(expected_objects, dict) or not any(
+        tool_input.get(key) != value for key, value in expected_objects.items()
+    )
 
 
 _WORKSPACE_PATH_PARAMETER = {
@@ -1257,9 +1264,7 @@ def _workspace_path_parameters_authorized(
             for char in first
         ):
             return False
-        if first == "**":
-            return False
-        return True
+        return first != "**"
 
     if not isinstance(tool_input, dict):
         return False
@@ -1357,6 +1362,7 @@ async def run_claude_agent_sdk(
     query_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    on_capability_evidence: Callable[[dict[str, str]], Awaitable[None]] | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
     attachment_contexts: list[ParsedAttachmentContext] | None = None,
@@ -1375,6 +1381,7 @@ async def run_claude_agent_sdk(
     }
     last_public_stage = "runtime"
     used_skill_names: list[str] = []
+    capability_evidence: list[dict[str, str]] = []
 
     def turn_diagnostics(error_code: str | None) -> dict[str, Any]:
         return project_sdk_turn_diagnostics(
@@ -1497,7 +1504,7 @@ async def run_claude_agent_sdk(
                 else list(_SDK_INTERNAL_CONTEXT_TOOLS)
             ),
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         context_retrieval_server = None
     if requested_internal_context_tools and context_retrieval_server is None:
         error_code = _SDK_TOOL_ADMISSION_FAILED
@@ -1556,6 +1563,27 @@ async def run_claude_agent_sdk(
         last_public_stage = "skills"
         if on_skill_use:
             await on_skill_use(skill_name, metadata)
+
+    async def record_capability_evidence(
+        *, capability_kind: str, canonical_identity: str, tool_call_id: str, lifecycle_phase: str
+    ) -> None:
+        """Record one bounded actual-call fact without tool input or output."""
+
+        try:
+            declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+                capability_kind=capability_kind,
+                canonical_identity=canonical_identity,
+            )
+            evidence = RequiredCapabilityEvidence.sdk_hook_payload(
+                declaration=declaration,
+                tool_call_id=tool_call_id,
+                lifecycle_phase=lifecycle_phase,
+            )
+        except RequiredToolContractError:
+            return
+        capability_evidence.append(evidence)
+        if on_capability_evidence:
+            await on_capability_evidence(dict(evidence))
 
     def selected_skill_hook_error() -> str | None:
         if selected_sdk_skill is None or selected_sdk_skill in used_skill_names:
@@ -1690,13 +1718,35 @@ async def run_claude_agent_sdk(
                     output["permissionDecisionReason"] = "native_tool_isolation_unavailable"
                 else:
                     output["updatedInput"] = updated_input
+        if decision.allowed is True and output["permissionDecision"] == "allow" and hook_input:
+            tool_name = str(hook_input.get("tool_name") or "")
+            identity = adapter_identity(tool_name)
+            resolved_tool_call_id = str(hook_input.get("tool_use_id") or tool_use_id or "")
+            if tool_name.lower() == "skill":
+                for skill_name in _extract_skill_names_from_tool_input(
+                    hook_input.get("tool_input"),
+                    allowed_skill_names,
+                ):
+                    await record_capability_evidence(
+                        capability_kind="skill",
+                        canonical_identity=skill_name,
+                        tool_call_id=resolved_tool_call_id,
+                        lifecycle_phase="invocation_requested",
+                    )
+            elif identity in authorized_subjects and identity.startswith("mcp__"):
+                await record_capability_evidence(
+                    capability_kind="mcp",
+                    canonical_identity=identity,
+                    tool_call_id=resolved_tool_call_id,
+                    lifecycle_phase="invocation_requested",
+                )
         return {"hookSpecificOutput": output}
     async def record_skill_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
-        if not isinstance(hook_input, dict):
-            return {}
+        hook_input = hook_input if isinstance(hook_input, dict) else {}
         tool_name = str(hook_input.get("tool_name") or "")
         if tool_name.lower() != "skill":
             return {}
+        resolved_tool_call_id = str(hook_input.get("tool_use_id") or tool_use_id or "")
         for skill_name in _extract_skill_names_from_tool_input(hook_input.get("tool_input"), allowed_skill_names):
             await record_used_skill(
                 skill_name,
@@ -1704,19 +1754,56 @@ async def run_claude_agent_sdk(
                     "source": "claude_agent_sdk_hook",
                     "hook_event_name": str(hook_input.get("hook_event_name") or ""),
                     "tool_name": tool_name,
-                    "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
+                    "tool_use_id": resolved_tool_call_id,
                 },
+            )
+            await record_capability_evidence(
+                capability_kind="skill",
+                canonical_identity=skill_name,
+                tool_call_id=resolved_tool_call_id,
+                lifecycle_phase="completed",
             )
         return {}
 
     async def record_failed_skill_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
-        if not isinstance(hook_input, dict):
-            return {}
+        hook_input = hook_input if isinstance(hook_input, dict) else {}
         if str(hook_input.get("tool_name") or "").lower() != "skill":
             return {}
         for skill_name in _extract_skill_names_from_tool_input(hook_input.get("tool_input"), allowed_skill_names):
             if skill_name not in failed_skill_names:
                 failed_skill_names.append(skill_name)
+            await record_capability_evidence(
+                capability_kind="skill",
+                canonical_identity=skill_name,
+                tool_call_id=str(hook_input.get("tool_use_id") or tool_use_id or ""),
+                lifecycle_phase="failed",
+            )
+        return {}
+
+    async def record_mcp_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
+        hook_input = hook_input if isinstance(hook_input, dict) else {}
+        identity = adapter_identity(hook_input.get("tool_name"))
+        if not identity.startswith("mcp__") or identity not in authorized_subjects:
+            return {}
+        await record_capability_evidence(
+            capability_kind="mcp",
+            canonical_identity=identity,
+            tool_call_id=str(hook_input.get("tool_use_id") or tool_use_id or ""),
+            lifecycle_phase="completed",
+        )
+        return {}
+
+    async def record_failed_mcp_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
+        hook_input = hook_input if isinstance(hook_input, dict) else {}
+        identity = adapter_identity(hook_input.get("tool_name"))
+        if not identity.startswith("mcp__") or identity not in authorized_subjects:
+            return {}
+        await record_capability_evidence(
+            capability_kind="mcp",
+            canonical_identity=identity,
+            tool_call_id=str(hook_input.get("tool_use_id") or tool_use_id or ""),
+            lifecycle_phase="failed",
+        )
         return {}
 
     try:
@@ -1739,12 +1826,21 @@ async def run_claude_agent_sdk(
                 )
             ],
         }
+        post_tool_hooks = []
+        post_tool_failure_hooks = []
         if configured_skills:
-            skill_hook = HookMatcher(matcher="Skill", hooks=[record_skill_tool_use])
-            hooks["PostToolUse"] = [skill_hook]
-            hooks["PostToolUseFailure"] = [
+            post_tool_hooks.append(HookMatcher(matcher="Skill", hooks=[record_skill_tool_use]))
+            post_tool_failure_hooks.append(
                 HookMatcher(matcher="Skill", hooks=[record_failed_skill_tool_use])
-            ]
+            )
+        if any(identity.startswith("mcp__") for identity in authorized_subjects):
+            post_tool_hooks.append(HookMatcher(matcher="mcp__*", hooks=[record_mcp_tool_use]))
+            post_tool_failure_hooks.append(
+                HookMatcher(matcher="mcp__*", hooks=[record_failed_mcp_tool_use])
+            )
+        if post_tool_hooks:
+            hooks["PostToolUse"] = post_tool_hooks
+            hooks["PostToolUseFailure"] = post_tool_failure_hooks
 
     sdk_tools = (
         [identity for identity in authorized_subjects if not identity.startswith("mcp__")]
@@ -1832,6 +1928,7 @@ async def run_claude_agent_sdk(
                         used_skills=list(used_skill_names),
                         used_skills_source="executor_hook" if used_skill_names else "",
                         turn_diagnostics=turn_diagnostics(error_code),
+                        capability_evidence=list(capability_evidence),
                     )
                 received_structured_terminal = True
                 stop_reason = getattr(message, "stop_reason", None)
@@ -1854,6 +1951,7 @@ async def run_claude_agent_sdk(
             used_skills=list(used_skill_names),
             used_skills_source="executor_hook" if used_skill_names else "",
             turn_diagnostics=turn_diagnostics(terminal_error),
+            capability_evidence=list(capability_evidence),
         )
 
     try:
@@ -1871,8 +1969,9 @@ async def run_claude_agent_sdk(
             used_skills=list(used_skill_names),
             used_skills_source="executor_hook" if used_skill_names else "",
             turn_diagnostics=turn_diagnostics(error_code),
+            capability_evidence=list(capability_evidence),
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         error_code = _canonical_sdk_error(
             exc,
             selected_skill_error=selected_skill_hook_error(),
@@ -1887,4 +1986,5 @@ async def run_claude_agent_sdk(
             used_skills=list(used_skill_names),
             used_skills_source="executor_hook" if used_skill_names else "",
             turn_diagnostics=turn_diagnostics(error_code),
+            capability_evidence=list(capability_evidence),
         )

@@ -1,33 +1,35 @@
-import base64
 import asyncio
-from contextlib import asynccontextmanager
+import base64
 import hashlib
 import io
 import json
-import subprocess
 import sys
 import types
 import zipfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 
-import app.skills.dependencies as dependency_policy
-import app.executors.claude_agent_worker as claude_agent_worker
 import app.executors.claude_agent_sdk_runner as sdk_runner
+import app.skills.dependencies as dependency_policy
 import app.worker as worker_module
+from app.executors import claude_agent_worker
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
+from app.executors.claude_agent_sdk_runner import (
+    build_sdk_env,
+    build_skill_prompt,
+    run_claude_agent_sdk,
+)
 from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
+    _allowed_skill_names,
+    _inferred_used_skill_names,
+    _ordinary_run_requires_sandbox,
+    _required_artifact_types,
 )
-from app.executors.claude_agent_worker import _allowed_skill_names
-from app.executors.claude_agent_worker import _inferred_used_skill_names
-from app.executors.claude_agent_worker import _ordinary_run_requires_sandbox
-from app.executors.claude_agent_worker import _required_artifact_types
-from app.executors.claude_agent_sdk_runner import _sdk_run_timeout_seconds
-from app.storage import StoredObject
-from app.executors.claude_agent_sdk_runner import build_sdk_env, build_skill_prompt, run_claude_agent_sdk
+from app.executors.registry import AdapterRegistry
 from app.file_parser_contracts import (
     XLSX_CONTENT_TYPE,
     XLSX_PARSER_ID,
@@ -35,15 +37,19 @@ from app.file_parser_contracts import (
     MaterializedAttachmentFact,
     ParsedAttachmentContext,
 )
-from app.executors.registry import AdapterRegistry
+from app.required_tool_contract import (
+    RequiredCapabilityDeclaration,
+    RequiredCapabilityEvidence,
+)
+from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import (
     DockerContainerProvider,
     FakeContainerProvider,
     OpenSandboxContainerProvider,
 )
-from app.runtime.kernel_contracts import AgentEvent
 from app.skills.pinning import build_skill_manifest_pins
 from app.skills.registry import BuiltinSkillRegistry
+from app.storage import StoredObject
 from app.worker import WorkerRunCancelled
 
 
@@ -334,7 +340,7 @@ def _snapshot_hash(files):
 
 
 def _test_skill_manifest(skill_id, *, description="Test skill.", dependency_ids=None):
-    content = f"---\nname: {skill_id}\ndescription: {description}\n---\n\n# {skill_id}\n".encode("utf-8")
+    content = f"---\nname: {skill_id}\ndescription: {description}\n---\n\n# {skill_id}\n".encode()
     files = [
         {
             "relative_path": "SKILL.md",
@@ -431,6 +437,91 @@ def sandbox_writing_payload(**overrides):
     return payload(**overrides)
 
 
+def _mcp_subject():
+    return {
+        "identity": "mcp__tenant-server__search",
+        "mcp_server": "tenant-server",
+        "mcp_tool": "search",
+        "public_tool_label": "Tenant Search",
+        "public_tool_category": "mcp",
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": "low",
+        "write_capable": False,
+        "mcp_server_config": {"type": "http", "url": "https://private.example/mcp"},
+    }
+
+
+def _selected_capability_evidence(request):
+    binding = {
+        "tenant_id": request.tenant_id,
+        "workspace_id": request.workspace_id,
+        "user_id": request.user_id,
+        "session_id": request.session_id,
+        "run_id": request.run_id,
+        "attempt_id": request.attempt_id,
+    }
+    identities = [
+        ("skill", request.skill_ids[0])
+        for _ in [0]
+        if request.skill_ids and request.skill_ids[0] != "general-chat"
+    ]
+    identities.extend(
+        ("mcp", subject["identity"])
+        for subject in request.tool_policy_subjects
+        if subject.get("mcp_server") and subject.get("identity") != "mcp__ai-platform-context"
+    )
+    evidence = []
+    for index, (kind, identity) in enumerate(identities):
+        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind=kind,
+            canonical_identity=identity,
+        )
+        call_id = f"invocation-{index}"
+        for phase in ("invocation_requested", "completed"):
+            evidence.append(
+                RequiredCapabilityEvidence.from_sdk_hook(
+                    declaration=declaration,
+                    binding=binding,
+                    tool_call_id=call_id,
+                    lifecycle_phase=phase,
+                ).__dict__
+            )
+    return evidence
+
+
+def _payload_skill_evidence(current_payload):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity=current_payload.skill_id,
+    )
+    binding = {
+        key: getattr(current_payload, key)
+        for key in (
+            "tenant_id",
+            "workspace_id",
+            "user_id",
+            "session_id",
+            "run_id",
+            "attempt_id",
+        )
+    }
+    return [
+        RequiredCapabilityEvidence.from_sdk_hook(
+            declaration=declaration,
+            binding=binding,
+            tool_call_id="invocation-0",
+            lifecycle_phase=phase,
+        ).__dict__
+        for phase in ("invocation_requested", "completed")
+    ]
+
+
 def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="completed", provider="docker"):
     requests = []
 
@@ -462,6 +553,7 @@ def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="comp
                     if request.skill_ids and request.skill_ids[0] != "general-chat"
                     else ""
                 ),
+                "capability_evidence": _selected_capability_evidence(request),
             }
             return types.SimpleNamespace(
                 status=status,
@@ -922,7 +1014,7 @@ def test_required_docx_validates_xml_ncname_relationship_ids(monkeypatch, tmp_pa
     output.mkdir(parents=True)
     relationships = (
         b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        + f'<Relationship Id="{relationship_id}" '.encode("utf-8")
+        + f'<Relationship Id="{relationship_id}" '.encode()
         + b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
         + b'Target="word/document.xml"/></Relationships>'
     )
@@ -1376,12 +1468,13 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(
         monkeypatch,
-        executor_response={
+        executor_response=lambda request: {
             "status": "completed",
             "message": "sandbox completed",
             "sdk_used": True,
             "used_skills": ["qa-file-reviewer"],
             "used_skills_source": "executor_hook",
+            "capability_evidence": _selected_capability_evidence(request),
         },
     )
 
@@ -1492,7 +1585,7 @@ async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkey
     )
 
     assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_selected_skill_not_invoked"
+    assert result.result["error_code"] == "required_tool_completion_evidence_missing"
     assert result.result["used_skills"] == []
     assert result.executor_payload["used_skills_source"] == "none"
 
@@ -1565,6 +1658,11 @@ async def test_worker_threads_server_xlsx_contract_and_accepts_matching_runtime_
             "used_skills": ["qa-rag-skill"],
             "used_skills_source": "executor_hook",
             "attachment_parser_evidence": [_xlsx_parser_evidence()],
+            "capability_evidence": [
+                item
+                for item in _selected_capability_evidence(request)
+                if item["canonical_identity"] == "qa-rag-skill"
+            ],
         }
 
     adapter = ClaudeAgentWorkerAdapter()
@@ -2125,35 +2223,42 @@ async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned
 
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    requests = install_sandbox_runtime(monkeypatch)
+    def completed_response(request):
+        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind="mcp",
+            canonical_identity="mcp__tenant-server__search",
+        )
+        binding = {
+            "tenant_id": request.tenant_id,
+            "workspace_id": request.workspace_id,
+            "user_id": request.user_id,
+            "session_id": request.session_id,
+            "run_id": request.run_id,
+            "attempt_id": request.attempt_id,
+        }
+        return {
+            "status": "completed",
+            "message": "sandbox completed",
+            "sdk_used": True,
+            "capability_evidence": [
+                RequiredCapabilityEvidence.from_sdk_hook(
+                    declaration=declaration,
+                    binding=binding,
+                    tool_call_id="tool-call-1",
+                    lifecycle_phase=phase,
+                ).__dict__
+                for phase in ("invocation_requested", "completed")
+            ],
+        }
+
+    requests = install_sandbox_runtime(monkeypatch, executor_response=completed_response)
     current_payload = payload(
         agent_id="general-agent",
         skill_id="general-chat",
         input={
             "message": "search with the selected tool",
             "mcp_tool_ids": ["tenant-search"],
-            "_runtime_tool_policy_subjects": [
-                {
-                    "identity": "mcp__tenant-server__search",
-                    "mcp_server": "tenant-server",
-                    "mcp_tool": "search",
-                    "public_tool_label": "Tenant Search",
-                    "public_tool_category": "mcp",
-                    "registered": True,
-                    "declared": True,
-                    "active": True,
-                    "distributed": True,
-                    "identity_authorized": True,
-                    "object_authorized": True,
-                    "parameters_authorized": True,
-                    "risk_level": "low",
-                    "write_capable": False,
-                    "mcp_server_config": {
-                        "type": "http",
-                        "url": "https://private.example/mcp",
-                    },
-                }
-            ],
+            "_runtime_tool_policy_subjects": [_mcp_subject()],
         },
     )
 
@@ -2163,12 +2268,8 @@ async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned
     assert len(requests) == 1
     assert requests[0].mcp_tool_ids == ["tenant-search"]
     mcp_events = [event for event in events if event["payload"].get("tool_category") == "mcp"]
-    assert [event["event_type"] for event in mcp_events] == [
-        "tool_call_started",
-        "tool_call_completed",
-    ]
+    assert mcp_events == []
     encoded = json.dumps(mcp_events)
-    assert "Tenant Search" in encoded
     assert "private.example" not in encoded
     assert "mcp__tenant-server__search" not in encoded
 
@@ -2229,12 +2330,8 @@ async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatc
         await adapter.submit_run(current_payload, event_sink=event_sink)
 
     mcp_events = [event for event in events if event["payload"].get("tool_category") == "mcp"]
-    assert [event["event_type"] for event in mcp_events] == [
-        "tool_call_started",
-        "tool_call_failed",
-    ]
+    assert mcp_events == []
     encoded = json.dumps(mcp_events)
-    assert "Tenant Search" in encoded
     assert "private endpoint" not in encoded
     assert "raw output" not in encoded
 
@@ -2436,12 +2533,13 @@ def test_worker_accepts_only_exact_required_xlsx_parser_evidence(
 ):
     adapter = ClaudeAgentWorkerAdapter()
 
+    current_payload = sandbox_writing_payload(
+        agent_id="qa-rag-agent",
+        skill_id="qa-rag-skill",
+        file_ids=["file_1"],
+    )
     result = adapter._executor_result_from_sandbox_runtime(
-        sandbox_writing_payload(
-            agent_id="qa-rag-agent",
-            skill_id="qa-rag-skill",
-            file_ids=["file_1"],
-        ),
+        current_payload,
         _xlsx_prepared_run(tmp_path),
         types.SimpleNamespace(
             status="completed",
@@ -2466,6 +2564,7 @@ def test_worker_accepts_only_exact_required_xlsx_parser_evidence(
                     "private_untrusted_field": "must-not-project",
                 },
                 "attachment_parser_evidence": [evidence],
+                "capability_evidence": _payload_skill_evidence(current_payload),
             },
             timings={},
         ),
@@ -5376,3 +5475,4 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
             skill_id="general-chat",
             on_text=on_text,
         )
+# ruff: noqa: RUF012

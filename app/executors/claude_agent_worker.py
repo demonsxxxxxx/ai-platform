@@ -52,6 +52,10 @@ from app.file_parser_contracts import (
     validate_required_parser_evidence,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
+from app.required_tool_contract import (
+    RequiredCapabilityDeclaration,
+    selected_capability_completion_decision,
+)
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
@@ -176,35 +180,39 @@ def _external_mcp_subjects(payload: RunPayload) -> list[dict[str, str]]:
     return subjects
 
 
-async def _emit_external_mcp_activity(
-    event_sink: ExecutorEventSink | None,
-    *,
-    subjects: list[dict[str, str]],
-    status: str,
-) -> None:
-    """Emit a public-safe generic MCP lifecycle without private runtime data."""
+def _selected_capability_invocation_error(payload: RunPayload, evidence: object) -> str | None:
+    """Delegate exact selected Skill/MCP sequence validation to the deep seam."""
 
-    if event_sink is None:
-        return
-    event_type = {
-        "started": "tool_call_started",
-        "completed": "tool_call_completed",
-        "failed": "tool_call_failed",
-    }[status]
-    for subject in subjects:
-        label = subject["label"]
-        await event_sink(
-            event_type=event_type,
-            stage="tools",
-            message=f"MCP tool {status}: {label}",
-            payload={
-                "visible_to_user": True,
-                "severity": "error" if status == "failed" else "info",
-                "tool_label": label,
-                "tool_category": subject["category"],
-                "status": status,
-            },
+    declarations = [
+        RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind="mcp",
+            canonical_identity=subject["identity"],
         )
+        for subject in _external_mcp_subjects(payload)
+    ]
+    if payload.skill_id != "general-chat":
+        declarations.insert(
+            0,
+            RequiredCapabilityDeclaration.from_authorized_subject(
+                capability_kind="skill",
+                canonical_identity=payload.skill_id,
+            ),
+        )
+    if not declarations:
+        return None
+    decision = selected_capability_completion_decision(
+        declarations=declarations,
+        binding={
+            "tenant_id": payload.tenant_id,
+            "workspace_id": payload.workspace_id,
+            "user_id": payload.user_id,
+            "session_id": payload.session_id,
+            "run_id": payload.run_id,
+            "attempt_id": payload.attempt_id,
+        },
+        evidence=evidence,
+    )
+    return None if decision.allowed else decision.reason
 
 
 def _effective_execution_tier(payload: RunPayload) -> str:
@@ -1406,40 +1414,11 @@ class ClaudeAgentWorkerAdapter:
             stage="runtime",
             message="Sandbox runtime dispatch is active",
         )
-        external_mcp_subjects = _external_mcp_subjects(payload)
-        await _emit_external_mcp_activity(
-            event_sink,
-            subjects=external_mcp_subjects,
-            status="started",
-        )
-        try:
-            runtime_result = await _submit_sandbox_runtime(
-                runtime,
-                request,
-                event_sink=runtime_event_sink,
-                execution_owner=execution_owner,
-            )
-        except BaseException:
-            await _emit_external_mcp_activity(
-                event_sink,
-                subjects=external_mcp_subjects,
-                status="failed",
-            )
-            raise
-        runtime_response = getattr(runtime_result, "executor_response", {})
-        runtime_status = str(
-            runtime_response.get("status")
-            if isinstance(runtime_response, dict)
-            else getattr(runtime_result, "status", "")
-        ).strip().lower()
-        await _emit_external_mcp_activity(
-            event_sink,
-            subjects=external_mcp_subjects,
-            status=(
-                "completed"
-                if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES
-                else "failed"
-            ),
+        runtime_result = await _submit_sandbox_runtime(
+            runtime,
+            request,
+            event_sink=runtime_event_sink,
+            execution_owner=execution_owner,
         )
         return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
 
@@ -1593,17 +1572,21 @@ class ClaudeAgentWorkerAdapter:
             "required_artifact_types": list(_required_artifact_types(payload)),
             "sandbox_timings": sandbox_timings,
             "attachment_parser_evidence": parser_evidence if isinstance(parser_evidence, list) else [],
+            "capability_evidence": (
+                executor_response.get("capability_evidence")
+                if isinstance(executor_response.get("capability_evidence"), list)
+                else []
+            ),
         }
-        selected_skill_error = _selected_skill_invocation_error(
+        selected_capability_error = _selected_capability_invocation_error(
             payload,
-            prepared.staged_skill_names,
-            used_skill_names,
+            common_payload["capability_evidence"],
         )
-        if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_skill_error is not None:
+        if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_capability_error is not None:
             turn_diagnostics = _public_sdk_turn_diagnostics(
                 payload,
                 executor_response.get("sdk_turn_diagnostics"),
-                error_code=selected_skill_error,
+                error_code=selected_capability_error,
                 used_skill_ids=used_skill_names,
                 public_skill_metadata=prepared.public_skill_metadata,
             )
@@ -1615,10 +1598,10 @@ class ClaudeAgentWorkerAdapter:
                 capabilities={**self.capabilities, "platform_skills": True},
                 result={
                     "message": "The selected capability did not complete its required Skill execution. Please retry.",
-                    "error_code": selected_skill_error,
+                    "error_code": selected_capability_error,
                     "sdk_used": bool(executor_response.get("sdk_used")),
                     "sdk_session_id": executor_response.get("sdk_session_id"),
-                    "sdk_error": selected_skill_error,
+                    "sdk_error": selected_capability_error,
                     "delegate_used": False,
                     "worker_boundary": self.executor_type,
                     "allowed_skills": prepared.allowed_skill_names,
@@ -1629,7 +1612,7 @@ class ClaudeAgentWorkerAdapter:
                 artifacts=[],
                 executor_payload={
                     **common_payload,
-                    "sdk_error": selected_skill_error,
+                    "sdk_error": selected_capability_error,
                     "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
@@ -1817,10 +1800,9 @@ class ClaudeAgentWorkerAdapter:
                 used_skill_names=used_skill_names,
                 pins=prepared.pinned_manifests,
             )
-            selected_skill_error = _selected_skill_invocation_error(
+            selected_skill_error = _selected_capability_invocation_error(
                 payload,
-                prepared.staged_skill_names,
-                used_skill_names,
+                getattr(sdk_result, "capability_evidence", None),
             )
             if selected_skill_error is not None:
                 turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -1865,6 +1847,9 @@ class ClaudeAgentWorkerAdapter:
                         "inferred_used_skills": inferred_used_skill_names,
                         "skill_manifests": skill_manifests,
                         "required_artifact_types": list(_required_artifact_types(payload)),
+                        "capability_evidence": list(
+                            getattr(sdk_result, "capability_evidence", []) or []
+                        ),
                         "sdk_turn_diagnostics": turn_diagnostics,
                     },
                 )
@@ -1909,6 +1894,9 @@ class ClaudeAgentWorkerAdapter:
                     "inferred_used_skills": inferred_used_skill_names,
                     "skill_manifests": skill_manifests,
                     "required_artifact_types": list(_required_artifact_types(payload)),
+                    "capability_evidence": list(
+                        getattr(sdk_result, "capability_evidence", []) or []
+                    ),
                     "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
