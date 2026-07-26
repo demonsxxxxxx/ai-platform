@@ -8,6 +8,14 @@ type XhrOutcome =
   | { type: "error" }
   | { type: "manual" };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function installUploadXhr(outcome: XhrOutcome) {
   const original = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
 
@@ -59,6 +67,132 @@ function installUploadXhr(outcome: XhrOutcome) {
       delete (globalThis as { XMLHttpRequest?: typeof XMLHttpRequest })
         .XMLHttpRequest;
     }
+  };
+}
+
+function installInFlightUploadXhr() {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
+  const sent = deferred<void>();
+  let sendCalls = 0;
+  let abortCalls = 0;
+  let abortListenerCount = 0;
+  let progressListenerCount = 0;
+  let suppressedLateProgress = 0;
+  let lateSuccessDispatches = 0;
+
+  class InFlightUploadRequest {
+    static activeRequest: InFlightUploadRequest | undefined;
+    status = 0;
+    statusText = "";
+    responseText = "";
+    withCredentials = false;
+    private aborted = false;
+    private readonly listeners = new Map<string, Array<(event: Event) => void>>();
+    readonly upload = {
+      addEventListener: (type: string, _listener: (event: Event) => void) => {
+        if (type === "progress") {
+          progressListenerCount += 1;
+        }
+      },
+    };
+
+    addEventListener(type: string, listener: (event: Event) => void) {
+      const listeners = this.listeners.get(type) ?? [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+      if (type === "abort") {
+        abortListenerCount += 1;
+      }
+    }
+
+    open() {}
+    setRequestHeader() {}
+
+    send() {
+      sendCalls += 1;
+      InFlightUploadRequest.activeRequest = this;
+      if (abortListenerCount !== 1 || progressListenerCount !== 1) {
+        throw new Error("XHR send occurred before upload listeners were registered");
+      }
+      sent.resolve();
+    }
+
+    abort() {
+      abortCalls += 1;
+      this.aborted = true;
+      this.emit("abort");
+    }
+
+    emitLateProgress() {
+      if (this.aborted) {
+        suppressedLateProgress += 1;
+      }
+    }
+
+    emitLateSuccess() {
+      if (this.aborted) {
+        this.status = 200;
+        this.statusText = "OK";
+        this.responseText = JSON.stringify({
+          key: "late-key",
+          url: "https://files.example/late-key",
+          name: "late.txt",
+          type: "document",
+          mimeType: "text/plain",
+          size: 4,
+        });
+        lateSuccessDispatches += 1;
+        this.emit("load");
+      }
+    }
+
+    private emit(type: string) {
+      const event = new Event(type);
+      for (const listener of this.listeners.get(type) ?? []) {
+        listener(event);
+      }
+    }
+  }
+
+  Object.defineProperty(globalThis, "XMLHttpRequest", {
+    configurable: true,
+    value: InFlightUploadRequest as unknown as typeof XMLHttpRequest,
+  });
+
+  return {
+    sent: sent.promise,
+    get sendCalls() {
+      return sendCalls;
+    },
+    get abortCalls() {
+      return abortCalls;
+    },
+    get abortListenerCount() {
+      return abortListenerCount;
+    },
+    get progressListenerCount() {
+      return progressListenerCount;
+    },
+    get suppressedLateProgress() {
+      return suppressedLateProgress;
+    },
+    get lateSuccessDispatches() {
+      return lateSuccessDispatches;
+    },
+    emitLateEvents() {
+      const request = InFlightUploadRequest.activeRequest;
+      assert.ok(request, "send must create the active XHR request");
+      request.emitLateProgress();
+      request.emitLateSuccess();
+    },
+    restore() {
+      if (original) {
+        Object.defineProperty(globalThis, "XMLHttpRequest", original);
+      } else {
+        delete (globalThis as { XMLHttpRequest?: typeof XMLHttpRequest })
+          .XMLHttpRequest;
+      }
+    },
   };
 }
 
@@ -189,24 +323,36 @@ test(
 );
 
 test(
-  "upload API classifies an in-flight XHR abort as cancelled",
+  "upload API classifies a listener-ready in-flight XHR abort as cancelled",
   { concurrency: false },
   async () => {
-    const restore = installUploadXhr({ type: "manual" });
+    const xhr = installInFlightUploadXhr();
     try {
+      let progressCalls = 0;
       const handle = uploadApi.uploadFile(
         new File(["fixture"], "fixture.txt", { type: "text/plain" }),
+        { onProgress: () => progressCalls += 1 },
       );
-      await Promise.resolve();
-      handle.abort();
+      await xhr.sent;
+      assert.equal(xhr.sendCalls, 1);
+      assert.equal(xhr.abortListenerCount, 1);
+      assert.equal(xhr.progressListenerCount, 1);
 
-      await assert.rejects(
+      handle.abort();
+      const rejection = assert.rejects(
         handle.promise,
         (error: unknown) =>
           error instanceof UploadRequestError && error.kind === "cancelled",
       );
+      xhr.emitLateEvents();
+      await rejection;
+
+      assert.equal(xhr.abortCalls, 1);
+      assert.equal(xhr.suppressedLateProgress, 1);
+      assert.equal(xhr.lateSuccessDispatches, 1);
+      assert.equal(progressCalls, 0);
     } finally {
-      restore();
+      xhr.restore();
     }
   },
 );
