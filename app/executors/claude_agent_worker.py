@@ -1,27 +1,31 @@
 import base64
 import binascii
-from dataclasses import dataclass, field
 import hashlib
 import inspect
-from pathlib import Path
 import posixpath
-import re
 import shutil
-from typing import Any, Awaitable, Callable
 import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, ClassVar
 from xml.etree import ElementTree
-
-
-_MAX_WORKSPACE_ARTIFACT_FILES = 128
-_MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
-_MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
 
 from app import repositories
 from app.capabilities import required_artifact_types_for_skill
-from app.control_plane_contracts import artifact_lineage_contract, sanitize_public_text, standard_trace_id
 from app.context_builder import executor_context_pack_from_snapshot
-from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, available_context_retrieval_tools
-from app.context_retrieval import ContextRetrieval, TransactionalContextRetrievalRepository
+from app.context_manifest import (
+    CONTEXT_MANIFEST_SCHEMA_VERSION,
+    available_context_retrieval_tools,
+)
+from app.context_retrieval import (
+    ContextRetrieval,
+    TransactionalContextRetrievalRepository,
+)
+from app.control_plane_contracts import (
+    artifact_lineage_contract,
+    sanitize_public_text,
+    standard_trace_id,
+)
 from app.db import transaction
 from app.execution_boundary import decide_execution_boundary
 from app.executors.base import (
@@ -48,29 +52,38 @@ from app.file_parser_contracts import (
     validate_required_parser_evidence,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
+from app.runtime.event_bridge import agent_event_to_executor_event
+from app.runtime.sandbox.callback_tokens import (
+    CallbackTokenBinding,
+    callback_token_id_for_binding,
+)
 from app.runtime.sandbox.container_provider import (
     DockerContainerProvider,
     FakeContainerProvider,
     OpenSandboxContainerProvider,
 )
-from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeRequest
 from app.runtime.sandbox.runtime import SandboxRuntime
-from app.runtime.event_bridge import agent_event_to_executor_event
-from app.settings import get_settings
 from app.session_continuity import sdk_session_id_for_run
-from app.skills.pinning import MAX_SKILL_SNAPSHOT_FILE_BYTES, MAX_SKILL_SNAPSHOT_TOTAL_BYTES
-from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry, skill_content_hash
-from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
+from app.settings import get_settings
 from app.skills.catalog import (
     AuthorizedSkillCatalogBinding,
     AuthorizedSkillCatalogError,
     AuthorizedSkillCatalogResolution,
     load_runtime_authorized_skill_catalog,
 )
+from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
+from app.skills.pinning import (
+    MAX_SKILL_SNAPSHOT_FILE_BYTES,
+    MAX_SKILL_SNAPSHOT_TOTAL_BYTES,
+)
+from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry, skill_content_hash
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
-from app.tool_policy import evaluate_tool_policy
+
+_MAX_WORKSPACE_ARTIFACT_FILES = 128
+_MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
+_MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
 
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
 _SELECTED_SKILL_INVOCATION_ERRORS = {
@@ -244,16 +257,6 @@ class _MaterializedFileNames(list[str]):
         self.materialized_file_names = list(
             values if materialized_file_names is None else materialized_file_names
         )
-
-
-async def resolve_claude_sdk_tool_permission(**_legacy_request: Any) -> dict[str, Any]:
-    """Fail-closed compatibility shim for retired callback integrations.
-
-    No route or runner invokes this function.  It intentionally performs no
-    repository lookup, request creation, polling, grant consumption or replay.
-    """
-
-    return {"allowed": False, "reason": "tool_permission_runtime_approval_removed"}
 
 
 def _execution_tier(payload: RunPayload) -> str:
@@ -526,7 +529,7 @@ class ClaudeAgentWorkerAdapter:
     adapter_version = "claude-agent-worker-adapter/1"
     executor_type = "claude-agent-worker"
     executor_version = "claude-agent-sdk-poc"
-    capabilities = {
+    capabilities: ClassVar[dict[str, bool]] = {
         "artifacts": True,
         "streaming": True,
         "tools": True,
@@ -2091,7 +2094,8 @@ class ClaudeAgentWorkerAdapter:
                 "error": "claude_agent_sdk_unavailable",
                 "turn_diagnostics": {},
             })()
-        except Exception:
+        # The worker boundary maps all SDK dependency failures to one stable public error.
+        except Exception:  # noqa: BLE001
             return type("SdkFailed", (), {
                 "used_sdk": True,
                 "message": "",
@@ -2453,7 +2457,8 @@ def _materialize_pinned_skill(skill_name: str, pin: dict[str, Any], snapshot_roo
     total_bytes = 0
     for item in pin.get("files") or []:
         if not isinstance(item, dict):
-            raise ValueError(f"invalid pinned skill file entry: {skill_name}")
+            # The pinned-skill payload contract reports malformed entries as value errors.
+            raise ValueError(f"invalid pinned skill file entry: {skill_name}")  # noqa: TRY004
         relative_path = str(item.get("relative_path") or "")
         if not relative_path or Path(relative_path).is_absolute() or ".." in Path(relative_path).parts:
             raise ValueError(f"invalid pinned skill file path: {skill_name}")
@@ -2659,7 +2664,7 @@ def _artifact_type(filename: str, skill_id: str | None = None) -> str:
         return "result_docx"
     if lower.endswith(".json"):
         return "result_json"
-    if lower.endswith(".txt") or lower.endswith(".md"):
+    if lower.endswith((".txt", ".md")):
         return "report_txt"
     return "runtime_file"
 
