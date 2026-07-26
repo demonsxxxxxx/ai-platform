@@ -264,6 +264,21 @@ Compose deployment:
   and `docker import`, build once from that flat base, and re-run provenance,
   health, and target-path verification.
 
+After successful `compose up -d --no-build`, `deploy-main-commit --strategy auto`
+uses a 45-second monotonic final-parity convergence window with a two-second
+maximum poll interval. Each attempt repeats only the existing strict, read-only
+parity collector; it never rebuilds an image, reruns Compose, changes a container,
+or reads the managed environment file. `verify` remains a single strict parity
+collection. Each collector subprocess and HTTP probe is capped at the remaining
+monotonic convergence budget and uses its existing owned-process cleanup; a report
+that arrives at or after the deadline cannot succeed. The convergence window retries
+only transient network `OSError` or `URLError`, an unverified parity report, and the
+explicit worker heartbeat startup-readiness failures. Any other authority error,
+including an HTTP status error, fails closed immediately.
+On convergence exhaustion, terminal evidence reports only `parity_attempts` and
+the fixed `parity_last_failure_kind`; it does not include raw exception text,
+URLs, endpoints, secrets, or environment data.
+
 Backend source-only/runtime-overlay stages are bounded at 90 seconds and frontend
 source-only stages at 180 seconds. Dependency-triggered canonical builds have a
 separate bounded per-stage timeout: `--canonical-build-timeout-seconds` accepts
@@ -292,12 +307,14 @@ The exact-main authority's conservative longest-path inventory is:
 - 22 for deploy preflights, target-image probes and verifications, sandbox-image
   revalidation, target revalidation, optional removal, and Compose convergence;
 - 11 for the final full parity pass;
+- 45 seconds for bounded post-Compose final-parity convergence retries; and
 - 4 HTTP probes at 15 seconds each across current and final parity; and
 - 2 sequential canonical dependency builds at 1800 seconds each.
 
-That is 65 default subprocess slots, four HTTP slots, and two canonical builds:
-`65 * 300 + 4 * 15 + 2 * 1800 = 23160` seconds. The 24000-second command
-deadline rounds this up with an additional 840 seconds for in-process filesystem
+That is 65 default subprocess slots, four HTTP slots, a bounded 45-second
+convergence window, and two canonical builds:
+`65 * 300 + 4 * 15 + 45 + 2 * 1800 = 23205` seconds. The 24000-second command
+deadline rounds this up with an additional 795 seconds for in-process filesystem
 trust walks, scheduling, cleanup dispatch, and evidence serialization. It is a
 conservative finite outer bound, separate from—and never an expansion of—any
 per-operation timeout.
@@ -330,4 +347,6 @@ rollback subject, authority terminal state, and final source/runtime parity.
 Historical evidence or a healthy old runtime does not prove the target release.
 For `deploy-main-commit`, the terminal result's non-secret `authority_commit` must
 equal the requested commit; it proves the loaded coordination authority checkout
-was at that exact target before immutable target materialization.
+was at that exact target before immutable target materialization. If a later
+authority error occurs after that gate, the CLI failure payload retains the same
+`authority_commit`; a pre-authority failure must omit it.

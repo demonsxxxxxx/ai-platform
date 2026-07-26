@@ -26,6 +26,17 @@ from typing import Any, Sequence
 from urllib.request import urlopen
 
 if __package__:
+    from .release_parity_convergence import (
+        COMPOSE_PROJECT,
+        COMPATIBILITY_IMAGE_COMMIT_LABELS,
+        FINAL_PARITY_CONVERGENCE_TIMEOUT_SECONDS,
+        SCHEMA_VERSION as _PARITY_SCHEMA_VERSION,
+        bounded_parity_attempt_timeout,
+        build_parity_report as _build_parity_report,
+        compose_identity_mismatches as _compose_identity_mismatches,
+        convergence_failure_evidence,
+        converge_final_parity,
+    )
     from .release_plan import (
         AutoReleasePlan,
         ReleasePlanError,
@@ -36,6 +47,17 @@ if __package__:
         is_runtime_neutral_backend_pyproject_change,
     )
 else:
+    from release_parity_convergence import (
+        COMPOSE_PROJECT,
+        COMPATIBILITY_IMAGE_COMMIT_LABELS,
+        FINAL_PARITY_CONVERGENCE_TIMEOUT_SECONDS,
+        SCHEMA_VERSION as _PARITY_SCHEMA_VERSION,
+        bounded_parity_attempt_timeout,
+        build_parity_report as _build_parity_report,
+        compose_identity_mismatches as _compose_identity_mismatches,
+        convergence_failure_evidence,
+        converge_final_parity,
+    )
     from release_plan import (
         AutoReleasePlan,
         ReleasePlanError,
@@ -47,8 +69,8 @@ else:
     )
 
 
-SCHEMA_VERSION = "ai-platform.release-authority.v1"
 PRESERVATION_SCHEMA_VERSION = "ai-platform.release-authority-preservation.v1"
+SCHEMA_VERSION = _PARITY_SCHEMA_VERSION
 FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_DIRECTORY_RE = re.compile(r"^[0-9a-f]{7,40}$")
 DOCKER_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -63,7 +85,6 @@ PROVIDER_OVERLAY_COMPOSE_SELECTIONS = frozenset(
         (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH),
     }
 )
-COMPOSE_PROJECT = "ai-platform-phaseb"
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 WORKER_TMPDIR_EXPANSION_MARKERS = frozenset("*?$`[]{}")
 WORKER_TMPDIR_UNICODE_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
@@ -74,18 +95,6 @@ AUTHORITATIVE_REPOSITORY_ALIASES = {
     "ssh://git@github.com/demonsxxxxxx/ai-platform.git",
 }
 SECRET_PATH_NAMES = {".env", ".env.local", ".env.production", ".env.development"}
-COMPATIBILITY_IMAGE_COMMIT_LABELS = (
-    "ai-platform.source-revision",
-    "ai-platform.runtime-subject",
-    "ai-platform.source_revision",
-    "ai-platform.source_commit",
-    "ai-platform.runtime_subject",
-    "ai-platform.source_tree_commit",
-    "ai_platform_source_revision",
-    "ai_platform_source_commit",
-    "ai_platform_runtime_subject",
-    "ai_platform_source_tree_commit",
-)
 DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
 HTTP_PROBE_TIMEOUT_SECONDS = 15
 BACKEND_STAGE_TIMEOUT_SECONDS = 90
@@ -103,6 +112,8 @@ BUILD_PROGRESS_MAX_TRACKED_STEPS = 128
 BUILD_PROGRESS_MAX_STEP_ORDINAL = 9999
 BUILD_PROGRESS_MAX_TAIL_LINES = 512
 BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES = 4096
+
+
 class ReleaseAuthorityError(RuntimeError):
     """Raised when a release-authority invariant is not satisfied."""
 
@@ -781,12 +792,13 @@ def _run(
     check: bool = True,
     text: bool = True,
     env: dict[str, str] | None = None,
-    timeout: int = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
+    timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
     input: str | bytes | None = None,
     classify_build_progress: bool = False,
 ) -> subprocess.CompletedProcess[Any]:
     if text and isinstance(input, (bytes, bytearray, memoryview)):
         raise TypeError("text mode input must be str, not bytes-like")
+    timeout = bounded_parity_attempt_timeout(timeout)
     arguments = list(command)
     windows_job_handle = _create_owned_windows_job()
     process: subprocess.Popen[Any] | None = None
@@ -1325,7 +1337,9 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
         if isinstance(exc.errno, int):
             evidence["errno"] = exc.errno
         return evidence
-    return {"failure_kind": "authority-error"}
+    evidence = {"failure_kind": "authority-error"}
+    evidence.update(convergence_failure_evidence(exc))
+    return evidence
 
 
 def _stage(
@@ -1839,33 +1853,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
     return destination
 
 
-def _compose_identity_mismatches(
-    labels: dict[str, Any],
-    role: str,
-    *,
-    expected_compose_dir: str,
-    expected_config_files: str,
-) -> list[str]:
-    mismatches: list[str] = []
-    if labels.get("ai-platform.release-owner") != "repo-local-compose":
-        mismatches.append(f"{role}_container_not_repo_local_compose_owned")
-    if labels.get("ai-platform.release-role") != role:
-        mismatches.append(f"{role}_container_role_mismatch")
-    if labels.get("com.docker.compose.project.working_dir") != expected_compose_dir:
-        mismatches.append(f"{role}_compose_working_dir_mismatch")
-    if str(labels.get("com.docker.compose.project.config_files") or "") != expected_config_files:
-        mismatches.append(f"{role}_compose_config_mismatch")
-    if labels.get("com.docker.compose.project") != COMPOSE_PROJECT:
-        mismatches.append(f"{role}_compose_project_mismatch")
-    if labels.get("com.docker.compose.service") != role:
-        mismatches.append(f"{role}_compose_service_mismatch")
-    if labels.get("com.docker.compose.oneoff") != "False":
-        mismatches.append(f"{role}_compose_oneoff_mismatch")
-    if not str(labels.get("com.docker.compose.config-hash") or "").strip():
-        mismatches.append(f"{role}_compose_config_hash_missing")
-    return mismatches
-
-
 def build_parity_report(
     *,
     expected_commit: str,
@@ -1877,82 +1864,18 @@ def build_parity_report(
     expected_repository: str,
     expected_compose_files: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Build a strict same-commit report for source, images, and runtime subjects."""
-    commit = _normalize_commit(expected_commit)
-    mismatches: list[str] = []
-    if source.get("commit") != commit:
-        mismatches.append("source_commit_mismatch")
-    if source.get("dirty") is not False:
-        mismatches.append("source_not_clean")
-
-    for role in ("backend", "frontend"):
-        image = images.get(role, {})
-        labels = image.get("labels") if isinstance(image.get("labels"), dict) else {}
-        if labels.get("ai-platform.source-commit") != commit:
-            mismatches.append(f"{role}_image_commit_mismatch")
-        if labels.get("org.opencontainers.image.revision") != commit:
-            mismatches.append(f"{role}_image_oci_revision_mismatch")
-        if labels.get("ai-platform.source-repository") != expected_repository:
-            mismatches.append(f"{role}_image_repository_mismatch")
-        if labels.get("ai-platform.build-dirty") != "false":
-            mismatches.append(f"{role}_image_dirty_label_mismatch")
-        if labels.get("ai-platform.release-role") != role:
-            mismatches.append(f"{role}_image_role_mismatch")
-        if any(
-            label in labels and labels.get(label) != commit
-            for label in COMPATIBILITY_IMAGE_COMMIT_LABELS
-        ):
-            mismatches.append(f"{role}_image_compatibility_commit_mismatch")
-
-    expected_config_files = ",".join(expected_compose_files) if expected_compose_files else (
-        f"{expected_compose_dir}/docker-compose.yml"
+    """Build a parity report through the focused release-parity contract."""
+    return _build_parity_report(
+        expected_commit=expected_commit,
+        source=source,
+        images=images,
+        containers=containers,
+        runtime=runtime,
+        expected_compose_dir=expected_compose_dir,
+        expected_repository=expected_repository,
+        expected_compose_files=expected_compose_files,
+        normalize_commit=_normalize_commit,
     )
-    expected_image_roles = {"api": "backend", "worker": "backend", "frontend": "frontend"}
-    for role, image_role in expected_image_roles.items():
-        container = containers.get(role, {})
-        labels = container.get("labels") if isinstance(container.get("labels"), dict) else {}
-        if container.get("running") is not True:
-            mismatches.append(f"{role}_container_not_running")
-        mismatches.extend(
-            _compose_identity_mismatches(
-                labels,
-                role,
-                expected_compose_dir=expected_compose_dir,
-                expected_config_files=expected_config_files,
-            )
-        )
-        if labels.get("ai-platform.source-commit") != commit:
-            mismatches.append(f"{role}_container_commit_mismatch")
-        if labels.get("ai-platform.source-dirty") != "false":
-            mismatches.append(f"{role}_container_dirty_label_mismatch")
-        expected_image_id = images.get(image_role, {}).get("id")
-        if not expected_image_id or container.get("image_id") != expected_image_id:
-            mismatches.append(f"{role}_container_image_mismatch")
-
-    for role in ("api", "worker", "frontend"):
-        if runtime.get(f"{role}_commit") != commit:
-            mismatches.append(f"{role}_runtime_commit_mismatch")
-    if runtime.get("api_sandbox_executor_image_matches_expected") is not True:
-        mismatches.append("api_sandbox_executor_image_mismatch")
-    if runtime.get("worker_sandbox_executor_image_matches_expected") is not True:
-        mismatches.append("worker_sandbox_executor_image_mismatch")
-    if runtime.get("api_worker_sandbox_executor_images_match") is not True:
-        mismatches.append("api_worker_sandbox_executor_image_mismatch")
-    if runtime.get("api_health_status") != "ok":
-        mismatches.append("api_health_not_ok")
-    if runtime.get("worker_running") is not True:
-        mismatches.append("worker_not_running")
-
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "expected_commit": commit,
-        "verified": not mismatches,
-        "mismatches": sorted(set(mismatches)),
-        "source": source,
-        "images": images,
-        "containers": containers,
-        "runtime": runtime,
-    }
 
 
 def _docker_base(docker_cmd: str) -> list[str]:
@@ -2425,7 +2348,7 @@ def _container_file_commit(docker: list[str], name: str, path: str) -> str:
 
 
 def _http_json(url: str) -> dict[str, Any]:
-    with urlopen(url, timeout=HTTP_PROBE_TIMEOUT_SECONDS) as response:
+    with urlopen(url, timeout=bounded_parity_attempt_timeout(HTTP_PROBE_TIMEOUT_SECONDS)) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -2975,16 +2898,56 @@ def deploy_main_commit(
     """Deploy and verify an exact fetched main commit from an isolated checkout."""
     if strategy not in {"canonical", "auto"}:
         raise ReleaseAuthorityError("release strategy is invalid")
-    canonical_dependency_build_timeout_seconds = (
-        _validate_canonical_dependency_build_timeout(
-            canonical_dependency_build_timeout_seconds
-        )
+    canonical_dependency_build_timeout_seconds = _validate_canonical_dependency_build_timeout(
+        canonical_dependency_build_timeout_seconds
     )
     normalized = _normalize_commit(commit)
     authority_commit: str | None = None
     if coordination_source is not None:
         assert_clean_coordination_source(coordination_source, normalized)
         authority_commit = normalized
+    try:
+        result = _deploy_main_commit_after_authority(
+            release_root,
+            normalized,
+            docker_cmd=docker_cmd,
+            env_file=env_file,
+            replace_known_manual_frontend=replace_known_manual_frontend,
+            expected_manual_frontend_image=expected_manual_frontend_image,
+            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
+            compose_files=compose_files,
+            strategy=strategy,
+            canonical_dependency_build_timeout_seconds=(
+                canonical_dependency_build_timeout_seconds
+            ),
+        )
+    except ReleaseAuthorityError as exc:
+        if authority_commit is not None:
+            exc.authority_commit = authority_commit
+        raise
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        if authority_commit is not None:
+            exc.authority_commit = authority_commit
+        raise
+    if authority_commit is not None:
+        result["authority_commit"] = authority_commit
+    return result
+
+
+def _deploy_main_commit_after_authority(
+    release_root: Path,
+    normalized: str,
+    *,
+    docker_cmd: str,
+    env_file: Path | None,
+    replace_known_manual_frontend: bool,
+    expected_manual_frontend_image: str | None = None,
+    expected_manual_frontend_image_id: str | None = None,
+    compose_files: Sequence[str | Path] | None = None,
+    strategy: str = "canonical",
+    canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Execute target materialization and deployment after authority provenance is proven."""
     managed_env_file = resolve_managed_env_file(release_root, env_file)
     checkout = materialize_main_checkout(release_root, normalized)
     if strategy == "canonical":
@@ -3054,23 +3017,24 @@ def deploy_main_commit(
             ),
         )
 
-        def final_parity() -> dict[str, Any]:
-            report = collect_live_parity(
+        def collect_final_parity(_: float) -> dict[str, Any]:
+            return collect_live_parity(
                 checkout,
                 normalized,
                 docker_cmd=docker_cmd,
                 compose_files=compose_files,
             )
-            if report.get("verified") is not True:
-                raise ReleaseAuthorityError("deployed release parity failed")
-            return report
 
         parity = _stage(
             events,
             name="final-parity",
             strategy=strategy,
             action="verify",
-            operation=final_parity,
+            operation=lambda: converge_final_parity(
+                collect_final_parity,
+                authority_error_type=ReleaseAuthorityError,
+            ),
+            timeout_seconds=FINAL_PARITY_CONVERGENCE_TIMEOUT_SECONDS,
         )
     result = {
         "commit": normalized,
@@ -3078,8 +3042,6 @@ def deploy_main_commit(
         "deployment": deployment,
         "parity": parity,
     }
-    if authority_commit is not None:
-        result["authority_commit"] = authority_commit
     return result
 
 
@@ -3240,17 +3202,21 @@ def main() -> int:
         stage_events = getattr(exc, "stage_events", None)
         if isinstance(stage_events, tuple):
             payload["stages"] = list(stage_events)
+        authority_commit = vars(exc).get("authority_commit")
+        if isinstance(authority_commit, str) and FULL_COMMIT_RE.fullmatch(authority_commit):
+            payload["authority_commit"] = authority_commit
         _write_json(payload, None)
         return 2
-    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
-        _write_json(
-            {
-                "verified": False,
-                "error": "release authority command failed",
-                "command": args.command,
-            },
-            None,
-        )
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        payload = {
+            "verified": False,
+            "error": "release authority command failed",
+            "command": args.command,
+        }
+        authority_commit = vars(exc).get("authority_commit")
+        if isinstance(authority_commit, str) and FULL_COMMIT_RE.fullmatch(authority_commit):
+            payload["authority_commit"] = authority_commit
+        _write_json(payload, None)
         return 2
     return 0
 
