@@ -54,8 +54,25 @@ def test_capability_projection_is_safe_and_stable_for_live_reconnect_and_history
         },
         {
             **base_event,
-            "id": "evt-capability-completed",
+            "id": "evt-capability-invoking",
             "sequence": 12,
+            "event_type": "capability_invoking",
+            "message": "private invocation request message",
+            "payload_json": {
+                "capability": {
+                    "kind": "mcp",
+                    "name": "Knowledge search",
+                    "status": "invoking",
+                },
+                "canonical_identity": "mcp__private-server__search",
+                "tool_call_id": "private-tool-call-id",
+                "arguments": {"query": "private"},
+            },
+        },
+        {
+            **base_event,
+            "id": "evt-capability-completed",
+            "sequence": 13,
             "event_type": "capability_completed",
             "message": "private completed message",
             "payload_json": {
@@ -72,7 +89,7 @@ def test_capability_projection_is_safe_and_stable_for_live_reconnect_and_history
         {
             **base_event,
             "id": "evt-capability-failed",
-            "sequence": 13,
+            "sequence": 14,
             "event_type": "capability_failed",
             "message": "private failed message",
             "payload_json": {
@@ -93,13 +110,18 @@ def test_capability_projection_is_safe_and_stable_for_live_reconnect_and_history
     expected = [
         ("evt-capability-selected", 11, {"kind": "skill", "name": "Document review", "status": "selected"}),
         (
-            "evt-capability-completed",
+            "evt-capability-invoking",
             12,
+            {"kind": "mcp", "name": "Knowledge search", "status": "invoking"},
+        ),
+        (
+            "evt-capability-completed",
+            13,
             {"kind": "mcp", "name": "Knowledge search", "status": "completed"},
         ),
         (
             "evt-capability-failed",
-            13,
+            14,
             {"kind": "mcp", "name": "Knowledge search", "status": "failed"},
         ),
     ]
@@ -131,6 +153,7 @@ def test_capability_projection_is_safe_and_stable_for_live_reconnect_and_history
         "https://private.example.test/mcp",
         "private token and stack trace",
         "private selected message",
+        "private invocation request message",
         "private completed message",
         "private failed message",
     ):
