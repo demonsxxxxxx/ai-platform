@@ -671,10 +671,10 @@ def _terminate_owned_windows_job(job_handle: int) -> bool:
         return False
 
 
-def _owned_process_group_kwargs() -> dict[str, Any]:
+def _owned_process_group_kwargs(*, umask: int = -1) -> dict[str, Any]:
     """Start each bounded subprocess in a group that this authority exclusively owns."""
     if os.name == "posix":
-        return {"start_new_session": True}
+        return {"start_new_session": True, "umask": umask}
     if os.name == "nt":
         return {
             "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -795,6 +795,7 @@ def _run(
     timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
     input: str | bytes | None = None,
     classify_build_progress: bool = False,
+    umask: int = -1,
 ) -> subprocess.CompletedProcess[Any]:
     if text and isinstance(input, (bytes, bytearray, memoryview)):
         raise TypeError("text mode input must be str, not bytes-like")
@@ -813,7 +814,7 @@ def _run(
                 stderr=subprocess.PIPE,
                 text=text and not classify_build_progress,
                 env=env,
-                **_owned_process_group_kwargs(),
+                **_owned_process_group_kwargs(umask=umask),
             )
             if windows_job_handle is not None:
                 _assign_owned_windows_job(process, windows_job_handle)
@@ -912,9 +913,8 @@ def _run(
         _close_owned_windows_job(windows_job_handle)
 
 
-def _git(repo_root: Path, *args: str, text: bool = True) -> str | bytes:
-    result = _run(["git", *args], cwd=repo_root, text=text)
-    return result.stdout
+def _git(repo_root: Path, *args: str, text: bool = True, umask: int = -1) -> str | bytes:
+    return _run(["git", *args], cwd=repo_root, text=text, umask=umask).stdout
 
 
 def _normalize_commit(value: str) -> str:
@@ -1746,7 +1746,7 @@ def materialize_main_checkout(release_root: Path, commit: str) -> Path:
         _git(staging, "init")
         _git(staging, "remote", "add", "origin", AUTHORITATIVE_REPOSITORY)
         _fetch_and_verify_main_commit(staging, normalized)
-        _git(staging, "checkout", "--detach", normalized)
+        _git(staging, "checkout", "--detach", normalized, umask=0o022)
         assert_clean_commit(staging, normalized)
         _assert_standalone_checkout(staging, root)
         if checkout.exists() or _is_link_or_junction(checkout):
