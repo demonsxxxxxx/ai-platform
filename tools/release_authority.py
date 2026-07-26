@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import codecs
 from collections import OrderedDict, deque
+from contextlib import contextmanager
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -23,7 +24,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 from urllib.request import urlopen
 
 
@@ -1771,6 +1772,16 @@ def _normalized_release_root(release_root: Path) -> Path:
     return normalized
 
 
+@contextmanager
+def _restricted_materialization_umask() -> Iterator[None]:
+    """Prevent a permissive caller umask from weakening a new target checkout."""
+    original_umask = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(original_umask)
+
+
 def _assert_standalone_checkout(checkout: Path, release_root: Path) -> None:
     if _is_link_or_junction(checkout) or checkout.resolve(strict=False).parent != release_root:
         raise ReleaseAuthorityError("versioned release checkout symlink or path traversal is forbidden")
@@ -1820,17 +1831,18 @@ def materialize_main_checkout(release_root: Path, commit: str) -> Path:
         assert_managed_target_checkout(checkout, normalized, root)
         return checkout
 
-    staging.mkdir(exist_ok=False)
-    _git(staging, "init")
-    _git(staging, "remote", "add", "origin", AUTHORITATIVE_REPOSITORY)
-    _fetch_and_verify_main_commit(staging, normalized)
-    _git(staging, "checkout", "--detach", normalized)
-    assert_clean_commit(staging, normalized)
-    _assert_standalone_checkout(staging, root)
-    if checkout.exists() or _is_link_or_junction(checkout):
-        raise ReleaseAuthorityError("versioned release destination appeared during materialization")
-    staging.rename(checkout)
-    _assert_standalone_checkout(checkout, root)
+    with _restricted_materialization_umask():
+        staging.mkdir(exist_ok=False)
+        _git(staging, "init")
+        _git(staging, "remote", "add", "origin", AUTHORITATIVE_REPOSITORY)
+        _fetch_and_verify_main_commit(staging, normalized)
+        _git(staging, "checkout", "--detach", normalized)
+        assert_clean_commit(staging, normalized)
+        _assert_standalone_checkout(staging, root)
+        if checkout.exists() or _is_link_or_junction(checkout):
+            raise ReleaseAuthorityError("versioned release destination appeared during materialization")
+        staging.rename(checkout)
+        _assert_standalone_checkout(checkout, root)
     return checkout
 
 

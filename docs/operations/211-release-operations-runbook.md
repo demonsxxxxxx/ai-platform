@@ -19,6 +19,7 @@ host subjects.
 set -eu
 : "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"
 : "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
+umask 077
 git -C "$SOURCE" fetch --no-tags origin main:refs/remotes/origin/main
 TARGET="$(git -C "$SOURCE" rev-parse refs/remotes/origin/main)"
 cd "$SOURCE"
