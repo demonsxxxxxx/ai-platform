@@ -19,8 +19,14 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
 )
 from app.context_builder import record_initial_context_snapshot
+from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
-from app.intent_router import FileSummary, fallback_to_general_chat, route_intent
+from app.intent_router import (
+    FileSummary,
+    classify_execution_polarity,
+    fallback_to_general_chat,
+    route_intent,
+)
 from app.model_catalog import resolve_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
@@ -29,23 +35,20 @@ from app.models import (
     ChatSessionRequest,
     ChatSessionResponse,
     ChatSessionsResponse,
-    ChatSubmissionPreLedgerAbsenceResponse,
     ChatStreamRequest,
     ChatStreamResponse,
+    ChatSubmissionPreLedgerAbsenceResponse,
     ChatSubmissionResponse,
     IntentDecisionResponse,
     QueueRunPayload,
 )
 from app.product_events import initial_run_event_specs, intent_event_specs
-from app.queue_payload_validation import queue_payload_invalid_detail
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 from app.projection_redaction import (
     capability_id_from_skill,
     default_skill_id_for_public_agent,
     internal_agent_id_for_request,
-    public_skill_display_label,
     public_agent_id_for_projection,
-    redact_raw_skill_references,
+    public_skill_display_label,
     sanitize_user_control_input,
 )
 from app.queue import (
@@ -56,6 +59,7 @@ from app.queue import (
     get_queue_insight,
     read_queue_admission,
 )
+from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import get_settings
 from app.skills.lifecycle import is_user_runnable_status
@@ -66,8 +70,11 @@ from app.skills.pinning import (
     build_skill_version_policy_manifest_pins,
     governed_locked_skill_version,
 )
-from app.skills.release_policy import release_decision_payload_for_locked_version, resolve_rollout_skill_decision
 from app.skills.registry import BuiltinSkillRegistry
+from app.skills.release_policy import (
+    release_decision_payload_for_locked_version,
+    resolve_rollout_skill_decision,
+)
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
@@ -480,7 +487,7 @@ async def _admit_chat_submission(
         queue_admission = await read_queue_admission(queue_payload)
         if queue_admission is None:
             queue_admission = await _enqueue_chat_run(queue_payload)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - persist queue failure for any backend exception
         enqueue_error = exc
         if not isinstance(exc, QueueAdmissionRejected):
             # A network exception can occur after Redis accepted the exact
@@ -488,7 +495,7 @@ async def _admit_chat_submission(
             # changing durable truth; this path never enqueues a second time.
             try:
                 queue_admission = await read_queue_admission(queue_payload)
-            except Exception:
+            except Exception:  # noqa: BLE001 - best-effort read after enqueue failure
                 queue_admission = None
     if enqueue_error is not None and queue_admission is None:
         exc = enqueue_error
@@ -677,11 +684,7 @@ async def _governed_skill_manifest_pins(
             version,
             available_skill_ids=_available_builtin_skill_ids_for_policy(),
         )
-    try:
-        skill_manifests = _skill_manifest_pins(skill_id, input_payload)
-    except SkillVersionMaterializationError:
-        raise
-    return skill_manifests
+    return _skill_manifest_pins(skill_id, input_payload)
 
 
 def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_id: str) -> dict[str, Any]:
@@ -795,9 +798,7 @@ def _file_row_matches_request_scope(
     if session_id and session_id != request.session_id:
         return False
     run_id = _row_value(row, "run_id", _MISSING)
-    if run_id is _MISSING or run_id:
-        return False
-    return True
+    return not (run_id is _MISSING or run_id)
 
 
 def _file_summaries_from_request(request: ChatStreamRequest) -> list[FileSummary]:
@@ -986,7 +987,7 @@ async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -
 
 
 @router.get("/chat/sessions", response_model=ChatSessionsResponse)
-async def list_sessions(principal: AuthPrincipal = Depends(require_principal)) -> ChatSessionsResponse:
+async def list_sessions(principal: AuthPrincipal = Depends(require_principal)) -> ChatSessionsResponse:  # noqa: B008
     async with transaction() as conn:
         rows = await repositories.list_authorized_sessions(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
     return ChatSessionsResponse(sessions=[_session_response(row) for row in rows])
@@ -995,7 +996,7 @@ async def list_sessions(principal: AuthPrincipal = Depends(require_principal)) -
 @router.post("/chat/sessions", response_model=ChatSessionResponse)
 async def create_chat_session(
     request: ChatSessionRequest,
-    principal: AuthPrincipal = Depends(require_principal),
+    principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSessionResponse:
     async with transaction() as conn:
         await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
@@ -1017,7 +1018,7 @@ async def create_chat_session(
 @router.get("/chat/sessions/{session_id}/messages", response_model=ChatMessagesResponse)
 async def list_messages(
     session_id: str,
-    principal: AuthPrincipal = Depends(require_principal),
+    principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatMessagesResponse:
     async with transaction() as conn:
         session = await repositories.get_authorized_session(
@@ -1054,7 +1055,7 @@ async def list_messages(
 async def chat_stream(
     request: ChatStreamRequest,
     agent_id: str | None = Query(None),
-    principal: AuthPrincipal = Depends(require_principal),
+    principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatStreamResponse:
     try:
         assert_safe_principal_user_id(principal.user_id)
@@ -1063,8 +1064,46 @@ async def chat_stream(
     query_agent_id = _normalized_query_agent_id(agent_id)
     submission_id = str(request.submission_id) if request.submission_id is not None else None
     request_fingerprint = None
+    existing_submission_row = None
+    if submission_id is not None:
+        request_fingerprint = repositories.chat_submission_fingerprint(
+            {
+                "request": request.model_dump(mode="json", exclude={"submission_id"}),
+                "query_agent_id": query_agent_id,
+            },
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+        )
+        async with transaction() as conn:
+            existing_submission_row = await repositories.get_chat_submission(
+                conn, tenant_id=principal.tenant_id, user_id=principal.user_id, submission_id=submission_id
+            )
+        if existing_submission_row:
+            if _is_preledger_recovery_tombstone(
+                existing_submission_row,
+                principal=principal,
+            ):
+                return _chat_stream_response_from_submission(existing_submission_row)
+            fingerprint_matches = existing_submission_row.get("request_fingerprint_sha256") == (
+                _canonical_pre_persistence_rejection_fingerprint(
+                    request=request,
+                    principal=principal,
+                    query_agent_id=query_agent_id,
+                    code=str(existing_submission_row.get("rejection_code") or "chat_submission_rejected"),
+                )
+                if existing_submission_row.get("state") == "rejected_before_persist"
+                else request_fingerprint
+            )
+            if request.session_id is None or request.selected_mcp_tool_ids is not None:
+                if not fingerprint_matches:
+                    raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+                return _chat_stream_response_from_submission(existing_submission_row)
+            if fingerprint_matches:
+                return _chat_stream_response_from_submission(existing_submission_row)
+    execution_polarity = classify_execution_polarity(request.message)
+    allowed = execution_polarity != "non_execution"
     requested_agent_id = request.agent_id or query_agent_id or "general-agent"
-    if request.skill_id and not is_ai_admin(principal):
+    if allowed and request.skill_id and not is_ai_admin(principal):
         request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
             request=request,
             principal=principal,
@@ -1082,8 +1121,8 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code="raw_skill_selector_forbidden")
         raise HTTPException(status_code=403, detail="raw_skill_selector_forbidden")
-    requested_skill_id = request.skill_id if is_ai_admin(principal) else None
-    if request.selected_skill is not None and request.skill_id:
+    requested_skill_id = request.skill_id if allowed and is_ai_admin(principal) else None
+    if allowed and request.selected_skill is not None and request.skill_id:
         request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
             request=request,
             principal=principal,
@@ -1106,8 +1145,6 @@ async def chat_stream(
         requested_skill_id,
         allow_raw_skill_agent_id=is_ai_admin(principal),
     )
-    if request.selected_skill is not None:
-        requested_skill_id = request.selected_skill.skill_id
     try:
         requested_model_selection = _requested_model_selection(request)
     except HTTPException as exc:
@@ -1132,7 +1169,7 @@ async def chat_stream(
     requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
     requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
     resolved_file_ids = _file_ids_from_request(request)
-    if _has_legacy_client_mcp_selector(request.input):
+    if allowed and _has_legacy_client_mcp_selector(request.input):
         code = "selected_mcp_tool_ids_required"
         request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
             request=request,
@@ -1156,8 +1193,6 @@ async def chat_stream(
             {"message": request.message, **request.input},
             redact_public=not is_ai_admin(principal),
         )
-        if request.selected_mcp_tool_ids is not None:
-            run_input["mcp_tool_ids"] = list(request.selected_mcp_tool_ids)
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
         denial = getattr(exc, "denial", None)
@@ -1183,13 +1218,20 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code=error_code) from exc
         raise HTTPException(status_code=403, detail=error_code) from exc
-    if request.selected_mcp_tool_ids is not None:
+    selected_skill_for_execution = request.selected_skill if allowed else None
+    selected_mcp_tool_ids_for_execution = request.selected_mcp_tool_ids if allowed else None
+    if not allowed:
+        requested_agent_id, requested_skill_id = "general-agent", None
+    if selected_skill_for_execution is not None:
+        requested_skill_id = selected_skill_for_execution.skill_id
+    if selected_mcp_tool_ids_for_execution is not None:
+        run_input["mcp_tool_ids"] = list(selected_mcp_tool_ids_for_execution)
         try:
             async with transaction() as conn:
                 await repositories.authorize_selected_chat_mcp_tools(
                     conn,
                     tenant_id=principal.tenant_id,
-                    tool_ids=list(request.selected_mcp_tool_ids),
+                    tool_ids=list(selected_mcp_tool_ids_for_execution),
                     principal_department_id=principal.department_id,
                     principal_roles=principal.roles,
                     is_admin=is_ai_admin(principal),
@@ -1217,24 +1259,6 @@ async def chat_stream(
                     code="mcp_tool_not_available",
                 ) from exc
             raise HTTPException(status_code=403, detail="mcp_tool_not_available") from exc
-    if submission_id is not None and (
-        request.session_id is None or request.selected_mcp_tool_ids is not None
-    ):
-        request_fingerprint = repositories.chat_submission_fingerprint(
-            {
-                "request": request.model_dump(mode="json", exclude={"submission_id"}),
-                "query_agent_id": query_agent_id,
-            },
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-        )
-    existing_submission = await _load_existing_chat_submission(
-        principal=principal,
-        submission_id=submission_id,
-        request_fingerprint=request_fingerprint,
-    )
-    if existing_submission is not None:
-        return existing_submission
     pending_submission_response: ChatStreamResponse | None = None
     locked_skill_label: str | None = None
     effective_workspace_id = request.workspace_id
@@ -1283,6 +1307,10 @@ async def chat_stream(
                 # or switch the session to another agent.
                 requested_agent_id = str(continuation_session["agent_id"])
 
+            if not allowed:
+                preserve_continuation_skill = False
+                requested_agent_id, requested_skill_id = "general-agent", None
+
             requires_locked_continuation = bool(
                 request.session_id
                 and (
@@ -1311,8 +1339,10 @@ async def chat_stream(
                 if locked_continuation_session is None:
                     raise HTTPException(status_code=404, detail="session_not_found")
                 continuation_session = locked_continuation_session
-                requested_agent_id = str(continuation_session["agent_id"])
-                if request.selected_mcp_tool_ids is None:
+                requested_agent_id = str(continuation_session["agent_id"]) if allowed else "general-agent"
+                if (
+                    request.selected_mcp_tool_ids is None and allowed
+                ):
                     continuation_latest_input_json = (
                         await repositories.get_latest_authorized_session_run_input(
                             conn,
@@ -1323,7 +1353,7 @@ async def chat_stream(
                         )
                     )
 
-            if request.session_id and request.selected_mcp_tool_ids is None:
+            if request.session_id and request.selected_mcp_tool_ids is None and allowed:
                 prior_input = (
                     continuation_latest_input_json.get("input")
                     if isinstance(continuation_latest_input_json, dict)
@@ -1349,7 +1379,7 @@ async def chat_stream(
                     mode="json",
                     exclude={"submission_id"},
                 )
-                if request.selected_mcp_tool_ids is None and "mcp_tool_ids" in run_input:
+                if request.selected_mcp_tool_ids is None and allowed and "mcp_tool_ids" in run_input:
                     fingerprint_request["selected_mcp_tool_ids"] = list(
                         run_input.get("mcp_tool_ids") or []
                     )
@@ -1412,6 +1442,7 @@ async def chat_stream(
                 continuation_capability = (
                     capability_id_from_skill(None, requested_agent_id)
                     if continuation_session is not None
+                    and allowed
                     else None
                 )
                 decision = route_intent(
@@ -1426,12 +1457,14 @@ async def chat_stream(
                     else [],
                     confirmed_capability_id=continuation_capability
                     or request.confirmed_capability_id,
+                    execution_polarity=execution_polarity,
                 )
                 decision_payload = decision.as_payload()
                 is_terminal_implicit_decision = (
                     continuation_session is None
-                    and request.selected_skill is None
+                    and selected_skill_for_execution is None
                     and request.skill_id is None
+                    and selected_mcp_tool_ids_for_execution is None
                     and not decision.confirmed_by_user
                     and decision.status == "selected"
                 )
@@ -1521,10 +1554,10 @@ async def chat_stream(
                     )
             if implicit_skill is not None:
                 skill = implicit_skill
-            elif request.selected_skill is not None:
+            elif selected_skill_for_execution is not None:
                 skill = await repositories.authorize_selected_run_capabilities(
                     conn,
-                    expected_version=request.selected_skill.expected_version,
+                    expected_version=selected_skill_for_execution.expected_version,
                     rollout_key=principal.user_id,
                     **authorization_kwargs,
                 )
@@ -1963,7 +1996,7 @@ async def chat_stream(
 async def get_chat_submission(
     submission_id: UUID,
     response: Response,
-    principal: AuthPrincipal = Depends(require_principal),
+    principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSubmissionResponse:
     """Resolve a durable client submission without inferring from session history."""
 
@@ -1984,7 +2017,7 @@ async def get_chat_submission(
 async def retry_chat_submission_admission(
     submission_id: UUID,
     response: Response,
-    principal: AuthPrincipal = Depends(require_principal),
+    principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse:
     """Explicitly retry queue admission for one already-created run only."""
 

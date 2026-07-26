@@ -1,7 +1,7 @@
-from contextlib import asynccontextmanager
 import base64
 import hashlib
 import json
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi import HTTPException, Response
@@ -10,15 +10,21 @@ from fastapi.testclient import TestClient
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
-from app.models import ChatSessionRequest, ChatStreamRequest, ChatSubmissionResponse, QueueRunPayload
 from app.main import create_app
+from app.models import (
+    ChatSessionRequest,
+    ChatStreamRequest,
+    ChatSubmissionResponse,
+    QueueRunPayload,
+)
+from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
-from app.settings import Settings
 from app.routes.chat import (
     _admit_chat_submission,
     _audit_capability_denial,
     _canonical_pre_persistence_rejection_fingerprint,
+    _file_row_matches_request_scope,
     _preledger_recovery_fingerprint,
     _validate_queue_payload_for_enqueue,
     chat_stream,
@@ -27,10 +33,8 @@ from app.routes.chat import (
     list_messages,
     list_sessions,
     retry_chat_submission_admission,
-    _file_row_matches_request_scope,
 )
-from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
-
+from app.settings import Settings
 
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
 _ORIGINAL_GET_LATEST_AUTHORIZED_SESSION_RUN_INPUT = (
@@ -366,6 +370,11 @@ async def test_mcp_denial_audit_redacts_raw_identity_and_correlates_deterministi
 
 @pytest.fixture(autouse=True)
 def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
+    async def no_submission(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(repository_module, "get_chat_submission", no_submission)
+
     async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
         return await repository_module.resolve_agent_skill(
             conn,
@@ -453,6 +462,76 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
     ]
 
 
+@pytest.mark.parametrize("roles", [[], ["admin"]], ids=["ordinary", "admin"])
+@pytest.mark.parametrize(
+    ("message", "selected_tools", "expected_authorizations"),
+    [
+        ("不要调用 MCP，只解释它是什么", ["qa-search"], 0),
+        ("请调用 MCP 搜索员工手册", ["qa-search"], 1),
+    ],
+    ids=["negative-veto", "affirmative"],
+)
+@pytest.mark.asyncio
+async def test_chat_stream_current_turn_controls_selected_mcp_before_authorization(
+    monkeypatch, roles, message, selected_tools, expected_authorizations
+):
+    calls = {"authorization": 0}
+
+    async def authorize_run(*_args, **_kwargs):
+        return {
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-general-chat",
+            "input_modes": ["chat"],
+        }
+
+    async def authorize_tools(*_args, **_kwargs):
+        calls["authorization"] += 1
+        return [{"tool_id": "qa-search"}]
+
+    async def create_session(*_args, **_kwargs):
+        return "ses-polarity"
+
+    async def create_run(*_args, **kwargs):
+        calls["run_input"] = kwargs["input_json"]["input"]
+        return "run-polarity"
+
+    async def append_message(*_args, **_kwargs):
+        return "msg-polarity"
+
+    async def enqueue(payload):
+        calls["queue_input"] = payload["input"]
+        return 1
+
+    async def manifests(*_args, **_kwargs):
+        return [snapshot_manifest("general-chat")]
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize_run)
+    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", authorize_tools)
+    monkeypatch.setattr(repository_module, "ensure_user", noop)
+    monkeypatch.setattr(repository_module, "create_session", create_session)
+    monkeypatch.setattr(repository_module, "create_run", create_run)
+    monkeypatch.setattr(repository_module, "append_message", append_message)
+    monkeypatch.setattr(repository_module, "bind_files_to_run", noop)
+    monkeypatch.setattr(repository_module, "append_event", noop)
+    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+
+    response = await chat_stream(
+        ChatStreamRequest(message=message, selected_mcp_tool_ids=selected_tools),
+        principal=principal(roles=roles),
+    )
+
+    assert response.status == "queued"
+    assert calls["authorization"] == expected_authorizations
+    expected_tools = selected_tools if expected_authorizations else None
+    assert calls["run_input"].get("mcp_tool_ids") == expected_tools
+    assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
+
+
 @pytest.mark.asyncio
 async def test_keyed_chat_payload_mismatch_is_rejected_before_routing(monkeypatch):
     request = ChatStreamRequest(
@@ -513,7 +592,6 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
 
     async def latest_input(*_args, **_kwargs):
         calls.append("latest_input")
-        return None
 
     async def claim_submission(*_args, **kwargs):
         calls.append("claim")
@@ -806,7 +884,6 @@ async def test_chat_submission_resolver_missing_is_read_only_and_fail_closed(mon
 
     async def missing_submission(conn, **kwargs):
         calls.append(kwargs)
-        return None
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", missing_submission, raising=False)
@@ -1384,7 +1461,7 @@ async def test_chat_stream_selected_skill_maps_stale_lock_to_stable_409_before_w
 
 
 def snapshot_manifest(skill_id, *, description="Pinned skill"):
-    content = f"---\nname: {skill_id}\ndescription: {description}\n---\n\n# {skill_id}\n".encode("utf-8")
+    content = f"---\nname: {skill_id}\ndescription: {description}\n---\n\n# {skill_id}\n".encode()
     files = [
         {
             "relative_path": "SKILL.md",
@@ -3822,7 +3899,6 @@ async def test_chat_stream_rejects_a_rotated_principal_stale_session_before_capa
 
     async def no_owned_session(conn, *, tenant_id, user_id, session_id, workspace_id=None, for_update=False):
         checked.append((tenant_id, user_id, session_id, workspace_id, for_update))
-        return None
 
     async def forbidden_after_ownership_check(*_args, **_kwargs):
         raise AssertionError("foreign session must fail before capability or persistence work")
