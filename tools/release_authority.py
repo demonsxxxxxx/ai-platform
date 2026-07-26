@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import codecs
 from collections import OrderedDict, deque
-from contextlib import contextmanager
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -23,7 +22,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Iterator, Sequence
+from typing import Any, Sequence
 from urllib.request import urlopen
 
 
@@ -1771,16 +1770,6 @@ def _normalized_release_root(release_root: Path) -> Path:
     return normalized
 
 
-@contextmanager
-def _restricted_materialization_umask() -> Iterator[None]:
-    """Prevent a permissive caller umask from weakening a new target checkout."""
-    original_umask = os.umask(0o077)
-    try:
-        yield
-    finally:
-        os.umask(original_umask)
-
-
 def _assert_standalone_checkout(checkout: Path, release_root: Path) -> None:
     if _is_link_or_junction(checkout) or checkout.resolve(strict=False).parent != release_root:
         raise ReleaseAuthorityError("versioned release checkout symlink or path traversal is forbidden")
@@ -1816,12 +1805,10 @@ def materialize_main_checkout(release_root: Path, commit: str) -> Path:
     root = _normalized_release_root(release_root)
     checkout = root / normalized
     staging = root / f".{normalized}.incoming"
-
     if _is_link_or_junction(staging) or staging.exists():
         raise ReleaseAuthorityError("interrupted release staging residue requires operator review")
     if _is_link_or_junction(checkout):
         raise ReleaseAuthorityError("versioned release checkout symlink is forbidden")
-
     if checkout.exists():
         assert_managed_target_pre_fetch_trust(checkout, normalized, root)
         _assert_standalone_checkout(checkout, root)
@@ -1829,8 +1816,8 @@ def materialize_main_checkout(release_root: Path, commit: str) -> Path:
         _fetch_and_verify_main_commit(checkout, normalized)
         assert_managed_target_checkout(checkout, normalized, root)
         return checkout
-
-    with _restricted_materialization_umask():
+    original_umask = os.umask(0o077)
+    try:
         staging.mkdir(exist_ok=False)
         _git(staging, "init")
         _git(staging, "remote", "add", "origin", AUTHORITATIVE_REPOSITORY)
@@ -1842,6 +1829,8 @@ def materialize_main_checkout(release_root: Path, commit: str) -> Path:
             raise ReleaseAuthorityError("versioned release destination appeared during materialization")
         staging.rename(checkout)
         _assert_standalone_checkout(checkout, root)
+    finally:
+        os.umask(original_umask)
     return checkout
 
 

@@ -3120,6 +3120,7 @@ def _install_checkout_git_runner(
     status: str = "",
     ancestor_returncode: int = 0,
     ignored_paths: tuple[str, ...] = (),
+    checkout_setup=None,
 ):
     commands: list[tuple[list[str], Path | None, bool]] = []
 
@@ -3142,6 +3143,8 @@ def _install_checkout_git_runner(
             stdout = "\0".join(ignored_paths) + ("\0" if ignored_paths else "")
         elif command[1:3] == ["merge-base", "--is-ancestor"]:
             returncode = ancestor_returncode
+        elif command[1:3] == ["checkout", "--detach"] and checkout_setup is not None:
+            checkout_setup(cwd_path)
         if not text:
             stdout = stdout.encode("utf-8")
             stderr = b""
@@ -3187,36 +3190,17 @@ def test_materialize_main_checkout_new_tree_ignores_permissive_ambient_umask(mon
     commit = "1" * 40
     release_root = tmp_path / "releases"
 
-    def fake_run(command, *, cwd=None, check=True, text=True, env=None):
-        command = list(command)
-        checkout = Path(cwd)
-        stdout = ""
-        if command[:2] == ["git", "init"]:
-            (checkout / ".git").mkdir()
-            (checkout / ".git" / "config").write_text("[core]\n", encoding="utf-8")
-        elif command[1:4] == ["config", "--get", "remote.origin.url"]:
-            stdout = AUTHORITATIVE_REPOSITORY + "\n"
-        elif command[1:3] == ["rev-parse", "HEAD"]:
-            stdout = commit + "\n"
-        elif command[1:3] == ["status", "--porcelain"]:
-            stdout = ""
-        elif command[1:3] == ["checkout", "--detach"]:
-            nested = checkout / "nested"
-            nested.mkdir()
-            (nested / "tracked.txt").write_text("tracked\n", encoding="utf-8")
-            executable_directory = checkout / "bin"
-            executable_directory.mkdir()
-            executable = executable_directory / "run-release"
-            executable.write_text("#!/bin/sh\n", encoding="utf-8")
-            executable.chmod(0o755)
-        if not text:
-            stdout = stdout.encode("utf-8")
-            stderr = b""
-        else:
-            stderr = ""
-        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=stderr)
+    def materialize_content(checkout):
+        (checkout / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+        nested = checkout / "nested"
+        nested.mkdir()
+        (nested / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+        executable = checkout / "bin" / "run-release"
+        executable.parent.mkdir()
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        executable.chmod(0o755)
 
-    monkeypatch.setattr(release_authority, "_run", fake_run)
+    _install_checkout_git_runner(monkeypatch, commit=commit, checkout_setup=materialize_content)
     original_umask = os.umask(0o002)
     try:
         checkout = release_authority.materialize_main_checkout(release_root, commit)
