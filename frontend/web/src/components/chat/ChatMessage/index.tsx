@@ -13,7 +13,7 @@ import { useTranslation } from "react-i18next";
 import { MarkdownContent } from "./MarkdownContent";
 import { ToolCallItem } from "./ToolCallItem";
 import { UserMessageBubble } from "./UserMessageBubble";
-import { MessagePartRenderer } from "./MessagePartRenderer";
+import { createMessagePartRenderKeys, MessagePartRenderer } from "./MessagePartRenderer";
 import { RevealArtifactsSummary } from "./RevealArtifactsSummary";
 import { FeedbackButtons } from "./FeedbackButtons";
 import { AssistantAvatar } from "./AssistantAvatar";
@@ -33,6 +33,10 @@ import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createMessageAnchorId } from "../../layout/AppContent/messageOutline";
 import { formatDateTime, formatDateTimeShort } from "../../../utils/datetime";
 import { copyToClipboard } from "../../../utils/clipboard";
+import {
+  createArtifactDownloadScope,
+  type ArtifactDownloadScopeContext,
+} from "./items/artifactDownloadRegistry";
 
 // Skeleton-style loading animation component - refined thin lines
 function ThinkingIndicator() {
@@ -66,6 +70,7 @@ function ThinkingIndicator() {
 
 interface ChatMessageProps {
   message: Message;
+  artifactDownloadScopeContext?: ArtifactDownloadScopeContext;
   sessionId?: string;
   runId?: string;
   isLastMessage?: boolean;
@@ -237,6 +242,7 @@ function TokenDetailsButton({
 
 export const ChatMessage = memo(function ChatMessage({
   message,
+  artifactDownloadScopeContext,
   sessionId,
   runId,
   isLastMessage,
@@ -250,6 +256,10 @@ export const ChatMessage = memo(function ChatMessage({
   const { isAuthenticated } = useAuth();
   const isUser = message.role === "user";
   const isStreaming = message.isStreaming && !message.content;
+  const artifactDownloadScope = createArtifactDownloadScope(
+    artifactDownloadScopeContext,
+    message.id,
+  );
   const modelDetails = resolveTokenUsageModelDetails({
     modelId: message.tokenUsage?.model_id,
     model: message.tokenUsage?.model,
@@ -261,6 +271,7 @@ export const ChatMessage = memo(function ChatMessage({
     ? getVisibleMessageParts(message.parts)
     : [];
   const hasParts = visibleParts.length > 0;
+  const visiblePartKeys = createMessagePartRenderKeys(message.id, visibleParts);
   // User message: bubble style, right aligned
   if (isUser) {
     return (
@@ -334,7 +345,7 @@ export const ChatMessage = memo(function ChatMessage({
             <div className="space-y-3 px-2 my-2">
               {visibleParts.map((part: MessagePart, index: number) => (
                 <MessagePartRenderer
-                  key={index}
+                  key={visiblePartKeys[index]}
                   part={part}
                   messageId={message.id}
                   partIndex={index}
@@ -342,6 +353,7 @@ export const ChatMessage = memo(function ChatMessage({
                   isLast={index === visibleParts.length - 1}
                   activePreview={activePreview}
                   onOpenPreview={onOpenPreview}
+                  artifactDownloadScope={artifactDownloadScope}
                   allowAutoPreview={shouldAllowAutoPreviewForPart({
                     messageId: message.id,
                     partIndex: index,

@@ -31,6 +31,15 @@ test("passes the message list session key into the scroll hook as a bottom-lock 
   );
 });
 
+test("passes an authenticated session scope through virtualized message rows", () => {
+  assert.match(chatViewSource, /createArtifactDownloadScopeContext/);
+  assert.match(
+    chatViewSource,
+    /artifactDownloadScopeContext=\{artifactDownloadScopeContext\}/,
+  );
+  assert.match(chatViewSource, /clearArtifactDownloadScope\(previousScope\)/);
+});
+
 test("anchors floating scroll buttons to the chat input", () => {
   assert.match(
     chatViewSource,
@@ -40,9 +49,7 @@ test("anchors floating scroll buttons to the chat input", () => {
     chatViewSource.match(/\$\{FLOATING_SCROLL_BUTTON_OFFSET_CLASS\}/g)?.length,
     2,
   );
-  assert.match(
-    chatViewSource,
-    /\{messages\.length > 0 && \(\s*<div className="relative">[\s\S]*<ChatInput \{\.\.\.chatInputProps\} \/>[\s\S]*<\/div>\s*\)\}/,
-  );
+  assert.match(chatViewSource, /const composer = \(\s*<div className="relative"/);
+  assert.match(chatViewSource, /<ChatInput\s+\{\.\.\.chatInputProps\}/);
   assert.doesNotMatch(chatViewSource, /bottom-\d+/);
 });

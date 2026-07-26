@@ -1,8 +1,10 @@
 import type { MessagePart } from "../../../types";
+import type { ArtifactDownloadScope } from "./items/artifactDownloadRegistry";
 
 export interface SubagentPanelData {
   agentId: string;
   agentName: string;
+  artifactDownloadScope?: ArtifactDownloadScope;
   input: string;
   result?: string;
   success?: boolean;

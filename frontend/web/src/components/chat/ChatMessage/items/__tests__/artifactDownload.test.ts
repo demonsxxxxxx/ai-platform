@@ -151,3 +151,24 @@ test("downloadArtifactFile authenticates protected platform artifact downloads",
   assert.deepEqual(authenticatedCalls, ["/api/ai/artifacts/artifact-1/download"]);
   assert.deepEqual(fetchCalls, []);
 });
+
+test("downloadArtifactFile preserves downloader failures for the card to present safely", async () => {
+  const sensitiveError = new Error(
+    "https://storage.example.test/private/object-key?token=secret",
+  );
+
+  await assert.rejects(
+    downloadArtifactFile(
+      {
+        download_url: "/api/ai/artifacts/artifact-1/download",
+        label: "protected.docx",
+      },
+      {
+        downloadPreviewUrl: async () => {
+          throw sensitiveError;
+        },
+      },
+    ),
+    sensitiveError,
+  );
+});

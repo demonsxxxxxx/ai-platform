@@ -4,6 +4,10 @@ import {
   createSubagentPanelStore,
   type SubagentPanelData,
 } from "../subagentPanelStore.ts";
+import {
+  createArtifactDownloadScope,
+  createArtifactDownloadScopeContext,
+} from "../items/artifactDownloadRegistry.ts";
 
 function createData(agentId: string): SubagentPanelData {
   return {
@@ -47,4 +51,43 @@ test("tracks current store size for lightweight observability", () => {
   store.delete("agent-a");
 
   assert.equal(store.size(), 1);
+});
+
+test("keeps the authenticated artifact scope with the subagent panel across a panel remount", () => {
+  const store = createSubagentPanelStore();
+  const context = createArtifactDownloadScopeContext({
+    tenantId: "tenant-a",
+    userId: "user-a",
+    roles: ["member"],
+    isActive: true,
+    sessionId: "session-a",
+  })!;
+  const scope = createArtifactDownloadScope(context, "message-a")!;
+  const updates: SubagentPanelData[] = [];
+  const unsubscribe = store.subscribe("agent-a", () => {
+    const current = store.get("agent-a");
+    if (current) updates.push(current);
+  });
+
+  store.set({
+    ...createData("agent-a"),
+    artifactDownloadScope: scope,
+    parts: [
+      {
+        type: "artifact",
+        artifact_id: "artifact-a",
+        artifact_type: "document",
+        label: "artifact.txt",
+        content_type: "text/plain",
+        size_bytes: 1,
+        download_url: "/api/ai/artifacts/artifact-a/download",
+      },
+    ],
+  });
+
+  const remountedPanel = store.get("agent-a");
+  assert.equal(remountedPanel?.artifactDownloadScope?.key, scope.key);
+  assert.equal(remountedPanel?.artifactDownloadScope?.sessionId, "session-a");
+  assert.equal(updates.length, 1);
+  unsubscribe();
 });
