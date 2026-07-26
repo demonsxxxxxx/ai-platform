@@ -859,6 +859,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         sequence: null,
       };
       lastHistoryTimestampRef.current = null;
+      currentRunIdRef.current = null;
+      setCurrentRunId(null);
+      setIsLoading(false);
+      setConnectionStatus("disconnected");
+      setIsInitializingSandbox(false);
+      setSandboxError(null);
       setBrowserAuthIncarnation(incarnation);
     };
     window.addEventListener(
