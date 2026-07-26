@@ -315,3 +315,149 @@ def test_sdk_hook_evidence_rejects_missing_tool_call_or_attempt_binding():
             tool_call_id="tool-call-a",
             succeeded=True,
         )
+
+
+def test_sdk_pre_tool_hook_evidence_is_exactly_bound_and_private():
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="document-reviewer",
+    )
+
+    evidence = RequiredCapabilityEvidence.from_sdk_hook(
+        declaration=declaration,
+        binding=_binding(),
+        tool_call_id="tool-call-started",
+        lifecycle_phase="started",
+    )
+    payload = evidence.__dict__
+
+    assert evidence.lifecycle_phase == "started"
+    assert evidence.lifecycle_status == "in_progress"
+    assert evidence.public_status == "in_progress"
+    assert RequiredCapabilityEvidence.from_payload(payload) == evidence
+    assert not ({"arguments", "result", "endpoint", "token", "error"} & payload.keys())
+
+
+def test_unbound_sdk_hook_payload_uses_the_same_bounded_lifecycle_vocabulary():
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp",
+        canonical_identity="mcp__github__search_issues",
+    )
+
+    payload = RequiredCapabilityEvidence.sdk_hook_payload(
+        declaration=declaration,
+        tool_call_id="tool-call-started",
+        lifecycle_phase="started",
+    )
+
+    assert payload == {
+        "schema_version": "ai-platform.required-capability-evidence.v1",
+        "capability_kind": "mcp",
+        "canonical_identity": "mcp__github__search_issues",
+        "tool_call_id": "tool-call-started",
+        "lifecycle_phase": "started",
+        "lifecycle_status": "in_progress",
+        "evidence_source": "claude_agent_sdk_hook",
+        "trust_basis": "tool_call_bound_invocation",
+        "public_label": "controlled_execution_capability",
+        "public_status": "in_progress",
+        "declaration_sha256": declaration.declaration_sha256,
+    }
+
+
+@pytest.mark.parametrize("tool_call_id", ["", None])
+def test_sdk_pre_tool_hook_evidence_rejects_empty_tool_call_identity(tool_call_id):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp",
+        canonical_identity="mcp__github__search_issues",
+    )
+
+    with pytest.raises(RequiredToolContractError, match="required_tool_completion_evidence_mismatch"):
+        RequiredCapabilityEvidence.from_sdk_hook(
+            declaration=declaration,
+            binding=_binding(),
+            tool_call_id=tool_call_id,
+            lifecycle_phase="started",
+        )
+
+
+@pytest.mark.parametrize(
+    ("phase", "status"),
+    [("started", "in_progress"), ("completed", "succeeded"), ("failed", "failed")],
+)
+def test_controlled_runner_skill_evidence_uses_process_bound_trust(phase, status):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="document-reviewer",
+    )
+
+    evidence = RequiredCapabilityEvidence.from_controlled_runner(
+        declaration=declaration,
+        binding=_binding(),
+        tool_call_id="process-a",
+        lifecycle_phase=phase,
+    )
+
+    assert evidence.lifecycle_status == status
+    assert evidence.evidence_source == "controlled_skill_runner"
+    assert evidence.trust_basis == "process_bound_invocation"
+    assert RequiredCapabilityEvidence.from_payload(evidence.__dict__) == evidence
+
+
+def test_controlled_runner_evidence_rejects_mcp_identity():
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp",
+        canonical_identity="mcp__github__search_issues",
+    )
+
+    with pytest.raises(RequiredToolContractError, match="required_tool_completion_evidence_mismatch"):
+        RequiredCapabilityEvidence.from_controlled_runner(
+            declaration=declaration,
+            binding=_binding(),
+            tool_call_id="process-a",
+            lifecycle_phase="started",
+        )
+
+
+@pytest.mark.parametrize(
+    ("capability_kind", "source", "trust"),
+    [
+        ("builtin", "claude_agent_sdk_hook", "tool_call_bound_invocation"),
+        ("builtin", "executor_private_payload", "tool_call_bound_invocation"),
+        ("mcp", "controlled_skill_runner", "process_bound_invocation"),
+        ("mcp", "claude_agent_sdk_hook", "process_bound_invocation"),
+        ("skill", "arbitrary_source", "arbitrary_trust"),
+        ("skill", "controlled_skill_runner", "tool_call_bound_invocation"),
+        ("skill", "claude_agent_sdk_hook", "process_bound_invocation"),
+    ],
+)
+def test_evidence_source_and_trust_matrix_rejects_forged_pairs(
+    capability_kind,
+    source,
+    trust,
+):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill" if capability_kind == "builtin" else capability_kind,
+        canonical_identity=(
+            "document-reviewer"
+            if capability_kind != "mcp"
+            else "mcp__github__search_issues"
+        ),
+    )
+    evidence = {
+        "schema_version": "ai-platform.required-capability-evidence.v1",
+        **_binding(),
+        "tool_call_id": "invocation-a",
+        "capability_kind": capability_kind,
+        "canonical_identity": "Bash" if capability_kind == "builtin" else declaration.identity,
+        "lifecycle_phase": "started",
+        "lifecycle_status": "in_progress",
+        "evidence_source": source,
+        "trust_basis": trust,
+        "public_label": "controlled_execution_capability",
+        "public_status": "in_progress",
+        "declaration_sha256": declaration.declaration_sha256,
+    }
+
+    with pytest.raises(RequiredToolContractError, match="required_tool_completion_evidence_mismatch"):
+        RequiredCapabilityEvidence.from_payload(evidence)

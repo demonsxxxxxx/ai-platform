@@ -60,8 +60,20 @@ _EVIDENCE_LIFECYCLE_PAIRS = frozenset(
 _SAFE_PUBLIC_LABEL = "controlled_execution_capability"
 _AUTHORIZED_SUBJECT_EVIDENCE_SOURCE = "server_authorized_subject"
 _AUTHORIZED_SUBJECT_TRUST_BASIS = "server_derived_authorized_subject"
-_SDK_HOOK_EVIDENCE_SOURCE = "claude_agent_sdk_hook"
-_TOOL_CALL_TRUST_BASIS = "tool_call_bound_invocation"
+SDK_HOOK_EVIDENCE_SOURCE = "claude_agent_sdk_hook"
+TOOL_CALL_TRUST_BASIS = "tool_call_bound_invocation"
+CONTROLLED_RUNNER_EVIDENCE_SOURCE = "controlled_skill_runner"
+PROCESS_BOUND_TRUST_BASIS = "process_bound_invocation"
+_EVIDENCE_TRUST_MATRIX = {
+    "builtin": frozenset({("executor_private_payload", "attempt_bound_tool_invocation")}),
+    "mcp": frozenset({(SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS)}),
+    "skill": frozenset(
+        {
+            (SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS),
+            (CONTROLLED_RUNNER_EVIDENCE_SOURCE, PROCESS_BOUND_TRUST_BASIS),
+        }
+    ),
+}
 _AFFIRMATIVE_EXECUTION = re.compile(
     r"(?:请|帮我|麻烦|立即|现在|直接|please\s+)?"
     r"(?:执行|运行|调用|使用|run|execute|invoke|use)"
@@ -158,15 +170,48 @@ class RequiredCapabilityEvidence:
     declaration_sha256: str
 
     @classmethod
+    def sdk_hook_payload(
+        cls,
+        *,
+        declaration: RequiredCapabilityDeclaration,
+        tool_call_id: str,
+        lifecycle_phase: str,
+    ) -> dict[str, str]:
+        """Normalize one unbound private SDK-hook fact for executor binding."""
+
+        _validate_declaration(declaration)
+        if declaration.capability_kind not in {"skill", "mcp"}:
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        if lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES:
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        lifecycle_status = dict(_EVIDENCE_LIFECYCLE_PAIRS)[lifecycle_phase]
+        return {
+            "schema_version": REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION,
+            "capability_kind": declaration.capability_kind,
+            "canonical_identity": declaration.canonical_identity,
+            "tool_call_id": tool_call_id,
+            "lifecycle_phase": lifecycle_phase,
+            "lifecycle_status": lifecycle_status,
+            "evidence_source": SDK_HOOK_EVIDENCE_SOURCE,
+            "trust_basis": TOOL_CALL_TRUST_BASIS,
+            "public_label": _SAFE_PUBLIC_LABEL,
+            "public_status": lifecycle_status,
+            "declaration_sha256": declaration.declaration_sha256,
+        }
+
+    @classmethod
     def from_sdk_hook(
         cls,
         *,
         declaration: RequiredCapabilityDeclaration,
         binding: Mapping[str, object],
         tool_call_id: str,
-        succeeded: bool,
+        succeeded: bool | None = None,
+        lifecycle_phase: str | None = None,
     ) -> RequiredCapabilityEvidence:
-        """Create exact invocation evidence from a completed SDK hook callback."""
+        """Create exact invocation evidence from one trusted SDK hook callback."""
 
         _validate_declaration(declaration)
         if declaration.capability_kind not in {"skill", "mcp"}:
@@ -179,18 +224,64 @@ class RequiredCapabilityEvidence:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         if not isinstance(tool_call_id, str) or not tool_call_id:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        lifecycle_phase = "completed" if succeeded else "failed"
-        lifecycle_status = "succeeded" if succeeded else "failed"
+        if lifecycle_phase is None:
+            if not isinstance(succeeded, bool):
+                raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+            lifecycle_phase = "completed" if succeeded else "failed"
+        elif succeeded is not None or lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES:
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        unbound = cls.sdk_hook_payload(
+            declaration=declaration,
+            tool_call_id=tool_call_id,
+            lifecycle_phase=lifecycle_phase,
+        )
+        return cls(
+            schema_version=unbound["schema_version"],
+            **{field: str(values[field]) for field in _BINDING_FIELDS},
+            tool_call_id=unbound["tool_call_id"],
+            capability_kind=unbound["capability_kind"],
+            canonical_identity=unbound["canonical_identity"],
+            lifecycle_phase=unbound["lifecycle_phase"],
+            lifecycle_status=unbound["lifecycle_status"],
+            evidence_source=unbound["evidence_source"],
+            trust_basis=unbound["trust_basis"],
+            public_label=unbound["public_label"],
+            public_status=unbound["public_status"],
+            declaration_sha256=unbound["declaration_sha256"],
+        )
+
+    @classmethod
+    def from_controlled_runner(
+        cls,
+        *,
+        declaration: RequiredCapabilityDeclaration,
+        binding: Mapping[str, object],
+        tool_call_id: str,
+        lifecycle_phase: str,
+    ) -> RequiredCapabilityEvidence:
+        """Create one process-bound Skill fact from the controlled runner."""
+
+        _validate_declaration(declaration)
+        if declaration.capability_kind != "skill":
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        values = {field: binding.get(field) for field in _BINDING_FIELDS}
+        if any(not isinstance(value, str) or not value for value in values.values()):
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        if lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES:
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        lifecycle_status = dict(_EVIDENCE_LIFECYCLE_PAIRS)[lifecycle_phase]
         return cls(
             schema_version=REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION,
             **{field: str(values[field]) for field in _BINDING_FIELDS},
             tool_call_id=tool_call_id,
-            capability_kind=declaration.capability_kind,
+            capability_kind="skill",
             canonical_identity=declaration.canonical_identity,
             lifecycle_phase=lifecycle_phase,
             lifecycle_status=lifecycle_status,
-            evidence_source=_SDK_HOOK_EVIDENCE_SOURCE,
-            trust_basis=_TOOL_CALL_TRUST_BASIS,
+            evidence_source=CONTROLLED_RUNNER_EVIDENCE_SOURCE,
+            trust_basis=PROCESS_BOUND_TRUST_BASIS,
             public_label=_SAFE_PUBLIC_LABEL,
             public_status=lifecycle_status,
             declaration_sha256=declaration.declaration_sha256,
@@ -248,19 +339,11 @@ class RequiredCapabilityEvidence:
             or not evidence.trust_basis
             or evidence.public_label != _SAFE_PUBLIC_LABEL
             or evidence.public_status != evidence.lifecycle_status
+            or (evidence.evidence_source, evidence.trust_basis)
+            not in _EVIDENCE_TRUST_MATRIX[evidence.capability_kind]
             or (
-                evidence.capability_kind == "builtin"
-                and (
-                    evidence.evidence_source != "executor_private_payload"
-                    or evidence.trust_basis != "attempt_bound_tool_invocation"
-                )
-            )
-            or (
-                evidence.capability_kind == "mcp"
-                and (
-                    evidence.tool_call_id is None
-                    or evidence.trust_basis != _TOOL_CALL_TRUST_BASIS
-                )
+                evidence.evidence_source != "executor_private_payload"
+                and evidence.tool_call_id is None
             )
         ):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
