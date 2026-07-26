@@ -220,9 +220,9 @@ def test_completion_is_run_attempt_bound_and_fails_closed_without_exact_evidence
         binding=_binding(),
         evidence={
             **valid_evidence,
-            "lifecycle_phase": "started",
-            "lifecycle_status": "in_progress",
-            "public_status": "in_progress",
+            "lifecycle_phase": "invocation_requested",
+            "lifecycle_status": "invoking",
+            "public_status": "invoking",
         },
     ).reason == "required_tool_completion_evidence_mismatch"
 
@@ -327,13 +327,13 @@ def test_sdk_pre_tool_hook_evidence_is_exactly_bound_and_private():
         declaration=declaration,
         binding=_binding(),
         tool_call_id="tool-call-started",
-        lifecycle_phase="started",
+        lifecycle_phase="invocation_requested",
     )
     payload = evidence.__dict__
 
-    assert evidence.lifecycle_phase == "started"
-    assert evidence.lifecycle_status == "in_progress"
-    assert evidence.public_status == "in_progress"
+    assert evidence.lifecycle_phase == "invocation_requested"
+    assert evidence.lifecycle_status == "invoking"
+    assert evidence.public_status == "invoking"
     assert RequiredCapabilityEvidence.from_payload(payload) == evidence
     assert not ({"arguments", "result", "endpoint", "token", "error"} & payload.keys())
 
@@ -347,7 +347,7 @@ def test_unbound_sdk_hook_payload_uses_the_same_bounded_lifecycle_vocabulary():
     payload = RequiredCapabilityEvidence.sdk_hook_payload(
         declaration=declaration,
         tool_call_id="tool-call-started",
-        lifecycle_phase="started",
+        lifecycle_phase="invocation_requested",
     )
 
     assert payload == {
@@ -355,12 +355,12 @@ def test_unbound_sdk_hook_payload_uses_the_same_bounded_lifecycle_vocabulary():
         "capability_kind": "mcp",
         "canonical_identity": "mcp__github__search_issues",
         "tool_call_id": "tool-call-started",
-        "lifecycle_phase": "started",
-        "lifecycle_status": "in_progress",
+        "lifecycle_phase": "invocation_requested",
+        "lifecycle_status": "invoking",
         "evidence_source": "claude_agent_sdk_hook",
         "trust_basis": "tool_call_bound_invocation",
         "public_label": "controlled_execution_capability",
-        "public_status": "in_progress",
+        "public_status": "invoking",
         "declaration_sha256": declaration.declaration_sha256,
     }
 
@@ -377,13 +377,13 @@ def test_sdk_pre_tool_hook_evidence_rejects_empty_tool_call_identity(tool_call_i
             declaration=declaration,
             binding=_binding(),
             tool_call_id=tool_call_id,
-            lifecycle_phase="started",
+            lifecycle_phase="invocation_requested",
         )
 
 
 @pytest.mark.parametrize(
     ("phase", "status"),
-    [("started", "in_progress"), ("completed", "succeeded"), ("failed", "failed")],
+    [("invocation_requested", "invoking"), ("completed", "succeeded"), ("failed", "failed")],
 )
 def test_controlled_runner_skill_evidence_uses_process_bound_trust(phase, status):
     declaration = RequiredCapabilityDeclaration.from_authorized_subject(
@@ -415,7 +415,7 @@ def test_controlled_runner_evidence_rejects_mcp_identity():
             declaration=declaration,
             binding=_binding(),
             tool_call_id="process-a",
-            lifecycle_phase="started",
+            lifecycle_phase="invocation_requested",
         )
 
 
@@ -450,12 +450,12 @@ def test_evidence_source_and_trust_matrix_rejects_forged_pairs(
         "tool_call_id": "invocation-a",
         "capability_kind": capability_kind,
         "canonical_identity": "Bash" if capability_kind == "builtin" else declaration.identity,
-        "lifecycle_phase": "started",
-        "lifecycle_status": "in_progress",
+        "lifecycle_phase": "invocation_requested",
+        "lifecycle_status": "invoking",
         "evidence_source": source,
         "trust_basis": trust,
         "public_label": "controlled_execution_capability",
-        "public_status": "in_progress",
+        "public_status": "invoking",
         "declaration_sha256": declaration.declaration_sha256,
     }
 
