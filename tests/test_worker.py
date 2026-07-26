@@ -7110,7 +7110,15 @@ async def test_worker_audits_read_only_ragflow_tool_call(monkeypatch):
         return f"aud_{len(audits)}"
 
     async def fake_ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        return {"id": tool_id, "status": "active", "write_capable": False, "risk_level": "low"}
+        return {
+            "id": tool_id,
+            "tool_id": tool_id,
+            "server_id": "tenant-search-server",
+            "allowed_tools": ["query"],
+            "status": "active",
+            "write_capable": False,
+            "risk_level": "low",
+        }
 
     async def fake_complete_run(conn, **kwargs):
         return True
@@ -7139,7 +7147,7 @@ async def test_worker_audits_read_only_ragflow_tool_call(monkeypatch):
     )
 
     assert outcome.status == "succeeded"
-    assert "mcp_tool_call_started" in events
+    assert "mcp_tool_call_started" not in events
     assert "mcp_tool_call_completed" in events
     completion_audit = next(item for item in audits if item["action"] == "mcp_tool_call_completed")
     assert completion_audit["payload_json"]["dataset_ids"] == ["dataset-a"]
@@ -7978,15 +7986,20 @@ async def test_worker_allows_builtin_ragflow_backing_mcp_on_ragflow_executor(mon
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"mode": "file"},
+        queue_input={
+            "mode": "queue",
+            "_runtime_tool_policy_subjects": [{"capability_id": "caller-forged-search"}],
+        },
     )
+    backing_tool_id = "ragflow-knowledge-search"
     state["skill"].update(
         executor_type="ragflow",
-        backing_mcp_tool_id="ragflow-knowledge-search",
+        backing_mcp_tool_id=backing_tool_id,
     )
     state["locked_run"]["input_json"]["executor_type"] = "ragflow"
     raw["executor_type"] = "ragflow"
-    state["tools"]["ragflow-knowledge-search"] = _task6_tool(
-        "ragflow-knowledge-search",
+    state["tools"][backing_tool_id] = _task6_tool(
+        backing_tool_id,
         "ragflow-server",
     )
     state["distributions"][("mcp_server", "ragflow-server")] = _task6_distribution(
@@ -7997,12 +8010,29 @@ async def test_worker_allows_builtin_ragflow_backing_mcp_on_ragflow_executor(mon
     outcome = await process_run_payload(raw, registry=registry)
 
     assert outcome.status == "succeeded"
-    assert ("tool_lookup", "tenant-a", "ragflow-knowledge-search") in calls
+    assert ("tool_lookup", "tenant-a", backing_tool_id) in calls
     registered_input = next(call[1] for call in calls if call[0] == "adapter")
     assert "mcp_tool_ids" not in registered_input
     assert any(
         subject.get("mcp_server") == "ragflow-server"
         for subject in registered_input["_runtime_tool_policy_subjects"]
+    )
+    completion = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "mcp_tool_call_completed"
+    )
+    audit = next(
+        call[1]
+        for call in calls
+        if call[0] == "audit" and call[1]["action"] == "mcp_tool_call_completed"
+    )
+    assert completion["payload"]["mcp_tool_id"] == backing_tool_id
+    assert audit["target_id"] == backing_tool_id
+    assert "caller-forged-search" not in json.dumps(calls)
+    assert not any(
+        call[0] == "event" and call[1]["event_type"] == "mcp_tool_call_started"
+        for call in calls
     )
     assert not any(
         call[0] == "event"
