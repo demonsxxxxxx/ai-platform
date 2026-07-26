@@ -12,6 +12,7 @@ from app.required_tool_contract import (
     parse_required_tool_declaration,
     replay_required_tool_authorization,
     required_builtin_capability_subjects,
+    selected_capability_completion_decision,
 )
 
 
@@ -461,3 +462,79 @@ def test_evidence_source_and_trust_matrix_rejects_forged_pairs(
 
     with pytest.raises(RequiredToolContractError, match="required_tool_completion_evidence_mismatch"):
         RequiredCapabilityEvidence.from_payload(evidence)
+
+
+def _selected_evidence(declaration, phase, *, call_id="call-a", **binding_overrides):
+    return RequiredCapabilityEvidence.from_sdk_hook(
+        declaration=declaration,
+        binding=_binding(**binding_overrides),
+        tool_call_id=call_id,
+        lifecycle_phase=phase,
+    ).__dict__
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        ["completed"],
+        ["invocation_requested"],
+        ["invocation_requested", "failed"],
+        ["completed", "invocation_requested"],
+        ["invocation_requested", "invocation_requested", "completed"],
+        ["invocation_requested", "completed", "completed"],
+    ],
+)
+def test_selected_capability_sequence_rejects_incomplete_failed_reversed_or_duplicate(records):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="document-reviewer",
+    )
+
+    decision = selected_capability_completion_decision(
+        declarations=[declaration],
+        binding=_binding(),
+        evidence=[_selected_evidence(declaration, phase) for phase in records],
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "required_tool_completion_evidence_mismatch"
+
+
+def test_selected_capability_sequence_requires_same_call_binding_and_every_identity():
+    skill = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="document-reviewer",
+    )
+    mcp = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp",
+        canonical_identity="mcp__github__search_issues",
+    )
+    valid = [
+        _selected_evidence(skill, "invocation_requested"),
+        _selected_evidence(skill, "completed"),
+        _selected_evidence(mcp, "invocation_requested", call_id="call-b"),
+        _selected_evidence(mcp, "completed", call_id="call-b"),
+    ]
+
+    assert selected_capability_completion_decision(
+        declarations=[skill, mcp], binding=_binding(), evidence=valid
+    ).allowed
+    assert not selected_capability_completion_decision(
+        declarations=[skill, mcp], binding=_binding(), evidence=valid[:-1]
+    ).allowed
+    assert not selected_capability_completion_decision(
+        declarations=[skill],
+        binding=_binding(),
+        evidence=[valid[0], _selected_evidence(skill, "completed", call_id="other")],
+    ).allowed
+    assert not selected_capability_completion_decision(
+        declarations=[skill],
+        binding=_binding(),
+        evidence=[valid[0], _selected_evidence(skill, "completed", attempt_id="qat-stale")],
+    ).allowed
+    assert not selected_capability_completion_decision(
+        declarations=[skill], binding=_binding(), evidence=valid
+    ).allowed
+    assert not selected_capability_completion_decision(
+        declarations=[skill, skill], binding=_binding(), evidence=valid[:2]
+    ).allowed

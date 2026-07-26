@@ -789,6 +789,98 @@ def completion_decision(
     )
 
 
+def selected_capability_completion_decision(
+    *,
+    declarations: list[RequiredCapabilityDeclaration],
+    binding: Mapping[str, object],
+    evidence: object,
+) -> RequiredCapabilityDecision:
+    """Validate one exact invoking-to-completed sequence for every selection."""
+
+    if not declarations:
+        return RequiredCapabilityDecision(True, "required_capability_not_selected", "", "")
+    try:
+        for declaration in declarations:
+            _validate_declaration(declaration)
+        if not isinstance(evidence, list):
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        records = [RequiredCapabilityEvidence.from_payload(item) for item in evidence]
+    except RequiredToolContractError:
+        return RequiredCapabilityDecision(
+            False,
+            "required_tool_completion_evidence_mismatch",
+            "",
+            "",
+        )
+    declaration_identities = [
+        (declaration.capability_kind, declaration.canonical_identity)
+        for declaration in declarations
+    ]
+    evidence_identities = {
+        (record.capability_kind, record.canonical_identity)
+        for record in records
+    }
+    if not records:
+        declaration = declarations[0]
+        return RequiredCapabilityDecision(
+            False,
+            "required_tool_completion_evidence_missing",
+            declaration.capability_kind,
+            declaration.identity,
+        )
+    if (
+        len(set(declaration_identities)) != len(declaration_identities)
+        or evidence_identities != set(declaration_identities)
+    ):
+        return RequiredCapabilityDecision(
+            False,
+            "required_tool_completion_evidence_mismatch",
+            "",
+            "",
+        )
+    for declaration in declarations:
+        matching = [
+            (index, record)
+            for index, record in enumerate(records)
+            if record.capability_kind == declaration.capability_kind
+            and record.canonical_identity == declaration.canonical_identity
+        ]
+        if not matching:
+            return RequiredCapabilityDecision(
+                False,
+                "required_tool_completion_evidence_missing",
+                declaration.capability_kind,
+                declaration.identity,
+            )
+        invoking = [item for item in matching if item[1].lifecycle_phase == "invocation_requested"]
+        completed = [item for item in matching if item[1].lifecycle_phase == "completed"]
+        failed = [item for item in matching if item[1].lifecycle_phase == "failed"]
+        if (
+            len(invoking) != 1
+            or len(completed) != 1
+            or failed
+            or invoking[0][0] >= completed[0][0]
+            or invoking[0][1].tool_call_id != completed[0][1].tool_call_id
+            or any(
+                record.declaration_sha256 != declaration.declaration_sha256
+                or not _binding_matches(binding, asdict(record))
+                for _, record in matching
+            )
+        ):
+            return RequiredCapabilityDecision(
+                False,
+                "required_tool_completion_evidence_mismatch",
+                declaration.capability_kind,
+                declaration.identity,
+            )
+    return RequiredCapabilityDecision(
+        True,
+        "required_tool_completion_evidence_valid",
+        "",
+        "",
+    )
+
+
 def completion_evidence_from_executor_payload(
     executor_payload: object,
 ) -> dict[str, Any] | None:
