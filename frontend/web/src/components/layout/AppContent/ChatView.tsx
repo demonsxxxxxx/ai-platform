@@ -96,6 +96,10 @@ import type { ModelOption } from "../../../services/api/modelPublic";
 import { openAttachmentPreview } from "../../chat/attachmentPreviewStore";
 import { downloadPreviewUrl } from "../../documents/documentPreviewSources";
 import {
+  clearArtifactDownloadScope,
+  createArtifactDownloadScopeContext,
+} from "../../chat/ChatMessage/items/artifactDownloadRegistry";
+import {
   mergeProjectedSessionFiles,
   sessionInputFileToAttachment,
 } from "./sessionInputFiles";
@@ -221,6 +225,18 @@ export function ChatView({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const artifactDownloadScopeContext = useMemo(
+    () =>
+      createArtifactDownloadScopeContext({
+        tenantId: user?.tenant_id,
+        userId: user?.id,
+        roles: user?.roles,
+        isActive: user?.is_active,
+        sessionId,
+      }),
+    [sessionId, user?.id, user?.is_active, user?.roles, user?.tenant_id],
+  );
+  const previousArtifactDownloadScopeRef = useRef(artifactDownloadScopeContext);
   const [composerDraft, setComposerDraft] = useState("");
   const [sessionFiles, setSessionFiles] = useState<SessionInputFile[]>([]);
   const [sessionFilesStatus, setSessionFilesStatus] = useState<
@@ -295,6 +311,17 @@ export function ChatView({
       return nextKey === previousKey ? previousKey : nextKey;
     });
   }, [messages.length, sessionId]);
+
+  useEffect(() => {
+    const previousScope = previousArtifactDownloadScopeRef.current;
+    if (
+      previousScope &&
+      previousScope.key !== artifactDownloadScopeContext?.key
+    ) {
+      clearArtifactDownloadScope(previousScope);
+    }
+    previousArtifactDownloadScopeRef.current = artifactDownloadScopeContext;
+  }, [artifactDownloadScopeContext]);
 
   useEffect(() => {
     let current = true;
@@ -655,6 +682,7 @@ export function ChatView({
     (index: number, message: (typeof messages)[number]) => (
       <ChatMessage
         message={message}
+        artifactDownloadScopeContext={artifactDownloadScopeContext}
         sessionId={sessionId ?? undefined}
         runId={currentRunId ?? undefined}
         isLastMessage={index === messages.length - 1}
@@ -666,6 +694,7 @@ export function ChatView({
     ),
     [
       sessionId,
+      artifactDownloadScopeContext,
       currentRunId,
       messages.length,
       activePreview,

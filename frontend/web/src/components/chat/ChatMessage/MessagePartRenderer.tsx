@@ -1,4 +1,5 @@
 import { clsx } from "clsx";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   Ban,
@@ -37,6 +38,12 @@ import {
 } from "./toolPermissionCardState";
 import { buildArtifactPreviewRequest } from "./items/artifactPreview";
 import { downloadArtifactFile } from "./items/artifactDownload";
+import {
+  getArtifactDownloadController,
+  type ArtifactDownloadController,
+  type ArtifactDownloadScope,
+  type ArtifactDownloadState,
+} from "./items/artifactDownloadRegistry";
 
 // Render single message part (shared by main agent and subagent)
 export function MessagePartRenderer({
@@ -48,6 +55,7 @@ export function MessagePartRenderer({
   allowAutoPreview,
   activePreview,
   onOpenPreview,
+  artifactDownloadScope,
 }: {
   part: MessagePart;
   messageId?: string;
@@ -60,6 +68,7 @@ export function MessagePartRenderer({
     preview: RevealPreviewRequest,
     source?: RevealPreviewOpenSource,
   ) => boolean;
+  artifactDownloadScope?: ArtifactDownloadScope;
 }) {
   const { t } = useTranslation();
   const toolPartAnchorId =
@@ -245,6 +254,7 @@ export function MessagePartRenderer({
         completedAt={part.completedAt}
         status={part.status}
         error={part.error}
+        artifactDownloadScope={artifactDownloadScope}
       />
     );
   }
@@ -293,7 +303,13 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "artifact") {
-    return <ArtifactCardItem part={part} onOpenPreview={onOpenPreview} />;
+    return (
+      <ArtifactCardItem
+        part={part}
+        onOpenPreview={onOpenPreview}
+        artifactDownloadScope={artifactDownloadScope}
+      />
+    );
   }
 
   if (part.type === "cancelled") {
@@ -391,17 +407,116 @@ function RunStatusItem({
   );
 }
 
+const ARTIFACT_DOWNLOAD_FAILURE_MESSAGE = "下载失败，请稍后重试。";
+const ARTIFACT_DOWNLOAD_RETRY_LABEL = "重试下载";
+const messagePartObjectTokens = new WeakMap<object, number>();
+let nextMessagePartObjectToken = 1;
+
+function getMessagePartObjectToken(part: MessagePart): number {
+  const existing = messagePartObjectTokens.get(part);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const token = nextMessagePartObjectToken;
+  nextMessagePartObjectToken += 1;
+  messagePartObjectTokens.set(part, token);
+  return token;
+}
+
+function createMessagePartIdentity(part: MessagePart): string {
+  switch (part.type) {
+    case "artifact":
+      return `${part.type}:${part.artifact_id}`;
+    case "tool":
+      return part.id
+        ? `${part.type}:${part.id}`
+        : `${part.type}:object:${getMessagePartObjectToken(part)}`;
+    case "run_status":
+    case "tool_permission":
+      return part.event_id
+        ? `${part.type}:${part.event_id}`
+        : `${part.type}:object:${getMessagePartObjectToken(part)}`;
+    case "thinking":
+      return part.thinking_id
+        ? `${part.type}:${part.thinking_id}`
+        : `${part.type}:object:${getMessagePartObjectToken(part)}`;
+    case "summary":
+      return part.summary_id
+        ? `${part.type}:${part.summary_id}`
+        : `${part.type}:object:${getMessagePartObjectToken(part)}`;
+    case "subagent":
+      return `${part.type}:${part.agent_id}:${part.startedAt ?? "pending"}`;
+    default:
+      return `${part.type}:object:${getMessagePartObjectToken(part)}`;
+  }
+}
+
+// eslint-disable-next-line react-refresh/only-export-components -- independently tested reconciliation seam.
+export function createMessagePartRenderKeys(
+  messageId: string,
+  parts: MessagePart[],
+): string[] {
+  return parts.map(
+    (part) => `${messageId}:${createMessagePartIdentity(part)}`,
+  );
+}
+
 function ArtifactCardItem({
   part,
   onOpenPreview,
+  artifactDownloadScope,
 }: {
   part: Extract<MessagePart, { type: "artifact" }>;
   onOpenPreview?: (
     preview: RevealPreviewRequest,
     source?: RevealPreviewOpenSource,
   ) => boolean;
+  artifactDownloadScope?: ArtifactDownloadScope;
 }) {
   const { t } = useTranslation();
+  const localDownloadControllerRef = useRef<ArtifactDownloadController | null>(null);
+  const scopedDownloadController = getArtifactDownloadController(
+    artifactDownloadScope,
+    part.artifact_id,
+  );
+  if (!localDownloadControllerRef.current) {
+    let isDownloadInFlight = false;
+    let state: ArtifactDownloadState = "idle";
+    const listeners = new Set<(next: ArtifactDownloadState) => void>();
+    const setState = (next: ArtifactDownloadState) => {
+      state = next;
+      listeners.forEach((listener) => listener(next));
+    };
+    localDownloadControllerRef.current = {
+      getState: () => state,
+      subscribe(listener) {
+        listeners.add(listener);
+        listener(state);
+        return () => listeners.delete(listener);
+      },
+      async download(downloadArtifact) {
+        if (isDownloadInFlight) return;
+        isDownloadInFlight = true;
+        setState("downloading");
+        try {
+          setState((await downloadArtifact()) ? "idle" : "failed");
+        } catch {
+          setState("failed");
+        } finally {
+          isDownloadInFlight = false;
+        }
+      },
+    };
+  }
+  const activeDownloadController =
+    scopedDownloadController ?? localDownloadControllerRef.current;
+  const [downloadState, setDownloadState] = useState<ArtifactDownloadState>(
+    activeDownloadController.getState(),
+  );
+  useEffect(
+    () => activeDownloadController.subscribe(setDownloadState),
+    [activeDownloadController],
+  );
   const info = getFileTypeInfo(part.label, part.content_type);
   const previewLabel = t("chat.message.preview", { defaultValue: "Preview" });
   const FileIcon = info.icon;
@@ -414,14 +529,17 @@ function ArtifactCardItem({
     }
     onOpenPreview(previewRequest, "manual");
   };
-  const handleDownload = () => {
-    if (!part.download_url) {
-      return;
-    }
-    void downloadArtifactFile(part).catch((error) => {
-      console.warn("[ArtifactCardItem] Download failed:", error);
-    });
+  const handleDownload = async () => {
+    await activeDownloadController.download(() =>
+      downloadArtifactFile(part),
+    );
   };
+  const isDownloading = downloadState === "downloading";
+  const hasDownloadFailed = downloadState === "failed";
+  const downloadLabel = t(
+    hasDownloadFailed ? "common.retry" : "chat.message.download",
+    { defaultValue: ARTIFACT_DOWNLOAD_RETRY_LABEL },
+  );
   const body = (
     <>
       <div
@@ -448,6 +566,7 @@ function ArtifactCardItem({
     <div
       className={clsx(
         "my-1 flex min-w-0 max-w-xl items-center gap-3 rounded-lg border px-3 py-2.5",
+        "flex-wrap",
         "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-left shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
         "dark:bg-stone-900",
       )}
@@ -469,14 +588,27 @@ function ArtifactCardItem({
           {part.download_url && (
             <button
               type="button"
-              onClick={handleDownload}
-              aria-label={`${t("chat.message.download")} ${part.label}`}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
+              onClick={() => void handleDownload()}
+              disabled={isDownloading}
+              aria-label={`${downloadLabel} ${part.label}`}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <Download size={13} />
-              <span>{t("chat.message.download")}</span>
+              {isDownloading ? (
+                <LoaderCircle size={13} className="animate-spin" />
+              ) : (
+                <Download size={13} />
+              )}
+              <span>{downloadLabel}</span>
             </button>
           )}
+        </div>
+      )}
+      {hasDownloadFailed && (
+        <div
+          role="alert"
+          className="basis-full text-xs text-red-600 dark:text-red-400"
+        >
+          {ARTIFACT_DOWNLOAD_FAILURE_MESSAGE}
         </div>
       )}
     </div>

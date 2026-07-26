@@ -21,7 +21,14 @@ import { LoadingSpinner, CollapsiblePill, CopyButton } from "../../common";
 import type { CollapsibleStatus } from "../../common";
 import type { MessagePart } from "../../../types";
 import { MarkdownContent } from "./MarkdownContent";
-import { MessagePartRenderer } from "./MessagePartRenderer";
+import {
+  createMessagePartRenderKeys,
+  MessagePartRenderer,
+} from "./MessagePartRenderer";
+import {
+  createSubagentArtifactDownloadScope,
+  type ArtifactDownloadScope,
+} from "./items/artifactDownloadRegistry";
 import {
   createSubagentAnchorOwnerId,
   createSubagentPanelKey,
@@ -89,6 +96,14 @@ export function buildSubagentPanelState(data: SubagentPanelData) {
     panelKey: createSubagentPanelKey(data.agentId),
     formattedAgentName: formatSubagentName(data.agentName),
   };
+}
+
+// eslint-disable-next-line react-refresh/only-export-components -- exercised by subagent reconciliation coverage.
+export function createSubagentPartRenderKeys(
+  agentId: string,
+  parts: MessagePart[],
+) {
+  return createMessagePartRenderKeys(createSubagentAnchorOwnerId(agentId), parts);
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -184,6 +199,14 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
 
   if (!data) return null;
 
+  const nestedArtifactDownloadScope = createSubagentArtifactDownloadScope(
+    data.artifactDownloadScope,
+    agentId,
+  );
+  const partKeys = data.parts
+    ? createSubagentPartRenderKeys(agentId, data.parts)
+    : [];
+
   const effectiveStatus =
     data.status ||
     (data.isPending ? "running" : data.success ? "complete" : "error");
@@ -212,12 +235,13 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
           <div className="space-y-2 pl-3 border-l-2 border-stone-200 dark:border-stone-700">
             {data.parts.map((part, index) => (
               <MessagePartRenderer
-                key={index}
+                key={partKeys[index]}
                 part={part}
                 messageId={createSubagentAnchorOwnerId(agentId)}
                 partIndex={index}
                 isStreaming={data.isPending}
                 isLast={index === data.parts!.length - 1}
+                artifactDownloadScope={nestedArtifactDownloadScope}
               />
             ))}
           </div>
@@ -339,6 +363,7 @@ export function SubagentBlock({
   completedAt,
   status,
   error,
+  artifactDownloadScope,
 }: {
   agent_id: string;
   agent_name: string;
@@ -351,6 +376,7 @@ export function SubagentBlock({
   completedAt?: number;
   status?: "pending" | "running" | "complete" | "error" | "cancelled";
   error?: string;
+  artifactDownloadScope?: ArtifactDownloadScope;
 }) {
   const {
     effectiveStatus,
@@ -361,6 +387,7 @@ export function SubagentBlock({
   } = buildSubagentPanelState({
     agentId: agent_id,
     agentName: agent_name,
+    artifactDownloadScope,
     input,
     result,
     success,
@@ -376,6 +403,7 @@ export function SubagentBlock({
     subagentPanelStore.set({
       agentId: agent_id,
       agentName: agent_name,
+      artifactDownloadScope,
       input,
       result,
       success,
@@ -422,6 +450,7 @@ export function SubagentBlock({
     result,
     success,
     error,
+    artifactDownloadScope,
     isPending,
     parts,
     startedAt,
