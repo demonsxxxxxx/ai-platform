@@ -4,6 +4,7 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     public_skill_display_label,
     redact_raw_skill_references,
+    required_tool_public_detail,
     sanitize_user_control_input,
 )
 
@@ -59,6 +60,8 @@ def test_redact_raw_skill_references_sanitizes_nested_agent_ids():
 def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_metadata():
     payload = {
         "message": "run",
+        "_required_capability_declaration": {"canonical_identity": "Bash"},
+        "required_capability_evidence": {"canonical_identity": "Bash"},
         "resume": {"copied_from_run_id": "run-forged"},
         "multi_agent_dispatch": {
             "orchestration_state": "awaiting_dispatch",
@@ -77,6 +80,8 @@ def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_m
     sanitized = sanitize_user_control_input(payload)
 
     assert sanitized["message"] == "run"
+    assert "_required_capability_declaration" not in sanitized
+    assert "required_capability_evidence" not in sanitized
     assert "resume" not in sanitized
     assert "multi_agent_dispatch" not in sanitized
     assert "multi_agent_dispatch" not in sanitized["nested"]
@@ -85,3 +90,17 @@ def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_m
     assert "dispatch_child_run_id" not in sanitized["nested"]
     assert "copied_from_run_id" not in sanitized["nested"]
     assert "parent_step_id" not in sanitized["nested"]
+
+
+def test_required_tool_public_detail_is_stable_and_never_exposes_private_identity():
+    unavailable = required_tool_public_detail("unavailable")
+    required = required_tool_public_detail("required")
+
+    assert unavailable == {
+        "status": "unavailable",
+        "detail_code": "required_capability_unavailable",
+        "message": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
+    }
+    assert required["detail_code"] == "required_capability_required"
+    assert "Bash" not in str(unavailable)
+    assert "Bash" not in str(required)

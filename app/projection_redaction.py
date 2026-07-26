@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
-
+from app.required_tool_contract import public_required_tool_detail
 
 CAPABILITY_BY_SKILL_ID = {
     "general-chat": "general_chat",
@@ -55,6 +55,10 @@ SERVER_OWNED_CONTROL_KEYS = {
     "parentrunid",
     "parentstepid",
     "resume",
+    "requiredcapabilitydeclaration",
+    "requiredcapabilityevidence",
+    "requiredtooldeclaration",
+    "requiredtoolcompletionevidence",
 }
 RAW_SKILL_ID_ALIASES = {
     "skillid",
@@ -145,6 +149,12 @@ def public_skill_display_label(value: object) -> str | None:
     ):
         return None
     return label
+
+
+def required_tool_public_detail(status: str) -> dict[str, str]:
+    """Project a required capability without exposing builtin identity."""
+
+    return public_required_tool_detail(status)
 
 
 def redact_raw_skill_references(value: Any, *, preserve_empty_skill_ids: bool = False) -> Any:

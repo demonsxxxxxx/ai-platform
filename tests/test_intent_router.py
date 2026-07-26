@@ -1,3 +1,5 @@
+import pytest
+
 from app.intent_router import FileSummary, fallback_to_general_chat, route_intent
 
 
@@ -59,6 +61,29 @@ def test_plain_question_routes_to_general_chat():
     assert decision.selected_capability == "general_chat"
     assert decision.agent_id == "general-agent"
     assert decision.skill_id == "general-chat"
+
+
+@pytest.mark.parametrize(
+    ("message", "required"),
+    [
+        ("请执行 Bash 命令 pwd", True),
+        ("run Bash command pwd", True),
+        ("不要执行 Bash 命令 pwd", False),
+        ("解释一下 Bash 命令 pwd", False),
+        ("请执行 bash 命令 pwd", False),
+        ("请执行 Bashful 命令 pwd", False),
+        ("请执行 Bash.exe 命令 pwd", False),
+    ],
+)
+def test_required_bash_intent_is_exact_and_does_not_change_chat_routing(message, required):
+    decision = route_intent(message=message, files=[])
+
+    assert decision.intent in {"general_chat", "long_task"}
+    assert decision.skill_id == "general-chat"
+    assert (decision.required_tool is not None) is required
+    if required:
+        assert decision.required_tool["canonical_identity"] == "Bash"
+        assert decision.required_tool["lifecycle_phase"] == "selected"
 
 
 def test_implicit_route_fallback_uses_non_confirmed_general_chat_decision():
