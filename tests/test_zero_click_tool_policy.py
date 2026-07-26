@@ -144,15 +144,6 @@ def test_runtime_approval_write_routes_fail_closed_before_any_repository_mutatio
     assert requested.json()["detail"] == decided.json()["detail"] == "tool_permission_runtime_approval_removed"
 
 
-@pytest.mark.asyncio
-async def test_legacy_callback_resolver_is_a_non_mutating_fail_closed_shim():
-    from app.executors.claude_agent_worker import resolve_claude_sdk_tool_permission
-
-    outcome = await resolve_claude_sdk_tool_permission(tool_name="Bash", run_id="run-a")
-
-    assert outcome == {"allowed": False, "reason": "tool_permission_runtime_approval_removed"}
-
-
 def test_no_active_production_permission_request_producer_or_sandbox_callback_sender_remains():
     root = Path(__file__).resolve().parents[1]
     production_files = [

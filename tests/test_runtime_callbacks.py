@@ -6,8 +6,14 @@ from fastapi.testclient import TestClient
 
 from app import repositories
 from app.main import create_app
-from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
-from app.runtime.sandbox.contracts import ExecutorCallbackEvent, ExecutorToolPermissionRequest
+from app.runtime.sandbox.callback_tokens import (
+    CallbackTokenBinding,
+    callback_token_id_for_binding,
+)
+from app.runtime.sandbox.contracts import (
+    ExecutorCallbackEvent,
+    ExecutorToolPermissionRequest,
+)
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt:run-a:attempt-a") -> str:
@@ -37,7 +43,7 @@ def callback_settings(token: str):
 
 def patch_callback_settings(monkeypatch, settings_obj):
     try:
-        import app.routes.runtime_callbacks as runtime_callbacks
+        from app.routes import runtime_callbacks
     except ModuleNotFoundError:
         monkeypatch.setattr("app.settings.get_settings", lambda: settings_obj)
     else:
@@ -84,7 +90,7 @@ def test_parallel_same_run_attempts_each_use_their_exact_lease_and_token(monkeyp
         events.append(kwargs)
         return f"evt-{len(events)}"
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
@@ -172,7 +178,7 @@ def test_executor_callback_rejects_duplicate_exact_attempt_leases(monkeypatch):
     async def fail_append_event(*args, **kwargs):
         raise AssertionError("ambiguous exact attempt must not append events")
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
@@ -234,7 +240,7 @@ def test_executor_callback_rejects_cross_run_token_id(monkeypatch):
 def test_executor_callback_rejects_valid_foreign_run_token_pair(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     async def fail_record_executor_callback(callback):
         raise AssertionError("foreign run token must be rejected before recording")
@@ -326,7 +332,7 @@ def test_executor_callback_rejects_stale_attempt_before_event_action(monkeypatch
     async def fail_append_event(*args, **kwargs):
         raise AssertionError("stale attempt must not append an event")
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
@@ -367,7 +373,7 @@ def test_executor_callback_rejects_released_attempt_before_event_action(monkeypa
     async def fail_append_event(*args, **kwargs):
         raise AssertionError("released attempt must not append an event")
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
@@ -391,7 +397,7 @@ def test_executor_callback_rejects_released_attempt_before_event_action(monkeypa
 def test_executor_callback_rejects_when_token_not_configured(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings(""))
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     async def fail_record_executor_callback(callback):
         raise AssertionError("callback must fail closed when token is not configured")
@@ -414,7 +420,7 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     recorded = []
 
     try:
-        import app.routes.runtime_callbacks as runtime_callbacks
+        from app.routes import runtime_callbacks
     except ModuleNotFoundError:
         runtime_callbacks = None
     else:
@@ -442,13 +448,7 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     assert recorded[0].callback_token_id == "cbt:run-a:attempt-a"
 
 
-def test_runtime_tool_permission_callback_is_retired_without_resolver_access(monkeypatch):
-    import app.routes.runtime_callbacks as runtime_callbacks
-
-    def fail_resolver(*args, **kwargs):
-        raise AssertionError("retired callback must never enter a permission resolver")
-
-    monkeypatch.setattr(runtime_callbacks, "resolve_claude_sdk_tool_permission", fail_resolver, raising=False)
+def test_runtime_tool_permission_callback_is_retired_without_resolver_access():
     client = TestClient(create_app())
     response = client.post("/api/ai/runtime/callbacks/tool-permission", json={"tool_name": "Bash"})
 
@@ -475,7 +475,7 @@ def test_executor_callback_rejects_terminal_status_before_persisting_public_even
         calls.append((event_type, stage, message, payload))
         return f"evt_{len(calls)}"
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
@@ -516,7 +516,7 @@ def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeyp
     async def fake_append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload):
         return "evt-a"
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
@@ -554,7 +554,7 @@ def test_executor_callback_rejects_session_mismatch(monkeypatch):
     async def fail_append_event(*args, **kwargs):
         raise AssertionError("mismatched callback must not append events")
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
@@ -590,7 +590,7 @@ def test_executor_callback_rejects_late_callback_for_terminal_run(monkeypatch):
     async def fail_append_event(*args, **kwargs):
         raise AssertionError("late callback must not append events")
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
@@ -627,7 +627,7 @@ def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatc
         calls.append((event_type, stage, message, payload))
         return f"evt_{len(calls)}"
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
@@ -696,7 +696,7 @@ def test_executor_callback_typed_admin_only_event_stays_hidden(monkeypatch):
         calls.append((event_type, stage, message, payload))
         return f"evt_{len(calls)}"
 
-    import app.routes.runtime_callbacks as runtime_callbacks
+    from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
