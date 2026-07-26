@@ -10,7 +10,6 @@ import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
-import io
 import json
 import os
 import posixpath
