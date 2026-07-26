@@ -2595,7 +2595,8 @@ async def process_run_payload(
             "mcp_tool_name": str(backing.get("mcp_tool") or ""),
             "mcp_identity": str(backing.get("identity") or ""),
         }
-        if not all(backing_identity.values()): raise RuntimeError("ragflow_backing_mcp_identity_unavailable")
+        if not all(backing_identity.values()):
+            raise RuntimeError("ragflow_backing_mcp_identity_unavailable")
         await append_user_event(
             conn,
             tenant_id=payload.tenant_id,
