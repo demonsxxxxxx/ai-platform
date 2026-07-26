@@ -532,6 +532,119 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
 
 
+@pytest.mark.parametrize(
+    ("message", "expects_required_capability_rejection"),
+    [
+        ("请执行 Bash 命令 pwd", True),
+        ("只解释 Bash 命令 pwd 是什么，不要执行", False),
+        ("不要执行 Bash 命令 pwd", False),
+        ("可以执行 Bash 吗？", False),
+    ],
+    ids=["affirmative-undeclared", "explanatory", "negative", "question"],
+)
+@pytest.mark.asyncio
+async def test_chat_stream_rejects_required_bash_before_undeclared_capability_side_effects(
+    monkeypatch, message, expects_required_capability_rejection
+):
+    forbidden_side_effects = []
+    locked_manifest = snapshot_manifest("general-chat")
+    locked_manifest["builtin_tool_identities"] = []
+
+    def side_effect_spy(name, result=None):
+        async def spy(*_args, **_kwargs):
+            forbidden_side_effects.append(name)
+            return result
+
+        return spy
+
+    async def authorize_run(*_args, **_kwargs):
+        return {
+            "executor_type": "claude-agent-worker",
+            "skill_version": locked_manifest["content_hash"],
+            "input_modes": ["chat"],
+        }
+
+    async def manifests(*_args, **_kwargs):
+        return [locked_manifest]
+
+    context_snapshot = {
+        "schema_version": "ai-platform.context-snapshot.v1",
+        "context_snapshot_id": "ctx-required-bash",
+        "source": "chat_stream",
+        "message_count": 1,
+        "file_count": 0,
+        "memory_record_count": 0,
+    }
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize_run)
+    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
+    monkeypatch.setattr(repository_module, "ensure_user", side_effect_spy("ensure_user"))
+    monkeypatch.setattr(
+        repository_module,
+        "create_session",
+        side_effect_spy("create_session", "ses-required-bash"),
+    )
+    monkeypatch.setattr(
+        repository_module,
+        "create_run",
+        side_effect_spy("create_run", "run-required-bash"),
+    )
+    monkeypatch.setattr(
+        repository_module,
+        "insert_run_skill_snapshots_at_creation",
+        side_effect_spy("insert_run_skill_snapshots_at_creation"),
+    )
+    monkeypatch.setattr(
+        repository_module,
+        "append_message",
+        side_effect_spy("append_message", "msg-required-bash"),
+    )
+    monkeypatch.setattr(repository_module, "bind_files_to_run", side_effect_spy("bind_files_to_run"))
+    monkeypatch.setattr(
+        "app.routes.chat.record_initial_context_snapshot",
+        side_effect_spy("record_initial_context_snapshot", context_snapshot),
+    )
+    monkeypatch.setattr(repository_module, "append_event", side_effect_spy("append_event"))
+    monkeypatch.setattr(
+        repository_module,
+        "create_tool_permission_request",
+        side_effect_spy("create_tool_permission_request"),
+    )
+    monkeypatch.setattr("app.routes.chat.enqueue_run", side_effect_spy("enqueue_run", 1))
+
+    rejection = None
+    response = None
+    try:
+        response = await chat_stream(
+            ChatStreamRequest(message=message),
+            principal=principal(),
+        )
+    except HTTPException as exc:
+        rejection = exc
+
+    if expects_required_capability_rejection:
+        observed = (
+            rejection.status_code if rejection is not None else None,
+            rejection.detail if rejection is not None else None,
+            forbidden_side_effects,
+        )
+        assert observed == (
+            403,
+            {
+                "status": "unavailable",
+                "detail_code": "required_capability_unavailable",
+                "message": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
+            },
+            [],
+        )
+    else:
+        assert rejection is None
+        assert response is not None and response.status == "queued"
+        assert "create_run" in forbidden_side_effects
+        assert "enqueue_run" in forbidden_side_effects
+        assert "create_tool_permission_request" not in forbidden_side_effects
+
+
 @pytest.mark.asyncio
 async def test_keyed_chat_payload_mismatch_is_rejected_before_routing(monkeypatch):
     request = ChatStreamRequest(
