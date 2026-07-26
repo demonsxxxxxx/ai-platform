@@ -1,12 +1,18 @@
 from types import SimpleNamespace
 
-from fastapi import HTTPException
 import pytest
+from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
+from app.run_projection import (
+    artifact_card,
+    progress_for_status,
+    public_terminal_projection,
+    run_event_response,
+    run_step_response,
+)
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import AgentEvent
-from app.run_projection import artifact_card, progress_for_status, run_event_response, run_step_response
 
 
 def principal(**overrides):
@@ -233,6 +239,16 @@ def test_projection_keeps_terminal_tool_permission_events_as_fixed_activity():
     assert "tool_permission_card" not in str(event["payload"])
     assert "tpr-terminal" not in str(event)
     assert "decision_endpoint" not in str(event)
+
+
+def test_required_capability_terminal_projection_is_stable_for_users_and_admins():
+    ordinary = public_terminal_projection("failed", "required_tool_unavailable")
+    admin = public_terminal_projection("failed", "required_tool_completion_evidence_missing")
+
+    assert ordinary["detail_code"] == "required_capability_unavailable"
+    assert admin["detail_code"] == "required_capability_unavailable"
+    assert ordinary["message"] == admin["message"]
+    assert "Bash" not in str(ordinary)
 
 
 @pytest.mark.parametrize(

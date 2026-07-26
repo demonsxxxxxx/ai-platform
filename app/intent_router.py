@@ -1,7 +1,7 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app.capabilities import get_capability
-
+from app.required_tool_contract import parse_required_tool_declaration
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -31,6 +31,7 @@ class IntentDecision:
     skill_id: str | None
     confirmed_by_user: bool = False
     suggestions: list[CapabilitySuggestion] = field(default_factory=list)
+    required_tool: dict[str, str] | None = None
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -124,6 +125,11 @@ def fallback_to_general_chat() -> IntentDecision:
     return _selected("general_chat", "general_chat", 0.74, "已使用通用对话处理")
 
 
+def _with_required_tool(decision: IntentDecision, declaration: object) -> IntentDecision:
+    payload = declaration.to_payload() if declaration is not None else None
+    return replace(decision, required_tool=payload)
+
+
 def route_intent(
     message: str,
     files: list[FileSummary],
@@ -132,6 +138,7 @@ def route_intent(
     if confirmed_capability_id:
         return confirm_capability(confirmed_capability_id)
 
+    required_tool = parse_required_tool_declaration(message)
     text = (message or "").lower()
     has_docx = _has_docx(files)
     review_tokens = ("审核", "审查", "review", "qa")
@@ -139,13 +146,25 @@ def route_intent(
     knowledge_tokens = ("sop", "知识库", "制度", "流程", "规范", "账号", "权限", "申请")
 
     if has_docx and any(token in text for token in review_tokens):
-        return _selected("document_review", "document_review", 0.92, "检测到 Word 文件和审核意图")
+        return _with_required_tool(
+            _selected("document_review", "document_review", 0.92, "检测到 Word 文件和审核意图"),
+            required_tool,
+        )
     if has_docx and any(token in text for token in translate_tokens):
-        return _selected("document_translation", "document_translation", 0.92, "检测到 Word 文件和翻译意图")
+        return _with_required_tool(
+            _selected("document_translation", "document_translation", 0.92, "检测到 Word 文件和翻译意图"),
+            required_tool,
+        )
     if not has_docx and any(token in text for token in knowledge_tokens):
-        return _selected("knowledge_answer", "knowledge_answer", 0.82, "检测到知识库或 SOP 问答意图")
+        return _with_required_tool(
+            _selected("knowledge_answer", "knowledge_answer", 0.82, "检测到知识库或 SOP 问答意图"),
+            required_tool,
+        )
     if not has_docx and _looks_like_long_task(text):
-        return _selected("long_task", "general_chat", 0.78, "检测到需要多步骤执行的复杂任务")
+        return _with_required_tool(
+            _selected("long_task", "general_chat", 0.78, "检测到需要多步骤执行的复杂任务"),
+            required_tool,
+        )
     if has_docx:
         return IntentDecision(
             status="needs_confirmation",
@@ -161,4 +180,7 @@ def route_intent(
                 _suggestion("general_chat", "普通分析"),
             ],
         )
-    return _selected("general_chat", "general_chat", 0.74, "未检测到文件型或知识库专属意图")
+    return _with_required_tool(
+        _selected("general_chat", "general_chat", 0.74, "未检测到文件型或知识库专属意图"),
+        required_tool,
+    )

@@ -1,17 +1,15 @@
 import asyncio
-from contextlib import asynccontextmanager
-from dataclasses import replace
-import hashlib
 import json
 import types
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from app.runtime.sandbox.container_provider import NativeToolAdmissionError
-
 import app.worker as worker_module
 from app import repositories as repository_module
+from app.auth import AuthPrincipal, is_ai_admin
 from app.executors.base import (
     ArtifactManifest,
     ExecutorResult,
@@ -22,7 +20,15 @@ from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.fake import FakeFailureAdapter, FakeSuccessAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
-from app.repositories import RepositoryConflictError, RepositoryNotFoundError, ToolPermissionTerminalizationProgress
+from app.repositories import (
+    RepositoryConflictError,
+    RepositoryNotFoundError,
+    ToolPermissionTerminalizationProgress,
+)
+from app.required_tool_contract import declaration_from_input
+from app.runtime.sandbox import container_provider
+from app.runtime.sandbox.container_provider import NativeToolAdmissionError
+from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.worker import (
     WorkerOutcome,
     _locked_run_principal,
@@ -32,10 +38,6 @@ from app.worker import (
     parse_queue_payload,
     process_run_payload,
 )
-from app.auth import AuthPrincipal, is_ai_admin
-from app.runtime.sandbox import container_provider
-from app.skills.execution_profiles import resolve_skill_execution_profile
-
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 _CURRENT_QUEUE_PAYLOAD = None
@@ -212,9 +214,7 @@ async def test_run_execution_owner_reports_registered_stop_failure_until_retry_q
     async def stop_remote(reason: str):
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
-            return False
-        return True
+        return attempts != 1
 
     owner = RunExecutionOwner("run-a")
     owner.start(live_writer())
@@ -483,6 +483,93 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
     assert by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
     assert container_provider._staged_skill_mount_required(runtime_request)
     assert container_provider._native_tool_required(runtime_request)
+
+
+def test_worker_integrates_required_bash_subject_and_attempt_bound_completion():
+    payload = parse_queue_payload(
+        base_payload(
+            _leased=False,
+            input={"message": "请执行 Bash 命令 pwd"},
+            skill_id="general-chat",
+            skill_version="hash-general",
+            skill_manifests=[primary_manifest("general-chat", "hash-general")],
+        )
+    )
+    subjects = worker_module._builtin_capability_subjects(
+        payload=payload,
+        run_identity={"skill_id": "general-chat"},
+        skill={"skill_id": "general-chat", "skill_status": "active"},
+        skill_decision=types.SimpleNamespace(usable=True),
+    )
+    by_identity = {subject["identity"]: subject for subject in subjects}
+    assert set(by_identity) == {"Bash", "Skill"}
+    assert by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
+    assert by_identity["Bash"]["required_parameter_keys"] == ["command"]
+
+    authorization = worker_module.required_tool_authorization_for_run(
+        payload=payload,
+        run_identity={
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+        },
+        attempt_id="qat-test-attempt",
+        subjects=subjects,
+        admin_bypass=False,
+    )
+    declaration = declaration_from_input(payload.input)
+
+    missing = worker_module.required_tool_completion_for_run(
+        payload=payload,
+        run_identity={
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+        },
+        attempt_id="qat-test-attempt",
+        authorization=authorization,
+        executor_payload={},
+    )
+    valid = worker_module.required_tool_completion_for_run(
+        payload=payload,
+        run_identity={
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+        },
+        attempt_id="qat-test-attempt",
+        authorization=authorization,
+        executor_payload={
+            "required_capability_evidence": {
+                "schema_version": "ai-platform.required-capability-evidence.v1",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "attempt_id": "qat-test-attempt",
+                "tool_call_id": None,
+                "capability_kind": "builtin",
+                "canonical_identity": "Bash",
+                "lifecycle_phase": "completed",
+                "lifecycle_status": "succeeded",
+                "evidence_source": "executor_private_payload",
+                "trust_basis": "attempt_bound_tool_invocation",
+                "public_label": "controlled_execution_capability",
+                "public_status": "succeeded",
+                "declaration_sha256": declaration.declaration_sha256,
+            }
+        },
+    )
+
+    assert missing.reason == "required_tool_completion_evidence_missing"
+    assert valid.allowed is True
 
 
 def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
@@ -1651,7 +1738,7 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
         conn = TransactionConnection()
         try:
             yield conn
-        except Exception:
+        except Exception:  # noqa: TRY203 - model transaction rollback before re-raising.
             # A real database transaction drops these writes before recovery.
             raise
         else:
@@ -1730,7 +1817,7 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
         pending = []
         try:
             yield types.SimpleNamespace(pending=pending)
-        except Exception:
+        except Exception:  # noqa: TRY203 - model transaction rollback before re-raising.
             raise
         else:
             committed.extend(pending)
@@ -3049,7 +3136,6 @@ async def test_worker_reconciliation_uses_repository_for_ordinary_run(monkeypatc
 
     async def reconcile(conn, **kwargs):
         calls.append(("reconcile", kwargs))
-        return None
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -3318,7 +3404,6 @@ async def test_worker_fails_missing_physical_context_snapshot_before_adapter(mon
 
     async def missing_snapshot(conn, **kwargs):
         calls.append(("lookup", kwargs["context_snapshot_id"]))
-        return None
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
@@ -4061,7 +4146,6 @@ async def test_worker_fails_invalid_physical_context_binding_before_adapter(monk
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
         calls.append(("lookup", kwargs["context_snapshot_id"]))
-        return None
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"]))
@@ -4199,7 +4283,6 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("lock", tenant_id, run_id))
-        return None
 
     async def get_run(conn, *, tenant_id, run_id):
         calls.append(("get_run", tenant_id, run_id))
@@ -5371,7 +5454,6 @@ async def test_worker_skips_stale_queue_payload_when_run_row_is_missing(monkeypa
 
     async def get_run(conn, *, tenant_id, run_id):
         calls.append(("get_run", tenant_id, run_id))
-        return None
 
     async def append_event(conn, **kwargs):
         raise AssertionError("stale queue payload without a run row must not write run_events")
@@ -5779,21 +5861,19 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
             AdapterRegistry({"fake": NonCooperativeAdapter()}),
         )
     )
-    started_done, _ = await asyncio.wait(
+    _started_done, _ = await asyncio.wait(
         {asyncio.create_task(adapter_started.wait()), task}, timeout=0.5
     )
     assert adapter_started.is_set(), (
         task.exception() if task.done() and not task.cancelled() else calls
     )
-    done, _ = await asyncio.wait({asyncio.create_task(stop_waiting.wait()), task}, timeout=0.5)
+    _done, _ = await asyncio.wait({asyncio.create_task(stop_waiting.wait()), task}, timeout=0.5)
     assert stop_waiting.is_set(), (
-        (
-            task.exception()
-            if task.done() and not task.cancelled() and task.exception() is not None
-            else task.result()
-            if task.done() and not task.cancelled()
-            else calls
-        )
+        task.exception()
+        if task.done() and not task.cancelled() and task.exception() is not None
+        else task.result()
+        if task.done() and not task.cancelled()
+        else calls
     )
     await asyncio.sleep(0.03)
 
@@ -7165,7 +7245,7 @@ async def test_worker_rolls_back_ragflow_completion_when_final_success_guard_los
         conn = TransactionConnection()
         try:
             yield conn
-        except Exception:
+        except Exception:  # noqa: TRY203 - model transaction rollback before re-raising.
             raise
         else:
             committed.extend(conn.pending)

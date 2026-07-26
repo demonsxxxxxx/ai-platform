@@ -2,7 +2,6 @@ from fastapi import HTTPException
 
 from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin
-from app.file_preview_contracts import xlsx_preview_identity_from_metadata
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     EVENT_ENVELOPE_SCHEMA_VERSION,
@@ -14,6 +13,8 @@ from app.control_plane_contracts import (
     sanitize_public_text,
     standard_trace_id,
 )
+from app.file_preview_contracts import xlsx_preview_identity_from_metadata
+from app.projection_redaction import required_tool_public_detail
 
 
 def normalize_run_status(status: str) -> str:
@@ -56,6 +57,7 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "dependent_service_unavailable": "任务依赖的服务暂时不可用。请稍后重试。",
     "capability_not_authorized": "当前账号不能使用所选能力。请重新选择或联系管理员。",
     "tool_permission_denied": "任务所需工具未获授权。请调整请求或联系管理员。",
+    "required_capability_unavailable": required_tool_public_detail("unavailable")["message"],
     "skill_sandbox_admission_failed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
     "run_cancelled": "任务已取消。取消前已产生的公开内容仍会保留。",
 }
@@ -78,6 +80,13 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "tool_denied": "tool_permission_denied",
     "mcp_tool_denied": "tool_permission_denied",
     "tool_permission_denied": "tool_permission_denied",
+    "required_tool_unavailable": "required_capability_unavailable",
+    "required_tool_declaration_mismatch": "required_capability_unavailable",
+    "required_tool_scope_mismatch": "required_capability_unavailable",
+    "required_tool_not_currently_authorized": "required_capability_unavailable",
+    "required_tool_admin_bypass_forbidden": "required_capability_unavailable",
+    "required_tool_completion_evidence_missing": "required_capability_unavailable",
+    "required_tool_completion_evidence_mismatch": "required_capability_unavailable",
 }
 
 def public_terminal_projection(
