@@ -61,6 +61,11 @@ from app.queue import (
 )
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.required_tool_contract import (
+    attach_required_tool_declaration,
+    declaration_from_input,
+    public_required_tool_detail,
+)
 from app.settings import get_settings
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
@@ -83,6 +88,7 @@ _MISSING = object()
 _ORIGINAL_ENQUEUE_RUN = enqueue_run
 _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL = "private, no-store"
 _PRELEDGER_RECOVERY_REJECTION_CODE = "chat_submission_retired_before_ledger"
+_SAFE_SUBMISSION_DETAIL_CODES = frozenset({"required_capability_unavailable"})
 
 
 class _ChatSubmissionNoStoreRoute(APIRoute):
@@ -122,6 +128,8 @@ def _chat_submission_http_error(*, status_code: int, code: str) -> HTTPException
 def _submission_code(detail: object, fallback: str = "chat_submission_rejected") -> str:
     if isinstance(detail, dict) and isinstance(detail.get("code"), str):
         return str(detail["code"])
+    if isinstance(detail, dict) and detail.get("detail_code") in _SAFE_SUBMISSION_DETAIL_CODES:
+        return str(detail["detail_code"])
     if isinstance(detail, str) and detail:
         return detail
     return fallback
@@ -1190,9 +1198,11 @@ async def chat_stream(
         raise HTTPException(status_code=400, detail=code)
     try:
         run_input = _strip_server_owned_control_metadata(
-            {"message": request.message, **request.input},
+            {**request.input, "message": request.message},
             redact_public=not is_ai_admin(principal),
         )
+        run_input = attach_required_tool_declaration(run_input)
+        required_tool_declaration = declaration_from_input(run_input)
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
         denial = getattr(exc, "denial", None)
@@ -1630,6 +1640,32 @@ async def chat_stream(
                 skill_id=resolved_skill_id,
                 mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(skill, run_input),
             )
+            if (
+                required_tool_declaration is not None
+                and required_tool_declaration.capability_kind == "builtin"
+            ):
+                primary_manifest = next(
+                    (
+                        manifest
+                        for manifest in skill_manifests
+                        if isinstance(manifest, dict)
+                        and str(manifest.get("skill_id") or "") == resolved_skill_id
+                    ),
+                    None,
+                )
+                try:
+                    canonical_builtin_identities = (
+                        repositories.canonical_builtin_tool_identities(primary_manifest)
+                        if isinstance(primary_manifest, dict)
+                        else []
+                    )
+                except RepositoryConflictError:
+                    canonical_builtin_identities = []
+                if required_tool_declaration.canonical_identity not in canonical_builtin_identities:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=public_required_tool_detail("unavailable"),
+                    )
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
             queue_payload = _validate_queue_payload_for_enqueue(

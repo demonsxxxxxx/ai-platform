@@ -26,6 +26,7 @@ from app.routes.chat import (
     _canonical_pre_persistence_rejection_fingerprint,
     _file_row_matches_request_scope,
     _preledger_recovery_fingerprint,
+    _submission_code,
     _validate_queue_payload_for_enqueue,
     chat_stream,
     create_chat_session,
@@ -533,41 +534,57 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
 
 @pytest.mark.parametrize(
-    ("message", "expects_required_capability_rejection"),
+    ("message", "reject", "roles", "request_input", "selector", "manifest_identities"),
     [
-        ("请执行 Bash 命令 pwd", True),
-        ("只解释 Bash 命令 pwd 是什么，不要执行", False),
-        ("不要执行 Bash 命令 pwd", False),
-        ("可以执行 Bash 吗？", False),
+        pytest.param("请执行 Bash 命令 pwd", True, [], {}, {}, [], id="undeclared"),
+        pytest.param("请执行 Bash 命令 pwd", True, ["admin"], {}, {}, [], id="admin"),
+        pytest.param("请执行 Bash 命令 pwd", True, [], {"message": "hello"}, {}, [], id="override"),
+        pytest.param("请执行 Bash 命令 pwd", True, [], {}, {}, ["Bash"], id="noncanonical"),
+        pytest.param(
+            "请执行 Bash 命令 pwd",
+            False,
+            ["admin"],
+            {},
+            {"agent_id": "qa-word-review", "skill_id": "qa-file-reviewer"},
+            ["Bash", "Write"],
+            id="declared",
+        ),
+        pytest.param("只解释 Bash 命令 pwd 是什么，不要执行", False, [], {}, {}, [], id="explanatory"),
+        pytest.param("不要执行 Bash 命令 pwd", False, [], {}, {}, [], id="negative"),
+        pytest.param("可以执行 Bash 吗？", False, [], {}, {}, [], id="question"),
     ],
-    ids=["affirmative-undeclared", "explanatory", "negative", "question"],
 )
 @pytest.mark.asyncio
-async def test_chat_stream_rejects_required_bash_before_undeclared_capability_side_effects(
-    monkeypatch, message, expects_required_capability_rejection
+async def test_chat_stream_required_bash_admission_precedes_side_effects(
+    monkeypatch, message, reject, roles, request_input, selector, manifest_identities
 ):
-    forbidden_side_effects = []
-    locked_manifest = snapshot_manifest("general-chat")
-    locked_manifest["builtin_tool_identities"] = []
+    side_effects, queued_payloads = [], []
+    manifest = snapshot_manifest(selector.get("skill_id", "general-chat"))
+    manifest["builtin_tool_identities"] = manifest_identities
 
-    def side_effect_spy(name, result=None):
-        async def spy(*_args, **_kwargs):
-            forbidden_side_effects.append(name)
+    def spy(name, result=None):
+        async def call(*_args, **_kwargs):
+            side_effects.append(name)
             return result
 
-        return spy
+        return call
 
-    async def authorize_run(*_args, **_kwargs):
+    async def authorize(*_args, **_kwargs):
         return {
             "executor_type": "claude-agent-worker",
-            "skill_version": locked_manifest["content_hash"],
+            "skill_version": manifest["content_hash"],
             "input_modes": ["chat"],
         }
 
     async def manifests(*_args, **_kwargs):
-        return [locked_manifest]
+        return [manifest]
 
-    context_snapshot = {
+    async def enqueue(payload):
+        side_effects.append("enqueue_run")
+        queued_payloads.append(payload)
+        return 1
+
+    context = {
         "schema_version": "ai-platform.context-snapshot.v1",
         "context_snapshot_id": "ctx-required-bash",
         "source": "chat_stream",
@@ -576,73 +593,42 @@ async def test_chat_stream_rejects_required_bash_before_undeclared_capability_si
         "memory_record_count": 0,
     }
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize_run)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
-    monkeypatch.setattr(repository_module, "ensure_user", side_effect_spy("ensure_user"))
-    monkeypatch.setattr(
-        repository_module,
-        "create_session",
-        side_effect_spy("create_session", "ses-required-bash"),
-    )
-    monkeypatch.setattr(
-        repository_module,
-        "create_run",
-        side_effect_spy("create_run", "run-required-bash"),
-    )
-    monkeypatch.setattr(
-        repository_module,
-        "insert_run_skill_snapshots_at_creation",
-        side_effect_spy("insert_run_skill_snapshots_at_creation"),
-    )
-    monkeypatch.setattr(
-        repository_module,
-        "append_message",
-        side_effect_spy("append_message", "msg-required-bash"),
-    )
-    monkeypatch.setattr(repository_module, "bind_files_to_run", side_effect_spy("bind_files_to_run"))
-    monkeypatch.setattr(
-        "app.routes.chat.record_initial_context_snapshot",
-        side_effect_spy("record_initial_context_snapshot", context_snapshot),
-    )
-    monkeypatch.setattr(repository_module, "append_event", side_effect_spy("append_event"))
-    monkeypatch.setattr(
-        repository_module,
-        "create_tool_permission_request",
-        side_effect_spy("create_tool_permission_request"),
-    )
-    monkeypatch.setattr("app.routes.chat.enqueue_run", side_effect_spy("enqueue_run", 1))
+    for name, result in [
+        ("ensure_user", None),
+        ("create_session", "ses-required-bash"),
+        ("create_run", "run-required-bash"),
+        ("insert_run_skill_snapshots_at_creation", None),
+        ("append_message", "msg-required-bash"),
+        ("bind_files_to_run", None),
+        ("append_event", None),
+        ("create_tool_permission_request", None),
+    ]:
+        monkeypatch.setattr(repository_module, name, spy(name, result))
+    monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", spy("record_initial_context_snapshot", context))
+    monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+    request = ChatStreamRequest(message=message, input=request_input, **selector)
 
-    rejection = None
-    response = None
-    try:
-        response = await chat_stream(
-            ChatStreamRequest(message=message),
-            principal=principal(),
-        )
-    except HTTPException as exc:
-        rejection = exc
-
-    if expects_required_capability_rejection:
-        observed = (
-            rejection.status_code if rejection is not None else None,
-            rejection.detail if rejection is not None else None,
-            forbidden_side_effects,
-        )
-        assert observed == (
+    if reject:
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_stream(request, principal=principal(roles=roles))
+        assert (exc_info.value.status_code, exc_info.value.detail, side_effects) == (
             403,
-            {
-                "status": "unavailable",
-                "detail_code": "required_capability_unavailable",
-                "message": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
-            },
+            {"status": "unavailable", "detail_code": "required_capability_unavailable", "message": "任务所需执行能力当前不可用。请调整请求或联系管理员。"},
             [],
         )
-    else:
-        assert rejection is None
-        assert response is not None and response.status == "queued"
-        assert "create_run" in forbidden_side_effects
-        assert "enqueue_run" in forbidden_side_effects
-        assert "create_tool_permission_request" not in forbidden_side_effects
+        return
+    assert (await chat_stream(request, principal=principal(roles=roles))).status == "queued"
+    assert "create_run" in side_effects and "enqueue_run" in side_effects
+    assert "create_tool_permission_request" not in side_effects
+    declaration = queued_payloads[0]["input"].get("_required_capability_declaration")
+    assert (declaration or {}).get("canonical_identity") == ("Bash" if selector else None)
+
+
+def test_submission_code_accepts_only_bounded_required_capability_detail_code():
+    assert _submission_code({"detail_code": "required_capability_unavailable"}) == "required_capability_unavailable"
+    assert _submission_code({"detail_code": "private_executor_detail"}) == "chat_submission_rejected"
 
 
 @pytest.mark.asyncio
