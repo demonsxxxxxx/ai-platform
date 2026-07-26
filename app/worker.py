@@ -1425,20 +1425,30 @@ async def _reauthorize_worker_capabilities(
             _denied_capability_decision("distribution_scope_invalid"),
         )
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+    skill_subject = CapabilityDistributionSubject(
+        capability_kind="skill",
+        capability_id=run_identity["skill_id"],
+        lifecycle_status=skill_lifecycle_status,
+        distribution=skill_distribution,
+    )
     skill_decision = resolve_capability_access(
         context,
-        CapabilityDistributionSubject(
-            capability_kind="skill",
-            capability_id=run_identity["skill_id"],
-            lifecycle_status=skill_lifecycle_status,
-            distribution=skill_distribution,
-        ),
+        skill_subject,
         intent="use",
     )
     skill_record = _worker_capability_record("skill", run_identity["skill_id"], skill_decision)
     decisions.append(skill_record)
     if not skill_decision.usable:
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), skill_record)
+    required_builtin_distribution = skill_decision
+    admin_non_bypass_authorized = False
+    if skill_decision.admin_bypass:
+        required_builtin_distribution = resolve_capability_access(
+            replace(context, is_admin=False),
+            skill_subject,
+            intent="use",
+        )
+        admin_non_bypass_authorized = required_builtin_distribution.usable
 
     authorized_skill_catalog: AuthorizedSkillCatalogResolution | None = None
     if payload.executor_type == "claude-agent-worker":
@@ -1491,7 +1501,7 @@ async def _reauthorize_worker_capabilities(
         payload=payload,
         run_identity=run_identity,
         skill=skill,
-        skill_decision=skill_decision,
+        skill_decision=required_builtin_distribution,
         authorized_skill_manifests=(
             authorized_skill_catalog.manifests
             if authorized_skill_catalog is not None
@@ -1509,6 +1519,7 @@ async def _reauthorize_worker_capabilities(
         attempt_id=attempt_id or "missing-attempt",
         subjects=tool_policy_subjects,
         admin_bypass=skill_decision.admin_bypass,
+        admin_non_bypass_authorized=admin_non_bypass_authorized,
     )
     if not required_tool_decision.allowed:
         denial = _worker_capability_record(

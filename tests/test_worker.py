@@ -7723,6 +7723,62 @@ async def test_worker_required_bash_undeclared_by_locked_manifest_fails_before_a
 
 
 @pytest.mark.asyncio
+async def test_worker_admin_required_declared_bash_uses_independent_ordinary_scope(monkeypatch):
+    raw, registry, _, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"message": "请执行 Bash 命令 pwd"},
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            department_id="qa",
+            roles=["admin", "qa_operator"],
+        ),
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "required_tool_completion_evidence_missing"
+    assert any(call[0] == "registry_get" for call in calls)
+    assert any(call[0] == "adapter" for call in calls)
+
+
+@pytest.mark.parametrize("restriction", ["department", "hidden", "disabled"])
+@pytest.mark.asyncio
+async def test_worker_admin_required_declared_bash_denies_bypass_only_scope_before_adapter(
+    monkeypatch,
+    restriction,
+):
+    department_id = "rd" if restriction == "department" else "qa"
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"message": "请执行 Bash 命令 pwd"},
+        current_principal=_test_current_principal(
+            user_id="user-a",
+            tenant_id="tenant-a",
+            department_id=department_id,
+            roles=["admin", "qa_operator"],
+        ),
+    )
+    if restriction == "hidden":
+        state["distributions"][("skill", "qa-file-reviewer")]["visible_to_user"] = False
+    elif restriction == "disabled":
+        state["distributions"][("skill", "qa-file-reviewer")]["status"] = "disabled"
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "required_tool_unavailable"
+    _task6_assert_no_executor_calls(calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["reason"] == "required_tool_not_currently_authorized"
+
+
+@pytest.mark.asyncio
 async def test_worker_current_principal_denial_cannot_be_restored_by_queued_snapshot(monkeypatch):
     raw, registry, _, calls = _install_task6_worker_fakes(
         monkeypatch,

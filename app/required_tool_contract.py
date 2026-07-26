@@ -882,6 +882,7 @@ def required_tool_authorization_for_run(
     attempt_id: str,
     subjects: list[dict[str, Any]],
     admin_bypass: bool,
+    admin_non_bypass_authorized: bool = False,
 ) -> RequiredCapabilityDecision:
     """Replay one locked payload against the current subject set."""
 
@@ -915,7 +916,12 @@ def required_tool_authorization_for_run(
         current_subject=subject,
         is_admin=False,
     )
-    if admin_bypass and decision.allowed and decision.identity:
+    if (
+        admin_bypass
+        and decision.allowed
+        and decision.identity
+        and admin_non_bypass_authorized is not True
+    ):
         return RequiredCapabilityDecision(
             False,
             "required_tool_admin_bypass_forbidden",
