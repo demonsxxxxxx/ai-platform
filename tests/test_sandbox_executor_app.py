@@ -61,6 +61,19 @@ def task_payload(
             "input_files": [],
             "materialized_file_names": [],
             "context_manifest": {"queue_attempt_id": "qat-attempt-a"},
+            "context_retrieval_scope": {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "agent_id": "agent-a",
+                "context_snapshot_id": "ctx-a",
+                "allowed_message_ids": [],
+                "allowed_file_ids": [],
+                "allowed_artifact_ids": [],
+                "memory_scope": {},
+            },
         },
     }
 
@@ -88,6 +101,13 @@ def sensitive_task_payload(callback_url: str = TRUSTED_CALLBACK_URL) -> dict[str
 
 def auth_headers(token: str = EXECUTOR_AUTH_TOKEN) -> dict[str, str]:
     return {"X-AI-Platform-Executor-Credential": token}
+
+
+def callback_ack(payload: dict[str, object]) -> dict[str, object]:
+    """Mirror the runtime callback receipt: envelope plus bridged events."""
+
+    events = payload.get("events")
+    return {"accepted": True, "event_count": 1 + len(events) if isinstance(events, list) else 1}
 
 
 def create_test_client(tmp_path, **kwargs) -> TestClient:
@@ -296,7 +316,7 @@ def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, 
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
-        return {"accepted": True}
+        return callback_ack(payload)
 
     # keep this focused on the default happy path instead of the disabled fail-closed branch
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
@@ -330,16 +350,20 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
             capability_kind="mcp",
             canonical_identity="mcp__tenant-server__search",
         )
-        await kwargs["on_capability_evidence"](
-            {
-                "capability_kind": "mcp",
-                "canonical_identity": "mcp__tenant-server__search",
-                "tool_call_id": "tool-call-1",
-                "lifecycle_phase": "completed",
-                "lifecycle_status": "succeeded",
-                "declaration_sha256": declaration.declaration_sha256,
-            }
-        )
+        for phase, status_value in (
+            ("invocation_requested", "invoking"),
+            ("completed", "succeeded"),
+        ):
+            await kwargs["on_capability_evidence"](
+                {
+                    "capability_kind": "mcp",
+                    "canonical_identity": "mcp__tenant-server__search",
+                    "tool_call_id": "tool-call-1",
+                    "lifecycle_phase": phase,
+                    "lifecycle_status": status_value,
+                    "declaration_sha256": declaration.declaration_sha256,
+                }
+            )
         return type(
             "SdkResult",
             (),
@@ -359,7 +383,7 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
-        return {"accepted": True}
+        return callback_ack(payload)
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -397,23 +421,22 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     response = client.post("/v1/tasks/execute", json=raw, headers=auth_headers())
 
     assert response.status_code == 200
-    evidence = response.json()["capability_evidence"][0]
-    assert evidence["run_id"] == "run-a"
-    assert evidence["attempt_id"] == "qat-attempt-a"
-    assert evidence["tool_call_id"] == "tool-call-1"
-    capability_event = next(item for item in callbacks if item.get("events"))
-    assert capability_event["events"] == [
-        {
-            "type": "capability_completed",
-            "message": "Capability lifecycle update",
-            "payload": {
-                "capability": {"kind": "mcp", "name": "Tenant Search", "status": "completed"}
-            },
-            "admin_only": False,
-        }
+    evidence = response.json()["capability_evidence"]
+    assert [(item["lifecycle_phase"], item["tool_call_id"]) for item in evidence] == [
+        ("invocation_requested", "tool-call-1"),
+        ("completed", "tool-call-1"),
     ]
-    assert "mcp__tenant-server__search" not in json.dumps(capability_event)
-    assert "tool-call-1" not in json.dumps(capability_event)
+    capability_events = [item for item in callbacks if item.get("events")]
+    assert [item["events"][0]["type"] for item in capability_events] == [
+        "capability_invoking",
+        "capability_completed",
+    ]
+    assert [item["events"][0]["payload"]["capability"] for item in capability_events] == [
+        {"kind": "mcp", "name": "Tenant Search", "status": "invoking"},
+        {"kind": "mcp", "name": "Tenant Search", "status": "completed"},
+    ]
+    assert "mcp__tenant-server__search" not in json.dumps(capability_events)
+    assert "tool-call-1" not in json.dumps(capability_events)
 
 
 @pytest.mark.asyncio
@@ -460,6 +483,82 @@ async def test_executor_omits_unknown_capability_identity_without_inference(monk
     assert events == []
 
 
+@pytest.mark.parametrize(
+    "phases",
+    [
+        ["invocation_requested", "invocation_requested"],
+        ["invocation_requested", "completed", "completed"],
+        ["invocation_requested", "completed", "failed"],
+    ],
+)
+def test_executor_rejects_duplicate_or_conflicting_sdk_lifecycle_before_public_persist(
+    tmp_path,
+    monkeypatch,
+    phases,
+):
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind="mcp",
+            canonical_identity="mcp__tenant-server__search",
+        )
+        for phase in phases:
+            await kwargs["on_capability_evidence"](
+                {
+                    "capability_kind": "mcp",
+                    "canonical_identity": declaration.identity,
+                    "tool_call_id": "call-a",
+                    "lifecycle_phase": phase,
+                    "declaration_sha256": declaration.declaration_sha256,
+                }
+            )
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "done",
+                "session_id": "sdk-a",
+                "usage": {},
+                "error": None,
+                "received_structured_terminal": True,
+                "terminal_reason": "end_turn",
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
+
+    def callback_sender(_url, payload, _token):
+        callbacks.extend(payload.get("events", []))
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "mcp__tenant-server__search",
+            "mcp_server": "tenant-server",
+            "public_tool_label": "Tenant Search",
+        }
+    ]
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+
+    body = client.post("/v1/tasks/execute", json=raw, headers=auth_headers()).json()
+
+    assert body["status"] == "failed"
+    assert body["error_code"] == "capability_lifecycle_sequence_invalid"
+    assert body["capability_evidence"] == []
+    assert [event["type"] for event in callbacks] == [
+        "capability_invoking",
+        *(["capability_completed"] if "completed" in phases else []),
+    ]
+
+
 def test_executor_execute_fails_closed_after_final_delta_without_structured_terminal(tmp_path, monkeypatch):
     callbacks = []
 
@@ -486,7 +585,7 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
-        return {"accepted": True}
+        return callback_ack(payload)
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -561,7 +660,7 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
-        return {"accepted": True}
+        return callback_ack(payload)
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -619,7 +718,7 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
-        return {"accepted": True}
+        return callback_ack(payload)
 
     client = create_test_client(
         tmp_path,
@@ -683,7 +782,7 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
-        return {"accepted": True}
+        return callback_ack(payload)
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -765,7 +864,7 @@ shutil.copyfile(source, output / \"translated.docx\")
     payload["config"]["skill_ids"] = ["baoyu-translate"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
@@ -802,7 +901,7 @@ Path("untrusted-runner-executed").write_text("unexpected", encoding="utf-8")
     payload["config"]["skill_ids"] = ["baoyu-translate"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
     payload["config"]["tool_policy_subjects"] = skill_only_baoyu_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
@@ -844,7 +943,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
     payload["config"]["skill_ids"] = ["baoyu-translate"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
@@ -880,7 +979,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
     payload["config"]["skill_ids"] = ["baoyu-translate"]
     payload["config"]["materialized_file_names"] = ["z.docx", "a.docx"]
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
@@ -904,7 +1003,7 @@ def test_executor_rejects_unsafe_materialized_file_name_without_executing(tmp_pa
     payload["config"]["skill_ids"] = ["baoyu-translate"]
     payload["config"]["materialized_file_names"] = ["../escape.docx"]
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
@@ -939,7 +1038,7 @@ def test_executor_runs_real_staged_baoyu_entrypoint_and_produces_translated_docx
     payload["config"]["skill_ids"] = ["baoyu-translate"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
@@ -977,7 +1076,7 @@ def test_executor_runs_real_staged_qa_entrypoint_with_minimal_environment(tmp_pa
         "qa-file-reviewer"
     ]
     payload["config"]["tool_policy_subjects"] = qa_policy
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
@@ -1009,7 +1108,7 @@ def test_executor_fails_closed_when_selected_file_skill_runner_fails(tmp_path, m
     payload["config"]["skill_ids"] = ["baoyu-translate"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
@@ -1039,7 +1138,7 @@ def test_executor_fails_closed_when_selected_file_skill_runner_is_not_staged(tmp
     payload["config"]["skill_ids"] = ["baoyu-translate"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
@@ -1087,16 +1186,15 @@ time.sleep(10)
     payload["config"]["materialized_file_names"] = ["source.docx"]
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
     request = ExecutorTaskRequest.model_validate(payload)
+    invocation_admitted = asyncio.Event()
 
-    async def emit_event(_event):
-        return None
+    async def emit_event(event):
+        if event.type == "capability_invoking":
+            invocation_admitted.set()
+        return True
 
     task = asyncio.create_task(_default_executor_runner(request, workspace, emit_event))
-    for _ in range(50):
-        if (workspace / "runner-started").is_file():
-            break
-        await asyncio.sleep(0.01)
-    assert (workspace / "runner-started").is_file()
+    await asyncio.wait_for(invocation_admitted.wait(), timeout=1.0)
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
@@ -1143,7 +1241,7 @@ time.sleep(10)
     payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
     app = create_executor_app(
         workspace_root=workspace,
-        callback_sender=lambda url, callback_payload, token: {"accepted": True},
+        callback_sender=lambda url, callback_payload, token: callback_ack(callback_payload),
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
         expected_run_id="run-a",
@@ -1181,7 +1279,7 @@ def test_executor_fails_closed_without_matching_skill_authorization(tmp_path, mo
         "qa-file-reviewer"
     ]
     payload["config"]["tool_policy_subjects"] = denied_policy
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
@@ -1762,7 +1860,7 @@ def test_executor_execute_reports_platform_timeout_probe_as_nonterminal_observat
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
-        return {"accepted": True}
+        return callback_ack(payload)
 
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
@@ -1805,7 +1903,7 @@ def test_executor_execute_enforces_fractional_positive_timeout_and_cancels_runne
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
-        return {"accepted": True}
+        return callback_ack(payload)
 
     client = create_test_client(
         tmp_path,
@@ -1864,7 +1962,7 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
 
     async def callback_sender(url, callback_payload, token):
         callbacks.append(callback_payload)
-        return {"accepted": True}
+        return callback_ack(callback_payload)
 
     app = create_executor_app(
         workspace_root=tmp_path,
@@ -1944,7 +2042,7 @@ async def test_executor_deadline_reports_cleanup_timeout_without_waiting_forever
     monkeypatch.setattr("app.runtime.sandbox.executor_app._EXECUTOR_CLEANUP_TIMEOUT_SECONDS", 0.02)
     app = create_executor_app(
         workspace_root=tmp_path,
-        callback_sender=lambda url, payload, token: {"accepted": True},
+        callback_sender=lambda url, payload, token: callback_ack(payload),
         executor_runner=executor_runner,
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
@@ -2031,7 +2129,7 @@ def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
-        return {"accepted": True}
+        return callback_ack(payload)
 
     client = create_test_client(tmp_path, callback_sender=callback_sender, executor_runner=executor_runner)
 
@@ -2049,7 +2147,7 @@ def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_
 
     client = create_test_client(
         tmp_path,
-        callback_sender=lambda url, payload, token: {"accepted": True},
+        callback_sender=lambda url, payload, token: callback_ack(payload),
         executor_runner=executor_runner,
     )
 
@@ -2078,7 +2176,7 @@ async def test_executor_execute_rejects_invalid_deadline_without_invoking_runner
 
     app = create_executor_app(
         workspace_root=tmp_path,
-        callback_sender=lambda url, payload, token: {"accepted": True},
+        callback_sender=lambda url, payload, token: callback_ack(payload),
         executor_runner=executor_runner,
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
@@ -2123,7 +2221,7 @@ def test_executor_execute_accepts_supported_async_callable_forms(tmp_path, runne
 
     client = create_test_client(
         tmp_path,
-        callback_sender=lambda url, payload, token: {"accepted": True},
+        callback_sender=lambda url, payload, token: callback_ack(payload),
         executor_runner=executor_runner,
     )
 
@@ -2147,7 +2245,7 @@ def test_executor_execute_rejects_sync_wrapper_before_positive_deadline_control(
 
     client = create_test_client(
         tmp_path,
-        callback_sender=lambda url, payload, token: {"accepted": True},
+        callback_sender=lambda url, payload, token: callback_ack(payload),
         executor_runner=sync_wrapper,
     )
 
@@ -2169,7 +2267,7 @@ def test_executor_execute_classifies_decorated_runner_timeout_as_internal_failur
 
     client = create_test_client(
         tmp_path,
-        callback_sender=lambda url, payload, token: {"accepted": True},
+        callback_sender=lambda url, payload, token: callback_ack(payload),
         executor_runner=decorated_runner,
     )
 
@@ -2198,7 +2296,7 @@ async def test_executor_execute_preserves_caller_cancellation(tmp_path):
 
     app = create_executor_app(
         workspace_root=tmp_path,
-        callback_sender=lambda url, payload, token: {"accepted": True},
+        callback_sender=lambda url, payload, token: callback_ack(payload),
         executor_runner=executor_runner,
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
@@ -2231,7 +2329,7 @@ async def test_executor_execute_reports_cleanup_failure_when_caller_cancellation
 
     app = create_executor_app(
         workspace_root=tmp_path,
-        callback_sender=lambda url, payload, token: {"accepted": True},
+        callback_sender=lambda url, payload, token: callback_ack(payload),
         executor_runner=executor_runner,
         executor_auth_token=EXECUTOR_AUTH_TOKEN,
         expected_session_id="session-a",
@@ -2262,7 +2360,7 @@ def test_executor_execute_fails_closed_for_sync_runner_with_positive_deadline(tm
 
     client = create_test_client(
         tmp_path,
-        callback_sender=lambda url, payload, token: {"accepted": True},
+        callback_sender=lambda url, payload, token: callback_ack(payload),
         executor_runner=executor_runner,
     )
 
@@ -2336,7 +2434,7 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monk
         callbacks.append((payload["status"], payload.get("state_patch", {}).get("stage")))
         if payload.get("state_patch", {}).get("stage") == "executor_finished":
             raise RuntimeError("callback failed")
-        return {"accepted": True}
+        return callback_ack(payload)
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -2379,7 +2477,7 @@ def test_executor_finished_observation_marker_path_is_container_path(tmp_path, m
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
-        return {"accepted": True}
+        return callback_ack(payload)
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -2438,7 +2536,7 @@ def test_executor_execute_rejects_replay_after_first_dispatch(tmp_path, monkeypa
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     first = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
     second = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
