@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
-import { uploadApi } from "../services/api";
+import { uploadApi, UploadRequestError } from "../services/api/upload";
 import type { FileCheckResult } from "../types";
 import { compressImageFile } from "../utils/imageCompression";
 import { uuid } from "../utils/uuid";
@@ -22,6 +22,29 @@ export interface UseFileUploadOptions {
       | MessageAttachment[]
       | ((prev: MessageAttachment[]) => MessageAttachment[]),
   ) => void;
+}
+
+type UploadTranslation = (key: string) => unknown;
+
+/** Project bounded upload failures to product copy and clean failed temporary attachments. */
+export function settleUploadFailure(
+  error: unknown,
+  t: UploadTranslation,
+  removeTemporaryAttachment: () => void,
+): string | null {
+  if (error instanceof UploadRequestError && error.kind === "cancelled") {
+    return null;
+  }
+
+  const key =
+    error instanceof UploadRequestError && error.kind === "file_too_large"
+      ? "fileUpload.serverFileTooLarge"
+      : error instanceof UploadRequestError &&
+          error.kind === "unsupported_file_type"
+        ? "fileUpload.serverUnsupportedFileType"
+        : "fileUpload.uploadFailedRecoverable";
+  removeTemporaryAttachment();
+  return String(t(key));
 }
 
 function getFileCategory(file: File): FileCategory {
@@ -54,6 +77,230 @@ function computeFileHash(file: File): Promise<string> {
   });
 }
 
+type UploadClient = Pick<typeof uploadApi, "checkFile"> & {
+  uploadFile: (
+    file: File,
+    options: { onProgress?: (progress: number) => void },
+  ) => ReturnType<typeof uploadApi.uploadFile>;
+};
+
+interface FileUploadTaskOptions {
+  file: File;
+  fileCategory: FileCategory;
+  t: UploadTranslation;
+  onAttachmentsChange: UseFileUploadOptions["onAttachmentsChange"];
+  abortMap: Map<string, () => void>;
+  cancelled: Set<string>;
+  prepareFile: (file: File) => Promise<File>;
+  hashFile: (file: File) => Promise<string>;
+  uploadClient: UploadClient;
+  createId: () => string;
+  notifyError: (message: string) => void;
+  reportFailure: (error: unknown) => void;
+}
+
+interface FileUploadTask {
+  tempId: string;
+  done: Promise<void>;
+}
+
+/**
+ * Tombstones a temporary attachment before removal. The tombstone remains until
+ * its task reaches a terminal path, so paused async phases cannot resume it.
+ */
+export function cancelTemporaryUpload(
+  id: string,
+  abortMap: Map<string, () => void>,
+  cancelled: Set<string>,
+  onAttachmentsChange: UseFileUploadOptions["onAttachmentsChange"],
+): void {
+  const isTemporary = id.startsWith("temp-");
+  if (isTemporary && cancelled.has(id)) {
+    return;
+  }
+  if (isTemporary) {
+    cancelled.add(id);
+  }
+
+  const abort = abortMap.get(id);
+  if (abort) {
+    abort();
+    abortMap.delete(id);
+  }
+  onAttachmentsChange((previous) =>
+    previous.filter((attachment) => attachment.id !== id),
+  );
+}
+
+/** Owns the full lifecycle of one temporary upload attachment. */
+export function startFileUploadTask({
+  file,
+  fileCategory,
+  t,
+  onAttachmentsChange,
+  abortMap,
+  cancelled,
+  prepareFile,
+  hashFile,
+  uploadClient,
+  createId,
+  notifyError,
+  reportFailure,
+}: FileUploadTaskOptions): FileUploadTask {
+  const tempId = `temp-${createId()}`;
+  const isCancelled = () => cancelled.has(tempId);
+  const finish = () => {
+    abortMap.delete(tempId);
+    cancelled.delete(tempId);
+  };
+
+  const tempAttachment: MessageAttachment = {
+    id: tempId,
+    key: "",
+    name: file.name,
+    type: fileCategory,
+    mimeType: file.type,
+    size: file.size,
+    url: "",
+    uploadProgress: 0,
+    isUploading: true,
+  };
+  onAttachmentsChange((previous) => [...previous, tempAttachment]);
+
+  const done = (async () => {
+    try {
+      const processedFile = await prepareFile(file);
+      if (isCancelled()) {
+        finish();
+        return;
+      }
+      onAttachmentsChange((previous) =>
+        previous.map((attachment) =>
+          attachment.id === tempId
+            ? {
+                ...attachment,
+                name: processedFile.name,
+                mimeType: processedFile.type,
+                size: processedFile.size,
+              }
+            : attachment,
+        ),
+      );
+
+      let check: FileCheckResult = { exists: false };
+      try {
+        const hash = await hashFile(processedFile);
+        if (isCancelled()) {
+          finish();
+          return;
+        }
+        onAttachmentsChange((previous) =>
+          previous.map((attachment) =>
+            attachment.id === tempId
+              ? { ...attachment, uploadProgress: 1 }
+              : attachment,
+          ),
+        );
+        check = await uploadClient.checkFile(
+          hash,
+          processedFile.size,
+          processedFile.name,
+          processedFile.type,
+        );
+      } catch {
+        if (isCancelled()) {
+          finish();
+          return;
+        }
+      }
+
+      if (isCancelled()) {
+        finish();
+        return;
+      }
+      if (check.exists && "key" in check) {
+        const existing = check as FileCheckResult;
+        const finalAttachment: MessageAttachment = {
+          id: createId(),
+          key: existing.key ?? "",
+          name: existing.name || processedFile.name,
+          type: existing.type as FileCategory,
+          mimeType: existing.mimeType ?? processedFile.type,
+          size: existing.size ?? processedFile.size,
+          url: existing.url || `/api/upload/file/${existing.key ?? ""}`,
+        };
+        onAttachmentsChange((previous) =>
+          previous.map((attachment) =>
+            attachment.id === tempId
+              ? {
+                  ...finalAttachment,
+                  uploadProgress: 100,
+                  isUploading: false,
+                }
+              : attachment,
+          ),
+        );
+        finish();
+        return;
+      }
+
+      const handle = uploadClient.uploadFile(processedFile, {
+        onProgress: (progress) => {
+          if (isCancelled()) {
+            return;
+          }
+          onAttachmentsChange((previous) =>
+            previous.map((attachment) =>
+              attachment.id === tempId
+                ? { ...attachment, uploadProgress: progress, isUploading: true }
+                : attachment,
+            ),
+          );
+        },
+      });
+      abortMap.set(tempId, handle.abort);
+      const result = await handle.promise;
+      if (isCancelled()) {
+        finish();
+        return;
+      }
+      const finalAttachment: MessageAttachment = {
+        id: createId(),
+        key: result.key,
+        name: result.name || processedFile.name,
+        type: result.type as FileCategory,
+        mimeType: result.mimeType,
+        size: result.size,
+        url: result.url,
+      };
+      onAttachmentsChange((previous) =>
+        previous.map((attachment) =>
+          attachment.id === tempId ? finalAttachment : attachment,
+        ),
+      );
+      finish();
+    } catch (error) {
+      abortMap.delete(tempId);
+      if (isCancelled()) {
+        finish();
+        return;
+      }
+      const message = settleUploadFailure(error, t, () => {
+        onAttachmentsChange((previous) =>
+          previous.filter((attachment) => attachment.id !== tempId),
+        );
+      });
+      if (message !== null) {
+        reportFailure(error);
+        notifyError(message);
+      }
+      finish();
+    }
+  })();
+
+  return { tempId, done };
+}
+
 export function useFileUpload({
   attachments,
   onAttachmentsChange,
@@ -62,6 +309,7 @@ export function useFileUpload({
   const [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null);
   const limitsFetched = useRef(false);
   const abortMapRef = useRef<Map<string, () => void>>(new Map());
+  const cancelledUploadIdsRef = useRef<Set<string>>(new Set());
 
   // Fetch upload limits once
   useEffect(() => {
@@ -119,12 +367,12 @@ export function useFileUpload({
   /** Cancel an in-progress upload by attachment id */
   const cancelUpload = useCallback(
     (id: string) => {
-      const abort = abortMapRef.current.get(id);
-      if (abort) {
-        abort();
-        abortMapRef.current.delete(id);
-      }
-      onAttachmentsChange((prev) => prev.filter((a) => a.id !== id));
+      cancelTemporaryUpload(
+        id,
+        abortMapRef.current,
+        cancelledUploadIdsRef.current,
+        onAttachmentsChange,
+      );
     },
     [onAttachmentsChange],
   );
@@ -133,122 +381,27 @@ export function useFileUpload({
   const uploadFile = useCallback(
     (file: File, category?: FileCategory) => {
       const fileCategory = category || getFileCategory(file);
-
-      // Compress images before upload
-      const maybeCompress =
-        fileCategory === "image"
-          ? compressImageFile(file).catch(() => file)
-          : Promise.resolve(file);
-
-      maybeCompress.then((processedFile) => {
-        const tempId = `temp-${uuid()}`;
-
-        const tempAttachment: MessageAttachment = {
-          id: tempId,
-          key: "",
-          name: processedFile.name,
-          type: fileCategory,
-          mimeType: processedFile.type,
-          size: processedFile.size,
-          url: "",
-          uploadProgress: 0,
-          isUploading: true,
-        };
-
-        onAttachmentsChange((prev) => [...prev, tempAttachment]);
-
-        computeFileHash(processedFile)
-          .then((hash) => {
-            onAttachmentsChange((prev: MessageAttachment[]) =>
-              prev.map((a) =>
-                a.id === tempId ? { ...a, uploadProgress: 1 } : a,
-              ),
-            );
-            return uploadApi
-              .checkFile(
-                hash,
-                processedFile.size,
-                processedFile.name,
-                processedFile.type,
-              )
-              .then((check) => ({ check }));
-          })
-          .catch(() => ({ check: { exists: false } }))
-          .then(({ check }) => {
-            if (check.exists && 'key' in check) {
-              abortMapRef.current.delete(tempId);
-              const c = check as FileCheckResult;
-              const finalAttachment: MessageAttachment = {
-                id: uuid(),
-                key: c.key ?? "",
-                name: c.name || processedFile.name,
-                type: c.type as FileCategory,
-                mimeType: c.mimeType ?? processedFile.type,
-                size: c.size ?? processedFile.size,
-                url: c.url || `/api/upload/file/${c.key ?? ""}`,
-              };
-              onAttachmentsChange((prev: MessageAttachment[]) =>
-                prev.map((a) =>
-                  a.id === tempId
-                    ? {
-                        ...finalAttachment,
-                        uploadProgress: 100,
-                        isUploading: false,
-                      }
-                    : a,
-                ),
-              );
-              return;
-            }
-
-            const handle = uploadApi.uploadFile(processedFile, {
-              onProgress: (progress) => {
-                onAttachmentsChange((prev: MessageAttachment[]) =>
-                  prev.map((a) =>
-                    a.id === tempId
-                      ? { ...a, uploadProgress: progress, isUploading: true }
-                      : a,
-                  ),
-                );
-              },
-            });
-
-            abortMapRef.current.set(tempId, handle.abort);
-
-            return handle.promise.then((result) => {
-              abortMapRef.current.delete(tempId);
-              const finalAttachment: MessageAttachment = {
-                id: uuid(),
-                key: result.key,
-                name: result.name || processedFile.name,
-                type: result.type as FileCategory,
-                mimeType: result.mimeType,
-                size: result.size,
-                url: result.url,
-              };
-              onAttachmentsChange((prev: MessageAttachment[]) =>
-                prev.map((a) => (a.id === tempId ? finalAttachment : a)),
-              );
-            });
-          })
-          .catch((error) => {
-            abortMapRef.current.delete(tempId);
-            if (
-              error instanceof Error &&
-              error.message === "Upload was aborted"
-            ) {
-              return;
-            }
-            console.error("Upload failed:", error);
-            toast.error(
-              error instanceof Error
-                ? error.message
-                : t("fileUpload.uploadFailed"),
-            );
-            onAttachmentsChange((prev: MessageAttachment[]) =>
-              prev.filter((a) => a.id !== tempId),
-            );
+      startFileUploadTask({
+        file,
+        fileCategory,
+        t,
+        onAttachmentsChange,
+        abortMap: abortMapRef.current,
+        cancelled: cancelledUploadIdsRef.current,
+        prepareFile: (source) =>
+          fileCategory === "image"
+            ? compressImageFile(source).catch(() => source)
+            : Promise.resolve(source),
+        hashFile: computeFileHash,
+        uploadClient: uploadApi,
+        createId: uuid,
+        notifyError: toast.error,
+        reportFailure: (error) => {
+          console.error("[Upload] failed", {
+            kind: error instanceof UploadRequestError ? error.kind : "recoverable",
+            status: error instanceof UploadRequestError ? error.status : undefined,
           });
+        },
       });
     },
     [onAttachmentsChange, t],
