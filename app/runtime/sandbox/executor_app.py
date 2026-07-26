@@ -1,3 +1,5 @@
+# ruff: noqa: B004, BLE001, RUF046, S110
+
 from __future__ import annotations
 
 import asyncio
@@ -12,8 +14,10 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, status
@@ -33,6 +37,11 @@ from app.file_parser_contracts import (
     dispatched_context_file_ids,
     parse_xlsx_attachment,
 )
+from app.required_tool_contract import (
+    RequiredCapabilityDeclaration,
+    RequiredCapabilityEvidence,
+    RequiredToolContractError,
+)
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
 from app.runtime.sandbox.contracts import (
@@ -45,7 +54,6 @@ from app.runtime.sandbox.contracts import (
 )
 from app.settings import get_settings
 from app.skills.execution_profiles import PLATFORM_CONTROLLED
-
 
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
@@ -80,6 +88,65 @@ _SDK_PRESERVED_FAILURE_CODES = frozenset(
     }
 )
 _SDK_TURN_LIMIT_ERROR_PATTERN = re.compile(r"Reached maximum number of turns \(\d+\)")
+
+
+def _public_capability_label(
+    *,
+    capability_kind: str,
+    canonical_identity: str,
+    subjects: list[dict[str, Any]],
+) -> str:
+    """Return only a server-owned public label for an exact authorized identity."""
+
+    if capability_kind == "skill":
+        skill_subject = next(
+            (
+                subject
+                for subject in subjects
+                if subject.get("identity") == "Skill"
+                and canonical_identity in (subject.get("allowed_skill_names") or [])
+            ),
+            None,
+        )
+        if skill_subject is None:
+            return ""
+        public_labels = skill_subject.get("public_skill_labels")
+        if isinstance(public_labels, dict):
+            label = public_labels.get(canonical_identity)
+            if isinstance(label, str) and label.strip():
+                return label.strip()[:120]
+        return "Skill"
+    if capability_kind == "mcp":
+        matching = [
+            subject
+            for subject in subjects
+            if subject.get("identity") == canonical_identity
+            and str(subject.get("mcp_server") or "") != "ai-platform-context"
+        ]
+        if len(matching) != 1:
+            return ""
+        label = matching[0].get("public_tool_label")
+        return label.strip()[:120] if isinstance(label, str) and label.strip() else ""
+    return ""
+
+
+def _evidence_binding(request: ExecutorTaskRequest) -> dict[str, str]:
+    """Return the authoritative request binding required by evidence factories."""
+
+    binding = request.config.get("context_retrieval_scope")
+    if not isinstance(binding, dict):
+        return {}
+    expected = {
+        "tenant_id": binding.get("tenant_id"),
+        "workspace_id": binding.get("workspace_id"),
+        "user_id": binding.get("user_id"),
+        "session_id": request.session_id,
+        "run_id": request.run_id,
+        "attempt_id": request.attempt_id,
+    }
+    if any(not isinstance(value, str) or not value for value in expected.values()):
+        return {}
+    return {key: str(value) for key, value in expected.items()}
 
 
 class _ExecutorCleanupError(RuntimeError):
@@ -653,7 +720,7 @@ def _close_windows_process_job(process: asyncio.subprocess.Process) -> None:
         if not kernel32.CloseHandle(job):
             raise OSError(ctypes.get_last_error(), "CloseHandle failed for controlled process job")
     finally:
-        setattr(process, "_controlled_job_handle", None)
+        process._controlled_job_handle = None
 
 
 async def _wait_for_controlled_process_exit(process: asyncio.subprocess.Process) -> None:
@@ -800,7 +867,7 @@ async def _run_selected_authorized_file_skill(
                 "used_skills": [],
                 "used_skills_source": "none",
             }
-        setattr(process, "_controlled_job_handle", job)
+        process._controlled_job_handle = job
     try:
         stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=_CONTROLLED_RUNNER_TIMEOUT_SECONDS)
     except asyncio.CancelledError:
@@ -999,17 +1066,49 @@ async def _default_executor_runner(
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
 
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
+        del skill_name, metadata
+
+    bound_capability_evidence: list[dict[str, Any]] = []
+
+    async def on_capability_evidence(raw: dict[str, str]) -> None:
+        """Bind SDK-hook facts to this request and emit only a safe public event."""
+
+        try:
+            declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+                capability_kind=str(raw.get("capability_kind") or ""),
+                canonical_identity=str(raw.get("canonical_identity") or ""),
+            )
+            if declaration.declaration_sha256 != raw.get("declaration_sha256"):
+                return
+            evidence = RequiredCapabilityEvidence.from_sdk_hook(
+                declaration=declaration,
+                binding=_evidence_binding(request),
+                tool_call_id=str(raw.get("tool_call_id") or ""),
+                succeeded=raw.get("lifecycle_phase") == "completed"
+                and raw.get("lifecycle_status") == "succeeded",
+            )
+        except RequiredToolContractError:
+            return
+        bound_capability_evidence.append(asdict(evidence))
+        label = _public_capability_label(
+            capability_kind=evidence.capability_kind,
+            canonical_identity=evidence.canonical_identity,
+            subjects=_task_tool_policy_subjects(request),
+        )
+        if not label:
+            return
+        status_value = "completed" if evidence.lifecycle_phase == "completed" else "failed"
         await emit_event(
             AgentEvent(
-                type="tool_call_started",
-                message=f"Skill used: {skill_name}",
+                type=f"capability_{status_value}",
+                message="Capability lifecycle update",
                 payload={
-                    "tool_name": "Skill",
-                    "skill_name": skill_name,
-                    "tool_call_id": str(metadata.get("tool_use_id") or ""),
-                    "source": str(metadata.get("source") or "claude_agent_sdk_hook"),
+                    "capability": {
+                        "kind": evidence.capability_kind,
+                        "name": label,
+                        "status": status_value,
+                    }
                 },
-                admin_only=True,
             )
         )
 
@@ -1025,6 +1124,7 @@ async def _default_executor_runner(
             context_retrieval_identity=context_retrieval_identity,
             on_text=on_text,
             on_skill_use=on_skill_use,
+            on_capability_evidence=on_capability_evidence,
             tool_policy_subjects=_task_tool_policy_subjects(request),
             execution_policy="sandbox_brokered",
             attachment_contexts=attachment_contexts,
@@ -1058,6 +1158,7 @@ async def _default_executor_runner(
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
         "sdk_turn_diagnostics": dict(getattr(sdk_result, "turn_diagnostics", {}) or {}),
         "attachment_parser_evidence": parser_evidence,
+        "capability_evidence": bound_capability_evidence,
     }
     if error:
         raw_error = str(error)
@@ -1325,6 +1426,7 @@ def create_executor_app(
             "used_skills_source",
             "sdk_turn_diagnostics",
             "attachment_parser_evidence",
+            "capability_evidence",
         ):
             if key in runner_result and runner_result[key] is not None:
                 response[key] = runner_result[key]
