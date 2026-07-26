@@ -269,9 +269,12 @@ uses a 45-second monotonic final-parity convergence window with a two-second
 maximum poll interval. Each attempt repeats only the existing strict, read-only
 parity collector; it never rebuilds an image, reruns Compose, changes a container,
 or reads the managed environment file. `verify` remains a single strict parity
-collection. The convergence window retries only transient network `OSError` or
-`URLError`, an unverified parity report, and the explicit worker heartbeat
-startup-readiness failures. Any other authority error fails closed immediately.
+collection. Each collector subprocess and HTTP probe is capped at the remaining
+monotonic convergence budget and uses its existing owned-process cleanup; a report
+that arrives at or after the deadline cannot succeed. The convergence window retries
+only transient network `OSError` or `URLError`, an unverified parity report, and the
+explicit worker heartbeat startup-readiness failures. Any other authority error,
+including an HTTP status error, fails closed immediately.
 On convergence exhaustion, terminal evidence reports only `parity_attempts` and
 the fixed `parity_last_failure_kind`; it does not include raw exception text,
 URLs, endpoints, secrets, or environment data.

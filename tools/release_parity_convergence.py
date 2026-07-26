@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import errno
+import subprocess
 import time
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 
 SCHEMA_VERSION = "ai-platform.release-authority.v1"
@@ -46,8 +49,42 @@ _RETRYABLE_FINAL_PARITY_READINESS_ERRORS = frozenset(
     }
 )
 _FINAL_PARITY_FAILURE_KINDS = frozenset(
-    {"startup-readiness", "transient-io", "unverified-parity"}
+    {"attempt-timeout", "startup-readiness", "transient-io", "unverified-parity"}
 )
+_ACTIVE_PARITY_ATTEMPT: ContextVar[tuple[float, Callable[[], float]] | None] = ContextVar(
+    "active_parity_attempt",
+    default=None,
+)
+
+
+class ParityAttemptDeadlineExceeded(RuntimeError):
+    """Raised before a read-only parity operation would outlive its attempt deadline."""
+
+
+@contextmanager
+def parity_attempt_budget(
+    deadline: float,
+    *,
+    monotonic: Callable[[], float],
+):
+    """Scope one strict read-only parity collection to its absolute monotonic deadline."""
+    token = _ACTIVE_PARITY_ATTEMPT.set((deadline, monotonic))
+    try:
+        yield
+    finally:
+        _ACTIVE_PARITY_ATTEMPT.reset(token)
+
+
+def bounded_parity_attempt_timeout(timeout_seconds: float) -> float:
+    """Return the remaining attempt budget capped by an operation's existing timeout."""
+    active = _ACTIVE_PARITY_ATTEMPT.get()
+    if active is None:
+        return timeout_seconds
+    deadline, monotonic = active
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise ParityAttemptDeadlineExceeded
+    return min(timeout_seconds, remaining)
 
 
 def compose_identity_mismatches(
@@ -168,7 +205,7 @@ def build_parity_report(
 
 
 def converge_final_parity(
-    collect: Callable[[], dict[str, Any]],
+    collect: Callable[[float], dict[str, Any]],
     *,
     authority_error_type: type[Exception],
     timeout_seconds: float = FINAL_PARITY_CONVERGENCE_TIMEOUT_SECONDS,
@@ -183,9 +220,20 @@ def converge_final_parity(
     attempts = 0
     last_failure_kind = "unverified-parity"
     while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            error = authority_error_type("final parity did not converge")
+            error.parity_attempts = min(attempts, 10_000)
+            error.parity_last_failure_kind = last_failure_kind
+            raise error
         attempts += 1
         try:
-            report = collect()
+            with parity_attempt_budget(deadline, monotonic=monotonic):
+                report = collect(remaining)
+        except (ParityAttemptDeadlineExceeded, TimeoutError, subprocess.TimeoutExpired):
+            last_failure_kind = "attempt-timeout"
+        except HTTPError:
+            raise
         except URLError:
             last_failure_kind = "transient-io"
         except OSError as exc:
@@ -197,9 +245,12 @@ def converge_final_parity(
                 raise
             last_failure_kind = "startup-readiness"
         else:
-            if report.get("verified") is True:
+            if monotonic() >= deadline:
+                last_failure_kind = "attempt-timeout"
+            elif report.get("verified") is True:
                 return report
-            last_failure_kind = "unverified-parity"
+            else:
+                last_failure_kind = "unverified-parity"
 
         remaining = deadline - monotonic()
         if remaining <= 0:

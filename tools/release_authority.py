@@ -31,6 +31,7 @@ if __package__:
         COMPATIBILITY_IMAGE_COMMIT_LABELS,
         FINAL_PARITY_CONVERGENCE_TIMEOUT_SECONDS,
         SCHEMA_VERSION as _PARITY_SCHEMA_VERSION,
+        bounded_parity_attempt_timeout,
         build_parity_report as _build_parity_report,
         compose_identity_mismatches as _compose_identity_mismatches,
         convergence_failure_evidence,
@@ -51,6 +52,7 @@ else:
         COMPATIBILITY_IMAGE_COMMIT_LABELS,
         FINAL_PARITY_CONVERGENCE_TIMEOUT_SECONDS,
         SCHEMA_VERSION as _PARITY_SCHEMA_VERSION,
+        bounded_parity_attempt_timeout,
         build_parity_report as _build_parity_report,
         compose_identity_mismatches as _compose_identity_mismatches,
         convergence_failure_evidence,
@@ -790,12 +792,13 @@ def _run(
     check: bool = True,
     text: bool = True,
     env: dict[str, str] | None = None,
-    timeout: int = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
+    timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
     input: str | bytes | None = None,
     classify_build_progress: bool = False,
 ) -> subprocess.CompletedProcess[Any]:
     if text and isinstance(input, (bytes, bytearray, memoryview)):
         raise TypeError("text mode input must be str, not bytes-like")
+    timeout = bounded_parity_attempt_timeout(timeout)
     arguments = list(command)
     windows_job_handle = _create_owned_windows_job()
     process: subprocess.Popen[Any] | None = None
@@ -2345,7 +2348,7 @@ def _container_file_commit(docker: list[str], name: str, path: str) -> str:
 
 
 def _http_json(url: str) -> dict[str, Any]:
-    with urlopen(url, timeout=HTTP_PROBE_TIMEOUT_SECONDS) as response:
+    with urlopen(url, timeout=bounded_parity_attempt_timeout(HTTP_PROBE_TIMEOUT_SECONDS)) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -2922,6 +2925,10 @@ def deploy_main_commit(
         if authority_commit is not None:
             exc.authority_commit = authority_commit
         raise
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        if authority_commit is not None:
+            exc.authority_commit = authority_commit
+        raise
     if authority_commit is not None:
         result["authority_commit"] = authority_commit
     return result
@@ -3010,7 +3017,7 @@ def _deploy_main_commit_after_authority(
             ),
         )
 
-        def collect_final_parity() -> dict[str, Any]:
+        def collect_final_parity(_: float) -> dict[str, Any]:
             return collect_live_parity(
                 checkout,
                 normalized,
@@ -3200,15 +3207,16 @@ def main() -> int:
             payload["authority_commit"] = authority_commit
         _write_json(payload, None)
         return 2
-    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
-        _write_json(
-            {
-                "verified": False,
-                "error": "release authority command failed",
-                "command": args.command,
-            },
-            None,
-        )
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        payload = {
+            "verified": False,
+            "error": "release authority command failed",
+            "command": args.command,
+        }
+        authority_commit = vars(exc).get("authority_commit")
+        if isinstance(authority_commit, str) and FULL_COMMIT_RE.fullmatch(authority_commit):
+            payload["authority_commit"] = authority_commit
+        _write_json(payload, None)
         return 2
     return 0
 

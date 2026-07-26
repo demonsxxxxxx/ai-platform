@@ -3573,7 +3573,13 @@ def test_deploy_main_commit_fails_closed_when_live_parity_does_not_verify(monkey
         raise AssertionError("a non-verifying rollout must fail closed")
 
 
-def test_deploy_main_cli_failure_preserves_verified_authority_commit(monkeypatch, capsys, tmp_path):
+@pytest.mark.parametrize("failure", [ReleaseAuthorityError("later parity failure"), OSError("https://private.invalid/raw-failure")])
+def test_deploy_main_cli_failure_preserves_verified_authority_commit(
+    monkeypatch,
+    capsys,
+    tmp_path,
+    failure,
+):
     source = tmp_path / "coordination-source"
     commit = _init_repo(source)
     _, release_root, env_file = _prepare_managed_release_layout(monkeypatch, tmp_path)
@@ -3583,7 +3589,7 @@ def test_deploy_main_cli_failure_preserves_verified_authority_commit(monkeypatch
     monkeypatch.setattr(
         release_authority,
         "collect_live_parity",
-        lambda *args, **kwargs: (_ for _ in ()).throw(ReleaseAuthorityError("later parity failure")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(failure),
     )
     monkeypatch.chdir(source)
     monkeypatch.setattr(
@@ -3606,7 +3612,10 @@ def test_deploy_main_cli_failure_preserves_verified_authority_commit(monkeypatch
 
     assert payload["authority_commit"] == commit
     assert payload["command"] == "deploy-main-commit"
-    assert payload["error"] == "later parity failure"
+    assert payload["error"] == (
+        str(failure) if isinstance(failure, ReleaseAuthorityError) else "release authority command failed"
+    )
+    assert "private.invalid" not in json.dumps(payload)
     assert env_file.is_file()
 
 
@@ -3633,6 +3642,35 @@ def test_deploy_main_cli_pre_authority_failure_omits_authority_commit(monkeypatc
     assert payload["command"] == "deploy-main-commit"
     assert payload["error"].startswith("coordination-source-commit gate failed:")
     assert "authority_commit" not in payload
+
+
+def test_deploy_main_cli_raw_pre_authority_failure_omits_authority_commit(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(
+        release_authority,
+        "assert_clean_coordination_source",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("https://private.invalid/pre-authority")),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py",
+            "deploy-main-commit",
+            "--release-root",
+            str(tmp_path / "managed" / "releases"),
+            "--commit",
+            "a" * 40,
+        ],
+    )
+
+    assert release_authority.main() == 2
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload == {
+        "command": "deploy-main-commit",
+        "error": "release authority command failed",
+        "verified": False,
+    }
 
 
 def test_image_validation_rejects_stale_underscore_compatibility_aliases():
