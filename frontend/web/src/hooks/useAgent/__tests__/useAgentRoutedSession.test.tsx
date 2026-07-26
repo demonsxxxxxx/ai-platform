@@ -643,8 +643,8 @@ test("useAgent carries the routed agent into a same-tab continuation", async () 
     await settle(harness.act);
 
     assert.equal(submissions.length, 2);
-    assert.equal(submissions[0]?.at(-1), "general-agent");
-    assert.equal(submissions[1]?.at(-1), "document-translation");
+    assert.equal(submissions[0]?.[8], "general-agent");
+    assert.equal(submissions[1]?.[8], "document-translation");
     assert.equal(harness.hook.sessionId, "session-routed");
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(sseCalls, 2);
@@ -694,7 +694,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
     });
 
     assert.equal(submissions.length, 1);
-    assert.equal(submissions[0]?.at(-1), "document-translation");
+    assert.equal(submissions[0]?.[8], "document-translation");
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
@@ -5878,6 +5878,106 @@ test("useAgent synchronously aborts a deferred run-control GET from the producti
     sessionApi.markRead = originalMarkRead;
     globalThis.fetch = originalFetch;
     await harness.cleanup();
+  }
+});
+
+test("useAgent synchronously retires an active Chat SSE from the production auth-incarnation event", async () => {
+  let restoreToastDismiss: (() => void) | null = null;
+  const harness = await loadReactHarness();
+  const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
+    "../../browserAuthCoordinator.ts"
+  );
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalGlobalFetch = globalThis.fetch;
+  const originalWindowFetch = dom.window.fetch;
+  let streamSignal: AbortSignal | null = null;
+  let rejectStream!: (reason?: unknown) => void;
+  let statusCalls = 0;
+  let streamCalls = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "认证代际流",
+    session_id: "session-auth-event-stream",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-auth-event-stream",
+    run_id: "run-auth-event-stream",
+    trace_id: "trace-auth-event-stream",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+  sessionApi.getStatus = (async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-auth-event-stream",
+      run_id: "run-auth-event-stream",
+      status: "running",
+    };
+  }) as typeof sessionApi.getStatus;
+  const nonClosingStream = ((_input: RequestInfo | URL, init?: RequestInit) => {
+    streamCalls += 1;
+    streamSignal = init?.signal as AbortSignal;
+    return new Promise<Response>((_resolve, reject) => {
+      rejectStream = reject;
+    });
+  }) as typeof fetch;
+  globalThis.fetch = nonClosingStream;
+  dom.window.fetch = nonClosingStream;
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("认证切换必须中止旧 SSE");
+      await Promise.resolve();
+    });
+    const activeStreamSignal = streamSignal as AbortSignal | null;
+    assert.ok(activeStreamSignal, "the Chat SSE should be active before auth turnover");
+    assert.equal(activeStreamSignal.aborted, false);
+    const toast = (await import("react-hot-toast")).default, originalDismiss = toast.dismiss;
+    const dismissedToastIds: Array<string | undefined> = [];
+    toast.dismiss = ((...args: Parameters<typeof toast.dismiss>) => (dismissedToastIds.push(args[0]), originalDismiss(...args))) as typeof toast.dismiss;
+    restoreToastDismiss = () => { toast.dismiss = originalDismiss; };
+    await harness.act(async () => {
+      const dispatched = dom.window.dispatchEvent(
+        new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
+          detail: { incarnation: "incarnation-retire-chat-sse" },
+        }) as unknown as { type: string; [key: string]: unknown },
+      );
+      assert.equal(dispatched, true);
+      assert.equal(
+        activeStreamSignal.aborted,
+        true,
+        "the event must synchronously abort the old Chat SSE before returning",
+      );
+      assert.deepEqual(dismissedToastIds, ["chat-queue"]);
+    });
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+
+    const abortError = new Error("old transport closed after auth turnover");
+    abortError.name = "AbortError";
+    rejectStream(abortError);
+    await settle(harness.act);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await settle(harness.act);
+
+    assert.equal(statusCalls, 0, "a retired stream must not reconcile status");
+    assert.equal(streamCalls, 1, "a retired stream must not reconnect");
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.deepEqual(dismissedToastIds, ["chat-queue"]);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getStatus = originalGetStatus;
+    globalThis.fetch = originalGlobalFetch;
+    dom.window.fetch = originalWindowFetch;
+    await harness.cleanup();
+    restoreToastDismiss?.();
   }
 });
 

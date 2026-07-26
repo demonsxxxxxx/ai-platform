@@ -807,6 +807,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     [runControlLifecycle],
   );
 
+  const clearReconcileOwners = useCallback(() => {
+    reconcileOwnerRef.current = null;
+    terminalHydrationOwnerRef.current = null;
+  }, []);
+
   useLayoutEffect(() => {
     const handleAuthIncarnationChange = (event: Event) => {
       const detail = (event as CustomEvent<{ incarnation?: unknown }>).detail;
@@ -831,6 +836,36 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       runControlAuthEventRevisionRef.current += 1;
       runControlAuthRevisionRef.current += 1;
       invalidateRunControl();
+      // Retire every old-principal stream owner before publishing the next
+      // auth incarnation. Stream callbacks use this generation boundary to
+      // skip reconciliation, reconnect, and transcript projection.
+      historyLoadTokenRef.current += 1;
+      sessionGenerationRef.current += 1;
+      streamVersionRef.current += 1;
+      clearReconcileOwners();
+      clearReconnectTimeout(reconnectTimeoutRef);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      isConnectingRef.current = false;
+      streamingMessageIdRef.current = null;
+      isReconnectFromHistoryRef.current = false;
+      retryCountRef.current = 0;
+      statusRetryCountRef.current = 0;
+      acceptedRunEventSequenceRef.current = {
+        sessionId: null,
+        runId: null,
+        sequence: null,
+      };
+      lastHistoryTimestampRef.current = null;
+      currentRunIdRef.current = null;
+      setCurrentRunId(null);
+      setIsLoading(false);
+      setConnectionStatus("disconnected");
+      setIsInitializingSandbox(false);
+      setSandboxError(null);
+      toast.dismiss("chat-queue");
       setBrowserAuthIncarnation(incarnation);
     };
     window.addEventListener(
@@ -842,12 +877,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         BROWSER_AUTH_INCARCINATION_EVENT,
         handleAuthIncarnationChange,
       );
-  }, [handoffActivePreAdmissionSubmission, invalidateRunControl]);
-
-  const clearReconcileOwners = useCallback(() => {
-    reconcileOwnerRef.current = null;
-    terminalHydrationOwnerRef.current = null;
-  }, []);
+  }, [
+    clearReconcileOwners,
+    handoffActivePreAdmissionSubmission,
+    invalidateRunControl,
+  ]);
 
   const convergeRunLifecycle = useCallback(
     (
