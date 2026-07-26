@@ -48,11 +48,11 @@ _DECLARATION_HASH_FIELDS = (
 _CAPABILITY_KINDS = frozenset({"builtin", "skill", "mcp"})
 _DECLARATION_LIFECYCLE_PHASES = frozenset({"selected"})
 _DECLARATION_LIFECYCLE_STATUSES = frozenset({"required"})
-_EVIDENCE_LIFECYCLE_PHASES = frozenset({"started", "completed", "failed"})
-_EVIDENCE_LIFECYCLE_STATUSES = frozenset({"in_progress", "succeeded", "failed"})
+_EVIDENCE_LIFECYCLE_PHASES = frozenset({"invocation_requested", "completed", "failed"})
+_EVIDENCE_LIFECYCLE_STATUSES = frozenset({"invoking", "succeeded", "failed"})
 _EVIDENCE_LIFECYCLE_PAIRS = frozenset(
     {
-        ("started", "in_progress"),
+        ("invocation_requested", "invoking"),
         ("completed", "succeeded"),
         ("failed", "failed"),
     }
