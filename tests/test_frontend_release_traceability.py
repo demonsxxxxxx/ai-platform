@@ -453,6 +453,25 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "corepack pnpm run ci:verify" in dockerfile
     assert "COPY tools ./tools" in dockerfile
     assert "COPY --from=build /workspace/frontend/web/dist" in dockerfile
+    healthcheck = next(
+        line for line in runtime_dockerfile.splitlines() if line.startswith("HEALTHCHECK ")
+    )
+    healthcheck_probes = [
+        "wget -q -O /dev/null http://127.0.0.1:8080/healthz",
+        "wget -q -O /dev/null http://127.0.0.1:8080/manifest.json",
+        "wget -q -O /dev/null http://127.0.0.1:8080/icons/icon.svg",
+        "wget -q -O /dev/null http://127.0.0.1:8080/icons/icon-192.png",
+        "wget -q -O /dev/null http://127.0.0.1:8080/icons/icon-512.png",
+    ]
+    assert "--interval=30s --timeout=3s --start-period=10s --retries=3" in healthcheck
+    assert all(probe in healthcheck for probe in healthcheck_probes)
+    assert healthcheck.count("&&") == len(healthcheck_probes) - 1
+    assert " || " not in healthcheck
+    assert ";" not in healthcheck
+    assert all(
+        f"{current_probe} && {next_probe}" in healthcheck
+        for current_probe, next_probe in zip(healthcheck_probes, healthcheck_probes[1:])
+    )
     assert "nginx.conf.template" in dockerfile
     mkdir_templates = "RUN mkdir -p /etc/nginx/templates /etc/nginx/templates-opensandbox"
     copy_full_template = (
