@@ -12,6 +12,7 @@ SUPPORTED_AGENT_EVENT_TYPES = {
     "tool_call_started",
     "tool_call_delta",
     "tool_call_completed",
+    "capability_invoking",
     "capability_completed",
     "capability_failed",
     "tool_permission_requested",

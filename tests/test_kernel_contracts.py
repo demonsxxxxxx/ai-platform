@@ -4,8 +4,11 @@ from pydantic import ValidationError
 from app.runtime.kernel_contracts import AgentEvent
 
 
-@pytest.mark.parametrize("event_type", ["capability_completed", "capability_failed"])
-def test_capability_terminal_facts_are_typed_agent_events(event_type):
+@pytest.mark.parametrize(
+    "event_type",
+    ["capability_invoking", "capability_completed", "capability_failed"],
+)
+def test_capability_lifecycle_facts_are_typed_agent_events(event_type):
     event = AgentEvent(
         type=event_type,
         message="Capability lifecycle update",

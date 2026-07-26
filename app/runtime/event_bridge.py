@@ -8,6 +8,7 @@ EVENT_STAGE_MAP = {
     "tool_call_started": "tool",
     "tool_call_delta": "tool",
     "tool_call_completed": "tool",
+    "capability_invoking": "capability",
     "capability_completed": "capability",
     "capability_failed": "capability",
     "tool_permission_requested": "tool_policy",
