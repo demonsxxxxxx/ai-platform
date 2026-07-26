@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException, Response
@@ -24,8 +25,10 @@ from app.routes.chat import (
     _admit_chat_submission,
     _audit_capability_denial,
     _canonical_pre_persistence_rejection_fingerprint,
+    _chat_submission_http_error,
     _file_row_matches_request_scope,
     _preledger_recovery_fingerprint,
+    _submission_code,
     _validate_queue_payload_for_enqueue,
     chat_stream,
     create_chat_session,
@@ -249,78 +252,66 @@ async def test_latest_session_run_input_read_is_principal_and_workspace_scoped()
     assert "runs.session_id = %s" in conn.sql
 
 
-def test_rejection_fingerprint_is_stable_safe_and_principal_session_scoped():
+def test_rejection_fingerprint_covers_complete_request_without_retaining_raw_values():
     request = ChatStreamRequest(
         message="reject selected tool",
-        session_id="session-a",
+        agent_id="agent-a",
+        skill_id="skill-a",
+        selected_skill={"skill_id": "skill-a", "expected_version": "version-a"},
+        agent_options={"model_id": "model-a"},
+        input={"endpoint": "https://private.example.test/mcp", "credential": "secret-a"},
+        file_ids=["file-a", "file-b"],
+        attachments=[{"id": "attachment-a", "kind": "document"}],
         submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
-        selected_mcp_tool_ids=[" unauthorized-private-tool ", "second-private-tool"],
-        input={
-            "endpoint": "https://private.example.test/mcp",
-            "credential": "private-credential",
-        },
     )
 
-    fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-        request=request,
-        principal=principal(),
-        query_agent_id=None,
-        code="mcp_tool_not_available",
-    )
-    reordered_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-        request=request.model_copy(
-            update={
-                "selected_mcp_tool_ids": [
-                    "second-private-tool",
-                    "unauthorized-private-tool",
-                ]
-            }
+    def fingerprint(candidate=request, *, query_agent_id="query-a", code="mcp_tool_not_available"):
+        return _canonical_pre_persistence_rejection_fingerprint(
+            request=candidate,
+            principal=principal(),
+            query_agent_id=query_agent_id,
+            code=code,
+        )
+
+    expected = fingerprint()
+    variants = {
+        "query_agent_id": (request, "query-b"),
+        "agent_id": (request.model_copy(update={"agent_id": "agent-b"}), "query-a"),
+        "raw_skill_id": (request.model_copy(update={"skill_id": "skill-b"}), "query-a"),
+        "selected_skill": (
+            request.model_copy(
+                update={
+                    "selected_skill": request.selected_skill.model_copy(
+                        update={"skill_id": "skill-b", "expected_version": "version-b"}
+                    )
+                }
+            ),
+            "query-a",
         ),
-        principal=principal(),
-        query_agent_id=None,
-        code="mcp_tool_not_available",
-    )
-    different_same_count_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-        request=request.model_copy(
-            update={
-                "selected_mcp_tool_ids": [
-                    "unauthorized-private-tool",
-                    "different-private-tool",
-                ]
-            }
+        "model": (request.model_copy(update={"agent_options": {"model_id": "model-b"}}), "query-a"),
+        "input": (request.model_copy(update={"input": {**request.input, "credential": "secret-b"}}), "query-a"),
+        "file_identity": (request.model_copy(update={"file_ids": ["file-c", "file-b"]}), "query-a"),
+        "attachment_identity": (
+            request.model_copy(update={"attachments": [{"id": "attachment-b", "kind": "document"}]}),
+            "query-a",
         ),
-        principal=principal(),
-        query_agent_id=None,
-        code="mcp_tool_not_available",
-    )
-    replay_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-        request=request,
-        principal=principal(),
-        query_agent_id=None,
-        code="mcp_tool_not_available",
-    )
-    other_user_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+    }
+
+    for name, (variant, query_agent_id) in variants.items():
+        assert fingerprint(variant, query_agent_id=query_agent_id) != expected, name
+    assert fingerprint() == expected
+    assert fingerprint(request.model_copy(update={"submission_id": None})) == expected
+    assert fingerprint(request.model_copy(update={"input": dict(reversed(request.input.items()))})) == expected
+    assert fingerprint(request.model_copy(update={"file_ids": list(reversed(request.file_ids))})) != expected
+    assert fingerprint(code="capability_not_authorized") != expected
+    assert expected != _canonical_pre_persistence_rejection_fingerprint(
         request=request,
         principal=principal(user_id="user-b"),
-        query_agent_id=None,
+        query_agent_id="query-a",
         code="mcp_tool_not_available",
     )
-    other_session_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-        request=request.model_copy(update={"session_id": "session-b"}),
-        principal=principal(),
-        query_agent_id=None,
-        code="mcp_tool_not_available",
-    )
-
-    assert fingerprint == replay_fingerprint
-    assert fingerprint == reordered_fingerprint
-    assert fingerprint != different_same_count_fingerprint
-    assert fingerprint != other_user_fingerprint
-    assert fingerprint != other_session_fingerprint
-    assert len(fingerprint) == 64
-    assert "unauthorized-private-tool" not in fingerprint
-    assert "private.example.test" not in fingerprint
-    assert "private-credential" not in fingerprint
+    assert len(expected) == 64
+    assert not any(raw in expected for raw in ("agent-a", "skill-a", "secret-a", "file-a"))
 
 
 @pytest.mark.asyncio
@@ -532,33 +523,141 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
 
 
+@pytest.mark.parametrize(
+    ("message", "reject", "roles", "request_input", "selector", "manifest_identities"),
+    [
+        ("请执行 Bash 命令 pwd", True, [], {}, {}, []),
+        ("请执行 Bash 命令 pwd", True, ["admin"], {}, {}, []),
+        ("请执行 Bash 命令 pwd", True, [], {"message": "hello"}, {}, []),
+        ("请执行 Bash 命令 pwd", True, [], {}, {}, ["Bash"]),
+        (
+            "请执行 Bash 命令 pwd", False, ["admin"], {},
+            {"agent_id": "qa-word-review", "skill_id": "qa-file-reviewer"},
+            ["Bash", "Write"],
+        ),
+        ("只解释 Bash 命令 pwd 是什么，不要执行", False, [], {}, {}, []),
+        ("不要执行 Bash 命令 pwd", False, [], {}, {}, []),
+        ("可以执行 Bash 吗？", False, [], {}, {}, []),
+    ],
+    ids=["undeclared", "admin", "override", "noncanonical", "declared", "explanatory", "negative", "question"],
+)
 @pytest.mark.asyncio
-async def test_keyed_chat_payload_mismatch_is_rejected_before_routing(monkeypatch):
-    request = ChatStreamRequest(
-        message="different payload",
-        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+async def test_chat_stream_required_bash_admission_precedes_side_effects(
+    monkeypatch, message, reject, roles, request_input, selector, manifest_identities
+):
+    keyed = reject and message == "请执行 Bash 命令 pwd" and not any(
+        (roles, request_input, selector, manifest_identities)
     )
-
-    async def existing_submission(*_args, **_kwargs):
-        return {
-            "submission_id": str(request.submission_id),
-            "request_fingerprint_sha256": "f" * 64,
-            "state": "queued",
-            "outcome_json": {},
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4" if keyed else None
+    race_id = "854b63f1-89f8-46cb-bc76-bc25891ba717"
+    manifest = snapshot_manifest(selector.get("skill_id", "general-chat"))
+    manifest["builtin_tool_identities"] = manifest_identities
+    business = {
+        name: AsyncMock(return_value=result)
+        for name, result in (
+            ("ensure_user", None),
+            ("create_session", "ses-required-bash"),
+            ("create_run", "run-required-bash"),
+            ("insert_run_skill_snapshots_at_creation", None),
+            ("append_message", "msg-required-bash"),
+            ("bind_files_to_run", None),
+            ("append_event", None),
+            ("create_tool_permission_request", None),
+        )
+    }
+    for name, mock in business.items():
+        monkeypatch.setattr(repository_module, name, mock)
+    authorize = AsyncMock(
+        return_value={
+            "executor_type": "claude-agent-worker",
+            "skill_version": manifest["content_hash"],
+            "input_modes": ["chat"],
         }
-
-    def forbidden_route(*_args, **_kwargs):
-        raise AssertionError("mismatched replay must not route intent")
-
+    )
+    manifests, enqueue = AsyncMock(return_value=[manifest]), AsyncMock(return_value=1)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", existing_submission, raising=False)
-    monkeypatch.setattr("app.routes.chat.route_intent", forbidden_route)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize)
+    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+    request = ChatStreamRequest(
+        message=message, input=request_input, submission_id=submission_id, **selector
+    )
+    race_request = request.model_copy(update={"submission_id": race_id})
+    if keyed:
+        fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+            request=request,
+            principal=principal(),
+            query_agent_id=None,
+            code="required_capability_unavailable",
+        )
+        rejected_row = {
+            "state": "rejected_before_persist",
+            "rejection_code": "required_capability_unavailable",
+            "request_fingerprint_sha256": fingerprint,
+        }
+        ledger_principal = AsyncMock()
+        monkeypatch.setattr(
+            repository_module,
+            "get_chat_submission",
+            AsyncMock(side_effect=[None, rejected_row, rejected_row, None]),
+        )
+        monkeypatch.setattr(repository_module, "ensure_submission_principal", ledger_principal)
+        monkeypatch.setattr(
+            repository_module,
+            "claim_chat_submission",
+            AsyncMock(side_effect=[
+                ({"state": "resolving"}, True), ({"state": "resolving"}, True),
+                (rejected_row, False), (rejected_row, False),
+            ]),
+        )
+        monkeypatch.setattr(repository_module, "finalize_chat_submission", AsyncMock())
 
-    with pytest.raises(HTTPException) as exc_info:
-        await chat_stream(request, principal=principal())
+    if reject:
+        async def rejected(call_request):
+            with pytest.raises(HTTPException) as exc_info:
+                await chat_stream(call_request, principal=principal(roles=roles))
+            return exc_info.value.status_code, exc_info.value.detail
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "submission_payload_mismatch"
+        first = await rejected(request)
+        if keyed:
+            replay = await rejected(request)
+            mismatch = await rejected(request.model_copy(update={"message": "请执行 Bash 命令 whoami"}))
+            race = await rejected(race_request)
+            public_detail = _chat_submission_http_error(
+                status_code=403, code="required_capability_unavailable"
+            ).detail
+            assert first == replay == race == (403, public_detail)
+            assert mismatch == (409, "submission_payload_mismatch")
+            assert ledger_principal.await_count == 4
+            assert authorize.await_count == 1
+        else:
+            assert first[0] == 403 and first[1]["detail_code"] == "required_capability_unavailable"
+        assert not any(mock.await_count for mock in business.values())
+        return
+    assert (await chat_stream(request, principal=principal(roles=roles))).status == "queued"
+    business["create_run"].assert_awaited_once()
+    business["create_tool_permission_request"].assert_not_awaited()
+    declaration = enqueue.await_args.args[0]["input"].get("_required_capability_declaration")
+    assert (declaration or {}).get("canonical_identity") == ("Bash" if selector else None)
+
+
+def test_submission_code_accepts_only_bounded_required_capability_detail_code():
+    assert _submission_code({"detail_code": "required_capability_unavailable"}) == "required_capability_unavailable"
+    assert _submission_code({"detail_code": "private_executor_detail"}) == "chat_submission_rejected"
+    safe = _chat_submission_http_error(
+        status_code=403, code="required_capability_unavailable"
+    ).detail
+    assert safe == {
+        "code": "required_capability_unavailable",
+        "detail_code": "required_capability_unavailable",
+        "message": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
+        "status": "unavailable",
+        "submission_disposition": "rejected_before_persist",
+    }
+    assert _chat_submission_http_error(status_code=403, code="private_error").detail == {
+        "code": "private_error",
+        "submission_disposition": "rejected_before_persist",
+    }
 
 
 @pytest.mark.asyncio
@@ -2284,7 +2383,7 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
 
     with pytest.raises(HTTPException) as replay_info:
         await chat_stream(
-            rejected_request(["second-private-tool", "unauthorized-private-tool"]),
+            rejected_request(["unauthorized-private-tool", "second-private-tool"]),
             principal=principal(),
         )
 
