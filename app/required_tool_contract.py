@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION, SDK_NATIVE
+from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
 from app.tool_policy import evaluate_tool_policy
 
 REQUIRED_CAPABILITY_DECLARATION_SCHEMA_VERSION = (
@@ -649,30 +649,13 @@ def required_builtin_capability_subjects(
     active: bool,
     distributed: bool,
 ) -> list[dict[str, Any]]:
-    """Merge an exact required identity into subjects without widening authority."""
+    """Preserve declared subjects without granting authority from a requirement."""
 
     if declaration is None:
         return existing_subjects
     _validate_declaration(declaration)
-    if any(subject.get("identity") == declaration.identity for subject in existing_subjects):
-        return existing_subjects
-    keys, required_keys = _BUILTIN_CAPABILITY_PARAMETERS[declaration.identity]
-    return [
-        *existing_subjects,
-        _builtin_subject(
-            identity=declaration.identity,
-            active=active,
-            distributed=distributed,
-            allowed_parameter_keys=keys,
-            required_parameter_keys=required_keys,
-            allowed_skill_names=[],
-            profile={
-                "strategy": SDK_NATIVE,
-                "command_isolation": NATIVE_COMMAND_ISOLATION,
-                "workspace_contract": "ai-platform.skill-workspace.v1",
-            },
-        ),
-    ]
+    del active, distributed
+    return existing_subjects
 
 
 def _binding_matches(left: Mapping[str, object], right: Mapping[str, object]) -> bool:

@@ -75,18 +75,28 @@ def test_negative_explanatory_question_and_lookalike_never_create_requirement(me
     assert parse_required_tool_declaration(message) is None
 
 
-def test_declaration_validation_rejects_forgery_and_subject_constructor_is_exact():
+def test_required_builtin_subject_preserves_existing_server_declaration():
     declaration = _declaration()
+    declared_subjects = [{"identity": "Bash", "declared": True}]
     subjects = required_builtin_capability_subjects(
         declaration=declaration,
-        existing_subjects=[],
+        existing_subjects=declared_subjects,
         active=True,
         distributed=True,
     )
 
-    assert [subject["identity"] for subject in subjects] == ["Bash"]
-    assert subjects[0]["required_parameter_keys"] == ["command"]
-    assert subjects[0]["command_isolation"] == "sibling-tool-sandbox-v1"
+    assert subjects is declared_subjects
+
+
+def test_required_builtin_subject_never_mints_undeclared_authority_and_rejects_forgery():
+    declaration = _declaration()
+
+    assert required_builtin_capability_subjects(
+        declaration=declaration,
+        existing_subjects=[],
+        active=True,
+        distributed=True,
+    ) == []
     with pytest.raises(RequiredToolContractError, match="required_tool_declaration_mismatch"):
         required_builtin_capability_subjects(
             declaration=replace(declaration, declaration_sha256="0" * 64),
