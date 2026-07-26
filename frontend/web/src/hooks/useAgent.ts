@@ -865,6 +865,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setConnectionStatus("disconnected");
       setIsInitializingSandbox(false);
       setSandboxError(null);
+      toast.dismiss("chat-queue");
       setBrowserAuthIncarnation(incarnation);
     };
     window.addEventListener(

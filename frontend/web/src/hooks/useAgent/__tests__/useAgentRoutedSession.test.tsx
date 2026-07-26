@@ -5882,6 +5882,7 @@ test("useAgent synchronously aborts a deferred run-control GET from the producti
 });
 
 test("useAgent synchronously retires an active Chat SSE from the production auth-incarnation event", async () => {
+  let restoreToastDismiss: (() => void) | null = null;
   const harness = await loadReactHarness();
   const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
     "../../browserAuthCoordinator.ts"
@@ -5925,7 +5926,6 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
   }) as typeof fetch;
   globalThis.fetch = nonClosingStream;
   dom.window.fetch = nonClosingStream;
-
   try {
     await harness.act(async () => {
       await harness.hook.sendMessage("认证切换必须中止旧 SSE");
@@ -5934,7 +5934,10 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
     const activeStreamSignal = streamSignal as AbortSignal | null;
     assert.ok(activeStreamSignal, "the Chat SSE should be active before auth turnover");
     assert.equal(activeStreamSignal.aborted, false);
-
+    const toast = (await import("react-hot-toast")).default, originalDismiss = toast.dismiss;
+    const dismissedToastIds: Array<string | undefined> = [];
+    toast.dismiss = ((...args: Parameters<typeof toast.dismiss>) => (dismissedToastIds.push(args[0]), originalDismiss(...args))) as typeof toast.dismiss;
+    restoreToastDismiss = () => { toast.dismiss = originalDismiss; };
     await harness.act(async () => {
       const dispatched = dom.window.dispatchEvent(
         new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
@@ -5947,6 +5950,7 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
         true,
         "the event must synchronously abort the old Chat SSE before returning",
       );
+      assert.deepEqual(dismissedToastIds, ["chat-queue"]);
     });
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
@@ -5964,6 +5968,7 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.deepEqual(dismissedToastIds, ["chat-queue"]);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;
@@ -5972,6 +5977,7 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
     globalThis.fetch = originalGlobalFetch;
     dom.window.fetch = originalWindowFetch;
     await harness.cleanup();
+    restoreToastDismiss?.();
   }
 });
 
