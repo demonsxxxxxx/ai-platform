@@ -256,6 +256,9 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
     "skill_used": _ChatPublicRunEventProjection(
         "capability_completed", "capability", "所需能力已完成", "completed"
     ),
+    "capability_invoking": _ChatPublicRunEventProjection(
+        "capability_invoking", "capability", "所需能力已请求调用", "active"
+    ),
     "capability_completed": _ChatPublicRunEventProjection(
         "capability_completed", "capability", "所需能力已完成", "completed"
     ),
@@ -455,6 +458,7 @@ def _strict_capability_chat_product(
         "capability_selected",
         "skill_used",
         "tool_call_completed",
+        "capability_invoking",
         "capability_completed",
         "capability_failed",
     }:
@@ -487,6 +491,7 @@ def _strict_capability_chat_product(
         "capability_selected": "selected",
         "skill_used": "completed",
         "tool_call_completed": "completed",
+        "capability_invoking": "invoking",
         "capability_completed": "completed",
         "capability_failed": "failed",
     }[raw_event_type]
