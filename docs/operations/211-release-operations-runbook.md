@@ -31,7 +31,7 @@ test "$(git -C "$SOURCE" rev-parse HEAD)" = "$TARGET"
 test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=all)"
 cd "$SOURCE"
 timeout --signal=INT --kill-after=30s 24000s \
-  python3 tools/release_authority.py deploy-main-commit \
+  python3 -B tools/release_authority.py deploy-main-commit \
   --release-root "$ROOT/releases" \
   --commit "$TARGET" \
   --strategy auto \

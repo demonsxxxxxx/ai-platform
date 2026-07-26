@@ -137,12 +137,14 @@ def test_opensandbox_compose_overlay_disables_docker_egress_policy_for_api_and_w
 def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract():
     text = RUNBOOK.read_text(encoding="utf-8")
     contract_text = " ".join(text.split())
+    canonical_invocation = "python3 -B tools/release_authority.py deploy-main-commit"
 
     assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
     assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
-    assert text.count("python3 tools/release_authority.py deploy-main-commit") == 1
+    assert text.count(canonical_invocation) == 1
+    assert "python3 tools/release_authority.py deploy-main-commit" not in text
     assert text.count("umask 077") == 1
-    assert text.index("umask 077") < text.index("python3 tools/release_authority.py deploy-main-commit")
+    assert text.index("umask 077") < text.index(canonical_invocation)
     assert "Resolve `SOURCE`" in text
     assert "and `ROOT` from the current 211 host mapping" in text
     assert "`docs/agent-rules/ai-platform-guardrails.md`, the authoritative source" in text
@@ -221,11 +223,40 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert 'test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=all)"' in command
     assert command.index("fetch --no-tags") < command.index("checkout --detach")
     assert command.index("checkout --detach") < command.index("rev-parse HEAD")
-    assert command.index("rev-parse HEAD") < command.index("python3 tools/release_authority.py")
+    assert command.index("rev-parse HEAD") < command.index(canonical_invocation)
     assert "git -C \"$SOURCE\" clean" not in command
     assert "git -C \"$SOURCE\" reset" not in command
     assert "git -C \"$SOURCE\" stash" not in command
     assert "`authority_commit`" in text
+
+
+def test_direct_release_authority_cli_no_bytecode_flag_leaves_no_sibling_bytecode(tmp_path):
+    isolated_root = tmp_path / "direct-release-cli"
+    isolated_tools = isolated_root / "tools"
+    isolated_tools.mkdir(parents=True)
+    for filename in (
+        "release_authority.py",
+        "release_parity_convergence.py",
+        "release_plan.py",
+    ):
+        (isolated_tools / filename).write_bytes((ROOT / "tools" / filename).read_bytes())
+
+    assert not list(isolated_root.rglob("__pycache__"))
+    assert not list(isolated_root.rglob("*.pyc"))
+    parent_bytecode_flag = sys.dont_write_bytecode
+
+    result = subprocess.run(
+        [sys.executable, "-B", str(isolated_tools / "release_authority.py"), "--help"],
+        cwd=isolated_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "usage:" in result.stdout
+    assert sys.dont_write_bytecode is parent_bytecode_flag
+    assert not list(isolated_root.rglob("__pycache__"))
+    assert not list(isolated_root.rglob("*.pyc"))
 
 
 def test_backend_and_frontend_images_publish_release_authority_labels():
@@ -3166,17 +3197,18 @@ def _install_checkout_git_runner(
     ignored_paths: tuple[str, ...] = (),
     checkout_setup=None,
 ):
-    commands: list[tuple[list[str], Path | None, bool]] = []
+    commands: list[tuple[list[str], Path | None, bool, int]] = []
 
-    def fake_run(command, *, cwd=None, check=True, text=True, env=None):
+    def fake_run(command, *, cwd=None, check=True, text=True, env=None, umask=-1):
         command = list(command)
         cwd_path = Path(cwd) if cwd is not None else None
-        commands.append((command, cwd_path, check))
+        commands.append((command, cwd_path, check, umask))
         stdout = ""
         returncode = 0
         if command[:2] == ["git", "init"]:
             assert cwd_path is not None
             (cwd_path / ".git").mkdir()
+            (cwd_path / ".git" / "config").write_text("[core]\n", encoding="utf-8")
         elif command[1:4] == ["config", "--get", "remote.origin.url"]:
             stdout = origin + "\n"
         elif command[1:3] == ["rev-parse", "HEAD"]:
@@ -3188,7 +3220,12 @@ def _install_checkout_git_runner(
         elif command[1:3] == ["merge-base", "--is-ancestor"]:
             returncode = ancestor_returncode
         elif command[1:3] == ["checkout", "--detach"] and checkout_setup is not None:
-            checkout_setup(cwd_path)
+            original_umask = os.umask(umask) if umask != -1 else None
+            try:
+                checkout_setup(cwd_path)
+            finally:
+                if original_umask is not None:
+                    os.umask(original_umask)
         if not text:
             stdout = stdout.encode("utf-8")
             stderr = b""
@@ -3221,12 +3258,15 @@ def test_materialize_main_checkout_fetches_explicit_refspec_into_isolated_commit
     assert checkout == release_root / commit
     assert checkout.is_dir()
     assert (checkout / ".git").is_dir()
-    git_commands = [command for command, _, _ in commands if command[0] == "git"]
+    git_commands = [command for command, _, _, _ in commands if command[0] == "git"]
     assert ["git", "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"] in git_commands
     assert ["git", "cat-file", "-e", f"{commit}^{{commit}}"] in git_commands
     assert ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/origin/main"] in git_commands
     assert ["git", "checkout", "--detach", commit] in git_commands
     assert not any(command[1] in {"archive", "worktree"} for command in git_commands)
+    checkout_command = ["git", "checkout", "--detach", commit]
+    assert [umask for command, _, _, umask in commands if command == checkout_command] == [0o022]
+    assert all(umask == -1 for command, _, _, umask in commands if command != checkout_command)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX permission bits")
@@ -3235,7 +3275,6 @@ def test_materialize_main_checkout_new_tree_ignores_permissive_ambient_umask(mon
     release_root = tmp_path / "releases"
 
     def materialize_content(checkout):
-        (checkout / ".git" / "config").write_text("[core]\n", encoding="utf-8")
         nested = checkout / "nested"
         nested.mkdir()
         (nested / "tracked.txt").write_text("tracked\n", encoding="utf-8")
@@ -3255,17 +3294,13 @@ def test_materialize_main_checkout_new_tree_ignores_permissive_ambient_umask(mon
         os.umask(original_umask)
 
     executable = checkout / "bin" / "run-release"
-    protected_paths = (
-        checkout,
-        checkout / ".git",
-        checkout / ".git" / "config",
-        checkout / "nested",
-        checkout / "nested" / "tracked.txt",
-        checkout / "bin",
-        executable,
-    )
-    assert all(stat.S_IMODE(path.stat().st_mode) & 0o022 == 0 for path in protected_paths)
-    assert stat.S_IMODE(executable.stat().st_mode) & 0o111
+    assert stat.S_IMODE(checkout.stat().st_mode) == 0o700
+    assert stat.S_IMODE((checkout / ".git").stat().st_mode) == 0o700
+    assert stat.S_IMODE((checkout / ".git" / "config").stat().st_mode) == 0o600
+    assert stat.S_IMODE((checkout / "nested").stat().st_mode) == 0o755
+    assert stat.S_IMODE((checkout / "nested" / "tracked.txt").stat().st_mode) == 0o644
+    assert stat.S_IMODE((checkout / "bin").stat().st_mode) == 0o755
+    assert stat.S_IMODE(executable.stat().st_mode) == 0o755
 
 
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX umask semantics")
@@ -3273,10 +3308,14 @@ def test_materialize_main_checkout_restores_ambient_umask_after_failure(monkeypa
     commit = "2" * 40
     release_root = tmp_path / "releases"
 
-    def fail_git(*args, **kwargs):
+    def fail_checkout(_checkout):
         raise OSError("forced materialization failure")
 
-    monkeypatch.setattr(release_authority, "_git", fail_git)
+    commands = _install_checkout_git_runner(
+        monkeypatch,
+        commit=commit,
+        checkout_setup=fail_checkout,
+    )
     original_umask = os.umask(0o002)
     try:
         with pytest.raises(OSError, match="forced materialization failure"):
@@ -3289,6 +3328,11 @@ def test_materialize_main_checkout_restores_ambient_umask_after_failure(monkeypa
 
     assert (release_root / f".{commit}.incoming").is_dir()
     assert not (release_root / commit).exists()
+    assert [
+        umask
+        for command, _, _, umask in commands
+        if command == ["git", "checkout", "--detach", commit]
+    ] == [0o022]
 
 
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX permission bits")
@@ -3328,7 +3372,7 @@ def test_materialize_main_checkout_reuses_only_clean_matching_checkout(monkeypat
 
     assert release_authority.materialize_main_checkout(release_root, commit) == checkout
 
-    git_commands = [command for command, _, _ in commands]
+    git_commands = [command for command, _, _, _ in commands]
     fetch_command = ["git", "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"]
     assert git_commands.count(fetch_command) == 1
     fetch_index = git_commands.index(fetch_command)
@@ -3452,7 +3496,7 @@ def test_materialize_main_checkout_rejects_ignored_file_before_reuse(monkeypatch
         raise AssertionError("a reused checkout with ignored files must fail closed")
 
     assert ["git", "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"] not in [
-        command for command, _, _ in commands
+        command for command, _, _, _ in commands
     ]
 
 
@@ -4878,6 +4922,62 @@ def test_run_timeout_retains_only_classified_stderr_diagnostic():
         "stderr_status": "recognized",
         "stderr_summary": "no space left on device",
     }
+
+
+def test_run_forwards_explicit_and_default_umask_to_process_kwargs(monkeypatch):
+    requested_umasks: list[int] = []
+    popen_umasks: list[int] = []
+
+    class FakeProcess:
+        returncode = 0
+        stdin = None
+        stdout = None
+        stderr = None
+
+        @staticmethod
+        def communicate(*, input=None, timeout=None):
+            return ("", "")
+
+    def fake_process_group_kwargs(*, umask=-1):
+        requested_umasks.append(umask)
+        return {"umask": umask}
+
+    def fake_popen(command, **kwargs):
+        popen_umasks.append(kwargs["umask"])
+        return FakeProcess()
+
+    monkeypatch.setattr(release_authority, "_owned_process_group_kwargs", fake_process_group_kwargs)
+    monkeypatch.setattr(release_authority, "_create_owned_windows_job", lambda: None)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    assert release_authority._run(["git", "status"], umask=0o022).returncode == 0
+    assert release_authority._run(["git", "status"]).returncode == 0
+
+    assert requested_umasks == [0o022, -1]
+    assert popen_umasks == [0o022, -1]
+
+
+def test_owned_process_group_kwargs_passes_umask_only_on_posix(monkeypatch):
+    with monkeypatch.context() as context:
+        context.setattr(release_authority.os, "name", "posix")
+        assert release_authority._owned_process_group_kwargs(umask=0o022) == {
+            "start_new_session": True,
+            "umask": 0o022,
+        }
+        assert release_authority._owned_process_group_kwargs() == {
+            "start_new_session": True,
+            "umask": -1,
+        }
+
+    with monkeypatch.context() as context:
+        context.setattr(release_authority.os, "name", "nt")
+        windows_kwargs = release_authority._owned_process_group_kwargs(umask=0o022)
+        assert "umask" not in windows_kwargs
+        assert "creationflags" in windows_kwargs
+
+    with monkeypatch.context() as context:
+        context.setattr(release_authority.os, "name", "other")
+        assert release_authority._owned_process_group_kwargs(umask=0o022) == {}
 
 
 def test_run_returns_normal_completed_process_without_terminating_successful_command(monkeypatch):
