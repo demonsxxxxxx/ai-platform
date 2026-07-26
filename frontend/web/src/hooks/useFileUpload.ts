@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
-import { uploadApi } from "../services/api";
+import { uploadApi, UploadRequestError } from "../services/api/upload";
 import type { FileCheckResult } from "../types";
 import { compressImageFile } from "../utils/imageCompression";
 import { uuid } from "../utils/uuid";
@@ -22,6 +22,29 @@ export interface UseFileUploadOptions {
       | MessageAttachment[]
       | ((prev: MessageAttachment[]) => MessageAttachment[]),
   ) => void;
+}
+
+type UploadTranslation = (key: string) => unknown;
+
+/** Project bounded upload failures to product copy and clean failed temporary attachments. */
+export function settleUploadFailure(
+  error: unknown,
+  t: UploadTranslation,
+  removeTemporaryAttachment: () => void,
+): string | null {
+  if (error instanceof UploadRequestError && error.kind === "cancelled") {
+    return null;
+  }
+
+  const key =
+    error instanceof UploadRequestError && error.kind === "file_too_large"
+      ? "fileUpload.serverFileTooLarge"
+      : error instanceof UploadRequestError &&
+          error.kind === "unsupported_file_type"
+        ? "fileUpload.serverUnsupportedFileType"
+        : "fileUpload.uploadFailedRecoverable";
+  removeTemporaryAttachment();
+  return String(t(key));
 }
 
 function getFileCategory(file: File): FileCategory {
@@ -233,21 +256,19 @@ export function useFileUpload({
           })
           .catch((error) => {
             abortMapRef.current.delete(tempId);
-            if (
-              error instanceof Error &&
-              error.message === "Upload was aborted"
-            ) {
+            const message = settleUploadFailure(error, t, () => {
+              onAttachmentsChange((prev: MessageAttachment[]) =>
+                prev.filter((attachment) => attachment.id !== tempId),
+              );
+            });
+            if (message === null) {
               return;
             }
-            console.error("Upload failed:", error);
-            toast.error(
-              error instanceof Error
-                ? error.message
-                : t("fileUpload.uploadFailed"),
-            );
-            onAttachmentsChange((prev: MessageAttachment[]) =>
-              prev.filter((a) => a.id !== tempId),
-            );
+            console.error("[Upload] failed", {
+              kind: error instanceof UploadRequestError ? error.kind : "recoverable",
+              status: error instanceof UploadRequestError ? error.status : undefined,
+            });
+            toast.error(message);
           });
       });
     },
