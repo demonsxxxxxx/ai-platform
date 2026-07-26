@@ -24,6 +24,7 @@ from app.routes.chat import (
     _admit_chat_submission,
     _audit_capability_denial,
     _canonical_pre_persistence_rejection_fingerprint,
+    _chat_submission_http_error,
     _file_row_matches_request_scope,
     _preledger_recovery_fingerprint,
     _submission_code,
@@ -559,6 +560,12 @@ async def test_chat_stream_required_bash_admission_precedes_side_effects(
     monkeypatch, message, reject, roles, request_input, selector, manifest_identities
 ):
     side_effects, queued_payloads = [], []
+    keyed = reject and message == "请执行 Bash 命令 pwd" and not any(
+        (roles, request_input, selector, manifest_identities)
+    )
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4" if keyed else None
+    race_id = "854b63f1-89f8-46cb-bc76-bc25891ba717"
+    ledger, normal_claimed = {}, False
     manifest = snapshot_manifest(selector.get("skill_id", "general-chat"))
     manifest["builtin_tool_identities"] = manifest_identities
 
@@ -584,6 +591,33 @@ async def test_chat_stream_required_bash_admission_precedes_side_effects(
         queued_payloads.append(payload)
         return 1
 
+    async def get_submission(*_args, **kwargs):
+        return None if kwargs["submission_id"] == race_id or not ledger else dict(ledger)
+
+    async def claim_submission(*_args, **kwargs):
+        nonlocal normal_claimed
+        if kwargs["submission_id"] == race_id:
+            return {
+                "state": "rejected_before_persist",
+                "rejection_code": "required_capability_unavailable",
+                "request_fingerprint_sha256": _canonical_pre_persistence_rejection_fingerprint(
+                    request=race_request,
+                    principal=principal(),
+                    query_agent_id=None,
+                    code="required_capability_unavailable",
+                ),
+            }, False
+        if not normal_claimed:
+            normal_claimed = True
+            return {"state": "resolving"}, True
+        if ledger:
+            return dict(ledger), False
+        ledger.update(request_fingerprint_sha256=kwargs["request_fingerprint_sha256"])
+        return dict(ledger), True
+
+    async def finalize_submission(*_args, **kwargs):
+        ledger.update(kwargs)
+
     context = {
         "schema_version": "ai-platform.context-snapshot.v1",
         "context_snapshot_id": "ctx-required-bash",
@@ -608,16 +642,43 @@ async def test_chat_stream_required_bash_admission_precedes_side_effects(
         monkeypatch.setattr(repository_module, name, spy(name, result))
     monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", spy("record_initial_context_snapshot", context))
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
-    request = ChatStreamRequest(message=message, input=request_input, **selector)
+    if keyed:
+        monkeypatch.setattr(repository_module, "get_chat_submission", get_submission)
+        monkeypatch.setattr(repository_module, "ensure_submission_principal", spy("ledger_principal"))
+        monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
+        monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_submission)
+    request = ChatStreamRequest(
+        message=message, input=request_input, submission_id=submission_id, **selector
+    )
+    race_request = request.model_copy(update={"submission_id": race_id})
 
     if reject:
-        with pytest.raises(HTTPException) as exc_info:
-            await chat_stream(request, principal=principal(roles=roles))
-        assert (exc_info.value.status_code, exc_info.value.detail, side_effects) == (
-            403,
-            {"status": "unavailable", "detail_code": "required_capability_unavailable", "message": "任务所需执行能力当前不可用。请调整请求或联系管理员。"},
-            [],
-        )
+        async def rejected(call_request):
+            with pytest.raises(HTTPException) as exc_info:
+                await chat_stream(call_request, principal=principal(roles=roles))
+            return exc_info.value.status_code, exc_info.value.detail
+
+        first = await rejected(request)
+        if keyed:
+            replay = await rejected(request)
+            mismatch = await rejected(request.model_copy(update={"message": "请执行 Bash 命令 whoami"}))
+            race = await rejected(race_request)
+            public_detail = {
+                "code": "required_capability_unavailable",
+                "detail_code": "required_capability_unavailable",
+                "message": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
+                "status": "unavailable",
+                "submission_disposition": "rejected_before_persist",
+            }
+            assert first == replay == race == (403, public_detail)
+            assert mismatch == (409, "submission_payload_mismatch")
+            assert side_effects == ["ledger_principal"] * 4
+        else:
+            assert first == (
+                403,
+                {"status": "unavailable", "detail_code": "required_capability_unavailable", "message": "任务所需执行能力当前不可用。请调整请求或联系管理员。"},
+            )
+            assert side_effects == []
         return
     assert (await chat_stream(request, principal=principal(roles=roles))).status == "queued"
     assert "create_run" in side_effects and "enqueue_run" in side_effects
@@ -629,6 +690,23 @@ async def test_chat_stream_required_bash_admission_precedes_side_effects(
 def test_submission_code_accepts_only_bounded_required_capability_detail_code():
     assert _submission_code({"detail_code": "required_capability_unavailable"}) == "required_capability_unavailable"
     assert _submission_code({"detail_code": "private_executor_detail"}) == "chat_submission_rejected"
+
+
+def test_required_capability_submission_wrapper_projects_only_safe_public_detail():
+    safe = _chat_submission_http_error(
+        status_code=403, code="required_capability_unavailable"
+    ).detail
+    assert safe == {
+        "code": "required_capability_unavailable",
+        "detail_code": "required_capability_unavailable",
+        "message": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
+        "status": "unavailable",
+        "submission_disposition": "rejected_before_persist",
+    }
+    assert _chat_submission_http_error(status_code=403, code="private_error").detail == {
+        "code": "private_error",
+        "submission_disposition": "rejected_before_persist",
+    }
 
 
 @pytest.mark.asyncio
