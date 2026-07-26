@@ -29,6 +29,58 @@ export interface UploadHandle {
   abort: () => void;
 }
 
+export type UploadRequestErrorKind =
+  | "file_too_large"
+  | "unsupported_file_type"
+  | "recoverable"
+  | "cancelled";
+
+type SafeUploadErrorCode = "file_too_large" | "unsupported_file_type";
+
+/** A bounded upload failure projection that never contains backend detail. */
+export class UploadRequestError extends Error {
+  constructor(
+    readonly kind: UploadRequestErrorKind,
+    readonly status?: number,
+    readonly code?: SafeUploadErrorCode,
+  ) {
+    super("Upload request failed");
+    this.name = "UploadRequestError";
+  }
+}
+
+function knownUploadErrorCode(
+  detail: unknown,
+): SafeUploadErrorCode | undefined {
+  const candidate =
+    typeof detail === "string"
+      ? detail
+      : detail !== null &&
+          typeof detail === "object" &&
+          !Array.isArray(detail) &&
+          Object.prototype.hasOwnProperty.call(detail, "code")
+        ? (detail as { code?: unknown }).code
+        : undefined;
+  if (candidate === "file_too_large" || candidate === "unsupported_file_type") {
+    return candidate;
+  }
+  return undefined;
+}
+
+function uploadRequestErrorFromResponse(
+  status: number,
+  detail: unknown,
+): UploadRequestError {
+  const code = knownUploadErrorCode(detail);
+  if (status === 413 && code === "file_too_large") {
+    return new UploadRequestError("file_too_large", status, code);
+  }
+  if (status === 415 && code === "unsupported_file_type") {
+    return new UploadRequestError("unsupported_file_type", status, code);
+  }
+  return new UploadRequestError("recoverable", status);
+}
+
 let _configPromise: Promise<UploadConfig> | null = null;
 
 export const uploadApi = {
@@ -60,7 +112,7 @@ export const uploadApi = {
 
         const token = await getValidAccessToken();
         if (aborted) {
-          reject(new Error("Upload was aborted"));
+          reject(new UploadRequestError("cancelled"));
           return;
         }
 
@@ -68,6 +120,9 @@ export const uploadApi = {
 
         if (onProgress) {
           xhr.upload.addEventListener("progress", (event) => {
+            if (aborted) {
+              return;
+            }
             if (event.lengthComputable) {
               const progress = Math.round((event.loaded / event.total) * 100);
               onProgress(progress, event.loaded, event.total);
@@ -106,21 +161,19 @@ export const uploadApi = {
 
           try {
             const errorData = JSON.parse(xhr.responseText);
-            reject(
-              new Error(errorData.detail || `Upload failed: ${xhr.statusText}`),
-            );
+            reject(uploadRequestErrorFromResponse(xhr.status, errorData.detail));
           } catch {
-            reject(new Error(`Upload failed: ${xhr.statusText}`));
+            reject(uploadRequestErrorFromResponse(xhr.status, undefined));
           }
         });
 
         xhr.addEventListener("error", () => {
-          reject(new Error("Network error during upload"));
+          reject(new UploadRequestError("recoverable"));
         });
 
         xhr.addEventListener("abort", () => {
           aborted = true;
-          reject(new Error("Upload was aborted"));
+          reject(new UploadRequestError("cancelled"));
         });
 
         const url = `${API_BASE}/api/upload/file?folder=${encodeURIComponent(
