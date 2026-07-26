@@ -1,6 +1,44 @@
 import pytest
 
-from app.intent_router import FileSummary, fallback_to_general_chat, route_intent
+from app.intent_router import (
+    FileSummary,
+    classify_execution_polarity,
+    fallback_to_general_chat,
+    route_intent,
+)
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("", "unspecified"),
+        ("请问账号流程", "unspecified"),
+        ("如何规划这件事", "unspecified"),
+        ("can you help with this", "unspecified"),
+        ("什么是知识库", "non_execution"),
+        ("如何使用 Skill（仅解释）", "non_execution"),
+        ("can you explain MCP", "non_execution"),
+        ("不要调用 MCP，但请使用 MCP", "non_execution"),
+        ("请查询知识库中的账号权限申请流程", "affirmative"),
+        ("Please search the knowledge base for the access process", "affirmative"),
+        ("please use selected Skill now", "affirmative"),
+        ("调用 MCP 搜索员工手册", "affirmative"),
+    ],
+)
+def test_current_turn_execution_polarity(message, expected):
+    assert classify_execution_polarity(message) == expected
+
+
+def test_non_execution_vetoes_confirmed_capability():
+    decision = route_intent(
+        "不要调用知识库，只解释流程",
+        [],
+        confirmed_capability_id="knowledge_answer",
+    )
+
+    assert decision.execution_polarity == "non_execution"
+    assert decision.selected_capability == "general_chat"
+    assert decision.confirmed_by_user is False
 
 
 def test_docx_review_routes_to_document_review():
