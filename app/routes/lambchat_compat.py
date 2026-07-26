@@ -1,26 +1,42 @@
+# ruff: noqa: B008
+
 import asyncio
 import json
 import re
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.auth import AuthPrincipal, is_ai_admin, require_principal, sign_principal_session, verify_principal_session
+from app import repositories, session_actions
+from app.auth import (
+    AuthPrincipal,
+    is_ai_admin,
+    require_principal,
+    sign_principal_session,
+    verify_principal_session,
+)
+from app.control_plane_contracts import (
+    EVENT_ENVELOPE_SCHEMA_VERSION,
+    sanitize_public_text,
+    standard_trace_id,
+)
 from app.db import transaction
 from app.model_catalog import build_model_catalog
 from app.models import LoginRequest, SessionRenameRequest
-from app import repositories, session_actions
-from app.routes.auth import _login_principal
-from app.routes.files import upload_file as upload_platform_file
 from app.projection_redaction import (
     capability_id_from_skill,
     public_agent_id_for_projection,
     public_skill_display_label,
 )
-from app.control_plane_contracts import EVENT_ENVELOPE_SCHEMA_VERSION, sanitize_public_text, standard_trace_id
-from app.routes.runs import artifact_card, event_visible_to_principal, run_event_response
+from app.routes.auth import _login_principal
+from app.routes.files import upload_file as upload_platform_file
+from app.routes.runs import (
+    artifact_card,
+    event_visible_to_principal,
+    run_event_response,
+)
 from app.run_projection import public_terminal_detail
 from app.settings import get_settings
 from app.tool_permission_projection import tool_permission_public_event_payload
@@ -237,6 +253,15 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
     "tool_call_completed": _ChatPublicRunEventProjection(
         "agent_step_completed", "activity", "受控处理步骤已完成", "completed"
     ),
+    "skill_used": _ChatPublicRunEventProjection(
+        "capability_completed", "capability", "所需能力已完成", "completed"
+    ),
+    "capability_completed": _ChatPublicRunEventProjection(
+        "capability_completed", "capability", "所需能力已完成", "completed"
+    ),
+    "capability_failed": _ChatPublicRunEventProjection(
+        "capability_failed", "capability", "所需能力未完成", "failed"
+    ),
     "agent_step_started": _ChatPublicRunEventProjection(
         "agent_step_started", "activity", "正在执行当前计划步骤，完成后将汇总结果", "active"
     ),
@@ -357,6 +382,9 @@ def _strict_typed_chat_event_product(
     shared compatibility event builder.
     """
     raw_event_type = str(event.get("event_type") or "")
+    capability_product = _strict_capability_chat_product(run, event, principal)
+    if capability_product is not None:
+        return capability_product
     if raw_event_type not in {
         "assistant_delta",
         "tool_permission_requested",
@@ -414,6 +442,64 @@ def _strict_typed_chat_event_product(
     )
 
 
+def _strict_capability_chat_product(
+    run: dict[str, Any],
+    event: dict[str, Any],
+    principal: AuthPrincipal,
+) -> _StrictChatEventProduct | None:
+    """Project current and legacy capability rows to one identity-safe product."""
+
+    raw_event_type = str(event.get("event_type") or "")
+    if raw_event_type not in {
+        "skill_selected",
+        "capability_selected",
+        "skill_used",
+        "tool_call_completed",
+        "capability_completed",
+        "capability_failed",
+    }:
+        return None
+    if not _chat_event_marked_visible(event) or not event_visible_to_principal(event, principal):
+        return None
+    payload = event.get("payload_json")
+    if not isinstance(payload, dict):
+        return None
+    kind = ""
+    name = ""
+    status = ""
+    capability = payload.get("capability")
+    if isinstance(capability, dict):
+        kind = str(capability.get("kind") or "")
+        name = public_skill_display_label(capability.get("name")) or ""
+        status = str(capability.get("status") or "")
+    elif raw_event_type in {"skill_selected", "skill_used"}:
+        kind = "skill"
+        name = public_skill_display_label(payload.get("public_capability_label")) or ""
+        status = "selected" if raw_event_type == "skill_selected" else "completed"
+    elif raw_event_type == "tool_call_completed" and payload.get("tool_category") == "mcp":
+        kind = "mcp"
+        name = public_skill_display_label(payload.get("tool_label")) or ""
+        status = "completed"
+    if kind not in {"skill", "mcp"} or not name:
+        return None
+    expected_status = {
+        "skill_selected": "selected",
+        "capability_selected": "selected",
+        "skill_used": "completed",
+        "tool_call_completed": "completed",
+        "capability_completed": "completed",
+        "capability_failed": "failed",
+    }[raw_event_type]
+    if status != expected_status:
+        return None
+    generic_envelope = run_event_response(str(run["id"]), event, principal=principal)
+    return _StrictChatEventProduct(
+        kind="capability",
+        generic_envelope=generic_envelope,
+        payload={"capability": {"kind": kind, "name": name, "status": status}},
+    )
+
+
 def _chat_projection_payload(envelope: dict[str, Any]) -> dict[str, object]:
     """Copy only the fixed activity tuple from the generic public envelope."""
     payload = envelope.get("payload")
@@ -451,6 +537,9 @@ def _public_run_event_envelope(
     if presentation is None:
         return None
     typed_product = _strict_typed_chat_event_product(run, event, principal)
+    if typed_product is not None and typed_product.kind == "capability":
+        capability_status = str(typed_product.payload["capability"]["status"])
+        presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS[f"capability_{capability_status}"]
     projected = (
         typed_product.generic_envelope
         if typed_product is not None
@@ -465,11 +554,7 @@ def _public_run_event_envelope(
         severity = "warning"
     elif severity not in {"info", "warning", "error"}:
         severity = "info"
-    payload = (
-        typed_product.payload
-        if typed_product is not None and typed_product.kind == "tool_permission_card"
-        else _chat_projection_payload(projected)
-    )
+    payload = typed_product.payload if typed_product is not None else _chat_projection_payload(projected)
     message = presentation.message
     stage = presentation.stage
     if raw_event_type == "error":
