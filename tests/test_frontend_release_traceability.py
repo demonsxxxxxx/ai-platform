@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
@@ -18,6 +19,13 @@ EXPECTED_CI_VERIFY = (
     "&& node scripts/write-build-provenance.mjs"
 )
 EXPECTED_PYTHON_DEPENDENCIES = "python -m pip install pytest pyyaml"
+FRONTEND_HEALTHCHECK_FILE_PATHS = (
+    "/usr/share/nginx/html/index.html",
+    "/usr/share/nginx/html/manifest.json",
+    "/usr/share/nginx/html/icons/icon.svg",
+    "/usr/share/nginx/html/icons/icon-192.png",
+    "/usr/share/nginx/html/icons/icon-512.png",
+)
 EXPECTED_WORKFLOW_PYTEST = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
@@ -452,22 +460,42 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
     assert "corepack pnpm run ci:verify" in dockerfile
     assert "COPY tools ./tools" in dockerfile
-    assert "COPY --from=build /workspace/frontend/web/dist" in dockerfile
+    copy_dist = "COPY --from=build /workspace/frontend/web/dist /usr/share/nginx/html"
+    assert copy_dist in dockerfile
+    copy_dist_line = next(line for line in runtime_dockerfile.splitlines() if copy_dist in line)
+    assert "--chown" not in copy_dist_line
     healthcheck = next(
         line for line in runtime_dockerfile.splitlines() if line.startswith("HEALTHCHECK ")
     )
-    healthcheck_probes = [
+    file_healthcheck_probes = [
+        command
+        for path in FRONTEND_HEALTHCHECK_FILE_PATHS
+        for command in (
+            f"test -f {path}",
+            f"test -s {path}",
+            f"stat -c %a {path} | grep -Eq '[4567]$'",
+        )
+    ]
+    http_healthcheck_probes = [
         "wget -q -O /dev/null http://127.0.0.1:8080/healthz",
         "wget -q -O /dev/null http://127.0.0.1:8080/manifest.json",
         "wget -q -O /dev/null http://127.0.0.1:8080/icons/icon.svg",
         "wget -q -O /dev/null http://127.0.0.1:8080/icons/icon-192.png",
         "wget -q -O /dev/null http://127.0.0.1:8080/icons/icon-512.png",
     ]
+    healthcheck_probes = file_healthcheck_probes + http_healthcheck_probes
     assert "--interval=30s --timeout=3s --start-period=10s --retries=3" in healthcheck
     assert all(probe in healthcheck for probe in healthcheck_probes)
+    assert healthcheck.index(file_healthcheck_probes[-1]) < healthcheck.index(
+        http_healthcheck_probes[0]
+    )
     assert healthcheck.count("&&") == len(healthcheck_probes) - 1
-    assert " || " not in healthcheck
+    assert "||" not in healthcheck
     assert ";" not in healthcheck
+    assert "test -r" not in healthcheck
+    assert "$" not in healthcheck.replace("'[4567]$'", "")
+    assert healthcheck.count("http://") == len(http_healthcheck_probes)
+    assert "https://" not in healthcheck
     assert all(
         f"{current_probe} && {next_probe}" in healthcheck
         for current_probe, next_probe in zip(healthcheck_probes, healthcheck_probes[1:])
@@ -515,6 +543,28 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "AI_PLATFORM_API_UPSTREAM: ${AI_PLATFORM_API_UPSTREAM:-http://api:8020}" in runtime_compose
     assert "AI_PLATFORM_SOURCE_COMMIT" in runtime_compose
     assert missing_plain_dockerfile_copy_sources(dockerfile) == []
+
+
+def test_frontend_healthcheck_file_predicate_fails_closed_for_missing_or_unreadable_assets():
+    healthy_assets = {
+        path: {"exists": True, "size": 1, "mode": 0o644}
+        for path in FRONTEND_HEALTHCHECK_FILE_PATHS
+    }
+
+    assert frontend_healthcheck_file_predicate_exit_code(healthy_assets) == 0
+
+    for path in FRONTEND_HEALTHCHECK_FILE_PATHS:
+        missing_assets = {asset_path: probe.copy() for asset_path, probe in healthy_assets.items()}
+        missing_assets[path] = {"exists": False, "size": 0, "mode": 0o000}
+        assert frontend_healthcheck_file_predicate_exit_code(missing_assets) == 1
+
+        unreadable_assets = {asset_path: probe.copy() for asset_path, probe in healthy_assets.items()}
+        unreadable_assets[path]["mode"] = 0o600
+        assert frontend_healthcheck_file_predicate_exit_code(unreadable_assets) == 1
+
+        empty_assets = {asset_path: probe.copy() for asset_path, probe in healthy_assets.items()}
+        empty_assets[path]["size"] = 0
+        assert frontend_healthcheck_file_predicate_exit_code(empty_assets) == 1
 
 
 def test_frontend_release_traceability_flags_packaged_delivery_missing_required_contract(tmp_path):
@@ -693,6 +743,14 @@ def missing_plain_dockerfile_copy_sources(dockerfile: str, repo_root: Path | Non
             if not (root / source).exists():
                 missing_sources.append(source)
     return missing_sources
+
+
+def frontend_healthcheck_file_predicate_exit_code(asset_probes):
+    for path in FRONTEND_HEALTHCHECK_FILE_PATHS:
+        probe = asset_probes[path]
+        if not probe["exists"] or probe["size"] <= 0 or not probe["mode"] & stat.S_IROTH:
+            return 1
+    return 0
 
 
 def initialize_git_repo(repo_root):
