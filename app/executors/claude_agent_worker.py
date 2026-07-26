@@ -10,10 +10,6 @@ from pathlib import Path
 from typing import Any, ClassVar
 from xml.etree import ElementTree
 
-_MAX_WORKSPACE_ARTIFACT_FILES = 128
-_MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
-_MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
-
 from app import repositories
 from app.capabilities import required_artifact_types_for_skill
 from app.context_builder import executor_context_pack_from_snapshot
@@ -84,6 +80,10 @@ from app.skills.pinning import (
 from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry, skill_content_hash
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
+
+_MAX_WORKSPACE_ARTIFACT_FILES = 128
+_MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
+_MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
 
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
 _SELECTED_SKILL_INVOCATION_ERRORS = {
