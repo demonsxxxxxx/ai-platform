@@ -4112,6 +4112,51 @@ def test_auto_promote_rewrites_target_labels_and_embedded_markers():
     assert "${AI_PLATFORM_BUILD_COMMIT}" in frontend
 
 
+@pytest.mark.parametrize(
+    "dockerfile",
+    [
+        pytest.param(
+            release_authority._backend_runtime_dockerfile(),
+            id="backend-runtime-rebuild",
+        ),
+        pytest.param(
+            release_authority._promotion_dockerfile("backend"),
+            id="backend-promotion",
+        ),
+        pytest.param(
+            release_authority._promotion_dockerfile("frontend"),
+            id="frontend-promotion",
+        ),
+    ],
+)
+def test_verified_role_image_dockerfiles_are_offline(dockerfile):
+    lowered = dockerfile.lower()
+
+    assert "# syntax=" not in lowered
+    assert not re.search(r"(?m)^\s*from\s+(?!\$\{base_image\}(?:\s|$))", lowered)
+    assert not re.search(r"(?m)^\s*add\b[^\n]*https?://", lowered)
+    assert "http://" not in lowered
+    assert "https://" not in lowered
+    assert not re.search(r"\b(?:apt(?:-get)?|pip3?|pnpm)\b", lowered)
+    assert not any(
+        token in lowered
+        for token in (
+            "docker.io/",
+            "ghcr.io/",
+            "registry.",
+        )
+    )
+
+
+def test_promotion_dockerfiles_are_provenance_only():
+    for role in ("backend", "frontend"):
+        dockerfile = release_authority._promotion_dockerfile(role)
+
+        assert "COPY " not in dockerfile
+        assert not re.search(r"(?m)^\s*ADD\s+", dockerfile)
+        assert "ai-platform.source-commit=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
+
+
 def test_invalid_current_runtime_provenance_fails_before_mutation(monkeypatch, tmp_path):
     current = "7" * 40
     main, _ = _write_compose_files(tmp_path)
@@ -4698,6 +4743,11 @@ def test_backend_runtime_rebuild_clears_current_subjects_before_target_copies():
     assert dockerfile.index(cleanup) < dockerfile.index("COPY docs/release-evidence /app/docs/release-evidence")
     assert "/app/docker-entrypoint.sh" in dockerfile.split("COPY app /app/app", 1)[0]
     assert "/app/.ai-platform-source-snapshot.json" in dockerfile.split("COPY app /app/app", 1)[0]
+    assert "COPY docker-entrypoint.sh /app/docker-entrypoint.sh" in dockerfile
+    assert "COPY --chmod" not in dockerfile
+    assert dockerfile.index("COPY docker-entrypoint.sh /app/docker-entrypoint.sh") < dockerfile.index(
+        "RUN chmod -R a+rX /app && chmod 0755 /app/docker-entrypoint.sh"
+    )
     assert not any(token in dockerfile.lower() for token in ("apt", "pip", "pnpm"))
 
 
@@ -5121,6 +5171,53 @@ def test_role_timeouts_distinguish_canonical_dependency_from_source_only(monkeyp
         release_authority.BACKEND_STAGE_TIMEOUT_SECONDS,
     ]
     assert progress_modes == [True, False, False, False]
+
+
+@pytest.mark.parametrize(
+    ("role", "action", "expected_dockerfile"),
+    [
+        ("backend", "runtime-rebuild", release_authority._backend_runtime_dockerfile),
+        ("backend", "promote", lambda: release_authority._promotion_dockerfile("backend")),
+        ("frontend", "promote", lambda: release_authority._promotion_dockerfile("frontend")),
+    ],
+)
+def test_verified_role_image_build_uses_local_base_stdin_and_local_context(
+    monkeypatch,
+    tmp_path,
+    role,
+    action,
+    expected_dockerfile,
+):
+    observed: dict[str, object] = {}
+    base_reference = "ai-platform:" + "b" * 40
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+    release_authority._build_from_verified_role_image(
+        ["docker"],
+        repo_root=tmp_path,
+        reference="ai-platform:" + "a" * 40,
+        base_reference=base_reference,
+        commit="a" * 40,
+        repository=AUTHORITATIVE_REPOSITORY,
+        role=role,
+        action=action,
+    )
+
+    command = observed["command"]
+    kwargs = observed["kwargs"]
+    assert command[:2] == ["docker", "build"]
+    assert command[command.index("--build-arg") + 1] == f"BASE_IMAGE={base_reference}"
+    assert command[-3:] == ["-f", "-", "."]
+    assert "--build-context" not in command
+    assert "://" not in command[-1]
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["input"] == expected_dockerfile()
+    assert "FROM ${BASE_IMAGE}" in kwargs["input"]
 
 
 @pytest.mark.parametrize(

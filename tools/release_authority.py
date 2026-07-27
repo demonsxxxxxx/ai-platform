@@ -1974,8 +1974,7 @@ def _promotion_dockerfile(role: str) -> str:
         user = ""
     else:
         raise ReleaseAuthorityError("release role is invalid")
-    return f"""# syntax=docker/dockerfile:1.7
-ARG BASE_IMAGE
+    return f"""ARG BASE_IMAGE
 FROM ${{BASE_IMAGE}}
 ARG AI_PLATFORM_BUILD_COMMIT
 ARG AI_PLATFORM_BUILD_DIRTY
@@ -1991,8 +1990,7 @@ def _backend_runtime_dockerfile() -> str:
     """Build source-only backend runtime from a verified image with no dependency installer command."""
     labels = _release_label_dockerfile_lines("backend")
     marker = _backend_provenance_dockerfile_run()
-    return f"""# syntax=docker/dockerfile:1.7
-ARG BASE_IMAGE
+    return f"""ARG BASE_IMAGE
 FROM ${{BASE_IMAGE}}
 ARG AI_PLATFORM_BUILD_COMMIT
 ARG AI_PLATFORM_BUILD_DIRTY
@@ -2006,7 +2004,7 @@ COPY tools /app/tools
 COPY scripts /app/scripts
 COPY skills /app/skills
 COPY docs/release-evidence /app/docs/release-evidence
-COPY --chmod=0755 docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod -R a+rX /app && chmod 0755 /app/docker-entrypoint.sh
 {labels}
 {marker}
