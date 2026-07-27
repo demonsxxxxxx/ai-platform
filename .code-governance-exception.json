@@ -1,0 +1,12 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-07-29",
+  "owner": "ai-platform-controller",
+  "reason": "OpenSandbox production rollout must atomically combine the reviewed executor identity contract and release transition authority stack.",
+  "violations": [
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}
