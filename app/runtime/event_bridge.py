@@ -8,6 +8,7 @@ EVENT_STAGE_MAP = {
     "run_queued": "queue",
     "run_started": "runtime",
     "runtime_container_started": "runtime",
+    "sandbox_executor_readiness_failed": "runtime",
     "assistant_delta": "message",
     "tool_call_started": "tool",
     "tool_call_delta": "tool",
@@ -82,7 +83,7 @@ def agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
         return _private_executor_event()
 
     payload = dict(event.payload)
-    if event.admin_only:
+    if event.admin_only or event.type == "sandbox_executor_readiness_failed":
         payload["visible_to_user"] = False
         payload["admin_only"] = True
     else:

@@ -221,6 +221,8 @@ class FakeDockerContainer:
         self.started = False
         self.stopped = False
         self.removed = False
+        self.stop_calls = 0
+        self.remove_calls = 0
         self._start_error = start_error
         self._reload_error: Exception | None = None
         self._stop_error = stop_error
@@ -266,12 +268,14 @@ class FakeDockerContainer:
         self.status = "running"
 
     def stop(self) -> None:
+        self.stop_calls += 1
         if self._stop_error is not None:
             raise self._stop_error
         self.stopped = True
         self.status = "exited"
 
     def remove(self, force: bool = False) -> None:
+        self.remove_calls += 1
         if self._remove_error is not None:
             raise self._remove_error
         self.removed = True
@@ -2513,6 +2517,97 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
     assert lease.executor_url == "http://127.0.0.1:18000"
     assert statuses[0].run_id == "run-a"
     assert statuses[0].sandbox_mode == "ephemeral"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_docker_provider_retains_safe_publish_wait_evidence_before_cleanup(monkeypatch, cleanup_fails):
+    import app.runtime.sandbox.container_provider as container_provider
+
+    raw_exception = "private publish failure at C:\\runtime\\secret with token-private"
+    cleanup_error = RuntimeError("cleanup unavailable") if cleanup_fails else None
+    fake = FakeDockerClient(host_port=None, stop_error=cleanup_error, remove_error=cleanup_error)
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+    )
+
+    async def fail_after_executor_exit(container, *_args):
+        container.status = "exited"
+        container.attrs["State"] = {
+            "Status": "exited",
+            "ExitCode": 23,
+            "OOMKilled": False,
+        }
+        raise container_provider.ExecutorHealthTimeoutError(raw_exception)
+
+    monkeypatch.setattr(provider, "_wait_for_executor_url", fail_after_executor_exit)
+
+    expected_error = container_provider.ContainerCleanupFailedError if cleanup_fails else container_provider.ExecutorHealthTimeoutError
+    with pytest.raises(expected_error) as exc_info:
+        await provider.create_or_reuse(request(), workspace())
+
+    evidence = exc_info.value.readiness_evidence.model_dump()
+    assert evidence == {
+        "readiness_phase": "publish_wait",
+        "container_state": "exited",
+        "exit_code": 23,
+        "oom_killed": False,
+        "published_port_observed": False,
+        "health_outcome": "not_attempted",
+        "elapsed_ms": evidence["elapsed_ms"],
+    }
+    assert 0 <= evidence["elapsed_ms"] <= 2_147_483_647
+    assert raw_exception not in repr(evidence)
+    executor = fake.containers_by_name["executor-exec-run-a"]
+    assert (executor.stop_calls, executor.remove_calls) == (1, 1)
+    if cleanup_fails:
+        assert exc_info.value.error_code == "container_cleanup_failed"
+        assert isinstance(exc_info.value.__cause__, container_provider.ExecutorHealthTimeoutError)
+        assert executor.removed is False
+        assert provider._leases
+    else:
+        assert exc_info.value.error_code == "executor_health_timeout"
+        assert str(exc_info.value) == "Executor health timeout"
+        assert executor.removed is True
+        assert provider._leases == {}
+        assert "ai-platform-sandbox-run-run-a" not in fake.networks_by_name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_docker_provider_retains_health_probe_outcome_before_cleanup(cleanup_fails):
+    import app.runtime.sandbox.container_provider as container_provider
+
+    cleanup_error = RuntimeError("cleanup unavailable") if cleanup_fails else None
+    fake = FakeDockerClient(stop_error=cleanup_error, remove_error=cleanup_error)
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: False,
+    )
+
+    expected_error = container_provider.ContainerCleanupFailedError if cleanup_fails else container_provider.ExecutorHealthTimeoutError
+    with pytest.raises(expected_error) as exc_info:
+        await provider.create_or_reuse(request(), workspace())
+
+    evidence = exc_info.value.readiness_evidence.model_dump()
+    assert evidence["readiness_phase"] == "health_probe"
+    assert evidence["container_state"] == "running"
+    assert evidence["exit_code"] is None
+    assert evidence["oom_killed"] is None
+    assert evidence["published_port_observed"] is True
+    assert evidence["health_outcome"] == "unhealthy"
+    assert 0 <= evidence["elapsed_ms"] <= 2_147_483_647
+    executor = fake.containers_by_name["executor-exec-run-a"]
+    assert (executor.stop_calls, executor.remove_calls) == (1, 1)
+    if cleanup_fails:
+        assert isinstance(exc_info.value.__cause__, container_provider.ExecutorHealthTimeoutError)
+        assert exc_info.value.__cause__.readiness_evidence is exc_info.value.readiness_evidence
+        assert executor.removed is False
+        assert provider._leases
+    else:
+        assert executor.removed is True
+        assert provider._leases == {}
 
 
 @pytest.mark.asyncio

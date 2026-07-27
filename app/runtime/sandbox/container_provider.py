@@ -56,6 +56,7 @@ from app.runtime.sandbox.executor_client import (
 )
 from app.runtime.sandbox import governed_egress_diagnostics as egress_diagnostics
 from app.runtime.sandbox.opensandbox_attestation import build_opensandbox_attestation_probe
+from app.runtime.sandbox import readiness_evidence
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
 
@@ -112,13 +113,15 @@ class NativeToolAdmissionError(SandboxRuntimeError):
 class ContainerCleanupFailedError(SandboxRuntimeError):
     """Raised when a rejected executor cannot be confirmed stopped and removed."""
 
-    def __init__(self, message: str = "Container cleanup failed") -> None:
+    def __init__(self, message: str = "Container cleanup failed", *, readiness_evidence: readiness_evidence.ExecutorReadinessEvidence | None = None) -> None:
         super().__init__("container_cleanup_failed", message)
+        self.readiness_evidence = readiness_evidence
 
 
 class ExecutorHealthTimeoutError(SandboxRuntimeError):
-    def __init__(self, message: str = "Executor health timeout") -> None:
+    def __init__(self, message: str = "Executor health timeout", *, readiness_evidence=None) -> None:
         super().__init__("executor_health_timeout", message)
+        self.readiness_evidence = readiness_evidence
 
 
 class ContainerProvider(Protocol):
@@ -230,6 +233,17 @@ def _published_executor_url_from_container(
     if host in {"", "0.0.0.0", "::"}:
         return None
     return f"http://{host}:{port_number}"
+
+
+def _docker_readiness_snapshot(
+    container: Any, endpoint: _ExecutorPublishedEndpoint | None = None
+) -> tuple[object, object, bool]:
+    try:
+        container.reload()
+        published = endpoint is None or bool(_published_executor_url_from_container(container, endpoint))
+        return container.attrs, container.status, published
+    except Exception:
+        return None, None, endpoint is None
 
 
 def _lease_from_request(
@@ -2854,7 +2868,7 @@ class DockerContainerProvider:
         raise ExecutorHealthTimeoutError()
 
     def _elapsed_ms(self, started_at: float) -> int:
-        return max(int(round((self._monotonic() - started_at) * 1000)), 0)
+        return readiness_evidence.bounded_elapsed_ms(started_at, self._monotonic())
 
     def _cleanup_container_or_track(self, container: Any, lease: ContainerLease) -> None:
         if _stop_and_remove_container(container):
@@ -3052,6 +3066,14 @@ class DockerContainerProvider:
             return
         self._leases[lease.container_id] = lease
         raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
+
+    def _cleanup_runtime_pair_for_error(self, container: Any, native: Any, lease: ContainerLease, cause: BaseException, evidence: readiness_evidence.ExecutorReadinessEvidence | None = None) -> BaseException:
+        try:
+            self._cleanup_runtime_pair_or_track(container, native, lease)
+        except ContainerCleanupFailedError as cleanup_exc:
+            cleanup_exc.readiness_evidence = evidence
+            raise cleanup_exc from cause
+        return cause
 
     async def _native_tool_reuse_valid(
         self,
@@ -3704,10 +3726,7 @@ class DockerContainerProvider:
             )
             owned_resources.primary = container
         except CallbackTargetValidationError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise ContainerStartFailedError() from exc
         except ContainerCleanupFailedError:
             raise
@@ -3719,10 +3738,7 @@ class DockerContainerProvider:
             raise
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             if normalized_exc is not None:
                 raise normalized_exc from exc
             if isinstance(exc, SandboxRuntimeError):
@@ -3744,10 +3760,7 @@ class DockerContainerProvider:
                 container.start()
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             if isinstance(normalized_exc, DockerPermissionDeniedError):
                 raise normalized_exc from exc
             raise ContainerStartFailedError() from exc
@@ -3764,10 +3777,7 @@ class DockerContainerProvider:
             )
         except GovernedEgressAdmissionError as exc:
             egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.POST_CREATE_PROOF_SEAL)
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise
 
         callback_reachable = await asyncio.to_thread(
@@ -3784,6 +3794,7 @@ class DockerContainerProvider:
                 raise cleanup_exc
             raise GovernedEgressAdmissionError()
 
+        publish_wait_started_at = time.monotonic()
         try:
             executor_url = await self._wait_for_executor_url(
                 container,
@@ -3792,22 +3803,17 @@ class DockerContainerProvider:
             )
             bootstrap_lease.executor_url = executor_url
         except asyncio.CancelledError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise
         except ExecutorHealthTimeoutError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
-            raise
+            evidence = readiness_evidence.normalize_docker_readiness_evidence(
+                "publish_wait", *_docker_readiness_snapshot(container, endpoint),
+                "not_attempted", readiness_evidence.bounded_elapsed_ms(publish_wait_started_at, time.monotonic()),
+            )
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc, evidence)
+            raise ExecutorHealthTimeoutError(readiness_evidence=evidence) from exc
         except Exception as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             if isinstance(exc, ContainerStartFailedError):
                 raise
             raise ContainerStartFailedError() from exc
@@ -3827,21 +3833,21 @@ class DockerContainerProvider:
                 probe_headers,
             )
         except asyncio.CancelledError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise
         except Exception as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
-            raise ExecutorHealthTimeoutError() from exc
+            evidence = readiness_evidence.normalize_docker_readiness_evidence(
+                "health_probe", *_docker_readiness_snapshot(container),
+                readiness_evidence.health_failure_outcome(exc), self._elapsed_ms(healthcheck_started_at),
+            )
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc, evidence)
+            raise ExecutorHealthTimeoutError(readiness_evidence=evidence) from exc
         sandbox_healthcheck_latency_ms = self._elapsed_ms(healthcheck_started_at)
         if not healthy:
-            self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            raise ExecutorHealthTimeoutError()
+            evidence = readiness_evidence.normalize_docker_readiness_evidence(
+                "health_probe", *_docker_readiness_snapshot(container), "unhealthy", sandbox_healthcheck_latency_ms,
+            )
+            raise self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, ExecutorHealthTimeoutError(readiness_evidence=evidence), evidence)
         if _container_config_user(container) != workspace_user:
             self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             raise ContainerStartFailedError("executor Config.User mismatch")
@@ -3854,16 +3860,10 @@ class DockerContainerProvider:
             )
             _require_expected_executor_identity(identity)
         except asyncio.CancelledError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise
         except Exception as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             if isinstance(exc, ContainerStartFailedError):
                 raise
             raise ContainerStartFailedError("executor identity unavailable") from exc
