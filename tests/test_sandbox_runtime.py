@@ -1309,8 +1309,10 @@ async def test_runtime_execution_owner_stops_persistent_provider_before_confirmi
     await asyncio.wait_for(executing.wait(), timeout=0.5)
 
     stopped = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
+    stopped_again = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
 
     assert stopped.quiescent is True
+    assert stopped_again.quiescent is True
     assert calls == [
         ("record", "run-a"),
         ("stop", "cancel_requested"),
