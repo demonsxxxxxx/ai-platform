@@ -5,7 +5,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import repositories
+from app.auth import AuthPrincipal
 from app.main import create_app
+from app.routes import lambchat_compat
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_for_binding,
@@ -729,3 +731,89 @@ def test_executor_callback_typed_admin_only_event_stays_hidden(monkeypatch):
     assert browser_event[3]["visible_to_user"] is False
     assert browser_event[3]["admin_only"] is True
     assert browser_event[3]["source"] == "executor_callback"
+
+
+def test_executor_callback_persists_exact_timeline_for_chat_and_history(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    persisted = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def fake_get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
+
+    async def fake_append_event(conn, **event):
+        persisted.append(event)
+        return f"evt_{len(persisted)}"
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(
+            new_message=None,
+            state_patch={},
+            events=[{
+                "type": "execution_step",
+                "message": "",
+                "payload": {
+                    "step_id": "pex_public_1",
+                    "kind": "processing",
+                    "stage": "execution",
+                    "status": "running",
+                    "title": "Process request",
+                    "summary": "Running controlled processing",
+                    "progress": {"current": 0, "total": 1},
+                    "safe_file_name": None,
+                    "artifact_public_id": None,
+                },
+            }],
+        ),
+    )
+
+    assert response.status_code == 200
+    execution = persisted[1]
+    assert "source" not in execution["payload"]
+    row = {
+        "id": "evt_execution",
+        "sequence": 2,
+        "trace_id": "trace-timeline",
+        "schema_version": "ai-platform.event-envelope.v1",
+        "event_type": execution["event_type"],
+        "stage": execution["stage"],
+        "message": execution["message"],
+        "severity": "info",
+        "visible_to_user": True,
+        "payload_json": execution["payload"],
+        "created_at": "2026-07-27T00:00:00Z",
+    }
+    run = {
+        "id": "run-a",
+        "trace_id": "trace-timeline",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+        "result_json": {},
+        "error_code": None,
+        "error_message": None,
+    }
+    principal = AuthPrincipal(
+        user_id="user-a", display_name="User", tenant_id="tenant-a", roles=["user"]
+    )
+
+    records = lambchat_compat._compatibility_events_for_run(run, [row], [], principal)
+
+    assert len(records) == 1
+    assert records[0].stream_event_type == "execution_step"
+    assert records[0].stream_data == records[0].history_event["data"]
+    assert records[0].history_event["payload"] == records[0].stream_data
