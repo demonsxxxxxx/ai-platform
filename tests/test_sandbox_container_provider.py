@@ -1293,6 +1293,138 @@ async def test_opensandbox_collection_rejects_drift_and_does_not_publish_partial
     assert not list((local_workspace / "output").glob(".ai-platform-download-*"))
 
 
+@pytest.mark.asyncio
+async def test_opensandbox_collection_does_not_publish_earlier_files_when_later_file_drifts(monkeypatch, tmp_path):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    local_workspace = tmp_path / "workspace"
+    local_workspace.mkdir()
+    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
+    runtime_request = request()
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
+    remote_files = FakeOpenSandbox.instances[lease.container_id].files
+    remote_files.write_files(
+        [
+            FakeOpenSandboxFile(path="/workspace/output/first.txt", data=b"first"),
+            FakeOpenSandboxFile(path="/workspace/output/second.txt", data=b"second"),
+        ]
+    )
+    original_get_file_info = remote_files.get_file_info
+
+    def second_file_drifts(paths):
+        details = original_get_file_info(paths)
+        if paths == ["/workspace/output/second.txt"]:
+            details[paths[0]]["size"] = 99
+        return details
+
+    remote_files.get_file_info = second_file_drifts
+    with pytest.raises(container_provider.ContainerStartFailedError, match="changed during download"):
+        await provider.collect_workspace(lease, runtime_request, lease_workspace)
+
+    assert not (local_workspace / "output" / "first.txt").exists()
+    assert not (local_workspace / "output" / "second.txt").exists()
+    assert not list(local_workspace.parent.glob(".ai-platform-collect-*"))
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_collection_rolls_back_already_published_files_when_local_publish_fails(monkeypatch, tmp_path):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    local_workspace = tmp_path / "workspace"
+    output_directory = local_workspace / "output"
+    output_directory.mkdir(parents=True)
+    (output_directory / "first.txt").write_bytes(b"prior")
+    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
+    runtime_request = request()
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
+    remote_files = FakeOpenSandbox.instances[lease.container_id].files
+    remote_files.write_files(
+        [
+            FakeOpenSandboxFile(path="/workspace/output/first.txt", data=b"first"),
+            FakeOpenSandboxFile(path="/workspace/output/second.txt", data=b"second"),
+        ]
+    )
+    original_replace = container_provider.os.replace
+
+    def fail_second_publish(source, target):
+        if Path(source).name == "second.txt" and Path(target) == output_directory / "second.txt":
+            raise OSError("publish failed")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(container_provider.os, "replace", fail_second_publish)
+    with pytest.raises(container_provider.ContainerStartFailedError, match="publication failed"):
+        await provider.collect_workspace(lease, runtime_request, lease_workspace)
+
+    assert (output_directory / "first.txt").read_bytes() == b"prior"
+    assert not (output_directory / "second.txt").exists()
+    assert not list(local_workspace.parent.glob(".ai-platform-collect-*"))
+
+
+def test_opensandbox_workspace_manifest_rejects_directory_symlink_swap_after_listing(monkeypatch, tmp_path):
+    from app.runtime.sandbox import container_provider
+
+    local_workspace = tmp_path / "workspace"
+    inputs = local_workspace / "inputs"
+    outside = tmp_path / "outside"
+    inputs.mkdir(parents=True)
+    outside.mkdir()
+    (inputs / "input.txt").write_text("trusted", encoding="utf-8")
+    (outside / "leak.txt").write_text("outside", encoding="utf-8")
+    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
+    original_iterdir = Path.iterdir
+    swapped = False
+
+    def swap_after_listing(path: Path):
+        nonlocal swapped
+        entries = list(original_iterdir(path))
+        if path == inputs and not swapped:
+            swapped = True
+            (inputs / "input.txt").unlink()
+            inputs.rmdir()
+            try:
+                inputs.symlink_to(outside, target_is_directory=True)
+            except OSError:
+                inputs.mkdir()
+                pytest.skip("directory symlinks are unavailable on this test host")
+        return iter(entries)
+
+    monkeypatch.setattr(Path, "iterdir", swap_after_listing)
+    try:
+        with pytest.raises(container_provider.ContainerStartFailedError):
+            container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+    finally:
+        if inputs.is_symlink():
+            inputs.unlink()
+            inputs.mkdir()
+
+
+def test_opensandbox_workspace_file_read_rejects_ancestor_directory_drift(monkeypatch, tmp_path):
+    from app.runtime.sandbox import container_provider
+
+    local_workspace = tmp_path / "workspace"
+    inputs = local_workspace / "inputs"
+    inputs.mkdir(parents=True)
+    (inputs / "input.txt").write_text("trusted", encoding="utf-8")
+    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
+    _directories, files = container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+    entry = next(item for item in files if item.relative_path == "inputs/input.txt")
+    original_directory_snapshot = container_provider._assert_workspace_directory
+
+    def drifted_directory_snapshot(path: Path):
+        snapshot = original_directory_snapshot(path)
+        if path == inputs:
+            return replace(snapshot, inode=snapshot.inode + 1)
+        return snapshot
+
+    monkeypatch.setattr(container_provider, "_assert_workspace_directory", drifted_directory_snapshot)
+    with pytest.raises(container_provider.ContainerStartFailedError, match="changed during read"):
+        container_provider._read_stable_workspace_file(entry)
+
+
 
 @pytest.mark.asyncio
 async def test_opensandbox_governed_egress_fails_closed_without_authoritative_topology_attestation(monkeypatch):

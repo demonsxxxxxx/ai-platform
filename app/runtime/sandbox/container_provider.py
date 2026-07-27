@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import socket
 import stat
 import tempfile
@@ -1769,10 +1770,18 @@ class _WorkspaceFileSnapshot:
 
 
 @dataclass(frozen=True)
+class _WorkspaceDirectorySnapshot:
+    device: int
+    inode: int
+    mode: int
+
+
+@dataclass(frozen=True)
 class _OpenSandboxWorkspaceFile:
     relative_path: str
     source_path: Path
     snapshot: _WorkspaceFileSnapshot
+    ancestor_directories: tuple[tuple[Path, _WorkspaceDirectorySnapshot], ...]
 
 
 def _safe_workspace_relative_path(value: str) -> str:
@@ -1806,13 +1815,18 @@ def _workspace_file_snapshot(path: Path) -> _WorkspaceFileSnapshot:
     )
 
 
-def _assert_workspace_directory(path: Path) -> None:
+def _assert_workspace_directory(path: Path) -> _WorkspaceDirectorySnapshot:
     try:
         node = path.lstat()
     except OSError as exc:
         raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
     if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
         raise ContainerStartFailedError("workspace transfer source is invalid")
+    return _WorkspaceDirectorySnapshot(
+        device=int(node.st_dev),
+        inode=int(node.st_ino),
+        mode=int(node.st_mode),
+    )
 
 
 def _stage_skills_required(request: SandboxRuntimeRequest) -> bool:
@@ -1826,7 +1840,7 @@ def _build_opensandbox_workspace_manifest(
     """Capture a bounded, no-follow manifest for remote workspace transfer."""
 
     root = Path(workspace.workspace_host_path)
-    _assert_workspace_directory(root)
+    root_snapshot = _assert_workspace_directory(root)
     try:
         root.resolve(strict=True).relative_to(Path(workspace.host_root).resolve(strict=True))
     except (OSError, RuntimeError, ValueError) as exc:
@@ -1836,7 +1850,11 @@ def _build_opensandbox_workspace_manifest(
     files: list[_OpenSandboxWorkspaceFile] = []
     total_bytes = 0
 
-    def add_file(path: Path, relative_path: str) -> None:
+    def add_file(
+        path: Path,
+        relative_path: str,
+        ancestor_directories: tuple[tuple[Path, _WorkspaceDirectorySnapshot], ...],
+    ) -> None:
         nonlocal total_bytes
         snapshot = _workspace_file_snapshot(path)
         if snapshot.size > _OPENSANDBOX_STAGE_MAX_FILE_BYTES:
@@ -1851,15 +1869,23 @@ def _build_opensandbox_workspace_manifest(
                 relative_path=_safe_workspace_relative_path(relative_path),
                 source_path=path,
                 snapshot=snapshot,
+                ancestor_directories=ancestor_directories,
             )
         )
 
-    def walk(directory: Path, relative_root: str) -> None:
-        _assert_workspace_directory(directory)
+    def walk(
+        directory: Path,
+        relative_root: str,
+        ancestor_directories: tuple[tuple[Path, _WorkspaceDirectorySnapshot], ...],
+    ) -> None:
+        directory_snapshot = _assert_workspace_directory(directory)
+        stable_ancestors = (*ancestor_directories, (directory, directory_snapshot))
         try:
             children = sorted(directory.iterdir(), key=lambda item: item.name)
         except OSError as exc:
             raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
+        if _assert_workspace_directory(directory) != directory_snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during manifest")
         for child in children:
             name = child.name
             if not name or name in {".", ".."} or "\x00" in name or "/" in name or "\\" in name:
@@ -1875,11 +1901,13 @@ def _build_opensandbox_workspace_manifest(
                 directories.add(_safe_workspace_relative_path(relative_path))
                 if len(directories) > _OPENSANDBOX_STAGE_MAX_DIRECTORIES:
                     raise ContainerStartFailedError("workspace transfer exceeds directory limit")
-                walk(child, relative_path)
+                walk(child, relative_path, stable_ancestors)
             elif stat.S_ISREG(node.st_mode):
-                add_file(child, relative_path)
+                add_file(child, relative_path, stable_ancestors)
             else:
                 raise ContainerStartFailedError("workspace transfer source is invalid")
+        if _assert_workspace_directory(directory) != directory_snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during manifest")
 
     # Root materialized files are direct workspace children.  Never transfer
     # hidden/private run trees by incidental recursion.
@@ -1887,6 +1915,8 @@ def _build_opensandbox_workspace_manifest(
         root_children = sorted(root.iterdir(), key=lambda item: item.name)
     except OSError as exc:
         raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
+    if _assert_workspace_directory(root) != root_snapshot:
+        raise ContainerStartFailedError("workspace transfer source changed during manifest")
     named_source_directories = {"inputs", ".ai-platform"}
     if _stage_skills_required(request):
         named_source_directories.add(".claude")
@@ -1898,27 +1928,37 @@ def _build_opensandbox_workspace_manifest(
         if stat.S_ISLNK(node.st_mode):
             raise ContainerStartFailedError("workspace transfer source is invalid")
         if stat.S_ISREG(node.st_mode):
-            add_file(child, child.name)
+            add_file(child, child.name, ((root, root_snapshot),))
             continue
         if not stat.S_ISDIR(node.st_mode):
             raise ContainerStartFailedError("workspace transfer source is invalid")
         if child.name in named_source_directories:
             if child.name == ".claude":
                 skills_root = child / "skills"
+                claude_snapshot = _assert_workspace_directory(child)
                 _assert_workspace_directory(skills_root)
                 directories.update({".claude", ".claude/skills"})
-                walk(skills_root, ".claude/skills")
+                walk(
+                    skills_root,
+                    ".claude/skills",
+                    ((root, root_snapshot), (child, claude_snapshot)),
+                )
             else:
                 directories.add(_safe_workspace_relative_path(child.name))
-                walk(child, child.name)
+                walk(child, child.name, ((root, root_snapshot),))
     if _stage_skills_required(request) and not (root / ".claude" / "skills").is_dir():
         raise ContainerStartFailedError("workspace transfer Skill source is unavailable")
+    if _assert_workspace_directory(root) != root_snapshot:
+        raise ContainerStartFailedError("workspace transfer source changed during manifest")
     return sorted(directories, key=lambda item: (item.count("/"), item)), sorted(files, key=lambda item: item.relative_path)
 
 
 def _read_stable_workspace_file(entry: _OpenSandboxWorkspaceFile) -> bytes:
     """Read one bounded no-link source and prove it did not drift while read."""
 
+    for directory, snapshot in entry.ancestor_directories:
+        if _assert_workspace_directory(directory) != snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during read")
     before = _workspace_file_snapshot(entry.source_path)
     if before != entry.snapshot:
         raise ContainerStartFailedError("workspace transfer source changed during read")
@@ -1961,6 +2001,9 @@ def _read_stable_workspace_file(entry: _OpenSandboxWorkspaceFile) -> bytes:
         raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
     if _workspace_file_snapshot(entry.source_path) != entry.snapshot:
         raise ContainerStartFailedError("workspace transfer source changed during read")
+    for directory, snapshot in entry.ancestor_directories:
+        if _assert_workspace_directory(directory) != snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during read")
     return b"".join(chunks)
 
 
@@ -5255,14 +5298,15 @@ class OpenSandboxContainerProvider:
         workspace: WorkspaceLease,
         relative_path: str,
         expected_size: int,
+        *,
+        destination_root: Path,
     ) -> None:
         if not hasattr(filesystem, "read_bytes_stream"):
             raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
         if expected_size > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
             raise ContainerStartFailedError("workspace artifacts exceed the per-file byte limit")
-        workspace_root = Path(workspace.workspace_host_path)
-        target = self._local_output_target(workspace_root, relative_path)
-        self._ensure_local_output_parent(workspace_root, target)
+        target = self._local_output_target(destination_root, relative_path)
+        self._ensure_local_output_parent(destination_root, target)
         remote_path = f"{workspace.workspace_container_path.rstrip('/')}/{relative_path}"
         descriptor: int | None = None
         temporary_path: str | None = None
@@ -5302,6 +5346,83 @@ class OpenSandboxContainerProvider:
                 except OSError:
                     pass
 
+    @staticmethod
+    def _temporary_collection_root(workspace_root: Path) -> Path:
+        _assert_workspace_directory(workspace_root)
+        workspace_parent = workspace_root.parent
+        _assert_workspace_directory(workspace_parent)
+        try:
+            return Path(tempfile.mkdtemp(prefix=".ai-platform-collect-", dir=str(workspace_parent)))
+        except OSError as exc:
+            raise ContainerStartFailedError("workspace collection staging is unavailable") from exc
+
+    @staticmethod
+    def _remove_temporary_collection_root(staging_root: Path) -> None:
+        try:
+            node = staging_root.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise ContainerStartFailedError("workspace collection staging cleanup failed") from exc
+        if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
+            raise ContainerStartFailedError("workspace collection staging cleanup failed")
+        try:
+            shutil.rmtree(staging_root)
+        except OSError as exc:
+            raise ContainerStartFailedError("workspace collection staging cleanup failed") from exc
+
+    def _publish_collected_workspace_files(
+        self,
+        staging_root: Path,
+        workspace_root: Path,
+        selected_files: list[tuple[str, int]],
+    ) -> None:
+        """Atomically publish a fully downloaded batch, restoring prior files on failure."""
+
+        backup_root = staging_root / ".rollback"
+        previous: list[tuple[Path, Path | None, bool]] = []
+        try:
+            for relative_path, _expected_size in sorted(selected_files):
+                source = self._local_output_target(staging_root, relative_path)
+                target = self._local_output_target(workspace_root, relative_path)
+                self._ensure_local_output_parent(workspace_root, target)
+                backup: Path | None = None
+                try:
+                    target_node = target.lstat()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise ContainerStartFailedError("workspace output destination is unavailable") from exc
+                else:
+                    if stat.S_ISLNK(target_node.st_mode) or not stat.S_ISREG(target_node.st_mode):
+                        raise ContainerStartFailedError("workspace output destination is invalid")
+                    backup = self._local_output_target(backup_root, relative_path)
+                    self._ensure_local_output_parent(staging_root, backup)
+                    os.replace(target, backup)
+                previous.append((target, backup, False))
+                os.replace(source, target)
+                previous[-1] = (target, backup, True)
+        except SandboxRuntimeError:
+            self._rollback_collected_workspace_files(previous)
+            raise
+        except OSError as exc:
+            self._rollback_collected_workspace_files(previous)
+            raise ContainerStartFailedError("workspace output publication failed") from exc
+
+    @staticmethod
+    def _rollback_collected_workspace_files(previous: list[tuple[Path, Path | None, bool]]) -> None:
+        rollback_failed = False
+        for target, backup, published in reversed(previous):
+            try:
+                if published:
+                    target.unlink(missing_ok=True)
+                if backup is not None:
+                    os.replace(backup, target)
+            except OSError:
+                rollback_failed = True
+        if rollback_failed:
+            raise ContainerStartFailedError("workspace output rollback failed")
+
     async def collect_workspace(
         self,
         lease: ContainerLease,
@@ -5310,6 +5431,7 @@ class OpenSandboxContainerProvider:
     ) -> None:
         """Publish only bounded legacy and delivery outputs from remote OpenSandbox."""
 
+        staging_root: Path | None = None
         try:
             sandbox = await self._workspace_transfer_sandbox(lease, request, workspace)
             filesystem = getattr(sandbox, "files", None)
@@ -5365,18 +5487,30 @@ class OpenSandboxContainerProvider:
             declared_total = sum(size for _relative_path, size in selected_files)
             if declared_total > _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES:
                 raise ContainerStartFailedError("workspace artifacts exceed the total byte limit")
+            workspace_root = Path(workspace.workspace_host_path)
+            staging_root = self._temporary_collection_root(workspace_root)
             downloaded_total = 0
             for relative_path, expected_size in sorted(selected_files):
-                await self._download_remote_workspace_file(filesystem, workspace, relative_path, expected_size)
+                await self._download_remote_workspace_file(
+                    filesystem,
+                    workspace,
+                    relative_path,
+                    expected_size,
+                    destination_root=staging_root,
+                )
                 downloaded_total += expected_size
                 if downloaded_total > _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES:
                     raise ContainerStartFailedError("workspace artifacts exceed the total byte limit")
+            self._publish_collected_workspace_files(staging_root, workspace_root, selected_files)
         except asyncio.CancelledError:
             raise
         except SandboxRuntimeError:
             raise
         except Exception as exc:
             raise ContainerStartFailedError("OpenSandbox workspace collection failed") from exc
+        finally:
+            if staging_root is not None:
+                self._remove_temporary_collection_root(staging_root)
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         settings = get_settings()
