@@ -26,6 +26,13 @@ from typing import Any, Sequence
 from urllib.request import urlopen
 
 if __package__:
+    from .release_backend_flatten import (
+        BackendFlattenError,
+        backend_runtime_dockerfile as _backend_runtime_dockerfile,
+        promotion_dockerfile as _promotion_dockerfile,
+        rebuild_from_flattened_backend,
+        validate_backend_layer_flatten_recovery_request,
+    )
     from .release_parity_convergence import (
         COMPOSE_PROJECT,
         COMPATIBILITY_IMAGE_COMMIT_LABELS,
@@ -47,6 +54,13 @@ if __package__:
         is_runtime_neutral_backend_pyproject_change,
     )
 else:
+    from release_backend_flatten import (
+        BackendFlattenError,
+        backend_runtime_dockerfile as _backend_runtime_dockerfile,
+        promotion_dockerfile as _promotion_dockerfile,
+        rebuild_from_flattened_backend,
+        validate_backend_layer_flatten_recovery_request,
+    )
     from release_parity_convergence import (
         COMPOSE_PROJECT,
         COMPATIBILITY_IMAGE_COMMIT_LABELS,
@@ -1338,9 +1352,7 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
         if isinstance(exc.errno, int):
             evidence["errno"] = exc.errno
         return evidence
-    evidence = {"failure_kind": "authority-error"}
-    evidence.update(convergence_failure_evidence(exc))
-    return evidence
+    return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
 
 
 def _stage(
@@ -1357,7 +1369,7 @@ def _stage(
     stage_error: ReleaseAuthorityError | None = None
     try:
         value = operation()
-    except (OSError, subprocess.SubprocessError, ReleaseAuthorityError) as exc:
+    except (OSError, subprocess.SubprocessError, ReleaseAuthorityError, BackendFlattenError) as exc:
         event = {
             "stage": name,
             "strategy": strategy,
@@ -1927,89 +1939,6 @@ def _existing_release_image(
         return None
     _validate_release_image(image, commit=commit, repository=repository, role=role)
     return image
-
-
-def _release_label_dockerfile_lines(role: str) -> str:
-    """Return all target-provenance labels required for one promoted image role."""
-    common = [
-        "LABEL org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
-        "LABEL ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",
-        "LABEL ai-platform.source-commit=$AI_PLATFORM_BUILD_COMMIT",
-        'LABEL ai-platform.build-dirty="$AI_PLATFORM_BUILD_DIRTY"',
-        "LABEL ai-platform.source-repository=$AI_PLATFORM_BUILD_REPOSITORY",
-        f"LABEL ai-platform.release-role={role}",
-    ]
-    if role == "backend":
-        common[1:1] = [
-            "LABEL ai-platform.runtime-subject=$AI_PLATFORM_BUILD_COMMIT",
-            "LABEL ai-platform.source_revision=$AI_PLATFORM_BUILD_COMMIT",
-            "LABEL ai-platform.source_commit=$AI_PLATFORM_BUILD_COMMIT",
-            "LABEL ai-platform.runtime_subject=$AI_PLATFORM_BUILD_COMMIT",
-            "LABEL ai-platform.source_tree_commit=$AI_PLATFORM_BUILD_COMMIT",
-        ]
-    return "\n".join(common)
-
-
-def _backend_provenance_dockerfile_run() -> str:
-    """Return the backend embedded-source marker update used by source rebuilds and promotions."""
-    return '''RUN printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.ai-platform-source-revision \\
-    && printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.codex-source-revision \\
-    && printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.source-commit \\
-    && AI_PLATFORM_BUILD_COMMIT="$AI_PLATFORM_BUILD_COMMIT" AI_PLATFORM_BUILD_DIRTY="$AI_PLATFORM_BUILD_DIRTY" \\
-       python -c "import json, os; from pathlib import Path; commit = os.environ.get('AI_PLATFORM_BUILD_COMMIT', 'unknown').strip() or 'unknown'; dirty_text = os.environ.get('AI_PLATFORM_BUILD_DIRTY', 'unknown').strip().lower(); dirty = dirty_text != 'false'; dirty_paths = [] if not dirty else ['unknown_runtime_affecting_dirty_paths']; payload = dict(schema_version='ai-platform.source-snapshot.v1', source_tree_commit_sha=commit, runtime_subject_commit_sha=commit, source_tree_dirty=dirty, runtime_affecting_changes_since_runtime_subject=[], runtime_affecting_dirty_paths=dirty_paths, snapshot_source='dockerfile_build_args'); Path('/app/.ai-platform-source-snapshot.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\\n', encoding='utf-8')"'''
-
-
-def _promotion_dockerfile(role: str) -> str:
-    """Build a provenance-only image from a verified local role image without dependency commands."""
-    labels = _release_label_dockerfile_lines(role)
-    if role == "backend":
-        marker = _backend_provenance_dockerfile_run()
-        user = "USER 10001:10001"
-    elif role == "frontend":
-        marker = (
-            'RUN sed -i "s/\\\"commit\\\": \\\"[^\\\"]*\\\"/\\\"commit\\\": '
-            '\\\"${AI_PLATFORM_BUILD_COMMIT}\\\"/" '
-            "/usr/share/nginx/html/ai-platform-build-provenance.json"
-        )
-        user = ""
-    else:
-        raise ReleaseAuthorityError("release role is invalid")
-    return f"""ARG BASE_IMAGE
-FROM ${{BASE_IMAGE}}
-ARG AI_PLATFORM_BUILD_COMMIT
-ARG AI_PLATFORM_BUILD_DIRTY
-ARG AI_PLATFORM_BUILD_REPOSITORY
-USER root
-{labels}
-{marker}
-{user}
-"""
-
-
-def _backend_runtime_dockerfile() -> str:
-    """Build source-only backend runtime from a verified image with no dependency installer command."""
-    labels = _release_label_dockerfile_lines("backend")
-    marker = _backend_provenance_dockerfile_run()
-    return f"""ARG BASE_IMAGE
-FROM ${{BASE_IMAGE}}
-ARG AI_PLATFORM_BUILD_COMMIT
-ARG AI_PLATFORM_BUILD_DIRTY
-ARG AI_PLATFORM_BUILD_REPOSITORY
-USER root
-RUN rm -rf /app/app /app/tools /app/scripts /app/skills /app/docs/release-evidence \\
-    && rm -f /app/docker-entrypoint.sh /app/.ai-platform-source-revision \\
-       /app/.codex-source-revision /app/.source-commit /app/.ai-platform-source-snapshot.json
-COPY app /app/app
-COPY tools /app/tools
-COPY scripts /app/scripts
-COPY skills /app/skills
-COPY docs/release-evidence /app/docs/release-evidence
-COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod -R a+rX /app && chmod 0755 /app/docker-entrypoint.sh
-{labels}
-{marker}
-USER 10001:10001
-"""
 
 
 def _build_args(commit: str, repository: str) -> list[str]:
@@ -2648,12 +2577,25 @@ def deploy_clean_commit(
     stage_events: list[dict[str, Any]] | None = None,
     managed_release_root: Path | None = None,
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+    allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Build immutable images and recreate the repo-local compose release."""
     if strategy not in {"canonical", "auto"}:
         raise ReleaseAuthorityError("release strategy is invalid")
     if strategy == "auto" and (auto_plan is None or current_references is None):
         raise ReleaseAuthorityError("auto release plan is required")
+    if allow_backend_layer_flatten_recovery:
+        if auto_plan is None:
+            raise ReleaseAuthorityError("backend layer flatten recovery requires an auto release plan")
+        validate_backend_layer_flatten_recovery_request(
+            enabled=True,
+            strategy=strategy,
+            backend_action=next(
+                (item.action for item in auto_plan.roles if item.role == "backend"), None
+            ),
+        )
+        if managed_release_root is None:
+            raise ReleaseAuthorityError("backend layer flatten recovery requires a managed release root")
     canonical_dependency_build_timeout_seconds = (
         _validate_canonical_dependency_build_timeout(
             canonical_dependency_build_timeout_seconds
@@ -2755,22 +2697,48 @@ def deploy_clean_commit(
                 )
                 if base_image is None:
                     raise ReleaseAuthorityError("verified current role image is unavailable")
-                _stage(
-                    events,
-                    name=f"{role}-image",
-                    strategy=strategy,
-                    action=item.action,
-                    operation=lambda: _build_from_verified_role_image(
-                        docker,
-                        repo_root=repo_root,
-                        reference=reference,
-                        base_reference=base_reference,
-                        commit=normalized,
-                        repository=repository,
-                        role=role,
+                if allow_backend_layer_flatten_recovery and role == "backend" and item.action == "runtime-rebuild":
+                    _stage(
+                        events,
+                        name="backend-layer-flatten-recovery",
+                        strategy=strategy,
+                        action="flatten-recovery",
+                        operation=lambda: rebuild_from_flattened_backend(
+                            docker=docker,
+                            source_reference=base_reference,
+                            expected_commit=auto_plan.current_commit if auto_plan is not None else normalized,
+                            expected_repository=repository,
+                            archive_root=managed_release_root,
+                            runner=_run,
+                            target_build=lambda flat_reference: _build_from_verified_role_image(
+                                docker,
+                                repo_root=repo_root,
+                                reference=reference,
+                                base_reference=flat_reference,
+                                commit=normalized,
+                                repository=repository,
+                                role="backend",
+                                action="runtime-rebuild",
+                            ),
+                        ),
+                    )
+                else:
+                    _stage(
+                        events,
+                        name=f"{role}-image",
+                        strategy=strategy,
                         action=item.action,
-                    ),
-                )
+                        operation=lambda: _build_from_verified_role_image(
+                            docker,
+                            repo_root=repo_root,
+                            reference=reference,
+                            base_reference=base_reference,
+                            commit=normalized,
+                            repository=repository,
+                            role=role,
+                            action=item.action,
+                        ),
+                    )
             elif item.action == "reuse":
                 raise ReleaseAuthorityError("verified target role image is unavailable")
             else:
@@ -2891,10 +2859,13 @@ def deploy_main_commit(
     strategy: str = "canonical",
     coordination_source: Path | None = None,
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+    allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Deploy and verify an exact fetched main commit from an isolated checkout."""
     if strategy not in {"canonical", "auto"}:
         raise ReleaseAuthorityError("release strategy is invalid")
+    if allow_backend_layer_flatten_recovery and strategy != "auto":
+        raise ReleaseAuthorityError("backend layer flatten recovery requires the auto strategy")
     canonical_dependency_build_timeout_seconds = _validate_canonical_dependency_build_timeout(
         canonical_dependency_build_timeout_seconds
     )
@@ -2917,11 +2888,13 @@ def deploy_main_commit(
             canonical_dependency_build_timeout_seconds=(
                 canonical_dependency_build_timeout_seconds
             ),
+            allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery,
         )
-    except ReleaseAuthorityError as exc:
+    except (ReleaseAuthorityError, BackendFlattenError) as exc:
+        error = ReleaseAuthorityError("backend layer flatten recovery failed") if isinstance(exc, BackendFlattenError) else exc
         if authority_commit is not None:
-            exc.authority_commit = authority_commit
-        raise
+            error.authority_commit = authority_commit
+        raise error from None
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         if authority_commit is not None:
             exc.authority_commit = authority_commit
@@ -2943,6 +2916,7 @@ def _deploy_main_commit_after_authority(
     compose_files: Sequence[str | Path] | None = None,
     strategy: str = "canonical",
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+    allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Execute target materialization and deployment after authority provenance is proven."""
     managed_env_file = resolve_managed_env_file(release_root, env_file)
@@ -2995,6 +2969,12 @@ def _deploy_main_commit_after_authority(
             action="plan",
             operation=lambda: _auto_release_plan(checkout, normalized, current["commit"]),
         )
+        if allow_backend_layer_flatten_recovery:
+            validate_backend_layer_flatten_recovery_request(
+                enabled=True,
+                strategy=strategy,
+                backend_action=next((item.action for item in plan.roles if item.role == "backend"), None),
+            )
         deployment = deploy_clean_commit(
             checkout,
             normalized,
@@ -3012,6 +2992,7 @@ def _deploy_main_commit_after_authority(
             canonical_dependency_build_timeout_seconds=(
                 canonical_dependency_build_timeout_seconds
             ),
+            allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery,
         )
 
         def collect_final_parity(_: float) -> dict[str, Any]:
@@ -3124,6 +3105,14 @@ def main() -> int:
         help="Role-specific release strategy; auto reuses verified current provenance",
     )
     deploy_main.add_argument(
+        "--allow-backend-layer-flatten-recovery",
+        action="store_true",
+        help=(
+            "Explicitly allow one temporary verified backend flat base only for an "
+            "auto backend runtime-rebuild plan"
+        ),
+    )
+    deploy_main.add_argument(
         "--compose-file",
         dest="compose_files",
         action="append",
@@ -3181,6 +3170,9 @@ def main() -> int:
                     coordination_source=Path.cwd(),
                     canonical_dependency_build_timeout_seconds=(
                         args.canonical_build_timeout_seconds
+                    ),
+                    allow_backend_layer_flatten_recovery=(
+                        args.allow_backend_layer_flatten_recovery
                     ),
                 ),
                 None,

@@ -259,10 +259,51 @@ Compose deployment:
   before it updates exact provenance, so deleted target files cannot survive.
 - Runtime-only images prepared from a Git archive or Windows snapshot must run
   `chmod +x /app/docker-entrypoint.sh` before container recreation.
-- If repeated runtime-only rebases fail with Docker `max depth exceeded`, stop
-  stacking layers. Flatten the current healthy container with `docker export`
-  and `docker import`, build once from that flat base, and re-run provenance,
-  health, and target-path verification.
+
+### Explicit backend-layer flatten recovery
+
+If, and only if, the normal auto backend runtime rebuild stops with Docker
+`max depth exceeded`, do not run `docker export`, `docker import`, `docker tag`,
+or Compose by hand. Do not retag the canonical current backend subject. After a
+fresh read-only readiness packet, use the normal exact-main preamble above and
+replace only its authority invocation with this sole recovery command:
+
+```bash
+cd "$SOURCE"
+timeout --signal=INT --kill-after=30s 27000s \
+  python3 -B tools/release_authority.py deploy-main-commit \
+  --release-root "$ROOT/releases" \
+  --commit "$TARGET" \
+  --strategy auto \
+  --allow-backend-layer-flatten-recovery \
+  --canonical-build-timeout-seconds 1800 \
+  --docker-cmd "sudo -n docker" \
+  --compose-file deploy/ai-platform/docker-compose.yml \
+  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
+```
+
+The flag is default-off. It is accepted only after the authority has completed
+strict current-runtime provenance and parity, and only when the resulting
+backend plan action is `runtime-rebuild`. It independently rechecks the
+canonical current backend image's clean provenance and requires at least 96
+RootFS layers. A lower-layer, missing, dirty, mismatched, or unsafe image fails
+closed; a canonical dependency build, frontend action, promotion, or an
+arbitrary build failure never activates recovery.
+
+For that one invocation the authority creates a unique stopped container from
+the verified current image without runtime environment, mounts, or Compose
+data; exports it to a mode-`0600` managed temporary archive; checks its digest;
+imports one unique non-canonical flat image; and rebuilds the target only from
+that validated temporary base. It restores only allowlisted image configuration
+(`10001:10001`, `/app`, entrypoint/CMD, required non-secret environment,
+`8020/tcp`, and clean provenance labels). It verifies the flat layer count,
+source markers, `0755` entrypoint, Python/Uvicorn executables, and the
+`10001:10001` runtime identity before the target build. The current tag/image
+and running containers remain untouched. All temporary containers, archives,
+and the flat reference are removed whether export, import, validation, target
+build, or final release fails. Terminal stage evidence contains only fixed
+stage/action/status/timing fields, never temporary names, commands, paths,
+archive contents, environment, or secrets.
 
 After successful `compose up -d --no-build`, `deploy-main-commit --strategy auto`
 uses a 45-second monotonic final-parity convergence window with a two-second
@@ -318,6 +359,13 @@ deadline rounds this up with an additional 795 seconds for in-process filesystem
 trust walks, scheduling, cleanup dispatch, and evidence serialization. It is a
 conservative finite outer bound, separate from—and never an expansion of—any
 per-operation timeout.
+
+The explicit flatten recovery adds up to ten bounded 300-second Docker slots
+(two stopped-container exports, import, validation, and cleanup) to that
+inventory: `23205 + 10 * 300 = 26205` seconds. Its documented 27000-second
+outer command budget leaves 795 seconds for the same in-process work. Configure
+the enclosing durable runner with a 27330-second deadline for this exceptional
+command only.
 
 Use exactly `timeout --signal=INT --kill-after=30s 24000s`. `INT`, rather than
 `TERM` or `KILL`, lets Python raise through the active `_run`, whose existing
