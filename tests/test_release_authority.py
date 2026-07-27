@@ -37,6 +37,9 @@ WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
+OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH = (
+    "deploy/ai-platform/docker-compose.opensandbox-bridge.yml"
+)
 
 
 def test_repo_local_compose_is_the_only_frontend_owner_and_binds_one_commit():
@@ -312,6 +315,13 @@ def _write_provider_compose_files(repo_root: Path) -> tuple[Path, Path, Path]:
     opensandbox = sandbox.with_name("docker-compose.opensandbox.yml")
     opensandbox.write_text("services: {}\n", encoding="utf-8")
     return main, sandbox, opensandbox
+
+
+def _write_bridge_compose_files(repo_root: Path) -> tuple[Path, Path, Path, Path]:
+    main, sandbox, opensandbox = _write_provider_compose_files(repo_root)
+    bridge = sandbox.with_name("docker-compose.opensandbox-bridge.yml")
+    bridge.write_text("services: {}\n", encoding="utf-8")
+    return main, sandbox, bridge, opensandbox
 
 
 def _prepare_managed_release_layout(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -1148,6 +1158,34 @@ def test_compose_file_selection_rejects_unsafe_or_noncanonical_paths(
             compose_files=selected,
         )
     assert docker_bases == []
+
+
+def test_compose_file_selection_allows_only_canonical_bridge_stack(tmp_path):
+    main, sandbox, bridge, _ = _write_bridge_compose_files(tmp_path)
+    canonical = [
+        COMPOSE_RELATIVE_PATH,
+        SANDBOX_COMPOSE_RELATIVE_PATH,
+        OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH,
+    ]
+    selection = release_authority.resolve_compose_files(
+        tmp_path,
+        canonical,
+    )
+    assert selection.relative_paths == tuple(canonical)
+    assert selection.config_files == _compose_config_value(main, sandbox, bridge)
+
+    arbitrary = main.with_name("docker-compose.arbitrary.yml")
+    arbitrary.write_text("services: {}\n", encoding="utf-8")
+    rejected = (
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH],
+        [COMPOSE_RELATIVE_PATH, *reversed(canonical[1:])],
+        [*canonical[:2], arbitrary.relative_to(tmp_path).as_posix()],
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH, canonical[-1]],
+        [*canonical, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
+    )
+    for selected in rejected:
+        with pytest.raises(ReleaseAuthorityError, match="compose file selection is not approved"):
+            release_authority.resolve_compose_files(tmp_path, selected)
 
 
 def test_compose_file_selection_rejects_absolute_and_linked_paths(monkeypatch, tmp_path):
@@ -2715,6 +2753,45 @@ def test_verified_current_runtime_uses_label_derived_historical_provider_selecti
     ]
 
 
+@pytest.mark.parametrize("target_uses_bridge", [True, False])
+def test_compose_ownership_round_trips_exact_bridge_transition_and_rollback(
+    tmp_path,
+    target_uses_bridge,
+):
+    release_root = tmp_path / "releases"
+    target = release_root / ("7" * 40)
+    prior = release_root / "678d3c46"
+    target_main, target_sandbox, target_bridge, _ = _write_bridge_compose_files(target)
+    prior_main, prior_sandbox, prior_bridge, _ = _write_bridge_compose_files(prior)
+    bridge_paths = [
+        COMPOSE_RELATIVE_PATH,
+        SANDBOX_COMPOSE_RELATIVE_PATH,
+        OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH,
+    ]
+    sandbox_paths = [COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH]
+    target_paths = bridge_paths if target_uses_bridge else sandbox_paths
+    prior_files = (
+        (prior_main, prior_sandbox)
+        if target_uses_bridge
+        else (prior_main, prior_sandbox, prior_bridge)
+    )
+    target_selection = release_authority.resolve_compose_files(target, target_paths)
+    labels = _owned_container_payload(
+        "frontend",
+        prior_main.parent,
+        _compose_config_value(*prior_files),
+    )[0]["Config"]["Labels"]
+
+    observed = release_authority._compose_ownership_selection(labels, target_selection)
+
+    assert observed is not None
+    assert observed.checkout_root == prior.resolve()
+    assert observed.relative_paths == tuple(
+        sandbox_paths if target_uses_bridge else bridge_paths
+    )
+    assert target_main.is_file() and target_sandbox.is_file() and target_bridge.is_file()
+
+
 @pytest.mark.parametrize(
     "invalid_selection",
     [
@@ -3953,6 +4030,29 @@ def test_auto_release_plan_uses_exact_git_pyproject_blobs_and_fails_closed(tmp_p
         "dependency",
         "canonical-build",
     )
+
+
+def test_auto_release_plan_treats_bridge_selection_as_frontend_runtime_only(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "7" * 40
+    monkeypatch.setattr(
+        "tools.release_authority._git_paths",
+        lambda *args: [OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH],
+    )
+
+    plan = release_authority._auto_release_plan(tmp_path, commit, commit)
+
+    backend, frontend = plan.roles
+    assert (backend.change_kind, backend.action, backend.paths) == ("unchanged", "reuse", ())
+    assert (frontend.change_kind, frontend.action, frontend.paths) == (
+        "source",
+        "source-build",
+        (OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH,),
+    )
+    assert plan.changes.frontend_source == (OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH,)
+    assert plan.no_runtime_change is False
 
 
 def _configure_auto_deploy(monkeypatch, tmp_path, *, current, target, target_present=False):
