@@ -304,6 +304,8 @@ def _sandbox_workspace(settings: object, payload: RunPayload) -> Path:
         / payload.session_id
         / "runs"
         / payload.run_id
+        / "attempts"
+        / payload.attempt_id
         / "workspace"
     )
 
