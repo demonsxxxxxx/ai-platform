@@ -1,0 +1,12 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-07-29",
+  "owner": "ai-platform-controller",
+  "reason": "Issue #644 trusted_internal OpenSandbox profile must atomically span app settings, runtime sandbox admission, execution-boundary lease verification, and deployment configuration.",
+  "violations": [
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}

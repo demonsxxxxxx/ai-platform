@@ -828,6 +828,7 @@ class FakeOpenSandbox:
         self.files = FakeOpenSandboxFiles(self)
         self.commands = FakeOpenSandboxCommands(self)
         self.killed = False
+        self.kill_calls = 0
         self.closed = False
         self.kill_error: Exception | None = None
         self.close_error: Exception | None = None
@@ -868,6 +869,7 @@ class FakeOpenSandbox:
         }
 
     def kill(self) -> None:
+        self.kill_calls += 1
         if self.kill_error is not None:
             raise self.kill_error
         self.killed = True
@@ -950,6 +952,8 @@ class ExternalEgressCapabilitySettings(OpenSandboxSettings):
     """Source-test settings for the required OpenSandbox runsc gateway profile."""
 
 
+
+
 class IncompatibleOpenSandboxNetworkPolicySettings(ExternalEgressCapabilitySettings):
     sandbox_egress_policy_enabled = True
 
@@ -1024,6 +1028,7 @@ def opensandbox_provider(
         ),
         utcnow=utcnow or (lambda: TEST_CAPABILITY_NOW),
     )
+
 
 
 @pytest.mark.asyncio
@@ -1453,6 +1458,7 @@ async def test_capability_token_whitespace_fails_before_network(monkeypatch, raw
     [
         ("registry.example/ai-platform:latest", "sha256:" + "a" * 64, "immutable sha256"),
         ("registry.example/ai-platform", "sha256:" + "a" * 64, "immutable sha256"),
+        ("sha256:" + "a" * 64, "sha256:" + "a" * 64, "immutable sha256"),
         (
             "registry.example/ai-platform@sha256:" + "a" * 64,
             "sha256:" + "b" * 64,
@@ -1525,6 +1531,7 @@ async def test_opensandbox_provider_uses_valid_requested_immutable_image(monkeyp
     assert FakeOpenSandbox.created[0]["image"] == settings.opensandbox_executor_image
     assert lease.labels["ai-platform.executor.requested_image"] == settings.opensandbox_executor_image
     assert lease.labels["ai-platform.executor.requested_image_digest"] == "sha256:" + "b" * 64
+
 
 
 @pytest.mark.asyncio

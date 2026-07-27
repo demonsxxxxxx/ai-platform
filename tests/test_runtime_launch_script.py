@@ -5,6 +5,7 @@ from pathlib import Path
 DEPLOY_DIR = Path("deploy/ai-platform")
 COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 SANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.sandbox.yml"
+OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
 TARGET_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
 STALE_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env"
@@ -329,6 +330,37 @@ def test_compose_exposes_sandbox_runtime_configuration():
     assert "SANDBOX_HOST_WORKSPACE_ROOT" not in sandbox_text
     assert "ai_platform_sandbox_workspaces" in compose_text
     assert "SANDBOX_CONTAINER_PROVIDER: docker" in sandbox_text
+
+
+def test_opensandbox_overlay_selects_explicit_trusted_internal_profile_and_requires_stock_inputs():
+    import yaml
+
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    overlay = yaml.safe_load(OPENSANDBOX_COMPOSE_FILE.read_text(encoding="utf-8"))
+    env_example = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+
+    for service_name in ("api", "worker"):
+        assert compose["services"][service_name]["environment"]["SANDBOX_SECURITY_PROFILE"] == (
+            "${SANDBOX_SECURITY_PROFILE:-governed}"
+        )
+        environment = overlay["services"][service_name]["environment"]
+        assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
+        assert environment["SANDBOX_SECURITY_PROFILE"] == "trusted_internal"
+        for required in (
+            "OPENSANDBOX_DOMAIN",
+            "OPENSANDBOX_PROTOCOL",
+            "OPENSANDBOX_API_KEY",
+            "OPENSANDBOX_EXECUTOR_IMAGE",
+            "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
+            "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL",
+            "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL",
+            "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL",
+        ):
+            assert environment[required].startswith("${")
+            assert ":?set " in environment[required]
+
+    assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
+    assert "trusted_internal" in env_example
 
 
 def test_compose_does_not_mount_docker_socket_by_default():

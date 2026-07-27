@@ -498,6 +498,53 @@ async def test_runtime_uses_opensandbox_external_bridge_callback_without_changin
 
 
 @pytest.mark.asyncio
+async def test_runtime_trusted_internal_callback_uses_same_dedicated_profile_seam(tmp_path, monkeypatch):
+    sent = []
+
+    class StubSettings:
+        sandbox_container_provider = "opensandbox"
+        sandbox_security_profile = "trusted_internal"
+        sandbox_callback_base_url = "http://api.sandbox.internal:8020"
+        sandbox_callback_token = "settings-token"
+        opensandbox_domain = "10.56.1.72:8080"
+        opensandbox_protocol = "http"
+        opensandbox_api_key = "test-stock-opensandbox-key"
+        opensandbox_use_server_proxy = False
+        opensandbox_executor_image = "sha256:" + "a" * 64
+        opensandbox_executor_image_digest = "sha256:" + "a" * 64
+        opensandbox_external_egress_callback_base_url = "http://10.56.0.211:18443"
+        opensandbox_external_egress_openai_base_url = "http://10.56.0.211:18443/openai/v1"
+        opensandbox_external_egress_anthropic_base_url = "http://10.56.0.211:18443/anthropic"
+
+    class OpenSandboxProvider(FakeContainerProvider):
+        async def create_or_reuse(self, runtime_request, workspace):
+            lease = await super().create_or_reuse(runtime_request, workspace)
+            return ContainerLease(**{**lease.model_dump(), "provider": "opensandbox"})
+
+    async def execute(_executor_url, task_request):
+        sent.append(task_request)
+        return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=OpenSandboxProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "test-callback-token",
+        record_lease=noop_lease,
+        release_lease=noop_lease,
+    )
+
+    await runtime.submit(request())
+
+    assert sent[0].callback_base_url == StubSettings.opensandbox_external_egress_callback_base_url
+    assert sent[0].callback_url == (
+        "http://10.56.0.211:18443/api/ai/runtime/callbacks/executor"
+    )
+    assert StubSettings.sandbox_callback_base_url not in repr(sent[0].model_dump())
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("sandbox_mode", "cancelled", "reason"),
     (
@@ -985,6 +1032,77 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
     assert "private-capability" not in repr(create_kwargs["lease_payload_json"])
     assert "registry.example" not in repr(create_kwargs["lease_payload_json"])
     assert calls[1] == ("release", "lease-created-a", "dispatch_completed")
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_trusted_internal_profile_without_governed_projection(tmp_path, monkeypatch):
+    calls = []
+    runtime_request = request(sandbox_mode="ephemeral", browser_enabled=False)
+
+    class StubSettings:
+        sandbox_container_provider = "opensandbox"
+        sandbox_security_profile = "trusted_internal"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        opensandbox_external_egress_callback_base_url = "http://10.56.0.211:18443"
+        opensandbox_external_egress_openai_base_url = "http://10.56.0.211:18443/openai/v1"
+        opensandbox_external_egress_anthropic_base_url = "http://10.56.0.211:18443/anthropic"
+
+    labels = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.tenant_id": runtime_request.tenant_id,
+        "ai-platform.workspace_id": runtime_request.workspace_id,
+        "ai-platform.user_id": runtime_request.user_id,
+        "ai-platform.session_id": runtime_request.session_id,
+        "ai-platform.run_id": runtime_request.run_id,
+        "ai-platform.attempt_id": runtime_request.attempt_id,
+        "ai-platform.sandbox_mode": runtime_request.sandbox_mode,
+        "ai-platform.browser_enabled": "false",
+        "ai-platform.provider_backend": "opensandbox",
+        "ai-platform.security_profile": "trusted_internal",
+        "ai-platform.executor.requested_image": "registry.example/ai-platform@sha256:" + "a" * 64,
+        "ai-platform.executor.requested_image_digest": "sha256:" + "a" * 64,
+        "ai-platform.unreviewed": "test-private-label-value",
+    }
+
+    async def create_sandbox_lease(_conn, **kwargs):
+        calls.append(kwargs)
+        return {"id": "lease-trusted-internal"}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.create_sandbox_lease", create_sandbox_lease)
+    runtime = SandboxRuntime(workspace_root=tmp_path, provider=FakeContainerProvider())
+    workspace = runtime.workspace_manager.prepare(runtime_request)
+    lease = ContainerLease(
+        container_id="osb-run-a",
+        container_name="opensandbox-run-a-qat_test-runtime-attempt",
+        provider="opensandbox",
+        executor_url="http://osb-run-a.opensandbox.test:18000",
+        executor_headers={"X-AI-Platform-Executor-Credential": "test-executor-key"},
+        tenant_id=runtime_request.tenant_id,
+        workspace_id=runtime_request.workspace_id,
+        user_id=runtime_request.user_id,
+        session_id=runtime_request.session_id,
+        run_id=runtime_request.run_id,
+        sandbox_mode=runtime_request.sandbox_mode,
+        browser_enabled=runtime_request.browser_enabled,
+        workspace_host_path=workspace.workspace_host_path,
+        workspace_container_path=workspace.workspace_container_path,
+        labels=labels,
+    )
+
+    await runtime._record_runtime_lease(lease, runtime_request, workspace)
+
+    payload = calls[0]["lease_payload_json"]
+    assert payload["security_profile"] == "trusted_internal"
+    assert payload["labels"]["ai-platform.security_profile"] == "trusted_internal"
+    assert "governed_egress_proof" not in payload
+    assert all(not key.startswith("governed_egress_") for key in payload)
+    assert "default_deny" not in repr(payload)
+    assert "policy_bound" not in repr(payload)
+    assert "test-executor-key" not in repr(payload)
+    assert "test-private-label-value" not in repr(payload)
 
 
 @pytest.mark.asyncio
