@@ -591,7 +591,7 @@ async def test_trusted_internal_stream_fails_closed_on_sensitive_or_conflicting_
 
 
 @pytest.mark.asyncio
-async def test_trusted_internal_stream_duplicate_stop_falls_back_to_terminal_result(monkeypatch, tmp_path):
+async def test_trusted_internal_stream_duplicate_stop_never_replays_terminal_result(monkeypatch, tmp_path):
     captured = {}
     deltas = []
     events = [
@@ -611,7 +611,34 @@ async def test_trusted_internal_stream_duplicate_stop_falls_back_to_terminal_res
         on_text=deltas.append,
     )
 
-    assert deltas == ["short answer", "terminal final"]
+    assert deltas == ["short answer"]
+
+
+@pytest.mark.asyncio
+async def test_trusted_internal_stream_unsafe_after_partial_never_replays_terminal_result(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    deltas = []
+    safe_text = "safe " * 120
+    events = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": safe_text}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "C:\\private\\token.txt"}},
+    ]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert deltas == [safe_text[:-512]]
+    assert result.message == "terminal final"
 
 
 @pytest.mark.asyncio

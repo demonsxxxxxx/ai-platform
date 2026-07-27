@@ -2147,7 +2147,6 @@ async def run_claude_agent_sdk(
                 if (
                     trusted_internal_raw_streaming
                     and raw_stream_partial_emitted
-                    and not raw_stream_partial_disabled
                 ):
                     # The terminal ResultMessage remains authoritative downstream;
                     # do not replay it through the delta callback after a raw beta delta.
