@@ -199,6 +199,7 @@ def _annotate_backend_flatten_operation(exc: BaseException, operation: str) -> B
     error_code = _BACKEND_FLATTEN_OPERATION_ERROR_CODES[operation]
     setattr(exc, "backend_flatten_operation", operation)
     setattr(exc, "backend_flatten_error_code", error_code)
+    setattr(exc, "safe_backend_flatten_evidence", {"backend_flatten_operation": operation, "backend_flatten_error_code": error_code})
     return exc
 
 

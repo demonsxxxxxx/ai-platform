@@ -5226,9 +5226,9 @@ def test_run_rejects_stdout_sink_in_text_or_build_progress_modes_before_popen(tm
 
     monkeypatch.setattr(subprocess, "Popen", fail_popen)
     with archive.open("wb") as sink:
-        with pytest.raises(TypeError, match="stdout sink requires binary mode"):
+        with pytest.raises(TypeError, match="stdout sink requires binary output"):
             release_authority._run(["docker", "container", "export"], stdout_sink=sink)
-        with pytest.raises(TypeError, match="stdout sink does not support build progress"):
+        with pytest.raises(TypeError, match="stdout sink requires binary output"):
             release_authority._run(
                 ["docker", "container", "export"],
                 text=False,
