@@ -42,6 +42,7 @@ from services.opensandbox_gateway.gateway import (
     API_KEY_HEADER,
     CAPABILITY_VERSION,
     CONTRACT_VERSION,
+    EXPECTED_EXECUTOR_IDENTITY,
     ROUTE_HEADER,
     DeadlineExceeded,
     GatewayApplication,
@@ -72,6 +73,20 @@ API_KEY = "lifecycle-" + "a" * 32
 CAPABILITY_TOKEN = "capability-" + "b" * 32
 PUBLIC_AUTHORITY = "10.56.1.72:8443"
 BRIDGE_ORIGIN = "https://bridge.internal.example:18443"
+EXPECTED_EXECUTOR_UID, EXPECTED_EXECUTOR_GID = EXPECTED_EXECUTOR_IDENTITY.split(":")
+
+
+class ContractRuntimeAdapter(InMemoryRuntimeAdapter):
+    """Test adapter mirroring the independently deployed executor wire identity."""
+
+    def provision(self, record) -> None:
+        super().provision(record)
+        self.evidence[record.sandbox_id] = replace(
+            self.evidence[record.sandbox_id],
+            user=EXPECTED_EXECUTOR_IDENTITY,
+            uid=EXPECTED_EXECUTOR_UID,
+            gid=EXPECTED_EXECUTOR_GID,
+        )
 
 
 def _test_tls_context() -> ssl.SSLContext:
@@ -119,9 +134,9 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
         "ai-platform.provider_backend": "opensandbox",
         "ai-platform.executor.requested_image": IMAGE,
         "ai-platform.executor.requested_image_digest": IMAGE.rsplit("@", 1)[1],
-        "ai-platform.executor.user": "1000:1000",
-        "ai-platform.executor.uid": "1000",
-        "ai-platform.executor.gid": "1000",
+        "ai-platform.executor.user": EXPECTED_EXECUTOR_IDENTITY,
+        "ai-platform.executor.uid": EXPECTED_EXECUTOR_UID,
+        "ai-platform.executor.gid": EXPECTED_EXECUTOR_GID,
         "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
         "ai-platform.external_egress.profile_version": "v1",
         "ai-platform.external_egress.profile_id": config.profile_id,
@@ -190,7 +205,7 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
 def application() -> tuple[GatewayApplication, InMemoryLifecycleTransport, InMemoryRuntimeAdapter, InMemoryStateStore]:
     config = gateway_config()
     lifecycle = InMemoryLifecycleTransport()
-    runtime = InMemoryRuntimeAdapter()
+    runtime = ContractRuntimeAdapter()
     store = InMemoryStateStore()
     return GatewayApplication(config, lifecycle, runtime, store), lifecycle, runtime, store
 
@@ -221,8 +236,8 @@ def multipart_lease_upload(record, boundary: str = "lease-boundary") -> bytes:
     metadata = json.dumps(
         {
             "path": "/workspace/.ai-platform-opensandbox-lease.json",
-            "owner": "1000",
-            "group": "1000",
+            "owner": EXPECTED_EXECUTOR_UID,
+            "group": EXPECTED_EXECUTOR_GID,
             "mode": "0600",
         },
         separators=(",", ":"),
@@ -266,7 +281,12 @@ def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> No
         },
         "runtime": {"identity": "runsc", "subject": config.runtime_subject},
         "network": {"mode": "none", "default_deny": True},
-        "security": {"no_new_privileges": True, "user": "1000:1000", "uid": "1000", "gid": "1000"},
+        "security": {
+            "no_new_privileges": True,
+            "user": EXPECTED_EXECUTOR_IDENTITY,
+            "uid": EXPECTED_EXECUTOR_UID,
+            "gid": EXPECTED_EXECUTOR_GID,
+        },
         "image": {"subject": IMAGE, "digest": IMAGE.rsplit("@", 1)[1]},
         "host_path_policy": {"subject": "scoped-workspace-only", "unscoped_host_paths_allowed": False},
         "upstream_bridge": {
@@ -289,6 +309,25 @@ def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> No
             "profile_signature": value["signed_profile"]["profile_signature"],
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "legacy_value"),
+    (
+        ("ai-platform.executor.user", "1000:1000"),
+        ("ai-platform.executor.uid", "1000"),
+        ("ai-platform.executor.gid", "1000"),
+    ),
+)
+def test_create_rejects_legacy_executor_identity_metadata(field, legacy_value) -> None:
+    app, _, _, _ = application()
+    payload = create_payload(gateway_config())
+    payload["metadata"][field] = legacy_value
+
+    response = call(app, "POST", "/v1/sandboxes", payload)
+
+    assert response.status == 400
+    assert decoded(response)["error"]["code"] == "executor_identity_mismatch"
 
 
 def test_payload_is_accepted_by_merged_ai_platform_attestor() -> None:
@@ -659,11 +698,19 @@ def test_signature_metadata_runtime_drift_and_route_auth_are_rejected() -> None:
     assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation").status == 409
 
 
-def test_live_root_user_is_rejected_before_attestation() -> None:
+@pytest.mark.parametrize(
+    ("field", "mismatched_value"),
+    (("user", "1000:1000"), ("uid", "1000"), ("gid", "1000"), ("user", "0:0")),
+)
+def test_live_executor_identity_mismatch_is_rejected_before_attestation(
+    field, mismatched_value
+) -> None:
     app, _, runtime, _ = application()
     sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config())))["id"]
     old = runtime.evidence[sandbox_id]
-    runtime.evidence[sandbox_id] = RuntimeEvidence(**{**old.__dict__, "user": "0:0"})
+    runtime.evidence[sandbox_id] = RuntimeEvidence(
+        **{**old.__dict__, field: mismatched_value}
+    )
     response = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
     assert response.status == 409
     assert decoded(response)["error"]["code"] == "runtime_attestation_drift"
@@ -701,7 +748,7 @@ def test_async_delete_keeps_durable_ownership_until_authoritative_not_found() ->
                 self.sandboxes.pop(path.rsplit("/", 1)[1], None)
             return super().request(method, path, body)
 
-    class TrackingRuntime(InMemoryRuntimeAdapter):
+    class TrackingRuntime(ContractRuntimeAdapter):
         def __init__(self) -> None:
             super().__init__()
             self.mailbox_cleanups: list[str] = []
@@ -740,7 +787,7 @@ def test_uncertain_delete_survives_restart_and_broker_excludes_pending(tmp_path)
             return super().request(method, path, body)
 
     lifecycle = UncertainDelete()
-    runtime = InMemoryRuntimeAdapter()
+    runtime = ContractRuntimeAdapter()
     state_path = tmp_path / "async-delete.sqlite3"
     store = SQLiteStateStore(str(state_path))
     app = GatewayApplication(gateway_config(), lifecycle, runtime, store)
@@ -753,7 +800,7 @@ def test_uncertain_delete_survives_restart_and_broker_excludes_pending(tmp_path)
     assert broker.poll_once() == 0
 
     lifecycle.available = True
-    restarted_runtime = InMemoryRuntimeAdapter()
+    restarted_runtime = ContractRuntimeAdapter()
     restarted_runtime.relays.add(sandbox_id)
     restarted = GatewayApplication(gateway_config(), lifecycle, restarted_runtime, SQLiteStateStore(str(state_path)))
     assert restarted.store.get(sandbox_id).state == "deleted"
@@ -762,7 +809,7 @@ def test_uncertain_delete_survives_restart_and_broker_excludes_pending(tmp_path)
 
 def test_claimed_mailbox_request_is_not_sent_after_delete_closes_admission(monkeypatch, tmp_path) -> None:
     store = SQLiteStateStore(str(tmp_path / "mailbox-fence.sqlite3"))
-    app = GatewayApplication(gateway_config(), InMemoryLifecycleTransport(), InMemoryRuntimeAdapter(), store)
+    app = GatewayApplication(gateway_config(), InMemoryLifecycleTransport(), ContractRuntimeAdapter(), store)
     sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "claim-delete")))["id"]
     record = store.get(sandbox_id)
     assert record is not None
@@ -886,7 +933,7 @@ def test_sqlite_store_persists_only_sealed_non_secret_record(tmp_path) -> None:
     path = tmp_path / "state.sqlite3"
     config = gateway_config()
     lifecycle = InMemoryLifecycleTransport()
-    runtime = InMemoryRuntimeAdapter()
+    runtime = ContractRuntimeAdapter()
     store = SQLiteStateStore(str(path))
     app = GatewayApplication(config, lifecycle, runtime, store)
     sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(config)))["id"]
@@ -912,7 +959,7 @@ def test_sqlite_workspace_reservation_is_cross_tenant_atomic_and_restart_reconci
             return super().request(method, path, body)
 
     lifecycle = BlockingCreate()
-    runtime = InMemoryRuntimeAdapter()
+    runtime = ContractRuntimeAdapter()
     state_path = tmp_path / "atomic.sqlite3"
     first = GatewayApplication(config, lifecycle, runtime, SQLiteStateStore(str(state_path)))
     second = GatewayApplication(config, lifecycle, runtime, SQLiteStateStore(str(state_path)))
@@ -931,7 +978,7 @@ def test_sqlite_workspace_reservation_is_cross_tenant_atomic_and_restart_reconci
     assert resumed.status == 201 and decoded(resumed) == decoded(created)
     assert sum(method == "POST" for method, _, _ in lifecycle.requests) == 1
 
-    restarted_runtime = InMemoryRuntimeAdapter()
+    restarted_runtime = ContractRuntimeAdapter()
     GatewayApplication(config, lifecycle, restarted_runtime, SQLiteStateStore(str(state_path)))
     assert decoded(created)["id"] in restarted_runtime.relays
 
@@ -948,10 +995,10 @@ def test_sqlite_workspace_reservation_is_cross_tenant_atomic_and_restart_reconci
     crash_lifecycle = CrashAfterCreate()
     crash_path = tmp_path / "reconcile.sqlite3"
     crashed_store = SQLiteStateStore(str(crash_path))
-    crashed = GatewayApplication(config, crash_lifecycle, InMemoryRuntimeAdapter(), crashed_store)
+    crashed = GatewayApplication(config, crash_lifecycle, ContractRuntimeAdapter(), crashed_store)
     assert call(crashed, "POST", "/v1/sandboxes", create_payload(config, "crash")).status == 500
     assert len(crashed_store.list({"state": "uncertain_create"})) == 1
-    recovered_runtime = InMemoryRuntimeAdapter()
+    recovered_runtime = ContractRuntimeAdapter()
     recovered_store = SQLiteStateStore(str(crash_path))
     GatewayApplication(config, crash_lifecycle, recovered_runtime, recovered_store)
     active = recovered_store.list({"state": "active"})
@@ -975,12 +1022,12 @@ def test_missing_uncertain_create_tombstone_allows_only_exact_idempotent_retry(t
     state_path = tmp_path / "deleted-intent-retry.sqlite3"
     store = SQLiteStateStore(str(state_path))
     payload = create_payload(config, "deleted-retry")
-    first = GatewayApplication(config, lifecycle, InMemoryRuntimeAdapter(), store)
+    first = GatewayApplication(config, lifecycle, ContractRuntimeAdapter(), store)
 
     assert call(first, "POST", "/v1/sandboxes", payload).status == 500
     intent = store.list({"state": "uncertain_create"})[0]
     restarted_store = SQLiteStateStore(str(state_path))
-    restarted = GatewayApplication(config, lifecycle, InMemoryRuntimeAdapter(), restarted_store)
+    restarted = GatewayApplication(config, lifecycle, ContractRuntimeAdapter(), restarted_store)
     tombstone = restarted_store.get(intent.sandbox_id)
     assert tombstone is not None and tombstone.state == "deleted"
 
@@ -1015,7 +1062,7 @@ def test_cleanup_pending_is_durable_until_delete_is_verified(tmp_path) -> None:
                 return Response.json(500, {"error": "deferred"})
             return super().request(method, path, body)
 
-    class RelayFailure(InMemoryRuntimeAdapter):
+    class RelayFailure(ContractRuntimeAdapter):
         def start_relay(self, record) -> None:
             raise RuntimeError("simulated relay crash")
 
@@ -1078,7 +1125,7 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
         gateway_config().workspace_root,
     )
     container_id = "a" * 64
-    config_user = "0:0" if case == "root" else "1000:1000"
+    config_user = "0:0" if case == "root" else EXPECTED_EXECUTOR_IDENTITY
     live_user = "1001:1001" if case == "config-mismatch" else config_user
     inspect_payload = [{
         "Image": "image-id",
@@ -1120,7 +1167,7 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
     if case == "success":
         evidence = adapter.verify(record)
         assert (evidence.user, evidence.uid, evidence.gid, evidence.relay_active) == (
-            "1000:1000", "1000", "1000", True
+            EXPECTED_EXECUTOR_IDENTITY, EXPECTED_EXECUTOR_UID, EXPECTED_EXECUTOR_GID, True
         )
     else:
         with pytest.raises(GatewayError):
@@ -1716,22 +1763,30 @@ def test_reconciliation_list_paginates_and_rejects_ambiguity() -> None:
             return super().request(method, path, body)
 
     config = gateway_config()
-    pages = lambda page: ([{"id": f"sandbox-{page}"}], page, page < 2)
-    app = GatewayApplication(config, PagedLifecycle(pages), InMemoryRuntimeAdapter(), InMemoryStateStore())
+    def pages(page):
+        return ([{"id": f"sandbox-{page}"}], page, page < 2)
+
+    app = GatewayApplication(config, PagedLifecycle(pages), ContractRuntimeAdapter(), InMemoryStateStore())
     assert [item["id"] for item in app._list_intent_sandboxes("intent-one")] == ["sandbox-1", "sandbox-2"]
 
-    duplicate = lambda page: ([{"id": "sandbox-1"}], page, page < 2)
-    duplicate_app = GatewayApplication(config, PagedLifecycle(duplicate), InMemoryRuntimeAdapter(), InMemoryStateStore())
+    def duplicate(page):
+        return ([{"id": "sandbox-1"}], page, page < 2)
+
+    duplicate_app = GatewayApplication(config, PagedLifecycle(duplicate), ContractRuntimeAdapter(), InMemoryStateStore())
     with pytest.raises(GatewayError, match="reservation_reconciliation_ambiguous"):
         duplicate_app._list_intent_sandboxes("intent-one")
 
-    wrong_page = lambda page: ([], page + 1, False)
-    wrong_page_app = GatewayApplication(config, PagedLifecycle(wrong_page), InMemoryRuntimeAdapter(), InMemoryStateStore())
+    def wrong_page(page):
+        return ([], page + 1, False)
+
+    wrong_page_app = GatewayApplication(config, PagedLifecycle(wrong_page), ContractRuntimeAdapter(), InMemoryStateStore())
     with pytest.raises(GatewayError, match="reservation_reconciliation_ambiguous"):
         wrong_page_app._list_intent_sandboxes("intent-one")
 
-    never_ends = lambda page: ([], page, True)
-    bounded_app = GatewayApplication(config, PagedLifecycle(never_ends), InMemoryRuntimeAdapter(), InMemoryStateStore())
+    def never_ends(page):
+        return ([], page, True)
+
+    bounded_app = GatewayApplication(config, PagedLifecycle(never_ends), ContractRuntimeAdapter(), InMemoryStateStore())
     with pytest.raises(GatewayError, match="reservation_reconciliation_ambiguous"):
         bounded_app._list_intent_sandboxes("intent-one")
 
@@ -1821,7 +1876,7 @@ def test_literal_private_ip_certificate_san_and_workspace_file_proxy_contracts(m
 
     for field, bad_value in (("owner", "0"), ("group", "0"), ("mode", "0644")):
         invalid = multipart_lease_upload(record).replace(
-            f'"{field}":"{("0600" if field == "mode" else "1000")}"'.encode(),
+            f'"{field}":"{("0600" if field == "mode" else EXPECTED_EXECUTOR_UID)}"'.encode(),
             f'"{field}":"{bad_value}"'.encode(),
         )
         rejected = call(
@@ -1984,18 +2039,60 @@ def test_workspace_dirfd_identity_and_symlink_leaf_fail_closed(monkeypatch) -> N
 
 
 def test_mailbox_protocol_rejects_wrong_owner_group_or_mode(monkeypatch) -> None:
-    expected = SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=1000, st_gid=4321)
+    expected = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o2770,
+        st_uid=int(EXPECTED_EXECUTOR_UID),
+        st_gid=4321,
+    )
     monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _: expected)
-    gateway_adapters._require_directory(7, uid=1000, gid=4321, mode=0o2770)
+    gateway_adapters._require_directory(
+        7,
+        uid=int(EXPECTED_EXECUTOR_UID),
+        gid=4321,
+        mode=0o2770,
+    )
     for changed in (
         SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=1001, st_gid=4321),
-        SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=1000, st_gid=4322),
-        SimpleNamespace(st_mode=stat.S_IFDIR | 0o0770, st_uid=1000, st_gid=4321),
-        SimpleNamespace(st_mode=stat.S_IFREG | 0o2770, st_uid=1000, st_gid=4321),
+        SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=1000, st_gid=4321),
+        SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=int(EXPECTED_EXECUTOR_UID), st_gid=4322),
+        SimpleNamespace(st_mode=stat.S_IFDIR | 0o0770, st_uid=int(EXPECTED_EXECUTOR_UID), st_gid=4321),
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o2770, st_uid=int(EXPECTED_EXECUTOR_UID), st_gid=4321),
     ):
         monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _, value=changed: value)
         with pytest.raises(OSError, match="ownership protocol mismatch"):
-            gateway_adapters._require_directory(7, uid=1000, gid=4321, mode=0o2770)
+            gateway_adapters._require_directory(
+                7,
+                uid=int(EXPECTED_EXECUTOR_UID),
+                gid=4321,
+                mode=0o2770,
+            )
+
+
+def test_mailbox_processor_rejects_legacy_executor_request_file(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "getgid", lambda: 4321, raising=False)
+    evidence = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o640,
+        st_uid=1000,
+        st_gid=4321,
+        st_size=2,
+        st_dev=1,
+        st_ino=2,
+        st_mtime_ns=3,
+        st_ctime_ns=4,
+    )
+    monkeypatch.setattr(gateway_adapters.os, "open", lambda *_args, **_kwargs: 7)
+    monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _fd: evidence)
+    monkeypatch.setattr(
+        gateway_adapters.os,
+        "read",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("legacy request reached read")),
+    )
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _fd: None)
+    broker = MailboxBroker(SimpleNamespace(), SimpleNamespace(targets={}), 1.0, 1024)
+
+    with pytest.raises(GatewayError, match="broker_request_invalid"):
+        broker._process(6, "0" * 32 + ".json")
 
 
 def test_mailbox_response_is_random_atomic_and_read_only(monkeypatch) -> None:
@@ -2029,7 +2126,7 @@ def test_mailbox_request_inode_change_fails_closed(monkeypatch) -> None:
     raw = json.dumps({"method": "POST", "path": "/callback", "headers": {}, "body": ""}).encode()
     before = SimpleNamespace(
         st_mode=stat.S_IFREG | 0o640,
-        st_uid=1000,
+        st_uid=int(EXPECTED_EXECUTOR_UID),
         st_gid=4321,
         st_size=len(raw),
         st_dev=1,
@@ -2115,7 +2212,7 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
         evidence = SimpleNamespace(
             st_mode=stat.S_IFREG | 0o640,
             st_size=len(raw),
-            st_uid=1000,
+            st_uid=int(EXPECTED_EXECUTOR_UID),
             st_gid=4321,
             st_dev=1,
             st_ino=2,
@@ -2223,7 +2320,7 @@ def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_on
         evidence = SimpleNamespace(
             st_mode=stat.S_IFREG | 0o640,
             st_size=len(raw),
-            st_uid=1000,
+            st_uid=int(EXPECTED_EXECUTOR_UID),
             st_gid=4321,
             st_dev=1,
             st_ino=2,
@@ -2459,7 +2556,7 @@ def test_mailbox_claim_is_cleaned_when_processing_deadline_expires(monkeypatch) 
     os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
     reason="real broker-owned claim permissions require a root-capable POSIX release gate",
 )
-def test_mailbox_claim_moves_request_into_real_broker_owned_posix_directory(tmp_path) -> None:
+def test_mailbox_claim_accepts_canonical_executor_request_on_real_posix(tmp_path) -> None:
     workspace_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         gateway_adapters._prepare_mailbox(workspace_fd, str(tmp_path), os.getuid(), os.getgid())
@@ -2467,8 +2564,9 @@ def test_mailbox_claim_moves_request_into_real_broker_owned_posix_directory(tmp_
         os.close(workspace_fd)
     mailbox = tmp_path / ".opensandbox-gateway"
     request_path = mailbox / "requests" / ("1" * 32 + ".json")
+    assert (mailbox / "requests").stat().st_uid == int(EXPECTED_EXECUTOR_UID)
     request_path.write_text("{}", encoding="utf-8")
-    os.chown(request_path, 1000, os.getgid())
+    os.chown(request_path, int(EXPECTED_EXECUTOR_UID), os.getgid())
     os.chmod(request_path, 0o640)
     request_fd = os.open(mailbox / "requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     claim_fd = os.open(mailbox / "claims", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -2481,6 +2579,7 @@ def test_mailbox_claim_moves_request_into_real_broker_owned_posix_directory(tmp_
         assert os.stat(claimed[0], dir_fd=claim_fd, follow_symlinks=False).st_ino == evidence.st_ino
         claim_dir = os.fstat(claim_fd)
         assert claim_dir.st_uid == os.getuid() and stat.S_IMODE(claim_dir.st_mode) == 0o700
+
     finally:
         os.close(claim_fd)
         os.close(request_fd)
@@ -2518,7 +2617,7 @@ def test_relay_timeout_removes_pending_request_on_real_posix(tmp_path) -> None:
     os.chmod(mailbox, 0o711)
     os.chown(mailbox, 0, 0)
     os.chmod(requests, 0o2770)
-    os.chown(requests, 1000, 0)
+    os.chown(requests, int(EXPECTED_EXECUTOR_UID), 0)
     os.chmod(responses, 0o755)
     os.chown(responses, 0, 0)
     probe = socket.socket()

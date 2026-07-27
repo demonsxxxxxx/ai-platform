@@ -12,6 +12,8 @@ import pytest
 import yaml
 
 from app.runtime.sandbox import opensandbox_attestation
+from app.runtime.sandbox.container_provider import _executor_identity_labels
+from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 from app.settings import Settings
 
 
@@ -22,6 +24,17 @@ ENV_EXAMPLE = ROOT / "deploy" / "ai-platform" / ".env.example"
 IMAGE_DIGEST = "sha256:" + "a" * 64
 IMAGE_SUBJECT = f"registry.example/team/ai-platform@{IMAGE_DIGEST}"
 PROOF_SIGNING_KEY = "attestation-proof-signing-key-with-enough-entropy-2026"
+
+
+def test_executor_identity_contract_uses_workspace_authority() -> None:
+    labels = _executor_identity_labels()
+
+    assert labels == {
+        "ai-platform.executor.user": f"{RUNTIME_UID}:{RUNTIME_GID}",
+        "ai-platform.executor.uid": str(RUNTIME_UID),
+        "ai-platform.executor.gid": str(RUNTIME_GID),
+        "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+    }
 
 
 def attestation_settings(**overrides: Any) -> SimpleNamespace:
@@ -104,9 +117,9 @@ def attestation_payload(**overrides: Any) -> dict[str, Any]:
         },
         "security": {
             "no_new_privileges": True,
-            "user": "1000:1000",
-            "uid": "1000",
-            "gid": "1000",
+            "user": f"{RUNTIME_UID}:{RUNTIME_GID}",
+            "uid": str(RUNTIME_UID),
+            "gid": str(RUNTIME_GID),
         },
         "image": {
             "subject": IMAGE_SUBJECT,
