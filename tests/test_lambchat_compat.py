@@ -258,3 +258,47 @@ def test_terminal_final_payload_only_adapts_projection_authority(monkeypatch):
     assert lambchat_compat._terminal_final_payload(
         {"id": "run-a", "status": "failed", "error_code": "ignored"}
     ) == ("final_detail", projection["payload"], "error")
+
+
+def test_lambchat_compat_keeps_first_public_lifecycle_projection_per_run():
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+    run = {
+        "id": "run-singleton",
+        "trace_id": "trace-singleton",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+    }
+    base = {
+        "trace_id": "trace-singleton",
+        "schema_version": "ai-platform.event-envelope.v1",
+        "stage": "internal",
+        "message": "private lifecycle detail",
+        "severity": "info",
+        "visible_to_user": True,
+        "error_code": None,
+        "created_at": None,
+        "payload_json": {"visible_to_user": True},
+    }
+    rows = [
+        {**base, "id": "intent-route", "sequence": 1, "event_type": "intent_detected"},
+        {**base, "id": "skill-route", "sequence": 2, "event_type": "skill_selected"},
+        {**base, "id": "worker", "sequence": 3, "event_type": "worker_started"},
+        {**base, "id": "intent-executor", "sequence": 4, "event_type": "intent_detected"},
+        {**base, "id": "skill-executor", "sequence": 5, "event_type": "skill_selected"},
+        {**base, "id": "run-executor", "sequence": 6, "event_type": "run_started"},
+    ]
+
+    assert [
+        (record.history_event["event_type"], record.id, record.history_event["sequence"])
+        for record in lambchat_compat._compatibility_events_for_run(run, rows, [], principal)
+    ] == [
+        ("intent_detected", "intent-route", 1),
+        ("capability_selected", "skill-route", 2),
+        ("run_started", "worker", 3),
+    ]
