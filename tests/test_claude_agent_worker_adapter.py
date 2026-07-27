@@ -2209,6 +2209,44 @@ def test_external_mcp_selection_forces_real_sandbox_without_client_execution_tie
     ) is True
 
 
+def test_claude_sandbox_admission_passes_explicit_mcp_requirement(monkeypatch):
+    captured = {}
+
+    def decide(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(requires_real_sandbox=True)
+
+    monkeypatch.setattr(claude_agent_worker, "decide_execution_boundary", decide)
+    current_payload = payload(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input={
+            "message": "search with the selected tool",
+            "_runtime_tool_policy_subjects": [
+                {
+                    "identity": "mcp__tenant-server__search",
+                    "mcp_server": "tenant-server",
+                    "registered": True,
+                    "declared": True,
+                    "active": True,
+                    "distributed": True,
+                    "identity_authorized": True,
+                    "object_authorized": True,
+                    "parameters_authorized": True,
+                }
+            ],
+        },
+    )
+
+    assert _ordinary_run_requires_sandbox(current_payload) is True
+    assert captured == {
+        "executor_type": "claude-agent-worker",
+        "execution_mode": "",
+        "execution_tier": "",
+        "mcp_requires_sandbox": True,
+    }
+
+
 @pytest.mark.asyncio
 async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
