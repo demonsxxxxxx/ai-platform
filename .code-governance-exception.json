@@ -18,6 +18,7 @@
     {"code": "test_responsibility_mirror", "path": "app/routes/agent_apps.py"},
     {"code": "test_responsibility_mirror", "path": "app/routes/chat.py"},
     {"code": "test_responsibility_mirror", "path": "app/routes/runs.py"},
+    {"code": "test_responsibility_mirror", "path": "app/runtime/sandbox/contracts.py"},
     {"code": "test_responsibility_mirror", "path": "app/schema.sql"},
     {"code": "test_responsibility_mirror", "path": "app/worker.py"},
     {"code": "test_responsibility_mirror", "path": "frontend/web/src/components/agent-builder/AgentBuilderRoute.tsx"},
