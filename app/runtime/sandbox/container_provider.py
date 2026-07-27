@@ -3734,10 +3734,8 @@ class DockerContainerProvider:
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc
             raise ContainerStartFailedError()
-        # Docker creation is the first point at which the actual container ID
-        # exists, but Docker does not expose authoritative network membership
-        # until the idle executor has started. Seal no governed proof before
-        # the immediate post-start readback succeeds.
+        # Docker exposes authoritative network membership only after the idle
+        # executor starts. Seal no proof before immediate post-start readback.
         observed_container_id = str(getattr(container, "id", "") or "").strip()
         if observed_container_id:
             bootstrap_lease.container_id = observed_container_id

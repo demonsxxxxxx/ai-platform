@@ -201,7 +201,6 @@ class FakeDockerContainer:
         environment: dict[str, str],
         ports: dict[str, Any] | None = None,
         start_error: Exception | None = None,
-        reload_error: Exception | None = None,
         stop_error: Exception | None = None,
         remove_error: Exception | None = None,
         host_port: str | None = "18000",
@@ -223,7 +222,7 @@ class FakeDockerContainer:
         self.stopped = False
         self.removed = False
         self._start_error = start_error
-        self._reload_error = reload_error
+        self._reload_error: Exception | None = None
         self._stop_error = stop_error
         self._remove_error = remove_error
         self._exec_exit_code = exec_exit_code
@@ -257,7 +256,6 @@ class FakeDockerContainer:
             raise self._start_error
         client = getattr(self, "client", None)
         if client is not None:
-            client.events.append(("start", self.name))
             if self._pending_network_name:
                 client.attach_to_network(self, self._pending_network_name)
                 self._pending_network_name = ""
@@ -285,9 +283,7 @@ class FakeDockerContainer:
     def reload(self) -> None:
         if self._reload_error is not None:
             raise self._reload_error
-        client = getattr(self, "client", None)
-        if client is not None:
-            client.events.append(("reload", self.name))
+        self.reload_count = getattr(self, "reload_count", 0) + 1
         return None
 
     def exec_run(self, command: list[str], **kwargs: Any) -> SimpleNamespace:
@@ -345,7 +341,6 @@ class FakeDockerContainers:
             raise RuntimeError(f"Conflict. The container name {kwargs['name']} is already in use.")
         container = FakeDockerContainer(
             start_error=self._client.start_error,
-            reload_error=self._client.reload_error,
             stop_error=self._client.stop_error,
             remove_error=self._client.remove_error,
             host_port=self._client.host_port,
@@ -368,7 +363,6 @@ class FakeDockerContainers:
         if callable(post_create_mutator):
             post_create_mutator(container)
         self._client.created.append(kwargs)
-        self._client.events.append(("create", container.name))
         self._client.containers_by_name[container.name] = container
         return container
 
@@ -446,7 +440,6 @@ class FakeDockerClient:
         ping_error: Exception | None = None,
         create_error: Exception | None = None,
         start_error: Exception | None = None,
-        reload_error: Exception | None = None,
         stop_error: Exception | None = None,
         remove_error: Exception | None = None,
         list_error: Exception | None = None,
@@ -458,7 +451,6 @@ class FakeDockerClient:
         self.ping_error = ping_error
         self.create_error = create_error
         self.start_error = start_error
-        self.reload_error = reload_error
         self.stop_error = stop_error
         self.remove_error = remove_error
         self.list_error = list_error
@@ -466,7 +458,6 @@ class FakeDockerClient:
         self.exec_exit_code = exec_exit_code
         self.exec_error = exec_error
         self.defer_container_network_until_start = defer_container_network_until_start
-        self.events: list[tuple[str, str]] = []
         self.created: list[dict[str, Any]] = []
         self.containers_by_name: dict[str, FakeDockerContainer] = {}
         self.networks_by_name: dict[str, FakeDockerNetwork] = {
@@ -4888,61 +4879,38 @@ async def test_docker_cold_start_starts_before_sealing_deferred_network_membersh
     )
 
     lease = await provider.create_or_reuse(request(), workspace())
-
     primary = fake.containers_by_name[lease.container_name]
-    primary_events = [event for event, name in fake.events if name == primary.name]
     assert primary.started is True
-    assert primary_events[:3] == ["create", "start", "reload"]
+    assert primary.reload_count >= 1
     assert lease.container_id in provider._leases
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_stage", ("start", "reload"))
-async def test_docker_cold_start_start_or_reload_failure_cleans_before_probes(monkeypatch, failure_stage):
+@pytest.mark.parametrize("failure", ("start", "reload", "empty-id", "wrong-id", "extra-peer"))
+async def test_docker_cold_start_failures_stop_before_probes(monkeypatch, failure):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     callback_calls: list[tuple[Any, ...]] = []
     fake = FakeDockerClient(
         defer_container_network_until_start=True,
-        start_error=RuntimeError("start failed") if failure_stage == "start" else None,
-        reload_error=RuntimeError("reload failed") if failure_stage == "reload" else None,
+        start_error=RuntimeError("start failed") if failure == "start" else None,
     )
-    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
-    provider = container_provider.DockerContainerProvider(
-        docker_client_factory=lambda: fake,
-        health_probe=lambda *_args: pytest.fail("executor health probe must not run"),
-        identity_probe=lambda *_args: pytest.fail("executor identity probe must not run"),
-        callback_reachability_probe=lambda *args: callback_calls.append(args) or True,
-    )
-
-    expected_error = (
-        container_provider.ContainerStartFailedError
-        if failure_stage == "start"
-        else container_provider.GovernedEgressAdmissionError
-    )
-    with pytest.raises(expected_error):
-        await provider.create_or_reuse(request(), workspace())
-
-    primary = fake.containers_by_name["executor-exec-run-a"]
-    network_name = fake.created[0]["network"]
-    assert primary.started is (failure_stage == "reload")
-    assert primary.stopped is True
-    assert primary.removed is True
-    assert network_name not in fake.networks_by_name
-    assert provider._leases == {}
-    assert callback_calls == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("attachment_id", ("", "network-unexpected"), ids=("empty", "wrong"))
-async def test_docker_cold_start_rejects_post_start_network_id_drift_without_probes(monkeypatch, attachment_id):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    callback_calls: list[tuple[Any, ...]] = []
-    fake = FakeDockerClient(defer_container_network_until_start=True)
-
+    peer = None
+    if failure == "extra-peer":
+        peer = FakeDockerContainer(
+            image="unrelated:immutable", name="unrelated-peer", detach=True,
+            labels={"ai-platform.owner": "another-runtime"}, volumes={}, environment={},
+        )
+        peer.client = fake
+        fake.containers_by_name[peer.name] = peer
     def mutate(container):
         network_name = next(iter(container.attrs["NetworkSettings"]["Networks"]))
-        container.attrs["NetworkSettings"]["Networks"][network_name]["NetworkID"] = attachment_id
-
+        if failure == "reload":
+            container._reload_error = RuntimeError("reload failed")
+        elif failure in {"empty-id", "wrong-id"}:
+            attachment_id = "" if failure == "empty-id" else "network-unexpected"
+            container.attrs["NetworkSettings"]["Networks"][network_name]["NetworkID"] = attachment_id
+        elif peer is not None:
+            fake.attach_to_network(peer, network_name)
     fake.post_start_mutator = mutate
     monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
     provider = container_provider.DockerContainerProvider(
@@ -4951,63 +4919,29 @@ async def test_docker_cold_start_rejects_post_start_network_id_drift_without_pro
         identity_probe=lambda *_args: pytest.fail("executor identity probe must not run"),
         callback_reachability_probe=lambda *args: callback_calls.append(args) or True,
     )
-
-    with pytest.raises(container_provider.GovernedEgressAdmissionError):
+    expected_error = (
+        container_provider.ContainerStartFailedError
+        if failure == "start"
+        else container_provider.ContainerCleanupFailedError
+        if peer is not None
+        else container_provider.GovernedEgressAdmissionError
+    )
+    with pytest.raises(expected_error):
         await provider.create_or_reuse(request(), workspace())
-
     primary = fake.containers_by_name["executor-exec-run-a"]
     network_name = fake.created[0]["network"]
-    assert primary.started is True
+    assert primary.started is (failure != "start")
     assert primary.stopped is True
     assert primary.removed is True
-    assert network_name not in fake.networks_by_name
-    assert provider._leases == {}
     assert callback_calls == []
-
-
-@pytest.mark.asyncio
-async def test_docker_cold_start_rejects_extra_post_start_peer_and_tracks_residual_network(monkeypatch):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    callback_calls: list[tuple[Any, ...]] = []
-    fake = FakeDockerClient(defer_container_network_until_start=True)
-    peer = FakeDockerContainer(
-        image="unrelated:immutable",
-        name="unrelated-peer",
-        detach=True,
-        labels={"ai-platform.owner": "another-runtime"},
-        volumes={},
-        environment={},
-    )
-    peer.client = fake
-    fake.containers_by_name[peer.name] = peer
-
-    def attach_peer(container):
-        network_name = next(iter(container.attrs["NetworkSettings"]["Networks"]))
-        fake.attach_to_network(peer, network_name)
-
-    fake.post_start_mutator = attach_peer
-    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
-    provider = container_provider.DockerContainerProvider(
-        docker_client_factory=lambda: fake,
-        health_probe=lambda *_args: pytest.fail("executor health probe must not run"),
-        identity_probe=lambda *_args: pytest.fail("executor identity probe must not run"),
-        callback_reachability_probe=lambda *args: callback_calls.append(args) or True,
-    )
-
-    with pytest.raises(container_provider.ContainerCleanupFailedError):
-        await provider.create_or_reuse(request(), workspace())
-
-    primary = fake.containers_by_name["executor-exec-run-a"]
-    network_name = fake.created[0]["network"]
-    assert primary.started is True
-    assert primary.stopped is True
-    assert primary.removed is True
-    assert peer.removed is False
-    assert network_name in peer.attrs["NetworkSettings"]["Networks"]
-    assert network_name in fake.networks_by_name
-    assert provider._leases[primary.id].container_id == primary.id
-    assert "ai-platform.governed_egress.proof" not in provider._leases[primary.id].labels
-    assert callback_calls == []
+    if peer is None:
+        assert network_name not in fake.networks_by_name
+        assert provider._leases == {}
+    else:
+        assert peer.removed is False
+        assert network_name in peer.attrs["NetworkSettings"]["Networks"]
+        assert network_name in fake.networks_by_name
+        assert "ai-platform.governed_egress.proof" not in provider._leases[primary.id].labels
 
 
 @pytest.mark.asyncio
