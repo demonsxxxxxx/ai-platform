@@ -1115,6 +1115,37 @@ def base_payload(**overrides):
     return payload
 
 
+def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeypatch):
+    captured = {}
+
+    def decide(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(requires_real_sandbox=False)
+
+    monkeypatch.setattr(worker_module, "decide_execution_boundary", decide)
+    payload = QueueRunPayload.model_validate(
+        {
+            key: value
+            for key, value in base_payload(
+                executor_type="ragflow",
+                input={"mode": "file", "mcp_tool_ids": ["corp-search"]},
+            ).items()
+            if key != "_queue_attempt_id"
+        }
+    )
+
+    assert worker_module._ordinary_run_uses_runtime_sandbox(
+        payload,
+        context_snapshot={},
+    ) is False
+    assert captured == {
+        "executor_type": "ragflow",
+        "execution_mode": "",
+        "execution_tier": "",
+        "mcp_requires_sandbox": True,
+    }
+
+
 def test_worker_propagates_exact_authorized_mcp_subject_without_permission_lookup_or_consume():
     payload = QueueRunPayload.model_validate(
         {key: value for key, value in base_payload(input={"mode": "file", "mcp_tool_ids": ["corp-search"]}).items() if key != "_queue_attempt_id"}
@@ -7072,7 +7103,7 @@ async def test_worker_follow_up_terminalization_reconciles_one_final_drain_only(
 
 
 @pytest.mark.asyncio
-async def test_worker_audits_read_only_ragflow_tool_call(monkeypatch):
+async def test_worker_denies_read_only_ragflow_backing_mcp_before_completion_audit(monkeypatch):
     audits = []
     events = []
     snapshots = []
@@ -7146,42 +7177,16 @@ async def test_worker_audits_read_only_ragflow_tool_call(monkeypatch):
         worker_id="worker-ragflow",
     )
 
-    assert outcome.status == "succeeded"
-    assert "mcp_tool_call_started" not in events
-    assert "mcp_tool_call_completed" in events
-    completion_audit = next(item for item in audits if item["action"] == "mcp_tool_call_completed")
-    assert completion_audit["payload_json"]["dataset_ids"] == ["dataset-a"]
-    assert audits[0]["payload_json"]["risk_level"] == "low"
-    assert audits[0]["payload_json"]["write_capable"] is False
-    assert audits[1]["action"] == "mcp_tool_call_completed"
-    assert audits[1]["trace_id"] == "trace_run_a"
-    assert audits[1]["payload_json"]["dataset_ids"] == ["dataset-a"]
-    assert audits[1]["payload_json"]["reference_ids"] == [
-        {"index": 1, "dataset_id": "dataset-a", "document_id": "doc-a", "chunk_id": "chunk-a"}
-    ]
-    assert snapshots == [
-        {
-            "tenant_id": "tenant-a",
-            "run_id": "run-a",
-            "skill_id": "ragflow-knowledge-search",
-            "skill_version": "hash-ragflow",
-            "content_hash": "hash-ragflow",
-            "source_json": repository_module.run_skill_snapshot_source_json(
-                primary_manifest("ragflow-knowledge-search", "hash-ragflow"),
-                release_decision=release_decision("hash-ragflow"),
-            ),
-            "dependency_ids": [],
-            "allowed": True,
-            "staged": True,
-            "used": True,
-            "used_skills_source": "executor_native",
-            "inferred_used": False,
-        }
-    ]
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    assert "capability_not_authorized" in events
+    assert "mcp_tool_call_completed" not in events
+    assert not any(item["action"] == "mcp_tool_call_completed" for item in audits)
+    assert snapshots == []
 
 
 @pytest.mark.asyncio
-async def test_worker_does_not_publish_ragflow_completion_for_failed_result(monkeypatch):
+async def test_worker_does_not_publish_ragflow_completion_for_backing_mcp_denial(monkeypatch):
     events = []
     audits = []
 
@@ -7236,12 +7241,13 @@ async def test_worker_does_not_publish_ragflow_completion_for_failed_result(monk
     )
 
     assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
     assert "mcp_tool_call_completed" not in events
     assert "mcp_tool_call_completed" not in audits
 
 
 @pytest.mark.asyncio
-async def test_worker_rolls_back_ragflow_completion_when_final_success_guard_loses(monkeypatch):
+async def test_worker_commits_ragflow_backing_mcp_denial_without_completion(monkeypatch):
     committed = []
 
     class TransactionConnection:
@@ -7323,13 +7329,14 @@ async def test_worker_rolls_back_ragflow_completion_when_final_success_guard_los
     )
 
     assert outcome.status == "failed"
-    assert ("fail", "tool_permission_pending") in committed
+    assert outcome.error_code == "capability_not_authorized"
+    assert ("fail", "capability_not_authorized") in committed
     assert ("event", "mcp_tool_call_completed") not in committed
     assert ("audit", "mcp_tool_call_completed") not in committed
 
 
 @pytest.mark.asyncio
-async def test_worker_does_not_mark_failed_ragflow_result_as_native_used(monkeypatch):
+async def test_worker_does_not_mark_denied_ragflow_backing_mcp_as_native_used(monkeypatch):
     snapshots = []
     failures = []
 
@@ -7388,26 +7395,9 @@ async def test_worker_does_not_mark_failed_ragflow_result_as_native_used(monkeyp
     )
 
     assert outcome.status == "failed"
-    assert failures[0]["error_code"] == "ragflow_api_error"
-    assert snapshots == [
-        {
-            "tenant_id": "tenant-a",
-            "run_id": "run-a",
-            "skill_id": "ragflow-knowledge-search",
-            "skill_version": "hash-ragflow",
-            "content_hash": "hash-ragflow",
-            "source_json": repository_module.run_skill_snapshot_source_json(
-                primary_manifest("ragflow-knowledge-search", "hash-ragflow"),
-                release_decision=release_decision("hash-ragflow"),
-            ),
-            "dependency_ids": [],
-            "allowed": True,
-            "staged": True,
-            "used": False,
-            "used_skills_source": "",
-            "inferred_used": False,
-        }
-    ]
+    assert outcome.error_code == "capability_not_authorized"
+    assert failures[0]["error_code"] == "capability_not_authorized"
+    assert snapshots == []
 
 
 @pytest.mark.asyncio
@@ -8066,7 +8056,7 @@ async def test_worker_rejects_external_mcp_before_non_claude_executor_dispatch(m
 
 
 @pytest.mark.asyncio
-async def test_worker_allows_builtin_ragflow_backing_mcp_on_ragflow_executor(monkeypatch):
+async def test_worker_rejects_ragflow_backing_mcp_before_adapter_dispatch(monkeypatch):
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"mode": "file"},
@@ -8093,37 +8083,21 @@ async def test_worker_allows_builtin_ragflow_backing_mcp_on_ragflow_executor(mon
 
     outcome = await process_run_payload(raw, registry=registry)
 
-    assert outcome.status == "succeeded"
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
     assert ("tool_lookup", "tenant-a", backing_tool_id) in calls
-    registered_input = next(call[1] for call in calls if call[0] == "adapter")
-    assert "mcp_tool_ids" not in registered_input
-    assert any(
-        subject.get("mcp_server") == "ragflow-server"
-        for subject in registered_input["_runtime_tool_policy_subjects"]
-    )
-    completion = next(
+    _task6_assert_no_executor_calls(calls)
+    failed = next(call[1] for call in calls if call[0] == "fail")
+    assert failed["error_code"] == "capability_not_authorized"
+    denied_event = next(
         call[1]
         for call in calls
-        if call[0] == "event" and call[1]["event_type"] == "mcp_tool_call_completed"
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
     )
-    audit = next(
-        call[1]
-        for call in calls
-        if call[0] == "audit" and call[1]["action"] == "mcp_tool_call_completed"
-    )
-    assert completion["payload"]["mcp_tool_id"] == backing_tool_id
-    assert audit["target_id"] == backing_tool_id
+    assert denied_event["payload"]["capability_kind"] == "mcp_tool"
+    assert denied_event["payload"]["capability_id"] == backing_tool_id
+    assert denied_event["payload"]["reason"] == "mcp_sandbox_executor_required"
     assert "caller-forged-search" not in json.dumps(calls)
-    assert not any(
-        call[0] == "event" and call[1]["event_type"] == "mcp_tool_call_started"
-        for call in calls
-    )
-    assert not any(
-        call[0] == "event"
-        and call[1]["event_type"] == "capability_not_authorized"
-        and call[1]["payload"].get("reason") == "mcp_sandbox_executor_required"
-        for call in calls
-    )
 
 
 @pytest.mark.asyncio

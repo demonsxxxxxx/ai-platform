@@ -96,7 +96,7 @@ def decide_execution_boundary(
     executor_type: str,
     execution_mode: str,
     execution_tier: str,
-    mcp_requires_sandbox: bool = False,
+    mcp_requires_sandbox: bool,
 ) -> ExecutionBoundaryDecision:
     """Resolve one execution authority decision from normalized admission facts."""
     real_sandbox = {
