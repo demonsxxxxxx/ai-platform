@@ -54,6 +54,9 @@ def _fake_sdk(captured, *, hook_invocations):
     class TextBlock:
         pass
 
+    class StreamEvent:
+        pass
+
     class ResultMessage:
         session_id = "sdk-session"
         usage = None
@@ -91,6 +94,7 @@ def _fake_sdk(captured, *, hook_invocations):
         ClaudeAgentOptions=ClaudeAgentOptions,
         HookMatcher=HookMatcher,
         ResultMessage=ResultMessage,
+        StreamEvent=StreamEvent,
         TextBlock=TextBlock,
         query=query,
     )
@@ -344,6 +348,7 @@ async def test_sdk_assistant_text_blocks_never_publish_answer_or_delta(monkeypat
             AssistantMessage=AssistantMessage,
             ClaudeAgentOptions=ClaudeAgentOptions,
             ResultMessage=ResultMessage,
+            StreamEvent=type("StreamEvent", (), {}),
             TextBlock=TextBlock,
             query=query,
         ),
@@ -403,6 +408,7 @@ async def test_sdk_discards_over_cap_diagnostic_text_and_publishes_terminal_resu
             AssistantMessage=AssistantMessage,
             ClaudeAgentOptions=ClaudeAgentOptions,
             ResultMessage=ResultMessage,
+            StreamEvent=type("StreamEvent", (), {}),
             TextBlock=TextBlock,
             query=query,
         ),
@@ -419,3 +425,174 @@ async def test_sdk_discards_over_cap_diagnostic_text_and_publishes_terminal_resu
 
     assert deltas == [ResultMessage.result]
     assert result.message == ResultMessage.result
+
+
+def _streaming_sdk(captured, events, *, on_before_result=None, result_text="terminal final"):
+    class AssistantMessage:
+        pass
+
+    class TextBlock:
+        pass
+
+    class StreamEvent:
+        def __init__(self, event):
+            self.event = event
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = None
+        model_usage = None
+        result = result_text
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        num_turns = 1
+        permission_denials = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    async def query(*, prompt, options):
+        del prompt, options
+        for event in events:
+            yield StreamEvent(event)
+        if on_before_result is not None:
+            on_before_result()
+        yield ResultMessage()
+
+    return types.SimpleNamespace(
+        AssistantMessage=AssistantMessage,
+        ClaudeAgentOptions=ClaudeAgentOptions,
+        ResultMessage=ResultMessage,
+        StreamEvent=StreamEvent,
+        TextBlock=TextBlock,
+        query=query,
+    )
+
+
+def _trusted_internal_settings():
+    settings = _settings()
+    settings.sandbox_security_profile = "trusted_internal"
+    return settings
+
+
+@pytest.mark.asyncio
+async def test_trusted_internal_streams_safe_raw_text_delta_before_result_without_terminal_replay(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    deltas = []
+    result_gate = []
+    streamed_text = "Safe public answer. " * 32
+    events = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": streamed_text}},
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _streaming_sdk(captured, events, on_before_result=lambda: result_gate.extend(deltas)),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert captured["include_partial_messages"] is True
+    assert result_gate == deltas
+    assert deltas
+    assert "terminal final" not in deltas
+    assert result.message == "terminal final"
+
+
+@pytest.mark.asyncio
+async def test_trusted_internal_stream_ignores_tool_thinking_and_json_events(monkeypatch, tmp_path):
+    captured = {}
+    deltas = []
+    events = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "private"}},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use"}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\"path\":\"C:\\\\private\"}"}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "signature_delta", "signature": "private"}},
+    ]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+
+    await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert captured["include_partial_messages"] is True
+    assert deltas == ["terminal final"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "events",
+    [
+        [
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "C:"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "\\\\private\\\\token.txt"}},
+        ],
+        [
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "wrong index"}},
+        ],
+        [
+            {"type": "content_block_start", "index": "0", "content_block": {"type": "text"}},
+        ],
+    ],
+)
+async def test_trusted_internal_stream_fails_closed_on_sensitive_or_conflicting_raw_events(
+    monkeypatch, tmp_path, events
+):
+    captured = {}
+    deltas = []
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.message == "terminal final"
+    assert deltas == ["terminal final"]
+
+
+@pytest.mark.asyncio
+async def test_governed_stream_events_keep_final_only_behavior(monkeypatch, tmp_path):
+    captured = {}
+    deltas = []
+    events = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "must remain private"}},
+    ]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert captured["include_partial_messages"] is False
+    assert deltas == ["terminal final"]

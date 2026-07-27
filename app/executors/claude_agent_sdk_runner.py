@@ -74,6 +74,8 @@ _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
 _MAX_REPLAY_TEXT_BLOCKS = 32
 _MAX_REPLAY_TEXT_CHARS = 8_192
+_TRUSTED_INTERNAL_RAW_STREAM_TRAILING_CHARS = 512
+_TRUSTED_INTERNAL_RAW_STREAM_MAX_PENDING_CHARS = 4_096
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
@@ -1413,6 +1415,7 @@ async def run_claude_agent_sdk(
         AssistantMessage = sdk.AssistantMessage
         ClaudeAgentOptions = sdk.ClaudeAgentOptions
         ResultMessage = sdk.ResultMessage
+        StreamEvent = sdk.StreamEvent
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
         if query_fn is None:
@@ -1429,6 +1432,11 @@ async def run_claude_agent_sdk(
         skill_id
         if skill_id != "general-chat" and skill_id in configured_skills
         else None
+    )
+    trusted_internal_raw_streaming = (
+        on_text is not None
+        and execution_policy == "sandbox_brokered"
+        and str(getattr(settings, "sandbox_security_profile", "governed") or "") == "trusted_internal"
     )
     try:
         attachment_data_message = _attachment_context_data_message(attachment_contexts)
@@ -1923,6 +1931,7 @@ async def run_claude_agent_sdk(
         effort=str(getattr(settings, "claude_agent_sdk_effort", "xhigh") or "xhigh"),
         can_use_tool=can_use_tool,
         hooks=hooks,
+        include_partial_messages=trusted_internal_raw_streaming,
         setting_sources=["project"],
     )
 
@@ -1934,6 +1943,10 @@ async def run_claude_agent_sdk(
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
     received_structured_terminal = False
+    raw_stream_text_index: int | None = None
+    raw_stream_pending_text = ""
+    raw_stream_partial_disabled = False
+    raw_stream_partial_emitted = False
 
     async def publish_terminal_text(value: str) -> None:
         if on_text is None or not value:
@@ -1941,6 +1954,83 @@ async def run_claude_agent_sdk(
         callback_result = on_text(value)
         if isawaitable(callback_result):
             await callback_result
+
+    async def consume_trusted_internal_stream_event(message: object) -> None:
+        """Publish only fail-closed raw text deltas for the trusted-internal beta.
+
+        The SDK exposes raw Anthropic stream events, not a vendor-guaranteed final
+        answer channel.  This intentionally narrow beta projector is therefore
+        limited to sandbox-brokered trusted_internal runs and disables itself on
+        any unsafe text or text-block sequence conflict.
+        """
+
+        nonlocal raw_stream_text_index, raw_stream_pending_text
+        nonlocal raw_stream_partial_disabled, raw_stream_partial_emitted
+        if raw_stream_partial_disabled:
+            return
+        event = getattr(message, "event", None)
+        if not isinstance(event, dict):
+            return
+        event_type = event.get("type")
+        if event_type == "content_block_start":
+            index = event.get("index")
+            content_block = event.get("content_block")
+            if isinstance(index, bool) or not isinstance(index, int) or not isinstance(content_block, dict):
+                raw_stream_partial_disabled = True
+                raw_stream_pending_text = ""
+                return
+            if content_block.get("type") != "text":
+                return
+            if raw_stream_text_index is not None:
+                raw_stream_partial_disabled = True
+                raw_stream_pending_text = ""
+                return
+            raw_stream_text_index = index
+            return
+        if event_type != "content_block_delta":
+            return
+        index = event.get("index")
+        delta = event.get("delta")
+        if not isinstance(delta, dict):
+            raw_stream_partial_disabled = True
+            raw_stream_pending_text = ""
+            return
+        delta_type = delta.get("type")
+        if delta_type in {"thinking_delta", "signature_delta", "input_json_delta"}:
+            return
+        if delta_type != "text_delta":
+            return
+        text = delta.get("text")
+        if not isinstance(text, str) or not text:
+            return
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or raw_stream_text_index is None
+            or index != raw_stream_text_index
+            or len(raw_stream_pending_text) + len(text) > _TRUSTED_INTERNAL_RAW_STREAM_MAX_PENDING_CHARS
+        ):
+            raw_stream_partial_disabled = True
+            raw_stream_pending_text = ""
+            return
+        raw_stream_pending_text += text
+        sanitized_pending = sanitize_public_payload(raw_stream_pending_text)
+        if not isinstance(sanitized_pending, str) or sanitized_pending != raw_stream_pending_text:
+            raw_stream_partial_disabled = True
+            raw_stream_pending_text = ""
+            return
+        stable_length = len(raw_stream_pending_text) - _TRUSTED_INTERNAL_RAW_STREAM_TRAILING_CHARS
+        if stable_length <= 0:
+            return
+        stable_text = raw_stream_pending_text[:stable_length]
+        sanitized_stable = sanitize_public_payload(stable_text)
+        if not isinstance(sanitized_stable, str) or sanitized_stable != stable_text:
+            raw_stream_partial_disabled = True
+            raw_stream_pending_text = ""
+            return
+        raw_stream_pending_text = raw_stream_pending_text[stable_length:]
+        await publish_terminal_text(stable_text)
+        raw_stream_partial_emitted = True
 
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
@@ -1954,6 +2044,9 @@ async def run_claude_agent_sdk(
             ),
             options=options,
         ):
+            if trusted_internal_raw_streaming and isinstance(message, StreamEvent):
+                await consume_trusted_internal_stream_event(message)
+                continue
             if isinstance(message, AssistantMessage):
                 diagnostic_counters["assistant_messages"] += 1
                 for block in message.content:
@@ -2021,7 +2114,11 @@ async def run_claude_agent_sdk(
         if terminal_error is None and received_structured_terminal:
             diagnostic_text = "".join(diagnostic_text_blocks)
             if on_text:
-                if (
+                if trusted_internal_raw_streaming and raw_stream_partial_emitted:
+                    # The terminal ResultMessage remains authoritative downstream;
+                    # do not replay it through the delta callback after a raw beta delta.
+                    pass
+                elif (
                     not diagnostic_text_overflowed
                     and diagnostic_text
                     and diagnostic_text == structured_result_text
