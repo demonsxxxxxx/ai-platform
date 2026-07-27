@@ -1982,6 +1982,58 @@ async def test_runtime_execution_owner_does_not_release_lease_when_provider_stop
     assert stopped.quiescent is False
     assert calls == [("stop", "cancel_requested")]
     assert (await owner.stop(reason="test_cleanup", timeout_seconds=0.2)).quiescent is True
+    assert calls == [
+        ("stop", "cancel_requested"),
+        ("stop", "test_cleanup"),
+        ("release", "test_cleanup", "lease-a"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_execution_owner_retries_after_provider_stop_raises(tmp_path):
+    calls = []
+    executing = asyncio.Event()
+
+    class StopRaisesProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason: str):
+            calls.append(("stop", reason))
+            if len(calls) == 1:
+                raise RuntimeError("stop unavailable")
+            return await super().stop(lease, reason=reason)
+
+    async def execute(executor_url, task_request):
+        executing.set()
+        await asyncio.Event().wait()
+
+    async def record_lease(lease, request, workspace):
+        return {"id": "lease-a"}
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        calls.append(("release", reason, lease_record_id))
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StopRaisesProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=record_lease,
+        release_lease=release_lease,
+    )
+    owner = RunExecutionOwner("run-a")
+    owner.start(runtime.submit(request(sandbox_mode="persistent"), execution_owner=owner))
+    await asyncio.wait_for(executing.wait(), timeout=0.5)
+
+    failed = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
+
+    assert failed.status == "failed"
+    assert failed.quiescent is False
+    assert calls == [("stop", "cancel_requested")]
+    assert (await owner.stop(reason="test_cleanup", timeout_seconds=0.2)).quiescent is True
+    assert calls == [
+        ("stop", "cancel_requested"),
+        ("stop", "test_cleanup"),
+        ("release", "test_cleanup", "lease-a"),
+    ]
 
 
 @pytest.mark.asyncio

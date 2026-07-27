@@ -360,7 +360,6 @@ class SandboxRuntime:
                 raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
             raise
         externally_stopped = False
-        terminal_stop_attempted = False
         terminal_stop_result: StopResult | None = None
         terminal_stop_lock = asyncio.Lock()
         validation_started = False
@@ -373,14 +372,20 @@ class SandboxRuntime:
         async def stop_owned_runtime(reason: str) -> bool:
             """Elect exactly one stop/release owner across runtime cancellation paths."""
 
-            nonlocal externally_stopped, terminal_stop_attempted, terminal_stop_result
+            nonlocal externally_stopped, terminal_stop_result
             async with terminal_stop_lock:
                 if externally_stopped:
                     return True
-                if terminal_stop_attempted:
-                    return terminal_stop_result is not None and terminal_stop_result.status != "failed"
-                terminal_stop_attempted = True
-                terminal_stop_result = await self.provider.stop(lease, reason=reason)
+                try:
+                    terminal_stop_result = await self.provider.stop(lease, reason=reason)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    terminal_stop_result = StopResult(
+                        container_id=lease.container_id,
+                        status="failed",
+                        message="sandbox provider stop raised",
+                    )
                 if terminal_stop_result.status == "failed":
                     return False
                 await self._call_release_lease(lease, reason, lease_record_id)
