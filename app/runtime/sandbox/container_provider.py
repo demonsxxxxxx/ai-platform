@@ -15,7 +15,7 @@ import stat
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -160,6 +160,26 @@ class ContainerProvider(Protocol):
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
     ) -> None: ...
+
+    async def stage_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Stage the controller-owned attempt files before executor dispatch."""
+
+        ...
+
+    async def collect_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Collect provider-approved attempt outputs after executor dispatch."""
+
+        ...
 
     async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]: ...
 
@@ -1701,31 +1721,14 @@ def _opensandbox_volumes(
     host_class: Any,
     volume_class: Any,
 ) -> list[Any]:
-    if getattr(settings, "opensandbox_workspace_mount_enabled", True) is not True:
-        if skill_mount is not None:
-            raise ContainerStartFailedError("OpenSandbox staged Skill mount requires workspace mounting")
-        return []
-    try:
-        volumes = [
-            volume_class(
-                name="ai-platform-workspace",
-                host=host_class(path=workspace.workspace_host_path),
-                mountPath=workspace.workspace_container_path,
-                readOnly=False,
-            )
-        ]
-        if skill_mount is not None:
-            volumes.append(
-                volume_class(
-                    name="ai-platform-claude-skills",
-                    host=host_class(path=str(skill_mount.host_path)),
-                    mountPath=skill_mount.container_path,
-                    readOnly=True,
-                )
-            )
-    except (TypeError, ValueError) as exc:
-        raise ContainerStartFailedError("OpenSandbox read-only staged Skill mount is unavailable") from exc
-    return volumes
+    """Remote OpenSandbox never receives a controller-local Host bind.
+
+    The parameters remain temporarily for SDK-create shape compatibility; workspace
+    transfer occurs only after the ready sandbox has a durable runtime lease.
+    """
+
+    del settings, workspace, skill_mount, host_class, volume_class
+    return []
 
 
 def _opensandbox_connection_config(settings: Any, connection_config_class: Any) -> Any:
@@ -1742,6 +1745,380 @@ def _opensandbox_connection_config(settings: Any, connection_config_class: Any) 
 
 def _opensandbox_sentinel_path(workspace: WorkspaceLease) -> str:
     return f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform-opensandbox-lease.json"
+
+
+_OPENSANDBOX_STAGE_MAX_FILES = 512
+_OPENSANDBOX_STAGE_MAX_FILE_BYTES = 32 * 1024 * 1024
+_OPENSANDBOX_STAGE_MAX_TOTAL_BYTES = 128 * 1024 * 1024
+_OPENSANDBOX_STAGE_MAX_DIRECTORIES = 512
+_OPENSANDBOX_COLLECT_MAX_FILES = 128
+_OPENSANDBOX_COLLECT_MAX_FILE_BYTES = 64 * 1024 * 1024
+_OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+_OPENSANDBOX_COLLECT_MAX_DIRECTORIES = 256
+
+
+@dataclass(frozen=True)
+class _WorkspaceFileSnapshot:
+    device: int
+    inode: int
+    mode: int
+    link_count: int
+    size: int
+    modified_ns: int
+
+
+@dataclass(frozen=True)
+class _WorkspaceDirectorySnapshot:
+    device: int
+    inode: int
+    mode: int
+
+
+@dataclass(frozen=True)
+class _OpenSandboxWorkspaceFile:
+    relative_path: str
+    source_path: Path
+    snapshot: _WorkspaceFileSnapshot
+    ancestor_directories: tuple[tuple[Path, _WorkspaceDirectorySnapshot], ...]
+
+
+def _safe_workspace_relative_path(value: str) -> str:
+    """Validate one controller-owned workspace-relative POSIX path."""
+
+    if not isinstance(value, str) or not value or "\x00" in value or "\\" in value:
+        raise ContainerStartFailedError("workspace transfer path is invalid")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ContainerStartFailedError("workspace transfer path is invalid")
+    normalized = path.as_posix()
+    if normalized != value:
+        raise ContainerStartFailedError("workspace transfer path is invalid")
+    return normalized
+
+
+def _workspace_file_snapshot(path: Path) -> _WorkspaceFileSnapshot:
+    try:
+        node = path.lstat()
+    except OSError as exc:
+        raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
+    if not stat.S_ISREG(node.st_mode) or stat.S_ISLNK(node.st_mode) or node.st_nlink != 1:
+        raise ContainerStartFailedError("workspace transfer source is invalid")
+    return _WorkspaceFileSnapshot(
+        device=int(node.st_dev),
+        inode=int(node.st_ino),
+        mode=int(node.st_mode),
+        link_count=int(node.st_nlink),
+        size=int(node.st_size),
+        modified_ns=int(node.st_mtime_ns),
+    )
+
+
+def _assert_workspace_directory(path: Path) -> _WorkspaceDirectorySnapshot:
+    try:
+        node = path.lstat()
+    except OSError as exc:
+        raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
+    if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
+        raise ContainerStartFailedError("workspace transfer source is invalid")
+    return _WorkspaceDirectorySnapshot(
+        device=int(node.st_dev),
+        inode=int(node.st_ino),
+        mode=int(node.st_mode),
+    )
+
+
+def _directory_snapshot_from_stat(node: os.stat_result) -> _WorkspaceDirectorySnapshot:
+    if not stat.S_ISDIR(node.st_mode):
+        raise ContainerStartFailedError("workspace transfer source is invalid")
+    return _WorkspaceDirectorySnapshot(
+        device=int(node.st_dev),
+        inode=int(node.st_ino),
+        mode=int(node.st_mode),
+    )
+
+
+def _workspace_file_snapshot_from_stat(node: os.stat_result) -> _WorkspaceFileSnapshot:
+    if not stat.S_ISREG(node.st_mode) or node.st_nlink != 1:
+        raise ContainerStartFailedError("workspace transfer source is invalid")
+    return _WorkspaceFileSnapshot(
+        device=int(node.st_dev),
+        inode=int(node.st_ino),
+        mode=int(node.st_mode),
+        link_count=int(node.st_nlink),
+        size=int(node.st_size),
+        modified_ns=int(node.st_mtime_ns),
+    )
+
+
+def _secure_workspace_transfer_supported() -> bool:
+    return bool(
+        getattr(os, "O_DIRECTORY", None)
+        and getattr(os, "O_NOFOLLOW", None)
+        and os.open in os.supports_dir_fd
+        and os.rename in os.supports_dir_fd
+    )
+
+
+def _require_secure_workspace_transfer() -> None:
+    if not _secure_workspace_transfer_supported():
+        raise ContainerStartFailedError("OpenSandbox secure workspace transfer is unavailable on this controller")
+
+
+def _directory_open_flags() -> int:
+    return int(os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+
+
+def _file_open_flags() -> int:
+    return int(os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+
+
+def _open_workspace_directory_fd(
+    path: Path,
+    expected_snapshot: _WorkspaceDirectorySnapshot | None = None,
+) -> int:
+    _require_secure_workspace_transfer()
+    try:
+        descriptor = os.open(path, _directory_open_flags())
+    except OSError as exc:
+        raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
+    try:
+        snapshot = _directory_snapshot_from_stat(os.fstat(descriptor))
+        if expected_snapshot is not None and snapshot != expected_snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during read")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_workspace_relative_parent_fd(
+    root_descriptor: int,
+    relative_path: str,
+    *,
+    create: bool,
+) -> tuple[int, str]:
+    """Open a no-follow parent chain below a pinned workspace directory descriptor."""
+
+    parts = PurePosixPath(_safe_workspace_relative_path(relative_path)).parts
+    descriptor = os.dup(root_descriptor)
+    try:
+        for part in parts[:-1]:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise ContainerStartFailedError("workspace output destination is unavailable") from exc
+            try:
+                next_descriptor = os.open(part, _directory_open_flags(), dir_fd=descriptor)
+            except OSError as exc:
+                raise ContainerStartFailedError("workspace output destination is invalid") from exc
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor, parts[-1]
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_workspace_file_fd(entry: _OpenSandboxWorkspaceFile) -> int:
+    if not entry.ancestor_directories:
+        raise ContainerStartFailedError("workspace transfer source is invalid")
+    root, root_snapshot = entry.ancestor_directories[0]
+    descriptor = _open_workspace_directory_fd(root, root_snapshot)
+    current_path = root
+    expected_directories = dict(entry.ancestor_directories)
+    try:
+        for part in PurePosixPath(entry.relative_path).parts[:-1]:
+            current_path = current_path / part
+            expected = expected_directories.get(current_path)
+            if expected is None:
+                raise ContainerStartFailedError("workspace transfer source is invalid")
+            next_descriptor = os.open(part, _directory_open_flags(), dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+            if _directory_snapshot_from_stat(os.fstat(descriptor)) != expected:
+                raise ContainerStartFailedError("workspace transfer source changed during read")
+        try:
+            file_descriptor = os.open(
+                PurePosixPath(entry.relative_path).name,
+                _file_open_flags(),
+                dir_fd=descriptor,
+            )
+        except OSError as exc:
+            raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
+    finally:
+        os.close(descriptor)
+    try:
+        if _workspace_file_snapshot_from_stat(os.fstat(file_descriptor)) != entry.snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during read")
+        return file_descriptor
+    except BaseException:
+        os.close(file_descriptor)
+        raise
+
+
+def _stage_skills_required(request: SandboxRuntimeRequest) -> bool:
+    return _staged_skill_mount_required(request) or any(skill_id != "general-chat" for skill_id in request.skill_ids)
+
+
+def _build_opensandbox_workspace_manifest(
+    request: SandboxRuntimeRequest,
+    workspace: WorkspaceLease,
+) -> tuple[list[str], list[_OpenSandboxWorkspaceFile]]:
+    """Capture a bounded, no-follow manifest for remote workspace transfer."""
+
+    root = Path(workspace.workspace_host_path)
+    root_snapshot = _assert_workspace_directory(root)
+    try:
+        root.resolve(strict=True).relative_to(Path(workspace.host_root).resolve(strict=True))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ContainerStartFailedError("workspace transfer source escapes attempt root") from exc
+
+    directories = {"inputs", "outputs", "outputs/delivery", ".ai-platform"}
+    files: list[_OpenSandboxWorkspaceFile] = []
+    total_bytes = 0
+
+    def add_file(
+        path: Path,
+        relative_path: str,
+        ancestor_directories: tuple[tuple[Path, _WorkspaceDirectorySnapshot], ...],
+    ) -> None:
+        nonlocal total_bytes
+        snapshot = _workspace_file_snapshot(path)
+        if snapshot.size > _OPENSANDBOX_STAGE_MAX_FILE_BYTES:
+            raise ContainerStartFailedError("workspace transfer exceeds file byte limit")
+        total_bytes += snapshot.size
+        if total_bytes > _OPENSANDBOX_STAGE_MAX_TOTAL_BYTES:
+            raise ContainerStartFailedError("workspace transfer exceeds total byte limit")
+        if len(files) >= _OPENSANDBOX_STAGE_MAX_FILES:
+            raise ContainerStartFailedError("workspace transfer exceeds file count limit")
+        files.append(
+            _OpenSandboxWorkspaceFile(
+                relative_path=_safe_workspace_relative_path(relative_path),
+                source_path=path,
+                snapshot=snapshot,
+                ancestor_directories=ancestor_directories,
+            )
+        )
+
+    def walk(
+        directory: Path,
+        relative_root: str,
+        ancestor_directories: tuple[tuple[Path, _WorkspaceDirectorySnapshot], ...],
+    ) -> None:
+        directory_snapshot = _assert_workspace_directory(directory)
+        stable_ancestors = (*ancestor_directories, (directory, directory_snapshot))
+        try:
+            children = sorted(directory.iterdir(), key=lambda item: item.name)
+        except OSError as exc:
+            raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
+        if _assert_workspace_directory(directory) != directory_snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during manifest")
+        for child in children:
+            name = child.name
+            if not name or name in {".", ".."} or "\x00" in name or "/" in name or "\\" in name:
+                raise ContainerStartFailedError("workspace transfer path is invalid")
+            relative_path = name if not relative_root else f"{relative_root}/{name}"
+            try:
+                node = child.lstat()
+            except OSError as exc:
+                raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
+            if stat.S_ISLNK(node.st_mode):
+                raise ContainerStartFailedError("workspace transfer source is invalid")
+            if stat.S_ISDIR(node.st_mode):
+                directories.add(_safe_workspace_relative_path(relative_path))
+                if len(directories) > _OPENSANDBOX_STAGE_MAX_DIRECTORIES:
+                    raise ContainerStartFailedError("workspace transfer exceeds directory limit")
+                walk(child, relative_path, stable_ancestors)
+            elif stat.S_ISREG(node.st_mode):
+                add_file(child, relative_path, stable_ancestors)
+            else:
+                raise ContainerStartFailedError("workspace transfer source is invalid")
+        if _assert_workspace_directory(directory) != directory_snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during manifest")
+
+    # Root materialized files are direct workspace children.  Never transfer
+    # hidden/private run trees by incidental recursion.
+    try:
+        root_children = sorted(root.iterdir(), key=lambda item: item.name)
+    except OSError as exc:
+        raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
+    if _assert_workspace_directory(root) != root_snapshot:
+        raise ContainerStartFailedError("workspace transfer source changed during manifest")
+    named_source_directories = {"inputs", ".ai-platform"}
+    if _stage_skills_required(request):
+        named_source_directories.add(".claude")
+    for child in root_children:
+        try:
+            node = child.lstat()
+        except OSError as exc:
+            raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
+        if stat.S_ISLNK(node.st_mode):
+            raise ContainerStartFailedError("workspace transfer source is invalid")
+        if stat.S_ISREG(node.st_mode):
+            add_file(child, child.name, ((root, root_snapshot),))
+            continue
+        if not stat.S_ISDIR(node.st_mode):
+            raise ContainerStartFailedError("workspace transfer source is invalid")
+        if child.name in named_source_directories:
+            if child.name == ".claude":
+                skills_root = child / "skills"
+                claude_snapshot = _assert_workspace_directory(child)
+                _assert_workspace_directory(skills_root)
+                directories.update({".claude", ".claude/skills"})
+                walk(
+                    skills_root,
+                    ".claude/skills",
+                    ((root, root_snapshot), (child, claude_snapshot)),
+                )
+            else:
+                directories.add(_safe_workspace_relative_path(child.name))
+                walk(child, child.name, ((root, root_snapshot),))
+    if _stage_skills_required(request) and not (root / ".claude" / "skills").is_dir():
+        raise ContainerStartFailedError("workspace transfer Skill source is unavailable")
+    if _assert_workspace_directory(root) != root_snapshot:
+        raise ContainerStartFailedError("workspace transfer source changed during manifest")
+    return sorted(directories, key=lambda item: (item.count("/"), item)), sorted(files, key=lambda item: item.relative_path)
+
+
+def _read_stable_workspace_file(entry: _OpenSandboxWorkspaceFile) -> bytes:
+    """Read via an anchored no-follow descriptor chain and prove it remained stable."""
+
+    for directory, snapshot in entry.ancestor_directories:
+        if _assert_workspace_directory(directory) != snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during read")
+    before = _workspace_file_snapshot(entry.source_path)
+    if before != entry.snapshot:
+        raise ContainerStartFailedError("workspace transfer source changed during read")
+    try:
+        descriptor = _open_workspace_file_fd(entry)
+        try:
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(descriptor, 64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _OPENSANDBOX_STAGE_MAX_FILE_BYTES:
+                    raise ContainerStartFailedError("workspace transfer exceeds file byte limit")
+                chunks.append(chunk)
+            if total != entry.snapshot.size or _workspace_file_snapshot_from_stat(os.fstat(descriptor)) != entry.snapshot:
+                raise ContainerStartFailedError("workspace transfer source changed during read")
+        finally:
+            os.close(descriptor)
+    except SandboxRuntimeError:
+        raise
+    except OSError as exc:
+        raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
+    if _workspace_file_snapshot(entry.source_path) != entry.snapshot:
+        raise ContainerStartFailedError("workspace transfer source changed during read")
+    for directory, snapshot in entry.ancestor_directories:
+        if _assert_workspace_directory(directory) != snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during read")
+    return b"".join(chunks)
 
 
 _OPENSANDBOX_CONFIRMED_STOP_STATUSES = frozenset({"running", "created", "removed", "exited", "paused"})
@@ -2664,6 +3041,22 @@ class FakeContainerProvider:
         return lease
 
     async def validate_for_dispatch(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        return None
+
+    async def stage_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        return None
+
+    async def collect_workspace(
         self,
         lease: ContainerLease,
         request: SandboxRuntimeRequest,
@@ -3875,6 +4268,26 @@ class DockerContainerProvider:
                 raise
             raise GovernedEgressAdmissionError() from None
 
+    async def stage_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Docker already owns the verified local workspace bind."""
+
+        return None
+
+    async def collect_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Docker writes directly to the controller-visible workspace bind."""
+
+        return None
+
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         primary_status = "not_found"
         primary_failed = False
@@ -3995,7 +4408,7 @@ def _load_opensandbox_symbols() -> dict[str, Any]:
     try:
         from opensandbox import Sandbox, SandboxManager
         from opensandbox.config import ConnectionConfig
-        from opensandbox.models.filesystem import WriteEntry
+        from opensandbox.models.filesystem import DirectoryListEntry, WriteEntry
         from opensandbox.models.sandboxes import Host, NetworkPolicy, NetworkRule, SandboxFilter, Volume
     except ImportError as exc:  # pragma: no cover - exercised through lazy dependency failure
         raise OpenSandboxUnavailableError() from exc
@@ -4004,6 +4417,7 @@ def _load_opensandbox_symbols() -> dict[str, Any]:
         "sandbox_manager_class": SandboxManager,
         "connection_config_class": ConnectionConfig,
         "file_class": WriteEntry,
+        "directory_entry_class": DirectoryListEntry,
         "host_class": Host,
         "volume_class": Volume,
         "network_policy_class": NetworkPolicy,
@@ -4035,6 +4449,7 @@ class OpenSandboxContainerProvider:
         sandbox_manager_class: Any | None = None,
         connection_config_class: Any | None = None,
         file_class: Any | None = None,
+        directory_entry_class: Any | None = None,
         host_class: Any | None = None,
         volume_class: Any | None = None,
         network_policy_class: Any | None = None,
@@ -4051,6 +4466,7 @@ class OpenSandboxContainerProvider:
         self._sandbox_manager_class = sandbox_manager_class
         self._connection_config_class = connection_config_class
         self._file_class = file_class
+        self._directory_entry_class = directory_entry_class
         self._host_class = host_class
         self._volume_class = volume_class
         self._network_policy_class = network_policy_class
@@ -4073,6 +4489,7 @@ class OpenSandboxContainerProvider:
         self._sandbox_manager_class = symbols["sandbox_manager_class"]
         self._connection_config_class = symbols["connection_config_class"]
         self._file_class = symbols["file_class"]
+        self._directory_entry_class = symbols["directory_entry_class"]
         self._host_class = symbols["host_class"]
         self._volume_class = symbols["volume_class"]
         self._network_policy_class = symbols["network_policy_class"]
@@ -4196,7 +4613,9 @@ class OpenSandboxContainerProvider:
             },
             sort_keys=True,
         )
-        await _maybe_await(sandbox.files.write_files([self._file_class(path=sentinel_path, data=payload)]))
+        await _maybe_await(
+            sandbox.files.write_files([self._file_class(path=sentinel_path, data=payload, mode=0o600)])
+        )
         readback = await _maybe_await(sandbox.files.read_file(sentinel_path))
         if isinstance(readback, bytes):
             readback_text = readback.decode("utf-8")
@@ -4204,13 +4623,6 @@ class OpenSandboxContainerProvider:
             readback_text = str(readback)
         if readback_text != payload:
             raise ContainerStartFailedError("OpenSandbox file verification failed")
-        commands = getattr(sandbox, "commands", None)
-        if commands is None or not hasattr(commands, "run"):
-            raise ContainerStartFailedError("OpenSandbox command execution is unavailable")
-        result = await _maybe_await(commands.run(f"test -f {shlex.quote(sentinel_path)}"))
-        exit_code = getattr(result, "exit_code", None)
-        if exit_code is not None and int(exit_code) != 0:
-            raise ContainerStartFailedError("OpenSandbox command execution failed")
 
     async def _executor_endpoint(self, sandbox: Any, settings: Any) -> tuple[str, dict[str, str]]:
         endpoint = await _maybe_await(sandbox.get_endpoint(port=18000))
@@ -4366,7 +4778,9 @@ class OpenSandboxContainerProvider:
             except OpenSandboxCapabilityAdmissionError:
                 await self._cleanup_cached_lease_after_capability_rejection(request)
                 raise
-        skill_mount = _prepare_trusted_skill_mount(request, workspace)
+        # Remote OpenSandbox has no controller filesystem identity.  Stage the
+        # controlled Skill tree only after this ready sandbox has a DB lease.
+        skill_mount = None
         cache_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
         cached = self._leases.get(cache_key)
         if cached is not None and cached.container_id in self._sandboxes:
@@ -4574,8 +4988,6 @@ class OpenSandboxContainerProvider:
         sandbox: Any | None = None
         try:
             sandbox = await _maybe_await(self._sandbox_class.create(**kwargs))
-            if getattr(settings, "opensandbox_startup_io_probe_enabled", True) is True:
-                await self._write_and_verify_sentinel(sandbox, request, workspace)
             executor_url, executor_headers = await self._executor_endpoint(sandbox, settings)
             sandbox_id = str(getattr(sandbox, "id", "") or "")
             if not sandbox_id:
@@ -4773,7 +5185,7 @@ class OpenSandboxContainerProvider:
             expected_labels = _trusted_internal_opensandbox_labels(
                 request,
                 profile,
-                _prepare_trusted_skill_mount(request, workspace),
+                None,
             )
             expected_lease = lease.model_copy(update={"labels": _provider_lease_labels(expected_labels)})
             if (
@@ -4823,6 +5235,489 @@ class OpenSandboxContainerProvider:
             if isinstance(exc, SandboxRuntimeError):
                 raise
             raise OpenSandboxCapabilityAdmissionError("OpenSandbox dispatch validation failed") from None
+
+    async def _workspace_transfer_sandbox(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> Any:
+        if not _lease_matches_request_workspace(lease, request, workspace):
+            raise ContainerStartFailedError("OpenSandbox workspace transfer scope mismatch")
+        sandbox = self._sandboxes.get(lease.container_id)
+        if sandbox is None:
+            sandbox = await self._connect(
+                lease.container_id,
+                self._connection_config(get_settings()),
+                skip_health_check=True,
+            )
+            self._sandboxes[lease.container_id] = sandbox
+        return sandbox
+
+    async def stage_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Synchronize the bounded attempt workspace after remote sandbox readiness."""
+
+        try:
+            _require_secure_workspace_transfer()
+            sandbox = await self._workspace_transfer_sandbox(lease, request, workspace)
+            filesystem = getattr(sandbox, "files", None)
+            if (
+                filesystem is None
+                or self._file_class is None
+                or not hasattr(filesystem, "create_directories")
+                or not hasattr(filesystem, "write_files")
+                or not hasattr(filesystem, "read_file")
+            ):
+                raise ContainerStartFailedError("OpenSandbox filesystem staging is unavailable")
+            directories, files = _build_opensandbox_workspace_manifest(request, workspace)
+            remote_root = workspace.workspace_container_path.rstrip("/")
+            remote_directories = [self._file_class(path=remote_root, data=None, mode=0o700)] + [
+                self._file_class(path=f"{remote_root}/{relative_path}", data=None, mode=0o700)
+                for relative_path in directories
+            ]
+            if remote_directories:
+                await _maybe_await(filesystem.create_directories(remote_directories))
+            for entry in files:
+                payload = _read_stable_workspace_file(entry)
+                mode = 0o700 if entry.snapshot.mode & stat.S_IXUSR else 0o600
+                await _maybe_await(
+                    filesystem.write_files(
+                        [
+                            self._file_class(
+                                path=f"{remote_root}/{entry.relative_path}",
+                                data=payload,
+                                mode=mode,
+                            )
+                        ]
+                    )
+                )
+            await self._write_and_verify_sentinel(sandbox, request, workspace)
+        except asyncio.CancelledError:
+            raise
+        except SandboxRuntimeError:
+            raise
+        except Exception as exc:
+            raise ContainerStartFailedError("OpenSandbox workspace staging failed") from exc
+
+    @staticmethod
+    def _filesystem_entry_value(entry: Any, name: str) -> Any:
+        if isinstance(entry, dict):
+            if name == "entry_type":
+                return entry.get("entry_type", entry.get("type"))
+            return entry.get(name)
+        if name == "entry_type":
+            return getattr(entry, "entry_type", getattr(entry, "type", None))
+        return getattr(entry, name, None)
+
+    def _remote_workspace_entry(
+        self,
+        entry: Any,
+        workspace: WorkspaceLease,
+    ) -> tuple[str, str, int]:
+        raw_path = self._filesystem_entry_value(entry, "path")
+        remote_root = workspace.workspace_container_path.rstrip("/")
+        if not isinstance(raw_path, str) or "\x00" in raw_path or not raw_path.startswith(f"{remote_root}/"):
+            raise ContainerStartFailedError("OpenSandbox workspace collection path is invalid")
+        relative_path = _safe_workspace_relative_path(raw_path[len(remote_root) + 1 :])
+        entry_type = str(self._filesystem_entry_value(entry, "entry_type") or "").lower()
+        if entry_type not in {"file", "directory"}:
+            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid")
+        try:
+            size = int(self._filesystem_entry_value(entry, "size"))
+        except (TypeError, ValueError) as exc:
+            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid") from exc
+        if size < 0:
+            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid")
+        return relative_path, entry_type, size
+
+    async def _list_remote_workspace_directory(
+        self,
+        filesystem: Any,
+        workspace: WorkspaceLease,
+        relative_directory: str,
+    ) -> list[tuple[str, str, int]]:
+        if self._directory_entry_class is None or not hasattr(filesystem, "list_directory"):
+            raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
+        remote_root = workspace.workspace_container_path.rstrip("/")
+        path = remote_root if not relative_directory else f"{remote_root}/{relative_directory}"
+        raw_entries = await _maybe_await(
+            filesystem.list_directory(self._directory_entry_class(path=path, depth=1))
+        )
+        if not isinstance(raw_entries, list):
+            raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+        if len(raw_entries) > _OPENSANDBOX_COLLECT_MAX_FILES + _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
+            raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
+        entries = [self._remote_workspace_entry(entry, workspace) for entry in raw_entries]
+        expected_parent = PurePosixPath(relative_directory)
+        for relative_path, _entry_type, _size in entries:
+            if PurePosixPath(relative_path).parent != expected_parent:
+                raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+        return entries
+
+    async def _remote_file_matches_listing(
+        self,
+        filesystem: Any,
+        remote_path: str,
+        expected_size: int,
+    ) -> bool:
+        if not hasattr(filesystem, "get_file_info"):
+            return False
+        details = await _maybe_await(filesystem.get_file_info([remote_path]))
+        entry = details.get(remote_path) if isinstance(details, dict) else None
+        if entry is None:
+            return False
+        entry_type = str(self._filesystem_entry_value(entry, "entry_type") or "").lower()
+        try:
+            size = int(self._filesystem_entry_value(entry, "size"))
+        except (TypeError, ValueError):
+            return False
+        return entry_type == "file" and size == expected_size
+
+    async def _stream_remote_workspace_file(
+        self,
+        filesystem: Any,
+        remote_path: str,
+        *,
+        destination: Any | None = None,
+    ) -> tuple[int, str]:
+        total = 0
+        digest = hashlib.sha256()
+        stream = filesystem.read_bytes_stream(remote_path, chunk_size=64 * 1024)
+        async for chunk in stream:
+            if not isinstance(chunk, bytes):
+                raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+            total += len(chunk)
+            if total > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
+                raise ContainerStartFailedError("workspace artifacts exceed the per-file byte limit")
+            digest.update(chunk)
+            if destination is not None:
+                destination.write(chunk)
+        return total, digest.hexdigest()
+
+    async def _download_remote_workspace_file(
+        self,
+        filesystem: Any,
+        workspace: WorkspaceLease,
+        relative_path: str,
+        expected_size: int,
+        *,
+        destination_root: Path,
+    ) -> None:
+        if not hasattr(filesystem, "read_bytes_stream"):
+            raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
+        if expected_size > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
+            raise ContainerStartFailedError("workspace artifacts exceed the per-file byte limit")
+        remote_path = f"{workspace.workspace_container_path.rstrip('/')}/{relative_path}"
+        root_snapshot = _assert_workspace_directory(destination_root)
+        root_descriptor = _open_workspace_directory_fd(destination_root, root_snapshot)
+        parent_descriptor: int | None = None
+        temporary_name: str | None = None
+        try:
+            parent_descriptor, target_name = _open_workspace_relative_parent_fd(
+                root_descriptor,
+                relative_path,
+                create=True,
+            )
+            temporary_name = f".ai-platform-download-{secrets.token_hex(16)}"
+            try:
+                temporary_descriptor = os.open(
+                    temporary_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
+            except OSError as exc:
+                raise ContainerStartFailedError("workspace collection staging is unavailable") from exc
+            with os.fdopen(temporary_descriptor, "wb") as destination:
+                total, digest = await self._stream_remote_workspace_file(
+                    filesystem,
+                    remote_path,
+                    destination=destination,
+                )
+                destination.flush()
+                os.fsync(destination.fileno())
+            if total != expected_size or not await self._remote_file_matches_listing(
+                filesystem,
+                remote_path,
+                expected_size,
+            ):
+                raise ContainerStartFailedError("OpenSandbox workspace output changed during download")
+            verification_total, verification_digest = await self._stream_remote_workspace_file(filesystem, remote_path)
+            if (
+                verification_total != expected_size
+                or verification_digest != digest
+                or not await self._remote_file_matches_listing(filesystem, remote_path, expected_size)
+            ):
+                raise ContainerStartFailedError("OpenSandbox workspace output changed during download")
+            os.replace(temporary_name, target_name, src_dir_fd=parent_descriptor, dst_dir_fd=parent_descriptor)
+            temporary_name = None
+        except SandboxRuntimeError:
+            raise
+        except (OSError, TypeError, ValueError) as exc:
+            raise ContainerStartFailedError("OpenSandbox workspace collection failed") from exc
+        finally:
+            if temporary_name is not None and parent_descriptor is not None:
+                try:
+                    os.unlink(temporary_name, dir_fd=parent_descriptor)
+                except OSError:
+                    pass
+            if parent_descriptor is not None:
+                os.close(parent_descriptor)
+            os.close(root_descriptor)
+
+    @staticmethod
+    def _temporary_collection_root(workspace_root: Path) -> Path:
+        root_snapshot = _assert_workspace_directory(workspace_root)
+        root_descriptor = _open_workspace_directory_fd(workspace_root, root_snapshot)
+        try:
+            for _unused in range(3):
+                name = f".ai-platform-collect-{secrets.token_hex(16)}"
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=root_descriptor)
+                except FileExistsError:
+                    continue
+                except OSError as exc:
+                    raise ContainerStartFailedError("workspace collection staging is unavailable") from exc
+                return workspace_root / name
+            raise ContainerStartFailedError("workspace collection staging is unavailable")
+        finally:
+            os.close(root_descriptor)
+
+    @staticmethod
+    def _remove_temporary_collection_root(staging_root: Path) -> None:
+        if not staging_root.name.startswith(".ai-platform-collect-"):
+            raise ContainerStartFailedError("workspace collection staging cleanup failed")
+        parent_snapshot = _assert_workspace_directory(staging_root.parent)
+        parent_descriptor = _open_workspace_directory_fd(staging_root.parent, parent_snapshot)
+        try:
+            try:
+                descriptor = os.open(staging_root.name, _directory_open_flags(), dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                raise ContainerStartFailedError("workspace collection staging cleanup failed") from exc
+            try:
+                for _relative, directories, files, current_descriptor in os.fwalk(
+                    ".",
+                    topdown=False,
+                    follow_symlinks=False,
+                    dir_fd=descriptor,
+                ):
+                    for name in files:
+                        os.unlink(name, dir_fd=current_descriptor)
+                    for name in directories:
+                        try:
+                            os.rmdir(name, dir_fd=current_descriptor)
+                        except NotADirectoryError:
+                            os.unlink(name, dir_fd=current_descriptor)
+                os.rmdir(staging_root.name, dir_fd=parent_descriptor)
+            except OSError as exc:
+                raise ContainerStartFailedError("workspace collection staging cleanup failed") from exc
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(parent_descriptor)
+
+    def _publish_collected_workspace_files(
+        self,
+        staging_root: Path,
+        workspace_root: Path,
+        selected_files: list[tuple[str, int]],
+    ) -> None:
+        """Atomically publish a fully downloaded batch, restoring prior files on failure."""
+
+        staging_snapshot = _assert_workspace_directory(staging_root)
+        workspace_snapshot = _assert_workspace_directory(workspace_root)
+        staging_descriptor = _open_workspace_directory_fd(staging_root, staging_snapshot)
+        workspace_descriptor = _open_workspace_directory_fd(workspace_root, workspace_snapshot)
+        previous: list[tuple[str, bool, bool]] = []
+        try:
+            for relative_path, _expected_size in sorted(selected_files):
+                source_parent, source_name = _open_workspace_relative_parent_fd(
+                    staging_descriptor,
+                    relative_path,
+                    create=False,
+                )
+                target_parent, target_name = _open_workspace_relative_parent_fd(
+                    workspace_descriptor,
+                    relative_path,
+                    create=True,
+                )
+                try:
+                    source_node = os.stat(source_name, dir_fd=source_parent, follow_symlinks=False)
+                    if stat.S_ISLNK(source_node.st_mode) or not stat.S_ISREG(source_node.st_mode) or source_node.st_nlink != 1:
+                        raise ContainerStartFailedError("workspace collection staging is invalid")
+                    try:
+                        target_node = os.stat(target_name, dir_fd=target_parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        has_backup = False
+                    else:
+                        if (
+                            stat.S_ISLNK(target_node.st_mode)
+                            or not stat.S_ISREG(target_node.st_mode)
+                            or target_node.st_nlink != 1
+                        ):
+                            raise ContainerStartFailedError("workspace output destination is invalid")
+                        backup_parent, backup_name = _open_workspace_relative_parent_fd(
+                            staging_descriptor,
+                            f".rollback/{relative_path}",
+                            create=True,
+                        )
+                        try:
+                            os.replace(
+                                target_name,
+                                backup_name,
+                                src_dir_fd=target_parent,
+                                dst_dir_fd=backup_parent,
+                            )
+                        finally:
+                            os.close(backup_parent)
+                        has_backup = True
+                    previous.append((relative_path, has_backup, False))
+                    os.replace(source_name, target_name, src_dir_fd=source_parent, dst_dir_fd=target_parent)
+                    previous[-1] = (relative_path, has_backup, True)
+                finally:
+                    os.close(source_parent)
+                    os.close(target_parent)
+        except SandboxRuntimeError:
+            self._rollback_collected_workspace_files(previous, staging_descriptor, workspace_descriptor)
+            raise
+        except OSError as exc:
+            self._rollback_collected_workspace_files(previous, staging_descriptor, workspace_descriptor)
+            raise ContainerStartFailedError("workspace output publication failed") from exc
+        finally:
+            os.close(workspace_descriptor)
+            os.close(staging_descriptor)
+
+    @staticmethod
+    def _rollback_collected_workspace_files(
+        previous: list[tuple[str, bool, bool]],
+        staging_descriptor: int,
+        workspace_descriptor: int,
+    ) -> None:
+        rollback_failed = False
+        for relative_path, has_backup, published in reversed(previous):
+            target_parent: int | None = None
+            try:
+                target_parent, target_name = _open_workspace_relative_parent_fd(
+                    workspace_descriptor,
+                    relative_path,
+                    create=False,
+                )
+                if published:
+                    os.unlink(target_name, dir_fd=target_parent)
+                if has_backup:
+                    backup_parent, backup_name = _open_workspace_relative_parent_fd(
+                        staging_descriptor,
+                        f".rollback/{relative_path}",
+                        create=False,
+                    )
+                    try:
+                        os.replace(backup_name, target_name, src_dir_fd=backup_parent, dst_dir_fd=target_parent)
+                    finally:
+                        os.close(backup_parent)
+            except (OSError, SandboxRuntimeError):
+                rollback_failed = True
+            finally:
+                if target_parent is not None:
+                    os.close(target_parent)
+        if rollback_failed:
+            raise ContainerStartFailedError("workspace output rollback failed")
+
+    async def collect_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Publish only bounded legacy and delivery outputs from remote OpenSandbox."""
+
+        staging_root: Path | None = None
+        try:
+            _require_secure_workspace_transfer()
+            sandbox = await self._workspace_transfer_sandbox(lease, request, workspace)
+            filesystem = getattr(sandbox, "files", None)
+            if filesystem is None:
+                raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
+            root_entries = await self._list_remote_workspace_directory(filesystem, workspace, "")
+            pending: list[tuple[str, bool, bool]] = []
+            seen_directories: set[str] = set()
+            for relative_path, entry_type, _size in root_entries:
+                if relative_path not in {"output", "outputs"}:
+                    continue
+                if entry_type != "directory":
+                    raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+                pending.append((relative_path, relative_path == "output", False))
+                seen_directories.add(relative_path)
+
+            selected_files: list[tuple[str, int]] = []
+            selected_file_paths: set[str] = set()
+            while pending:
+                relative_directory, legacy_output, delivery_output = pending.pop()
+                if len(seen_directories) > _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
+                    raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
+                for relative_path, entry_type, size in await self._list_remote_workspace_directory(
+                    filesystem,
+                    workspace,
+                    relative_directory,
+                ):
+                    name = PurePosixPath(relative_path).name
+                    if entry_type == "directory":
+                        if relative_path in seen_directories:
+                            raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+                        if len(seen_directories) >= _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
+                            raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
+                        seen_directories.add(relative_path)
+                        pending.append(
+                            (
+                                relative_path,
+                                legacy_output,
+                                delivery_output or (not legacy_output and name == "delivery"),
+                            )
+                        )
+                        continue
+                    if legacy_output or delivery_output:
+                        if size > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
+                            raise ContainerStartFailedError("workspace artifacts exceed the per-file byte limit")
+                        if (
+                            relative_path in selected_file_paths
+                            or len(selected_files) >= _OPENSANDBOX_COLLECT_MAX_FILES
+                        ):
+                            raise ContainerStartFailedError("workspace artifacts exceed the file count limit")
+                        selected_file_paths.add(relative_path)
+                        selected_files.append((relative_path, size))
+            declared_total = sum(size for _relative_path, size in selected_files)
+            if declared_total > _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES:
+                raise ContainerStartFailedError("workspace artifacts exceed the total byte limit")
+            workspace_root = Path(workspace.workspace_host_path)
+            staging_root = self._temporary_collection_root(workspace_root)
+            downloaded_total = 0
+            for relative_path, expected_size in sorted(selected_files):
+                await self._download_remote_workspace_file(
+                    filesystem,
+                    workspace,
+                    relative_path,
+                    expected_size,
+                    destination_root=staging_root,
+                )
+                downloaded_total += expected_size
+                if downloaded_total > _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES:
+                    raise ContainerStartFailedError("workspace artifacts exceed the total byte limit")
+            self._publish_collected_workspace_files(staging_root, workspace_root, selected_files)
+        except asyncio.CancelledError:
+            raise
+        except SandboxRuntimeError:
+            raise
+        except Exception as exc:
+            raise ContainerStartFailedError("OpenSandbox workspace collection failed") from exc
+        finally:
+            if staging_root is not None:
+                self._remove_temporary_collection_root(staging_root)
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         settings = get_settings()

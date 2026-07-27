@@ -292,19 +292,6 @@ class SandboxRuntime:
                 reason=reason,
             )
 
-    async def _stop_and_release_recorded_lease(
-        self,
-        lease: ContainerLease,
-        *,
-        reason: str,
-        lease_record_id: str | None,
-    ) -> None:
-        """Confirm provider stop before releasing one recorded runtime lease."""
-        stop_result = await self.provider.stop(lease, reason=reason)
-        if stop_result.status == "failed":
-            raise SandboxRuntimeCleanupError(reason=reason, stop_result=stop_result)
-        await self._call_release_lease(lease, reason, lease_record_id)
-
     def _elapsed_ms(self, started_at: float) -> int:
         return max(int(round((time.monotonic() - started_at) * 1000)), 0)
 
@@ -373,23 +360,53 @@ class SandboxRuntime:
                 raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
             raise
         externally_stopped = False
+        terminal_stop_result: StopResult | None = None
+        terminal_stop_lock = asyncio.Lock()
         validation_started = False
         validation_succeeded = False
+        staging_started = False
+        staging_succeeded = False
+        collection_started = False
+        collection_succeeded = False
 
         async def stop_owned_runtime(reason: str) -> bool:
-            nonlocal externally_stopped
-            if externally_stopped:
+            """Elect exactly one stop/release owner across runtime cancellation paths."""
+
+            nonlocal externally_stopped, terminal_stop_result
+            async with terminal_stop_lock:
+                if externally_stopped:
+                    return True
+                try:
+                    terminal_stop_result = await self.provider.stop(lease, reason=reason)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    terminal_stop_result = StopResult(
+                        container_id=lease.container_id,
+                        status="failed",
+                        message="sandbox provider stop raised",
+                    )
+                if terminal_stop_result.status == "failed":
+                    return False
+                await self._call_release_lease(lease, reason, lease_record_id)
+                externally_stopped = True
                 return True
-            stop_result = await self.provider.stop(lease, reason=reason)
-            if stop_result.status == "failed":
-                return False
-            await self._call_release_lease(lease, reason, lease_record_id)
-            externally_stopped = True
-            return True
+
+        async def stop_and_release_owned(reason: str) -> None:
+            if await stop_owned_runtime(reason):
+                return
+            raise SandboxRuntimeCleanupError(
+                reason=reason,
+                stop_result=terminal_stop_result
+                or StopResult(container_id=lease.container_id, status="failed", message="sandbox stop failed"),
+            )
 
         if execution_owner is not None:
             execution_owner.register_stop(stop_owned_runtime)
         try:
+            staging_started = True
+            await self.provider.stage_workspace(lease, request, workspace)
+            staging_succeeded = True
             await self._emit(event_sink, container_started_event(lease))
 
             task_config = {
@@ -431,10 +448,29 @@ class SandboxRuntime:
             dispatch_started_at = time.monotonic()
             response = await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
+            collection_started = True
+            await self.provider.collect_workspace(lease, request, workspace)
+            collection_succeeded = True
         except BaseException as exc:
             validation_rejected = validation_started and not validation_succeeded
-            if not externally_stopped and (request.sandbox_mode == "ephemeral" or validation_rejected):
+            staging_rejected = staging_started and not staging_succeeded
+            collection_rejected = collection_started and not collection_succeeded
+            if not externally_stopped and (
+                request.sandbox_mode == "ephemeral"
+                or validation_rejected
+                or staging_rejected
+                or collection_rejected
+            ):
                 reason = (
+                    "workspace_stage_cancelled"
+                    if staging_rejected and isinstance(exc, asyncio.CancelledError)
+                    else "workspace_stage_failed"
+                    if staging_rejected
+                    else "workspace_collect_cancelled"
+                    if collection_rejected and isinstance(exc, asyncio.CancelledError)
+                    else "workspace_collect_failed"
+                    if collection_rejected
+                    else
                     "dispatch_validation_cancelled"
                     if validation_rejected and isinstance(exc, asyncio.CancelledError)
                     else "dispatch_validation_failed"
@@ -444,7 +480,7 @@ class SandboxRuntime:
                     else "dispatch_failed"
                 )
                 try:
-                    await self._stop_and_release_recorded_lease(lease, reason=reason, lease_record_id=lease_record_id)
+                    await stop_and_release_owned(reason)
                 except SandboxRuntimeCleanupError as cleanup_exc:
                     raise cleanup_exc from exc
             raise
@@ -459,11 +495,7 @@ class SandboxRuntime:
                 if terminal_status in {"cancelled", "canceled"}
                 else "dispatch_completed"
             )
-            await self._stop_and_release_recorded_lease(
-                lease,
-                reason=release_reason,
-                lease_record_id=lease_record_id,
-            )
+            await stop_and_release_owned(release_reason)
             sandbox_cleanup_latency_ms = self._elapsed_ms(cleanup_started_at)
 
         return SandboxRuntimeResult(
