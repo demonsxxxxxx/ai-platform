@@ -63,6 +63,11 @@ const AppContent = lazy(() =>
     default: m.AppContent,
   })),
 );
+const AgentBuilderRoute = lazy(() =>
+  import("./components/agent-builder/AgentBuilderRoute").then((m) => ({
+    default: m.AgentBuilderRoute,
+  })),
+);
 const NotFoundPage = lazy(() =>
   import("./components/common/NotFoundPage").then((m) => ({
     default: m.NotFoundPage,
@@ -366,6 +371,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <ChatPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.agentBuilder}
+              element={
+                <ProtectedRoute>
+                  <AgentBuilderRoute />
                 </ProtectedRoute>
               }
             />

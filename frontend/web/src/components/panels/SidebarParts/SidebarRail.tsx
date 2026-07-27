@@ -35,6 +35,7 @@ interface SidebarRailProps {
   onOpenSearch: () => void;
   onOpenRecentChats: () => void;
   onOpenLaunchpad: () => void;
+  onOpenAgentBuilder: () => void;
   onOpenSkills: () => void;
   onOpenMcp: () => void;
   onOpenModels: () => void;
@@ -51,6 +52,7 @@ export function SidebarRail({
   onOpenSearch,
   onOpenRecentChats,
   onOpenLaunchpad,
+  onOpenAgentBuilder,
   onOpenSkills,
   onOpenMcp,
   onOpenModels,
@@ -156,6 +158,18 @@ export function SidebarRail({
           active={isRailItemActive("apps")}
         >
           <LayoutGrid size={20} />
+        </LibreChatRailButton>
+        <LibreChatRailButton
+          type="button"
+          onClick={onOpenAgentBuilder}
+          className={railBtn}
+          aria-current={isRailItemActive("agentBuilder") ? "page" : undefined}
+          title="Agent Builder"
+          aria-label="Agent Builder"
+          itemKey="agentBuilder"
+          active={isRailItemActive("agentBuilder")}
+        >
+          <Bot size={20} />
         </LibreChatRailButton>
         <LibreChatRailButton
           type="button"

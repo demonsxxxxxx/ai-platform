@@ -5,6 +5,7 @@ export const APP_ROUTE_PATHS = {
   login: "/auth/login",
   register: "/auth/register",
   chat: "/chat/:sessionId?",
+  agentBuilder: "/agent-builder",
   apps: "/apps",
   skills: "/skills",
   marketplace: "/marketplace",

@@ -354,6 +354,7 @@ export const SessionSidebar = forwardRef<
                 setIsRecentChatsOpen(true);
               }}
               onOpenLaunchpad={() => navigate("/apps")}
+              onOpenAgentBuilder={() => navigate("/agent-builder")}
               onOpenSkills={() => navigate("/skills")}
               onOpenMcp={() => navigate("/mcp")}
               onOpenModels={() => navigateWorkbenchItem("models")}
@@ -390,6 +391,7 @@ export const SessionSidebar = forwardRef<
             setIsRecentChatsOpen(true);
           }}
           onOpenLaunchpad={() => navigate("/apps")}
+          onOpenAgentBuilder={() => navigate("/agent-builder")}
           onOpenSkills={() => navigate("/skills")}
           onOpenMcp={() => navigate("/mcp")}
           onOpenModels={() => navigateWorkbenchItem("models")}
