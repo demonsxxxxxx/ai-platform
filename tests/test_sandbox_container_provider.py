@@ -27,7 +27,7 @@ requires_secure_opensandbox_transfer = pytest.mark.skipif(
         getattr(os, "O_DIRECTORY", None)
         and getattr(os, "O_NOFOLLOW", None)
         and os.open in os.supports_dir_fd
-        and os.replace in os.supports_dir_fd
+        and os.rename in os.supports_dir_fd
     ),
     reason="OpenSandbox workspace transfer requires controller openat and O_NOFOLLOW support",
 )
@@ -1115,6 +1115,33 @@ async def test_opensandbox_create_never_serializes_controller_workspace_paths(mo
     create_request = FakeOpenSandbox.created[0]
     assert create_request["volumes"] == []
     assert str(local_workspace) not in repr(create_request)
+
+
+@pytest.mark.parametrize(
+    ("has_openat", "has_renameat", "expected"),
+    [
+        (True, True, True),
+        (True, False, False),
+        (False, True, False),
+    ],
+)
+def test_secure_workspace_transfer_preflight_requires_openat_and_renameat(
+    monkeypatch,
+    has_openat,
+    has_renameat,
+    expected,
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    supported = set()
+    if has_openat:
+        supported.add(container_provider.os.open)
+    if has_renameat:
+        supported.add(container_provider.os.rename)
+    monkeypatch.setattr(container_provider.os, "O_DIRECTORY", 1, raising=False)
+    monkeypatch.setattr(container_provider.os, "O_NOFOLLOW", 1, raising=False)
+    monkeypatch.setattr(container_provider.os, "supports_dir_fd", supported)
+
+    assert container_provider._secure_workspace_transfer_supported() is expected
 
 
 @pytest.mark.asyncio

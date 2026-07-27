@@ -1855,7 +1855,7 @@ def _secure_workspace_transfer_supported() -> bool:
         getattr(os, "O_DIRECTORY", None)
         and getattr(os, "O_NOFOLLOW", None)
         and os.open in os.supports_dir_fd
-        and os.replace in os.supports_dir_fd
+        and os.rename in os.supports_dir_fd
     )
 
 
