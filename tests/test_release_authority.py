@@ -4015,14 +4015,25 @@ def test_auto_backend_source_only_uses_runtime_rebuild_without_dependency_comman
         strategy="auto",
         auto_plan=plan,
         current_references=current_refs,
+        canonical_dependency_build_timeout_seconds=2400,
     )
 
     builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
-    backend_runtime = next(kwargs["input"] for command, kwargs in builds if "COPY app /app/app" in kwargs.get("input", ""))
+    backend_runtime_build = next(
+        kwargs for command, kwargs in builds if "COPY app /app/app" in kwargs.get("input", "")
+    )
+    backend_runtime = backend_runtime_build["input"]
     assert not any(token in backend_runtime.lower() for token in ("apt", "pip", "pnpm"))
     assert all("frontend/web/Dockerfile" not in command for command, _ in builds)
     assert deployment["plan"]["roles"][0]["action"] == "runtime-rebuild"
-    assert any(event["action"] == "runtime-rebuild" for event in deployment["stages"])
+    assert (
+        backend_runtime_build["timeout"]
+        == release_authority.RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
+    )
+    assert (
+        release_authority.RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
+        > release_authority.BACKEND_STAGE_TIMEOUT_SECONDS
+    )
 
 
 def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_path):
@@ -5100,7 +5111,7 @@ def test_role_timeouts_distinguish_canonical_dependency_from_source_only(monkeyp
         **common,
         base_reference="ai-platform:" + "b" * 40,
         role="backend",
-        dockerfile="FROM scratch\n",
+        action="promote",
     )
 
     assert observed == [
@@ -5110,6 +5121,34 @@ def test_role_timeouts_distinguish_canonical_dependency_from_source_only(monkeyp
         release_authority.BACKEND_STAGE_TIMEOUT_SECONDS,
     ]
     assert progress_modes == [True, False, False, False]
+
+
+@pytest.mark.parametrize(
+    ("role", "action"),
+    [("backend", "unexpected-action"), ("frontend", "runtime-rebuild")],
+)
+def test_verified_role_image_build_rejects_invalid_action_before_docker(
+    monkeypatch,
+    tmp_path,
+    role,
+    action,
+):
+    monkeypatch.setattr(
+        "tools.release_authority._run",
+        lambda *_args, **_kwargs: pytest.fail("invalid role action must not invoke Docker"),
+    )
+
+    with pytest.raises(ReleaseAuthorityError, match="release role action is invalid"):
+        release_authority._build_from_verified_role_image(
+            ["docker"],
+            repo_root=tmp_path,
+            reference="ai-platform:" + "a" * 40,
+            base_reference="ai-platform:" + "b" * 40,
+            commit="a" * 40,
+            repository=AUTHORITATIVE_REPOSITORY,
+            role=role,
+            action=action,
+        )
 
 
 @pytest.mark.parametrize(
