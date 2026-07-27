@@ -1442,10 +1442,10 @@ async def test_opensandbox_collection_rolls_back_already_published_files_when_lo
     )
     original_replace = container_provider.os.replace
 
-    def fail_second_publish(source, target):
-        if Path(source).name == "second.txt" and Path(target) == output_directory / "second.txt":
+    def fail_second_publish(source, target, *args, **kwargs):
+        if source == "second.txt" and target == "second.txt":
             raise OSError("publish failed")
-        return original_replace(source, target)
+        return original_replace(source, target, *args, **kwargs)
 
     monkeypatch.setattr(container_provider.os, "replace", fail_second_publish)
     with pytest.raises(container_provider.ContainerStartFailedError, match="publication failed"):
