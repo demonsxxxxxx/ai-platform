@@ -5489,7 +5489,6 @@ async def test_docker_provider_rejects_non_target_workspace_owner_before_create(
 
 @pytest.mark.asyncio
 async def test_docker_provider_uses_and_verifies_exact_runtime_identity(monkeypatch):
-    from app.runtime.sandbox import container_provider
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
     probes = []
@@ -5542,7 +5541,6 @@ async def test_docker_cached_reuse_rejects_remote_identity_label_mismatch():
 
 @pytest.mark.asyncio
 async def test_docker_provider_cleans_up_when_actual_executor_identity_mismatches(monkeypatch):
-    from app.runtime.sandbox import container_provider
     from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
 
     fake = FakeDockerClient()

@@ -16,8 +16,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 from typing import Any, Callable, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -54,6 +54,7 @@ from app.runtime.sandbox.executor_client import (
     EXECUTOR_CONNECT_BASE_URL_METADATA,
     prepare_executor_http_request,
 )
+from app.runtime.sandbox import governed_egress_diagnostics as egress_diagnostics
 from app.runtime.sandbox.opensandbox_attestation import build_opensandbox_attestation_probe
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
@@ -2601,23 +2602,14 @@ def default_governed_callback_reachability_probe(
         or not hasattr(container, "exec_run")
     ):
         return False
-    script = (
-        "import json,sys,urllib.request; "
-        "url=sys.argv[1].rstrip('/')+'/api/ai/health'; "
-        "body=json.load(urllib.request.urlopen(url,timeout=3)); "
-        "raise SystemExit(0 if body=={'status':'ok','runtime_commit':sys.argv[2]} else 1)"
-    )
     try:
         result = container.exec_run(
-            ["python", "-c", script, callback_base_url, expected_runtime_commit],
+            egress_diagnostics.callback_probe_command(callback_base_url, expected_runtime_commit),
             user=f"{RUNTIME_UID}:{RUNTIME_GID}",
         )
     except Exception:
-        return False
-    exit_code = getattr(result, "exit_code", None)
-    if exit_code is None and isinstance(result, tuple) and result:
-        exit_code = result[0]
-    return exit_code == 0
+        return egress_diagnostics.record_callback_exec_exception()
+    return egress_diagnostics.record_callback_exec_result(result)
 
 
 def _require_expected_executor_identity(identity: object) -> None:
@@ -2878,7 +2870,7 @@ class DockerContainerProvider:
             return _is_not_found_error(exc)
         try:
             _docker_owned_governed_network(network, lease)
-        except Exception as exc:
+        except Exception:
             return False
         attrs = _docker_network_authoritative_attrs(network)
         members = attrs.get("Containers")
@@ -3275,6 +3267,7 @@ class DockerContainerProvider:
                 callback.base_url,
                 _runtime_release_commit(current_settings),
             ):
+                egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.CALLBACK_REACHABILITY)
                 raise GovernedEgressAdmissionError()
         except asyncio.CancelledError as exc:
             try:
@@ -3410,6 +3403,8 @@ class DockerContainerProvider:
             ):
                 raise GovernedEgressAdmissionError()
         except Exception as exc:
+            if isinstance(exc, GovernedEgressAdmissionError):
+                egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.POST_CREATE_PROOF_SEAL)
             self._cleanup_runtime_pair_or_track(
                 container,
                 self._owned_native_tool_container(candidate),
@@ -3459,6 +3454,7 @@ class DockerContainerProvider:
                 bootstrap_lease,
             )
         except GovernedEgressAdmissionError:
+            egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.PREFLIGHT_TOPOLOGY)
             cleanup_lease = existing or bootstrap_lease
             try:
                 remote = client.containers.get(cleanup_lease.container_name)
@@ -3635,6 +3631,7 @@ class DockerContainerProvider:
                 bootstrap_lease,
             )
         except GovernedEgressAdmissionError:
+            egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.PREFLIGHT_TOPOLOGY)
             if not self._remove_owned_governed_network(bootstrap_lease):
                 self._leases.setdefault(bootstrap_lease.container_id, bootstrap_lease)
                 raise ContainerCleanupFailedError("governed network cleanup could not be confirmed") from None
@@ -3755,6 +3752,7 @@ class DockerContainerProvider:
                 )
             )
         except GovernedEgressAdmissionError as exc:
+            egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.POST_CREATE_PROOF_SEAL)
             try:
                 self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
@@ -3780,6 +3778,7 @@ class DockerContainerProvider:
             egress_admission.runtime_commit,
         )
         if not callback_reachable:
+            egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.CALLBACK_REACHABILITY)
             try:
                 self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
