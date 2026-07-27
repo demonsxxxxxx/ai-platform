@@ -2741,60 +2741,59 @@ def test_verified_current_runtime_uses_label_derived_full_to_docker_selection(
     ]
 
 
-@pytest.mark.parametrize(("prior_paths", "target_paths"), [
-    ((COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH), (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH)),
-    ((COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH), (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH)),
-    ((COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH), (COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH)),
-    ((COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH), (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH)),
+@pytest.mark.parametrize(("prior_paths", "target_paths", "allowed"), [
+    ((COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH), (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH), True),
+    ((COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH), (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH), True),
+    ((COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH), (COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH), True),
+    ((COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH), (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH), True),
+    ((COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH), (COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH), False),
+    ((COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH), (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH), False),
 ])
-def test_compose_ownership_allows_only_directed_bridge_and_provider_transitions(
-    tmp_path,
-    prior_paths,
-    target_paths,
-):
-    release_root = tmp_path / "releases"
-    target = release_root / ("7" * 40)
-    prior = release_root / "678d3c46"
+def test_compose_ownership_enforces_directed_bridge_and_provider_transition_matrix(tmp_path, prior_paths, target_paths, allowed):
+    target = tmp_path / "releases" / ("7" * 40)
+    prior = target.parent / "678d3c46"
     paths = (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH)
-    target_files = dict(zip(paths, _write_bridge_compose_files(target), strict=True))
+    _write_bridge_compose_files(target)
     prior_files = dict(zip(paths, _write_bridge_compose_files(prior), strict=True))
     target_selection = release_authority.resolve_compose_files(target, target_paths)
-    labels = _owned_container_payload(
-        "frontend",
-        prior_files[COMPOSE_RELATIVE_PATH].parent,
-        _compose_config_value(*(prior_files[path] for path in prior_paths)),
-    )[0]["Config"]["Labels"]
+    labels = _owned_container_payload("frontend", prior_files[COMPOSE_RELATIVE_PATH].parent, _compose_config_value(*(prior_files[path] for path in prior_paths)))[0]["Config"]["Labels"]
     observed = release_authority._compose_ownership_selection(labels, target_selection)
-    assert observed is not None and (observed.checkout_root, observed.relative_paths) == (prior.resolve(), prior_paths)
-    assert all(path.is_file() for path in target_files.values())
+    assert (observed is not None) is allowed
+    if allowed:
+        assert (observed.checkout_root, observed.relative_paths) == (prior.resolve(), prior_paths)
 
 
-def test_compose_ownership_short_absolute_config_path_fails_closed(monkeypatch, tmp_path):
+def test_compose_ownership_short_absolute_config_path_fails_closed(monkeypatch, capsys, tmp_path):
     target = tmp_path / "releases" / ("7" * 40)
     main, sandbox = _write_compose_files(target)
     selection = release_authority.resolve_compose_files(target, [COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH])
     inspected = _owned_container_payload("api", main.parent, _compose_config_value(main, sandbox))[0]
     labels = inspected["Config"]["Labels"]
-    labels.update({"com.docker.compose.project.working_dir": "C:/", "com.docker.compose.project.config_files": "C:/x"})
-    assert release_authority._compose_ownership_selection(labels, selection) is None
+    short_absolute = Path(Path.cwd().anchor)
+    assert short_absolute.is_absolute()
+    with pytest.raises(IndexError):
+        short_absolute.parents[len(release_authority.DEFAULT_COMPOSE_RELATIVE_PATH.parts) - 1]
+    labels.update({"com.docker.compose.project.working_dir": str(short_absolute), "com.docker.compose.project.config_files": str(short_absolute)})
+    monkeypatch.setattr("tools.release_authority._inspect_optional_container", lambda docker, name: inspected if name == "ai-platform-api" else None)
     monkeypatch.setattr(
-        "tools.release_authority._inspect_optional_container",
-        lambda docker, name: inspected if name == "ai-platform-api" else None,
-    )
-    with pytest.raises(ReleaseAuthorityError, match="^api compose ownership mismatch$"):
-        release_authority._preflight_managed_container_ownership(
+        "tools.release_authority.collect_live_parity",
+        lambda *_args, **_kwargs: release_authority._preflight_managed_container_ownership(
             ["docker"],
             selection,
             replace_known_manual_frontend=False,
             expected_manual_frontend_image=None,
             expected_manual_frontend_image_id=None,
-        )
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["release_authority.py", "verify", "--repo-root", str(target), "--commit", "7" * 40])
+
+    assert release_authority.main() == 2
+    assert json.loads(capsys.readouterr().out) == {"command": "verify", "error": "api compose ownership mismatch", "verified": False}
 
 
 @pytest.mark.parametrize(
     "invalid_selection",
     [
-        "docker_to_full",
         "base_only_observed",
         "arbitrary_observed",
         "reordered_observed",
