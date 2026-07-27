@@ -1966,24 +1966,30 @@ async def run_claude_agent_sdk(
 
         nonlocal raw_stream_text_index, raw_stream_pending_text
         nonlocal raw_stream_partial_disabled, raw_stream_partial_emitted
+
+        def disable_raw_stream_partial() -> None:
+            nonlocal raw_stream_text_index, raw_stream_pending_text, raw_stream_partial_disabled
+            raw_stream_partial_disabled = True
+            raw_stream_pending_text = ""
+            raw_stream_text_index = None
+
         if raw_stream_partial_disabled:
             return
         event = getattr(message, "event", None)
         if not isinstance(event, dict):
+            disable_raw_stream_partial()
             return
         event_type = event.get("type")
         if event_type == "content_block_start":
             index = event.get("index")
             content_block = event.get("content_block")
+            if raw_stream_text_index is not None:
+                disable_raw_stream_partial()
+                return
             if isinstance(index, bool) or not isinstance(index, int) or not isinstance(content_block, dict):
-                raw_stream_partial_disabled = True
-                raw_stream_pending_text = ""
+                disable_raw_stream_partial()
                 return
             if content_block.get("type") != "text":
-                return
-            if raw_stream_text_index is not None:
-                raw_stream_partial_disabled = True
-                raw_stream_pending_text = ""
                 return
             raw_stream_text_index = index
             return
@@ -1995,15 +2001,11 @@ async def run_claude_agent_sdk(
                 or raw_stream_text_index is None
                 or index != raw_stream_text_index
             ):
-                raw_stream_partial_disabled = True
-                raw_stream_pending_text = ""
-                raw_stream_text_index = None
+                disable_raw_stream_partial()
                 return
             sanitized_pending = sanitize_public_payload(raw_stream_pending_text)
             if not isinstance(sanitized_pending, str) or sanitized_pending != raw_stream_pending_text:
-                raw_stream_partial_disabled = True
-                raw_stream_pending_text = ""
-                raw_stream_text_index = None
+                disable_raw_stream_partial()
                 return
             if raw_stream_pending_text:
                 await publish_terminal_text(raw_stream_pending_text)
@@ -2015,33 +2017,34 @@ async def run_claude_agent_sdk(
             return
         index = event.get("index")
         delta = event.get("delta")
-        if not isinstance(delta, dict):
-            raw_stream_partial_disabled = True
-            raw_stream_pending_text = ""
-            return
-        delta_type = delta.get("type")
-        if delta_type in {"thinking_delta", "signature_delta", "input_json_delta"}:
-            return
-        if delta_type != "text_delta":
-            return
-        text = delta.get("text")
-        if not isinstance(text, str) or not text:
+        if raw_stream_text_index is None:
+            if isinstance(delta, dict) and delta.get("type") != "text_delta":
+                return
+            disable_raw_stream_partial()
             return
         if (
             isinstance(index, bool)
             or not isinstance(index, int)
-            or raw_stream_text_index is None
             or index != raw_stream_text_index
+            or not isinstance(delta, dict)
+        ):
+            disable_raw_stream_partial()
+            return
+        if delta.get("type") != "text_delta":
+            disable_raw_stream_partial()
+            return
+        text = delta.get("text")
+        if (
+            not isinstance(text, str)
+            or not text
             or len(raw_stream_pending_text) + len(text) > _TRUSTED_INTERNAL_RAW_STREAM_MAX_PENDING_CHARS
         ):
-            raw_stream_partial_disabled = True
-            raw_stream_pending_text = ""
+            disable_raw_stream_partial()
             return
         raw_stream_pending_text += text
         sanitized_pending = sanitize_public_payload(raw_stream_pending_text)
         if not isinstance(sanitized_pending, str) or sanitized_pending != raw_stream_pending_text:
-            raw_stream_partial_disabled = True
-            raw_stream_pending_text = ""
+            disable_raw_stream_partial()
             return
         stable_length = len(raw_stream_pending_text) - _TRUSTED_INTERNAL_RAW_STREAM_TRAILING_CHARS
         if stable_length <= 0:
@@ -2049,8 +2052,7 @@ async def run_claude_agent_sdk(
         stable_text = raw_stream_pending_text[:stable_length]
         sanitized_stable = sanitize_public_payload(stable_text)
         if not isinstance(sanitized_stable, str) or sanitized_stable != stable_text:
-            raw_stream_partial_disabled = True
-            raw_stream_pending_text = ""
+            disable_raw_stream_partial()
             return
         raw_stream_pending_text = raw_stream_pending_text[stable_length:]
         await publish_terminal_text(stable_text)

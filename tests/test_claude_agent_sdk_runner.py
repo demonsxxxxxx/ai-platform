@@ -642,6 +642,45 @@ async def test_trusted_internal_stream_unsafe_after_partial_never_replays_termin
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_event",
+    [
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"command\":\"private\"}"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "private"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "unknown_delta", "value": "private"}},
+        {"type": "content_block_delta", "index": 0, "delta": {}},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use"}},
+        "malformed stream event",
+    ],
+)
+async def test_trusted_internal_active_text_conflicts_fail_closed_before_later_safe_delta(
+    monkeypatch, tmp_path, invalid_event
+):
+    captured = {}
+    deltas = []
+    events = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+        invalid_event,
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "safe later text"}},
+        {"type": "content_block_stop", "index": 0},
+    ]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+
+    await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert deltas == ["terminal final"]
+    assert "command" not in "".join(deltas)
+    assert "private" not in "".join(deltas)
+
+
+@pytest.mark.asyncio
 async def test_governed_stream_events_keep_final_only_behavior(monkeypatch, tmp_path):
     captured = {}
     deltas = []
