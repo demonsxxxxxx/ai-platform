@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, beforeEach } from "node:test";
 
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 import { sessionApi } from "../../../services/api/session.ts";
@@ -8,6 +8,80 @@ import {
   type RunControlChild,
   type RunControlOwner,
 } from "../runControlLifecycle.ts";
+
+class MemorySessionStorage implements Storage {
+  private readonly values = new Map<string, string>();
+
+  get length(): number {
+    return this.values.size;
+  }
+
+  clear(): void {
+    this.values.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return [...this.values.keys()][index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+}
+
+class FailingSessionStorage extends MemorySessionStorage {
+  writes = 0;
+
+  constructor(private readonly failOnWrite: number) {
+    super();
+  }
+
+  override setItem(key: string, value: string): void {
+    this.writes += 1;
+    if (this.writes === this.failOnWrite) {
+      throw new Error("session storage write failed");
+    }
+    super.setItem(key, value);
+  }
+}
+
+const originalSessionStorageDescriptor = Object.getOwnPropertyDescriptor(
+  globalThis,
+  "sessionStorage",
+);
+const sessionStorage = new MemorySessionStorage();
+
+function setSessionStorage(value: Storage | undefined): void {
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value,
+  });
+}
+
+setSessionStorage(sessionStorage);
+beforeEach(() => {
+  sessionStorage.clear();
+  setSessionStorage(sessionStorage);
+});
+after(() => {
+  if (originalSessionStorageDescriptor) {
+    Object.defineProperty(
+      globalThis,
+      "sessionStorage",
+      originalSessionStorageDescriptor,
+    );
+  } else {
+    Reflect.deleteProperty(globalThis, "sessionStorage");
+  }
+});
 
 function parent(
   historyGeneration = 1,
@@ -289,8 +363,176 @@ test("RunControlLifecycle unlocks retry after deterministic no-side-effect rejec
   }
 });
 
+test("RunControlLifecycle retains direct 401/403/404/410 pending across reload", async () => {
+  const originalRetry = sessionApi.retryRun;
+  const originalResolve = sessionApi.resolveRunControlOperation;
+  let mutations = 0;
+  let resolverReads = 0;
+  try {
+    for (const status of [401, 403, 404, 410]) {
+      sessionStorage.clear();
+      sessionApi.retryRun = (async () => {
+        mutations += 1;
+        throw new ApiRequestError(`ambiguous direct rejection ${status}`, status);
+      }) as typeof sessionApi.retryRun;
+
+      const firstLifecycle = new RunControlLifecycle();
+      firstLifecycle.configure({
+        adoptRunControlChild: async () => "superseded",
+        reconnectRunControlOwner: async () => {},
+      });
+      firstLifecycle.bindParent(parent());
+      await firstLifecycle.retry();
+
+      assert.equal(firstLifecycle.getSnapshot().phase, "unconfirmed");
+      assert.equal(firstLifecycle.getSnapshot().owner?.mutationStarted, true);
+      const mutationsAfterInitial = mutations;
+      sessionApi.resolveRunControlOperation = (async (
+        sourceRunId,
+        action,
+        operationId,
+      ) => {
+        resolverReads += 1;
+        return {
+          source_run_id: sourceRunId,
+          action,
+          operation_id: operationId,
+          run_id: null,
+          session_id: null,
+          status: "absent",
+          queue_admission: null,
+        };
+      }) as typeof sessionApi.resolveRunControlOperation;
+
+      const reloadedLifecycle = new RunControlLifecycle();
+      reloadedLifecycle.configure({
+        adoptRunControlChild: async () => "superseded",
+        reconnectRunControlOwner: async () => {},
+      });
+      reloadedLifecycle.bindParent(parent());
+
+      assert.equal(reloadedLifecycle.getSnapshot().phase, "unconfirmed");
+      assert.equal(reloadedLifecycle.getSnapshot().owner?.mutationStarted, true);
+      reloadedLifecycle.open();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await reloadedLifecycle.retry();
+      assert.equal(
+        mutations,
+        mutationsAfterInitial,
+        `${status} must not unlock a second POST after reload`,
+      );
+    }
+    assert.equal(resolverReads, 4, "reload may perform one GET-only resolution");
+  } finally {
+    sessionApi.retryRun = originalRetry;
+    sessionApi.resolveRunControlOperation = originalResolve;
+  }
+});
+
+test("RunControlLifecycle requires durable storage before the initial mutation POST", async () => {
+  const originalRetry = sessionApi.retryRun;
+  let mutations = 0;
+  sessionApi.retryRun = (async () => {
+    mutations += 1;
+    return { run_id: "run-child", session_id: "session-a", status: "queued" };
+  }) as typeof sessionApi.retryRun;
+
+  try {
+    for (const unavailableStorage of [
+      undefined,
+      new FailingSessionStorage(1),
+    ]) {
+      setSessionStorage(unavailableStorage);
+      const lifecycle = new RunControlLifecycle();
+      lifecycle.configure({
+        adoptRunControlChild: async () => "superseded",
+        reconnectRunControlOwner: async () => {},
+      });
+      lifecycle.bindParent(parent());
+
+      await lifecycle.retry();
+
+      assert.equal(mutations, 0, "storage failure must prevent the initial POST");
+      assert.equal(lifecycle.getSnapshot().phase, "rejected");
+      assert.equal(lifecycle.getSnapshot().owner?.mutationStarted, true);
+      assert.equal(lifecycle.getSnapshot().canRetry, false);
+    }
+  } finally {
+    setSessionStorage(sessionStorage);
+    sessionApi.retryRun = originalRetry;
+  }
+});
+
+test("RunControlLifecycle sends no resolver or replay POST when a fence write fails", async () => {
+  const originalRetry = sessionApi.retryRun;
+  const originalResolve = sessionApi.resolveRunControlOperation;
+  let mutations = 0;
+  let resolverReads = 0;
+  sessionApi.retryRun = (async () => {
+    mutations += 1;
+    throw new ApiRequestError("initial response lost", 502);
+  }) as typeof sessionApi.retryRun;
+  sessionApi.resolveRunControlOperation = (async (
+    sourceRunId,
+    action,
+    operationId,
+  ) => {
+    resolverReads += 1;
+    return {
+      source_run_id: sourceRunId,
+      action,
+      operation_id: operationId,
+      run_id: null,
+      session_id: null,
+      status: "absent",
+      queue_admission: null,
+    };
+  }) as typeof sessionApi.resolveRunControlOperation;
+
+  try {
+    setSessionStorage(new FailingSessionStorage(2));
+    const resolverFenceFailure = new RunControlLifecycle();
+    resolverFenceFailure.configure({
+      adoptRunControlChild: async () => "superseded",
+      reconnectRunControlOwner: async () => {},
+    });
+    resolverFenceFailure.bindParent(parent());
+    await resolverFenceFailure.retry();
+
+    assert.equal(mutations, 1, "only the durably fenced initial POST is allowed");
+    assert.equal(resolverReads, 0, "resolver requires its own durable fence");
+    assert.equal(resolverFenceFailure.getSnapshot().phase, "unconfirmed");
+    assert.equal(resolverFenceFailure.getSnapshot().owner?.mutationStarted, true);
+
+    mutations = 0;
+    resolverReads = 0;
+    setSessionStorage(new FailingSessionStorage(3));
+    const replayFenceFailure = new RunControlLifecycle();
+    replayFenceFailure.configure({
+      adoptRunControlChild: async () => "superseded",
+      reconnectRunControlOwner: async () => {},
+    });
+    replayFenceFailure.bindParent(parent());
+    await replayFenceFailure.retry();
+
+    assert.equal(resolverReads, 1, "the durably fenced resolver may prove absence");
+    assert.equal(
+      mutations,
+      1,
+      "failure to persist the fresh replay operation must prevent a replay POST",
+    );
+    assert.equal(replayFenceFailure.getSnapshot().phase, "unconfirmed");
+    assert.equal(replayFenceFailure.getSnapshot().owner?.mutationStarted, true);
+  } finally {
+    setSessionStorage(sessionStorage);
+    sessionApi.retryRun = originalRetry;
+    sessionApi.resolveRunControlOperation = originalResolve;
+  }
+});
+
 test("RunControlLifecycle keeps resolver 409/412/422 pending and never replays the POST", async () => {
   for (const status of [409, 412, 422]) {
+    sessionStorage.clear();
     const lifecycle = new RunControlLifecycle();
     const originalRetry = sessionApi.retryRun;
     const originalResolve = sessionApi.resolveRunControlOperation;
@@ -350,12 +592,20 @@ test("RunControlLifecycle keeps resolver 409/412/422 pending and never replays t
       assert.equal(mutations, 1);
       assert.equal(resolverReads, 1);
 
-      lifecycle.open();
+      const reloadedLifecycle = new RunControlLifecycle();
+      reloadedLifecycle.configure({
+        adoptRunControlChild: async () => "superseded",
+        reconnectRunControlOwner: async () => {},
+      });
+      reloadedLifecycle.bindParent(parent());
+      assert.equal(reloadedLifecycle.getSnapshot().phase, "unconfirmed");
+      assert.equal(reloadedLifecycle.getSnapshot().owner?.mutationStarted, true);
+      reloadedLifecycle.open();
       await new Promise((resolve) => setTimeout(resolve, 0));
       assert.equal(resolverReads, 2, `${status} must retain the pending operation`);
       assert.equal(mutations, 1, `${status} must block replay after resolver rejection`);
 
-      await lifecycle.retry();
+      await reloadedLifecycle.retry();
       assert.equal(mutations, 1, `${status} must keep manual retry locked`);
     } finally {
       sessionApi.retryRun = originalRetry;
@@ -368,14 +618,17 @@ test("RunControlLifecycle keeps resolver 409/412/422 pending and never replays t
 
 test("RunControlLifecycle keeps replay 409/412/422 pending and blocks another POST", async () => {
   for (const status of [409, 412, 422]) {
+    sessionStorage.clear();
     const lifecycle = new RunControlLifecycle();
     const originalRetry = sessionApi.retryRun;
     const originalResolve = sessionApi.resolveRunControlOperation;
     const originalStatus = sessionApi.getStatus;
     let mutations = 0;
     let resolverReads = 0;
-    sessionApi.retryRun = (async () => {
+    const operationIds: string[] = [];
+    sessionApi.retryRun = (async (_runId, operationId) => {
       mutations += 1;
+      operationIds.push(operationId);
       if (mutations === 1) {
         throw new ApiRequestError("initial response lost", 502);
       }
@@ -413,12 +666,25 @@ test("RunControlLifecycle keeps replay 409/412/422 pending and blocks another PO
       assert.equal(lifecycle.getSnapshot().phase, "unconfirmed");
       assert.equal(lifecycle.getSnapshot().canRetry, false);
       assert.equal(mutations, 2, "one replay is allowed only after exact absence");
+      assert.notEqual(
+        operationIds[0],
+        operationIds[1],
+        "authoritative absence must create a fresh durable replay operation",
+      );
       assert.equal(resolverReads, 1);
 
       await lifecycle.retry();
       assert.equal(mutations, 2, `${status} must keep manual retry locked`);
 
-      lifecycle.open();
+      const reloadedLifecycle = new RunControlLifecycle();
+      reloadedLifecycle.configure({
+        adoptRunControlChild: async () => "superseded",
+        reconnectRunControlOwner: async () => {},
+      });
+      reloadedLifecycle.bindParent(parent());
+      assert.equal(reloadedLifecycle.getSnapshot().phase, "unconfirmed");
+      assert.equal(reloadedLifecycle.getSnapshot().owner?.mutationStarted, true);
+      reloadedLifecycle.open();
       await new Promise((resolve) => setTimeout(resolve, 0));
       assert.equal(resolverReads, 2, `${status} must retain the pending operation`);
       assert.equal(mutations, 2, `${status} must not issue another replay POST`);
