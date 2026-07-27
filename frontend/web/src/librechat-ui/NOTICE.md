@@ -1,14 +1,16 @@
-# LibreChat UI Upstream Notice
+# LibreChat UI Reference Notice
 
-ai-platform tracks the LibreChat frontend as a UI upstream for shell geometry,
-sidebar density, composer surface structure, selector/chip affordances, and
-right-panel interaction patterns.
+ai-platform uses LibreChat as a pinned UI reference for shell geometry, sidebar
+density, composer surfaces, selector/chip affordances, Agent Builder forms,
+tool pickers, Marketplace cards, and right-panel interaction patterns. This is
+a reference-derived port, not a vendored copy of LibreChat directories.
 
 - Upstream repository: https://github.com/danny-avila/LibreChat
-- Pinned commit: `9e74cc0e57b395926122bd4062c1fcedc48ed465`
-- License: MIT
+- Pinned reference commit: `21dc4a2ef490b86510e4b410fe8f78d52c1d9629`
+- License: MIT, Copyright (c) 2026 LibreChat
 - Local module: `frontend/web/src/librechat-ui/`
 
-Only pure UI structure and styling may live in this module. Data fetching,
-auth/session handling, RBAC, MCP authorization, persistence, provider
-configuration, secrets, and backend event contracts remain ai-platform-owned.
+Only reference-derived UI structure and styling may live in this module. Data
+fetching, auth/session handling, RBAC, MCP authorization, persistence,
+provider configuration, secrets, and backend event contracts remain
+ai-platform-owned.

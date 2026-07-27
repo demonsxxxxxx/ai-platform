@@ -25,6 +25,7 @@ from app.runtime.sandbox.contracts import (
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.settings import get_settings
 from app.storage import ObjectStorage
+from app.worker import _canonical_assistant_delta_event as canonical_assistant_delta_event
 
 router = APIRouter()
 
@@ -131,7 +132,16 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
 
     if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
         raise HTTPException(status_code=409, detail="executor_terminal_callback_not_allowed")
-    events = callback_event_to_run_events(callback)
+    callback_for_events = callback
+    if callback.status == "running" and callback.new_message is not None:
+        raw_delta = (
+            callback.new_message["delta"]
+            if "delta" in callback.new_message
+            else callback.new_message.get("text")
+        )
+        if canonical_assistant_delta_event(stage="message", payload={"delta": raw_delta}) is None:
+            callback_for_events = callback.model_copy(update={"new_message": None})
+    events = callback_event_to_run_events(callback_for_events)
     async with transaction() as conn:
         run_identity = await repositories.get_run_identity(conn, run_id=callback.run_id, for_update=True)
         if run_identity is None:
@@ -163,28 +173,42 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
                 "visible_to_user": False,
             },
         )
+        persisted_event_count = 1
         for event in events:
             executor_event = agent_event_to_executor_event(event)
             executor_event_type = str(executor_event["event_type"])
             executor_payload = dict(executor_event["payload"])
-            if executor_event_type not in PUBLIC_EXECUTION_EVENT_TYPES:
-                executor_payload["source"] = "executor_callback"
+            if executor_event_type == "assistant_delta":
+                canonical_delta = canonical_assistant_delta_event(
+                    stage=str(executor_event["stage"]),
+                    payload=executor_payload,
+                )
+                if canonical_delta is None:
+                    continue
+                event_stage, event_message, event_payload = canonical_delta
+            else:
+                event_stage = str(executor_event["stage"])
+                event_message = str(executor_event["message"])
+                event_payload = executor_payload
+            if executor_event_type not in PUBLIC_EXECUTION_EVENT_TYPES and executor_event_type != "assistant_delta":
+                event_payload["source"] = "executor_callback"
             await repositories.append_event(
                 conn,
                 tenant_id=tenant_id,
                 run_id=callback.run_id,
                 event_type=executor_event_type,
-                stage=str(executor_event["stage"]),
-                message=str(executor_event["message"]),
-                payload=executor_payload,
+                stage=event_stage,
+                message=event_message,
+                payload=event_payload,
             )
+            persisted_event_count += 1
         await _require_current_runtime_attempt(
             conn,
             tenant_id=tenant_id,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
-    return {"accepted": True, "event_count": 1 + len(events)}
+    return {"accepted": True, "event_count": persisted_event_count}
 
 
 async def _require_current_runtime_attempt(
