@@ -222,10 +222,12 @@ class FakeDockerContainer:
         self.stopped = False
         self.removed = False
         self._start_error = start_error
+        self._reload_error: Exception | None = None
         self._stop_error = stop_error
         self._remove_error = remove_error
         self._exec_exit_code = exec_exit_code
         self._exec_error = exec_error
+        self._pending_network_name = ""
         published_host = "0.0.0.0"
         port_binding = self.ports.get("18000/tcp")
         if isinstance(port_binding, tuple) and len(port_binding) == 2:
@@ -252,6 +254,14 @@ class FakeDockerContainer:
     def start(self) -> None:
         if self._start_error is not None:
             raise self._start_error
+        client = getattr(self, "client", None)
+        if client is not None:
+            if self._pending_network_name:
+                client.attach_to_network(self, self._pending_network_name)
+                self._pending_network_name = ""
+            post_start_mutator = getattr(client, "post_start_mutator", None)
+            if callable(post_start_mutator):
+                post_start_mutator(self)
         self.started = True
         self.status = "running"
 
@@ -271,6 +281,9 @@ class FakeDockerContainer:
             client.detach_from_all_networks(self)
 
     def reload(self) -> None:
+        if self._reload_error is not None:
+            raise self._reload_error
+        self.reload_count = getattr(self, "reload_count", 0) + 1
         return None
 
     def exec_run(self, command: list[str], **kwargs: Any) -> SimpleNamespace:
@@ -335,15 +348,22 @@ class FakeDockerContainers:
             exec_error=self._client.exec_error,
             **kwargs,
         )
+        container.client = self._client
         network_name = str(kwargs.get("network") or "")
         if network_name:
-            self._client.attach_to_network(container, network_name)
+            if self._client.defer_container_network_until_start:
+                container._pending_network_name = network_name
+                container.attrs["NetworkSettings"]["Networks"][network_name] = {
+                    "NetworkID": "",
+                    "Aliases": [],
+                }
+            else:
+                self._client.attach_to_network(container, network_name)
         post_create_mutator = getattr(self._client, "post_create_mutator", None)
         if callable(post_create_mutator):
             post_create_mutator(container)
         self._client.created.append(kwargs)
         self._client.containers_by_name[container.name] = container
-        container.client = self._client
         return container
 
     def list(self, all: bool = False, filters: dict[str, Any] | None = None) -> list[FakeDockerContainer]:
@@ -426,6 +446,7 @@ class FakeDockerClient:
         host_port: str | None = "18000",
         exec_exit_code: int = 0,
         exec_error: Exception | None = None,
+        defer_container_network_until_start: bool = False,
     ) -> None:
         self.ping_error = ping_error
         self.create_error = create_error
@@ -436,6 +457,7 @@ class FakeDockerClient:
         self.host_port = host_port
         self.exec_exit_code = exec_exit_code
         self.exec_error = exec_error
+        self.defer_container_network_until_start = defer_container_network_until_start
         self.created: list[dict[str, Any]] = []
         self.containers_by_name: dict[str, FakeDockerContainer] = {}
         self.networks_by_name: dict[str, FakeDockerNetwork] = {
@@ -4845,6 +4867,84 @@ async def test_docker_provider_creates_owned_per_lease_internal_network(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_docker_cold_start_starts_before_sealing_deferred_network_membership(monkeypatch):
+    """Model Docker exposing the governed attachment only after container start."""
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    fake = FakeDockerClient(defer_container_network_until_start=True)
+    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+
+    lease = await provider.create_or_reuse(request(), workspace())
+    primary = fake.containers_by_name[lease.container_name]
+    assert primary.started is True
+    assert primary.reload_count >= 1
+    assert lease.container_id in provider._leases
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ("start", "reload", "empty-id", "wrong-id", "extra-peer"))
+async def test_docker_cold_start_failures_stop_before_probes(monkeypatch, failure):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    callback_calls: list[tuple[Any, ...]] = []
+    fake = FakeDockerClient(
+        defer_container_network_until_start=True,
+        start_error=RuntimeError("start failed") if failure == "start" else None,
+    )
+    peer = None
+    if failure == "extra-peer":
+        peer = FakeDockerContainer(
+            image="unrelated:immutable", name="unrelated-peer", detach=True,
+            labels={"ai-platform.owner": "another-runtime"}, volumes={}, environment={},
+        )
+        peer.client = fake
+        fake.containers_by_name[peer.name] = peer
+    def mutate(container):
+        network_name = next(iter(container.attrs["NetworkSettings"]["Networks"]))
+        if failure == "reload":
+            container._reload_error = RuntimeError("reload failed")
+        elif failure in {"empty-id", "wrong-id"}:
+            attachment_id = "" if failure == "empty-id" else "network-unexpected"
+            container.attrs["NetworkSettings"]["Networks"][network_name]["NetworkID"] = attachment_id
+        elif peer is not None:
+            fake.attach_to_network(peer, network_name)
+    fake.post_start_mutator = mutate
+    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: pytest.fail("executor health probe must not run"),
+        identity_probe=lambda *_args: pytest.fail("executor identity probe must not run"),
+        callback_reachability_probe=lambda *args: callback_calls.append(args) or True,
+    )
+    expected_error = (
+        container_provider.ContainerStartFailedError
+        if failure == "start"
+        else container_provider.ContainerCleanupFailedError
+        if peer is not None
+        else container_provider.GovernedEgressAdmissionError
+    )
+    with pytest.raises(expected_error):
+        await provider.create_or_reuse(request(), workspace())
+    primary = fake.containers_by_name["executor-exec-run-a"]
+    network_name = fake.created[0]["network"]
+    assert primary.started is (failure != "start")
+    assert primary.stopped is True
+    assert primary.removed is True
+    assert callback_calls == []
+    if peer is None:
+        assert network_name not in fake.networks_by_name
+        assert provider._leases == {}
+    else:
+        assert peer.removed is False
+        assert network_name in peer.attrs["NetworkSettings"]["Networks"]
+        assert network_name in fake.networks_by_name
+        assert "ai-platform.governed_egress.proof" not in provider._leases[primary.id].labels
+
+
+@pytest.mark.asyncio
 async def test_docker_governed_network_is_per_sandbox_and_contains_only_api_and_lease(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     fake = FakeDockerClient()
@@ -5041,7 +5141,7 @@ async def test_docker_post_create_readback_rejects_unattested_runtime_topology(m
         await provider.create_or_reuse(request(), workspace())
 
     primary = fake.containers_by_name["executor-exec-run-a"]
-    assert primary.started is False
+    assert primary.started is True
     assert primary.removed is True
     assert provider._leases == {}
 
