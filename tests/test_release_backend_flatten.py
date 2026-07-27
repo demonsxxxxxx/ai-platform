@@ -1,6 +1,7 @@
 import io
 import json
-from pathlib import Path
+import os
+import stat
 import subprocess
 import sys
 import tarfile
@@ -8,6 +9,7 @@ import tarfile
 import pytest
 
 import tools.release_authority as release_authority
+import tools.release_backend_flatten as release_backend_flatten
 from tools.release_backend_flatten import (
     BACKEND_LAYER_FLATTEN_MIN_LAYERS,
     BackendFlattenError,
@@ -70,14 +72,18 @@ def _tar_member(archive, name, content, mode=0o644):
     archive.addfile(member, io.BytesIO(data))
 
 
-def _write_rootfs_archive(path):
+def _write_rootfs_archive(target):
     snapshot = {
         "schema_version": "ai-platform.source-snapshot.v1",
         "source_tree_commit_sha": COMMIT,
         "runtime_subject_commit_sha": COMMIT,
         "source_tree_dirty": False,
     }
-    with tarfile.open(path, "w") as archive:
+    if hasattr(target, "write"):
+        archive = tarfile.open(fileobj=target, mode="w")
+    else:
+        archive = tarfile.open(target, "w")
+    with archive:
         _tar_member(archive, "app/.ai-platform-source-revision", f"{COMMIT}\n")
         _tar_member(archive, "app/.codex-source-revision", f"{COMMIT}\n")
         _tar_member(archive, "app/.source-commit", f"{COMMIT}\n")
@@ -101,6 +107,7 @@ class _FakeDocker:
         self.fail_stage = fail_stage
         self.cleanup_nonzero = cleanup_nonzero
         self.commands = []
+        self.export_observations = []
 
     def __call__(self, command, **kwargs):
         command = list(command)
@@ -116,9 +123,12 @@ class _FakeDocker:
         if command[:3] == ["docker", "container", "export"]:
             if self.fail_stage == "export":
                 raise subprocess.CalledProcessError(1, command)
-            archive = Path(command[command.index("--output") + 1])
-            _write_rootfs_archive(archive)
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+            assert "--output" not in command
+            sink = kwargs["stdout_sink"]
+            _write_rootfs_archive(sink)
+            sink.flush()
+            self.export_observations.append(os.fstat(sink.fileno()))
+            return subprocess.CompletedProcess(command, 0, stdout=None, stderr="")
         if command[:3] == ["docker", "image", "import"]:
             if self.fail_stage == "import":
                 raise subprocess.CalledProcessError(1, command)
@@ -132,9 +142,22 @@ def _cleanup_commands(fake):
     return [command for command, _ in fake.commands if command[1:3] in (["container", "rm"], ["image", "rm"])]
 
 
-def test_flattened_backend_base_exports_imports_and_passes_only_noncanonical_ref(tmp_path):
+def test_flattened_backend_base_streams_two_secure_archives_then_imports_only_the_noncanonical_ref(
+    tmp_path, monkeypatch
+):
     docker = _FakeDocker(tmp_path)
     bases = []
+    verified_archives = []
+    original_verify_archive = release_backend_flatten._verify_archive
+
+    def observe_verified_archive(path, identity):
+        original_verify_archive(path, identity)
+        metadata = path.stat(follow_symlinks=False)
+        with path.open("rb") as handle:
+            assert handle.read(1)
+        verified_archives.append((metadata, identity))
+
+    monkeypatch.setattr(release_backend_flatten, "_verify_archive", observe_verified_archive)
 
     with flattened_backend_base(
         docker=["docker"],
@@ -160,8 +183,44 @@ def test_flattened_backend_base_exports_imports_and_passes_only_noncanonical_ref
     assert all(CURRENT_REFERENCE not in command for command in _cleanup_commands(docker))
     assert any(command[1:3] == ["container", "rm"] for command in _cleanup_commands(docker))
     assert any(command[1:3] == ["image", "rm"] and bases[0] in command for command in _cleanup_commands(docker))
-    archive_paths = [Path(command[command.index("--output") + 1]) for command, _ in docker.commands if "--output" in command]
-    assert archive_paths and all(not path.exists() for path in archive_paths)
+    exports = [
+        (command, kwargs)
+        for command, kwargs in docker.commands
+        if command[1:3] == ["container", "export"]
+    ]
+    assert len(exports) == 2
+    assert all("--output" not in command for command, _ in exports)
+    assert all(kwargs["text"] is False and kwargs["stdout_sink"] is not None for _, kwargs in exports)
+    assert len(docker.export_observations) == 2
+    assert all(metadata.st_size > 0 and stat.S_ISREG(metadata.st_mode) for metadata in docker.export_observations)
+    assert len(verified_archives) == 2
+    for metadata, identity in verified_archives:
+        assert metadata.st_dev == identity.st_dev
+        assert metadata.st_ino == identity.st_ino
+        assert metadata.st_size > 0
+        assert stat.S_ISREG(metadata.st_mode)
+        if os.name == "posix":
+            assert stat.S_IMODE(metadata.st_mode) == 0o600
+            assert metadata.st_uid == os.getuid()
+    assert not list(tmp_path.iterdir())
+
+
+def test_verify_archive_refuses_a_replaced_inode_after_streaming(tmp_path):
+    archive, sink, identity = release_backend_flatten._create_archive_sink(tmp_path, "source-rootfs.tar")
+    try:
+        _write_rootfs_archive(sink)
+        sink.flush()
+        os.fsync(sink.fileno())
+    finally:
+        sink.close()
+
+    archive.unlink()
+    archive.write_bytes(b"replacement")
+    if os.name == "posix":
+        os.chmod(archive, 0o600)
+
+    with pytest.raises(BackendFlattenError, match="archive is unsafe"):
+        release_backend_flatten._verify_archive(archive, identity)
 
 
 @pytest.mark.parametrize(
@@ -228,8 +287,7 @@ def test_flattened_backend_base_cleans_all_temporary_subjects_on_every_failure(t
     cleanup = _cleanup_commands(docker)
     assert any(command[1:3] == ["container", "rm"] for command in cleanup)
     assert all(CURRENT_REFERENCE not in command for command in cleanup)
-    archive_paths = [Path(command[command.index("--output") + 1]) for command, _ in docker.commands if "--output" in command]
-    assert all(not path.exists() for path in archive_paths)
+    assert all("--output" not in command for command, _ in docker.commands)
 
 
 @pytest.mark.parametrize("fail_stage", ["export", "import", "validate", "target-build"])
@@ -277,7 +335,49 @@ def test_authority_stage_keeps_cleanup_failure_evidence_bounded(tmp_path):
         )
 
     assert events[-1]["cleanup_status"] == "failed"
+    assert events[-1]["backend_flatten_operation"] == "source_export"
+    assert events[-1]["backend_flatten_error_code"] == "backend_flatten_source_export_failed"
     assert "ai-platform-flatten" not in json.dumps(events[-1])
+
+
+def test_authority_stage_retains_safe_source_export_timeout_code_without_archive_path(tmp_path):
+    docker = _FakeDocker(tmp_path)
+    original_runner = docker.__call__
+
+    def timeout_export(command, **kwargs):
+        if list(command)[1:3] == ["container", "export"]:
+            assert "--output" not in command
+            assert kwargs["stdout_sink"] is not None
+            error = subprocess.TimeoutExpired(["docker", "private-marker", str(tmp_path)], 17)
+            error.safe_stderr_diagnostic = {"stderr_status": "redacted"}
+            raise error
+        return original_runner(command, **kwargs)
+
+    events = []
+    with pytest.raises(release_authority.ReleaseAuthorityError, match="backend-layer-flatten-recovery"):
+        release_authority._stage(
+            events,
+            name="backend-layer-flatten-recovery",
+            strategy="auto",
+            action="flatten-recovery",
+            operation=lambda: release_authority.rebuild_from_flattened_backend(
+                docker=["docker"],
+                source_reference=CURRENT_REFERENCE,
+                expected_commit=COMMIT,
+                expected_repository=REPOSITORY,
+                archive_root=tmp_path,
+                runner=timeout_export,
+                target_build=lambda _: None,
+            ),
+        )
+
+    event = events[-1]
+    assert event["failure_kind"] == "timeout"
+    assert event["backend_flatten_operation"] == "source_export"
+    assert event["backend_flatten_error_code"] == "backend_flatten_source_export_failed"
+    assert event["stderr_status"] == "redacted"
+    assert "private-marker" not in json.dumps(event)
+    assert str(tmp_path) not in json.dumps(event)
 
 
 @pytest.mark.parametrize(

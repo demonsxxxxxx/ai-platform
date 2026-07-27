@@ -22,7 +22,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Sequence
+from typing import Any, BinaryIO, Sequence
 from urllib.request import urlopen
 
 if __package__:
@@ -810,10 +810,17 @@ def _run(
     timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
     input: str | bytes | None = None,
     classify_build_progress: bool = False,
+    stdout_sink: BinaryIO | None = None,
     umask: int = -1,
 ) -> subprocess.CompletedProcess[Any]:
     if text and isinstance(input, (bytes, bytearray, memoryview)):
         raise TypeError("text mode input must be str, not bytes-like")
+    if stdout_sink is not None and text:
+        raise TypeError("stdout sink requires binary mode")
+    if stdout_sink is not None and classify_build_progress:
+        raise TypeError("stdout sink does not support build progress classification")
+    if stdout_sink is not None and input is not None:
+        raise TypeError("stdout sink does not support stdin")
     timeout = bounded_parity_attempt_timeout(timeout)
     arguments = list(command)
     windows_job_handle = _create_owned_windows_job()
@@ -825,7 +832,7 @@ def _run(
                 arguments,
                 cwd=cwd,
                 stdin=subprocess.PIPE if input is not None else None,
-                stdout=subprocess.PIPE,
+                stdout=stdout_sink if stdout_sink is not None else subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=text and not classify_build_progress,
                 env=env,
@@ -1323,6 +1330,33 @@ def _redacted_stderr_diagnostic(stderr: str | bytes | None) -> dict[str, Any]:
     return {"stderr_status": "redacted"}
 
 
+_BACKEND_FLATTEN_OPERATION_ERROR_CODES = {
+    "source_export": "backend_flatten_source_export_failed",
+    "source_archive_verify": "backend_flatten_source_archive_verify_failed",
+    "import": "backend_flatten_import_failed",
+    "flat_inspect": "backend_flatten_flat_inspect_failed",
+    "validation_export": "backend_flatten_validation_export_failed",
+    "flat_rootfs": "backend_flatten_flat_rootfs_failed",
+    "target_build": "backend_flatten_target_build_failed",
+    "cleanup": "backend_flatten_cleanup_failed",
+}
+
+
+def _backend_flatten_failure_evidence(exc: BaseException) -> dict[str, str]:
+    """Return only a fixed flatten operation/code pair when the producer supplied one."""
+    operation = getattr(exc, "backend_flatten_operation", None)
+    error_code = getattr(exc, "backend_flatten_error_code", None)
+    if (
+        isinstance(operation, str)
+        and _BACKEND_FLATTEN_OPERATION_ERROR_CODES.get(operation) == error_code
+    ):
+        return {
+            "backend_flatten_operation": operation,
+            "backend_flatten_error_code": error_code,
+        }
+    return {}
+
+
 def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
     """Return only bounded, non-secret facts needed to diagnose one failed stage."""
     if isinstance(exc, subprocess.TimeoutExpired):
@@ -1335,6 +1369,7 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
+            **_backend_flatten_failure_evidence(exc),
         }
     if isinstance(exc, subprocess.CalledProcessError):
         return {
@@ -1346,13 +1381,19 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
+            **_backend_flatten_failure_evidence(exc),
         }
     if isinstance(exc, OSError):
         evidence: dict[str, Any] = {"failure_kind": "os-error"}
         if isinstance(exc.errno, int):
             evidence["errno"] = exc.errno
-        return evidence
-    return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
+        return {**evidence, **_backend_flatten_failure_evidence(exc)}
+    return {
+        "failure_kind": "authority-error",
+        **convergence_failure_evidence(exc),
+        **_backend_flatten_failure_evidence(exc),
+        **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {}),
+    }
 
 
 def _stage(

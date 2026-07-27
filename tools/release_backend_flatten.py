@@ -14,7 +14,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
-from typing import Any, Callable, Iterator
+from typing import Any, BinaryIO, Callable, Iterator
 
 
 BACKEND_LAYER_FLATTEN_MIN_LAYERS = 96
@@ -148,6 +148,18 @@ class BackendFlattenError(RuntimeError):
     """Raised when a temporary backend flatten operation cannot prove its invariants."""
 
 
+_BACKEND_FLATTEN_OPERATION_ERROR_CODES = {
+    "source_export": "backend_flatten_source_export_failed",
+    "source_archive_verify": "backend_flatten_source_archive_verify_failed",
+    "import": "backend_flatten_import_failed",
+    "flat_inspect": "backend_flatten_flat_inspect_failed",
+    "validation_export": "backend_flatten_validation_export_failed",
+    "flat_rootfs": "backend_flatten_flat_rootfs_failed",
+    "target_build": "backend_flatten_target_build_failed",
+    "cleanup": "backend_flatten_cleanup_failed",
+}
+
+
 @dataclass(frozen=True)
 class FlattenedBackendBase:
     """One verified non-canonical image reference, valid only inside its context."""
@@ -170,7 +182,46 @@ class _TemporarySubjects:
     flat_reference: str | None = None
 
 
+@dataclass(frozen=True)
+class _ArchiveIdentity:
+    """Stable identity captured from the authority-owned archive file descriptor."""
+
+    st_dev: int
+    st_ino: int
+    st_uid: int | None
+
+
 Runner = Callable[..., subprocess.CompletedProcess[Any]]
+
+
+def _annotate_backend_flatten_operation(exc: BaseException, operation: str) -> BaseException:
+    """Attach only fixed stage facts; callers never surface an archive path or command."""
+    error_code = _BACKEND_FLATTEN_OPERATION_ERROR_CODES[operation]
+    setattr(exc, "backend_flatten_operation", operation)
+    setattr(exc, "backend_flatten_error_code", error_code)
+    return exc
+
+
+def _operation_error(operation: str, cause: BaseException | None = None) -> BackendFlattenError:
+    error = BackendFlattenError(f"backend flatten {operation.replace('_', ' ')} failed")
+    if cause is not None:
+        for attribute in ("safe_stderr_diagnostic", "safe_build_progress_diagnostic"):
+            if hasattr(cause, attribute):
+                setattr(error, attribute, getattr(cause, attribute))
+    _annotate_backend_flatten_operation(error, operation)
+    return error
+
+
+def _run_flatten_operation(operation: str, callback: Callable[[], Any]) -> Any:
+    """Map a bounded operation to a fixed safe code while retaining timeout semantics."""
+    try:
+        return callback()
+    except subprocess.TimeoutExpired as exc:
+        raise _annotate_backend_flatten_operation(exc, operation) from None
+    except BackendFlattenError as exc:
+        raise _annotate_backend_flatten_operation(exc, operation) from None
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+        raise _operation_error(operation, exc) from None
 
 
 def _safe_text(value: Any) -> str:
@@ -327,28 +378,63 @@ def _import_changes(config: _FlattenConfig) -> list[str]:
     return changes
 
 
-def _create_archive_path(directory: Path, name: str) -> Path:
-    archive = directory / name
-    descriptor = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    os.close(descriptor)
-    os.chmod(archive, 0o600)
-    return archive
-
-
-def _verify_archive(path: Path) -> None:
-    try:
-        metadata = path.stat(follow_symlinks=False)
-    except OSError:
-        raise BackendFlattenError("backend flatten archive is unavailable") from None
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_size <= 0
-        or (os.name == "posix" and stat.S_IMODE(metadata.st_mode) != 0o600)
+def _assert_archive_metadata(
+    metadata: os.stat_result,
+    *,
+    identity: _ArchiveIdentity | None,
+    require_content: bool,
+) -> None:
+    """Require a regular, private, authority-owned archive with an unchanged identity."""
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise BackendFlattenError("backend flatten archive is unsafe")
+    if os.name == "posix":
+        if stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_uid != os.getuid():
+            raise BackendFlattenError("backend flatten archive is unsafe")
+    if identity is not None and (
+        metadata.st_dev != identity.st_dev
+        or metadata.st_ino != identity.st_ino
+        or (identity.st_uid is not None and metadata.st_uid != identity.st_uid)
     ):
         raise BackendFlattenError("backend flatten archive is unsafe")
-    digest = hashlib.sha256()
+    if require_content and metadata.st_size <= 0:
+        raise BackendFlattenError("backend flatten archive is unsafe")
+
+
+def _create_archive_sink(directory: Path, name: str) -> tuple[Path, BinaryIO, _ArchiveIdentity]:
+    """Open one exclusive 0600 archive descriptor that Docker can stream directly into."""
+    archive = directory / name
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(archive, flags, 0o600)
     try:
-        with path.open("rb") as handle:
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+        else:
+            os.chmod(archive, 0o600)
+        metadata = os.fstat(descriptor)
+        _assert_archive_metadata(metadata, identity=None, require_content=False)
+        identity = _ArchiveIdentity(
+            st_dev=metadata.st_dev,
+            st_ino=metadata.st_ino,
+            st_uid=metadata.st_uid if os.name == "posix" else None,
+        )
+        return archive, os.fdopen(descriptor, "wb"), identity
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _verify_archive(path: Path, identity: _ArchiveIdentity) -> None:
+    descriptor: int | None = None
+    try:
+        path_metadata = path.stat(follow_symlinks=False)
+        _assert_archive_metadata(path_metadata, identity=identity, require_content=True)
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor_metadata = os.fstat(descriptor)
+        _assert_archive_metadata(descriptor_metadata, identity=identity, require_content=True)
+        handle = os.fdopen(descriptor, "rb")
+        descriptor = None
+        digest = hashlib.sha256()
+        with handle:
             while True:
                 chunk = handle.read(128 * 1024)
                 if not chunk:
@@ -356,8 +442,47 @@ def _verify_archive(path: Path) -> None:
                 digest.update(chunk)
     except OSError:
         raise BackendFlattenError("backend flatten archive is unavailable") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     if not digest.hexdigest():
         raise BackendFlattenError("backend flatten archive checksum failed")
+
+
+def _export_container_archive(
+    *,
+    docker: list[str],
+    container: str,
+    directory: Path,
+    name: str,
+    runner: Runner,
+    export_operation: str,
+    verification_operation: str,
+) -> Path:
+    """Stream one stopped-container rootfs into the exact descriptor, then verify it."""
+    archive, sink, identity = _run_flatten_operation(
+        export_operation,
+        lambda: _create_archive_sink(directory, name),
+    )
+    try:
+        _run_flatten_operation(
+            export_operation,
+            lambda: runner(
+                [*docker, "container", "export", container],
+                text=False,
+                stdout_sink=sink,
+            ),
+        )
+        _run_flatten_operation(
+            verification_operation,
+            lambda: (sink.flush(), os.fsync(sink.fileno()), _verify_archive(archive, identity)),
+        )
+        return archive
+    finally:
+        try:
+            sink.close()
+        except OSError:
+            pass
 
 
 def _member_content(archive: tarfile.TarFile, member: tarfile.TarInfo) -> str:
@@ -481,45 +606,84 @@ def flattened_backend_base(
     )
     primary_error: BaseException | None = None
     try:
-        source_image = _image_payload(runner, docker, source_reference)
-        source_layers = _layers(source_image, flat=False)
-        config = _validated_flatten_config(
-            source_image,
-            commit=commit,
-            repository=repository,
-            flat=False,
+        source_image, source_layers, config = _run_flatten_operation(
+            "source_export",
+            lambda: (
+                (image := _image_payload(runner, docker, source_reference)),
+                _layers(image, flat=False),
+                _validated_flatten_config(
+                    image,
+                    commit=commit,
+                    repository=repository,
+                    flat=False,
+                ),
+            ),
         )
         with tempfile.TemporaryDirectory(prefix="ai-platform-flatten-", dir=root) as directory_name:
             directory = Path(directory_name)
-            source_archive = _create_archive_path(directory, "source-rootfs.tar")
-            runner([*docker, "container", "create", "--name", temporary.source_container, source_reference])
-            runner([*docker, "container", "export", "--output", str(source_archive), temporary.source_container])
-            _verify_archive(source_archive)
-            runner(
-                [
-                    *docker,
-                    "image",
-                    "import",
-                    *_import_changes(config),
-                    str(source_archive),
-                    temporary.flat_reference,
-                ]
+            _run_flatten_operation(
+                "source_export",
+                lambda: runner(
+                    [*docker, "container", "create", "--name", temporary.source_container, source_reference]
+                ),
             )
-            flat_image = _image_payload(runner, docker, temporary.flat_reference)
-            flat_layers = _layers(flat_image, flat=True)
-            _validated_flatten_config(
-                flat_image,
-                commit=commit,
-                repository=repository,
-                flat=True,
+            source_archive = _export_container_archive(
+                docker=docker,
+                container=temporary.source_container,
+                directory=directory,
+                name="source-rootfs.tar",
+                runner=runner,
+                export_operation="source_export",
+                verification_operation="source_archive_verify",
             )
-            validation_archive = _create_archive_path(directory, "flat-rootfs.tar")
-            runner([*docker, "container", "create", "--name", temporary.validation_container, temporary.flat_reference])
-            runner(
-                [*docker, "container", "export", "--output", str(validation_archive), temporary.validation_container]
+            _run_flatten_operation(
+                "import",
+                lambda: runner(
+                    [
+                        *docker,
+                        "image",
+                        "import",
+                        *_import_changes(config),
+                        str(source_archive),
+                        temporary.flat_reference,
+                    ]
+                ),
             )
-            _verify_archive(validation_archive)
-            _verify_flat_rootfs(validation_archive, commit=commit)
+            flat_image, flat_layers = _run_flatten_operation(
+                "flat_inspect",
+                lambda: (
+                    (image := _image_payload(runner, docker, temporary.flat_reference)),
+                    _layers(image, flat=True),
+                ),
+            )
+            _run_flatten_operation(
+                "flat_inspect",
+                lambda: _validated_flatten_config(
+                    flat_image,
+                    commit=commit,
+                    repository=repository,
+                    flat=True,
+                ),
+            )
+            _run_flatten_operation(
+                "validation_export",
+                lambda: runner(
+                    [*docker, "container", "create", "--name", temporary.validation_container, temporary.flat_reference]
+                ),
+            )
+            validation_archive = _export_container_archive(
+                docker=docker,
+                container=temporary.validation_container,
+                directory=directory,
+                name="flat-rootfs.tar",
+                runner=runner,
+                export_operation="validation_export",
+                verification_operation="flat_rootfs",
+            )
+            _run_flatten_operation(
+                "flat_rootfs",
+                lambda: _verify_flat_rootfs(validation_archive, commit=commit),
+            )
             yield FlattenedBackendBase(
                 reference=temporary.flat_reference,
                 source_layer_count=source_layers,
@@ -528,8 +692,11 @@ def flattened_backend_base(
     except BackendFlattenError as exc:
         primary_error = exc
         raise
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
-        primary_error = BackendFlattenError("backend layer flatten recovery failed")
+    except subprocess.TimeoutExpired as exc:
+        primary_error = exc
+        raise
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+        primary_error = _operation_error("source_export", exc)
         raise primary_error from None
     except BaseException as exc:
         primary_error = exc
@@ -540,7 +707,7 @@ def flattened_backend_base(
             if primary_error is not None:
                 setattr(primary_error, "cleanup_status", "failed")
             else:
-                cleanup_error = BackendFlattenError("backend layer flatten cleanup failed")
+                cleanup_error = _operation_error("cleanup")
                 cleanup_error.cleanup_status = "failed"
                 raise cleanup_error
 
@@ -564,4 +731,4 @@ def rebuild_from_flattened_backend(
         archive_root=archive_root,
         runner=runner,
     ) as flattened:
-        target_build(flattened.reference)
+        _run_flatten_operation("target_build", lambda: target_build(flattened.reference))
