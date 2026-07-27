@@ -16,6 +16,7 @@ from app.execution_boundary import (
 from app.executors.base import RunExecutionOwner
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import (
+    ContainerCleanupFailedError,
     ContainerProvider,
     ExecutorHealthTimeoutError,
     create_container_provider,
@@ -291,13 +292,11 @@ class SandboxRuntime:
         evidence: ExecutorReadinessEvidence,
     ) -> AgentEvent:
         return AgentEvent(
-            type="runtime_container_started",
+            type="sandbox_executor_readiness_failed",
             message="Sandbox executor readiness failed",
             admin_only=True,
             payload={
                 "schema_version": "ai-platform.executor-readiness-evidence.v1",
-                "source": "sandbox_runtime",
-                "evidence_class": "executor_readiness_failure",
                 "run_id": request.run_id,
                 "attempt_id": request.attempt_id,
                 **safe_readiness_evidence_payload(evidence),
@@ -317,10 +316,13 @@ class SandboxRuntime:
         lease_started_at = time.monotonic()
         try:
             lease = await self.provider.create_or_reuse(request, workspace)
-        except ExecutorHealthTimeoutError as exc:
+        except (ContainerCleanupFailedError, ExecutorHealthTimeoutError) as exc:
             evidence = exc.readiness_evidence
             if isinstance(evidence, ExecutorReadinessEvidence):
-                await self._emit(event_sink, self._readiness_failure_event(request, evidence))
+                try:
+                    await self._emit(event_sink, self._readiness_failure_event(request, evidence))
+                except Exception:
+                    pass
             raise
         if lease.provider != configured_provider:
             trusted_callback_target = self._trusted_callback_target(lease.provider)

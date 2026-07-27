@@ -113,8 +113,9 @@ class NativeToolAdmissionError(SandboxRuntimeError):
 class ContainerCleanupFailedError(SandboxRuntimeError):
     """Raised when a rejected executor cannot be confirmed stopped and removed."""
 
-    def __init__(self, message: str = "Container cleanup failed") -> None:
+    def __init__(self, message: str = "Container cleanup failed", *, readiness_evidence: readiness_evidence.ExecutorReadinessEvidence | None = None) -> None:
         super().__init__("container_cleanup_failed", message)
+        self.readiness_evidence = readiness_evidence
 
 
 class ExecutorHealthTimeoutError(SandboxRuntimeError):
@@ -3066,11 +3067,13 @@ class DockerContainerProvider:
         self._leases[lease.container_id] = lease
         raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
 
-    def _cleanup_runtime_pair_for_error(self, container: Any, native: Any, lease: ContainerLease, cause: BaseException) -> None:
+    def _cleanup_runtime_pair_for_error(self, container: Any, native: Any, lease: ContainerLease, cause: BaseException, evidence: readiness_evidence.ExecutorReadinessEvidence | None = None) -> BaseException:
         try:
             self._cleanup_runtime_pair_or_track(container, native, lease)
         except ContainerCleanupFailedError as cleanup_exc:
+            cleanup_exc.readiness_evidence = evidence
             raise cleanup_exc from cause
+        return cause
 
     async def _native_tool_reuse_valid(
         self,
@@ -3807,7 +3810,7 @@ class DockerContainerProvider:
                 "publish_wait", *_docker_readiness_snapshot(container, endpoint),
                 "not_attempted", readiness_evidence.bounded_elapsed_ms(publish_wait_started_at, time.monotonic()),
             )
-            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc, evidence)
             raise ExecutorHealthTimeoutError(readiness_evidence=evidence) from exc
         except Exception as exc:
             self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
@@ -3837,16 +3840,14 @@ class DockerContainerProvider:
                 "health_probe", *_docker_readiness_snapshot(container),
                 readiness_evidence.health_failure_outcome(exc), self._elapsed_ms(healthcheck_started_at),
             )
-            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc, evidence)
             raise ExecutorHealthTimeoutError(readiness_evidence=evidence) from exc
         sandbox_healthcheck_latency_ms = self._elapsed_ms(healthcheck_started_at)
         if not healthy:
             evidence = readiness_evidence.normalize_docker_readiness_evidence(
-                "health_probe", *_docker_readiness_snapshot(container),
-                "unhealthy", sandbox_healthcheck_latency_ms,
+                "health_probe", *_docker_readiness_snapshot(container), "unhealthy", sandbox_healthcheck_latency_ms,
             )
-            self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            raise ExecutorHealthTimeoutError(readiness_evidence=evidence)
+            raise self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, ExecutorHealthTimeoutError(readiness_evidence=evidence), evidence)
         if _container_config_user(container) != workspace_user:
             self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             raise ContainerStartFailedError("executor Config.User mismatch")

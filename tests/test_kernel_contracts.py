@@ -29,3 +29,15 @@ def test_capability_lifecycle_facts_are_typed_agent_events(event_type):
 def test_unknown_capability_event_type_fails_closed():
     with pytest.raises(ValidationError, match="Unsupported agent event type"):
         AgentEvent(type="capability_started", payload={})
+
+
+def test_sandbox_executor_readiness_failed_is_a_distinct_typed_private_event():
+    event = AgentEvent(
+        type="sandbox_executor_readiness_failed",
+        message="Sandbox executor readiness failed",
+        payload={"schema_version": "ai-platform.executor-readiness-evidence.v1"},
+        admin_only=True,
+    )
+
+    assert event.type == "sandbox_executor_readiness_failed"
+    assert event.admin_only is True

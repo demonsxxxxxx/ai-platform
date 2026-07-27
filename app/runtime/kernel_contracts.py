@@ -8,6 +8,7 @@ SUPPORTED_AGENT_EVENT_TYPES = {
     "run_queued",
     "run_started",
     "runtime_container_started",
+    "sandbox_executor_readiness_failed",
     "assistant_delta",
     "execution_step",
     "execution_progress",
