@@ -1,6 +1,7 @@
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +26,7 @@ class Settings(BaseSettings):
     runtime_211_base_url: str = Field(default="")
     sandbox_workspace_root: str = Field(default="/tmp/ai-platform-sandbox-workspaces")
     sandbox_container_provider: str = Field(default="fake")
+    sandbox_security_profile: Literal["governed", "trusted_internal"] = Field(default="governed")
     sandbox_executor_image: str = Field(default="ai-platform-executor:dev")
     sandbox_executor_browser_image: str = Field(default="")
     sandbox_executor_published_host: str = Field(default="127.0.0.1")
@@ -61,6 +63,9 @@ class Settings(BaseSettings):
     opensandbox_external_egress_callback_base_url: str = Field(default="")
     opensandbox_external_egress_openai_base_url: str = Field(default="")
     opensandbox_external_egress_anthropic_base_url: str = Field(default="")
+    opensandbox_trusted_internal_callback_base_url: str = Field(default="")
+    opensandbox_trusted_internal_openai_base_url: str = Field(default="")
+    opensandbox_trusted_internal_anthropic_base_url: str = Field(default="")
     opensandbox_executor_image_digest: str = Field(default="")
     sandbox_max_active_ephemeral_containers: int = Field(default=2)
     sandbox_max_active_persistent_containers: int = Field(default=1)
@@ -141,6 +146,14 @@ class Settings(BaseSettings):
     ragflow_timeout_seconds: float = Field(default=30.0)
     ragflow_top_k: int = Field(default=3)
     ragflow_similarity_threshold: float = Field(default=0.2)
+
+    @model_validator(mode="after")
+    def validate_sandbox_security_profile(self) -> "Settings":
+        """Restrict the internal-beta relaxation to the OpenSandbox provider."""
+
+        if self.sandbox_security_profile == "trusted_internal" and self.sandbox_container_provider != "opensandbox":
+            raise ValueError("trusted_internal sandbox security profile requires the OpenSandbox provider")
+        return self
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

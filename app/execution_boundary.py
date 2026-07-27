@@ -9,6 +9,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.runtime.sandbox.opensandbox_trusted_internal import (
+    SANDBOX_SECURITY_PROFILE_GOVERNED,
+    SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL,
+    trusted_internal_runtime_lease_payload_matches_row,
+)
 from app.settings import get_settings
 
 CLAUDE_WORKER_EXECUTOR = "claude-agent-worker"
@@ -484,6 +489,9 @@ def _payload_matches_signed_projection(payload: Mapping[str, Any], proof: Mappin
     return True
 
 
+_trusted_internal_payload_matches_runtime_row = trusted_internal_runtime_lease_payload_matches_row
+
+
 def is_accepted_runtime_lease(
     row: dict[str, Any],
     *,
@@ -493,12 +501,12 @@ def is_accepted_runtime_lease(
     now: datetime | None = None,
     verification_mode: str = "active",
 ) -> bool:
-    """Verify active admission or signed historical evidence for one lease.
+    """Verify profile-aware active admission or historical evidence for one lease.
 
     ``active`` is the only mode for runtime admission and requires a proof that
-    has not expired. ``historical`` is limited to terminal audit projections:
-    it still requires exact shape, signature, and scope binding, but permits a
-    naturally expired proof without extending its runtime authority.
+    has not expired in governed mode. ``historical`` is limited to terminal
+    audit projections: governed evidence retains signature validation, while
+    trusted-internal evidence remains exact-shape and current-profile bound.
     """
     if verification_mode not in {"active", "historical"}:
         return False
@@ -510,6 +518,18 @@ def is_accepted_runtime_lease(
         payload = row.get("lease_payload")
     expected_binding = _runtime_lease_expected_binding(row, payload) if isinstance(payload, dict) else None
     settings = get_settings()
+    if (
+        isinstance(payload, dict)
+        and provider == "opensandbox"
+        and payload.get("security_profile") == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
+    ):
+        return (
+            getattr(settings, "sandbox_security_profile", SANDBOX_SECURITY_PROFILE_GOVERNED)
+            == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
+            and str(payload.get("source") or "") == REAL_SANDBOX_EVIDENCE_SOURCE
+            and str(payload.get("evidence_class") or "") == REAL_SANDBOX_EVIDENCE_CLASS
+            and _trusted_internal_payload_matches_runtime_row(row, payload)
+        )
     key = signing_key if signing_key is not None else settings.sandbox_egress_proof_signing_key
     current_key_id = (
         signing_key_id

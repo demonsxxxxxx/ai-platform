@@ -23,6 +23,7 @@ from app.runtime.sandbox.container_provider import (
     executor_callback_target,
 )
 from app.runtime.sandbox.contracts import (
+    EXECUTOR_AUTH_HEADER,
     ContainerLease,
     ExecutorTaskRequest,
     SandboxRuntimeRequest,
@@ -39,6 +40,13 @@ from app.runtime.sandbox.executor_client import SandboxExecutorClient
 from app.runtime.sandbox.readiness_evidence import (
     ExecutorReadinessEvidence,
     safe_readiness_evidence_payload,
+)
+from app.runtime.sandbox.opensandbox_trusted_internal import (
+    SANDBOX_SECURITY_PROFILE_GOVERNED,
+    SANDBOX_SECURITY_PROFILE_LABEL,
+    SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL,
+    configured_security_profile,
+    trusted_internal_persisted_runtime_labels,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.settings import get_settings
@@ -163,42 +171,58 @@ class SandboxRuntime:
             raise ValueError("incomplete_runtime_handle")
         image_subject = str(lease.labels.get("ai-platform.executor.requested_image") or "").strip()
         image_digest = str(lease.labels.get("ai-platform.executor.requested_image_digest") or "").strip()
+        settings = get_settings()
+        configured_profile = configured_security_profile(settings)
+        lease_security_profile = str(
+            lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED
+        )
+        trusted_internal = (
+            lease.provider == "opensandbox"
+            and lease_security_profile == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
+        )
+        persisted_trusted_labels: dict[str, str] | None = None
+        if trusted_internal:
+            persisted_trusted_labels = trusted_internal_persisted_runtime_labels(
+                lease,
+                request,
+                workspace,
+                configured_profile=configured_profile,
+                has_executor_auth=bool(lease.executor_headers.get(EXECUTOR_AUTH_HEADER)),
+            )
+        elif lease_security_profile == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL:
+            raise ValueError("trusted_internal_runtime_lease_invalid")
         authorized_skill_scope = governed_egress_authorized_skill_scope(
             skill_ids=request.skill_ids,
             mcp_tool_ids=request.mcp_tool_ids,
         )
         authorized_native_tool_scope = governed_egress_authorized_native_tool_scope(request.tool_policy_subjects)
-        governed_egress_proof = governed_egress_proof_from_labels(
-            lease.provider,
-            lease.labels,
-            signing_key=getattr(get_settings(), "sandbox_egress_proof_signing_key", ""),
-            signing_key_id=getattr(get_settings(), "sandbox_egress_proof_key_id", "current"),
-            expected_binding={
-                "tenant_id": lease.tenant_id,
-                "workspace_id": lease.workspace_id,
-                "user_id": lease.user_id,
-                "session_id": lease.session_id,
-                "run_id": lease.run_id,
-                "attempt_id": request.attempt_id,
-                "image_subject": image_subject,
-                "image_digest": image_digest,
-                "authorized_skill_scope": authorized_skill_scope,
-                "authorized_native_tool_scope": authorized_native_tool_scope,
-                "lease_identity": f"{lease.provider}:{lease.container_name}:{lease.container_id}",
-            },
-        )
-        if lease.provider in REAL_SANDBOX_PROVIDERS and governed_egress_proof is None:
+        governed_egress_proof = None
+        if not trusted_internal:
+            governed_egress_proof = governed_egress_proof_from_labels(
+                lease.provider,
+                lease.labels,
+                signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
+                signing_key_id=getattr(settings, "sandbox_egress_proof_key_id", "current"),
+                expected_binding={
+                    "tenant_id": lease.tenant_id,
+                    "workspace_id": lease.workspace_id,
+                    "user_id": lease.user_id,
+                    "session_id": lease.session_id,
+                    "run_id": lease.run_id,
+                    "attempt_id": request.attempt_id,
+                    "image_subject": image_subject,
+                    "image_digest": image_digest,
+                    "authorized_skill_scope": authorized_skill_scope,
+                    "authorized_native_tool_scope": authorized_native_tool_scope,
+                    "lease_identity": f"{lease.provider}:{lease.container_name}:{lease.container_id}",
+                },
+            )
+        if lease.provider in REAL_SANDBOX_PROVIDERS and governed_egress_proof is None and not trusted_internal:
             raise ValueError("governed_egress_proof_invalid")
-        lease_payload = {
-            "source": "sandbox_runtime",
-            "evidence_class": "runtime_lease_projection",
-            "attempt_id": request.attempt_id,
-            "container_id": runtime_container_id,
-            "container_name": runtime_container_name,
-            "executor_url": runtime_executor_url,
-            "workspace_host_path": lease.workspace_host_path,
-            "workspace_container_path": runtime_workspace_container_path,
-            "labels": {
+        persisted_labels = (
+            persisted_trusted_labels
+            if trusted_internal
+            else {
                 str(key): str(value)
                 for key, value in lease.labels.items()
                 if not str(key).startswith(
@@ -208,8 +232,21 @@ class SandboxRuntime:
                         "ai-platform.governed_egress.",
                     )
                 )
-            },
+            }
+        )
+        lease_payload = {
+            "source": "sandbox_runtime",
+            "evidence_class": "runtime_lease_projection",
+            "attempt_id": request.attempt_id,
+            "container_id": runtime_container_id,
+            "container_name": runtime_container_name,
+            "executor_url": runtime_executor_url,
+            "workspace_host_path": lease.workspace_host_path,
+            "workspace_container_path": runtime_workspace_container_path,
+            "labels": persisted_labels,
         }
+        if trusted_internal:
+            lease_payload["security_profile"] = SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
         if governed_egress_proof is not None:
             lease_payload["governed_egress_proof"] = governed_egress_proof
             for proof_field in (
