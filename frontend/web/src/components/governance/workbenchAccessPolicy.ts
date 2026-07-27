@@ -2,6 +2,7 @@ export type WorkbenchAccessUser = { is_admin?: boolean } | null;
 
 export type WorkbenchAccessKey =
   | "chat"
+  | "agentBuilder"
   | "apps"
   | "skills"
   | "mcp"
@@ -24,6 +25,7 @@ const ADMIN_ONLY_ITEMS = new Set<WorkbenchAccessKey>([
 
 const PATH_ACCESS_KEYS: Array<[RegExp, WorkbenchAccessKey]> = [
   [/^\/chat(?:\/|$)/, "chat"],
+  [/^\/agent-builder(?:\/|$)/, "agentBuilder"],
   [/^\/apps(?:\/|$)/, "apps"],
   [/^\/skills(?:\/|$)/, "skills"],
   [/^\/marketplace(?:\/|$)/, "skills"],
