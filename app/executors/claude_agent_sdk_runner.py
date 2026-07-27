@@ -20,6 +20,7 @@ from app.context_manifest import (
 )
 from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
 from app.control_plane_contracts import sanitize_public_payload
+from app.executors.claude_stream_projection import TrustedInternalClaudeStreamProjector
 from app.file_parser_contracts import ParsedAttachmentContext
 from app.public_context_keys import safe_public_context_pack_version
 from app.required_tool_contract import (
@@ -74,8 +75,6 @@ _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
 _MAX_REPLAY_TEXT_BLOCKS = 32
 _MAX_REPLAY_TEXT_CHARS = 8_192
-_TRUSTED_INTERNAL_RAW_STREAM_TRAILING_CHARS = 512
-_TRUSTED_INTERNAL_RAW_STREAM_MAX_PENDING_CHARS = 4_096
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
@@ -1943,10 +1942,11 @@ async def run_claude_agent_sdk(
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
     received_structured_terminal = False
-    raw_stream_text_index: int | None = None
-    raw_stream_pending_text = ""
-    raw_stream_partial_disabled = False
-    raw_stream_partial_emitted = False
+    stream_projector = (
+        TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload)
+        if trusted_internal_raw_streaming
+        else None
+    )
 
     async def publish_terminal_text(value: str) -> None:
         if on_text is None or not value:
@@ -1955,114 +1955,10 @@ async def run_claude_agent_sdk(
         if isawaitable(callback_result):
             await callback_result
 
-    async def consume_trusted_internal_stream_event(message: object) -> None:
-        """Publish only fail-closed raw text deltas for the trusted-internal beta.
-
-        The SDK exposes raw Anthropic stream events, not a vendor-guaranteed final
-        answer channel.  This intentionally narrow beta projector is therefore
-        limited to sandbox-brokered trusted_internal runs and disables itself on
-        any unsafe text or text-block sequence conflict.
-        """
-
-        nonlocal raw_stream_text_index, raw_stream_pending_text
-        nonlocal raw_stream_partial_disabled, raw_stream_partial_emitted
-
-        def disable_raw_stream_partial() -> None:
-            nonlocal raw_stream_text_index, raw_stream_pending_text, raw_stream_partial_disabled
-            raw_stream_partial_disabled = True
-            raw_stream_pending_text = ""
-            raw_stream_text_index = None
-
-        if raw_stream_partial_disabled:
-            return
-        event = getattr(message, "event", None)
-        if not isinstance(event, dict):
-            disable_raw_stream_partial()
-            return
-        event_type = event.get("type")
-        if event_type == "content_block_start":
-            index = event.get("index")
-            content_block = event.get("content_block")
-            if raw_stream_text_index is not None:
-                disable_raw_stream_partial()
-                return
-            if isinstance(index, bool) or not isinstance(index, int) or not isinstance(content_block, dict):
-                disable_raw_stream_partial()
-                return
-            if content_block.get("type") != "text":
-                return
-            raw_stream_text_index = index
-            return
-        if event_type == "content_block_stop":
-            index = event.get("index")
-            if (
-                isinstance(index, bool)
-                or not isinstance(index, int)
-                or raw_stream_text_index is None
-                or index != raw_stream_text_index
-            ):
-                disable_raw_stream_partial()
-                return
-            sanitized_pending = sanitize_public_payload(raw_stream_pending_text)
-            if not isinstance(sanitized_pending, str) or sanitized_pending != raw_stream_pending_text:
-                disable_raw_stream_partial()
-                return
-            if raw_stream_pending_text:
-                await publish_terminal_text(raw_stream_pending_text)
-                raw_stream_partial_emitted = True
-            raw_stream_pending_text = ""
-            raw_stream_text_index = None
-            return
-        if event_type != "content_block_delta":
-            return
-        index = event.get("index")
-        delta = event.get("delta")
-        if raw_stream_text_index is None:
-            if isinstance(delta, dict) and delta.get("type") != "text_delta":
-                return
-            disable_raw_stream_partial()
-            return
-        if (
-            isinstance(index, bool)
-            or not isinstance(index, int)
-            or index != raw_stream_text_index
-            or not isinstance(delta, dict)
-        ):
-            disable_raw_stream_partial()
-            return
-        if delta.get("type") != "text_delta":
-            disable_raw_stream_partial()
-            return
-        text = delta.get("text")
-        if (
-            not isinstance(text, str)
-            or not text
-            or len(raw_stream_pending_text) + len(text) > _TRUSTED_INTERNAL_RAW_STREAM_MAX_PENDING_CHARS
-        ):
-            disable_raw_stream_partial()
-            return
-        raw_stream_pending_text += text
-        sanitized_pending = sanitize_public_payload(raw_stream_pending_text)
-        if not isinstance(sanitized_pending, str) or sanitized_pending != raw_stream_pending_text:
-            disable_raw_stream_partial()
-            return
-        stable_length = len(raw_stream_pending_text) - _TRUSTED_INTERNAL_RAW_STREAM_TRAILING_CHARS
-        if stable_length <= 0:
-            return
-        stable_text = raw_stream_pending_text[:stable_length]
-        sanitized_stable = sanitize_public_payload(stable_text)
-        if not isinstance(sanitized_stable, str) or sanitized_stable != stable_text:
-            disable_raw_stream_partial()
-            return
-        raw_stream_pending_text = raw_stream_pending_text[stable_length:]
-        await publish_terminal_text(stable_text)
-        raw_stream_partial_emitted = True
-
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, structured_result_text
         nonlocal diagnostic_text_characters, diagnostic_text_overflowed
-        nonlocal raw_stream_text_index, raw_stream_pending_text, raw_stream_partial_disabled
         async for message in query(
             prompt=_sdk_user_prompt_stream(
                 sdk_prompt,
@@ -2071,8 +1967,9 @@ async def run_claude_agent_sdk(
             ),
             options=options,
         ):
-            if trusted_internal_raw_streaming and isinstance(message, StreamEvent):
-                await consume_trusted_internal_stream_event(message)
+            if stream_projector is not None and isinstance(message, StreamEvent):
+                for text in stream_projector.accept(message.event):
+                    await publish_terminal_text(text)
                 continue
             if isinstance(message, AssistantMessage):
                 diagnostic_counters["assistant_messages"] += 1
@@ -2133,11 +2030,8 @@ async def run_claude_agent_sdk(
                 terminal_reason = (
                     str(stop_reason).strip() if isinstance(stop_reason, str) and stop_reason.strip() else None
                 )
-        if trusted_internal_raw_streaming and raw_stream_text_index is not None:
-            # A text block that never closes has no trusted flush boundary.
-            raw_stream_partial_disabled = True
-            raw_stream_pending_text = ""
-            raw_stream_text_index = None
+        if stream_projector is not None:
+            stream_projector.close_unfinished()
         terminal_error = (
             selected_skill_hook_error()
             if received_structured_terminal
@@ -2147,8 +2041,8 @@ async def run_claude_agent_sdk(
             diagnostic_text = "".join(diagnostic_text_blocks)
             if on_text:
                 if (
-                    trusted_internal_raw_streaming
-                    and raw_stream_partial_emitted
+                    stream_projector is not None
+                    and stream_projector.partial_emitted
                 ):
                     # The terminal ResultMessage remains authoritative downstream;
                     # do not replay it through the delta callback after a raw beta delta.
