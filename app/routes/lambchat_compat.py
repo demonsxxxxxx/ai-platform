@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,7 +18,6 @@ from app.auth import (
 )
 from app.control_plane_contracts import (
     EVENT_ENVELOPE_SCHEMA_VERSION,
-    sanitize_public_text,
     standard_trace_id,
 )
 from app.db import transaction
@@ -41,7 +39,12 @@ from app.routes.runs import (
     event_visible_to_principal,
     run_event_response,
 )
-from app.run_projection import public_terminal_detail
+from app.run_projection import (
+    CHAT_PUBLIC_PROJECTION_VERSION,
+    public_chat_answer_text,
+    public_chat_terminal_projection,
+    public_terminal_detail,
+)
 from app.settings import get_settings
 from app.tool_permission_projection import tool_permission_public_event_payload
 
@@ -72,133 +75,17 @@ def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _run_answer(run: dict[str, Any]) -> str:
-    result = run.get("result_json") or {}
-    if isinstance(result, dict):
-        message = result.get("message")
-        if isinstance(message, str) and message.strip():
-            return message
-    if run.get("error_message"):
-        return str(run["error_message"])
-    return ""
-
-
-def _public_run_answer(run: dict[str, Any], principal: AuthPrincipal) -> str:
-    answer = _run_answer(run)
-    if is_ai_admin(principal):
-        return answer
-    return sanitize_public_text(answer)
-
-
-def _public_terminal_text(run: dict[str, Any], principal: AuthPrincipal) -> str:
-    status = _platform_status(str(run.get("status") or ""))
-    answer = _public_run_answer(run, principal)
-    if answer:
-        return answer
-    if status == "succeeded":
-        return "任务完成"
-    if status == "failed":
-        detail = public_terminal_detail(status, run.get("error_code"))
-        return detail["message"] if detail is not None else ""
-    if status == "cancelled":
-        detail = public_terminal_detail(status)
-        return detail["message"] if detail is not None else ""
-    return ""
-
-
-def _chat_identifier_token_pattern(identifier: str) -> re.Pattern[str]:
-    """Match an identifier only outside Unicode word, dash, dot, or colon tokens."""
-    token_character = r"[\w.:\-]"
-    return re.compile(
-        rf"(?<!{token_character}){re.escape(identifier)}(?!{token_character})"
-    )
-
-
-def _sanitize_chat_answer_text(run: dict[str, Any], value: object) -> str:
-    """Remove public-text hazards and publicize identifiers owned by the run."""
-    content = sanitize_public_text(value)
-    if not content:
-        return ""
-    raw_skill_id = str(run.get("skill_id") or "")
-    raw_agent_id = str(run.get("agent_id") or "")
-    skill_capability_id = capability_id_from_skill(raw_skill_id)
-    agent_capability_id = capability_id_from_skill(None, raw_agent_id)
-    run_capability_id = skill_capability_id or agent_capability_id
-    public_agent_id = public_agent_id_for_projection(raw_agent_id, raw_skill_id)
-    identifiers = (
-        (raw_skill_id, skill_capability_id),
-        (raw_agent_id, agent_capability_id),
-    )
-    matched_identifiers = []
-    for identifier, identifier_capability_id in identifiers:
-        if not identifier:
-            continue
-        token_pattern = _chat_identifier_token_pattern(identifier)
-        if token_pattern.search(content):
-            matched_identifiers.append(
-                (identifier, identifier_capability_id, token_pattern)
-            )
-    if (
-        matched_identifiers
-        and raw_skill_id
-        and raw_agent_id
-        and skill_capability_id != agent_capability_id
-    ):
-        return ""
-    for identifier, identifier_capability_id, token_pattern in matched_identifiers:
-        if (
-            not run_capability_id
-            or identifier_capability_id != run_capability_id
-            or not public_agent_id
-        ):
-            return ""
-        if public_agent_id != identifier:
-            content = token_pattern.sub(public_agent_id, content)
-    content = sanitize_public_text(content)
-    return content if content.strip() else ""
-
-
 def _terminal_final_payload(
     run: dict[str, Any],
 ) -> tuple[str, dict[str, str], str] | None:
-    """Return the safe final user-facing payload that precedes terminal replay."""
-    status = _platform_status(str(run.get("status") or ""))
-    if status == "succeeded":
-        canonical_answer = _sanitize_chat_answer_text(run, _run_answer(run)) or "任务完成"
-        return (
-            "message:chunk",
-            {
-                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                "projection_kind": "assistant_final",
-                "content": canonical_answer,
-            },
-            "info",
-        )
-    if status == "failed":
-        detail = public_terminal_detail(status, run.get("error_code"))
-        if detail is None:
-            return None
-        return (
-            "final_detail",
-            {
-                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                **detail,
-            },
-            "error",
-        )
-    if status == "cancelled":
-        detail = public_terminal_detail(status)
-        if detail is None:
-            return None
-        return (
-            "final_detail",
-            {
-                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                **detail,
-            },
-            "info",
-        )
-    return None
+    """Adapt the authoritative terminal projection to the compatibility wire."""
+    projection = public_chat_terminal_projection(run)
+    if projection is None:
+        return None
+    payload = projection["payload"]
+    if not isinstance(payload, dict):
+        return None
+    return str(projection["event_type"]), payload, str(projection["severity"])
 
 
 @dataclass(frozen=True)
@@ -212,7 +99,6 @@ class _CompatibilityWireEvent:
     terminal: bool = False
 
 
-CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
 CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
 
 @dataclass(frozen=True)
@@ -418,7 +304,7 @@ def _strict_typed_chat_event_product(
             or not isinstance(raw_payload.get("delta"), str)
         ):
             return None
-        content = _sanitize_chat_answer_text(run, raw_payload["delta"])
+        content = public_chat_answer_text(run, raw_payload["delta"])
         if not content:
             return None
         return _StrictChatEventProduct(
@@ -567,10 +453,13 @@ def _public_run_event_envelope(
     message = presentation.message
     stage = presentation.stage
     if raw_event_type == "error":
-        terminal_detail = public_terminal_detail("failed", event.get("error_code"))
-        if terminal_detail is not None:
-            message = terminal_detail["message"]
-            payload = {"detail_code": terminal_detail["detail_code"]}
+        terminal = public_chat_terminal_projection(
+            {"status": "failed", "error_code": event.get("error_code")}
+        )
+        if terminal is not None:
+            message = str(terminal["message"])
+            terminal_payload = terminal["event_payload"]
+            payload = dict(terminal_payload) if isinstance(terminal_payload, dict) else {}
     return {
         "id": str(projected["id"]),
         "schema_version": str(projected["schema_version"]),
@@ -892,11 +781,10 @@ def _compatibility_events_for_run(
 
 
 def _public_error_text(run: dict[str, Any], _principal: AuthPrincipal) -> str:
-    status = _platform_status(str(run.get("status") or ""))
-    if status != "failed":
+    if _platform_status(str(run.get("status") or "")) != "failed":
         return ""
-    detail = public_terminal_detail(status, run.get("error_code"))
-    return detail["message"] if detail is not None else ""
+    projection = public_chat_terminal_projection(run)
+    return str(projection["message"]) if projection is not None else ""
 
 
 def _platform_status(status: str) -> str:

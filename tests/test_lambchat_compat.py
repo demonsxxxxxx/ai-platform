@@ -234,3 +234,27 @@ def test_strict_execution_timeline_replaces_legacy_capability_rows():
     assert "private-call-id" not in rendered
     assert "private legacy message" not in rendered
     assert "private projector message" not in rendered
+
+
+def test_terminal_final_payload_only_adapts_projection_authority(monkeypatch):
+    projection = {
+        "event_type": "final_detail",
+        "payload": {
+            "projection_version": "authority-version",
+            "detail_kind": "failed",
+            "detail_code": "authority-code",
+            "message": "authority message",
+        },
+        "message": "authority message",
+        "event_payload": {"detail_code": "authority-code"},
+        "severity": "error",
+    }
+    monkeypatch.setattr(
+        lambchat_compat,
+        "public_chat_terminal_projection",
+        lambda _run: projection,
+    )
+
+    assert lambchat_compat._terminal_final_payload(
+        {"id": "run-a", "status": "failed", "error_code": "ignored"}
+    ) == ("final_detail", projection["payload"], "error")
