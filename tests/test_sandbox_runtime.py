@@ -137,6 +137,172 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
 
 
 @pytest.mark.asyncio
+async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and_before_stop(tmp_path, monkeypatch):
+    steps: list[str] = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class RecordingProvider(FakeContainerProvider):
+        async def create_or_reuse(self, runtime_request, workspace):
+            steps.append("create")
+            return await super().create_or_reuse(runtime_request, workspace)
+
+        async def stage_workspace(self, lease, runtime_request, workspace):
+            steps.append("stage")
+
+        async def validate_for_dispatch(self, lease, runtime_request, workspace):
+            steps.append("validate")
+
+        async def collect_workspace(self, lease, runtime_request, workspace):
+            steps.append("collect")
+
+        async def stop(self, lease, *, reason):
+            steps.append("stop")
+            return await super().stop(lease, reason=reason)
+
+    async def execute(*_args, **_kwargs):
+        steps.append("dispatch")
+        return {"status": "completed", "session_id": "session-a", "run_id": "run-a"}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path.parent / "r",
+        provider=RecordingProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: steps.append("record") or "lease-a",
+        release_lease=lambda *_args: steps.append("release"),
+    )
+
+    await runtime.submit(
+        request(
+            tenant_id="t",
+            workspace_id="w",
+            user_id="u",
+            session_id="s",
+            run_id="r",
+            attempt_id="a",
+        )
+    )
+
+    assert steps == ["create", "record", "stage", "validate", "dispatch", "collect", "stop", "release"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_phase", ["stage", "collect"])
+async def test_runtime_workspace_transfer_failure_is_terminal_and_cleans_up(tmp_path, monkeypatch, failure_phase):
+    calls: list[str] = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class FailingTransferProvider(FakeContainerProvider):
+        async def stage_workspace(self, lease, runtime_request, workspace):
+            calls.append("stage")
+            if failure_phase == "stage":
+                raise RuntimeError("stage failed")
+
+        async def collect_workspace(self, lease, runtime_request, workspace):
+            calls.append("collect")
+            if failure_phase == "collect":
+                raise RuntimeError("collect failed")
+
+        async def stop(self, lease, *, reason):
+            calls.append(reason)
+            return await super().stop(lease, reason=reason)
+
+    async def execute(*_args, **_kwargs):
+        calls.append("dispatch")
+        return {"status": "completed", "session_id": "s", "run_id": "r"}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path.parent / f"x-{failure_phase}",
+        provider=FailingTransferProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: calls.append("record") or "lease-a",
+        release_lease=lambda *_args: calls.append("release"),
+    )
+
+    with pytest.raises(RuntimeError, match=failure_phase):
+        await runtime.submit(
+            request(
+                tenant_id="t",
+                workspace_id="w",
+                user_id="u",
+                session_id="s",
+                run_id="r",
+                attempt_id=f"a-{failure_phase}",
+                sandbox_mode="persistent",
+            )
+        )
+
+    if failure_phase == "stage":
+        assert calls == ["record", "stage", "workspace_stage_failed", "release"]
+    else:
+        assert calls == ["record", "stage", "dispatch", "collect", "workspace_collect_failed", "release"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_and_execution_owner_elect_one_stop_terminator(tmp_path, monkeypatch):
+    started = asyncio.Event()
+    stop_calls: list[str] = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class SlowStopProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason):
+            stop_calls.append(reason)
+            await asyncio.sleep(0.01)
+            return await super().stop(lease, reason=reason)
+
+    async def execute(*_args, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path.parent / "owner",
+        provider=SlowStopProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: "lease-a",
+        release_lease=lambda *_args: None,
+    )
+    owner = RunExecutionOwner("r")
+    owner.start(
+        runtime.submit(
+            request(
+                tenant_id="t",
+                workspace_id="w",
+                user_id="u",
+                session_id="s",
+                run_id="r",
+                attempt_id="a-owner",
+                sandbox_mode="persistent",
+            ),
+            execution_owner=owner,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    first, second = await asyncio.gather(
+        owner.stop(reason="user_cancel", timeout_seconds=1.0),
+        owner.stop(reason="duplicate_cancel", timeout_seconds=1.0),
+    )
+
+    assert first.quiescent is True
+    assert second.quiescent is True
+    assert stop_calls == ["user_cancel"]
+
+
+@pytest.mark.asyncio
 async def test_runtime_persists_one_private_safe_readiness_event_before_rethrow(tmp_path, monkeypatch):
     from app.public_execution import public_execution_event_from_row
 
@@ -733,6 +899,12 @@ async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tm
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
         async def validate_for_dispatch(self, lease, runtime_request, leased_workspace):
+            return None
+
+        async def stage_workspace(self, lease, runtime_request, leased_workspace):
+            return None
+
+        async def collect_workspace(self, lease, runtime_request, leased_workspace):
             return None
 
     async def execute(executor_url, task_request):
