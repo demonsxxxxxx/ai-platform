@@ -22,6 +22,7 @@ from typing import Any, NamedTuple
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, status
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.context_retrieval import ContextRetrievalDenied
@@ -171,6 +172,41 @@ _SDK_PRESERVED_FAILURE_CODES = frozenset(
     }
 )
 _SDK_TURN_LIMIT_ERROR_PATTERN = re.compile(r"Reached maximum number of turns \(\d+\)")
+_MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS = 16_000
+
+
+class _ServerOwnedSystemPromptConfig(BaseModel):
+    """Validate the one private executor config value allowed to reach the SDK system channel."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    system_prompt: str = Field(max_length=_MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+
+
+class _ServerOwnedSystemPromptError(ValueError):
+    """Classify a malformed private system prompt without retaining its content."""
+
+    def __init__(self, error_code: str) -> None:
+        super().__init__(error_code)
+        self.error_code = error_code
+
+
+def _server_owned_system_prompt(request: ExecutorTaskRequest) -> str | None:
+    """Return only a strictly validated private system prompt from trusted task config."""
+
+    if "system_prompt" not in request.config:
+        return None
+    try:
+        return _ServerOwnedSystemPromptConfig.model_validate(
+            {"system_prompt": request.config["system_prompt"]}
+        ).system_prompt
+    except ValidationError as exc:
+        error_code = (
+            "executor_system_prompt_too_large"
+            if any(item.get("type") == "string_too_long" for item in exc.errors())
+            else "executor_system_prompt_invalid"
+        )
+        raise _ServerOwnedSystemPromptError(error_code) from exc
 
 
 def _public_capability_label(
@@ -1117,6 +1153,17 @@ async def _default_executor_runner(
     *,
     callback_sender: CallbackSender = _default_callback_sender,
 ) -> dict[str, Any]:
+    try:
+        system_prompt = _server_owned_system_prompt(request)
+    except _ServerOwnedSystemPromptError as exc:
+        return {
+            "status": "failed",
+            "message": "Executor system prompt configuration is invalid",
+            "error_code": exc.error_code,
+            "error_message": "Executor system prompt configuration is invalid",
+            "sdk_used": False,
+            "executor_mode": "system_prompt_config_invalid",
+        }
     context_retrieval, context_retrieval_identity, context_retrieval_error = _context_retrieval_for_request(request)
     if context_retrieval_error:
         return {
@@ -1254,22 +1301,27 @@ async def _default_executor_runner(
             invocation_states[invocation_key] = "rejected"
 
     try:
+        sdk_kwargs = {
+            "prompt": request.prompt,
+            "cwd": workspace_root,
+            "skill_id": skill_ids[0],
+            "session_id": request.sdk_session_id,
+            "model_id": model_id,
+            "skills": skill_ids,
+            "context_retrieval": context_retrieval,
+            "context_retrieval_identity": context_retrieval_identity,
+            "on_text": on_text,
+            "on_skill_use": on_skill_use,
+            "on_capability_evidence": on_capability_evidence,
+            "on_tool_lifecycle": on_tool_lifecycle,
+            "tool_policy_subjects": _task_tool_policy_subjects(request),
+            "execution_policy": "sandbox_brokered",
+            "attachment_contexts": attachment_contexts,
+        }
+        if system_prompt is not None:
+            sdk_kwargs["system_prompt"] = system_prompt
         sdk_result = await run_claude_agent_sdk(
-            prompt=request.prompt,
-            cwd=workspace_root,
-            skill_id=skill_ids[0],
-            session_id=request.sdk_session_id,
-            model_id=model_id,
-            skills=skill_ids,
-            context_retrieval=context_retrieval,
-            context_retrieval_identity=context_retrieval_identity,
-            on_text=on_text,
-            on_skill_use=on_skill_use,
-            on_capability_evidence=on_capability_evidence,
-            on_tool_lifecycle=on_tool_lifecycle,
-            tool_policy_subjects=_task_tool_policy_subjects(request),
-            execution_policy="sandbox_brokered",
-            attachment_contexts=attachment_contexts,
+            **sdk_kwargs,
         )
     except ClaudeAgentSdkNotAvailable:
         return {
