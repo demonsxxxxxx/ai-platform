@@ -1,7 +1,7 @@
 import asyncio
 import inspect
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -17,6 +17,8 @@ from app.executors.base import RunExecutionOwner
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import (
     ContainerProvider,
+    ExecutorHealthTimeoutError,
+    ExecutorReadinessEvidence,
     create_container_provider,
     executor_callback_target,
 )
@@ -280,6 +282,25 @@ class SandboxRuntime:
             CallbackTokenBinding(run_id=lease.run_id, attempt_id=attempt_id)
         )
 
+    @staticmethod
+    def _readiness_failure_event(
+        request: SandboxRuntimeRequest,
+        evidence: ExecutorReadinessEvidence,
+    ) -> AgentEvent:
+        return AgentEvent(
+            type="runtime_container_started",
+            message="Sandbox executor readiness failed",
+            admin_only=True,
+            payload={
+                "schema_version": "ai-platform.executor-readiness-evidence.v1",
+                "source": "sandbox_runtime",
+                "evidence_class": "executor_readiness_failure",
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+                **asdict(evidence),
+            },
+        )
+
     async def submit(
         self,
         request: SandboxRuntimeRequest,
@@ -291,7 +312,13 @@ class SandboxRuntime:
         trusted_callback_target = self._trusted_callback_target(configured_provider)
         workspace = self.workspace_manager.prepare(request)
         lease_started_at = time.monotonic()
-        lease = await self.provider.create_or_reuse(request, workspace)
+        try:
+            lease = await self.provider.create_or_reuse(request, workspace)
+        except ExecutorHealthTimeoutError as exc:
+            evidence = exc.readiness_evidence
+            if isinstance(evidence, ExecutorReadinessEvidence):
+                await self._emit(event_sink, self._readiness_failure_event(request, evidence))
+            raise
         if lease.provider != configured_provider:
             trusted_callback_target = self._trusted_callback_target(lease.provider)
         lease_acquire_latency_ms = self._elapsed_ms(lease_started_at)

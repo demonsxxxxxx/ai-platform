@@ -6,6 +6,7 @@ import hmac
 import inspect
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -16,7 +17,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -116,9 +117,58 @@ class ContainerCleanupFailedError(SandboxRuntimeError):
         super().__init__("container_cleanup_failed", message)
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutorReadinessEvidence:
+    """Bounded non-sensitive evidence retained for one failed executor readiness phase."""
+
+    readiness_phase: Literal["publish_wait", "health_probe"]
+    container_state: Literal["created", "running", "exited", "dead", "unknown"]
+    exit_code: int | None
+    oom_killed: bool | None
+    published_port_observed: bool
+    health_outcome: Literal[
+        "not_attempted",
+        "healthy",
+        "unhealthy",
+        "timeout",
+        "transport_error",
+    ]
+    elapsed_ms: int
+
+    def __post_init__(self) -> None:
+        if self.readiness_phase not in {"publish_wait", "health_probe"}:
+            raise ValueError("invalid readiness phase")
+        if self.container_state not in {"created", "running", "exited", "dead", "unknown"}:
+            raise ValueError("invalid container state")
+        if self.exit_code is not None and (
+            type(self.exit_code) is not int or not -(2**31) <= self.exit_code <= 2**31 - 1
+        ):
+            raise ValueError("invalid exit code")
+        if self.oom_killed is not None and type(self.oom_killed) is not bool:
+            raise ValueError("invalid OOM state")
+        if type(self.published_port_observed) is not bool:
+            raise ValueError("invalid published-port observation")
+        if self.health_outcome not in {
+            "not_attempted",
+            "healthy",
+            "unhealthy",
+            "timeout",
+            "transport_error",
+        }:
+            raise ValueError("invalid health outcome")
+        if type(self.elapsed_ms) is not int or not 0 <= self.elapsed_ms <= 2**31 - 1:
+            raise ValueError("invalid readiness elapsed time")
+
+
 class ExecutorHealthTimeoutError(SandboxRuntimeError):
-    def __init__(self, message: str = "Executor health timeout") -> None:
+    def __init__(
+        self,
+        message: str = "Executor health timeout",
+        *,
+        readiness_evidence: ExecutorReadinessEvidence | None = None,
+    ) -> None:
         super().__init__("executor_health_timeout", message)
+        self.readiness_evidence = readiness_evidence
 
 
 class ContainerProvider(Protocol):
@@ -2856,6 +2906,85 @@ class DockerContainerProvider:
     def _elapsed_ms(self, started_at: float) -> int:
         return max(int(round((self._monotonic() - started_at) * 1000)), 0)
 
+    def _readiness_evidence(
+        self,
+        container: Any,
+        *,
+        readiness_phase: Literal["publish_wait", "health_probe"],
+        published_port_observed: bool,
+        health_outcome: Literal[
+            "not_attempted",
+            "healthy",
+            "unhealthy",
+            "timeout",
+            "transport_error",
+        ],
+        started_at: float,
+        clock: Callable[[], float] | None = None,
+    ) -> ExecutorReadinessEvidence:
+        """Normalize one pre-cleanup Docker inspection into the safe readiness contract."""
+
+        try:
+            reload_container = getattr(container, "reload", None)
+            if callable(reload_container):
+                reload_container()
+        except Exception:
+            pass
+        try:
+            attrs = getattr(container, "attrs", None)
+        except Exception:
+            attrs = None
+        state_attrs = attrs.get("State") if isinstance(attrs, dict) else None
+        if isinstance(state_attrs, dict) and "Status" in state_attrs:
+            raw_state = state_attrs.get("Status")
+        else:
+            try:
+                raw_state = getattr(container, "status", None)
+            except Exception:
+                raw_state = None
+        normalized_state = raw_state.strip().lower() if isinstance(raw_state, str) else "unknown"
+        if normalized_state not in {"created", "running", "exited", "dead"}:
+            normalized_state = "unknown"
+
+        exit_code: int | None = None
+        oom_killed: bool | None = None
+        if isinstance(state_attrs, dict) and normalized_state in {"exited", "dead"}:
+            raw_exit_code = state_attrs.get("ExitCode")
+            if type(raw_exit_code) is int and -(2**31) <= raw_exit_code <= 2**31 - 1:
+                exit_code = raw_exit_code
+            raw_oom_killed = state_attrs.get("OOMKilled")
+            if type(raw_oom_killed) is bool:
+                oom_killed = raw_oom_killed
+
+        try:
+            elapsed_seconds = (clock or self._monotonic)() - started_at
+            elapsed_ms = int(round(elapsed_seconds * 1000)) if math.isfinite(elapsed_seconds) else 0
+        except (ArithmeticError, TypeError, ValueError):
+            elapsed_ms = 0
+        return ExecutorReadinessEvidence(
+            readiness_phase=readiness_phase,
+            container_state=normalized_state,
+            exit_code=exit_code,
+            oom_killed=oom_killed,
+            published_port_observed=published_port_observed,
+            health_outcome=health_outcome,
+            elapsed_ms=min(max(elapsed_ms, 0), 2**31 - 1),
+        )
+
+    @staticmethod
+    def _health_failure_outcome(exc: BaseException) -> Literal["timeout", "transport_error"]:
+        return "timeout" if isinstance(exc, (TimeoutError, httpx.TimeoutException)) else "transport_error"
+
+    @staticmethod
+    def _published_port_observed(
+        container: Any,
+        endpoint: _ExecutorPublishedEndpoint,
+    ) -> bool:
+        try:
+            return bool(_published_executor_url_from_container(container, endpoint))
+        except Exception:
+            return False
+
     def _cleanup_container_or_track(self, container: Any, lease: ContainerLease) -> None:
         if _stop_and_remove_container(container):
             return
@@ -3784,6 +3913,7 @@ class DockerContainerProvider:
                 raise cleanup_exc
             raise GovernedEgressAdmissionError()
 
+        publish_wait_started_at = time.monotonic()
         try:
             executor_url = await self._wait_for_executor_url(
                 container,
@@ -3798,11 +3928,19 @@ class DockerContainerProvider:
                 raise cleanup_exc from exc
             raise
         except ExecutorHealthTimeoutError as exc:
+            evidence = self._readiness_evidence(
+                container,
+                readiness_phase="publish_wait",
+                published_port_observed=self._published_port_observed(container, endpoint),
+                health_outcome="not_attempted",
+                started_at=publish_wait_started_at,
+                clock=time.monotonic,
+            )
             try:
                 self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
-            raise
+            raise ExecutorHealthTimeoutError(readiness_evidence=evidence) from exc
         except Exception as exc:
             try:
                 self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
@@ -3833,15 +3971,29 @@ class DockerContainerProvider:
                 raise cleanup_exc from exc
             raise
         except Exception as exc:
+            evidence = self._readiness_evidence(
+                container,
+                readiness_phase="health_probe",
+                published_port_observed=True,
+                health_outcome=self._health_failure_outcome(exc),
+                started_at=healthcheck_started_at,
+            )
             try:
                 self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
-            raise ExecutorHealthTimeoutError() from exc
+            raise ExecutorHealthTimeoutError(readiness_evidence=evidence) from exc
         sandbox_healthcheck_latency_ms = self._elapsed_ms(healthcheck_started_at)
         if not healthy:
+            evidence = self._readiness_evidence(
+                container,
+                readiness_phase="health_probe",
+                published_port_observed=True,
+                health_outcome="unhealthy",
+                started_at=healthcheck_started_at,
+            )
             self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            raise ExecutorHealthTimeoutError()
+            raise ExecutorHealthTimeoutError(readiness_evidence=evidence)
         if _container_config_user(container) != workspace_user:
             self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             raise ContainerStartFailedError("executor Config.User mismatch")

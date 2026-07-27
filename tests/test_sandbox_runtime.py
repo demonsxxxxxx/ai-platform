@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.file_parser_contracts import build_attachment_preprocessing_contract
+from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import FakeContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, SandboxRuntimeRequest, StopResult
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
@@ -132,6 +133,137 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert lease_calls[0][2].run_id == "run-a"
     assert lease_calls[1][0] == "release"
     assert lease_calls[1][2] == "dispatch_completed"
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_one_private_safe_readiness_event_before_rethrow(tmp_path, monkeypatch):
+    from app.public_execution import public_execution_event_from_row
+
+    class StubSettings:
+        sandbox_container_provider = "docker"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    raw_exception = "private health failure at C:\\runtime\\secret with token-private"
+    evidence = container_provider.ExecutorReadinessEvidence(
+        readiness_phase="health_probe",
+        container_state="exited",
+        exit_code=137,
+        oom_killed=True,
+        published_port_observed=True,
+        health_outcome="timeout",
+        elapsed_ms=321,
+    )
+
+    class ReadinessFailedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            raise container_provider.ExecutorHealthTimeoutError(
+                raw_exception,
+                readiness_evidence=evidence,
+            )
+
+    async def execute(*_args, **_kwargs):
+        raise AssertionError("executor dispatch must not occur after readiness failure")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    events = []
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=ReadinessFailedProvider(),
+        execute_task=execute,
+        record_lease=lambda *_args: (_ for _ in ()).throw(AssertionError("lease must not be persisted")),
+    )
+
+    with pytest.raises(container_provider.ExecutorHealthTimeoutError) as exc_info:
+        await runtime.submit(request(), event_sink=events.append)
+
+    assert exc_info.value.readiness_evidence is evidence
+    assert len(events) == 1
+    event = events[0]
+    assert event.type == "runtime_container_started"
+    assert event.admin_only is True
+    assert event.message == "Sandbox executor readiness failed"
+    assert event.payload == {
+        "schema_version": "ai-platform.executor-readiness-evidence.v1",
+        "source": "sandbox_runtime",
+        "evidence_class": "executor_readiness_failure",
+        "run_id": "run-a",
+        "attempt_id": "qat_test-runtime-attempt",
+        "readiness_phase": "health_probe",
+        "container_state": "exited",
+        "exit_code": 137,
+        "oom_killed": True,
+        "published_port_observed": True,
+        "health_outcome": "timeout",
+        "elapsed_ms": 321,
+    }
+    assert set(event.payload) == {
+        "schema_version",
+        "source",
+        "evidence_class",
+        "run_id",
+        "attempt_id",
+        "readiness_phase",
+        "container_state",
+        "exit_code",
+        "oom_killed",
+        "published_port_observed",
+        "health_outcome",
+        "elapsed_ms",
+    }
+    serialized = repr(event)
+    for prohibited in (
+        raw_exception,
+        "C:\\runtime\\secret",
+        "token-private",
+        "hello",
+        "stdout",
+        "stderr",
+        "command",
+        "args",
+        "image",
+        "endpoint",
+        "container_id",
+        "network_id",
+        "private labels",
+    ):
+        assert prohibited not in serialized
+    assert public_execution_event_from_row(
+        request().run_id,
+        {
+            "id": "event-private-readiness",
+            "sequence": 1,
+            "event_type": event.type,
+            "payload_json": event.payload,
+            "created_at": None,
+        },
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_mislabel_callback_or_proof_rejection_as_readiness(tmp_path, monkeypatch):
+    class StubSettings:
+        sandbox_container_provider = "docker"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class ProofRejectedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            raise container_provider.GovernedEgressAdmissionError()
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    events = []
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=ProofRejectedProvider(),
+        execute_task=lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+        record_lease=lambda *_args: (_ for _ in ()).throw(AssertionError("lease must not be persisted")),
+    )
+
+    with pytest.raises(container_provider.GovernedEgressAdmissionError):
+        await runtime.submit(request(), event_sink=events.append)
+
+    assert events == []
 
 
 @pytest.mark.asyncio
