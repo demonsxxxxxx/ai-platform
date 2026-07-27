@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-
 PROOF_KEY = "proof-key-for-tests-with-enough-independent-entropy-2026"
 
 
@@ -38,6 +37,7 @@ def test_unknown_claude_tier_fails_closed_without_local_execution():
         executor_type="claude-agent-worker",
         execution_mode="",
         execution_tier="unknown_writing_tier",
+        mcp_requires_sandbox=False,
     )
 
     assert decision.requires_real_sandbox is True
@@ -45,13 +45,15 @@ def test_unknown_claude_tier_fails_closed_without_local_execution():
     assert decision.local_sdk_allowed is False
 
 
-def test_non_parked_multi_agent_fails_closed():
+@pytest.mark.parametrize("mcp_requires_sandbox", [False, True])
+def test_non_parked_multi_agent_fails_closed(mcp_requires_sandbox):
     module = _module()
 
     decision = module.decide_execution_boundary(
         executor_type="claude-agent-worker",
         execution_mode="multi_agent",
         execution_tier="heavy_sandbox",
+        mcp_requires_sandbox=mcp_requires_sandbox,
     )
 
     assert decision.fail_closed is True
@@ -65,11 +67,60 @@ def test_non_claude_adapter_keeps_adapter_managed_execution():
         executor_type="ragflow",
         execution_mode="",
         execution_tier="sdk_only_writing",
+        mcp_requires_sandbox=False,
     )
 
     assert decision.requires_real_sandbox is False
     assert decision.permission_policy == "adapter_managed"
     assert decision.fail_closed is False
+
+
+def test_mcp_requirement_forces_real_sandbox_without_synthetic_execution_tier():
+    module = _module()
+
+    decision = module.decide_execution_boundary(
+        executor_type="claude-agent-worker",
+        execution_mode="",
+        execution_tier="",
+        mcp_requires_sandbox=True,
+    )
+
+    assert decision.requires_real_sandbox is True
+    assert decision.permission_policy == "sandbox_brokered"
+    assert decision.fail_closed is False
+    assert decision.reason == "mcp_execution_requires_real_sandbox"
+
+
+def test_mcp_requirement_preserves_non_claude_worker_sandbox_override():
+    module = _module()
+
+    decision = module.decide_execution_boundary(
+        executor_type="ragflow",
+        execution_mode="",
+        execution_tier="",
+        mcp_requires_sandbox=True,
+    )
+
+    assert decision.requires_real_sandbox is True
+    assert decision.permission_policy == "sandbox_brokered"
+    assert decision.fail_closed is False
+    assert decision.reason == "mcp_execution_requires_real_sandbox"
+
+
+def test_invalid_mcp_requirement_fails_closed_without_local_execution():
+    module = _module()
+
+    decision = module.decide_execution_boundary(
+        executor_type="ragflow",
+        execution_mode="",
+        execution_tier="",
+        mcp_requires_sandbox=None,
+    )
+
+    assert decision.requires_real_sandbox is True
+    assert decision.fail_closed is True
+    assert decision.local_sdk_allowed is False
+    assert decision.reason == "invalid_mcp_sandbox_requirement"
 
 
 def _real_runtime_lease(module, *, signing_key=PROOF_KEY, key_id="current", **overrides):

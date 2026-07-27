@@ -4,12 +4,12 @@ import hashlib
 import hmac
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping
+from typing import Any
 
 from app.settings import get_settings
-
 
 CLAUDE_WORKER_EXECUTOR = "claude-agent-worker"
 REAL_SANDBOX_PROVIDERS = frozenset({"docker", "opensandbox"})
@@ -96,9 +96,24 @@ def decide_execution_boundary(
     executor_type: str,
     execution_mode: str,
     execution_tier: str,
+    mcp_requires_sandbox: bool = False,
 ) -> ExecutionBoundaryDecision:
-    """Resolve one execution authority decision without inspecting user input modes."""
-    if executor_type != CLAUDE_WORKER_EXECUTOR:
+    """Resolve one execution authority decision from normalized admission facts."""
+    real_sandbox = {
+        "requires_real_sandbox": True,
+        "accepted_providers": REAL_SANDBOX_PROVIDERS,
+        "permission_policy": SANDBOX_BROKERED_PERMISSION_POLICY,
+        "evidence_source": REAL_SANDBOX_EVIDENCE_SOURCE,
+        "evidence_class": REAL_SANDBOX_EVIDENCE_CLASS,
+        "local_sdk_allowed": False,
+    }
+    if not isinstance(mcp_requires_sandbox, bool):
+        return ExecutionBoundaryDecision(
+            **real_sandbox,
+            fail_closed=True,
+            reason="invalid_mcp_sandbox_requirement",
+        )
+    if executor_type != CLAUDE_WORKER_EXECUTOR and not mcp_requires_sandbox:
         return ExecutionBoundaryDecision(
             requires_real_sandbox=False,
             accepted_providers=frozenset(),
@@ -110,28 +125,26 @@ def decide_execution_boundary(
             reason="non_claude_adapter",
         )
 
-    common = {
-        "requires_real_sandbox": True,
-        "accepted_providers": REAL_SANDBOX_PROVIDERS,
-        "permission_policy": SANDBOX_BROKERED_PERMISSION_POLICY,
-        "evidence_source": REAL_SANDBOX_EVIDENCE_SOURCE,
-        "evidence_class": REAL_SANDBOX_EVIDENCE_CLASS,
-        "local_sdk_allowed": False,
-    }
-    if execution_mode == "multi_agent":
+    if executor_type == CLAUDE_WORKER_EXECUTOR and execution_mode == "multi_agent":
         return ExecutionBoundaryDecision(
-            **common,
+            **real_sandbox,
             fail_closed=True,
             reason="multi_agent_adapter_execution_disabled",
         )
+    if mcp_requires_sandbox:
+        return ExecutionBoundaryDecision(
+            **real_sandbox,
+            fail_closed=False,
+            reason="mcp_execution_requires_real_sandbox",
+        )
     if execution_tier not in SINGLE_RUN_WRITING_TIERS:
         return ExecutionBoundaryDecision(
-            **common,
+            **real_sandbox,
             fail_closed=True,
             reason="untrusted_claude_execution_tier",
         )
     return ExecutionBoundaryDecision(
-        **common,
+        **real_sandbox,
         fail_closed=False,
         reason="ordinary_claude_writing_requires_real_sandbox",
     )
