@@ -13,6 +13,8 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
+from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
+
 
 OPENSANDBOX_ATTESTATION_CONTRACT_VERSION = "ai-platform.opensandbox.topology-attestation.v1"
 OPENSANDBOX_ATTESTATION_PATH = "/v1/sandboxes/{sandbox_id}/attestation"
@@ -409,9 +411,9 @@ class _OpenSandboxAttestor:
             },
             "security": {
                 "no_new_privileges": True,
-                "user": "1000:1000",
-                "uid": "1000",
-                "gid": "1000",
+                "user": f"{RUNTIME_UID}:{RUNTIME_GID}",
+                "uid": str(RUNTIME_UID),
+                "gid": str(RUNTIME_GID),
             },
             "image": {
                 "subject": image_subject,

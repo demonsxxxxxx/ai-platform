@@ -1,0 +1,7 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-07-28",
+  "owner": "ai-platform-controller",
+  "reason": "OpenSandbox executor identity must be changed atomically in the platform attestation producer and independently deployed gateway verifier",
+  "violations": [{"code":"production_subsystem_count","path":null}]
+}
