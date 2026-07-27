@@ -1987,6 +1987,30 @@ async def run_claude_agent_sdk(
                 return
             raw_stream_text_index = index
             return
+        if event_type == "content_block_stop":
+            index = event.get("index")
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or raw_stream_text_index is None
+                or index != raw_stream_text_index
+            ):
+                raw_stream_partial_disabled = True
+                raw_stream_pending_text = ""
+                raw_stream_text_index = None
+                return
+            sanitized_pending = sanitize_public_payload(raw_stream_pending_text)
+            if not isinstance(sanitized_pending, str) or sanitized_pending != raw_stream_pending_text:
+                raw_stream_partial_disabled = True
+                raw_stream_pending_text = ""
+                raw_stream_text_index = None
+                return
+            if raw_stream_pending_text:
+                await publish_terminal_text(raw_stream_pending_text)
+                raw_stream_partial_emitted = True
+            raw_stream_pending_text = ""
+            raw_stream_text_index = None
+            return
         if event_type != "content_block_delta":
             return
         index = event.get("index")
@@ -2036,6 +2060,7 @@ async def run_claude_agent_sdk(
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, structured_result_text
         nonlocal diagnostic_text_characters, diagnostic_text_overflowed
+        nonlocal raw_stream_text_index, raw_stream_pending_text, raw_stream_partial_disabled
         async for message in query(
             prompt=_sdk_user_prompt_stream(
                 sdk_prompt,
@@ -2106,6 +2131,11 @@ async def run_claude_agent_sdk(
                 terminal_reason = (
                     str(stop_reason).strip() if isinstance(stop_reason, str) and stop_reason.strip() else None
                 )
+        if trusted_internal_raw_streaming and raw_stream_text_index is not None:
+            # A text block that never closes has no trusted flush boundary.
+            raw_stream_partial_disabled = True
+            raw_stream_pending_text = ""
+            raw_stream_text_index = None
         terminal_error = (
             selected_skill_hook_error()
             if received_structured_terminal
@@ -2114,7 +2144,11 @@ async def run_claude_agent_sdk(
         if terminal_error is None and received_structured_terminal:
             diagnostic_text = "".join(diagnostic_text_blocks)
             if on_text:
-                if trusted_internal_raw_streaming and raw_stream_partial_emitted:
+                if (
+                    trusted_internal_raw_streaming
+                    and raw_stream_partial_emitted
+                    and not raw_stream_partial_disabled
+                ):
                     # The terminal ResultMessage remains authoritative downstream;
                     # do not replay it through the delta callback after a raw beta delta.
                     pass

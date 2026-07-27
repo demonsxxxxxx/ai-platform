@@ -484,10 +484,11 @@ async def test_trusted_internal_streams_safe_raw_text_delta_before_result_withou
     captured = {}
     deltas = []
     result_gate = []
-    streamed_text = "Safe public answer. " * 32
+    streamed_text = "Short safe public answer."
     events = [
         {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
         {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": streamed_text}},
+        {"type": "content_block_stop", "index": 0},
     ]
     monkeypatch.setitem(
         sys.modules,
@@ -505,8 +506,8 @@ async def test_trusted_internal_streams_safe_raw_text_delta_before_result_withou
     )
 
     assert captured["include_partial_messages"] is True
-    assert result_gate == deltas
-    assert deltas
+    assert result_gate == [streamed_text]
+    assert deltas == [streamed_text]
     assert "terminal final" not in deltas
     assert result.message == "terminal final"
 
@@ -553,6 +554,20 @@ async def test_trusted_internal_stream_ignores_tool_thinking_and_json_events(mon
         [
             {"type": "content_block_start", "index": "0", "content_block": {"type": "text"}},
         ],
+        [
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "short answer"}},
+        ],
+        [
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "short answer"}},
+            {"type": "content_block_stop", "index": 1},
+        ],
+        [
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "short answer"}},
+            {"type": "content_block_stop", "index": True},
+        ],
     ],
 )
 async def test_trusted_internal_stream_fails_closed_on_sensitive_or_conflicting_raw_events(
@@ -573,6 +588,30 @@ async def test_trusted_internal_stream_fails_closed_on_sensitive_or_conflicting_
 
     assert result.message == "terminal final"
     assert deltas == ["terminal final"]
+
+
+@pytest.mark.asyncio
+async def test_trusted_internal_stream_duplicate_stop_falls_back_to_terminal_result(monkeypatch, tmp_path):
+    captured = {}
+    deltas = []
+    events = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "short answer"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_stop", "index": 0},
+    ]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+
+    await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert deltas == ["short answer", "terminal final"]
 
 
 @pytest.mark.asyncio
