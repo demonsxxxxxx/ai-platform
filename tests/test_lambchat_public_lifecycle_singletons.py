@@ -43,15 +43,9 @@ def test_public_lifecycle_singletons_match_builder_sse_reconnect_and_exact_histo
         }
 
     run_events = [
-        event("evt-intent-route", 1, "intent_detected", {"visible_to_user": True}),
-        event("evt-queued", 2, "queued", {"visible_to_user": True}),
-        event("evt-skill-route", 3, "skill_selected", {"visible_to_user": True}),
-        event("evt-worker-started", 4, "worker_started", {"visible_to_user": True}),
-        event("evt-intent-executor", 5, "intent_detected", {"visible_to_user": True}),
         event("evt-skill-executor", 6, "skill_selected", {"visible_to_user": True}),
-        event("evt-executor-started", 7, "run_started", {"visible_to_user": True}),
         event("evt-heartbeat", 8, "run_started", {"heartbeat": True, "visible_to_user": True}),
-        event("evt-control", 9, "cancel_requested", {"visible_to_user": True}),
+        event("evt-intent-executor", 5, "intent_detected", {"visible_to_user": True}),
         event(
             "evt-hidden",
             10,
@@ -60,6 +54,12 @@ def test_public_lifecycle_singletons_match_builder_sse_reconnect_and_exact_histo
             message="must-not-leak-private-marker",
             visible_to_user=False,
         ),
+        event("evt-worker-started", 4, "worker_started", {"visible_to_user": True}),
+        event("evt-control", 9, "cancel_requested", {"visible_to_user": True}),
+        event("evt-intent-route", 1, "intent_detected", {"visible_to_user": True}),
+        event("evt-executor-started", 7, "run_started", {"visible_to_user": True}),
+        event("evt-queued", 2, "queued", {"visible_to_user": True}),
+        event("evt-skill-route", 3, "skill_selected", {"visible_to_user": True}),
     ]
     expected_lifecycle = [
         ("intent_detected", "evt-intent-route", 1),
