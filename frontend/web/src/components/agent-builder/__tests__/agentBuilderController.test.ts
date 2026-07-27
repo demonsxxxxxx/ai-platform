@@ -78,7 +78,7 @@ test("prepares one authorized submission without persisting local instructions",
     skill_id: "document-review",
     expected_version: "2026.07.27",
   });
-  assert.deepEqual(prepared.submission.agentOptions, { model: "platform/model" });
+  assert.deepEqual(prepared.submission.agentOptions, { model_id: "model-id" });
   assert.deepEqual(prepared.submission.selectedMcpToolIds, [
     "mcp:knowledge:search",
   ]);
@@ -100,7 +100,7 @@ test("submits through the existing Chat seam then holds only observed session an
   assert.deepEqual(calls, [
     [
       "Review the current document",
-      { model: "platform/model" },
+      { model_id: "model-id" },
       undefined,
       { skill_id: "document-review", expected_version: "2026.07.27" },
       ["mcp:knowledge:search"],

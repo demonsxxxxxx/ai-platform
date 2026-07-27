@@ -78,7 +78,8 @@ def _fake_sdk(captured, *, hook_invocations):
             captured.update(kwargs)
 
     async def query(*, prompt, options):
-        del prompt, options
+        del options
+        captured["sdk_user_messages"] = [item async for item in prompt]
         for hook_name, hook_input, tool_call_id in hook_invocations:
             matchers = captured["hooks"][hook_name]
             matcher = (
@@ -98,6 +99,36 @@ def _fake_sdk(captured, *, hook_invocations):
         TextBlock=TextBlock,
         query=query,
     )
+
+
+@pytest.mark.asyncio
+async def test_sdk_profile_system_prompt_never_enters_the_user_message_stream(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[]),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    await run_claude_agent_sdk(
+        prompt="User supplied question",
+        system_prompt="Private profile instruction",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_subject()],
+    )
+
+    assert captured["system_prompt"] == "Private profile instruction"
+    assert captured["sdk_user_messages"] == [
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "User supplied question"},
+            "parent_tool_use_id": None,
+            "session_id": "default",
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -82,7 +82,10 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     )
 
     result = await runtime.submit(
-        request(materialized_file_names=["z.docx", "a.docx"]),
+        request(
+            materialized_file_names=["z.docx", "a.docx"],
+            system_prompt="Private profile instruction",
+        ),
         event_sink=events.append,
     )
 
@@ -127,6 +130,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "tool_policy_subjects": [],
         "input_files": ["file-a"],
         "materialized_file_names": ["z.docx", "a.docx"],
+        "system_prompt": "Private profile instruction",
     }
     assert [event.type for event in events] == ["runtime_container_started"]
     assert lease_calls[0][0] == "record"

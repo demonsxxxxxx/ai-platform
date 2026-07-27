@@ -327,6 +327,7 @@ function AgentBuilderWorkbenchContent({
     draft.selectedSkill,
   );
   const saveDraft = useCallback(async () => {
+    if (!canManageProfiles) return;
     if (!canPersist || !draft.model || !draft.selectedSkill) {
       setPersistenceState({ busy: false, error: "Choose a name, instructions, model, and Skill before saving." });
       return;
@@ -344,6 +345,7 @@ function AgentBuilderWorkbenchContent({
             expected_version: draft.selectedSkill.expected_version,
           },
           mcp_tool_ids: draft.selectedMcpToolIds,
+          expected_draft_revision: draft.draftRevision ?? 0,
         },
         draft.agentId,
       );
@@ -355,8 +357,9 @@ function AgentBuilderWorkbenchContent({
         error: error instanceof Error ? error.message : "Unable to save the Agent draft.",
       });
     }
-  }, [activeDraft.name, canPersist, draft, markProfileDraft]);
+  }, [activeDraft.name, canManageProfiles, canPersist, draft, markProfileDraft]);
   const publishDraft = useCallback(async () => {
+    if (!canManageProfiles) return;
     if (!draft.agentId || !draft.draftRevision) return;
     setPersistenceState({ busy: true, error: null });
     try {
@@ -369,7 +372,7 @@ function AgentBuilderWorkbenchContent({
         error: error instanceof Error ? error.message : "Unable to publish the Agent draft.",
       });
     }
-  }, [draft.agentId, draft.draftRevision, markProfilePublished]);
+  }, [canManageProfiles, draft.agentId, draft.draftRevision, markProfilePublished]);
   const stateMessage =
     controllerMessage(controllerState) ??
     (draft.selectedSkill?.requires_file
@@ -725,6 +728,7 @@ function AgentBuilderWorkbenchContent({
 /** Hidden reference-derived workbench with the real Chat submission seam. */
 export function AgentBuilderWorkbench({
   catalog,
+  canManageProfiles,
   onHandoffReady,
 }: AgentBuilderWorkbenchProps) {
   const workbench = useAgentBuilderWorkbenchState(catalog);
@@ -766,6 +770,7 @@ export function AgentBuilderWorkbench({
   return (
     <AgentBuilderWorkbenchContent
       catalog={catalog}
+      canManageProfiles={canManageProfiles}
       chat={builderChat}
       chatIdentity={chatIdentity}
       onHandoffReady={onHandoffReady}
@@ -777,6 +782,7 @@ export function AgentBuilderWorkbench({
 /** Uses the production draft/controller state with an injected admission seam for UI tests. */
 export function AgentBuilderWorkbenchHarness({
   catalog,
+  canManageProfiles,
   chat,
   chatIdentity,
   onHandoffReady,
@@ -785,6 +791,7 @@ export function AgentBuilderWorkbenchHarness({
   return (
     <AgentBuilderWorkbenchContent
       catalog={catalog}
+      canManageProfiles={canManageProfiles}
       chat={chat}
       chatIdentity={chatIdentity}
       onHandoffReady={onHandoffReady}

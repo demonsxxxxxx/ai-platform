@@ -137,7 +137,7 @@ class SelectedAgentProfileRequest(BaseModel):
 
 
 class AgentProfileDraftRequest(BaseModel):
-    """Admin-only definition stored as an immutable draft revision."""
+    """Admin definition plus the required optimistic draft-save precondition."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -147,6 +147,7 @@ class AgentProfileDraftRequest(BaseModel):
     model_id: str
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    expected_draft_revision: int = Field(ge=0)
 
     @field_validator("model_id")
     @classmethod

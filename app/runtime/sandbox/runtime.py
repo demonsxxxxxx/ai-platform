@@ -406,6 +406,9 @@ class SandboxRuntime:
                 task_config["context_manifest"] = dict(request.context_manifest)
             if request.context_retrieval_scope is not None:
                 task_config["context_retrieval_scope"] = request.context_retrieval_scope.model_dump()
+            if request.system_prompt:
+                # The executor treats this as server-owned configuration, never as user input.
+                task_config["system_prompt"] = request.system_prompt
 
             callback_token_id = self._lease_callback_token_id(lease, attempt_id=request.attempt_id)
             task_request = ExecutorTaskRequest(

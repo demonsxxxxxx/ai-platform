@@ -19,9 +19,11 @@ export interface AgentProfileDraftRequest {
   model_id: string;
   selected_skill: SelectedSkillRequest;
   mcp_tool_ids: string[];
+  /** 0 creates a profile; later saves must name the current immutable revision. */
+  expected_draft_revision: number;
 }
 
-export interface AgentProfileAdminProjection extends AgentProfileDraftRequest {
+export interface AgentProfileAdminProjection extends Omit<AgentProfileDraftRequest, "expected_draft_revision"> {
   agent_id: string;
   revision: number;
   status: "draft" | "published";

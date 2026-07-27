@@ -302,15 +302,27 @@ create table if not exists agents (
   description text not null default '',
   default_skill_id text references skills(id),
   status text not null default 'active',
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  constraint uq_agents_tenant_id unique (tenant_id, id)
 );
+
+-- Older databases predate the composite tenant+agent authority used below.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'agents'::regclass and conname = 'uq_agents_tenant_id'
+  ) then
+    alter table agents add constraint uq_agents_tenant_id unique (tenant_id, id);
+  end if;
+end $$;
 
 -- Agent Profile definitions are append-only. The shared agents row remains the
 -- durable identity used by sessions/runs; this table is the sole authority for
 -- mutable-looking definition state and preserves every saved/published revision.
 create table if not exists agent_profile_revisions (
   tenant_id text not null references tenants(id),
-  agent_id text not null references agents(id),
+  agent_id text not null,
   revision bigint not null check (revision > 0),
   status text not null check (status in ('draft', 'published')),
   name text not null,
@@ -325,6 +337,9 @@ create table if not exists agent_profile_revisions (
   created_at timestamptz not null default now(),
   published_by text references users(id),
   published_at timestamptz,
+  published_from_revision bigint,
+  constraint fk_agent_profile_revisions_tenant_agent
+    foreign key (tenant_id, agent_id) references agents(tenant_id, id),
   primary key (tenant_id, agent_id, revision)
 );
 
@@ -337,14 +352,19 @@ create table if not exists sessions (
   tenant_id text not null references tenants(id),
   workspace_id text not null references workspaces(id),
   user_id text references users(id),
-  agent_id text not null references agents(id),
+  agent_id text not null,
   title text not null default '',
   status text not null default 'active',
   admitted_agent_profile_revision bigint,
   admitted_agent_profile_hash text,
   next_run_generation bigint not null default 0,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint fk_sessions_tenant_agent foreign key (tenant_id, agent_id)
+    references agents(tenant_id, id),
+  constraint fk_sessions_agent_profile_pin foreign key (
+    tenant_id, agent_id, admitted_agent_profile_revision
+  ) references agent_profile_revisions(tenant_id, agent_id, revision)
 );
 
 create table if not exists runs (
@@ -353,7 +373,7 @@ create table if not exists runs (
   workspace_id text not null references workspaces(id),
   session_id text not null references sessions(id),
   user_id text references users(id),
-  agent_id text not null references agents(id),
+  agent_id text not null,
   skill_id text not null references skills(id),
   trace_id text not null default '',
   schema_version text not null default 'ai-platform.run.v1',
@@ -386,7 +406,12 @@ create table if not exists runs (
   permission_terminalization_reason text not null default '',
   permission_terminalization_result_json jsonb not null default '{}'::jsonb,
   permission_terminalization_error_code text,
-  permission_terminalization_error_message text
+  permission_terminalization_error_message text,
+  constraint fk_runs_tenant_agent foreign key (tenant_id, agent_id)
+    references agents(tenant_id, id),
+  constraint fk_runs_agent_profile_pin foreign key (
+    tenant_id, agent_id, admitted_agent_profile_revision
+  ) references agent_profile_revisions(tenant_id, agent_id, revision)
 );
 
 create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at desc);
@@ -403,6 +428,39 @@ alter table sessions add column if not exists admitted_agent_profile_revision bi
 alter table sessions add column if not exists admitted_agent_profile_hash text;
 alter table runs add column if not exists admitted_agent_profile_revision bigint;
 alter table runs add column if not exists admitted_agent_profile_hash text;
+alter table agent_profile_revisions add column if not exists published_from_revision bigint;
+
+-- Add composite tenant+agent authority and profile-pin constraints for existing
+-- installations after all referenced tables and columns are present.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conrelid = 'agent_profile_revisions'::regclass and conname = 'fk_agent_profile_revisions_tenant_agent') then
+    alter table agent_profile_revisions add constraint fk_agent_profile_revisions_tenant_agent
+      foreign key (tenant_id, agent_id) references agents(tenant_id, id);
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'sessions'::regclass and conname = 'fk_sessions_tenant_agent') then
+    alter table sessions add constraint fk_sessions_tenant_agent
+      foreign key (tenant_id, agent_id) references agents(tenant_id, id);
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'sessions'::regclass and conname = 'fk_sessions_agent_profile_pin') then
+    alter table sessions add constraint fk_sessions_agent_profile_pin
+      foreign key (tenant_id, agent_id, admitted_agent_profile_revision)
+      references agent_profile_revisions(tenant_id, agent_id, revision);
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'fk_runs_tenant_agent') then
+    alter table runs add constraint fk_runs_tenant_agent
+      foreign key (tenant_id, agent_id) references agents(tenant_id, id);
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'fk_runs_agent_profile_pin') then
+    alter table runs add constraint fk_runs_agent_profile_pin
+      foreign key (tenant_id, agent_id, admitted_agent_profile_revision)
+      references agent_profile_revisions(tenant_id, agent_id, revision);
+  end if;
+end $$;
+
+create unique index if not exists idx_agent_profile_revisions_published_from_draft
+  on agent_profile_revisions(tenant_id, agent_id, published_from_revision)
+  where status = 'published' and published_from_revision is not null;
 -- Existing rows deliberately remain unordered (NULL generation): timestamps and
 -- UUIDs are not a valid historical run-creation authority.
 alter table sessions add column if not exists next_run_generation bigint not null default 0;

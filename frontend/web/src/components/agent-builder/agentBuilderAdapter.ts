@@ -15,7 +15,7 @@ export interface AgentBuilderSafeMcpTool {
 export interface AgentBuilderDraft {
   message: string;
   description?: string;
-  /** Local-only draft text until an AgentProfile backend contract exists. */
+  /** Server-owned after an administrator saves this local draft. */
   instructions: string;
   model: ModelOption | null;
   selectedSkill: PublicSkillResponse | null;
@@ -231,7 +231,7 @@ export function prepareAgentBuilderSubmission(
     kind: "ready",
     submission: {
       message,
-      agentOptions: sanitizedDraft.model ? { model: sanitizedDraft.model.value } : {},
+      agentOptions: sanitizedDraft.model ? { model_id: sanitizedDraft.model.id } : {},
       selectedSkill: sanitizedDraft.selectedSkill
         ? {
             skill_id: sanitizedDraft.selectedSkill.name,

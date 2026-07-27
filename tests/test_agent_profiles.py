@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,7 +12,13 @@ from app.agent_profiles import (
     resolve_profile_for_admission,
 )
 from app.auth import AuthPrincipal
-from app.models import ChatStreamRequest, SelectedAgentProfileRequest, SelectedSkillRequest
+from app.models import (
+    AgentProfileDraftRequest,
+    ChatStreamRequest,
+    SelectedAgentProfileRequest,
+    SelectedSkillRequest,
+)
+from app.repositories import RepositoryConflictError
 from app.main import create_app
 
 
@@ -81,6 +88,22 @@ def test_selected_profile_rejects_client_owned_capability_selectors():
         raise AssertionError("client-owned Skill selection must be rejected")
 
 
+def test_selected_profile_rejects_both_legacy_and_canonical_model_selectors():
+    for selector in ({"model": "legacy-model"}, {"model_id": "catalog-model"}):
+        request = ChatStreamRequest(
+            message="Help me",
+            selected_agent_profile=SelectedAgentProfileRequest(
+                agent_id="agt_support",
+                expected_revision=4,
+            ),
+            agent_options=selector,
+        )
+        with pytest.raises(HTTPException) as caught:
+            reject_profile_selector_conflicts(request)
+        assert caught.value.status_code == 400
+        assert caught.value.detail == "agent_profile_selector_conflict"
+
+
 def test_selected_profile_is_an_optimistic_revision_lock():
     request = ChatStreamRequest(
         message="Help me",
@@ -145,6 +168,7 @@ def test_agent_profile_admin_write_requires_admin(monkeypatch):
             "model_id": "model-a",
             "selected_skill": {"skill_id": "general-chat", "expected_version": "version-a"},
             "mcp_tool_ids": [],
+            "expected_draft_revision": 0,
         },
     )
 
@@ -235,6 +259,12 @@ def test_agent_profile_schema_is_idempotent_and_legacy_rows_can_remain_unpinned(
         assert statement in schema
     assert "admitted_agent_profile_revision bigint not null" not in schema
     assert "admitted_agent_profile_hash text not null" not in schema
+    assert "constraint uq_agents_tenant_id unique (tenant_id, id)" in schema
+    assert "fk_agent_profile_revisions_tenant_agent" in schema
+    assert "fk_sessions_agent_profile_pin" in schema
+    assert "fk_runs_agent_profile_pin" in schema
+    assert "published_from_revision bigint" in schema
+    assert "idx_agent_profile_revisions_published_from_draft" in schema
 
 
 def test_legacy_run_snapshot_without_agent_profile_remains_compatible():
@@ -255,16 +285,159 @@ def test_legacy_run_snapshot_without_agent_profile_remains_compatible():
     assert "agent_profile" not in snapshot
 
 
-def test_agent_profile_instructions_are_a_private_prompt_section_not_user_message():
+def test_profile_copy_snapshot_preserves_private_prompt_model_and_exact_pins():
+    from app.repositories import (
+        admitted_agent_profile_pins_for_copy,
+        copied_run_execution_snapshot,
+        preserved_server_owned_execution_snapshot,
+    )
+
+    source_snapshot = copied_run_execution_snapshot(
+        {
+            "input": {"message": "retry only this user request"},
+            "model_id": "catalog-model-a",
+            "model_value": "provider-model-a",
+            "agent_profile": {
+                "agent_id": "agt_support",
+                "revision": 4,
+                "content_hash": "a" * 64,
+                "instructions": "Private profile instruction",
+            },
+        }
+    )
+    source_run = {
+        "agent_id": "agt_support",
+        "admitted_agent_profile_revision": 4,
+        "admitted_agent_profile_hash": "a" * 64,
+    }
+
+    assert admitted_agent_profile_pins_for_copy(source_run, source_snapshot) == (4, "a" * 64)
+    assert preserved_server_owned_execution_snapshot(source_snapshot) == {
+        "model_id": "catalog-model-a",
+        "model_value": "provider-model-a",
+        "agent_profile": source_snapshot["agent_profile"],
+    }
+
+    forged_run = {**source_run, "agent_id": "agt_other_tenant"}
+    with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+        admitted_agent_profile_pins_for_copy(forged_run, source_snapshot)
+
+
+def test_agent_profile_instructions_are_not_placed_in_the_user_prompt():
     from app.executors.claude_agent_sdk_runner import build_skill_prompt
 
     prompt = build_skill_prompt(
         skill_id="general-chat",
         user_message="User supplied question",
         file_names=[],
-        agent_profile_instructions="Private profile instruction",
     )
 
-    assert "Private profile instruction" in prompt
-    assert prompt.index("Private profile instruction") < prompt.index("User request: User supplied question")
-    assert "User request: Private profile instruction" not in prompt
+    assert "Private profile instruction" not in prompt
+    assert "User request: User supplied question" in prompt
+
+
+def _draft(*, expected_draft_revision: int) -> AgentProfileDraftRequest:
+    return AgentProfileDraftRequest(
+        name="Support assistant",
+        description="Approved support helper.",
+        instructions="Private instruction",
+        model_id="model-a",
+        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        mcp_tool_ids=[],
+        expected_draft_revision=expected_draft_revision,
+    )
+
+
+async def test_profile_draft_save_requires_explicit_create_or_update_precondition():
+    from app.agent_profiles import save_draft
+
+    principal = AuthPrincipal(
+        user_id="admin-a",
+        display_name="Admin A",
+        tenant_id="tenant-a",
+        roles=["admin"],
+    )
+    with pytest.raises(HTTPException) as create_error:
+        await save_draft(object(), principal=principal, definition=_draft(expected_draft_revision=2), agent_id=None)
+    assert create_error.value.status_code == 409
+    assert create_error.value.detail == "agent_profile_create_revision_invalid"
+
+    with pytest.raises(HTTPException) as update_error:
+        await save_draft(
+            object(),
+            principal=principal,
+            definition=_draft(expected_draft_revision=0),
+            agent_id="agt_support",
+        )
+    assert update_error.value.status_code == 409
+    assert update_error.value.detail == "agent_profile_revision_stale"
+
+
+async def test_profile_revision_fence_allows_one_concurrent_publish_from_the_same_draft():
+    from app.repositories import create_agent_profile_revision
+
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class LockedConnection:
+        def __init__(self):
+            self.lock = asyncio.Lock()
+            self.current_revision = 4
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split()).lower()
+            if "pg_advisory_xact_lock" in normalized:
+                await self.lock.acquire()
+                return Cursor()
+            if "select coalesce(max(revision), 0) as current_revision" in normalized:
+                return Cursor({"current_revision": self.current_revision})
+            if "insert into agent_profile_revisions" in normalized:
+                self.current_revision = int(params[2])
+                self.lock.release()
+                return Cursor(
+                    {
+                        "tenant_id": params[0],
+                        "agent_id": params[1],
+                        "revision": params[2],
+                        "status": params[3],
+                        "name": params[4],
+                        "description": params[5],
+                        "instructions": params[6],
+                        "model_id": params[7],
+                        "skill_id": params[8],
+                        "skill_version": params[9],
+                        "mcp_tool_ids": [],
+                        "content_hash": params[11],
+                    }
+                )
+            raise AssertionError(normalized)
+
+    async def publish(conn):
+        return await create_agent_profile_revision(
+            conn,
+            tenant_id="tenant-a",
+            agent_id="agt_support",
+            status="published",
+            name="Support assistant",
+            description="Approved support helper.",
+            instructions="Private instruction",
+            model_id="model-a",
+            skill_id="general-chat",
+            skill_version="version-a",
+            mcp_tool_ids=[],
+            content_hash="a" * 64,
+            created_by="admin-a",
+            published_by="admin-a",
+            expected_previous_revision=4,
+            published_from_revision=4,
+        )
+
+    conn = LockedConnection()
+    outcomes = await asyncio.gather(publish(conn), publish(conn), return_exceptions=True)
+
+    assert [outcome["revision"] for outcome in outcomes if isinstance(outcome, dict)] == [5]
+    assert sum(isinstance(outcome, RepositoryConflictError) for outcome in outcomes) == 1

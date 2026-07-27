@@ -479,8 +479,10 @@ async def create_agent_profile_revision(
     content_hash: str,
     created_by: str,
     published_by: str | None = None,
+    expected_previous_revision: int | None = None,
+    published_from_revision: int | None = None,
 ) -> dict[str, Any]:
-    """Append one revision under a transaction advisory lock for this tenant identity."""
+    """Append one revision under an optimistic fence and transaction advisory lock."""
 
     await conn.execute(
         "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
@@ -488,23 +490,26 @@ async def create_agent_profile_revision(
     )
     cursor = await conn.execute(
         """
-        select coalesce(max(revision), 0) + 1 as next_revision
+        select coalesce(max(revision), 0) as current_revision
         from agent_profile_revisions
         where tenant_id = %s and agent_id = %s
         """,
         (tenant_id, agent_id),
     )
     row = await cursor.fetchone()
-    revision = int(row["next_revision"] if row else 1)
+    current_revision = int(row["current_revision"] if row else 0)
+    if expected_previous_revision is not None and current_revision != expected_previous_revision:
+        raise RepositoryConflictError("agent_profile_revision_stale")
+    revision = current_revision + 1
     cursor = await conn.execute(
         """
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, status, name, description, instructions,
           model_id, skill_id, skill_version, mcp_tool_ids, content_hash, created_by,
-          published_by, published_at
+          published_by, published_at, published_from_revision
         )
         values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
-                %s, case when %s is null then null else now() end)
+                %s, case when %s is null then null else now() end, %s)
         returning tenant_id, agent_id, revision, status, name, description, instructions,
                   model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
                   created_at, published_at
@@ -525,6 +530,7 @@ async def create_agent_profile_revision(
             created_by,
             published_by,
             published_by,
+            published_from_revision,
         ),
     )
     saved = await cursor.fetchone()
@@ -8916,6 +8922,10 @@ async def create_multi_agent_dispatch_child_run(
     }
 
     source_execution_snapshot = copied_run_execution_snapshot(source_input)
+    admitted_profile_revision, admitted_profile_hash = admitted_agent_profile_pins_for_copy(
+        parent,
+        source_execution_snapshot,
+    )
     skill_version = str(source_execution_snapshot.get("skill_version") or "")
     skill_manifests = source_execution_snapshot.get("skill_manifests") or []
     release_decision_payload = source_execution_snapshot.get("release_decision") or {}
@@ -8959,6 +8969,7 @@ async def create_multi_agent_dispatch_child_run(
         context_snapshot={},
         schema_version=RUN_PAYLOAD_SCHEMA_VERSION,
     )
+    child_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
     child_execution_snapshot = copied_run_execution_snapshot(child_input_json)
     child_input_json.update(child_execution_snapshot)
 
@@ -8977,9 +8988,10 @@ async def create_multi_agent_dispatch_child_run(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
+          admitted_agent_profile_revision, admitted_agent_profile_hash,
           status, input_json, queued_at, copied_from_run_id, session_generation
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
         """,
         (
             child_run_id,
@@ -8995,6 +9007,8 @@ async def create_multi_agent_dispatch_child_run(
             dumps_json(inherited_roles),
             inherited_department_id,
             inherited_auth_source,
+            admitted_profile_revision,
+            admitted_profile_hash,
             dumps_json(child_input_json),
             parent_run_id,
             session_generation,
@@ -10688,6 +10702,10 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     else:
         source_execution_input = {}
     source_execution_snapshot = copied_run_execution_snapshot(source_input)
+    admitted_profile_revision, admitted_profile_hash = admitted_agent_profile_pins_for_copy(
+        source,
+        source_execution_snapshot,
+    )
     skill_version = str(source_execution_snapshot.get("skill_version") or "")
     skill_manifests = source_execution_snapshot.get("skill_manifests") or []
     release_decision_payload = source_execution_snapshot.get("release_decision") or {}
@@ -10748,6 +10766,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         context_snapshot={},
         schema_version=RUN_PAYLOAD_SCHEMA_VERSION,
     )
+    copied_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
     copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
     copied_input_json.update(copied_execution_snapshot)
     session_generation = await allocate_session_run_generation(
@@ -10764,9 +10783,10 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
+          admitted_agent_profile_revision, admitted_agent_profile_hash,
           status, input_json, queued_at, copied_from_run_id, session_generation
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
         """,
         (
             new_run_id,
@@ -10782,6 +10802,8 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             dumps_json(inherited_roles),
             inherited_department_id,
             inherited_auth_source,
+            admitted_profile_revision,
+            admitted_profile_hash,
             dumps_json(copied_input_json),
             run_id,
             session_generation,
@@ -10981,6 +11003,55 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
     if isinstance(agent_profile, dict):
         snapshot["agent_profile"] = dict(agent_profile)
     return snapshot
+
+
+def preserved_server_owned_execution_snapshot(source_snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return admitted execution facts that sanitization must never reconstruct from a caller."""
+
+    preserved = {
+        "model_id": source_snapshot.get("model_id"),
+        "model_value": source_snapshot.get("model_value"),
+    }
+    agent_profile = source_snapshot.get("agent_profile")
+    if isinstance(agent_profile, dict):
+        preserved["agent_profile"] = dict(agent_profile)
+    return preserved
+
+
+def admitted_agent_profile_pins_for_copy(
+    source_run: dict[str, Any],
+    source_snapshot: dict[str, Any],
+) -> tuple[int | None, str | None]:
+    """Require a profile's private snapshot and durable pins to remain identical on descendants."""
+
+    revision = source_run.get("admitted_agent_profile_revision")
+    content_hash = source_run.get("admitted_agent_profile_hash")
+    profile = source_snapshot.get("agent_profile")
+    if profile is None:
+        if revision is not None or content_hash is not None:
+            raise RepositoryConflictError("agent_profile_snapshot_missing")
+        return None, None
+    if not isinstance(profile, dict):
+        raise RepositoryConflictError("agent_profile_snapshot_invalid")
+    profile_revision = profile.get("revision")
+    profile_hash = profile.get("content_hash")
+    profile_agent_id = profile.get("agent_id")
+    if (
+        not isinstance(profile_revision, int)
+        or isinstance(profile_revision, bool)
+        or profile_revision < 1
+        or not isinstance(profile_hash, str)
+        or not profile_hash
+        or profile_agent_id != source_run.get("agent_id")
+        or revision != profile_revision
+        or content_hash != profile_hash
+        or not isinstance(source_snapshot.get("model_id"), str)
+        or not source_snapshot.get("model_id")
+        or not isinstance(source_snapshot.get("model_value"), str)
+        or not source_snapshot.get("model_value")
+    ):
+        raise RepositoryConflictError("agent_profile_snapshot_invalid")
+    return profile_revision, profile_hash
 
 
 async def update_run_input_execution_snapshot(

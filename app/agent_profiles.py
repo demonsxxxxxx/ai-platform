@@ -82,6 +82,7 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
             expected_version=str(row["skill_version"]),
         ),
         mcp_tool_ids=_mcp_tool_ids(row),
+        expected_draft_revision=int(row["revision"]),
     )
 
 
@@ -185,6 +186,10 @@ async def save_draft(
     """Persist a new immutable draft under a server-owned tenant identity."""
 
     _require_admin(principal)
+    if agent_id is None and definition.expected_draft_revision != 0:
+        raise HTTPException(status_code=409, detail="agent_profile_create_revision_invalid")
+    if agent_id is not None and definition.expected_draft_revision < 1:
+        raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
     resolved_agent_id = agent_id or repositories.new_id("agt")
     await repositories.ensure_user(
         conn,
@@ -213,6 +218,7 @@ async def save_draft(
         mcp_tool_ids=definition.mcp_tool_ids,
         content_hash=_revision_hash(definition),
         created_by=principal.user_id,
+        expected_previous_revision=definition.expected_draft_revision,
     )
     audit_id = await repositories.append_audit_log(
         conn,
@@ -268,6 +274,8 @@ async def publish_draft(
         content_hash=str(draft_row["content_hash"]),
         created_by=principal.user_id,
         published_by=principal.user_id,
+        expected_previous_revision=expected_revision,
+        published_from_revision=expected_revision,
     )
     audit_id = await repositories.append_audit_log(
         conn,
