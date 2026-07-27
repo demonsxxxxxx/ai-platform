@@ -3735,11 +3735,24 @@ class DockerContainerProvider:
                 raise cleanup_exc
             raise ContainerStartFailedError()
         # Docker creation is the first point at which the actual container ID
-        # and attachment topology exist. Seal no governed proof before this
-        # authoritative readback succeeds.
+        # exists, but Docker does not expose authoritative network membership
+        # until the idle executor has started. Seal no governed proof before
+        # the immediate post-start readback succeeds.
         observed_container_id = str(getattr(container, "id", "") or "").strip()
         if observed_container_id:
             bootstrap_lease.container_id = observed_container_id
+        try:
+            if hasattr(container, "start"):
+                container.start()
+        except Exception as exc:
+            normalized_exc = _normalize_docker_availability_error(exc)
+            try:
+                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
+            if isinstance(normalized_exc, DockerPermissionDeniedError):
+                raise normalized_exc from exc
+            raise ContainerStartFailedError() from exc
         try:
             bootstrap_lease.labels.update(
                 _seal_docker_governed_egress_after_readback(
@@ -3758,18 +3771,6 @@ class DockerContainerProvider:
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
-        try:
-            if hasattr(container, "start"):
-                container.start()
-        except Exception as exc:
-            normalized_exc = _normalize_docker_availability_error(exc)
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
-            if isinstance(normalized_exc, DockerPermissionDeniedError):
-                raise normalized_exc from exc
-            raise ContainerStartFailedError() from exc
 
         callback_reachable = await asyncio.to_thread(
             self._callback_reachability_probe,
