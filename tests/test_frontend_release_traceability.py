@@ -445,6 +445,14 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
     assert trace["workflow"]["missing_path_filters"] == []
 
 
+def test_frontend_dockerfile_has_no_registry_resolved_syntax_directive():
+    dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
+
+    assert not any(
+        line.lstrip().startswith("# syntax=") for line in dockerfile.splitlines()
+    )
+
+
 def test_frontend_packaged_image_files_define_static_proxy_contract():
     dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
     runtime_dockerfile = dockerfile.split("FROM nginx:1.27-alpine AS runtime", 1)[1]
