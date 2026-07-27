@@ -84,12 +84,12 @@ DOCKER_SANDBOX_COMPOSE_SELECTION = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), SA
 DOCKER_SANDBOX_BRIDGE_COMPOSE_SELECTION = (
     *DOCKER_SANDBOX_COMPOSE_SELECTION, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH
 )
-PROVIDER_OVERLAY_COMPOSE_SELECTIONS = frozenset({
-    DOCKER_SANDBOX_COMPOSE_SELECTION,
-    (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH),
-})
-BRIDGE_OVERLAY_COMPOSE_SELECTIONS = frozenset({
-    DOCKER_SANDBOX_COMPOSE_SELECTION, DOCKER_SANDBOX_BRIDGE_COMPOSE_SELECTION,
+OPENSANDBOX_COMPOSE_SELECTION = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH)
+ALLOWED_COMPOSE_SELECTION_TRANSITIONS = frozenset({
+    (DOCKER_SANDBOX_COMPOSE_SELECTION, DOCKER_SANDBOX_BRIDGE_COMPOSE_SELECTION),
+    (DOCKER_SANDBOX_BRIDGE_COMPOSE_SELECTION, DOCKER_SANDBOX_COMPOSE_SELECTION),
+    (DOCKER_SANDBOX_BRIDGE_COMPOSE_SELECTION, OPENSANDBOX_COMPOSE_SELECTION),
+    (OPENSANDBOX_COMPOSE_SELECTION, DOCKER_SANDBOX_COMPOSE_SELECTION),
 })
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 WORKER_TMPDIR_EXPANSION_MARKERS = frozenset("*?$`[]{}")
@@ -2181,8 +2181,11 @@ def _compose_ownership_selection(
     ):
         return None
 
-    observed_main = observed_paths[0]
-    observed_root = observed_main.parents[len(DEFAULT_COMPOSE_RELATIVE_PATH.parts) - 1]
+    observed_root = observed_paths[0]
+    for _ in DEFAULT_COMPOSE_RELATIVE_PATH.parts:
+        if observed_root.parent == observed_root:
+            return None
+        observed_root = observed_root.parent
     release_root = target.checkout_root.parent
     if (
         observed_root == target.checkout_root
@@ -2202,10 +2205,7 @@ def _compose_ownership_selection(
         return None
     if observed.relative_paths == target.relative_paths:
         return observed
-    transition = frozenset({observed.relative_paths, target.relative_paths})
-    return observed if transition in {
-        PROVIDER_OVERLAY_COMPOSE_SELECTIONS, BRIDGE_OVERLAY_COMPOSE_SELECTIONS,
-    } else None
+    return observed if (observed.relative_paths, target.relative_paths) in ALLOWED_COMPOSE_SELECTION_TRANSITIONS else None
 
 
 def _manual_frontend_container_id(inspected: dict[str, Any]) -> str:
