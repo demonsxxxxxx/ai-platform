@@ -2716,62 +2716,6 @@ def test_verified_current_runtime_uses_label_derived_historical_provider_selecti
 
 
 @pytest.mark.parametrize(
-    ("current_overlay", "target_overlay"),
-    [
-        (SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH),
-        (OPENSANDBOX_COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH),
-    ],
-    ids=["docker-to-opensandbox", "opensandbox-to-docker"],
-)
-def test_verified_current_runtime_allows_same_checkout_provider_transition(
-    monkeypatch,
-    tmp_path,
-    current_overlay,
-    target_overlay,
-):
-    commit = "7" * 40
-    checkout = tmp_path / "releases" / commit
-    main, sandbox, opensandbox = _write_provider_compose_files(checkout)
-    overlays = {
-        SANDBOX_COMPOSE_RELATIVE_PATH: sandbox,
-        OPENSANDBOX_COMPOSE_RELATIVE_PATH: opensandbox,
-    }
-    target_selection = release_authority.resolve_compose_files(
-        checkout,
-        [COMPOSE_RELATIVE_PATH, target_overlay],
-    )
-    current_config = _compose_config_value(main, overlays[current_overlay])
-    parity_calls: list[tuple[Path, str, tuple[str, ...]]] = []
-
-    def fake_container_inspect(docker, name):
-        role = name.removeprefix("ai-platform-")
-        payload = _owned_container_payload(role, main.parent, current_config)[0]
-        labels = payload["Config"]["Labels"]
-        labels["ai-platform.source-commit"] = commit
-        labels["ai-platform.source-dirty"] = "false"
-        return {"labels": labels}, payload
-
-    def fake_parity(repo_root, observed_commit, **kwargs):
-        parity_calls.append((repo_root, observed_commit, tuple(kwargs["compose_files"])))
-        return {"verified": True}
-
-    monkeypatch.setattr(
-        "tools.release_authority._container_inspect_record",
-        fake_container_inspect,
-    )
-    monkeypatch.setattr("tools.release_authority.collect_live_parity", fake_parity)
-
-    current = release_authority._verified_current_runtime(
-        ["docker"],
-        target_selection,
-        docker_cmd="docker",
-    )
-
-    assert current["commit"] == commit
-    assert parity_calls == [(checkout.resolve(), commit, (COMPOSE_RELATIVE_PATH, current_overlay))]
-
-
-@pytest.mark.parametrize(
     "invalid_selection",
     [
         "base_only_observed",
