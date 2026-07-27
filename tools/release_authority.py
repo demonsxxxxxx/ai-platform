@@ -2192,8 +2192,7 @@ def _compose_ownership_selection(
         observed_root = observed_root.parent
     release_root = target.checkout_root.parent
     if (
-        observed_root == target.checkout_root
-        or observed_root.parent != release_root
+        observed_root.parent != release_root
         or not FULL_COMMIT_RE.fullmatch(target.checkout_root.name)
         or not RELEASE_DIRECTORY_RE.fullmatch(observed_root.name)
     ):

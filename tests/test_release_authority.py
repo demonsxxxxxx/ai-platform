@@ -2716,6 +2716,62 @@ def test_verified_current_runtime_uses_label_derived_historical_provider_selecti
 
 
 @pytest.mark.parametrize(
+    ("current_overlay", "target_overlay"),
+    [
+        (SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+        (OPENSANDBOX_COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH),
+    ],
+    ids=["docker-to-opensandbox", "opensandbox-to-docker"],
+)
+def test_verified_current_runtime_allows_same_checkout_provider_transition(
+    monkeypatch,
+    tmp_path,
+    current_overlay,
+    target_overlay,
+):
+    commit = "7" * 40
+    checkout = tmp_path / "releases" / commit
+    main, sandbox, opensandbox = _write_provider_compose_files(checkout)
+    overlays = {
+        SANDBOX_COMPOSE_RELATIVE_PATH: sandbox,
+        OPENSANDBOX_COMPOSE_RELATIVE_PATH: opensandbox,
+    }
+    target_selection = release_authority.resolve_compose_files(
+        checkout,
+        [COMPOSE_RELATIVE_PATH, target_overlay],
+    )
+    current_config = _compose_config_value(main, overlays[current_overlay])
+    parity_calls: list[tuple[Path, str, tuple[str, ...]]] = []
+
+    def fake_container_inspect(docker, name):
+        role = name.removeprefix("ai-platform-")
+        payload = _owned_container_payload(role, main.parent, current_config)[0]
+        labels = payload["Config"]["Labels"]
+        labels["ai-platform.source-commit"] = commit
+        labels["ai-platform.source-dirty"] = "false"
+        return {"labels": labels}, payload
+
+    def fake_parity(repo_root, observed_commit, **kwargs):
+        parity_calls.append((repo_root, observed_commit, tuple(kwargs["compose_files"])))
+        return {"verified": True}
+
+    monkeypatch.setattr(
+        "tools.release_authority._container_inspect_record",
+        fake_container_inspect,
+    )
+    monkeypatch.setattr("tools.release_authority.collect_live_parity", fake_parity)
+
+    current = release_authority._verified_current_runtime(
+        ["docker"],
+        target_selection,
+        docker_cmd="docker",
+    )
+
+    assert current["commit"] == commit
+    assert parity_calls == [(checkout.resolve(), commit, (COMPOSE_RELATIVE_PATH, current_overlay))]
+
+
+@pytest.mark.parametrize(
     "invalid_selection",
     [
         "base_only_observed",
@@ -3590,6 +3646,91 @@ def test_deploy_main_commit_keeps_target_provider_selection_for_final_parity(mon
     ]
     assert result["checkout"] == str(checkout)
     assert result["parity"]["verified"] is True
+
+
+@pytest.mark.parametrize(
+    ("current_overlay", "target_overlay"),
+    [
+        (SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+        (OPENSANDBOX_COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH),
+    ],
+    ids=["docker-to-opensandbox", "opensandbox-to-docker"],
+)
+def test_auto_flow_advances_after_same_checkout_provider_transition(
+    monkeypatch,
+    tmp_path,
+    current_overlay,
+    target_overlay,
+):
+    commit = "8" * 40
+    _, release_root, env_file = _prepare_managed_release_layout(monkeypatch, tmp_path)
+    checkout = release_root / commit
+    main, sandbox, opensandbox = _write_provider_compose_files(checkout)
+    overlays = {
+        SANDBOX_COMPOSE_RELATIVE_PATH: sandbox,
+        OPENSANDBOX_COMPOSE_RELATIVE_PATH: opensandbox,
+    }
+    current_config = _compose_config_value(main, overlays[current_overlay])
+    staged_events: list[dict] | None = None
+    deploy_calls: list[tuple[Path, str, tuple[str, ...]]] = []
+
+    def fake_container_inspect(docker, name):
+        role = name.removeprefix("ai-platform-")
+        payload = _owned_container_payload(role, main.parent, current_config)[0]
+        labels = payload["Config"]["Labels"]
+        labels["ai-platform.source-commit"] = commit
+        labels["ai-platform.source-dirty"] = "false"
+        return {"labels": labels}, payload
+
+    def fake_deploy(repo_root, requested, **kwargs):
+        nonlocal staged_events
+        deploy_calls.append((repo_root, requested, tuple(kwargs["compose_files"])))
+        staged_events = kwargs["stage_events"]
+        return {"commit": requested}
+
+    monkeypatch.setattr(
+        "tools.release_authority.materialize_main_checkout",
+        lambda root, requested: checkout,
+    )
+    monkeypatch.setattr("tools.release_authority.assert_managed_target_checkout", lambda *args: None)
+    monkeypatch.setattr("tools.release_authority._docker_base", lambda docker_cmd: ["docker"])
+    monkeypatch.setattr(
+        "tools.release_authority._container_inspect_record",
+        fake_container_inspect,
+    )
+    monkeypatch.setattr(
+        "tools.release_authority.collect_live_parity",
+        lambda *args, **kwargs: {"verified": True},
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._auto_release_plan",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr("tools.release_authority.deploy_clean_commit", fake_deploy)
+    monkeypatch.setattr(
+        "tools.release_authority.converge_final_parity",
+        lambda collect, **kwargs: collect(0.0),
+    )
+
+    result = release_authority._deploy_main_commit_after_authority(
+        release_root,
+        commit,
+        docker_cmd="docker",
+        env_file=env_file,
+        replace_known_manual_frontend=False,
+        compose_files=[COMPOSE_RELATIVE_PATH, target_overlay],
+        strategy="auto",
+    )
+
+    assert deploy_calls == [(checkout, commit, (COMPOSE_RELATIVE_PATH, target_overlay))]
+    assert staged_events is not None
+    assert [event["stage"] for event in staged_events] == [
+        "current-runtime-provenance",
+        "runtime-diff-classification",
+        "final-parity",
+    ]
+    assert all(event["status"] == "ok" for event in staged_events)
+    assert result["parity"] == {"verified": True}
 
 
 def test_deploy_main_commit_fails_closed_when_live_parity_does_not_verify(monkeypatch, tmp_path):
