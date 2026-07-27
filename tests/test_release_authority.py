@@ -141,7 +141,7 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
 
     assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
     assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
-    assert text.count(canonical_invocation) == 1
+    assert text.count(canonical_invocation) == 2
     assert "python3 tools/release_authority.py deploy-main-commit" not in text
     assert text.count("umask 077") == 1
     assert text.index("umask 077") < text.index(canonical_invocation)
@@ -227,6 +227,9 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "git -C \"$SOURCE\" clean" not in command
     assert "git -C \"$SOURCE\" reset" not in command
     assert "git -C \"$SOURCE\" stash" not in command
+    assert "--allow-backend-layer-flatten-recovery" in text
+    assert "Do not retag the canonical current backend subject" in text
+    assert "do not run `docker export`, `docker import`, `docker tag`, or Compose by hand" in contract_text
     assert "`authority_commit`" in text
 
 
@@ -236,6 +239,7 @@ def test_direct_release_authority_cli_no_bytecode_flag_leaves_no_sibling_bytecod
     isolated_tools.mkdir(parents=True)
     for filename in (
         "release_authority.py",
+        "release_backend_flatten.py",
         "release_parity_convergence.py",
         "release_plan.py",
     ):
@@ -4813,6 +4817,7 @@ def test_deploy_main_cli_forwards_default_canonical_build_timeout(monkeypatch, c
 
     assert release_authority.main() == 0
     assert observed["canonical_dependency_build_timeout_seconds"] == 1800
+    assert observed["allow_backend_layer_flatten_recovery"] is False
     assert json.loads(capsys.readouterr().out) == {"commit": "b" * 40}
 
 
