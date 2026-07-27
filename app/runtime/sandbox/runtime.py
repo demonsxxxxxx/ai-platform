@@ -1,7 +1,7 @@
 import asyncio
 import inspect
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -18,7 +18,6 @@ from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import (
     ContainerProvider,
     ExecutorHealthTimeoutError,
-    ExecutorReadinessEvidence,
     create_container_provider,
     executor_callback_target,
 )
@@ -36,6 +35,10 @@ from app.runtime.sandbox.callback_tokens import (
 )
 from app.runtime.sandbox.event_normalizer import container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.runtime.sandbox.readiness_evidence import (
+    ExecutorReadinessEvidence,
+    safe_readiness_evidence_payload,
+)
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.settings import get_settings
 
@@ -297,7 +300,7 @@ class SandboxRuntime:
                 "evidence_class": "executor_readiness_failure",
                 "run_id": request.run_id,
                 "attempt_id": request.attempt_id,
-                **asdict(evidence),
+                **safe_readiness_evidence_payload(evidence),
             },
         )
 

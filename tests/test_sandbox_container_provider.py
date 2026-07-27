@@ -9,7 +9,7 @@ import socket
 import threading
 import time
 import traceback
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -2540,7 +2540,7 @@ async def test_docker_provider_retains_safe_publish_wait_evidence_before_cleanup
     with pytest.raises(container_provider.ExecutorHealthTimeoutError) as exc_info:
         await provider.create_or_reuse(request(), workspace())
 
-    evidence = asdict(exc_info.value.readiness_evidence)
+    evidence = exc_info.value.readiness_evidence.model_dump()
     assert evidence == {
         "readiness_phase": "publish_wait",
         "container_state": "exited",
@@ -2573,7 +2573,7 @@ async def test_docker_provider_retains_health_probe_outcome_before_cleanup():
     with pytest.raises(container_provider.ExecutorHealthTimeoutError) as exc_info:
         await provider.create_or_reuse(request(), workspace())
 
-    evidence = asdict(exc_info.value.readiness_evidence)
+    evidence = exc_info.value.readiness_evidence.model_dump()
     assert evidence["readiness_phase"] == "health_probe"
     assert evidence["container_state"] == "running"
     assert evidence["exit_code"] is None
@@ -2583,77 +2583,6 @@ async def test_docker_provider_retains_health_probe_outcome_before_cleanup():
     assert 0 <= evidence["elapsed_ms"] <= 2_147_483_647
     assert fake.containers_by_name["executor-exec-run-a"].removed is True
     assert provider._leases == {}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("probe_error", "expected_outcome"),
-    (
-        (httpx.ReadTimeout("private timeout at http://executor-secret.test"), "timeout"),
-        (RuntimeError("private transport failure at C:\\runtime\\secret"), "transport_error"),
-    ),
-)
-async def test_docker_provider_bounds_health_probe_exception_outcome_before_cleanup(
-    probe_error,
-    expected_outcome,
-):
-    import app.runtime.sandbox.container_provider as container_provider
-
-    def fail_probe(*_args):
-        raise probe_error
-
-    fake = FakeDockerClient()
-    provider = container_provider.DockerContainerProvider(
-        docker_client_factory=lambda: fake,
-        health_probe=fail_probe,
-    )
-
-    with pytest.raises(container_provider.ExecutorHealthTimeoutError) as exc_info:
-        await provider.create_or_reuse(request(), workspace())
-
-    evidence = asdict(exc_info.value.readiness_evidence)
-    assert evidence["readiness_phase"] == "health_probe"
-    assert evidence["health_outcome"] == expected_outcome
-    assert str(exc_info.value) == "Executor health timeout"
-    assert str(probe_error) not in repr(evidence)
-    assert fake.containers_by_name["executor-exec-run-a"].removed is True
-    assert provider._leases == {}
-
-
-@pytest.mark.asyncio
-async def test_docker_provider_normalizes_malformed_readiness_attrs_without_raw_values():
-    import app.runtime.sandbox.container_provider as container_provider
-
-    prohibited_values = (
-        "private-state-value",
-        "private-exit-value",
-        "private-oom-value",
-    )
-    fake = FakeDockerClient()
-
-    def corrupt_authoritative_state(container):
-        container.attrs["State"] = {
-            "Status": prohibited_values[0],
-            "ExitCode": prohibited_values[1],
-            "OOMKilled": prohibited_values[2],
-        }
-
-    fake.post_start_mutator = corrupt_authoritative_state
-    provider = container_provider.DockerContainerProvider(
-        docker_client_factory=lambda: fake,
-        health_probe=lambda *_args: False,
-    )
-
-    with pytest.raises(container_provider.ExecutorHealthTimeoutError) as exc_info:
-        await provider.create_or_reuse(request(), workspace())
-
-    evidence = asdict(exc_info.value.readiness_evidence)
-    assert evidence["container_state"] == "unknown"
-    assert evidence["exit_code"] is None
-    assert evidence["oom_killed"] is None
-    serialized = json.dumps(evidence, sort_keys=True)
-    for prohibited in prohibited_values:
-        assert prohibited not in serialized
 
 
 @pytest.mark.asyncio

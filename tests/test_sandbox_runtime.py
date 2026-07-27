@@ -12,6 +12,7 @@ from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import FakeContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, SandboxRuntimeRequest, StopResult
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime
 
@@ -145,7 +146,7 @@ async def test_runtime_persists_one_private_safe_readiness_event_before_rethrow(
         sandbox_callback_token = "settings-token"
 
     raw_exception = "private health failure at C:\\runtime\\secret with token-private"
-    evidence = container_provider.ExecutorReadinessEvidence(
+    evidence = ExecutorReadinessEvidence(
         readiness_phase="health_probe",
         container_state="exited",
         exit_code=137,
