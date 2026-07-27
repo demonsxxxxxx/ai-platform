@@ -22,6 +22,17 @@ import pytest
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
 
 
+requires_secure_opensandbox_transfer = pytest.mark.skipif(
+    not (
+        getattr(os, "O_DIRECTORY", None)
+        and getattr(os, "O_NOFOLLOW", None)
+        and os.open in os.supports_dir_fd
+        and os.replace in os.supports_dir_fd
+    ),
+    reason="OpenSandbox workspace transfer requires controller openat and O_NOFOLLOW support",
+)
+
+
 @pytest.fixture(autouse=True)
 def fixed_runtime_identity_test_seams(monkeypatch, request):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
@@ -1107,6 +1118,26 @@ async def test_opensandbox_create_never_serializes_controller_workspace_paths(mo
 
 
 @pytest.mark.asyncio
+async def test_opensandbox_workspace_transfer_fails_closed_without_secure_controller_primitives(monkeypatch, tmp_path):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    monkeypatch.setattr(container_provider, "_secure_workspace_transfer_supported", lambda: False)
+    local_workspace = tmp_path / "controller-local" / "workspace"
+    local_workspace.mkdir(parents=True)
+    runtime_request = request()
+    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="secure workspace transfer is unavailable"):
+        await provider.stage_workspace(lease, runtime_request, lease_workspace)
+    with pytest.raises(container_provider.ContainerStartFailedError, match="secure workspace transfer is unavailable"):
+        await provider.collect_workspace(lease, runtime_request, lease_workspace)
+
+
+@pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
 async def test_opensandbox_stages_skills_inputs_and_attempt_sentinel_after_ready_create(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -1145,6 +1176,7 @@ async def test_opensandbox_stages_skills_inputs_and_attempt_sentinel_after_ready
 
 
 @pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
 async def test_opensandbox_collects_only_legacy_and_delivery_outputs_atomically(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -1243,6 +1275,7 @@ def test_opensandbox_workspace_manifest_enforces_upload_file_and_total_bytes(mon
 
 
 @pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
 async def test_opensandbox_collection_rejects_remote_symlink_and_removes_partial_download(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -1267,6 +1300,7 @@ async def test_opensandbox_collection_rejects_remote_symlink_and_removes_partial
 
 
 @pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
 async def test_opensandbox_collection_rejects_drift_and_does_not_publish_partial_file(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -1294,6 +1328,36 @@ async def test_opensandbox_collection_rejects_drift_and_does_not_publish_partial
 
 
 @pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
+async def test_opensandbox_collection_rejects_same_size_remote_content_drift(monkeypatch, tmp_path):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    local_workspace = tmp_path / "workspace"
+    local_workspace.mkdir()
+    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
+    runtime_request = request()
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
+    remote_files = FakeOpenSandbox.instances[lease.container_id].files
+    remote_files.write_files([FakeOpenSandboxFile(path="/workspace/output/result.txt", data=b"first")])
+    stream_calls = 0
+
+    async def same_size_drifting_stream(_path, *, chunk_size=65536):
+        nonlocal stream_calls
+        stream_calls += 1
+        yield b"first" if stream_calls == 1 else b"other"
+
+    remote_files.read_bytes_stream = same_size_drifting_stream
+    with pytest.raises(container_provider.ContainerStartFailedError, match="changed during download"):
+        await provider.collect_workspace(lease, runtime_request, lease_workspace)
+
+    assert stream_calls == 2
+    assert not (local_workspace / "output" / "result.txt").exists()
+
+
+@pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
 async def test_opensandbox_collection_does_not_publish_earlier_files_when_later_file_drifts(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -1329,6 +1393,7 @@ async def test_opensandbox_collection_does_not_publish_earlier_files_when_later_
 
 
 @pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
 async def test_opensandbox_collection_rolls_back_already_published_files_when_local_publish_fails(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -4297,6 +4362,7 @@ async def test_opensandbox_skill_bash_run_does_not_require_volume_support(
 
 
 @pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
 async def test_opensandbox_provider_accepts_byte_readback_from_attempt_sentinel(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -4325,6 +4391,7 @@ async def test_opensandbox_provider_accepts_byte_readback_from_attempt_sentinel(
 
 
 @pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
 async def test_opensandbox_provider_fails_when_attempt_sentinel_readback_mismatches(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -4408,6 +4475,7 @@ async def test_opensandbox_provider_cleans_up_when_created_sandbox_has_no_id(mon
 
 
 @pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
 async def test_opensandbox_provider_defers_created_sandbox_cleanup_to_runtime_on_stage_cancel(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
