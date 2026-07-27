@@ -12,10 +12,7 @@ from app.context_retrieval import (
 )
 from app.db import transaction
 from app.public_execution import PUBLIC_EXECUTION_EVENT_TYPES
-from app.runtime.event_bridge import (
-    agent_event_to_executor_event,
-    canonical_assistant_delta_event,
-)
+from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_matches_binding,
@@ -28,6 +25,7 @@ from app.runtime.sandbox.contracts import (
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.settings import get_settings
 from app.storage import ObjectStorage
+from app.worker import _canonical_assistant_delta_event as canonical_assistant_delta_event
 
 router = APIRouter()
 
@@ -136,7 +134,11 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
         raise HTTPException(status_code=409, detail="executor_terminal_callback_not_allowed")
     callback_for_events = callback
     if callback.status == "running" and callback.new_message is not None:
-        raw_delta = callback.new_message.get("delta") or callback.new_message.get("text")
+        raw_delta = (
+            callback.new_message["delta"]
+            if "delta" in callback.new_message
+            else callback.new_message.get("text")
+        )
         if canonical_assistant_delta_event(stage="message", payload={"delta": raw_delta}) is None:
             callback_for_events = callback.model_copy(update={"new_message": None})
     events = callback_event_to_run_events(callback_for_events)

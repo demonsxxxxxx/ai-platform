@@ -54,7 +54,6 @@ from app.required_tool_contract import (
     required_tool_completion_for_run,
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
-from app.runtime.event_bridge import canonical_assistant_delta_event
 from app.settings import get_settings
 from app.skills.catalog import (
     RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY,
@@ -457,6 +456,33 @@ AGENT_STEP_EVENT_STATUS = {
     "agent_step_blocked": "failed",
     "agent_step_failed": "failed",
 }
+
+CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
+_ASSISTANT_DELTA_INPUT_STAGES = frozenset({"message", "assistant"})
+
+
+def _canonical_assistant_delta_event(
+    *,
+    stage: str,
+    payload: dict[str, Any] | None,
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Return the sole persisted answer-delta shape accepted from executors."""
+    if stage not in _ASSISTANT_DELTA_INPUT_STAGES or not isinstance(payload, dict):
+        return None
+    delta = payload.get("delta")
+    if not isinstance(delta, str) or not delta:
+        return None
+    return (
+        "answer",
+        "",
+        {
+            "delta": delta,
+            "source": CHAT_ASSISTANT_DELTA_SOURCE,
+            "visible_to_user": True,
+            "severity": "info",
+        },
+    )
+
 
 def _sanitize_artifact_manifest(value: Any) -> Any:
     if isinstance(value, dict):
@@ -2483,7 +2509,7 @@ async def process_run_payload(
         event_payload = payload
         persist_event = True
         if event_type == "assistant_delta":
-            canonical_delta = canonical_assistant_delta_event(
+            canonical_delta = _canonical_assistant_delta_event(
                 stage=stage,
                 payload=payload,
             )

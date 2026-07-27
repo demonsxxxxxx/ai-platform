@@ -1,5 +1,3 @@
-from collections.abc import Mapping
-
 from app.public_execution import (
     PUBLIC_EXECUTION_EVENT_TYPES,
     validate_public_execution_step_payload,
@@ -38,9 +36,6 @@ EVENT_STAGE_MAP = {
     "run_cancelled": "control",
 }
 
-CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
-ASSISTANT_DELTA_INPUT_STAGES = frozenset({"message", "assistant"})
-
 _RAW_TOOL_PRIVATE_FIELDS = frozenset(
     {
         "command",
@@ -63,29 +58,6 @@ def _private_executor_event() -> dict[str, object]:
         "message": "",
         "payload": {"visible_to_user": False, "admin_only": True},
     }
-
-
-def canonical_assistant_delta_event(
-    *,
-    stage: str,
-    payload: Mapping[str, object] | None,
-) -> tuple[str, str, dict[str, object]] | None:
-    """Return the sole persisted public answer-delta shape accepted from executors."""
-    if stage not in ASSISTANT_DELTA_INPUT_STAGES or not isinstance(payload, Mapping):
-        return None
-    delta = payload.get("delta")
-    if not isinstance(delta, str) or not delta:
-        return None
-    return (
-        "answer",
-        "",
-        {
-            "delta": delta,
-            "source": CHAT_ASSISTANT_DELTA_SOURCE,
-            "visible_to_user": True,
-            "severity": "info",
-        },
-    )
 
 
 def agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:

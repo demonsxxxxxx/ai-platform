@@ -957,8 +957,16 @@ def test_executor_callback_rejects_empty_or_non_string_assistant_delta(monkeypat
     assert [event["event_type"] for event in persisted] == ["executor_callback"]
 
 
-@pytest.mark.parametrize("delta", ["", 7])
-def test_executor_callback_rejects_empty_or_non_string_new_message_delta(monkeypatch, delta):
+@pytest.mark.parametrize(
+    "new_message",
+    [
+        {"type": "assistant", "delta": ""},
+        {"type": "assistant", "delta": 7},
+        {"type": "assistant", "delta": "", "text": "non-authoritative fallback"},
+        {"type": "assistant", "delta": 7, "text": "non-authoritative fallback"},
+    ],
+)
+def test_executor_callback_rejects_empty_or_non_string_new_message_delta(monkeypatch, new_message):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     persisted = []
 
@@ -985,9 +993,52 @@ def test_executor_callback_rejects_empty_or_non_string_new_message_delta(monkeyp
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
         headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json=callback_payload(new_message={"type": "assistant", "delta": delta}, state_patch={}),
+        json=callback_payload(new_message=new_message, state_patch={}),
     )
 
     assert response.status_code == 200
     assert response.json() == {"accepted": True, "event_count": 1}
     assert [event["event_type"] for event in persisted] == ["executor_callback"]
+
+
+def test_executor_callback_uses_text_when_delta_is_absent(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    persisted = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def fake_get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
+
+    async def fake_append_event(conn, **event):
+        persisted.append(event)
+        return f"evt_{len(persisted)}"
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(new_message={"type": "assistant", "text": "text fallback"}, state_patch={}),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True, "event_count": 2}
+    assert persisted[1]["event_type"] == "assistant_delta"
+    assert persisted[1]["stage"] == "answer"
+    assert persisted[1]["message"] == ""
+    assert persisted[1]["payload"] == {
+        "delta": "text fallback",
+        "source": "worker_answer_delta_v1",
+        "visible_to_user": True,
+        "severity": "info",
+    }
