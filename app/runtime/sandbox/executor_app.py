@@ -16,9 +16,9 @@ import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, status
@@ -64,11 +64,10 @@ CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
 CallbackSender = Callable[[str, CallbackPayload, str], Awaitable[CallbackResult] | CallbackResult]
 
-@dataclass(frozen=True)
-class _PrivateExecutionFact:
+class _PrivateExecutionFact(NamedTuple):
     """Private runner fact paired with an optional public capability event."""
 
-    fact: dict[str, str]
+    fact: dict[str, str] | None
     public_event: AgentEvent | None = None
 
     @property
@@ -76,6 +75,20 @@ class _PrivateExecutionFact:
         """Keep in-process lifecycle observers on the public event vocabulary."""
 
         return self.public_event.type if self.public_event is not None else "execution_step"
+
+    def public_events(self, projector: PublicExecutionProjector) -> list[AgentEvent]:
+        """Project this private fact into one ordered, public-safe callback batch."""
+
+        events = []
+        if self.public_event is not None:
+            events.append(AgentEvent.model_validate(self.public_event.model_dump()))
+        timeline = projector.project(self.fact)
+        timeline_type = public_execution_event_type_for_lifecycle(
+            self.fact.get("lifecycle") if self.fact is not None else None
+        )
+        if timeline is not None and timeline_type is not None:
+            events.append(AgentEvent(type=timeline_type, message="", payload=timeline))
+        return events
 
 
 ExecutorEventEmitter = Callable[[AgentEvent | _PrivateExecutionFact], Awaitable[bool]]
@@ -106,52 +119,32 @@ def _callback_acknowledges_exact_batch(result: object, *, event_count: int) -> b
     ) is int and acknowledged_count == 1 + event_count
 
 
-def _public_lifecycle_status(lifecycle_phase: str) -> str:
-    return {"invocation_requested": "invoking", "completed": "completed", "failed": "failed"}[
-        lifecycle_phase
-    ]
-
-
-def _lifecycle_callback_event(
+def _private_capability_fact(
     *,
-    capability_kind: str,
-    label: str,
-    lifecycle_phase: str,
-) -> AgentEvent:
-    status_value = _public_lifecycle_status(lifecycle_phase)
-    payload: dict[str, object] = {
-        "capability": {"kind": capability_kind, "name": label, "status": status_value}
-    }
-    return AgentEvent(
-        type=f"capability_{status_value}",
-        message="Capability lifecycle update",
-        payload=payload,
+    evidence: RequiredCapabilityEvidence,
+    callback_label: str,
+    timeline_label: str,
+) -> _PrivateExecutionFact:
+    """Build both public views from one verified capability lifecycle fact."""
+
+    callback_status, timeline_status = {"invocation_requested": ("invoking", "started"),
+                                        "completed": ("completed", "completed"),
+                                        "failed": ("failed", "failed")}[evidence.lifecycle_phase]
+    return _PrivateExecutionFact(
+        fact={
+            "fact_kind": "capability_invocation",
+            "invocation_id": str(evidence.tool_call_id),
+            "lifecycle": timeline_status,
+            "public_label": timeline_label,
+        },
+        public_event=AgentEvent(
+            type=f"capability_{callback_status}",
+            message="Capability lifecycle update",
+            payload={"capability": {
+                "kind": evidence.capability_kind, "name": callback_label, "status": callback_status,
+            }},
+        ),
     )
-
-
-def _public_tool_lifecycle_label(fact: dict[str, str]) -> str | None:
-    """Map real builtin tool names to fixed server-owned public labels."""
-
-    tool_name = str(fact.get("tool_name") or "")
-    return _PUBLIC_TOOL_LIFECYCLE_LABELS.get(tool_name)
-
-
-def _public_execution_fact_for_capability(
-    *, evidence: RequiredCapabilityEvidence, label: str
-) -> dict[str, str] | None:
-    lifecycle = {
-        "invocation_requested": "started",
-        "completed": "completed",
-        "failed": "failed",
-    }.get(evidence.lifecycle_phase)
-    if lifecycle is None or not evidence.tool_call_id:
-        return None
-    return {
-        "fact_kind": "capability_invocation",
-        "invocation_id": str(evidence.tool_call_id),
-        "lifecycle": lifecycle,
-        "public_label": label,
-    }
 
 
 _CONTROLLED_FILE_SKILLS = {"baoyu-translate", "qa-file-reviewer"}
@@ -962,24 +955,11 @@ async def _run_selected_authorized_file_skill(
             tool_call_id=invocation_id,
             lifecycle_phase=lifecycle_phase,
         )
-        label = "Skill"
         acknowledged = await emit_event(
-            _PrivateExecutionFact(
-                public_event=_lifecycle_callback_event(
-                    capability_kind="skill",
-                    label=label,
-                    lifecycle_phase=lifecycle_phase,
-                ),
-                fact={
-                    "fact_kind": "capability_invocation",
-                    "invocation_id": invocation_id,
-                    "lifecycle": {
-                        "invocation_requested": "started",
-                        "completed": "completed",
-                        "failed": "failed",
-                    }[lifecycle_phase],
-                    "public_label": "Authorized file processing",
-                },
+            _private_capability_fact(
+                evidence=evidence,
+                callback_label="Skill",
+                timeline_label="Authorized file processing",
             )
         )
         if acknowledged is not True:
@@ -1200,7 +1180,7 @@ async def _default_executor_runner(
     async def on_tool_lifecycle(fact: dict[str, str]) -> None:
         """Forward only a mapped server-owned lifecycle fact to the request projector."""
 
-        label = _public_tool_lifecycle_label(fact)
+        label = _PUBLIC_TOOL_LIFECYCLE_LABELS.get(str(fact.get("tool_name") or ""))
         if label is None:
             return
         await emit_event(
@@ -1259,16 +1239,10 @@ async def _default_executor_runner(
             lifecycle_sequence_failed["value"] = True
             return
         acknowledged = await emit_event(
-            _PrivateExecutionFact(
-                public_event=_lifecycle_callback_event(
-                    capability_kind=evidence.capability_kind,
-                    label=label,
-                    lifecycle_phase=evidence.lifecycle_phase,
-                ),
-                fact=_public_execution_fact_for_capability(
-                    evidence=evidence,
-                    label=label,
-                ),
+            _private_capability_fact(
+                evidence=evidence,
+                callback_label=label,
+                timeline_label=label,
             )
         )
         if acknowledged is True:
@@ -1473,65 +1447,31 @@ def create_executor_app(
             nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
             if not runner_events_open["value"]:
                 return False
-            private_fact = event if isinstance(event, _PrivateExecutionFact) else None
-            agent_event = private_fact.public_event if private_fact is not None else (
-                event if isinstance(event, AgentEvent) else AgentEvent.model_validate(event)
-            )
-            timeline_fact = private_fact.fact if private_fact is not None else None
-            raw_payload = dict(agent_event.payload) if agent_event is not None else {}
-            if agent_event is not None and agent_event.type in {
-                "execution_step",
-                "execution_progress",
-                "execution_step_completed",
-                "execution_step_failed",
-            }:
-                # A runner cannot forge a public timeline row. Only this request
-                # projector may convert a server-owned private fact.
-                return False
-            if agent_event is not None and agent_event.type.startswith("tool_call") and {
-                "command",
-                "args",
-                "arguments",
-                "result",
-                "output",
-                "tool_input",
-                "tool_output",
-                "private_payload",
-                "executor_private_payload",
-            } & set(raw_payload):
-                return True
-            projected_timeline = public_execution_projector.project(timeline_fact)
-            public_execution_event_type = public_execution_event_type_for_lifecycle(
-                timeline_fact.get("lifecycle") if isinstance(timeline_fact, dict) else None
-            )
-            if private_fact is not None and agent_event is None:
-                if projected_timeline is None or public_execution_event_type is None:
+            if isinstance(event, _PrivateExecutionFact):
+                agent_event = event.public_event
+                agent_events = event.public_events(public_execution_projector)
+                if not agent_events:
                     return True
-                agent_events = [
-                    AgentEvent(
-                        type=public_execution_event_type,
-                        message="",
-                        payload=projected_timeline,
-                    )
-                ]
+                event_type = event.type
             else:
-                assert agent_event is not None
-                outbound_event = AgentEvent(
+                agent_event = event if isinstance(event, AgentEvent) else AgentEvent.model_validate(event)
+                raw_payload = dict(agent_event.payload)
+                if agent_event.type in {
+                    "execution_step", "execution_progress", "execution_step_completed", "execution_step_failed"
+                }:
+                    return False
+                if agent_event.type.startswith("tool_call") and {
+                    "command", "args", "arguments", "result", "output", "tool_input", "tool_output",
+                    "private_payload", "executor_private_payload",
+                } & set(raw_payload):
+                    return True
+                agent_events = [AgentEvent(
                     type=agent_event.type,
                     message=agent_event.message,
                     payload=raw_payload,
                     admin_only=agent_event.admin_only,
-                )
-                agent_events = [outbound_event]
-                if projected_timeline is not None and public_execution_event_type is not None:
-                    agent_events.append(
-                        AgentEvent(
-                            type=public_execution_event_type,
-                            message="",
-                            payload=projected_timeline,
-                        )
-                    )
-            event_type = agent_event.type if agent_event is not None else public_execution_event_type
+                )]
+                event_type = agent_event.type
             if event_type == "assistant_delta" and executor_first_token_latency_ms is None:
                 executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
             if event_type and event_type.startswith("tool_call") and executor_tool_call_latency_ms is None:
