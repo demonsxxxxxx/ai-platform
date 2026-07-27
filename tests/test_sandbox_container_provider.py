@@ -4044,7 +4044,7 @@ async def test_opensandbox_provider_cleans_up_created_sandbox_on_cancel(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_provider_stop_and_cleanup_are_scope_bounded(monkeypatch):
+async def test_opensandbox_provider_stop_is_scope_bounded(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
@@ -4059,50 +4059,6 @@ async def test_opensandbox_provider_stop_and_cleanup_are_scope_bounded(monkeypat
     assert FakeOpenSandbox.instances["osb-run-a"].closed is True
     assert lease.container_id not in provider._sandboxes
     assert f"opensandbox-{lease.run_id}" not in provider._leases
-
-    same_tenant_failed = FakeOpenSandbox(
-        sandbox_id="osb-orphan-a",
-        metadata={
-            "ai-platform.owner": "sandbox-runtime",
-            "ai-platform.tenant_id": "tenant-a",
-            "ai-platform.workspace_id": "workspace-a",
-            "ai-platform.user_id": "user-a",
-            "ai-platform.session_id": "session-a",
-            "ai-platform.run_id": "run-orphan-a",
-            "ai-platform.attempt_id": "qat-test-attempt",
-            "ai-platform.sandbox_mode": "ephemeral",
-            "ai-platform.browser_enabled": "false",
-        },
-        state="FAILED",
-    )
-    same_tenant_running = FakeOpenSandbox(
-        sandbox_id="osb-running-a",
-        metadata={**same_tenant_failed.metadata, "ai-platform.run_id": "run-running-a"},
-        state="RUNNING",
-    )
-    foreign_failed = FakeOpenSandbox(
-        sandbox_id="osb-orphan-b",
-        metadata={**same_tenant_failed.metadata, "ai-platform.tenant_id": "tenant-b", "ai-platform.run_id": "run-orphan-b"},
-        state="FAILED",
-    )
-    FakeOpenSandbox.instances.update(
-        {
-            same_tenant_failed.id: same_tenant_failed,
-            same_tenant_running.id: same_tenant_running,
-            foreign_failed.id: foreign_failed,
-        }
-    )
-    FakeOpenSandboxManager.sandboxes = [same_tenant_failed, same_tenant_running, foreign_failed]
-
-    results = await provider.cleanup_orphan_containers(
-        {"tenant_id": "tenant-a", "attempt_id": "qat-test-attempt"},
-        reason="admin_runtime",
-    )
-
-    assert [item.container_id for item in results] == ["osb-orphan-a"]
-    assert FakeOpenSandboxManager.killed == ["osb-orphan-a"]
-    assert same_tenant_running.killed is False
-    assert foreign_failed.killed is False
 
 
 @pytest.mark.asyncio
@@ -4161,6 +4117,8 @@ def _inventory_sandbox(sandbox_id: str, *, tenant_id: str, attempt_id: str) -> F
             "ai-platform.attempt_id": attempt_id,
             "ai-platform.sandbox_mode": "ephemeral",
             "ai-platform.browser_enabled": "false",
+            "ai-platform.provider_backend": "opensandbox",
+            "ai-platform.security_profile": "trusted_internal",
         },
         state="FAILED",
     )
@@ -4216,9 +4174,19 @@ async def test_opensandbox_sdk_inventory_and_cleanup_exhaust_all_pages_with_exac
             type(self).killed.append(sandbox_id)
 
     provider = _paged_opensandbox_provider(PagedManager)
-    filters = {"tenant_id": "tenant-a", "attempt_id": "attempt-a"}
-    statuses = await provider.list_runtime_containers(filters)
-    results = await provider.cleanup_orphan_containers(filters, reason="orphan_reconciliation")
+    inventory_filters = {"tenant_id": "tenant-a", "attempt_id": "attempt-a"}
+    cleanup_filters = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "sandbox_mode": "ephemeral",
+        "security_profile": "trusted_internal",
+    }
+    statuses = await provider.list_runtime_containers(inventory_filters)
+    results = await provider.cleanup_orphan_containers(cleanup_filters, reason="orphan_reconciliation")
 
     assert len(statuses) == len(results) == 101
     assert statuses[-1].container_id == "osb-target-100"
@@ -4226,12 +4194,29 @@ async def test_opensandbox_sdk_inventory_and_cleanup_exhaust_all_pages_with_exac
     assert foreign_tenant.id not in PagedManager.killed
     assert foreign_attempt.id not in PagedManager.killed
     assert [(item.page, item.page_size) for item in PagedManager.calls] == [(1, 100), (2, 100), (1, 100), (2, 100)]
-    expected_metadata = {
+    inventory_metadata = {
         "ai-platform.owner": "sandbox-runtime",
         "ai-platform.tenant_id": "tenant-a",
         "ai-platform.attempt_id": "attempt-a",
     }
-    assert all(item.metadata == expected_metadata for item in PagedManager.calls)
+    cleanup_metadata = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.provider_backend": "opensandbox",
+        "ai-platform.tenant_id": "tenant-a",
+        "ai-platform.workspace_id": "workspace-a",
+        "ai-platform.user_id": "user-a",
+        "ai-platform.session_id": "session-a",
+        "ai-platform.run_id": "run-a",
+        "ai-platform.attempt_id": "attempt-a",
+        "ai-platform.sandbox_mode": "ephemeral",
+        "ai-platform.security_profile": "trusted_internal",
+    }
+    assert [item.metadata for item in PagedManager.calls] == [
+        inventory_metadata,
+        inventory_metadata,
+        cleanup_metadata,
+        cleanup_metadata,
+    ]
 
 
 @pytest.mark.asyncio

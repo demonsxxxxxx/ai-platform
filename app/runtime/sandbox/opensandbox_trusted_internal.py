@@ -19,10 +19,25 @@ SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL = "trusted_internal"
 SANDBOX_SECURITY_PROFILE_LABEL = "ai-platform.security_profile"
 
 _GOVERNED_EGRESS_PROOF_LABEL = "ai-platform.governed_egress.proof"
-_BRIDGE_PATHS = {
+_GOVERNED_BRIDGE_PATHS = {
     "callback": "",
     "openai": "/openai/v1",
     "anthropic": "/anthropic",
+}
+_TRUSTED_DIRECT_PATHS = {
+    "callback": "",
+    "openai": "/v1",
+    "anthropic": "",
+}
+_TRUSTED_ORPHAN_CLEANUP_FILTER_LABELS = {
+    "tenant_id": "ai-platform.tenant_id",
+    "workspace_id": "ai-platform.workspace_id",
+    "user_id": "ai-platform.user_id",
+    "session_id": "ai-platform.session_id",
+    "run_id": "ai-platform.run_id",
+    "attempt_id": "ai-platform.attempt_id",
+    "sandbox_mode": "ai-platform.sandbox_mode",
+    "security_profile": SANDBOX_SECURITY_PROFILE_LABEL,
 }
 _DNS_HOSTNAME = re.compile(
     r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
@@ -93,7 +108,7 @@ def require_provider_profile_compatibility(settings: Any, provider_name: object)
 
 def _canonical_governed_bridge_base(value: object, *, kind: str) -> str:
     raw = str(value or "")
-    expected_path = _BRIDGE_PATHS[kind]
+    expected_path = _GOVERNED_BRIDGE_PATHS[kind]
     try:
         parsed = urlsplit(raw)
         port = parsed.port
@@ -249,9 +264,9 @@ def _validate_trusted_endpoint(settings: Any) -> None:
         raise OpenSandboxProfileConfigurationError("trusted_internal OpenSandbox endpoint is invalid") from None
 
 
-def _canonical_trusted_base(value: object, *, kind: str) -> str:
+def _canonical_trusted_direct_base(value: object, *, kind: str) -> str:
     raw = str(value or "")
-    expected_path = _BRIDGE_PATHS[kind]
+    expected_path = _TRUSTED_DIRECT_PATHS[kind]
     try:
         parsed = urlsplit(raw)
         port = parsed.port
@@ -285,30 +300,37 @@ def _canonical_trusted_base(value: object, *, kind: str) -> str:
 
 def _trusted_egress_bases(settings: Any) -> ExecutorEgressBases:
     bases = ExecutorEgressBases(
-        callback_base_url=_canonical_trusted_base(
-            getattr(settings, "opensandbox_external_egress_callback_base_url", ""),
+        callback_base_url=_canonical_trusted_direct_base(
+            getattr(settings, "opensandbox_trusted_internal_callback_base_url", ""),
             kind="callback",
         ),
-        openai_base_url=_canonical_trusted_base(
-            getattr(settings, "opensandbox_external_egress_openai_base_url", ""),
+        openai_base_url=_canonical_trusted_direct_base(
+            getattr(settings, "opensandbox_trusted_internal_openai_base_url", ""),
             kind="openai",
         ),
-        anthropic_base_url=_canonical_trusted_base(
-            getattr(settings, "opensandbox_external_egress_anthropic_base_url", ""),
+        anthropic_base_url=_canonical_trusted_direct_base(
+            getattr(settings, "opensandbox_trusted_internal_anthropic_base_url", ""),
             kind="anthropic",
         ),
     )
-    origins = {
-        (urlsplit(value).scheme, urlsplit(value).hostname, urlsplit(value).port)
-        for value in (
-            bases.callback_base_url,
-            bases.openai_base_url,
-            bases.anthropic_base_url,
-        )
+    parsed_bases = {
+        "callback": urlsplit(bases.callback_base_url),
+        "openai": urlsplit(bases.openai_base_url),
+        "anthropic": urlsplit(bases.anthropic_base_url),
     }
-    if len(origins) != 1:
+    if len({parsed.hostname for parsed in parsed_bases.values()}) != 1:
         raise OpenSandboxProfileConfigurationError(
-            "trusted_internal OpenSandbox dedicated base origin drift detected"
+            "trusted_internal OpenSandbox dedicated base host drift detected"
+        )
+    openai = parsed_bases["openai"]
+    anthropic = parsed_bases["anthropic"]
+    if (openai.scheme, openai.hostname, openai.port) != (
+        anthropic.scheme,
+        anthropic.hostname,
+        anthropic.port,
+    ):
+        raise OpenSandboxProfileConfigurationError(
+            "trusted_internal OpenSandbox model base origin drift detected"
         )
     try:
         bases.callback_target()
@@ -543,6 +565,52 @@ def _has_governed_projection(labels: Mapping[object, object]) -> bool:
         str(key).startswith(("ai-platform.external_egress.", "ai-platform.governed_egress."))
         or str(key) == "ai-platform.runtime_subject"
         for key in labels
+    )
+
+
+def trusted_internal_orphan_cleanup_metadata_filter(
+    filters: Mapping[str, object],
+) -> dict[str, str] | None:
+    """Return an exact remote filter only for a complete trusted lease scope."""
+
+    if set(filters) != set(_TRUSTED_ORPHAN_CLEANUP_FILTER_LABELS):
+        return None
+    values: dict[str, str] = {}
+    for field, label in _TRUSTED_ORPHAN_CLEANUP_FILTER_LABELS.items():
+        value = filters.get(field)
+        if (
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or len(value) > 512
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        ):
+            return None
+        values[label] = value
+    if (
+        values["ai-platform.sandbox_mode"] not in {"ephemeral", "persistent"}
+        or values[SANDBOX_SECURITY_PROFILE_LABEL] != SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
+    ):
+        return None
+    return {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.provider_backend": "opensandbox",
+        **values,
+    }
+
+
+def trusted_internal_orphan_cleanup_identity_is_authorized(
+    status_labels: object,
+    filters: Mapping[str, object],
+) -> bool:
+    """Match an authoritative readback to one complete trusted cleanup scope."""
+
+    expected = trusted_internal_orphan_cleanup_metadata_filter(filters)
+    return (
+        expected is not None
+        and isinstance(status_labels, dict)
+        and not _has_governed_projection(status_labels)
+        and all(status_labels.get(key) == value for key, value in expected.items())
     )
 
 

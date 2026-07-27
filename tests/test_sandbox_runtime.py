@@ -512,9 +512,9 @@ async def test_runtime_trusted_internal_callback_uses_same_dedicated_profile_sea
         opensandbox_use_server_proxy = False
         opensandbox_executor_image = "sha256:" + "a" * 64
         opensandbox_executor_image_digest = "sha256:" + "a" * 64
-        opensandbox_external_egress_callback_base_url = "http://10.56.0.211:18443"
-        opensandbox_external_egress_openai_base_url = "http://10.56.0.211:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "http://10.56.0.211:18443/anthropic"
+        opensandbox_trusted_internal_callback_base_url = "http://10.56.0.211:8020"
+        opensandbox_trusted_internal_openai_base_url = "http://10.56.0.211:3002/v1"
+        opensandbox_trusted_internal_anthropic_base_url = "http://10.56.0.211:3002"
 
     class OpenSandboxProvider(FakeContainerProvider):
         async def create_or_reuse(self, runtime_request, workspace):
@@ -537,9 +537,9 @@ async def test_runtime_trusted_internal_callback_uses_same_dedicated_profile_sea
 
     await runtime.submit(request())
 
-    assert sent[0].callback_base_url == StubSettings.opensandbox_external_egress_callback_base_url
+    assert sent[0].callback_base_url == StubSettings.opensandbox_trusted_internal_callback_base_url
     assert sent[0].callback_url == (
-        "http://10.56.0.211:18443/api/ai/runtime/callbacks/executor"
+        "http://10.56.0.211:8020/api/ai/runtime/callbacks/executor"
     )
     assert StubSettings.sandbox_callback_base_url not in repr(sent[0].model_dump())
 
@@ -1044,9 +1044,9 @@ async def test_runtime_persists_trusted_internal_profile_without_governed_projec
         sandbox_security_profile = "trusted_internal"
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
-        opensandbox_external_egress_callback_base_url = "http://10.56.0.211:18443"
-        opensandbox_external_egress_openai_base_url = "http://10.56.0.211:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "http://10.56.0.211:18443/anthropic"
+        opensandbox_trusted_internal_callback_base_url = "http://10.56.0.211:8020"
+        opensandbox_trusted_internal_openai_base_url = "http://10.56.0.211:3002/v1"
+        opensandbox_trusted_internal_anthropic_base_url = "http://10.56.0.211:3002"
 
     labels = {
         "ai-platform.owner": "sandbox-runtime",

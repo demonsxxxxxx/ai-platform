@@ -352,15 +352,21 @@ def test_opensandbox_overlay_selects_explicit_trusted_internal_profile_and_requi
             "OPENSANDBOX_API_KEY",
             "OPENSANDBOX_EXECUTOR_IMAGE",
             "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
-            "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL",
-            "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL",
-            "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL",
+            "OPENSANDBOX_TRUSTED_INTERNAL_CALLBACK_BASE_URL",
+            "OPENSANDBOX_TRUSTED_INTERNAL_OPENAI_BASE_URL",
+            "OPENSANDBOX_TRUSTED_INTERNAL_ANTHROPIC_BASE_URL",
         ):
             assert environment[required].startswith("${")
             assert ":?set " in environment[required]
 
+    assert set(overlay["services"]) == {"api", "worker"}
+    assert "AI_PLATFORM_S72_BRIDGE_" not in OPENSANDBOX_COMPOSE_FILE.read_text(encoding="utf-8")
     assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
     assert "trusted_internal" in env_example
+    assert "OPENSANDBOX_TRUSTED_INTERNAL_CALLBACK_BASE_URL=http://10.56.0.211:8020" in env_example
+    assert "OPENSANDBOX_TRUSTED_INTERNAL_OPENAI_BASE_URL=http://10.56.0.211:3002/v1" in env_example
+    assert "OPENSANDBOX_TRUSTED_INTERNAL_ANTHROPIC_BASE_URL=http://10.56.0.211:3002" in env_example
+    assert "AI_PLATFORM_S72_BRIDGE_" not in env_example
 
 
 def test_compose_does_not_mount_docker_socket_by_default():

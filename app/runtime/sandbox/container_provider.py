@@ -74,6 +74,8 @@ from app.runtime.sandbox.opensandbox_trusted_internal import (
     runtime_scope_labels,
     trusted_internal_cleanup_identity_is_authorized,
     trusted_internal_lease_labels,
+    trusted_internal_orphan_cleanup_identity_is_authorized,
+    trusted_internal_orphan_cleanup_metadata_filter,
 )
 from app.runtime.sandbox import readiness_evidence
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
@@ -4953,22 +4955,20 @@ class OpenSandboxContainerProvider:
             raise ContainerStartFailedError("OpenSandbox inventory failed") from exc
 
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
-        if not all(isinstance(filters.get(key), str) and filters[key] for key in ("tenant_id", "attempt_id")):
-            raise ContainerCleanupFailedError("OpenSandbox cleanup requires exact tenant and attempt scope")
+        metadata_filter = trusted_internal_orphan_cleanup_metadata_filter(filters)
+        if metadata_filter is None:
+            return []
         settings = get_settings()
         manager = await self._manager(self._connection_config(settings))
         try:
-            metadata_filter = {
-                f"ai-platform.{key}": value
-                for key, value in filters.items()
-                if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id", "sandbox_mode"}
-            }
-            metadata_filter["ai-platform.owner"] = "sandbox-runtime"
             infos = await self._list_all_sandbox_infos(manager, metadata_filter)
             results: list[StopResult] = []
             for info in infos or []:
                 status = _opensandbox_status_from_info(info)
-                if status is None or not _matches_filters(status, filters):
+                if status is None or not trusted_internal_orphan_cleanup_identity_is_authorized(
+                    status.detail.get("labels"),
+                    filters,
+                ):
                     continue
                 if status.status == "running":
                     continue

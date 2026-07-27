@@ -4,6 +4,7 @@ import pytest
 
 from app.runtime.sandbox.opensandbox_trusted_internal import (
     OpenSandboxProfileConfigurationError,
+    trusted_internal_orphan_cleanup_metadata_filter,
     validate_opensandbox_image_reference,
 )
 from test_sandbox_container_provider import (
@@ -22,9 +23,9 @@ class TrustedInternalOpenSandboxSettings(OpenSandboxSettings):
     opensandbox_domain = "10.56.1.72:8080"
     opensandbox_api_key = "test-stock-opensandbox-key"
     opensandbox_executor_image = "registry.example/ai-platform@sha256:" + "a" * 64
-    opensandbox_external_egress_callback_base_url = "http://10.56.0.211:18443"
-    opensandbox_external_egress_openai_base_url = "http://10.56.0.211:18443/openai/v1"
-    opensandbox_external_egress_anthropic_base_url = "http://10.56.0.211:18443/anthropic"
+    opensandbox_trusted_internal_callback_base_url = "http://10.56.0.211:8020"
+    opensandbox_trusted_internal_openai_base_url = "http://10.56.0.211:3002/v1"
+    opensandbox_trusted_internal_anthropic_base_url = "http://10.56.0.211:3002"
     openai_api_key = "test-model-api-key"
     anthropic_auth_token = "test-model-auth-token"
 
@@ -54,7 +55,6 @@ def test_immutable_image_validation_rejects_mutable_mismatch_and_governed_local_
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        pytest.param("sandbox_security_profile", "governed", id="profile"),
         pytest.param("opensandbox_api_key", "", id="api-key"),
         pytest.param("opensandbox_domain", "opensandbox.internal:8080", id="literal-endpoint"),
         pytest.param("opensandbox_domain", "8.8.8.8:8080", id="private-endpoint"),
@@ -64,19 +64,89 @@ def test_immutable_image_validation_rejects_mutable_mismatch_and_governed_local_
         pytest.param("opensandbox_executor_image", "registry.example/ai-platform:latest", id="immutable-image"),
         pytest.param("opensandbox_executor_image_digest", "sha256:" + "b" * 64, id="matching-digest"),
         pytest.param(
-            "opensandbox_external_egress_callback_base_url",
-            "http://bridge.internal:18443",
-            id="callback-literal",
+            "opensandbox_trusted_internal_callback_base_url",
+            "https://bridge.internal.example:18443",
+            id="governed-bridge-callback",
         ),
         pytest.param(
-            "opensandbox_external_egress_openai_base_url",
-            "http://10.56.0.211:18443/v1",
-            id="openai-dedicated-base",
+            "opensandbox_trusted_internal_openai_base_url",
+            "https://bridge.internal.example:18443/openai/v1",
+            id="governed-bridge-openai",
         ),
         pytest.param(
-            "opensandbox_external_egress_anthropic_base_url",
-            "http://8.8.8.8:18443/anthropic",
-            id="anthropic-private-base",
+            "opensandbox_trusted_internal_anthropic_base_url",
+            "https://bridge.internal.example:18443/anthropic",
+            id="governed-bridge-anthropic",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_callback_base_url",
+            "http://10.56.0.212:8020",
+            id="callback-host-drift",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_openai_base_url",
+            "http://10.56.0.212:3002/v1",
+            id="model-host-drift",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_anthropic_base_url",
+            "http://10.56.0.211:3003",
+            id="model-port-drift",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_callback_base_url",
+            "http://10.56.0.211:8020/callback",
+            id="callback-path",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_openai_base_url",
+            "http://10.56.0.211:3002/openai/v1",
+            id="openai-path",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_anthropic_base_url",
+            "http://10.56.0.211:3002/anthropic",
+            id="anthropic-path",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_callback_base_url",
+            "http://platform.internal:8020",
+            id="hostname",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_callback_base_url",
+            "http://127.0.0.1:8020",
+            id="unsafe-loopback",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_openai_base_url",
+            "http://8.8.8.8:3002/v1",
+            id="unsafe-public-ip",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_callback_base_url",
+            "http://0.0.0.0:8020",
+            id="unsafe-unspecified-ip",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_callback_base_url",
+            "http://240.0.0.1:8020",
+            id="unsafe-reserved-ip",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_callback_base_url",
+            "http://user@10.56.0.211:8020",
+            id="credentials",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_openai_base_url",
+            "http://10.56.0.211:3002/v1?model=test",
+            id="query",
+        ),
+        pytest.param(
+            "opensandbox_trusted_internal_anthropic_base_url",
+            "http://10.56.0.211:3002#fragment",
+            id="fragment",
         ),
     ],
 )
@@ -116,9 +186,12 @@ async def test_trusted_internal_opensandbox_uses_profile_bases_without_governed_
 
     created = FakeOpenSandbox.created[0]
     assert created["network_policy"] is None
-    assert created["env"]["AI_PLATFORM_CALLBACK_BASE_URL"] == settings.opensandbox_external_egress_callback_base_url
-    assert created["env"]["OPENAI_BASE_URL"] == settings.opensandbox_external_egress_openai_base_url
-    assert created["env"]["ANTHROPIC_BASE_URL"] == settings.opensandbox_external_egress_anthropic_base_url
+    assert created["env"]["AI_PLATFORM_CALLBACK_BASE_URL"] == settings.opensandbox_trusted_internal_callback_base_url
+    assert created["env"]["OPENAI_BASE_URL"] == settings.opensandbox_trusted_internal_openai_base_url
+    assert created["env"]["ANTHROPIC_BASE_URL"] == settings.opensandbox_trusted_internal_anthropic_base_url
+    callback_target = container_provider.executor_callback_target(settings, "opensandbox")
+    assert callback_target.base_url == "http://10.56.0.211:8020"
+    assert callback_target.callback_url == "http://10.56.0.211:8020/api/ai/runtime/callbacks/executor"
     assert lease.labels["ai-platform.security_profile"] == "trusted_internal"
     assert lease.labels["ai-platform.provider_backend"] == "opensandbox"
     assert all("governed_egress" not in key and "external_egress" not in key for key in lease.labels)
@@ -233,9 +306,7 @@ async def test_trusted_internal_dispatch_rejects_configured_profile_drift_and_cl
     FakeOpenSandbox.reset()
     settings = TrustedInternalOpenSandboxSettings()
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
-    provider = opensandbox_provider(
-        capability_profile_fetcher=lambda *_args: pytest.fail("trusted_internal must not fetch governed capability")
-    )
+    provider = opensandbox_provider()
     sandbox_request = request()
     leased_workspace = workspace()
     lease = await provider.create_or_reuse(sandbox_request, leased_workspace)
@@ -304,3 +375,107 @@ async def test_trusted_internal_opensandbox_accepts_exact_preloaded_local_image_
     assert FakeOpenSandbox.created[0]["image"] == settings.opensandbox_executor_image
     assert lease.labels["ai-platform.executor.requested_image"] == settings.opensandbox_executor_image
     assert lease.labels["ai-platform.executor.requested_image_digest"] == settings.opensandbox_executor_image
+
+
+def _trusted_orphan_filters(**overrides):
+    values = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "qat-test-attempt",
+        "sandbox_mode": "ephemeral",
+        "security_profile": "trusted_internal",
+    }
+    values.update(overrides)
+    return values
+
+
+def _trusted_orphan_metadata(**overrides):
+    values = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.provider_backend": "opensandbox",
+        "ai-platform.tenant_id": "tenant-a",
+        "ai-platform.workspace_id": "workspace-a",
+        "ai-platform.user_id": "user-a",
+        "ai-platform.session_id": "session-a",
+        "ai-platform.run_id": "run-a",
+        "ai-platform.attempt_id": "qat-test-attempt",
+        "ai-platform.sandbox_mode": "ephemeral",
+        "ai-platform.security_profile": "trusted_internal",
+        "ai-platform.browser_enabled": "false",
+    }
+    values.update(overrides)
+    return values
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_tenant_only_orphan_cleanup_is_safe_noop_before_manager(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    provider = opensandbox_provider()
+
+    async def unexpected_manager(_connection_config):
+        pytest.fail("tenant-only cleanup must not create an OpenSandbox manager")
+
+    monkeypatch.setattr(provider, "_manager", unexpected_manager)
+    monkeypatch.setattr(container_provider, "get_settings", lambda: pytest.fail("settings must not be read"))
+
+    assert await provider.cleanup_orphan_containers({"tenant_id": "tenant-a"}, reason="admin_runtime") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("metadata_override", "expected_killed"),
+    [
+        pytest.param({}, ["osb-orphan-a"], id="exact-scope"),
+        pytest.param({"ai-platform.run_id": "run-stale"}, [], id="run-mismatch"),
+        pytest.param({"ai-platform.security_profile": "governed"}, [], id="profile-mismatch"),
+    ],
+)
+async def test_opensandbox_orphan_cleanup_requires_exact_trusted_scope_and_readback(
+    monkeypatch,
+    metadata_override,
+    expected_killed,
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    settings = TrustedInternalOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    orphan = FakeOpenSandbox(
+        sandbox_id="osb-orphan-a",
+        metadata=_trusted_orphan_metadata(**metadata_override),
+        state="FAILED",
+    )
+
+    class RecordingManager:
+        def __init__(self):
+            self.list_calls = []
+            self.killed = []
+            self.closed = False
+
+        async def list_sandboxes(self, **kwargs):
+            self.list_calls.append(kwargs)
+            return [orphan]
+
+        async def kill_sandbox(self, sandbox_id):
+            self.killed.append(sandbox_id)
+
+        async def close(self):
+            self.closed = True
+
+    manager = RecordingManager()
+    provider = opensandbox_provider()
+
+    async def manager_factory(_connection_config):
+        return manager
+
+    monkeypatch.setattr(provider, "_manager", manager_factory)
+    filters = _trusted_orphan_filters()
+    expected_filter = trusted_internal_orphan_cleanup_metadata_filter(filters)
+
+    results = await provider.cleanup_orphan_containers(filters, reason="orphan_reconciliation")
+
+    assert manager.list_calls == [{"metadata": expected_filter}]
+    assert manager.killed == expected_killed
+    assert [result.container_id for result in results] == expected_killed
+    assert manager.closed is True
