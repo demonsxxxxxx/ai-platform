@@ -92,7 +92,7 @@ async def create_agent_profile(
                 agent_id=None,
             )
     except repositories.RepositoryConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
     return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)
 
 
@@ -119,7 +119,7 @@ async def save_agent_profile_draft(
                 agent_id=safe_agent_id,
             )
     except repositories.RepositoryConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
     return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)
 
 
@@ -137,11 +137,14 @@ async def publish_agent_profile(
         safe_agent_id = assert_safe_id(agent_id, "agent_id")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="agent_id_invalid") from exc
-    async with transaction() as conn:
-        profile, audit_id = await publish_draft(
-            conn,
-            principal=principal,
-            agent_id=safe_agent_id,
-            expected_revision=request.expected_revision,
-        )
+    try:
+        async with transaction() as conn:
+            profile, audit_id = await publish_draft(
+                conn,
+                principal=principal,
+                agent_id=safe_agent_id,
+                expected_revision=request.expected_revision,
+            )
+    except repositories.RepositoryConflictError as exc:
+        raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
     return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)

@@ -30,6 +30,7 @@ from app.runtime.sandbox.executor_app import (
     create_executor_app,
 )
 from app.tool_permission_lifecycle import tool_permission_budget
+from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 EXECUTOR_AUTH_TOKEN = "executor-secret"
 TRUSTED_CALLBACK_BASE_URL = "http://ai-platform.test"
@@ -400,7 +401,7 @@ def test_executor_system_prompt_uses_private_sdk_channel_without_public_leakage(
     [
         (None, "executor_system_prompt_invalid"),
         ({"role": "system", "content": "private-marker"}, "executor_system_prompt_invalid"),
-        ("x" * 16_001, "executor_system_prompt_too_large"),
+        ("x" * (MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS + 1), "executor_system_prompt_too_large"),
     ],
 )
 def test_executor_rejects_invalid_private_system_prompt_before_sdk_or_public_leakage(

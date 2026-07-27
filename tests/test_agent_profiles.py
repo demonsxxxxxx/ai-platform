@@ -13,6 +13,7 @@ from app.agent_profiles import (
 )
 from app.auth import AuthPrincipal
 from app.models import (
+    AgentProfileAdminProjection,
     AgentProfileDraftRequest,
     ChatStreamRequest,
     SelectedAgentProfileRequest,
@@ -20,6 +21,7 @@ from app.models import (
 )
 from app.repositories import RepositoryConflictError
 from app.main import create_app
+from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
 def auth_settings():
@@ -38,6 +40,22 @@ def ordinary_headers():
         "x-ai-tenant-id": "tenant-a",
         "x-ai-roles": "user",
         "x-ai-gateway-secret": "test-secret",
+    }
+
+
+def admin_headers():
+    return {**ordinary_headers(), "x-ai-roles": "admin"}
+
+
+def profile_draft_payload(instructions: str, *, expected_draft_revision: int = 0) -> dict[str, object]:
+    return {
+        "name": "Support assistant",
+        "description": "Approved support helper.",
+        "instructions": instructions,
+        "model_id": "model-a",
+        "selected_skill": {"skill_id": "general-chat", "expected_version": "version-a"},
+        "mcp_tool_ids": [],
+        "expected_draft_revision": expected_draft_revision,
     }
 
 
@@ -187,6 +205,85 @@ def test_agent_profile_admin_publish_requires_admin(monkeypatch):
 
     assert response.status_code == 403
     assert response.json()["detail"] == "not_ai_admin"
+
+
+def test_profile_instruction_length_is_rejected_by_the_admin_api_before_runtime(monkeypatch):
+    saved_instruction_lengths = []
+
+    async def save_profile(_conn, *, definition, **_kwargs):
+        saved_instruction_lengths.append(len(definition.instructions))
+        return (
+            AgentProfileAdminProjection(
+                agent_id="agt_support",
+                revision=1,
+                status="draft",
+                name=definition.name,
+                description=definition.description,
+                instructions=definition.instructions,
+                model_id=definition.model_id,
+                selected_skill=definition.selected_skill,
+                mcp_tool_ids=definition.mcp_tool_ids,
+                content_hash="a" * 64,
+            ),
+            "audit_profile_save",
+        )
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_apps.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_apps.save_draft", save_profile)
+    client = TestClient(create_app())
+    max_length_instructions = "界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+
+    accepted = client.post(
+        "/api/ai/admin/agent-profiles",
+        headers=admin_headers(),
+        json=profile_draft_payload(max_length_instructions),
+    )
+    rejected = client.post(
+        "/api/ai/admin/agent-profiles",
+        headers=admin_headers(),
+        json=profile_draft_payload(max_length_instructions + "界"),
+    )
+
+    assert accepted.status_code == 200
+    assert len(max_length_instructions.encode("utf-8")) > MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+    assert rejected.status_code == 422
+    assert saved_instruction_lengths == [MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS]
+
+
+def test_agent_profile_mutation_routes_map_repository_conflicts_to_one_safe_stale_code(monkeypatch):
+    async def conflict(*_args, **_kwargs):
+        raise RepositoryConflictError("database constraint detail must not be public")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_apps.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_apps.save_draft", conflict)
+    monkeypatch.setattr("app.routes.agent_apps.publish_draft", conflict)
+    client = TestClient(create_app())
+
+    responses = [
+        client.post(
+            "/api/ai/admin/agent-profiles",
+            headers=admin_headers(),
+            json=profile_draft_payload("Keep answers concise."),
+        ),
+        client.put(
+            "/api/ai/admin/agent-profiles/agt_support",
+            headers=admin_headers(),
+            json=profile_draft_payload("Keep answers concise.", expected_draft_revision=4),
+        ),
+        client.post(
+            "/api/ai/admin/agent-profiles/agt_support/publish",
+            headers=admin_headers(),
+            json={"expected_revision": 4},
+        ),
+    ]
+
+    assert [(response.status_code, response.json()) for response in responses] == [
+        (409, {"detail": "agent_profile_revision_stale"}),
+        (409, {"detail": "agent_profile_revision_stale"}),
+        (409, {"detail": "agent_profile_revision_stale"}),
+    ]
 
 
 async def test_agent_profile_repository_list_is_tenant_scoped():

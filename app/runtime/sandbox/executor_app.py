@@ -60,6 +60,7 @@ from app.runtime.sandbox.contracts import (
 )
 from app.settings import get_settings
 from app.skills.execution_profiles import PLATFORM_CONTROLLED
+from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
@@ -172,7 +173,6 @@ _SDK_PRESERVED_FAILURE_CODES = frozenset(
     }
 )
 _SDK_TURN_LIMIT_ERROR_PATTERN = re.compile(r"Reached maximum number of turns \(\d+\)")
-_MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS = 16_000
 
 
 class _ServerOwnedSystemPromptConfig(BaseModel):
@@ -180,7 +180,7 @@ class _ServerOwnedSystemPromptConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    system_prompt: str = Field(max_length=_MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+    system_prompt: str = Field(max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
 
 
 class _ServerOwnedSystemPromptError(ValueError):

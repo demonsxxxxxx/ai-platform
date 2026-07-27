@@ -15,6 +15,7 @@ from app.runtime.sandbox.executor_client import SandboxExecutorClient
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime
+from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt_run-a") -> str:
@@ -53,6 +54,14 @@ def request(**overrides) -> SandboxRuntimeRequest:
     }
     values.update(overrides)
     return SandboxRuntimeRequest(**values)
+
+
+def test_sandbox_system_prompt_uses_the_same_character_limit_as_profile_admission():
+    accepted = request(system_prompt="界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+
+    assert accepted.system_prompt == "界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+    with pytest.raises(ValueError):
+        request(system_prompt="界" * (MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS + 1))
 
 
 @pytest.mark.asyncio

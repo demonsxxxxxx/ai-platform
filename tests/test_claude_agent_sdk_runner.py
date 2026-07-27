@@ -102,7 +102,12 @@ def _fake_sdk(captured, *, hook_invocations):
 
 
 @pytest.mark.asyncio
-async def test_sdk_profile_system_prompt_never_enters_the_user_message_stream(monkeypatch, tmp_path):
+@pytest.mark.parametrize("execution_policy", ["worker_local_legacy", "sandbox_brokered"])
+async def test_sdk_profile_system_prompt_appends_to_claude_code_without_entering_user_stream(
+    monkeypatch,
+    tmp_path,
+    execution_policy,
+):
     captured = {}
     monkeypatch.setitem(
         sys.modules,
@@ -116,11 +121,15 @@ async def test_sdk_profile_system_prompt_never_enters_the_user_message_stream(mo
         system_prompt="Private profile instruction",
         cwd=tmp_path,
         skill_id="general-chat",
-        execution_policy="sandbox_brokered",
+        execution_policy=execution_policy,
         tool_policy_subjects=[_subject()],
     )
 
-    assert captured["system_prompt"] == "Private profile instruction"
+    assert captured["system_prompt"] == {
+        "type": "preset",
+        "preset": "claude_code",
+        "append": "Private profile instruction",
+    }
     assert captured["sdk_user_messages"] == [
         {
             "type": "user",

@@ -7,7 +7,11 @@ from app.control_plane_contracts import RUN_PAYLOAD_SCHEMA_VERSION
 from app.skills.release_policy import validate_release_decision_lock, validate_release_decision_payload
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 
-from app.validation import assert_safe_id, assert_safe_principal_user_id
+from app.validation import (
+    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
+    assert_safe_id,
+    assert_safe_principal_user_id,
+)
 
 
 def _normalize_capability_department_ids(values: list[str], field_name: str) -> list[str]:
@@ -143,7 +147,7 @@ class AgentProfileDraftRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=2_000)
-    instructions: str = Field(min_length=1, max_length=16_000)
+    instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
     model_id: str
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
@@ -732,7 +736,11 @@ class QueueRunPayload(BaseModel):
             raise ValueError("agent_profile_revision_invalid")
         if not isinstance(content_hash, str) or len(content_hash) != 64:
             raise ValueError("agent_profile_hash_invalid")
-        if not isinstance(instructions, str) or not instructions or len(instructions) > 16_000:
+        if (
+            not isinstance(instructions, str)
+            or not instructions
+            or len(instructions) > MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+        ):
             raise ValueError("agent_profile_instructions_invalid")
         return {
             "agent_id": assert_safe_id(agent_id, "agent_profile.agent_id"),

@@ -3,6 +3,7 @@ import re
 
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SAFE_PRINCIPAL_USER_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}$")
+MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS = 16_000
 
 
 def assert_safe_id(value: str, field_name: str) -> str:
