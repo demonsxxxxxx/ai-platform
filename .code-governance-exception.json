@@ -1,0 +1,12 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-07-29",
+  "owner": "issue-642-chat-product-owner",
+  "reason": "Temporary exception for https://github.com/demonsxxxxxx/ai-platform/issues/642 to keep one coherent Chat UI repair across components, hooks, and i18n; remove before deployment.",
+  "violations": [
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}

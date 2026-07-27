@@ -36,6 +36,7 @@ interface PendingRunControlOperation {
   sourceRunId: string;
   action: RunControlMutationAction;
   operationId: string;
+  replayBlocked: boolean;
 }
 
 /**
@@ -174,8 +175,15 @@ function loadPendingOperation(
       value.sourceRunId === parent.runId &&
       (value.action === "retry" || value.action === "resume") &&
       typeof value.operationId === "string" &&
-      UUID4_PATTERN.test(value.operationId);
-    return valid ? (value as PendingRunControlOperation) : null;
+      UUID4_PATTERN.test(value.operationId) &&
+      (value.replayBlocked === undefined ||
+        typeof value.replayBlocked === "boolean");
+    return valid
+      ? ({
+          ...value,
+          replayBlocked: value.replayBlocked === true,
+        } as PendingRunControlOperation)
+      : null;
   };
   if (storage) {
     try {
@@ -605,6 +613,7 @@ export class RunControlLifecycle {
           sourceRunId: owner.runId,
           action,
           operationId: createOpaqueOperationId(),
+          replayBlocked: false,
         };
       } catch (error) {
         owner.mutationStarted = true;
@@ -738,13 +747,19 @@ export class RunControlLifecycle {
       );
     } catch (error) {
       if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
-      if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
+      if (
+        error instanceof ApiRequestError &&
+        isRecoverableNoSideEffectMutationRejection(error)
+      ) {
+        this.blockPendingReplay(owner, pending);
+        this.publishUnconfirmed(owner);
+        await this.refreshUnconfirmedReadiness(owner);
+      } else if (
+        error instanceof ApiRequestError &&
+        isDefinitiveMutationRejection(error)
+      ) {
         this.clearPendingOperation(owner, pending);
-        this.publishRejected(
-          owner,
-          error.message,
-          isRecoverableNoSideEffectMutationRejection(error),
-        );
+        this.publishRejected(owner, error.message, false);
       } else {
         this.publishUnconfirmed(owner);
         await this.refreshUnconfirmedReadiness(owner);
@@ -781,7 +796,8 @@ export class RunControlLifecycle {
       resolution.session_id.length > 0;
     if (
       (!exactAbsence && !exactPendingAdmission) ||
-      !allowReplayAfterAbsence
+      !allowReplayAfterAbsence ||
+      pending.replayBlocked
     ) {
       this.publishUnconfirmed(owner);
       await this.refreshUnconfirmedReadiness(owner);
@@ -809,13 +825,19 @@ export class RunControlLifecycle {
       this.publishUnconfirmed(owner);
     } catch (error) {
       if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
-      if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
+      if (
+        error instanceof ApiRequestError &&
+        isRecoverableNoSideEffectMutationRejection(error)
+      ) {
+        this.blockPendingReplay(owner, pending);
+        this.publishUnconfirmed(owner);
+        await this.refreshUnconfirmedReadiness(owner);
+      } else if (
+        error instanceof ApiRequestError &&
+        isDefinitiveMutationRejection(error)
+      ) {
         this.clearPendingOperation(owner, pending);
-        this.publishRejected(
-          owner,
-          error.message,
-          isRecoverableNoSideEffectMutationRejection(error),
-        );
+        this.publishRejected(owner, error.message, false);
       } else {
         this.publishUnconfirmed(owner);
       }
@@ -867,6 +889,14 @@ export class RunControlLifecycle {
     if (this.pendingOperation?.operationId === pending.operationId) {
       this.pendingOperation = null;
     }
+  }
+
+  private blockPendingReplay(
+    owner: RunControlOwner,
+    pending: PendingRunControlOperation,
+  ): void {
+    pending.replayBlocked = true;
+    persistPendingOperation(owner, pending);
   }
 
   private publishRejected(

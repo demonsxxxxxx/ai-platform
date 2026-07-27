@@ -288,3 +288,144 @@ test("RunControlLifecycle unlocks retry after deterministic no-side-effect rejec
     globalThis.fetch = originalFetch;
   }
 });
+
+test("RunControlLifecycle keeps resolver 409/412/422 pending and never replays the POST", async () => {
+  for (const status of [409, 412, 422]) {
+    const lifecycle = new RunControlLifecycle();
+    const originalRetry = sessionApi.retryRun;
+    const originalResolve = sessionApi.resolveRunControlOperation;
+    const originalStatus = sessionApi.getStatus;
+    const originalFetch = globalThis.fetch;
+    let mutations = 0;
+    let resolverReads = 0;
+    sessionApi.retryRun = (async () => {
+      mutations += 1;
+      throw new ApiRequestError("initial response lost", 502);
+    }) as typeof sessionApi.retryRun;
+    sessionApi.resolveRunControlOperation = (async (
+      sourceRunId,
+      action,
+      operationId,
+    ) => {
+      resolverReads += 1;
+      if (resolverReads === 1) {
+        throw new ApiRequestError(`resolver rejection ${status}`, status);
+      }
+      return {
+        source_run_id: sourceRunId,
+        action,
+        operation_id: operationId,
+        run_id: null,
+        session_id: null,
+        status: "absent",
+        queue_admission: null,
+      };
+    }) as typeof sessionApi.resolveRunControlOperation;
+    sessionApi.getStatus = (async () => ({
+      session_id: "session-a",
+      run_id: "run-a",
+      status: "failed",
+    })) as typeof sessionApi.getStatus;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          run: { run_id: "run-a", status: "failed" },
+          timeline: [],
+          events: [],
+          artifacts: [],
+          steps: [],
+          multi_agent: null,
+        }),
+      )) as typeof fetch;
+    lifecycle.configure({
+      adoptRunControlChild: async () => "superseded",
+      reconnectRunControlOwner: async () => {},
+    });
+    lifecycle.bindParent(parent());
+
+    try {
+      await lifecycle.retry();
+      assert.equal(lifecycle.getSnapshot().phase, "unconfirmed");
+      assert.equal(lifecycle.getSnapshot().canRetry, false);
+      assert.equal(mutations, 1);
+      assert.equal(resolverReads, 1);
+
+      lifecycle.open();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(resolverReads, 2, `${status} must retain the pending operation`);
+      assert.equal(mutations, 1, `${status} must block replay after resolver rejection`);
+
+      await lifecycle.retry();
+      assert.equal(mutations, 1, `${status} must keep manual retry locked`);
+    } finally {
+      sessionApi.retryRun = originalRetry;
+      sessionApi.resolveRunControlOperation = originalResolve;
+      sessionApi.getStatus = originalStatus;
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test("RunControlLifecycle keeps replay 409/412/422 pending and blocks another POST", async () => {
+  for (const status of [409, 412, 422]) {
+    const lifecycle = new RunControlLifecycle();
+    const originalRetry = sessionApi.retryRun;
+    const originalResolve = sessionApi.resolveRunControlOperation;
+    const originalStatus = sessionApi.getStatus;
+    let mutations = 0;
+    let resolverReads = 0;
+    sessionApi.retryRun = (async () => {
+      mutations += 1;
+      if (mutations === 1) {
+        throw new ApiRequestError("initial response lost", 502);
+      }
+      throw new ApiRequestError(`replay rejection ${status}`, status);
+    }) as typeof sessionApi.retryRun;
+    sessionApi.resolveRunControlOperation = (async (
+      sourceRunId,
+      action,
+      operationId,
+    ) => {
+      resolverReads += 1;
+      return {
+        source_run_id: sourceRunId,
+        action,
+        operation_id: operationId,
+        run_id: null,
+        session_id: null,
+        status: "absent",
+        queue_admission: null,
+      };
+    }) as typeof sessionApi.resolveRunControlOperation;
+    sessionApi.getStatus = (async () => ({
+      session_id: "session-a",
+      run_id: "run-a",
+      status: "failed",
+    })) as typeof sessionApi.getStatus;
+    lifecycle.configure({
+      adoptRunControlChild: async () => "superseded",
+      reconnectRunControlOwner: async () => {},
+    });
+    lifecycle.bindParent(parent());
+
+    try {
+      await lifecycle.retry();
+      assert.equal(lifecycle.getSnapshot().phase, "unconfirmed");
+      assert.equal(lifecycle.getSnapshot().canRetry, false);
+      assert.equal(mutations, 2, "one replay is allowed only after exact absence");
+      assert.equal(resolverReads, 1);
+
+      await lifecycle.retry();
+      assert.equal(mutations, 2, `${status} must keep manual retry locked`);
+
+      lifecycle.open();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(resolverReads, 2, `${status} must retain the pending operation`);
+      assert.equal(mutations, 2, `${status} must not issue another replay POST`);
+    } finally {
+      sessionApi.retryRun = originalRetry;
+      sessionApi.resolveRunControlOperation = originalResolve;
+      sessionApi.getStatus = originalStatus;
+    }
+  }
+});
