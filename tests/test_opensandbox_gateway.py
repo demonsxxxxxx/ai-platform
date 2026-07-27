@@ -2039,18 +2039,60 @@ def test_workspace_dirfd_identity_and_symlink_leaf_fail_closed(monkeypatch) -> N
 
 
 def test_mailbox_protocol_rejects_wrong_owner_group_or_mode(monkeypatch) -> None:
-    expected = SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=1000, st_gid=4321)
+    expected = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o2770,
+        st_uid=int(EXPECTED_EXECUTOR_UID),
+        st_gid=4321,
+    )
     monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _: expected)
-    gateway_adapters._require_directory(7, uid=1000, gid=4321, mode=0o2770)
+    gateway_adapters._require_directory(
+        7,
+        uid=int(EXPECTED_EXECUTOR_UID),
+        gid=4321,
+        mode=0o2770,
+    )
     for changed in (
         SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=1001, st_gid=4321),
-        SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=1000, st_gid=4322),
-        SimpleNamespace(st_mode=stat.S_IFDIR | 0o0770, st_uid=1000, st_gid=4321),
-        SimpleNamespace(st_mode=stat.S_IFREG | 0o2770, st_uid=1000, st_gid=4321),
+        SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=1000, st_gid=4321),
+        SimpleNamespace(st_mode=stat.S_IFDIR | 0o2770, st_uid=int(EXPECTED_EXECUTOR_UID), st_gid=4322),
+        SimpleNamespace(st_mode=stat.S_IFDIR | 0o0770, st_uid=int(EXPECTED_EXECUTOR_UID), st_gid=4321),
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o2770, st_uid=int(EXPECTED_EXECUTOR_UID), st_gid=4321),
     ):
         monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _, value=changed: value)
         with pytest.raises(OSError, match="ownership protocol mismatch"):
-            gateway_adapters._require_directory(7, uid=1000, gid=4321, mode=0o2770)
+            gateway_adapters._require_directory(
+                7,
+                uid=int(EXPECTED_EXECUTOR_UID),
+                gid=4321,
+                mode=0o2770,
+            )
+
+
+def test_mailbox_processor_rejects_legacy_executor_request_file(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "getgid", lambda: 4321, raising=False)
+    evidence = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o640,
+        st_uid=1000,
+        st_gid=4321,
+        st_size=2,
+        st_dev=1,
+        st_ino=2,
+        st_mtime_ns=3,
+        st_ctime_ns=4,
+    )
+    monkeypatch.setattr(gateway_adapters.os, "open", lambda *_args, **_kwargs: 7)
+    monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _fd: evidence)
+    monkeypatch.setattr(
+        gateway_adapters.os,
+        "read",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("legacy request reached read")),
+    )
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _fd: None)
+    broker = MailboxBroker(SimpleNamespace(), SimpleNamespace(targets={}), 1.0, 1024)
+
+    with pytest.raises(GatewayError, match="broker_request_invalid"):
+        broker._process(6, "0" * 32 + ".json")
 
 
 def test_mailbox_response_is_random_atomic_and_read_only(monkeypatch) -> None:
@@ -2084,7 +2126,7 @@ def test_mailbox_request_inode_change_fails_closed(monkeypatch) -> None:
     raw = json.dumps({"method": "POST", "path": "/callback", "headers": {}, "body": ""}).encode()
     before = SimpleNamespace(
         st_mode=stat.S_IFREG | 0o640,
-        st_uid=1000,
+        st_uid=int(EXPECTED_EXECUTOR_UID),
         st_gid=4321,
         st_size=len(raw),
         st_dev=1,
@@ -2170,7 +2212,7 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
         evidence = SimpleNamespace(
             st_mode=stat.S_IFREG | 0o640,
             st_size=len(raw),
-            st_uid=1000,
+            st_uid=int(EXPECTED_EXECUTOR_UID),
             st_gid=4321,
             st_dev=1,
             st_ino=2,
@@ -2278,7 +2320,7 @@ def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_on
         evidence = SimpleNamespace(
             st_mode=stat.S_IFREG | 0o640,
             st_size=len(raw),
-            st_uid=1000,
+            st_uid=int(EXPECTED_EXECUTOR_UID),
             st_gid=4321,
             st_dev=1,
             st_ino=2,
@@ -2514,7 +2556,7 @@ def test_mailbox_claim_is_cleaned_when_processing_deadline_expires(monkeypatch) 
     os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
     reason="real broker-owned claim permissions require a root-capable POSIX release gate",
 )
-def test_mailbox_claim_moves_request_into_real_broker_owned_posix_directory(tmp_path) -> None:
+def test_mailbox_claim_accepts_canonical_executor_request_on_real_posix(tmp_path) -> None:
     workspace_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         gateway_adapters._prepare_mailbox(workspace_fd, str(tmp_path), os.getuid(), os.getgid())
@@ -2522,8 +2564,9 @@ def test_mailbox_claim_moves_request_into_real_broker_owned_posix_directory(tmp_
         os.close(workspace_fd)
     mailbox = tmp_path / ".opensandbox-gateway"
     request_path = mailbox / "requests" / ("1" * 32 + ".json")
+    assert (mailbox / "requests").stat().st_uid == int(EXPECTED_EXECUTOR_UID)
     request_path.write_text("{}", encoding="utf-8")
-    os.chown(request_path, 1000, os.getgid())
+    os.chown(request_path, int(EXPECTED_EXECUTOR_UID), os.getgid())
     os.chmod(request_path, 0o640)
     request_fd = os.open(mailbox / "requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     claim_fd = os.open(mailbox / "claims", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -2536,6 +2579,7 @@ def test_mailbox_claim_moves_request_into_real_broker_owned_posix_directory(tmp_
         assert os.stat(claimed[0], dir_fd=claim_fd, follow_symlinks=False).st_ino == evidence.st_ino
         claim_dir = os.fstat(claim_fd)
         assert claim_dir.st_uid == os.getuid() and stat.S_IMODE(claim_dir.st_mode) == 0o700
+
     finally:
         os.close(claim_fd)
         os.close(request_fd)
@@ -2573,7 +2617,7 @@ def test_relay_timeout_removes_pending_request_on_real_posix(tmp_path) -> None:
     os.chmod(mailbox, 0o711)
     os.chown(mailbox, 0, 0)
     os.chmod(requests, 0o2770)
-    os.chown(requests, 1000, 0)
+    os.chown(requests, int(EXPECTED_EXECUTOR_UID), 0)
     os.chmod(responses, 0o755)
     os.chown(responses, 0, 0)
     probe = socket.socket()
