@@ -1467,10 +1467,8 @@ async def test_sandbox_skill_staging_matches_attempt_lease_and_isolates_retries(
     write_skill(tmp_path / "skills")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
     pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
-    staged_workspaces = {}
+    staged_workspaces, workspace_leases, trusted_mounts = {}, {}, {}
     runtime_requests = []
-    workspace_leases = {}
-    trusted_mounts = {}
     skill_subject = {
         "identity": "Skill",
         "registered": True,
