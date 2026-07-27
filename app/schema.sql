@@ -305,6 +305,33 @@ create table if not exists agents (
   created_at timestamptz not null default now()
 );
 
+-- Agent Profile definitions are append-only. The shared agents row remains the
+-- durable identity used by sessions/runs; this table is the sole authority for
+-- mutable-looking definition state and preserves every saved/published revision.
+create table if not exists agent_profile_revisions (
+  tenant_id text not null references tenants(id),
+  agent_id text not null references agents(id),
+  revision bigint not null check (revision > 0),
+  status text not null check (status in ('draft', 'published')),
+  name text not null,
+  description text not null default '',
+  instructions text not null,
+  model_id text not null,
+  skill_id text not null references skills(id),
+  skill_version text not null,
+  mcp_tool_ids jsonb not null default '[]'::jsonb,
+  content_hash text not null,
+  created_by text references users(id),
+  created_at timestamptz not null default now(),
+  published_by text references users(id),
+  published_at timestamptz,
+  primary key (tenant_id, agent_id, revision)
+);
+
+create index if not exists idx_agent_profile_revisions_published
+  on agent_profile_revisions(tenant_id, agent_id, revision desc)
+  where status = 'published';
+
 create table if not exists sessions (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -313,6 +340,8 @@ create table if not exists sessions (
   agent_id text not null references agents(id),
   title text not null default '',
   status text not null default 'active',
+  admitted_agent_profile_revision bigint,
+  admitted_agent_profile_hash text,
   next_run_generation bigint not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -332,6 +361,8 @@ create table if not exists runs (
   principal_roles jsonb not null default '[]'::jsonb,
   principal_department_id text not null default '',
   auth_source text,
+  admitted_agent_profile_revision bigint,
+  admitted_agent_profile_hash text,
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
   context_snapshot_id text,
@@ -368,6 +399,10 @@ alter table runs add column if not exists executor_schema_version text not null 
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
 alter table runs add column if not exists principal_department_id text not null default '';
 alter table runs add column if not exists auth_source text;
+alter table sessions add column if not exists admitted_agent_profile_revision bigint;
+alter table sessions add column if not exists admitted_agent_profile_hash text;
+alter table runs add column if not exists admitted_agent_profile_revision bigint;
+alter table runs add column if not exists admitted_agent_profile_hash text;
 -- Existing rows deliberately remain unordered (NULL generation): timestamps and
 -- UUIDs are not a valid historical run-creation authority.
 alter table sessions add column if not exists next_run_generation bigint not null default 0;

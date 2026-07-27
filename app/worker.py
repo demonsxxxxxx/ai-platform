@@ -1107,6 +1107,7 @@ LOCKED_RUN_SNAPSHOT_FIELDS = (
     "context_snapshot",
     "model_id",
     "model_value",
+    "agent_profile",
     "schema_version",
 )
 
@@ -2495,6 +2496,7 @@ async def process_run_payload(
         context_pack=executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
         model_id=payload.model_id or "",
         model_value=payload.model_value or "",
+        agent_profile=payload.agent_profile or {},
     )
 
     async def event_sink(

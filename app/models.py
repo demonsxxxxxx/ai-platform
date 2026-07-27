@@ -122,6 +122,112 @@ class SelectedSkillRequest(BaseModel):
         return assert_safe_id(value, info.field_name)
 
 
+class SelectedAgentProfileRequest(BaseModel):
+    """Client optimistic lock for one immutable published Agent Profile revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    expected_revision: int = Field(ge=1)
+
+    @field_validator("agent_id")
+    @classmethod
+    def validate_agent_id(cls, value: str):
+        return assert_safe_id(value, "agent_id")
+
+
+class AgentProfileDraftRequest(BaseModel):
+    """Admin-only definition stored as an immutable draft revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2_000)
+    instructions: str = Field(min_length=1, max_length=16_000)
+    model_id: str
+    selected_skill: SelectedSkillRequest
+    mcp_tool_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("model_id")
+    @classmethod
+    def validate_model_id(cls, value: str):
+        return assert_safe_id(value, "model_id")
+
+    @field_validator("mcp_tool_ids")
+    @classmethod
+    def validate_mcp_tool_ids(cls, value: list[str]):
+        normalized: list[str] = []
+        for item in value:
+            tool_id = assert_safe_id(item.strip(), "mcp_tool_ids")
+            if tool_id in normalized:
+                raise ValueError("mcp_tool_ids contains duplicates")
+            normalized.append(tool_id)
+        return normalized
+
+
+class AgentProfilePublishRequest(BaseModel):
+    """Admin optimistic lock for publishing one saved draft revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class AgentProfilePublicProjection(BaseModel):
+    """Ordinary-user market projection without executable configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    expected_revision: int
+    name: str
+    description: str = ""
+
+
+class AgentProfileCatalogResponse(BaseModel):
+    """Ordinary-user catalog response containing only safe profile cards."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_profiles: list[AgentProfilePublicProjection] = Field(default_factory=list)
+
+
+class AgentProfileAdminProjection(BaseModel):
+    """Admin-only revision projection, including server-owned instructions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    revision: int
+    status: Literal["draft", "published"]
+    name: str
+    description: str = ""
+    instructions: str
+    model_id: str
+    selected_skill: SelectedSkillRequest
+    mcp_tool_ids: list[str] = Field(default_factory=list)
+    content_hash: str
+    created_at: Any | None = None
+    published_at: Any | None = None
+
+
+class AgentProfileAdminListResponse(BaseModel):
+    """Administrator response containing same-tenant profile revisions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_profiles: list[AgentProfileAdminProjection] = Field(default_factory=list)
+
+
+class AgentProfileMutationResponse(BaseModel):
+    """Administrator draft-save or publish result with its audit identity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_profile: AgentProfileAdminProjection
+    audit_id: str
+
+
 class CreateRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -572,6 +678,7 @@ class QueueRunPayload(BaseModel):
     context_snapshot: dict[str, Any] = Field(default_factory=dict)
     model_id: str | None = None
     model_value: str | None = None
+    agent_profile: dict[str, Any] | None = None
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 
     @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "skill_id", "executor_type")
@@ -608,6 +715,30 @@ class QueueRunPayload(BaseModel):
     @classmethod
     def validate_release_decision(cls, value: dict[str, Any]):
         return validate_release_decision_payload(value)
+
+    @field_validator("agent_profile")
+    @classmethod
+    def validate_private_agent_profile(cls, value: dict[str, Any] | None):
+        if value is None:
+            return None
+        agent_id = value.get("agent_id")
+        revision = value.get("revision")
+        content_hash = value.get("content_hash")
+        instructions = value.get("instructions")
+        if not isinstance(agent_id, str):
+            raise ValueError("agent_profile_agent_id_invalid")
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            raise ValueError("agent_profile_revision_invalid")
+        if not isinstance(content_hash, str) or len(content_hash) != 64:
+            raise ValueError("agent_profile_hash_invalid")
+        if not isinstance(instructions, str) or not instructions or len(instructions) > 16_000:
+            raise ValueError("agent_profile_instructions_invalid")
+        return {
+            "agent_id": assert_safe_id(agent_id, "agent_profile.agent_id"),
+            "revision": revision,
+            "content_hash": content_hash,
+            "instructions": instructions,
+        }
 
     @field_validator("schema_version")
     @classmethod
@@ -774,6 +905,7 @@ class ChatStreamRequest(BaseModel):
     agent_id: str | None = None
     skill_id: str | None = None
     selected_skill: SelectedSkillRequest | None = None
+    selected_agent_profile: SelectedAgentProfileRequest | None = None
     message: str = Field(min_length=1)
     file_ids: list[str] = Field(default_factory=list)
     input: dict[str, Any] = Field(default_factory=dict)

@@ -119,6 +119,35 @@ test("submits through the existing Chat seam then holds only observed session an
   });
 });
 
+test("forwards a published Agent selection as the sole execution selector", async () => {
+  const controller = new AgentBuilderController();
+  const calls: unknown[][] = [];
+  const profileDraft = draft({
+    selectedAgentProfile: {
+      agent_id: "profile-doc-review",
+      expected_revision: 7,
+    },
+  });
+
+  await controller.submit(profileDraft, catalog({ modelsResolved: false }), {
+    sendMessage: async (...args: unknown[]) => {
+      calls.push(args);
+      return { status: "accepted" as const };
+    },
+  } as never);
+
+  assert.deepEqual(calls, [
+    [
+      "Review the current document",
+      {},
+      undefined,
+      null,
+      [],
+      { agent_id: "profile-doc-review", expected_revision: 7 },
+    ],
+  ]);
+});
+
 test("surfaces a Chat submission failure without inventing a session or assistant output", async () => {
   const controller = new AgentBuilderController();
   const state = await controller.submit(draft(), catalog(), {

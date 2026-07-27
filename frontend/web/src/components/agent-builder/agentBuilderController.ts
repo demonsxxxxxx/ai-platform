@@ -2,7 +2,11 @@ import type {
   SubmissionOutcome,
   UseAgentReturn,
 } from "../../hooks/useAgent/types";
-import type { MessageAttachment, SelectedSkillRequest } from "../../types";
+import type {
+  MessageAttachment,
+  SelectedAgentProfileRequest,
+  SelectedSkillRequest,
+} from "../../types";
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
 import {
   prepareAgentBuilderSubmission,
@@ -46,6 +50,7 @@ export interface AgentBuilderChatSubmitSeam {
     attachments?: MessageAttachment[],
     selectedSkill?: SelectedSkillRequest | null,
     selectedMcpToolIds?: readonly string[],
+    selectedAgentProfile?: SelectedAgentProfileRequest | null,
   ) => ReturnType<UseAgentReturn["sendMessage"]> | Promise<SubmissionOutcome>;
 }
 
@@ -98,13 +103,22 @@ export class AgentBuilderController {
     }
 
     this.stateValue = { phase: "submitting", generation };
-    const outcome = await chat.sendMessage(
-      preparation.submission.message,
-      preparation.submission.agentOptions,
-      undefined,
-      preparation.submission.selectedSkill,
-      preparation.submission.selectedMcpToolIds,
-    );
+    const outcome = preparation.submission.selectedAgentProfile
+      ? await chat.sendMessage(
+          preparation.submission.message,
+          preparation.submission.agentOptions,
+          undefined,
+          preparation.submission.selectedSkill,
+          preparation.submission.selectedMcpToolIds,
+          preparation.submission.selectedAgentProfile,
+        )
+      : await chat.sendMessage(
+          preparation.submission.message,
+          preparation.submission.agentOptions,
+          undefined,
+          preparation.submission.selectedSkill,
+          preparation.submission.selectedMcpToolIds,
+        );
 
     if (this.stateValue.generation !== generation) {
       return this.stateValue;

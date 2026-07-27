@@ -74,6 +74,13 @@ export type {
 } from "./skill";
 
 export type { AgentOption } from "./agentOptions";
+export type {
+  AgentProfileAdminProjection,
+  AgentProfileDraftRequest,
+  AgentProfileMutationResponse,
+  AgentProfilePublicProjection,
+  SelectedAgentProfileRequest,
+} from "./agentProfile";
 
 // ============================================
 // Session Types

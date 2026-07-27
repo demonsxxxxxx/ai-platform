@@ -13,6 +13,7 @@ from fastapi.routing import APIRoute
 from starlette.responses import PlainTextResponse
 
 from app import repositories
+from app.agent_profiles import reject_profile_selector_conflicts, resolve_profile_for_admission
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessDecision,
@@ -41,6 +42,8 @@ from app.models import (
     ChatSubmissionResponse,
     IntentDecisionResponse,
     QueueRunPayload,
+    SelectedAgentProfileRequest,
+    SelectedSkillRequest,
 )
 from app.product_events import initial_run_event_specs, intent_event_specs
 from app.projection_redaction import (
@@ -1083,10 +1086,14 @@ async def chat_stream(
             if fingerprint_matches:
                 return _chat_stream_response_from_submission(existing_submission_row)
     execution_polarity = classify_execution_polarity(request.message)
-    allowed = execution_polarity != "non_execution"
+    selected_agent_profile = request.selected_agent_profile
+    reject_profile_selector_conflicts(request)
+    allowed = execution_polarity != "non_execution" or selected_agent_profile is not None
     explicit_skill_selection = request.selected_skill is not None
     skill_selector_allowed = allowed or explicit_skill_selection
     requested_agent_id = request.agent_id or query_agent_id or "general-agent"
+    if selected_agent_profile is not None:
+        requested_agent_id = selected_agent_profile.agent_id
     if skill_selector_allowed and request.skill_id and not is_ai_admin(principal):
         await _persist_pre_persistence_rejection(
             principal=principal,
@@ -1219,6 +1226,7 @@ async def chat_stream(
     locked_skill_label: str | None = None
     effective_workspace_id = request.workspace_id
     inherited_mcp_selection = False
+    admitted_agent_profile = None
     try:
         async with transaction() as conn:
             if submission_id is not None:
@@ -1236,6 +1244,7 @@ async def chat_stream(
                 request.session_id
                 and request.selected_skill is None
                 and request.skill_id is None
+                and selected_agent_profile is None
             )
             if request.session_id:
                 continuation_session = await repositories.get_authorized_session(
@@ -1313,7 +1322,58 @@ async def chat_stream(
                         )
                     )
 
-            if request.session_id and request.selected_mcp_tool_ids is None and allowed:
+            session_profile_revision = (
+                continuation_session.get("admitted_agent_profile_revision")
+                if isinstance(continuation_session, dict)
+                else None
+            )
+            session_profile_hash = (
+                continuation_session.get("admitted_agent_profile_hash")
+                if isinstance(continuation_session, dict)
+                else None
+            )
+            if request.session_id and isinstance(session_profile_revision, int) and session_profile_revision > 0:
+                session_profile_agent_id = str(continuation_session.get("agent_id") or "")
+                if (
+                    selected_agent_profile is not None
+                    and (
+                        selected_agent_profile.agent_id != session_profile_agent_id
+                        or selected_agent_profile.expected_revision != session_profile_revision
+                    )
+                ):
+                    raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
+                selected_agent_profile = SelectedAgentProfileRequest(
+                    agent_id=session_profile_agent_id,
+                    expected_revision=session_profile_revision,
+                )
+            elif request.session_id and selected_agent_profile is not None:
+                raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
+
+            if selected_agent_profile is not None:
+                admitted_agent_profile = await resolve_profile_for_admission(
+                    conn,
+                    principal=principal,
+                    selection=selected_agent_profile,
+                )
+                if session_profile_hash and session_profile_hash != admitted_agent_profile.content_hash:
+                    raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
+                requested_agent_id = admitted_agent_profile.agent_id
+                requested_skill_id = str(admitted_agent_profile.skill["skill_id"])
+                selected_skill_for_execution = SelectedSkillRequest(
+                    skill_id=requested_skill_id,
+                    expected_version=str(admitted_agent_profile.skill["skill_version"]),
+                )
+                selected_mcp_tool_ids_for_execution = list(admitted_agent_profile.mcp_tool_ids)
+                requested_model_id = admitted_agent_profile.model["id"]
+                requested_model_value = admitted_agent_profile.model["value"]
+                run_input["mcp_tool_ids"] = list(admitted_agent_profile.mcp_tool_ids)
+
+            if (
+                request.session_id
+                and request.selected_mcp_tool_ids is None
+                and selected_agent_profile is None
+                and allowed
+            ):
                 prior_input = (
                     continuation_latest_input_json.get("input")
                     if isinstance(continuation_latest_input_json, dict)
@@ -1646,6 +1706,11 @@ async def chat_stream(
                     "skill_manifests": skill_manifests,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
+                    **(
+                        {"agent_profile": admitted_agent_profile.private_execution_input}
+                        if admitted_agent_profile is not None
+                        else {}
+                    ),
                 }
             )
             await repositories.ensure_workspace_belongs_to_tenant(
@@ -1668,24 +1733,30 @@ async def chat_stream(
                 user_id=principal.user_id,
                 display_name=principal.display_name,
             )
-            session_id = await repositories.create_session(
-                conn,
-                tenant_id=principal.tenant_id,
-                workspace_id=effective_workspace_id,
-                user_id=principal.user_id,
-                agent_id=resolved_agent_id,
-                title=request.title or request.message[:80],
-                session_id=session_id,
-            )
-            run_id = await repositories.create_run(
-                conn,
-                tenant_id=principal.tenant_id,
-                workspace_id=effective_workspace_id,
-                session_id=session_id,
-                user_id=principal.user_id,
-                agent_id=resolved_agent_id,
-                skill_id=resolved_skill_id,
-                input_json={
+            session_create_kwargs = {
+                "tenant_id": principal.tenant_id,
+                "workspace_id": effective_workspace_id,
+                "user_id": principal.user_id,
+                "agent_id": resolved_agent_id,
+                "title": request.title or request.message[:80],
+                "session_id": session_id,
+            }
+            if admitted_agent_profile is not None:
+                session_create_kwargs.update(
+                    {
+                        "admitted_agent_profile_revision": admitted_agent_profile.revision,
+                        "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
+                    }
+                )
+            session_id = await repositories.create_session(conn, **session_create_kwargs)
+            run_create_kwargs = {
+                "tenant_id": principal.tenant_id,
+                "workspace_id": effective_workspace_id,
+                "session_id": session_id,
+                "user_id": principal.user_id,
+                "agent_id": resolved_agent_id,
+                "skill_id": resolved_skill_id,
+                "input_json": {
                     "input": run_input,
                     "file_ids": resolved_file_ids,
                     "executor_type": skill["executor_type"],
@@ -1695,11 +1766,24 @@ async def chat_stream(
                     "intent": decision_payload,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
+                    **(
+                        {"agent_profile": admitted_agent_profile.private_execution_input}
+                        if admitted_agent_profile is not None
+                        else {}
+                    ),
                 },
-                principal_roles=principal.roles,
-                principal_department_id=principal.department_id,
-                auth_source=principal.source,
-            )
+                "principal_roles": principal.roles,
+                "principal_department_id": principal.department_id,
+                "auth_source": principal.source,
+            }
+            if admitted_agent_profile is not None:
+                run_create_kwargs.update(
+                    {
+                        "admitted_agent_profile_revision": admitted_agent_profile.revision,
+                        "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
+                    }
+                )
+            run_id = await repositories.create_run(conn, **run_create_kwargs)
             await repositories.insert_run_skill_snapshots_at_creation(
                 conn,
                 tenant_id=principal.tenant_id,

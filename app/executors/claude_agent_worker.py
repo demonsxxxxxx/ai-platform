@@ -1082,6 +1082,12 @@ class ClaudeAgentWorkerAdapter:
             },
         )
 
+    def _agent_profile_instructions(self, payload: RunPayload) -> str:
+        """Return only the server-owned profile instructions for the private prompt."""
+
+        value = payload.agent_profile.get("instructions") if isinstance(payload.agent_profile, dict) else None
+        return value if isinstance(value, str) else ""
+
     def _executor_context_pack(self, payload: RunPayload) -> dict[str, Any]:
         if payload.context_pack.get("schema_version") == "ai-platform.executor-context-pack.v1":
             return payload.context_pack
@@ -1303,6 +1309,7 @@ class ClaudeAgentWorkerAdapter:
             authorized_skill_catalog=(
                 authorized_catalog.snapshot if authorized_catalog is not None else None
             ),
+            agent_profile_instructions=self._agent_profile_instructions(payload),
         )
         return (
             PreparedSdkRun(
@@ -2014,6 +2021,7 @@ class ClaudeAgentWorkerAdapter:
                 authorized_skill_catalog=(
                     authorized_catalog.snapshot if authorized_catalog is not None else None
                 ),
+                agent_profile_instructions=self._agent_profile_instructions(payload),
             )
         context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack)
 

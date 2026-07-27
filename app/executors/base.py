@@ -192,6 +192,7 @@ class RunPayload:
     context_pack: dict[str, Any] = field(default_factory=dict)
     model_id: str = ""
     model_value: str = ""
+    agent_profile: dict[str, Any] = field(default_factory=dict)
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
