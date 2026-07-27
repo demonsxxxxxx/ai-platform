@@ -2082,10 +2082,10 @@ def _build_from_verified_role_image(
     action: str,
 ) -> None:
     """Create one target role image from a verified local source image through a bounded build."""
+    if action not in {"runtime-rebuild", "promote"} or (action == "runtime-rebuild" and role != "backend"):
+        raise ReleaseAuthorityError("release role action is invalid")
     runtime_rebuild = action == "runtime-rebuild"
-    dockerfile = (
-        _backend_runtime_dockerfile() if runtime_rebuild else _promotion_dockerfile(role)
-    )
+    dockerfile = _backend_runtime_dockerfile() if runtime_rebuild else _promotion_dockerfile(role)
     _run(
         [
             *docker,
