@@ -2768,12 +2768,14 @@ def test_compose_ownership_short_absolute_config_path_fails_closed(monkeypatch, 
     main, sandbox = _write_compose_files(target)
     selection = release_authority.resolve_compose_files(target, [COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH])
     inspected = _owned_container_payload("api", main.parent, _compose_config_value(main, sandbox))[0]
-    labels = inspected["Config"]["Labels"]
     short_absolute = Path(Path.cwd().anchor)
     assert short_absolute.is_absolute()
+    short_label = short_absolute.as_posix()
+    parsed_short_label = Path(short_label)
+    assert parsed_short_label.is_absolute() and parsed_short_label.as_posix() == short_label and "\\" not in short_label
     with pytest.raises(IndexError):
         short_absolute.parents[len(release_authority.DEFAULT_COMPOSE_RELATIVE_PATH.parts) - 1]
-    labels.update({"com.docker.compose.project.working_dir": str(short_absolute), "com.docker.compose.project.config_files": str(short_absolute)})
+    inspected["Config"]["Labels"].update({"com.docker.compose.project.working_dir": short_label, "com.docker.compose.project.config_files": short_label})
     monkeypatch.setattr("tools.release_authority._inspect_optional_container", lambda docker, name: inspected if name == "ai-platform-api" else None)
     monkeypatch.setattr(
         "tools.release_authority.collect_live_parity",
@@ -2786,7 +2788,6 @@ def test_compose_ownership_short_absolute_config_path_fails_closed(monkeypatch, 
         ),
     )
     monkeypatch.setattr(sys, "argv", ["release_authority.py", "verify", "--repo-root", str(target), "--commit", "7" * 40])
-
     assert release_authority.main() == 2
     assert json.loads(capsys.readouterr().out) == {"command": "verify", "error": "api compose ownership mismatch", "verified": False}
 
