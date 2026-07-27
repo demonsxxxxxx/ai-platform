@@ -46,7 +46,9 @@ from app.runtime.sandbox.container_provider import (
     DockerContainerProvider,
     FakeContainerProvider,
     OpenSandboxContainerProvider,
+    _prepare_trusted_skill_mount,
 )
+from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.skills.pinning import build_skill_manifest_pins
 from app.skills.registry import BuiltinSkillRegistry
 from app.storage import StoredObject
@@ -419,7 +421,7 @@ def settings(tmp_path, *, sdk_enabled=True, legacy_fallback=False):
         {
             "claude_agent_sdk_enabled": sdk_enabled,
             "claude_agent_workspace_root": str(tmp_path / "workspaces"),
-            "sandbox_workspace_root": str(tmp_path / f"s-{short_id}"),
+            "sandbox_workspace_root": str(Path(".pytest-tmp") / f"s-{short_id}"),
             "sandbox_container_provider": "docker",
             "sandbox_callback_base_url": "http://platform.test",
             "claude_agent_model": "deepseek-v4-flash",
@@ -573,7 +575,7 @@ def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="comp
     return requests
 
 
-def sandbox_workspace_path(current_settings, *, run_id="run_1"):
+def sandbox_workspace_path(current_settings, *, run_id="run_1", attempt_id="qat-test-attempt"):
     return (
         Path(current_settings.sandbox_workspace_root)
         / "tenants"
@@ -586,6 +588,8 @@ def sandbox_workspace_path(current_settings, *, run_id="run_1"):
         / "ses_1"
         / "runs"
         / run_id
+        / "attempts"
+        / attempt_id
         / "workspace"
     )
 
@@ -1455,6 +1459,116 @@ async def test_sdk_disabled_fails_without_legacy_delegate(monkeypatch, tmp_path)
     assert result.result["delegate_used"] is False
 
 @pytest.mark.asyncio
+async def test_sandbox_skill_staging_matches_attempt_lease_and_isolates_retries(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_skill(tmp_path / "skills")
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
+    staged_workspaces = {}
+    runtime_requests = []
+    workspace_leases = {}
+    trusted_mounts = {}
+    skill_subject = {
+        "identity": "Skill",
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "declared_identities": ["Skill"],
+        "allowed_skill_names": ["qa-file-reviewer", "minimax-docx"],
+    }
+
+    async def materialize_attempt_file(current_payload, workspace):
+        staged_workspaces[current_payload.attempt_id] = workspace
+        inputs = workspace / "inputs"
+        inputs.mkdir(parents=True, exist_ok=True)
+        marker = inputs / f"{current_payload.attempt_id}.txt"
+        marker.write_text(current_payload.attempt_id, encoding="utf-8")
+        return [marker.name]
+
+    class LeaseCheckingSandboxRuntime:
+        def __init__(self, *args, **kwargs):
+            self.provider = object.__new__(DockerContainerProvider)
+
+        async def submit(self, request, event_sink=None):
+            runtime_requests.append(request)
+            lease = SandboxWorkspaceManager(root=current_settings.sandbox_workspace_root).prepare(request)
+            workspace_leases[request.attempt_id] = lease
+            trusted_mounts[request.attempt_id] = _prepare_trusted_skill_mount(request, lease)
+            return types.SimpleNamespace(
+                status="completed",
+                provider="docker",
+                session_id=request.session_id,
+                run_id=request.run_id,
+                executor_response={
+                    "status": "completed",
+                    "message": "sandbox completed",
+                    "sdk_used": True,
+                    "used_skills": ["qa-file-reviewer"],
+                    "used_skills_source": "executor_hook",
+                    "capability_evidence": _selected_capability_evidence(request),
+                },
+                timings={},
+            )
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_worker.SandboxRuntime", LeaseCheckingSandboxRuntime)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_attempt_file)
+
+    first = sandbox_writing_payload(
+        run_id="same-run",
+        attempt_id="attempt-one",
+        skill_id="qa-file-reviewer",
+        agent_id="qa-word-review",
+        input={
+            "attempt_id": "user-supplied-attempt",
+            "_runtime_tool_policy_subjects": [skill_subject],
+        },
+        skill_manifests=pins,
+    )
+    second = sandbox_writing_payload(
+        run_id="same-run",
+        attempt_id="attempt-two",
+        skill_id="qa-file-reviewer",
+        agent_id="qa-word-review",
+        input={
+            "attempt_id": "attempt-one",
+            "_runtime_tool_policy_subjects": [skill_subject],
+        },
+        skill_manifests=pins,
+    )
+
+    first_result = await adapter.submit_run(first)
+    first_pin_sentinel = staged_workspaces["attempt-one"] / ".pins" / "attempt-one-only"
+    first_pin_sentinel.write_text("first attempt", encoding="utf-8")
+    second_result = await adapter.submit_run(second)
+
+    assert first_result.status == second_result.status == "succeeded"
+    assert [request.attempt_id for request in runtime_requests] == ["attempt-one", "attempt-two"]
+    first_workspace = Path(workspace_leases["attempt-one"].workspace_host_path)
+    second_workspace = Path(workspace_leases["attempt-two"].workspace_host_path)
+    assert staged_workspaces == {
+        "attempt-one": first_workspace,
+        "attempt-two": second_workspace,
+    }
+    assert first_workspace != second_workspace
+    assert first_workspace.parts[-3:] == ("attempts", "attempt-one", "workspace")
+    assert second_workspace.parts[-3:] == ("attempts", "attempt-two", "workspace")
+    for attempt_id, workspace in staged_workspaces.items():
+        assert (workspace / "inputs" / f"{attempt_id}.txt").is_file()
+        assert (workspace / ".pins" / "qa-file-reviewer" / "SKILL.md").is_file()
+        assert (workspace / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
+        assert trusted_mounts[attempt_id].host_path == (workspace / ".claude").resolve()
+    assert not (second_workspace / "inputs" / "attempt-one.txt").exists()
+    assert first_pin_sentinel.is_file()
+    assert not (second_workspace / ".pins" / "attempt-one-only").exists()
+
+
+@pytest.mark.asyncio
 async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills")
@@ -1523,20 +1637,7 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert manifest["staged"] is True
     assert manifest["used"] is True
     runtime_request = runtime_requests[0]
-    workspace = (
-        Path(current_settings.sandbox_workspace_root)
-        / "tenants"
-        / "default"
-        / "workspaces"
-        / "default"
-        / "users"
-        / "user-a"
-        / "sessions"
-        / "ses_1"
-        / "runs"
-        / "run_1"
-        / "workspace"
-    )
+    workspace = sandbox_workspace_path(current_settings)
     assert runtime_request.skill_ids == ["qa-file-reviewer", "minimax-docx"]
     assert (workspace / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
     assert (workspace / ".claude" / "skills" / "minimax-docx" / "SKILL.md").is_file()
