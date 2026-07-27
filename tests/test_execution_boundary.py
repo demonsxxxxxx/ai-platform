@@ -20,6 +20,7 @@ def test_claude_single_run_requires_real_sandbox_contract():
         executor_type="claude-agent-worker",
         execution_mode="",
         execution_tier="sdk_only_writing",
+        mcp_requires_sandbox=False,
     )
 
     assert decision.requires_real_sandbox is True
