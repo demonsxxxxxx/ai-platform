@@ -99,6 +99,7 @@ DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
 HTTP_PROBE_TIMEOUT_SECONDS = 15
 BACKEND_STAGE_TIMEOUT_SECONDS = 90
 FRONTEND_STAGE_TIMEOUT_SECONDS = 180
+RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS = 300
 DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 1800
 CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
 MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 300
@@ -2079,6 +2080,7 @@ def _build_from_verified_role_image(
     repository: str,
     role: str,
     dockerfile: str,
+    timeout_seconds: int | None = None,
 ) -> None:
     """Create one target role image from a verified local source image through a bounded build."""
     _run(
@@ -2095,7 +2097,7 @@ def _build_from_verified_role_image(
             ".",
         ],
         cwd=repo_root,
-        timeout=_role_timeout(role),
+        timeout=timeout_seconds if timeout_seconds is not None else _role_timeout(role),
         input=dockerfile,
     )
 
@@ -2758,6 +2760,11 @@ def deploy_clean_commit(
                     if item.action == "runtime-rebuild"
                     else _promotion_dockerfile(role)
                 )
+                build_timeout_seconds = (
+                    RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
+                    if item.action == "runtime-rebuild"
+                    else _role_timeout(role)
+                )
                 _stage(
                     events,
                     name=f"{role}-image",
@@ -2772,7 +2779,9 @@ def deploy_clean_commit(
                         repository=repository,
                         role=role,
                         dockerfile=dockerfile,
+                        timeout_seconds=build_timeout_seconds,
                     ),
+                    timeout_seconds=build_timeout_seconds,
                 )
             elif item.action == "reuse":
                 raise ReleaseAuthorityError("verified target role image is unavailable")

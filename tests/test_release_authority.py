@@ -4015,14 +4015,34 @@ def test_auto_backend_source_only_uses_runtime_rebuild_without_dependency_comman
         strategy="auto",
         auto_plan=plan,
         current_references=current_refs,
+        canonical_dependency_build_timeout_seconds=2400,
     )
 
     builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
-    backend_runtime = next(kwargs["input"] for command, kwargs in builds if "COPY app /app/app" in kwargs.get("input", ""))
+    backend_runtime_build = next(
+        kwargs for command, kwargs in builds if "COPY app /app/app" in kwargs.get("input", "")
+    )
+    backend_runtime = backend_runtime_build["input"]
+    backend_runtime_stage = next(
+        event
+        for event in deployment["stages"]
+        if event["stage"] == "backend-image" and event["action"] == "runtime-rebuild"
+    )
     assert not any(token in backend_runtime.lower() for token in ("apt", "pip", "pnpm"))
     assert all("frontend/web/Dockerfile" not in command for command, _ in builds)
     assert deployment["plan"]["roles"][0]["action"] == "runtime-rebuild"
-    assert any(event["action"] == "runtime-rebuild" for event in deployment["stages"])
+    assert (
+        backend_runtime_build["timeout"]
+        == release_authority.RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
+    )
+    assert (
+        backend_runtime_stage["timeout_seconds"]
+        == release_authority.RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
+    )
+    assert (
+        release_authority.RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
+        > release_authority.BACKEND_STAGE_TIMEOUT_SECONDS
+    )
 
 
 def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_path):
