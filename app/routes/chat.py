@@ -1084,8 +1084,10 @@ async def chat_stream(
                 return _chat_stream_response_from_submission(existing_submission_row)
     execution_polarity = classify_execution_polarity(request.message)
     allowed = execution_polarity != "non_execution"
+    explicit_skill_selection = request.selected_skill is not None
+    skill_selector_allowed = allowed or explicit_skill_selection
     requested_agent_id = request.agent_id or query_agent_id or "general-agent"
-    if allowed and request.skill_id and not is_ai_admin(principal):
+    if skill_selector_allowed and request.skill_id and not is_ai_admin(principal):
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -1098,8 +1100,8 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code="raw_skill_selector_forbidden")
         raise HTTPException(status_code=403, detail="raw_skill_selector_forbidden")
-    requested_skill_id = request.skill_id if allowed and is_ai_admin(principal) else None
-    if allowed and request.selected_skill is not None and request.skill_id:
+    requested_skill_id = request.skill_id if skill_selector_allowed and is_ai_admin(principal) else None
+    if skill_selector_allowed and request.selected_skill is not None and request.skill_id:
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -1177,9 +1179,9 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code=error_code) from exc
         raise HTTPException(status_code=403, detail=error_code) from exc
-    selected_skill_for_execution = request.selected_skill if allowed else None
+    selected_skill_for_execution = request.selected_skill if skill_selector_allowed else None
     selected_mcp_tool_ids_for_execution = request.selected_mcp_tool_ids if allowed else None
-    if not allowed:
+    if not allowed and selected_skill_for_execution is None:
         requested_agent_id, requested_skill_id = "general-agent", None
     if selected_skill_for_execution is not None:
         requested_skill_id = selected_skill_for_execution.skill_id
@@ -1261,7 +1263,7 @@ async def chat_stream(
                 # or switch the session to another agent.
                 requested_agent_id = str(continuation_session["agent_id"])
 
-            if not allowed:
+            if not allowed and selected_skill_for_execution is None:
                 preserve_continuation_skill = False
                 requested_agent_id, requested_skill_id = "general-agent", None
 
@@ -1293,7 +1295,11 @@ async def chat_stream(
                 if locked_continuation_session is None:
                     raise HTTPException(status_code=404, detail="session_not_found")
                 continuation_session = locked_continuation_session
-                requested_agent_id = str(continuation_session["agent_id"]) if allowed else "general-agent"
+                requested_agent_id = (
+                    str(continuation_session["agent_id"])
+                    if allowed or selected_skill_for_execution is not None
+                    else "general-agent"
+                )
                 if (
                     request.selected_mcp_tool_ids is None and allowed
                 ):
