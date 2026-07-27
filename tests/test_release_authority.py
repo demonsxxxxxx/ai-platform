@@ -4023,20 +4023,11 @@ def test_auto_backend_source_only_uses_runtime_rebuild_without_dependency_comman
         kwargs for command, kwargs in builds if "COPY app /app/app" in kwargs.get("input", "")
     )
     backend_runtime = backend_runtime_build["input"]
-    backend_runtime_stage = next(
-        event
-        for event in deployment["stages"]
-        if event["stage"] == "backend-image" and event["action"] == "runtime-rebuild"
-    )
     assert not any(token in backend_runtime.lower() for token in ("apt", "pip", "pnpm"))
     assert all("frontend/web/Dockerfile" not in command for command, _ in builds)
     assert deployment["plan"]["roles"][0]["action"] == "runtime-rebuild"
     assert (
         backend_runtime_build["timeout"]
-        == release_authority.RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
-    )
-    assert (
-        backend_runtime_stage["timeout_seconds"]
         == release_authority.RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
     )
     assert (
@@ -5120,7 +5111,7 @@ def test_role_timeouts_distinguish_canonical_dependency_from_source_only(monkeyp
         **common,
         base_reference="ai-platform:" + "b" * 40,
         role="backend",
-        dockerfile="FROM scratch\n",
+        action="promote",
     )
 
     assert observed == [

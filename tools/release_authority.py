@@ -2079,10 +2079,13 @@ def _build_from_verified_role_image(
     commit: str,
     repository: str,
     role: str,
-    dockerfile: str,
-    timeout_seconds: int | None = None,
+    action: str,
 ) -> None:
     """Create one target role image from a verified local source image through a bounded build."""
+    runtime_rebuild = action == "runtime-rebuild"
+    dockerfile = (
+        _backend_runtime_dockerfile() if runtime_rebuild else _promotion_dockerfile(role)
+    )
     _run(
         [
             *docker,
@@ -2097,7 +2100,7 @@ def _build_from_verified_role_image(
             ".",
         ],
         cwd=repo_root,
-        timeout=timeout_seconds if timeout_seconds is not None else _role_timeout(role),
+        timeout=RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS if runtime_rebuild else _role_timeout(role),
         input=dockerfile,
     )
 
@@ -2755,16 +2758,6 @@ def deploy_clean_commit(
                 )
                 if base_image is None:
                     raise ReleaseAuthorityError("verified current role image is unavailable")
-                dockerfile = (
-                    _backend_runtime_dockerfile()
-                    if item.action == "runtime-rebuild"
-                    else _promotion_dockerfile(role)
-                )
-                build_timeout_seconds = (
-                    RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
-                    if item.action == "runtime-rebuild"
-                    else _role_timeout(role)
-                )
                 _stage(
                     events,
                     name=f"{role}-image",
@@ -2778,10 +2771,8 @@ def deploy_clean_commit(
                         commit=normalized,
                         repository=repository,
                         role=role,
-                        dockerfile=dockerfile,
-                        timeout_seconds=build_timeout_seconds,
+                        action=item.action,
                     ),
-                    timeout_seconds=build_timeout_seconds,
                 )
             elif item.action == "reuse":
                 raise ReleaseAuthorityError("verified target role image is unavailable")
