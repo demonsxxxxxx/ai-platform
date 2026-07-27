@@ -1,7 +1,11 @@
 import pytest
 
 from app.public_execution import public_execution_event_from_row
-from app.runtime.event_bridge import agent_event_to_executor_event
+from app.runtime.event_bridge import (
+    CHAT_ASSISTANT_DELTA_SOURCE,
+    agent_event_to_executor_event,
+    canonical_assistant_delta_event,
+)
 from app.runtime.kernel_contracts import AgentEvent
 
 
@@ -91,3 +95,42 @@ def test_readiness_failure_bridge_retains_safe_payload_for_admin_only():
             "created_at": None,
         },
     ) is None
+
+
+def test_canonical_assistant_delta_event_keeps_only_the_public_answer_contract():
+    canonical = canonical_assistant_delta_event(
+        stage="message",
+        payload={
+            "delta": "safe answer",
+            "command": "private command",
+            "path": "/private/path",
+            "token": "private-token",
+            "tool_name": "private-tool",
+            "stdout": "private stdout",
+            "stderr": "private stderr",
+        },
+    )
+
+    assert canonical == (
+        "answer",
+        "",
+        {
+            "delta": "safe answer",
+            "source": CHAT_ASSISTANT_DELTA_SOURCE,
+            "visible_to_user": True,
+            "severity": "info",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "payload"),
+    [
+        ("thinking", {"delta": "must stay private"}),
+        ("message", {"delta": ""}),
+        ("assistant", {"delta": 7}),
+        ("message", None),
+    ],
+)
+def test_canonical_assistant_delta_event_rejects_invalid_public_inputs(stage, payload):
+    assert canonical_assistant_delta_event(stage=stage, payload=payload) is None
