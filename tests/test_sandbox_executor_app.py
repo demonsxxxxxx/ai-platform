@@ -385,38 +385,13 @@ def test_executor_system_prompt_uses_private_sdk_channel_without_public_leakage(
     public_payload = json.dumps({"result": response.json(), "callbacks": callbacks})
     assert private_system_prompt not in public_payload
     assert "attacker-controlled" not in captured["system_prompt"]
-
-
-def test_executor_system_prompt_missing_preserves_sdk_call_shape(tmp_path, monkeypatch):
-    captured = {}
-
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_run_claude_agent_sdk(**kwargs):
-        captured.update(kwargs)
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "sdk final",
-                "session_id": "sdk-session-a",
-                "usage": {},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-
-    result = asyncio.run(_default_executor_runner(ExecutorTaskRequest.model_validate(task_payload()), tmp_path, lambda _event: None))
-
-    assert result["status"] == "completed"
+    captured.clear()
+    legacy_client = create_test_client(
+        tmp_path,
+        callback_sender=lambda _url, payload, _token: callback_ack(payload),
+    )
+    legacy_response = legacy_client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    assert legacy_response.status_code == 200
     assert "system_prompt" not in captured
 
 
