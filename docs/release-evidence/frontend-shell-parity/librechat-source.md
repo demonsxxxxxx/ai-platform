@@ -1,28 +1,52 @@
-# LibreChat UI Source Pin
+# LibreChat Reference-Derived UI Source Pin
 
-This document records the pinned LibreChat frontend source used as the UI
-upstream for ai-platform chat shell convergence.
+This document records pinned LibreChat frontend references used by ai-platform
+UI ports. It is provenance evidence, not a claim that complete upstream
+directories are vendored into this repository.
 
 ## Upstream
 
 | Field | Value |
 | --- | --- |
 | Repository | `https://github.com/danny-avila/LibreChat` |
-| Commit | `9e74cc0e57b395926122bd4062c1fcedc48ed465` |
+| Commit | `21dc4a2ef490b86510e4b410fe8f78d52c1d9629` |
 | License | MIT |
+| Copyright | Copyright (c) 2026 LibreChat |
+| Integration mode | `reference-derived` |
 | Local UI module | `frontend/web/src/librechat-ui/` |
 
 ## Allowed Intake
 
-The local module may track pure UI structure, geometry, tokens, and interaction
-affordances from the pinned commit:
+The local module may reference pure UI structure, geometry, tokens, and
+interaction affordances from the pinned commit:
 
 - chat shell layout;
 - sidebar and session-list density;
 - composer surface structure;
 - selector, command-menu, and chip affordances;
 - artifact and right-panel tab patterns;
-- loading, empty, unavailable, forbidden, degraded, and ready visual states.
+- loading, empty, unavailable, forbidden, degraded, and ready visual states;
+- Agent Builder form, tool picker, and Marketplace card interaction patterns.
+
+## Agent Builder Reference Scope
+
+The Agent Builder port is reference-derived from these exact source paths. No
+complete upstream `Agents` or `Tools` directory is vendored.
+
+- `client/src/components/SidePanel/Agents/AgentPanel.tsx`
+- `client/src/components/SidePanel/Agents/AgentConfig.tsx`
+- `client/src/components/SidePanel/Agents/Instructions.tsx`
+- `client/src/components/SidePanel/Agents/ModelPanel.tsx`
+- `client/src/components/SidePanel/Agents/AgentFooter.tsx`
+- `client/src/components/SidePanel/Agents/Tools/ToolsSection.tsx`
+- `client/src/components/SidePanel/Agents/Tools/SkillsDialog.tsx`
+- `client/src/components/SidePanel/Agents/Tools/ToolsMarketplaceDialog.tsx`
+- `client/src/components/SidePanel/Agents/Tools/ToolRow.tsx`
+- `client/src/components/SidePanel/Agents/Tools/ItemDialog/sections/McpSection.tsx`
+- `client/src/components/SidePanel/Agents/Tools/ItemDialog/sections/SkillSection.tsx`
+- `client/src/components/Agents/AgentCard.tsx`
+- `client/src/components/Agents/AgentGrid.tsx`
+- `client/src/components/Agents/AgentDetail.tsx`
 
 ## Forbidden Intake
 
@@ -54,6 +78,7 @@ re-exports only. Active workbench code must consume `frontend/web/src/librechat-
 
 ## Status Boundary
 
-This source pin and local module prove frontend UI-upstream traceability only.
+This reference-derived source pin and local module prove frontend UI-upstream
+traceability only.
 They do not close backend RBAC, MCP governance, marketplace write contracts,
 department skill policy, approval flows, 211 deployment, or issue closure gates.
