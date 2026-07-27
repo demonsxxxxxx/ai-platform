@@ -27,7 +27,11 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.db import transaction
-from app.execution_boundary import decide_execution_boundary
+from app.execution_boundary import (
+    CLAUDE_WORKER_EXECUTOR,
+    ExecutionBoundaryDecision,
+    decide_execution_boundary,
+)
 from app.executors.base import (
     ArtifactManifest,
     ExecutorEventSink,
@@ -215,14 +219,6 @@ def _selected_capability_invocation_error(payload: RunPayload, evidence: object)
     return None if decision.allowed else decision.reason
 
 
-def _effective_execution_tier(payload: RunPayload) -> str:
-    """Force every external MCP registration through a real sandbox boundary."""
-
-    return _execution_tier(payload) or (
-        "sdk_only_writing" if _external_mcp_subjects(payload) else ""
-    )
-
-
 @dataclass(frozen=True)
 class _AuthorizedAttachmentMetadata:
     """Authorized attachment metadata that never requires reading object bytes."""
@@ -277,12 +273,17 @@ def _execution_tier(payload: RunPayload) -> str:
     return ""
 
 
-def _ordinary_run_requires_sandbox(payload: RunPayload) -> bool:
+def _execution_boundary_decision(payload: RunPayload) -> ExecutionBoundaryDecision:
     return decide_execution_boundary(
-        executor_type="claude-agent-worker",
+        executor_type=CLAUDE_WORKER_EXECUTOR,
         execution_mode=str(payload.input.get("execution_mode") or ""),
-        execution_tier=_effective_execution_tier(payload),
-    ).requires_real_sandbox
+        execution_tier=_execution_tier(payload),
+        mcp_requires_sandbox=bool(_external_mcp_subjects(payload)),
+    )
+
+
+def _ordinary_run_requires_sandbox(payload: RunPayload) -> bool:
+    return _execution_boundary_decision(payload).requires_real_sandbox
 
 
 def _required_artifact_types(payload: RunPayload) -> tuple[str, ...]:
@@ -535,7 +536,7 @@ class PinnedSkillMismatch(ValueError):
 
 class ClaudeAgentWorkerAdapter:
     adapter_version = "claude-agent-worker-adapter/1"
-    executor_type = "claude-agent-worker"
+    executor_type = CLAUDE_WORKER_EXECUTOR
     executor_version = "claude-agent-sdk-poc"
     capabilities: ClassVar[dict[str, bool]] = {
         "artifacts": True,
@@ -555,11 +556,7 @@ class ClaudeAgentWorkerAdapter:
         event_sink: ExecutorEventSink | None = None,
         execution_owner: RunExecutionOwner | None = None,
     ) -> ExecutorResult:
-        decision = decide_execution_boundary(
-            executor_type=self.executor_type,
-            execution_mode=str(payload.input.get("execution_mode") or ""),
-            execution_tier=_effective_execution_tier(payload),
-        )
+        decision = _execution_boundary_decision(payload)
         if decision.fail_closed:
             return ExecutorResult(
                 status="failed",
@@ -1499,11 +1496,7 @@ class ClaudeAgentWorkerAdapter:
             executor_response.get("status") or getattr(runtime_result, "status", "") or ""
         ).strip().lower()
         sandbox_provider = _runtime_provider(runtime_result)
-        decision = decide_execution_boundary(
-            executor_type=self.executor_type,
-            execution_mode=str(payload.input.get("execution_mode") or ""),
-            execution_tier=_effective_execution_tier(payload),
-        )
+        decision = _execution_boundary_decision(payload)
         if sandbox_provider not in decision.accepted_providers:
             return self._sandbox_provider_required_result(
                 sandbox_provider=sandbox_provider,
