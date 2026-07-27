@@ -1,3 +1,5 @@
+import re
+
 from fastapi import HTTPException
 
 from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
@@ -14,7 +16,11 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
-from app.projection_redaction import required_tool_public_detail
+from app.projection_redaction import (
+    capability_id_from_skill,
+    public_agent_id_for_projection,
+    required_tool_public_detail,
+)
 from app.public_execution import (
     PUBLIC_EXECUTION_EVENT_TYPES,
     public_execution_event_from_row,
@@ -93,6 +99,8 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "required_tool_completion_evidence_mismatch": "required_capability_unavailable",
 }
 
+CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
+
 def public_terminal_projection(
     status: object,
     error_code: object = None,
@@ -140,6 +148,103 @@ def public_terminal_detail(status: object, error_code: object = None) -> dict[st
         "detail_kind": str(projection["detail_kind"]),
         "detail_code": str(projection["detail_code"]),
         "message": str(projection["message"]),
+    }
+
+
+def _chat_identifier_token_pattern(identifier: str) -> re.Pattern[str]:
+    """Match an identifier only outside Unicode word, dash, dot, or colon tokens."""
+    token_character = r"[\w.:\-]"
+    return re.compile(
+        rf"(?<!{token_character}){re.escape(identifier)}(?!{token_character})"
+    )
+
+
+def public_chat_answer_text(run: dict[str, object], value: object) -> str:
+    """Sanitize terminal and delta text with the run-owned identifier policy."""
+    content = sanitize_public_text(value)
+    if not content:
+        return ""
+    raw_skill_id = str(run.get("skill_id") or "")
+    raw_agent_id = str(run.get("agent_id") or "")
+    skill_capability_id = capability_id_from_skill(raw_skill_id)
+    agent_capability_id = capability_id_from_skill(None, raw_agent_id)
+    run_capability_id = skill_capability_id or agent_capability_id
+    public_agent_id = public_agent_id_for_projection(raw_agent_id, raw_skill_id)
+    identifiers = (
+        (raw_skill_id, skill_capability_id),
+        (raw_agent_id, agent_capability_id),
+    )
+    matched_identifiers = []
+    for identifier, identifier_capability_id in identifiers:
+        if not identifier:
+            continue
+        token_pattern = _chat_identifier_token_pattern(identifier)
+        if token_pattern.search(content):
+            matched_identifiers.append(
+                (identifier, identifier_capability_id, token_pattern)
+            )
+    if (
+        matched_identifiers
+        and raw_skill_id
+        and raw_agent_id
+        and skill_capability_id != agent_capability_id
+    ):
+        return ""
+    for identifier, identifier_capability_id, token_pattern in matched_identifiers:
+        if (
+            not run_capability_id
+            or identifier_capability_id != run_capability_id
+            or not public_agent_id
+        ):
+            return ""
+        if public_agent_id != identifier:
+            content = token_pattern.sub(public_agent_id, content)
+    content = sanitize_public_text(content)
+    return content if content.strip() else ""
+
+
+def _chat_terminal_answer_candidate(run: dict[str, object]) -> object:
+    result = run.get("result_json")
+    if isinstance(result, dict):
+        message = result.get("message")
+        if isinstance(message, str) and message.strip():
+            return message
+    return run.get("error_message") or ""
+
+
+def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object] | None:
+    """Build the sole versioned Chat payload for a terminal run state."""
+    status = normalize_run_status(str(run.get("status") or ""))
+    if status == "succeeded":
+        content = public_chat_answer_text(run, _chat_terminal_answer_candidate(run)) or "任务完成"
+        return {
+            "event_type": "message:chunk",
+            "payload": {
+                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+                "projection_kind": "assistant_final",
+                "content": content,
+            },
+            "message": content,
+            "event_payload": {},
+            "severity": "info",
+        }
+    terminal = public_terminal_projection(status, run.get("error_code"))
+    if terminal is None:
+        return None
+    detail_kind = str(terminal["detail_kind"])
+    detail_code = str(terminal["detail_code"])
+    message = str(terminal["message"])
+    return {
+        "event_type": "final_detail",
+        "payload": {
+            "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+            "detail_kind": detail_kind,
+            "detail_code": detail_code,
+            "message": message,
+        },
+        "message": message,
+        "event_payload": {"detail_code": detail_code},
+        "severity": "error" if detail_kind == "failed" else "info",
     }
 
 

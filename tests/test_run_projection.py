@@ -7,6 +7,7 @@ from app.auth import AuthPrincipal
 from app.run_projection import (
     artifact_card,
     progress_for_status,
+    public_chat_terminal_projection,
     public_terminal_projection,
     run_event_response,
     run_step_response,
@@ -249,6 +250,47 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     assert admin["detail_code"] == "required_capability_unavailable"
     assert ordinary["message"] == admin["message"]
     assert "Bash" not in str(ordinary)
+
+
+def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
+    succeeded = public_chat_terminal_projection(
+        {
+            "id": "run-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "status": "succeeded",
+            "result_json": {"message": "当前（general-chat），没有 Bash 工具，无法执行。"},
+        }
+    )
+    failed = public_chat_terminal_projection(
+        {
+            "id": "run-b",
+            "status": "failed",
+            "error_code": "required_tool_unavailable",
+        }
+    )
+
+    assert succeeded == {
+        "event_type": "message:chunk",
+        "payload": {
+            "projection_version": "ai-platform.chat-public-projection.v1",
+            "projection_kind": "assistant_final",
+            "content": "当前（general-agent），没有 Bash 工具，无法执行。",
+        },
+        "message": "当前（general-agent），没有 Bash 工具，无法执行。",
+        "event_payload": {},
+        "severity": "info",
+    }
+    assert failed is not None
+    assert failed["event_type"] == "final_detail"
+    assert failed["payload"] == {
+        "projection_version": "ai-platform.chat-public-projection.v1",
+        "detail_kind": "failed",
+        "detail_code": "required_capability_unavailable",
+        "message": public_terminal_projection("failed", "required_tool_unavailable")["message"],
+    }
+    assert failed["event_payload"] == {"detail_code": "required_capability_unavailable"}
+    assert failed["severity"] == "error"
 
 
 @pytest.mark.parametrize(
