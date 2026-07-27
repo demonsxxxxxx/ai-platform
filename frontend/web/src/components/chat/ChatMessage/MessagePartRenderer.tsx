@@ -336,13 +336,43 @@ export function MessagePartRenderer({
   return null;
 }
 
-function formatEventLabel(value: string): string {
-  return value
-    .split(/[_:]+/)
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(" ");
-}
+const RUN_STATUS_EVENT_I18N_KEYS: Readonly<Record<string, string>> = {
+  queued: "chat.runStatus.event.queued",
+  run_started: "chat.runStatus.event.runStarted",
+  tool_call_started: "chat.runStatus.event.toolCallStarted",
+  tool_call_completed: "chat.runStatus.event.toolCallCompleted",
+  agent_step_started: "chat.runStatus.event.agentStepStarted",
+  agent_step_reused: "chat.runStatus.event.agentStepReused",
+  agent_step_completed: "chat.runStatus.event.agentStepCompleted",
+  agent_step_blocked: "chat.runStatus.event.agentStepBlocked",
+  agent_step_failed: "chat.runStatus.event.agentStepFailed",
+  subagent_started: "chat.runStatus.event.subagentStarted",
+  subagent_completed: "chat.runStatus.event.subagentCompleted",
+  subagent_failed: "chat.runStatus.event.subagentFailed",
+  run_child_created: "chat.runStatus.event.runChildCreated",
+  capability_selected: "chat.runStatus.event.capabilitySelected",
+  intent_detected: "chat.runStatus.event.intentDetected",
+  intent_confirmed: "chat.runStatus.event.intentConfirmed",
+  context_snapshot_created: "chat.runStatus.event.contextSnapshotCreated",
+  file_bound: "chat.runStatus.event.fileBound",
+  artifact_created: "chat.runStatus.event.artifactCreated",
+  cancel_requested: "chat.runStatus.event.cancelRequested",
+  cancel_requested_but_completed:
+    "chat.runStatus.event.cancelRequestedButCompleted",
+  run_failed: "chat.runStatus.event.runFailed",
+  run_timeout: "chat.runStatus.event.runTimeout",
+  run_budget_exhausted: "chat.runStatus.event.runBudgetExhausted",
+  model_service_unavailable: "chat.runStatus.event.modelServiceUnavailable",
+  execution_service_unavailable:
+    "chat.runStatus.event.executionServiceUnavailable",
+  dependent_service_unavailable:
+    "chat.runStatus.event.dependentServiceUnavailable",
+  capability_not_authorized: "chat.runStatus.event.capabilityNotAuthorized",
+  tool_permission_denied: "chat.runStatus.event.toolPermissionDenied",
+  skill_sandbox_admission_failed:
+    "chat.runStatus.event.skillSandboxAdmissionFailed",
+  run_cancelled: "chat.runStatus.event.runCancelled",
+};
 
 function RunStatusItem({
   part,
@@ -351,6 +381,7 @@ function RunStatusItem({
   part: Extract<MessagePart, { type: "run_status" }>;
   isStreaming: boolean;
 }) {
+  const { t } = useTranslation();
   const isWaiting =
     part.event_type === "queued" ||
     part.event_type === "agent_step_blocked" ||
@@ -378,9 +409,21 @@ function RunStatusItem({
       : part.severity === "warning"
         ? "border-amber-200/70 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300"
         : "border-stone-200/70 bg-stone-50 text-stone-700 dark:border-stone-700/60 dark:bg-stone-800/40 dark:text-stone-300";
-  const meta = [part.stage, formatEventLabel(part.event_type)]
-    .filter(Boolean)
-    .join(" · ");
+  const eventLabel = t(
+    RUN_STATUS_EVENT_I18N_KEYS[part.event_type] ??
+      "chat.runStatus.event.executionUpdate",
+  );
+  const statusLabel = t(
+    part.severity === "error"
+      ? "chat.runStatus.status.failed"
+      : part.severity === "warning"
+        ? "chat.runStatus.status.warning"
+        : isWaiting
+          ? "chat.runStatus.status.waiting"
+          : isActive
+            ? "chat.runStatus.status.running"
+            : "chat.runStatus.status.completed",
+  );
 
   return (
     <div
@@ -398,14 +441,8 @@ function RunStatusItem({
         )}
       />
       <div className="min-w-0 flex-1">
-        {part.message && (
-          <div className="break-words font-medium leading-snug">
-            {part.message}
-          </div>
-        )}
-        {meta && (
-          <div className="mt-0.5 truncate text-xs opacity-70">{meta}</div>
-        )}
+        <div className="break-words font-medium leading-snug">{eventLabel}</div>
+        <div className="mt-0.5 truncate text-xs opacity-70">{statusLabel}</div>
       </div>
     </div>
   );
@@ -418,13 +455,24 @@ function ExecutionTimelineItem({
   part: Extract<MessagePart, { type: "execution_step" }>;
   isStreaming: boolean;
 }) {
-  const progressPercent = Math.min(
-    100,
-    Math.max(
-      0,
-      Math.round((part.progress.current / part.progress.total) * 100),
-    ),
-  );
+  const { t } = useTranslation();
+  const hasAuthoritativeProgress =
+    Number.isInteger(part.progress.current) &&
+    Number.isInteger(part.progress.total) &&
+    part.progress.total > 1 &&
+    part.progress.current >= 0 &&
+    part.progress.current <= part.progress.total;
+  const progressPercent = hasAuthoritativeProgress
+    ? Math.min(
+        100,
+        Math.max(
+          0,
+          Math.round((part.progress.current / part.progress.total) * 100),
+        ),
+      )
+    : 0;
+  const kindLabel = t(`chat.executionTimeline.kind.${part.kind}`);
+  const statusLabel = t(`chat.executionTimeline.status.${part.status}`);
   const Icon =
     part.status === "failed"
       ? XCircle
@@ -453,28 +501,42 @@ function ExecutionTimelineItem({
         )}
       />
       <div className="min-w-0 flex-1">
-        <div className="break-words font-medium leading-snug">{part.title}</div>
-        <div className="mt-0.5 break-words text-xs opacity-80">{part.summary}</div>
-        <div
-          className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[var(--theme-border)]/70"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={part.progress.total}
-          aria-valuenow={part.progress.current}
-          aria-label={`${part.title} ${part.progress.current}/${part.progress.total}`}
-        >
-          <div
-            className={clsx(
-              "h-full rounded-sm transition-[width] duration-200",
-              part.status === "failed"
-                ? "bg-red-500"
-                : part.status === "completed"
-                  ? "bg-emerald-500"
-                  : "bg-sky-500",
-            )}
-            style={{ width: `${progressPercent}%` }}
-          />
+        <div className="break-words font-medium leading-snug">{kindLabel}</div>
+        <div className="mt-0.5 break-words text-xs opacity-80">
+          {statusLabel}
+          {hasAuthoritativeProgress &&
+            ` · ${t("chat.executionTimeline.progress", {
+              current: part.progress.current,
+              total: part.progress.total,
+            })}`}
         </div>
+        {hasAuthoritativeProgress && (
+          <div
+            className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[var(--theme-border)]/70"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={part.progress.total}
+            aria-valuenow={part.progress.current}
+            aria-label={t("chat.executionTimeline.progressLabel", {
+              kind: kindLabel,
+              status: statusLabel,
+              current: part.progress.current,
+              total: part.progress.total,
+            })}
+          >
+            <div
+              className={clsx(
+                "h-full rounded-sm transition-[width] duration-200",
+                part.status === "failed"
+                  ? "bg-red-500"
+                  : part.status === "completed"
+                    ? "bg-emerald-500"
+                    : "bg-sky-500",
+              )}
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+        )}
         {part.safe_file_name && (
           <div className="mt-1.5 truncate text-xs opacity-70">
             {part.safe_file_name}

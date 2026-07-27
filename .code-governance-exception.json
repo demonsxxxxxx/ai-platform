@@ -1,17 +1,9 @@
 {
   "schema_version": "ai-platform.code-governance-exception.v1",
   "expires_on": "2026-07-29",
-  "owner": "ai-platform-controller",
-  "reason": "Issue #81 accepts F1-F4 as one coherent Agent Builder module for product-first delivery: https://github.com/demonsxxxxxx/ai-platform/issues/81",
+  "owner": "issue-642-chat-product-owner",
+  "reason": "Temporary exception for https://github.com/demonsxxxxxx/ai-platform/issues/642 to keep one coherent Chat UI repair across components, hooks, and i18n; remove before deployment.",
   "violations": [
-    {
-      "code": "production_file_count",
-      "path": null
-    },
-    {
-      "code": "production_net_loc",
-      "path": null
-    },
     {
       "code": "production_subsystem_count",
       "path": null

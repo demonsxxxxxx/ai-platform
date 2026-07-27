@@ -562,6 +562,68 @@
     "requestFailed": "Failed to load session",
     "activeRunLimitExceeded": "This account already has 3 running tasks. Wait for them to finish or cancel an older task before sending.",
     "sendNotAcceptedRetry": "Your message was not sent. Please try again.",
+    "executionTimeline": {
+      "kind": {
+        "analysis": "Analysis",
+        "artifact": "Artifact",
+        "capability": "Capability selection",
+        "collaboration": "Collaboration",
+        "file_read": "Reading file",
+        "generation": "Generating",
+        "processing": "Processing",
+        "verification": "Verification"
+      },
+      "progress": "{{current}}/{{total}}",
+      "progressLabel": "{{kind}} · {{status}} · {{current}}/{{total}}",
+      "status": {
+        "completed": "Completed",
+        "failed": "Failed",
+        "running": "Running"
+      }
+    },
+    "runStatus": {
+      "event": {
+        "agentStepBlocked": "Execution is waiting",
+        "agentStepCompleted": "Execution step completed",
+        "agentStepFailed": "Execution step failed",
+        "agentStepReused": "Reusing execution step",
+        "agentStepStarted": "Execution step started",
+        "artifactCreated": "Artifact created",
+        "cancelRequested": "Cancellation requested",
+        "cancelRequestedButCompleted": "Execution completed before cancellation",
+        "capabilityNotAuthorized": "Capability not authorized",
+        "capabilitySelected": "Capability selected",
+        "contextSnapshotCreated": "Context prepared",
+        "dependentServiceUnavailable": "Dependent service unavailable",
+        "executionServiceUnavailable": "Execution service unavailable",
+        "executionUpdate": "Execution update",
+        "fileBound": "File attached to execution",
+        "intentConfirmed": "Request confirmed",
+        "intentDetected": "Request understood",
+        "modelServiceUnavailable": "Model service unavailable",
+        "queued": "Execution queued",
+        "runBudgetExhausted": "Execution limit reached",
+        "runCancelled": "Execution cancelled",
+        "runChildCreated": "Follow-up execution created",
+        "runFailed": "Execution failed",
+        "runStarted": "Execution started",
+        "runTimeout": "Execution timed out",
+        "skillSandboxAdmissionFailed": "Skill sandbox unavailable",
+        "subagentCompleted": "Collaborator completed",
+        "subagentFailed": "Collaborator failed",
+        "subagentStarted": "Collaborator started",
+        "toolCallCompleted": "Action completed",
+        "toolCallStarted": "Action started",
+        "toolPermissionDenied": "Action not authorized"
+      },
+      "status": {
+        "completed": "Completed",
+        "failed": "Failed",
+        "running": "Running",
+        "waiting": "Waiting",
+        "warning": "Needs attention"
+      }
+    },
     "runTerminal": {
       "failed": "The task could not be completed. Try again later or contact an administrator if the problem persists.",
       "runBudgetExhausted": "The task reached its execution-turn limit. Narrow or split the task, then retry.",

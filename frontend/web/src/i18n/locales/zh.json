@@ -562,6 +562,68 @@
     "requestFailed": "加载会话失败",
     "activeRunLimitExceeded": "当前账户已有 3 个运行中的任务。请等待任务结束或取消旧任务后再发送。",
     "sendNotAcceptedRetry": "消息未发送，请重试。",
+    "executionTimeline": {
+      "kind": {
+        "analysis": "分析",
+        "artifact": "产物",
+        "capability": "能力选择",
+        "collaboration": "协作",
+        "file_read": "读取文件",
+        "generation": "生成",
+        "processing": "处理",
+        "verification": "验证"
+      },
+      "progress": "{{current}}/{{total}}",
+      "progressLabel": "{{kind}} · {{status}} · {{current}}/{{total}}",
+      "status": {
+        "completed": "已完成",
+        "failed": "失败",
+        "running": "进行中"
+      }
+    },
+    "runStatus": {
+      "event": {
+        "agentStepBlocked": "执行正在等待",
+        "agentStepCompleted": "执行步骤已完成",
+        "agentStepFailed": "执行步骤失败",
+        "agentStepReused": "正在复用执行步骤",
+        "agentStepStarted": "执行步骤已开始",
+        "artifactCreated": "产物已创建",
+        "cancelRequested": "已请求取消",
+        "cancelRequestedButCompleted": "取消前执行已完成",
+        "capabilityNotAuthorized": "能力未获授权",
+        "capabilitySelected": "能力已选择",
+        "contextSnapshotCreated": "上下文已准备",
+        "dependentServiceUnavailable": "依赖服务不可用",
+        "executionServiceUnavailable": "执行服务不可用",
+        "executionUpdate": "执行状态更新",
+        "fileBound": "文件已绑定到执行",
+        "intentConfirmed": "请求已确认",
+        "intentDetected": "请求已识别",
+        "modelServiceUnavailable": "模型服务不可用",
+        "queued": "执行已排队",
+        "runBudgetExhausted": "已达到执行上限",
+        "runCancelled": "执行已取消",
+        "runChildCreated": "后续执行已创建",
+        "runFailed": "执行失败",
+        "runStarted": "执行已开始",
+        "runTimeout": "执行已超时",
+        "skillSandboxAdmissionFailed": "Skill 沙箱不可用",
+        "subagentCompleted": "协作者已完成",
+        "subagentFailed": "协作者失败",
+        "subagentStarted": "协作者已开始",
+        "toolCallCompleted": "操作已完成",
+        "toolCallStarted": "操作已开始",
+        "toolPermissionDenied": "操作未获授权"
+      },
+      "status": {
+        "completed": "已完成",
+        "failed": "失败",
+        "running": "进行中",
+        "waiting": "等待中",
+        "warning": "需要处理"
+      }
+    },
     "runTerminal": {
       "failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
       "runBudgetExhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",

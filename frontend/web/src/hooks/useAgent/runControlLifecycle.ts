@@ -36,6 +36,7 @@ interface PendingRunControlOperation {
   sourceRunId: string;
   action: RunControlMutationAction;
   operationId: string;
+  replayBlocked: boolean;
 }
 
 /**
@@ -174,8 +175,15 @@ function loadPendingOperation(
       value.sourceRunId === parent.runId &&
       (value.action === "retry" || value.action === "resume") &&
       typeof value.operationId === "string" &&
-      UUID4_PATTERN.test(value.operationId);
-    return valid ? (value as PendingRunControlOperation) : null;
+      UUID4_PATTERN.test(value.operationId) &&
+      (value.replayBlocked === undefined ||
+        typeof value.replayBlocked === "boolean");
+    return valid
+      ? ({
+          ...value,
+          replayBlocked: value.replayBlocked === true,
+        } as PendingRunControlOperation)
+      : null;
   };
   if (storage) {
     try {
@@ -202,30 +210,32 @@ function persistPendingOperation(
 ): boolean {
   const key = operationStorageKey(parent);
   const storage = operationStorage();
-  if (!storage) return true;
+  if (!storage) return false;
   try {
-    storage.setItem(key, JSON.stringify(pending));
+    const serialized = JSON.stringify(pending);
+    storage.setItem(key, serialized);
+    return storage.getItem(key) === serialized;
   } catch {
-    // The caller retains the pending value in this lifecycle instance, so the
-    // first mutation and same-page resolver/replay path remain available.
+    return false;
   }
-  return true;
 }
 
 function removePendingOperation(
   parent: RunControlParentIdentity,
   operationId: string,
-): void {
+): boolean {
   const key = operationStorageKey(parent);
   const storage = operationStorage();
-  if (!storage) return;
+  if (!storage) return false;
   try {
     const raw = storage.getItem(key);
-    if (!raw) return;
+    if (!raw) return true;
     const value = JSON.parse(raw) as Partial<PendingRunControlOperation>;
-    if (value.operationId === operationId) storage.removeItem(key);
+    if (value.operationId !== operationId) return false;
+    storage.removeItem(key);
+    return storage.getItem(key) === null;
   } catch {
-    // The resolver is already authoritative; storage cleanup is best effort.
+    return false;
   }
 }
 
@@ -280,6 +290,14 @@ function isDefinitiveMutationRejection(error: ApiRequestError): boolean {
   // can occur after commit, so recovery is GET-first; POST is eligible only
   // after the locked resolver proves authoritative absence.
   return [401, 403, 404, 409, 410, 412, 422].includes(error.status);
+}
+
+function isRecoverableNoSideEffectMutationRejection(
+  error: ApiRequestError,
+): boolean {
+  // The run-control contract guarantees that these validation/conflict
+  // rejections have no committed child. Every other failure stays locked.
+  return [409, 412, 422].includes(error.status);
 }
 
 function parentIdentityKey(parent: RunControlParentIdentity): string {
@@ -446,7 +464,8 @@ export class RunControlLifecycle {
     const pending = this.pendingOperation;
     if (pending && this.callbacks) {
       const actionSequence = ++owner.actionSequence;
-      void this.resolvePendingOperation(owner, pending, actionSequence, true);
+      // A reload never inherits same-page authority to issue another POST.
+      void this.resolvePendingOperation(owner, pending, actionSequence, false);
       return;
     }
     void this.refresh(owner);
@@ -597,6 +616,9 @@ export class RunControlLifecycle {
           sourceRunId: owner.runId,
           action,
           operationId: createOpaqueOperationId(),
+          // The durable form is always fail-closed. Only this lifecycle instance
+          // may authorize one fresh replay after an authoritative absence.
+          replayBlocked: true,
         };
       } catch (error) {
         owner.mutationStarted = true;
@@ -675,10 +697,21 @@ export class RunControlLifecycle {
       ) {
         return;
       }
-      if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
-        if (pending) this.clearPendingOperation(owner, pending);
-        this.publishRejected(owner, error.message);
-        return;
+      if (error instanceof ApiRequestError && pending) {
+        if (isRecoverableNoSideEffectMutationRejection(error)) {
+          if (this.clearPendingOperation(owner, pending)) {
+            this.publishRejected(owner, error.message, true);
+          } else {
+            this.publishUnconfirmed(owner);
+          }
+          return;
+        }
+        if (isDefinitiveMutationRejection(error)) {
+          // Authorization/not-found responses do not prove that the request had
+          // no side effect. Keep the durable fence and remain reload-locked.
+          this.publishUnconfirmed(owner);
+          return;
+        }
       }
       if (pending) {
         await this.resolvePendingOperation(owner, pending, actionSequence, true);
@@ -716,6 +749,9 @@ export class RunControlLifecycle {
   ): Promise<void> {
     if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
     this.publishUnconfirmed(owner);
+    if (!this.blockPendingReplay(owner, pending)) {
+      return;
+    }
     let resolution: RunControlOperationResponse;
     try {
       resolution = await sessionApi.resolveRunControlOperation(
@@ -724,15 +760,12 @@ export class RunControlLifecycle {
         pending.operationId,
         { signal: owner.abortController.signal },
       );
-    } catch (error) {
+    } catch {
       if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
-      if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
-        this.clearPendingOperation(owner, pending);
-        this.publishRejected(owner, error.message);
-      } else {
-        this.publishUnconfirmed(owner);
-        await this.refreshUnconfirmedReadiness(owner);
-      }
+      // Resolver failures never prove that the original POST had no side
+      // effect. The already-durable replay fence remains authoritative.
+      this.publishUnconfirmed(owner);
+      await this.refreshUnconfirmedReadiness(owner);
       return;
     }
     if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
@@ -754,17 +787,8 @@ export class RunControlLifecycle {
       resolution.status === "absent" &&
       resolution.run_id === null &&
       resolution.session_id === null;
-    const exactPendingAdmission =
-      resolution.source_run_id === pending.sourceRunId &&
-      resolution.action === pending.action &&
-      resolution.operation_id === pending.operationId &&
-      resolution.queue_admission === "pending" &&
-      typeof resolution.run_id === "string" &&
-      resolution.run_id.length > 0 &&
-      typeof resolution.session_id === "string" &&
-      resolution.session_id.length > 0;
     if (
-      (!exactAbsence && !exactPendingAdmission) ||
+      !exactAbsence ||
       !allowReplayAfterAbsence
     ) {
       this.publishUnconfirmed(owner);
@@ -772,17 +796,39 @@ export class RunControlLifecycle {
       return;
     }
 
+    if (!this.clearPendingOperation(owner, pending)) {
+      this.publishUnconfirmed(owner);
+      return;
+    }
+
+    let replayPending: PendingRunControlOperation;
+    try {
+      replayPending = {
+        ...pending,
+        operationId: createOpaqueOperationId(),
+        replayBlocked: true,
+      };
+    } catch {
+      this.publishUnconfirmed(owner);
+      return;
+    }
+    if (!persistPendingOperation(owner, replayPending)) {
+      this.publishUnconfirmed(owner);
+      return;
+    }
+    this.pendingOperation = replayPending;
+
     try {
       const replay = await this.requestMutation(
-        pending.action,
+        replayPending.action,
         owner,
-        pending.operationId,
+        replayPending.operationId,
       );
-      if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
+      if (!this.isCurrentOperation(owner, replayPending, actionSequence)) return;
       if (
         await this.acceptOperationChild(
           owner,
-          pending,
+          replayPending,
           replay as RunControlChildResponse | null,
           actionSequence,
           true,
@@ -792,12 +838,15 @@ export class RunControlLifecycle {
       }
       this.publishUnconfirmed(owner);
     } catch (error) {
-      if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
-      if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
-        this.clearPendingOperation(owner, pending);
-        this.publishRejected(owner, error.message);
-      } else {
-        this.publishUnconfirmed(owner);
+      if (!this.isCurrentOperation(owner, replayPending, actionSequence)) return;
+      // A replay response cannot prove whether the replay POST committed. Its
+      // fresh durable record was fail-closed before the request and is retained.
+      this.publishUnconfirmed(owner);
+      if (
+        error instanceof ApiRequestError &&
+        isRecoverableNoSideEffectMutationRejection(error)
+      ) {
+        await this.refreshUnconfirmedReadiness(owner);
       }
     }
   }
@@ -842,14 +891,34 @@ export class RunControlLifecycle {
   private clearPendingOperation(
     owner: RunControlOwner,
     pending: PendingRunControlOperation,
-  ): void {
-    removePendingOperation(owner, pending.operationId);
+  ): boolean {
+    if (!removePendingOperation(owner, pending.operationId)) return false;
     if (this.pendingOperation?.operationId === pending.operationId) {
       this.pendingOperation = null;
     }
+    return true;
   }
 
-  private publishRejected(owner: RunControlOwner, message: string): void {
+  private blockPendingReplay(
+    owner: RunControlOwner,
+    pending: PendingRunControlOperation,
+  ): boolean {
+    const blocked = { ...pending, replayBlocked: true };
+    if (!persistPendingOperation(owner, blocked)) return false;
+    if (this.pendingOperation?.operationId === pending.operationId) {
+      this.pendingOperation = blocked;
+    }
+    return true;
+  }
+
+  private publishRejected(
+    owner: RunControlOwner,
+    message: string,
+    restoreMutationAvailability: boolean,
+  ): void {
+    if (restoreMutationAvailability) {
+      owner.mutationStarted = false;
+    }
     owner.phase = "rejected";
     this.publishForOwner(owner, {
       phase: "rejected",
