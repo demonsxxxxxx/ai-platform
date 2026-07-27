@@ -6,7 +6,7 @@ import argparse
 import codecs
 from collections import OrderedDict, deque
 import ctypes
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -79,12 +79,18 @@ DEFAULT_MANAGED_ENV_RELATIVE_PATH = Path("deploy/ai-platform/.env")
 MANAGED_RELEASE_DIRECTORY_NAME = "releases"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
-PROVIDER_OVERLAY_COMPOSE_SELECTIONS = frozenset(
-    {
-        (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), SANDBOX_COMPOSE_RELATIVE_PATH),
-        (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH),
-    }
+OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox-bridge.yml"
+DOCKER_SANDBOX_COMPOSE_SELECTION = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), SANDBOX_COMPOSE_RELATIVE_PATH)
+DOCKER_SANDBOX_BRIDGE_COMPOSE_SELECTION = (
+    *DOCKER_SANDBOX_COMPOSE_SELECTION, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH
 )
+OPENSANDBOX_COMPOSE_SELECTION = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH)
+ALLOWED_COMPOSE_SELECTION_TRANSITIONS = frozenset({
+    (DOCKER_SANDBOX_COMPOSE_SELECTION, DOCKER_SANDBOX_BRIDGE_COMPOSE_SELECTION),
+    (DOCKER_SANDBOX_BRIDGE_COMPOSE_SELECTION, DOCKER_SANDBOX_COMPOSE_SELECTION),
+    (DOCKER_SANDBOX_BRIDGE_COMPOSE_SELECTION, OPENSANDBOX_COMPOSE_SELECTION),
+    (OPENSANDBOX_COMPOSE_SELECTION, DOCKER_SANDBOX_COMPOSE_SELECTION),
+})
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 WORKER_TMPDIR_EXPANSION_MARKERS = frozenset("*?$`[]{}")
 WORKER_TMPDIR_UNICODE_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
@@ -1601,11 +1607,7 @@ def resolve_compose_files(
     ):
         raise ReleaseAuthorityError("release checkout path is invalid")
 
-    values: Sequence[str | Path]
-    if compose_files is None:
-        values = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),)
-    else:
-        values = compose_files
+    values: Sequence[str | Path] = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),) if compose_files is None else compose_files
     if not values:
         raise ReleaseAuthorityError("compose file selection is invalid")
 
@@ -1671,13 +1673,10 @@ def resolve_compose_files(
         absolute_paths.append(resolved)
 
     working_dir = absolute_paths[0].parent.as_posix()
-    return _ComposeSelection(
-        checkout_root=root,
-        relative_paths=tuple(relative_paths),
-        absolute_paths=tuple(absolute_paths),
-        working_dir=working_dir,
-        config_files=",".join(path.as_posix() for path in absolute_paths),
-    )
+    selected = tuple(relative_paths)
+    if (OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH in selected or len(selected) > 2) and selected != DOCKER_SANDBOX_BRIDGE_COMPOSE_SELECTION:
+        raise ReleaseAuthorityError("compose file selection is not approved")
+    return _ComposeSelection(root, selected, tuple(absolute_paths), working_dir, ",".join(path.as_posix() for path in absolute_paths))
 
 
 def _normalized_release_root(release_root: Path) -> Path:
@@ -2166,15 +2165,11 @@ def _compose_ownership_selection(
         return None
     if working_dir == target.working_dir and config_files == target.config_files:
         return target
-
     observed_files = config_files.split(",")
-    if not observed_files or any(not value for value in observed_files):
-        return None
-    observed_paths: list[Path] = []
-    for value in observed_files:
-        path = Path(value)
-        if (
-            not path.is_absolute()
+    observed_paths = [Path(value) for value in observed_files]
+    if any(
+            not value
+            or not path.is_absolute()
             or path.as_posix() != value
             or value != unicodedata.normalize("NFC", value)
             or "\\" in value
@@ -2182,13 +2177,14 @@ def _compose_ownership_selection(
                 unicodedata.category(character) in WORKER_TMPDIR_UNICODE_CATEGORIES
                 for character in value
             )
-        ):
-            return None
-        observed_paths.append(path)
+        for value, path in zip(observed_files, observed_paths, strict=True)
+    ):
+        return None
 
-    observed_main = observed_paths[0]
-    observed_root = observed_main
+    observed_root = observed_paths[0]
     for _ in DEFAULT_COMPOSE_RELATIVE_PATH.parts:
+        if observed_root.parent == observed_root:
+            return None
         observed_root = observed_root.parent
     release_root = target.checkout_root.parent
     if (
@@ -2202,20 +2198,14 @@ def _compose_ownership_selection(
         observed_relative_paths = tuple(
             path.relative_to(observed_root).as_posix() for path in observed_paths
         )
-    except ValueError:
-        return None
-    try:
         observed = resolve_compose_files(observed_root, observed_relative_paths)
-    except (OSError, ReleaseAuthorityError):
+    except (OSError, ValueError, ReleaseAuthorityError):
         return None
     if observed.working_dir != working_dir or observed.config_files != config_files:
         return None
     if observed.relative_paths == target.relative_paths:
         return observed
-    transition = frozenset({observed.relative_paths, target.relative_paths})
-    if transition == PROVIDER_OVERLAY_COMPOSE_SELECTIONS:
-        return observed
-    return None
+    return observed if (observed.relative_paths, target.relative_paths) in ALLOWED_COMPOSE_SELECTION_TRANSITIONS else None
 
 
 def _manual_frontend_container_id(inspected: dict[str, Any]) -> str:
@@ -2630,6 +2620,16 @@ def _auto_release_plan(
         paths,
         runtime_neutral_backend_dependency_paths=neutral_paths,
     )
+    if OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH in paths:
+        changes = replace(
+            changes,
+            frontend_source=tuple(sorted({
+                *changes.frontend_source, OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH,
+            })),
+            deployment_only=tuple(
+                path for path in changes.deployment_only if path != OPENSANDBOX_BRIDGE_COMPOSE_RELATIVE_PATH
+            ),
+        )
     return build_auto_release_plan(current_commit, target_commit, changes)
 
 
