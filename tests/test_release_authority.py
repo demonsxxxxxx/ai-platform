@@ -5426,3 +5426,13 @@ def test_canonical_build_timeout_default_and_override_are_recorded_in_plan_and_s
         release_authority._plan_as_dict(plan)["canonical_dependency_build_timeout_seconds"]
         == release_authority.CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
     )
+
+
+def test_backend_flatten_cleanup_status_evidence_is_bounded():
+    error = release_authority.BackendFlattenError("C:/private-marker/backend-flatten")
+    error.cleanup_status = "failed"
+
+    evidence = release_authority._stage_failure_evidence(error)
+
+    assert evidence == {"failure_kind": "authority-error", "cleanup_status": "failed"}
+    assert "private-marker" not in json.dumps(evidence)
