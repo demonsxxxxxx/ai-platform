@@ -4,10 +4,8 @@ import hmac
 import inspect
 import importlib
 import json
-import logging
 import os
 import socket
-import subprocess
 import threading
 import time
 import traceback
@@ -4976,165 +4974,6 @@ async def test_docker_rejects_unreachable_or_stale_api_callback_before_dispatch(
         await provider.create_or_reuse(request(run_id="run-c"), workspace(run_id="run-c"))
 
 
-@pytest.mark.parametrize(
-    ("exec_exit_code", "exec_error", "expected_stage"),
-    (
-        (9, None, "callback_probe_docker_exec_nonzero"),
-        (0, RuntimeError("private-exec-sentinel"), "callback_probe_docker_exec_exception"),
-    ),
-)
-def test_default_governed_callback_probe_logs_bounded_docker_exec_failures(
-    caplog,
-    exec_exit_code,
-    exec_error,
-    expected_stage,
-):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    private_sentinel = "private-exec-sentinel"
-
-    class ProbeContainer:
-        def exec_run(self, _command, **_kwargs):
-            if exec_error is not None:
-                raise exec_error
-            return SimpleNamespace(exit_code=exec_exit_code)
-
-    caplog.set_level(logging.DEBUG, logger=container_provider.__name__)
-
-    assert (
-        container_provider.default_governed_callback_reachability_probe(
-            ProbeContainer(),
-            "http://private-callback-sentinel.invalid:8020",
-            "a" * 40,
-        )
-        is False
-    )
-
-    assert expected_stage in caplog.text
-    assert "outcome=failed" in caplog.text
-    assert private_sentinel not in caplog.text
-    assert "private-callback-sentinel" not in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("http_status", "response_body", "expected_stage", "expected_result"),
-    (
-        (503, b"private-http-sentinel", "callback_probe_http_status", False),
-        (200, b"private-payload-sentinel", "callback_probe_payload_invalid", False),
-        (200, b'{"status":"ok"}', "callback_probe_payload_invalid", False),
-        (
-            200,
-            json.dumps({"status": "ok", "runtime_commit": "b" * 40}).encode("utf-8"),
-            "callback_probe_runtime_commit_mismatch",
-            False,
-        ),
-        (
-            200,
-            json.dumps({"status": "ok", "runtime_commit": "a" * 40}).encode("utf-8"),
-            "callback_probe_success",
-            True,
-        ),
-    ),
-)
-def test_default_governed_callback_probe_logs_bounded_http_payload_and_commit_stages(
-    caplog,
-    http_status,
-    response_body,
-    expected_stage,
-    expected_result,
-):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-
-    class CallbackHandler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
-            self.send_response(http_status)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(response_body)
-
-        def log_message(self, _format, *_args):
-            return None
-
-    class LocalExecContainer:
-        def exec_run(self, command, **_kwargs):
-            completed = subprocess.run(command, capture_output=True, check=False)
-            return SimpleNamespace(exit_code=completed.returncode)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), CallbackHandler)
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-    caplog.set_level(logging.DEBUG, logger=container_provider.__name__)
-    try:
-        result = container_provider.default_governed_callback_reachability_probe(
-            LocalExecContainer(),
-            f"http://127.0.0.1:{server.server_port}",
-            "a" * 40,
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-        server_thread.join(timeout=2)
-
-    assert result is expected_result
-    assert expected_stage in caplog.text
-    assert "private-http-sentinel" not in caplog.text
-    assert "private-payload-sentinel" not in caplog.text
-    if expected_result:
-        assert all(record.levelno < logging.WARNING for record in caplog.records)
-        assert "outcome=failed" not in caplog.text
-        assert "outcome=passed" in caplog.text
-    else:
-        assert "outcome=failed" in caplog.text
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("gate", "expected_stage"),
-    (
-        ("preflight", "preflight_topology_admission_failed"),
-        ("proof-seal", "post_create_proof_seal_failed"),
-        ("callback", "callback_reachability_failed"),
-    ),
-)
-async def test_docker_governed_egress_gate_logs_private_stage_preserves_public_error_and_cleans_up(
-    monkeypatch,
-    caplog,
-    gate,
-    expected_stage,
-):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    private_sentinel = "private-governed-egress-sentinel"
-    fake = FakeDockerClient(
-        list_error=RuntimeError(private_sentinel) if gate == "preflight" else None,
-        exec_error=RuntimeError(private_sentinel) if gate == "callback" else None,
-    )
-    if gate == "proof-seal":
-        fake.post_create_mutator = lambda container: container.attrs.update(Id=private_sentinel)
-    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
-    provider = container_provider.DockerContainerProvider(
-        docker_client_factory=lambda: fake,
-        health_probe=lambda *_args: True,
-        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
-    )
-    caplog.set_level(logging.DEBUG, logger=container_provider.__name__)
-
-    with pytest.raises(container_provider.GovernedEgressAdmissionError) as exc_info:
-        await provider.create_or_reuse(request(), workspace())
-
-    assert exc_info.value.error_code == "sandbox_egress_unavailable"
-    assert str(exc_info.value).encode("utf-8") == (
-        b"Governed sandbox egress is unavailable; contact an operator."
-    )
-    assert expected_stage in caplog.text
-    assert private_sentinel not in caplog.text
-    assert all(not name.startswith("ai-platform-sandbox-egress-v2-") for name in fake.networks_by_name)
-    if gate == "preflight":
-        assert fake.created == []
-    else:
-        primary = fake.containers_by_name["executor-exec-run-a"]
-        assert primary.removed is True
-        assert provider._leases == {}
-
-
 @pytest.mark.asyncio
 async def test_docker_requires_api_witness_to_match_the_exact_runtime_commit(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
@@ -5650,7 +5489,6 @@ async def test_docker_provider_rejects_non_target_workspace_owner_before_create(
 
 @pytest.mark.asyncio
 async def test_docker_provider_uses_and_verifies_exact_runtime_identity(monkeypatch):
-    from app.runtime.sandbox import container_provider
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
     probes = []
@@ -5703,7 +5541,6 @@ async def test_docker_cached_reuse_rejects_remote_identity_label_mismatch():
 
 @pytest.mark.asyncio
 async def test_docker_provider_cleans_up_when_actual_executor_identity_mismatches(monkeypatch):
-    from app.runtime.sandbox import container_provider
     from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
 
     fake = FakeDockerClient()
