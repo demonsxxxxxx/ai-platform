@@ -282,6 +282,14 @@ function isDefinitiveMutationRejection(error: ApiRequestError): boolean {
   return [401, 403, 404, 409, 410, 412, 422].includes(error.status);
 }
 
+function isRecoverableNoSideEffectMutationRejection(
+  error: ApiRequestError,
+): boolean {
+  // The run-control contract guarantees that these validation/conflict
+  // rejections have no committed child. Every other failure stays locked.
+  return [409, 412, 422].includes(error.status);
+}
+
 function parentIdentityKey(parent: RunControlParentIdentity): string {
   return JSON.stringify([
     parent.chatHistoryGeneration,
@@ -677,7 +685,11 @@ export class RunControlLifecycle {
       }
       if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
         if (pending) this.clearPendingOperation(owner, pending);
-        this.publishRejected(owner, error.message);
+        this.publishRejected(
+          owner,
+          error.message,
+          isRecoverableNoSideEffectMutationRejection(error),
+        );
         return;
       }
       if (pending) {
@@ -728,7 +740,11 @@ export class RunControlLifecycle {
       if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
       if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
         this.clearPendingOperation(owner, pending);
-        this.publishRejected(owner, error.message);
+        this.publishRejected(
+          owner,
+          error.message,
+          isRecoverableNoSideEffectMutationRejection(error),
+        );
       } else {
         this.publishUnconfirmed(owner);
         await this.refreshUnconfirmedReadiness(owner);
@@ -795,7 +811,11 @@ export class RunControlLifecycle {
       if (!this.isCurrentOperation(owner, pending, actionSequence)) return;
       if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
         this.clearPendingOperation(owner, pending);
-        this.publishRejected(owner, error.message);
+        this.publishRejected(
+          owner,
+          error.message,
+          isRecoverableNoSideEffectMutationRejection(error),
+        );
       } else {
         this.publishUnconfirmed(owner);
       }
@@ -849,7 +869,14 @@ export class RunControlLifecycle {
     }
   }
 
-  private publishRejected(owner: RunControlOwner, message: string): void {
+  private publishRejected(
+    owner: RunControlOwner,
+    message: string,
+    restoreMutationAvailability: boolean,
+  ): void {
+    if (restoreMutationAvailability) {
+      owner.mutationStarted = false;
+    }
     owner.phase = "rejected";
     this.publishForOwner(owner, {
       phase: "rejected",

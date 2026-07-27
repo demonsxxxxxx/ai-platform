@@ -221,8 +221,67 @@ test("RunControlLifecycle treats a post-commit retry 5xx as unconfirmed and GET-
     await Promise.resolve();
     assert.equal(mutations, 1, "unknown 5xx must not replay the POST");
     assert.equal(lifecycle.getSnapshot().phase, "unconfirmed");
+    assert.equal(
+      lifecycle.getSnapshot().canRetry,
+      false,
+      "an unknown post-commit failure must keep mutation recovery fail-closed",
+    );
     assert.equal(statusReads, 1, "recovery may only read readiness");
     assert.equal(playbackReads, 1, "recovery may only read playback");
+  } finally {
+    sessionApi.retryRun = originalRetry;
+    sessionApi.getStatus = originalStatus;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("RunControlLifecycle unlocks retry after deterministic no-side-effect rejections", async () => {
+  const lifecycle = new RunControlLifecycle();
+  const originalRetry = sessionApi.retryRun;
+  const originalStatus = sessionApi.getStatus;
+  const originalFetch = globalThis.fetch;
+  const statuses = [409, 412, 422];
+  let mutationIndex = 0;
+  sessionApi.retryRun = (async () => {
+    const status = statuses[mutationIndex++];
+    throw new ApiRequestError(`deterministic rejection ${status}`, status);
+  }) as typeof sessionApi.retryRun;
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-a",
+    run_id: "run-a",
+    status: "failed",
+  })) as typeof sessionApi.getStatus;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        run: { run_id: "run-a", status: "failed" },
+        timeline: [],
+        events: [],
+        artifacts: [],
+        steps: [],
+        multi_agent: null,
+      }),
+    )) as typeof fetch;
+  lifecycle.configure({
+    adoptRunControlChild: async () => "superseded",
+    reconnectRunControlOwner: async () => {},
+  });
+  lifecycle.bindParent(parent());
+
+  try {
+    await lifecycle.refresh();
+    assert.equal(lifecycle.getSnapshot().canRetry, true);
+
+    for (const status of statuses) {
+      await lifecycle.retry();
+      assert.equal(lifecycle.getSnapshot().phase, "rejected");
+      assert.equal(
+        lifecycle.getSnapshot().canRetry,
+        true,
+        `${status} must restore retry without rebinding or reloading`,
+      );
+    }
+    assert.equal(mutationIndex, statuses.length);
   } finally {
     sessionApi.retryRun = originalRetry;
     sessionApi.getStatus = originalStatus;
