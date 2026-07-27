@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { useAuth } from "../../hooks/useAuth";
 import { useSkills } from "../../hooks/useSkills";
 import { useTools } from "../../hooks/useTools";
 import { modelPublicApi, type ModelOption } from "../../services/api/modelPublic";
@@ -13,6 +14,7 @@ import {
 /** Activated route bridge: catalog refresh stays outside the draft submission authority. */
 export function AgentBuilderRoute() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -100,6 +102,7 @@ export function AgentBuilderRoute() {
   return (
     <AgentBuilderWorkbench
       catalog={catalog}
+      canManageProfiles={user?.is_admin === true}
       onHandoffReady={(path) => navigate(path, { replace: true })}
     />
   );

@@ -12,7 +12,12 @@ import {
 } from "lucide-react";
 
 import type { ModelOption } from "../../services/api/modelPublic";
-import type { PublicSkillResponse } from "../../types";
+import { agentProfileApi } from "../../services/api/agentProfile";
+import type {
+  AgentProfileAdminProjection,
+  AgentProfilePublicProjection,
+  PublicSkillResponse,
+} from "../../types";
 import { useAgent } from "../../hooks/useAgent";
 import { AgentBuilderDialog } from "./AgentBuilderDialog";
 import {
@@ -48,6 +53,7 @@ interface LocalDraft {
 
 export interface AgentBuilderWorkbenchProps {
   catalog: AgentBuilderWorkbenchCatalog;
+  canManageProfiles?: boolean;
   onHandoffReady?: (path: string, identity: AgentBuilderChatIdentity) => void;
 }
 
@@ -62,10 +68,12 @@ function createLocalDraft(id: string, name: string): LocalDraft {
     name,
     draft: {
       message: "",
+      description: "",
       instructions: "",
       model: null,
       selectedSkill: null,
       selectedMcpToolIds: [],
+      selectedAgentProfile: null,
     },
   };
 }
@@ -114,6 +122,9 @@ interface AgentBuilderWorkbenchState {
   createDraft: () => void;
   submit: (chat: AgentBuilderChatSubmitSeam) => Promise<void>;
   acceptChatIdentity: (identity: AgentBuilderChatIdentity | null) => void;
+  markProfileDraft: (profile: AgentProfileAdminProjection) => void;
+  markProfilePublished: (profile: AgentProfileAdminProjection) => void;
+  selectPublishedProfile: (profile: AgentProfilePublicProjection) => void;
 }
 
 function useAgentBuilderWorkbenchState(
@@ -167,7 +178,10 @@ function useAgentBuilderWorkbenchState(
 
   const replaceActiveDraft = useCallback((update: (current: AgentBuilderDraft) => AgentBuilderDraft) => {
     invalidateDraftMutation();
-    setDrafts((current) => updateDraft(current, activeDraft.id, update));
+    setDrafts((current) => updateDraft(current, activeDraft.id, (draft) => ({
+      ...update(draft),
+      selectedAgentProfile: null,
+    })));
   }, [activeDraft.id, invalidateDraftMutation]);
 
   const renameActiveDraft = useCallback((name: string) => {
@@ -205,6 +219,38 @@ function useAgentBuilderWorkbenchState(
     setControllerState(controllerRef.current.acceptChatIdentity(identity));
   }, []);
 
+  const markProfileDraft = useCallback((profile: AgentProfileAdminProjection) => {
+    setDrafts((current) => updateDraft(current, activeDraft.id, (draft) => ({
+      ...draft,
+      agentId: profile.agent_id,
+      draftRevision: profile.revision,
+      selectedAgentProfile: null,
+    })));
+  }, [activeDraft.id]);
+
+  const markProfilePublished = useCallback((profile: AgentProfileAdminProjection) => {
+    setDrafts((current) => updateDraft(current, activeDraft.id, (draft) => ({
+      ...draft,
+      agentId: profile.agent_id,
+      draftRevision: profile.revision,
+      selectedAgentProfile: {
+        agent_id: profile.agent_id,
+        expected_revision: profile.revision,
+      },
+    })));
+  }, [activeDraft.id]);
+
+  const selectPublishedProfile = useCallback((profile: AgentProfilePublicProjection) => {
+    setControllerState(controllerRef.current.invalidateDraft());
+    setDrafts((current) => updateDraft(current, activeDraft.id, (draft) => ({
+      ...draft,
+      selectedAgentProfile: {
+        agent_id: profile.agent_id,
+        expected_revision: profile.expected_revision,
+      },
+    })));
+  }, [activeDraft.id]);
+
   return {
     controllerState,
     drafts,
@@ -217,11 +263,15 @@ function useAgentBuilderWorkbenchState(
     createDraft,
     submit,
     acceptChatIdentity,
+    markProfileDraft,
+    markProfilePublished,
+    selectPublishedProfile,
   };
 }
 
 function AgentBuilderWorkbenchContent({
   catalog,
+  canManageProfiles = false,
   chat,
   chatIdentity,
   onHandoffReady,
@@ -239,8 +289,90 @@ function AgentBuilderWorkbenchContent({
     createDraft,
     submit,
     acceptChatIdentity,
+    markProfileDraft,
+    markProfilePublished,
+    selectPublishedProfile,
   } = workbench;
   const draft = activeDraft.draft;
+  const [persistenceState, setPersistenceState] = useState<{
+    busy: boolean;
+    error: string | null;
+  }>({ busy: false, error: null });
+  const [marketState, setMarketState] = useState<{
+    profiles: AgentProfilePublicProjection[];
+    loading: boolean;
+    error: string | null;
+  }>({ profiles: [], loading: true, error: null });
+  const refreshPublishedProfiles = useCallback(async () => {
+    setMarketState((current) => ({ ...current, loading: true, error: null }));
+    try {
+      const response = await agentProfileApi.listPublished();
+      setMarketState({
+        profiles: response.agent_profiles,
+        loading: false,
+        error: null,
+      });
+    } catch (error) {
+      setMarketState((current) => ({
+        ...current,
+        loading: false,
+        error: error instanceof Error ? error.message : "Unable to load published Agents.",
+      }));
+    }
+  }, []);
+  const canPersist = Boolean(
+    activeDraft.name.trim() &&
+    draft.instructions.trim() &&
+    draft.model?.id &&
+    draft.selectedSkill,
+  );
+  const saveDraft = useCallback(async () => {
+    if (!canManageProfiles) return;
+    if (!canPersist || !draft.model || !draft.selectedSkill) {
+      setPersistenceState({ busy: false, error: "Choose a name, instructions, model, and Skill before saving." });
+      return;
+    }
+    setPersistenceState({ busy: true, error: null });
+    try {
+      const response = await agentProfileApi.saveDraft(
+        {
+          name: activeDraft.name.trim(),
+          description: (draft.description ?? "").trim(),
+          instructions: draft.instructions,
+          model_id: draft.model.id,
+          selected_skill: {
+            skill_id: draft.selectedSkill.name,
+            expected_version: draft.selectedSkill.expected_version,
+          },
+          mcp_tool_ids: draft.selectedMcpToolIds,
+          expected_draft_revision: draft.draftRevision ?? 0,
+        },
+        draft.agentId,
+      );
+      markProfileDraft(response.agent_profile);
+      setPersistenceState({ busy: false, error: null });
+    } catch (error) {
+      setPersistenceState({
+        busy: false,
+        error: error instanceof Error ? error.message : "Unable to save the Agent draft.",
+      });
+    }
+  }, [activeDraft.name, canManageProfiles, canPersist, draft, markProfileDraft]);
+  const publishDraft = useCallback(async () => {
+    if (!canManageProfiles) return;
+    if (!draft.agentId || !draft.draftRevision) return;
+    setPersistenceState({ busy: true, error: null });
+    try {
+      const response = await agentProfileApi.publish(draft.agentId, draft.draftRevision);
+      markProfilePublished(response.agent_profile);
+      setPersistenceState({ busy: false, error: null });
+    } catch (error) {
+      setPersistenceState({
+        busy: false,
+        error: error instanceof Error ? error.message : "Unable to publish the Agent draft.",
+      });
+    }
+  }, [canManageProfiles, draft.agentId, draft.draftRevision, markProfilePublished]);
   const stateMessage =
     controllerMessage(controllerState) ??
     (draft.selectedSkill?.requires_file
@@ -256,6 +388,10 @@ function AgentBuilderWorkbenchContent({
     if (controllerState.phase !== "awaiting_chat_identity") return;
     acceptChatIdentity(chatIdentity);
   }, [acceptChatIdentity, chatIdentity, controllerState.phase]);
+
+  useEffect(() => {
+    void refreshPublishedProfiles();
+  }, [refreshPublishedProfiles]);
 
   useEffect(() => {
     if (controllerState.phase === "handoff_ready") {
@@ -279,7 +415,7 @@ function AgentBuilderWorkbenchContent({
   const submitDisabled =
     catalog.isLoading ||
     !draft.message.trim() ||
-    draft.selectedSkill?.requires_file === true ||
+    (!draft.selectedAgentProfile && draft.selectedSkill?.requires_file === true) ||
     controllerState.phase === "submitting" ||
     controllerState.phase === "awaiting_chat_identity";
 
@@ -290,7 +426,13 @@ function AgentBuilderWorkbenchContent({
           <Bot size={20} className="shrink-0 text-[var(--theme-primary)]" aria-hidden="true" />
           <div className="min-w-0">
             <h1 className="truncate text-lg font-semibold">Agent Builder</h1>
-            <p className="text-sm text-[var(--theme-text-secondary)]">Unsaved local draft</p>
+            <p className="text-sm text-[var(--theme-text-secondary)]">
+              {draft.selectedAgentProfile
+                ? `Published revision ${draft.selectedAgentProfile.expected_revision}`
+                : draft.draftRevision
+                  ? `Saved draft revision ${draft.draftRevision}`
+                  : "Unsaved local draft"}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -308,15 +450,27 @@ function AgentBuilderWorkbenchContent({
             />
             <span className="hidden sm:inline">Refresh catalogs</span>
           </button>
-          <button
-            className="btn-secondary hidden items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 sm:inline-flex"
-            disabled
-            title="AgentProfile persistence is not available"
-            type="button"
-          >
-            <Save size={16} aria-hidden="true" />
-            Save unavailable
-          </button>
+          {canManageProfiles ? (
+            <>
+              <button
+                className="btn-secondary hidden items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 sm:inline-flex"
+                disabled={persistenceState.busy || !canPersist}
+                onClick={() => void saveDraft()}
+                type="button"
+              >
+                <Save size={16} aria-hidden="true" />
+                Save draft
+              </button>
+              <button
+                className="btn-primary hidden items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 sm:inline-flex"
+                disabled={persistenceState.busy || !draft.agentId || !draft.draftRevision}
+                onClick={() => void publishDraft()}
+                type="button"
+              >
+                Publish
+              </button>
+            </>
+          ) : null}
         </div>
       </header>
 
@@ -366,6 +520,11 @@ function AgentBuilderWorkbenchContent({
                 <span>{stateMessage}</span>
               </div>
             ) : null}
+            {persistenceState.error ? (
+              <div className="border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-200">
+                {persistenceState.error}
+              </div>
+            ) : null}
 
             <label className="flex flex-col gap-2">
               <span className="text-sm font-medium">Name</span>
@@ -373,6 +532,17 @@ function AgentBuilderWorkbenchContent({
                 className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm outline-none focus:border-[var(--theme-primary)]"
                 onChange={(event) => renameActiveDraft(event.target.value)}
                 value={activeDraft.name}
+              />
+            </label>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium">Description</span>
+              <textarea
+                aria-label="Agent description"
+                className="min-h-20 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)]"
+                onChange={(event) => replaceActiveDraft((current) => ({ ...current, description: event.target.value }))}
+                placeholder="Safe market description"
+                value={draft.description ?? ""}
               />
             </label>
 
@@ -448,7 +618,52 @@ function AgentBuilderWorkbenchContent({
         </section>
 
         <aside className="border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-5 lg:overflow-y-auto lg:border-l lg:border-t-0">
-          <h2 className="text-sm font-semibold">Chat handoff</h2>
+          <div className="border-b border-[var(--theme-border)] pb-4">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">Published Agents</h2>
+              <button
+                className="text-xs text-[var(--theme-primary)] hover:underline"
+                disabled={marketState.loading}
+                onClick={() => void refreshPublishedProfiles()}
+                type="button"
+              >
+                Refresh
+              </button>
+            </div>
+            {marketState.error ? (
+              <p className="mt-2 text-xs text-red-700 dark:text-red-300">{marketState.error}</p>
+            ) : marketState.loading ? (
+              <p className="mt-2 text-xs text-[var(--theme-text-secondary)]">Loading market…</p>
+            ) : marketState.profiles.length === 0 ? (
+              <p className="mt-2 text-xs text-[var(--theme-text-secondary)]">No published Agents are available.</p>
+            ) : (
+              <div className="mt-3 space-y-2">
+                {marketState.profiles.map((profile) => {
+                  const selected =
+                    draft.selectedAgentProfile?.agent_id === profile.agent_id &&
+                    draft.selectedAgentProfile.expected_revision === profile.expected_revision;
+                  return (
+                    <button
+                      key={`${profile.agent_id}:${profile.expected_revision}`}
+                      className={`w-full rounded-md border p-2 text-left text-xs transition-colors ${
+                        selected
+                          ? "border-[var(--theme-primary)] bg-[var(--theme-workbench-canvas)]"
+                          : "border-[var(--theme-border)] hover:border-[var(--theme-border-strong)]"
+                      }`}
+                      onClick={() => selectPublishedProfile(profile)}
+                      type="button"
+                    >
+                      <span className="block truncate font-medium">{profile.name}</span>
+                      <span className="mt-1 block line-clamp-2 text-[var(--theme-text-secondary)]">
+                        {profile.description || "Published Agent"}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <h2 className="mt-4 text-sm font-semibold">Chat handoff</h2>
           <dl className="mt-4 space-y-3 text-sm">
             <div>
               <dt className="text-[var(--theme-text-secondary)]">Skill</dt>
@@ -513,6 +728,7 @@ function AgentBuilderWorkbenchContent({
 /** Hidden reference-derived workbench with the real Chat submission seam. */
 export function AgentBuilderWorkbench({
   catalog,
+  canManageProfiles,
   onHandoffReady,
 }: AgentBuilderWorkbenchProps) {
   const workbench = useAgentBuilderWorkbenchState(catalog);
@@ -532,6 +748,7 @@ export function AgentBuilderWorkbench({
         attachments,
         selectedSkill,
         selectedMcpToolIds = [],
+        selectedAgentProfile,
       ) => {
         preparedMcpToolIdsRef.current = [...selectedMcpToolIds];
         return chat.sendMessage(
@@ -539,6 +756,7 @@ export function AgentBuilderWorkbench({
           agentOptions,
           attachments,
           selectedSkill,
+          selectedAgentProfile,
         );
       },
     }),
@@ -552,6 +770,7 @@ export function AgentBuilderWorkbench({
   return (
     <AgentBuilderWorkbenchContent
       catalog={catalog}
+      canManageProfiles={canManageProfiles}
       chat={builderChat}
       chatIdentity={chatIdentity}
       onHandoffReady={onHandoffReady}
@@ -563,6 +782,7 @@ export function AgentBuilderWorkbench({
 /** Uses the production draft/controller state with an injected admission seam for UI tests. */
 export function AgentBuilderWorkbenchHarness({
   catalog,
+  canManageProfiles,
   chat,
   chatIdentity,
   onHandoffReady,
@@ -571,6 +791,7 @@ export function AgentBuilderWorkbenchHarness({
   return (
     <AgentBuilderWorkbenchContent
       catalog={catalog}
+      canManageProfiles={canManageProfiles}
       chat={chat}
       chatIdentity={chatIdentity}
       onHandoffReady={onHandoffReady}

@@ -19,6 +19,7 @@ import type {
   MessagePart,
   ConnectionStatus,
   MessageAttachment,
+  SelectedAgentProfileRequest,
   SelectedSkillRequest,
 } from "../types";
 import {
@@ -1758,6 +1759,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       agentOptions?: Record<string, boolean | string | number>,
       attachments?: MessageAttachment[],
       selectedSkill?: SelectedSkillRequest | null,
+      selectedAgentProfile?: SelectedAgentProfileRequest | null,
     ): Promise<SubmissionOutcome> => {
       if (!isMountedRef.current) return { status: "failed" };
       if (!content.trim()) return { status: "failed" };
@@ -1922,6 +1924,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           submissionId,
           requestAgentId,
           selectedMcpToolIds,
+          selectedAgentProfile,
         );
 
         if (!isCurrentRequestSession()) {

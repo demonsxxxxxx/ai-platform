@@ -1,6 +1,7 @@
 import type { ModelOption } from "../../services/api/modelPublic";
 import type {
   PublicSkillResponse,
+  SelectedAgentProfileRequest,
   SelectedSkillRequest,
   ToolState,
 } from "../../types";
@@ -13,11 +14,15 @@ export interface AgentBuilderSafeMcpTool {
 
 export interface AgentBuilderDraft {
   message: string;
-  /** Local-only draft text until an AgentProfile backend contract exists. */
+  description?: string;
+  /** Server-owned after an administrator saves this local draft. */
   instructions: string;
   model: ModelOption | null;
   selectedSkill: PublicSkillResponse | null;
   selectedMcpToolIds: string[];
+  agentId?: string;
+  draftRevision?: number;
+  selectedAgentProfile?: SelectedAgentProfileRequest | null;
 }
 
 export interface AgentBuilderSubmission {
@@ -25,6 +30,7 @@ export interface AgentBuilderSubmission {
   agentOptions: Record<string, boolean | string | number>;
   selectedSkill: SelectedSkillRequest | null;
   selectedMcpToolIds: string[];
+  selectedAgentProfile: SelectedAgentProfileRequest | null;
 }
 
 export interface AgentBuilderCurrentCatalog {
@@ -194,6 +200,23 @@ export function prepareAgentBuilderSubmission(
   if (!message) {
     return { kind: "blocked", code: "message_required", sanitizedDraft: draft };
   }
+
+  // A published profile is a complete, server-owned execution selection.
+  // Do not inspect unrelated local-builder fields before handing it off: those
+  // fields are deliberately omitted from the Chat request by this adapter.
+  if (draft.selectedAgentProfile) {
+    return {
+      kind: "ready",
+      submission: {
+        message,
+        agentOptions: {},
+        selectedSkill: null,
+        selectedMcpToolIds: [],
+        selectedAgentProfile: draft.selectedAgentProfile,
+      },
+    };
+  }
+
   const revalidated = revalidateAgentBuilderDraft(draft, catalog);
   if (revalidated.code !== null) {
     return {
@@ -208,7 +231,7 @@ export function prepareAgentBuilderSubmission(
     kind: "ready",
     submission: {
       message,
-      agentOptions: sanitizedDraft.model ? { model: sanitizedDraft.model.value } : {},
+      agentOptions: sanitizedDraft.model ? { model_id: sanitizedDraft.model.id } : {},
       selectedSkill: sanitizedDraft.selectedSkill
         ? {
             skill_id: sanitizedDraft.selectedSkill.name,
@@ -216,6 +239,7 @@ export function prepareAgentBuilderSubmission(
           }
         : null,
       selectedMcpToolIds: sanitizedDraft.selectedMcpToolIds,
+      selectedAgentProfile: null,
     },
   };
 }

@@ -6,6 +6,7 @@ import type {
   SessionEventsResponse,
   RunSummary,
   MessageAttachment,
+  SelectedAgentProfileRequest,
   SelectedSkillRequest,
 } from "../../types";
 import { API_BASE } from "./config";
@@ -192,6 +193,7 @@ export function buildSubmitChatBody({
   selectedMcpToolIds,
   userTimezone,
   selectedSkill,
+  selectedAgentProfile,
   submissionId,
 }: {
   message: string;
@@ -204,6 +206,7 @@ export function buildSubmitChatBody({
   selectedMcpToolIds?: string[];
   userTimezone?: string;
   selectedSkill?: SelectedSkillRequest | null;
+  selectedAgentProfile?: SelectedAgentProfileRequest | null;
   submissionId?: string;
 }): Record<string, unknown> {
   const body: Record<string, unknown> = {
@@ -226,6 +229,10 @@ export function buildSubmitChatBody({
 
   if (selectedSkill) {
     body.selected_skill = selectedSkill;
+  }
+
+  if (selectedAgentProfile) {
+    body.selected_agent_profile = selectedAgentProfile;
   }
 
   if (userTimezone) {
@@ -537,6 +544,7 @@ export const sessionApi = {
     submissionId?: string,
     agentId?: string,
     selectedMcpToolIds?: string[],
+    selectedAgentProfile?: SelectedAgentProfileRequest | null,
   ): Promise<ChatStreamResponse> {
     const body = buildSubmitChatBody({
       message,
@@ -548,6 +556,7 @@ export const sessionApi = {
       selectedMcpToolIds,
       userTimezone: getBrowserTimezone(),
       selectedSkill,
+      selectedAgentProfile,
       submissionId,
     });
     return authFetch(buildSubmitChatUrl(agentId), {
