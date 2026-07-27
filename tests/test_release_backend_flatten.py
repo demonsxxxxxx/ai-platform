@@ -94,11 +94,12 @@ def _write_rootfs_archive(path):
 
 
 class _FakeDocker:
-    def __init__(self, tmp_path, *, source=None, flat=None, fail_stage=None):
+    def __init__(self, tmp_path, *, source=None, flat=None, fail_stage=None, cleanup_nonzero=False):
         self.tmp_path = tmp_path
         self.source = source or _image_payload()
         self.flat = flat or _image_payload(layers=1)
         self.fail_stage = fail_stage
+        self.cleanup_nonzero = cleanup_nonzero
         self.commands = []
 
     def __call__(self, command, **kwargs):
@@ -122,6 +123,8 @@ class _FakeDocker:
             if self.fail_stage == "import":
                 raise subprocess.CalledProcessError(1, command)
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if self.cleanup_nonzero and command[1:3] in (["container", "rm"], ["image", "rm"]):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
 
@@ -151,6 +154,7 @@ def test_flattened_backend_base_exports_imports_and_passes_only_noncanonical_ref
     imports = [command for command, _ in docker.commands if command[1:3] == ["image", "import"]]
     assert len(imports) == 1
     assert imports[0][-1] == bases[0]
+    assert "ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" in imports[0]
     assert any("LABEL ai-platform.source-commit=" + COMMIT in value for value in imports[0])
     assert not any(command[1] == "tag" for command, _ in docker.commands)
     assert all(CURRENT_REFERENCE not in command for command in _cleanup_commands(docker))
@@ -158,6 +162,51 @@ def test_flattened_backend_base_exports_imports_and_passes_only_noncanonical_ref
     assert any(command[1:3] == ["image", "rm"] and bases[0] in command for command in _cleanup_commands(docker))
     archive_paths = [Path(command[command.index("--output") + 1]) for command, _ in docker.commands if "--output" in command]
     assert archive_paths and all(not path.exists() for path in archive_paths)
+
+
+@pytest.mark.parametrize(
+    "path_value",
+    [
+        "relative/bin:/usr/bin",
+        "/usr/local/bin:/tmp/contains space",
+        "/usr/local/bin:=/tmp/injected",
+        "/usr/local/bin:/tmp/contains\tcontrol",
+    ],
+)
+def test_flattened_backend_base_rejects_noncanonical_path_before_import(tmp_path, path_value):
+    source = _image_payload()
+    source["Config"]["Env"][0] = f"PATH={path_value}"
+    docker = _FakeDocker(tmp_path, source=source)
+
+    with pytest.raises(BackendFlattenError, match="source config"):
+        with flattened_backend_base(
+            docker=["docker"],
+            source_reference=CURRENT_REFERENCE,
+            expected_commit=COMMIT,
+            expected_repository=REPOSITORY,
+            archive_root=tmp_path,
+            runner=docker,
+        ):
+            raise AssertionError("unsafe PATH must not be yielded")
+
+    assert not any(command[1:3] == ["image", "import"] for command, _ in docker.commands)
+
+
+def test_flattened_backend_base_rejects_extra_flat_environment_key(tmp_path):
+    flat = _image_payload(layers=1)
+    flat["Config"]["Env"].append("EXTRA_RUNTIME_ENV=1")
+    docker = _FakeDocker(tmp_path, flat=flat)
+
+    with pytest.raises(BackendFlattenError, match="flat image config"):
+        with flattened_backend_base(
+            docker=["docker"],
+            source_reference=CURRENT_REFERENCE,
+            expected_commit=COMMIT,
+            expected_repository=REPOSITORY,
+            archive_root=tmp_path,
+            runner=docker,
+        ):
+            raise AssertionError("flat image with an extra environment key must not be yielded")
 
 
 @pytest.mark.parametrize("fail_stage", ["export", "import", "validate", "target-build"])
@@ -181,6 +230,54 @@ def test_flattened_backend_base_cleans_all_temporary_subjects_on_every_failure(t
     assert all(CURRENT_REFERENCE not in command for command in cleanup)
     archive_paths = [Path(command[command.index("--output") + 1]) for command, _ in docker.commands if "--output" in command]
     assert all(not path.exists() for path in archive_paths)
+
+
+@pytest.mark.parametrize("fail_stage", ["export", "import", "validate", "target-build"])
+def test_flattened_backend_base_marks_primary_failure_when_cleanup_also_fails(tmp_path, fail_stage):
+    docker = _FakeDocker(
+        tmp_path,
+        fail_stage=None if fail_stage == "target-build" else fail_stage,
+        cleanup_nonzero=True,
+    )
+
+    with pytest.raises((BackendFlattenError, RuntimeError)) as error:
+        with flattened_backend_base(
+            docker=["docker"],
+            source_reference=CURRENT_REFERENCE,
+            expected_commit=COMMIT,
+            expected_repository=REPOSITORY,
+            archive_root=tmp_path,
+            runner=docker,
+        ):
+            if fail_stage == "target-build":
+                raise RuntimeError("target build failed")
+
+    assert getattr(error.value, "cleanup_status", None) == "failed"
+
+
+def test_authority_stage_keeps_cleanup_failure_evidence_bounded(tmp_path):
+    docker = _FakeDocker(tmp_path, fail_stage="export", cleanup_nonzero=True)
+    events = []
+
+    with pytest.raises(release_authority.ReleaseAuthorityError, match="backend-layer-flatten-recovery"):
+        release_authority._stage(
+            events,
+            name="backend-layer-flatten-recovery",
+            strategy="auto",
+            action="flatten-recovery",
+            operation=lambda: release_authority.rebuild_from_flattened_backend(
+                docker=["docker"],
+                source_reference=CURRENT_REFERENCE,
+                expected_commit=COMMIT,
+                expected_repository=REPOSITORY,
+                archive_root=tmp_path,
+                runner=docker,
+                target_build=lambda _: None,
+            ),
+        )
+
+    assert events[-1]["cleanup_status"] == "failed"
+    assert "ai-platform-flatten" not in json.dumps(events[-1])
 
 
 @pytest.mark.parametrize(
@@ -330,3 +427,35 @@ def test_deploy_main_cli_plumbs_default_off_and_explicit_flatten_opt_in(monkeypa
     assert release_authority.main() == 0
     assert observed["allow_backend_layer_flatten_recovery"] is enabled
     assert json.loads(capsys.readouterr().out) == {"commit": COMMIT}
+
+
+def test_deploy_main_cli_redacts_backend_flatten_pre_stage_error(monkeypatch, capsys, tmp_path):
+    def fake_after_authority(*args, **kwargs):
+        raise BackendFlattenError("C:/private-marker/backend-flatten")
+
+    monkeypatch.setattr("tools.release_authority.assert_clean_coordination_source", lambda *args: None)
+    monkeypatch.setattr("tools.release_authority._deploy_main_commit_after_authority", fake_after_authority)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py",
+            "deploy-main-commit",
+            "--release-root",
+            str(tmp_path / "releases"),
+            "--commit",
+            COMMIT,
+            "--strategy",
+            "auto",
+            "--allow-backend-layer-flatten-recovery",
+        ],
+    )
+
+    assert release_authority.main() == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "authority_commit": COMMIT,
+        "command": "deploy-main-commit",
+        "error": "backend layer flatten recovery failed",
+        "verified": False,
+    }

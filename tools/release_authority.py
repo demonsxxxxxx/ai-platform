@@ -1352,9 +1352,7 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
         if isinstance(exc.errno, int):
             evidence["errno"] = exc.errno
         return evidence
-    evidence = {"failure_kind": "authority-error"}
-    evidence.update(convergence_failure_evidence(exc))
-    return evidence
+    return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
 
 
 def _stage(
@@ -2892,10 +2890,11 @@ def deploy_main_commit(
             ),
             allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery,
         )
-    except ReleaseAuthorityError as exc:
+    except (ReleaseAuthorityError, BackendFlattenError) as exc:
+        error = ReleaseAuthorityError("backend layer flatten recovery failed") if isinstance(exc, BackendFlattenError) else exc
         if authority_commit is not None:
-            exc.authority_commit = authority_commit
-        raise
+            error.authority_commit = authority_commit
+        raise error from None
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         if authority_commit is not None:
             exc.authority_commit = authority_commit

@@ -58,6 +58,7 @@ _REQUIRED_LABELS = (
     "ai-platform.release-role",
 )
 _MAX_MARKER_BYTES = 128 * 1024
+_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 
 
 def release_label_dockerfile_lines(role: str) -> str:
@@ -241,6 +242,15 @@ def _environment_mapping(config: dict[str, Any]) -> dict[str, str]:
     return values
 
 
+def _is_canonical_path(value: str) -> bool:
+    """Accept only non-empty colon-separated absolute path components."""
+    return bool(value) and all(
+        component.startswith("/")
+        and all(segment not in {"", ".", ".."} and _PATH_SEGMENT_RE.fullmatch(segment) for segment in component[1:].split("/"))
+        for component in value.split(":")
+    )
+
+
 def _validated_flatten_config(
     image: dict[str, Any],
     *,
@@ -266,13 +276,14 @@ def _validated_flatten_config(
     if not isinstance(exposed, dict) or set(exposed) != {"8020/tcp"}:
         raise BackendFlattenError("backend flatten flat image config is invalid" if flat else "backend flatten source config is invalid")
     environment = _environment_mapping(config)
-    if set(_RUNTIME_ENVIRONMENT_KEYS) - set(environment):
-        raise BackendFlattenError("backend flatten source config is invalid")
+    expected_environment_keys = set(_RUNTIME_ENVIRONMENT_KEYS)
+    if (set(environment) != expected_environment_keys) if flat else (expected_environment_keys - set(environment)):
+        raise BackendFlattenError("backend flatten flat image config is invalid" if flat else "backend flatten source config is invalid")
     for key, expected in _REQUIRED_RUNTIME_ENVIRONMENT.items():
         if environment.get(key) != expected:
             raise BackendFlattenError("backend flatten source config is invalid")
     path_value = environment.get("PATH")
-    if path_value is None or not path_value.startswith("/"):
+    if path_value is None or not _is_canonical_path(path_value):
         raise BackendFlattenError("backend flatten source config is invalid")
     labels = config.get("Labels")
     if not isinstance(labels, dict):
@@ -468,7 +479,7 @@ def flattened_backend_base(
         validation_container=f"ai-platform-flatten-validate-{nonce}",
         flat_reference=f"ai-platform:flatten-base-{commit[:12]}-{nonce}",
     )
-    primary_failed = False
+    primary_error: BaseException | None = None
     try:
         source_image = _image_payload(runner, docker, source_reference)
         source_layers = _layers(source_image, flat=False)
@@ -514,19 +525,24 @@ def flattened_backend_base(
                 source_layer_count=source_layers,
                 flat_layer_count=flat_layers,
             )
-    except BackendFlattenError:
-        primary_failed = True
+    except BackendFlattenError as exc:
+        primary_error = exc
         raise
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
-        primary_failed = True
-        raise BackendFlattenError("backend layer flatten recovery failed") from None
-    except BaseException:
-        primary_failed = True
+        primary_error = BackendFlattenError("backend layer flatten recovery failed")
+        raise primary_error from None
+    except BaseException as exc:
+        primary_error = exc
         raise
     finally:
         cleanup_failed = _cleanup(runner, docker, temporary)
-        if cleanup_failed and not primary_failed:
-            raise BackendFlattenError("backend layer flatten cleanup failed")
+        if cleanup_failed:
+            if primary_error is not None:
+                setattr(primary_error, "cleanup_status", "failed")
+            else:
+                cleanup_error = BackendFlattenError("backend layer flatten cleanup failed")
+                cleanup_error.cleanup_status = "failed"
+                raise cleanup_error
 
 
 def rebuild_from_flattened_backend(
