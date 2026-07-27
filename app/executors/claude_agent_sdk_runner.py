@@ -20,6 +20,7 @@ from app.context_manifest import (
 )
 from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
 from app.control_plane_contracts import sanitize_public_payload
+from app.executors.claude_stream_projection import TrustedInternalClaudeStreamProjector
 from app.file_parser_contracts import ParsedAttachmentContext
 from app.public_context_keys import safe_public_context_pack_version
 from app.required_tool_contract import (
@@ -1413,6 +1414,7 @@ async def run_claude_agent_sdk(
         AssistantMessage = sdk.AssistantMessage
         ClaudeAgentOptions = sdk.ClaudeAgentOptions
         ResultMessage = sdk.ResultMessage
+        StreamEvent = sdk.StreamEvent
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
         if query_fn is None:
@@ -1429,6 +1431,11 @@ async def run_claude_agent_sdk(
         skill_id
         if skill_id != "general-chat" and skill_id in configured_skills
         else None
+    )
+    trusted_internal_raw_streaming = (
+        on_text is not None
+        and execution_policy == "sandbox_brokered"
+        and str(getattr(settings, "sandbox_security_profile", "governed") or "") == "trusted_internal"
     )
     try:
         attachment_data_message = _attachment_context_data_message(attachment_contexts)
@@ -1923,6 +1930,7 @@ async def run_claude_agent_sdk(
         effort=str(getattr(settings, "claude_agent_sdk_effort", "xhigh") or "xhigh"),
         can_use_tool=can_use_tool,
         hooks=hooks,
+        include_partial_messages=trusted_internal_raw_streaming,
         setting_sources=["project"],
     )
 
@@ -1934,6 +1942,11 @@ async def run_claude_agent_sdk(
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
     received_structured_terminal = False
+    stream_projector = (
+        TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload)
+        if trusted_internal_raw_streaming
+        else None
+    )
 
     async def publish_terminal_text(value: str) -> None:
         if on_text is None or not value:
@@ -1954,6 +1967,10 @@ async def run_claude_agent_sdk(
             ),
             options=options,
         ):
+            if stream_projector is not None and isinstance(message, StreamEvent):
+                for text in stream_projector.accept(message.event):
+                    await publish_terminal_text(text)
+                continue
             if isinstance(message, AssistantMessage):
                 diagnostic_counters["assistant_messages"] += 1
                 for block in message.content:
@@ -2013,6 +2030,8 @@ async def run_claude_agent_sdk(
                 terminal_reason = (
                     str(stop_reason).strip() if isinstance(stop_reason, str) and stop_reason.strip() else None
                 )
+        if stream_projector is not None:
+            stream_projector.close_unfinished()
         terminal_error = (
             selected_skill_hook_error()
             if received_structured_terminal
@@ -2022,6 +2041,13 @@ async def run_claude_agent_sdk(
             diagnostic_text = "".join(diagnostic_text_blocks)
             if on_text:
                 if (
+                    stream_projector is not None
+                    and stream_projector.partial_emitted
+                ):
+                    # The terminal ResultMessage remains authoritative downstream;
+                    # do not replay it through the delta callback after a raw beta delta.
+                    pass
+                elif (
                     not diagnostic_text_overflowed
                     and diagnostic_text
                     and diagnostic_text == structured_result_text
