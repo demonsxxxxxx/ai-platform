@@ -17,6 +17,7 @@ const read = (relativePath: string) =>
   readFileSync(resolve(src, relativePath), "utf8");
 
 test("legacy product URLs resolve through the active route manifest to NotFound", () => {
+  assert.equal(resolveAppRoute("/agent-builder"), "agentBuilder");
   for (const route of [
     "/persona",
     "/persona/preset-a",
@@ -43,6 +44,7 @@ test("legacy product surfaces are absent from navigation and lazy imports", () =
   for (const route of ["/persona", "/agent-workspace", "/agents", "/channels"]) {
     assert.doesNotMatch(navigationSources, new RegExp(route.replace("/", "\\/")), route);
   }
+  assert.match(navigationSources, /agent-builder/);
   for (const legacyModule of [
     "PersonaWorkbenchPanel",
     "AgentWorkspacePanel",

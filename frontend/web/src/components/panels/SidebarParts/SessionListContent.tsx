@@ -107,6 +107,12 @@ export function SessionListContent({
       onClick: () => navigate("/apps"),
     },
     {
+      key: "agentBuilder",
+      icon: Bot,
+      label: "Agent Builder",
+      onClick: () => navigate("/agent-builder"),
+    },
+    {
       key: "skills",
       icon: Package,
       label: skillsNavigationLabel,
