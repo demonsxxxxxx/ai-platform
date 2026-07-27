@@ -1362,6 +1362,7 @@ async def run_claude_agent_sdk(
     context_retrieval: ContextRetrieval | None = None,
     context_retrieval_identity: ScopedContextRetrievalIdentity | None = None,
     model_id: str | None = None,
+    system_prompt: str | None = None,
     skills: list[str] | None = None,
     query_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
@@ -1414,7 +1415,7 @@ async def run_claude_agent_sdk(
         AssistantMessage = sdk.AssistantMessage
         ClaudeAgentOptions = sdk.ClaudeAgentOptions
         ResultMessage = sdk.ResultMessage
-        StreamEvent = sdk.StreamEvent
+        StreamEvent = getattr(sdk, "StreamEvent", ())
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
         if query_fn is None:
@@ -1914,9 +1915,15 @@ async def run_claude_agent_sdk(
             include_skill=bool(allowed_skill_names),
         )
     )
+    # The installed SDK's SystemPromptPreset preserves Claude Code's default
+    # system prompt while adding only server-owned profile instructions.
+    sdk_system_prompt: dict[str, str] = {"type": "preset", "preset": "claude_code"}
+    if system_prompt:
+        sdk_system_prompt["append"] = system_prompt
     options = ClaudeAgentOptions(
         cwd=str(cwd),
         model=model_id or settings.claude_agent_model or settings.anthropic_model or None,
+        system_prompt=sdk_system_prompt,
         tools=sdk_tools,
         mcp_servers=mcp_servers,
         permission_mode=permission_mode,

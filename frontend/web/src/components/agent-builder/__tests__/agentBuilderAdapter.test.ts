@@ -172,3 +172,27 @@ test("does not prepare a selected catalog entry while its current authorization 
   if (prepared.kind !== "blocked") return;
   assert.equal(prepared.code, "catalog_unavailable");
 });
+
+test("prepares a published Agent selection without forwarding local builder selectors", () => {
+  const prepared = prepareAgentBuilderSubmission(
+    draft({
+      selectedAgentProfile: {
+        agent_id: "profile-doc-review",
+        expected_revision: 7,
+      },
+    }),
+    catalog({ modelsResolved: false, skillsResolved: false, mcpToolsResolved: false }),
+  );
+  assert.equal(prepared.kind, "ready");
+  if (prepared.kind !== "ready") return;
+  assert.deepEqual(prepared.submission, {
+    message: "Review the current document",
+    agentOptions: {},
+    selectedSkill: null,
+    selectedMcpToolIds: [],
+    selectedAgentProfile: {
+      agent_id: "profile-doc-review",
+      expected_revision: 7,
+    },
+  });
+});

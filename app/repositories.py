@@ -40,12 +40,7 @@ from app.control_plane_contracts import (
 from app.error_taxonomy import summarize_error_categories
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
 from app.persistence import RepositoryNotFoundError
-from app.persistence.chat_submissions import (
-    chat_submission_fingerprint,
-    claim_chat_submission,
-    finalize_chat_submission,
-    get_chat_submission,
-)
+from app.persistence import chat_submissions
 from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
 from app.skills.execution_profiles import (
@@ -64,6 +59,13 @@ from app.tool_permission_lifecycle import (
     TOOL_PERMISSION_EXPIRY_BATCH_LIMIT,
     TOOL_PERMISSION_REQUEST_TTL_SECONDS,
 )
+
+# Preserve the established repository facade used by Chat callers while making
+# the cross-module ownership explicit to Ruff.
+chat_submission_fingerprint = chat_submissions.chat_submission_fingerprint
+claim_chat_submission = chat_submissions.claim_chat_submission
+finalize_chat_submission = chat_submissions.finalize_chat_submission
+get_chat_submission = chat_submissions.get_chat_submission
 
 
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker", "ragflow"}
@@ -422,6 +424,192 @@ async def list_agent_app_projections(conn: AsyncConnection, *, tenant_id: str) -
         (tenant_id,),
     )
     return list(await cursor.fetchall())
+
+
+async def ensure_agent_profile_identity(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    name: str,
+    default_skill_id: str,
+) -> None:
+    """Create exactly one profile identity without mutating existing Agent definitions."""
+
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, agent_type, status
+        from agents
+        where id = %s
+        """,
+        (agent_id,),
+    )
+    existing = await cursor.fetchone()
+    if existing is not None:
+        if (
+            str(existing.get("tenant_id") or "") != tenant_id
+            or str(existing.get("agent_type") or "") != "profile"
+        ):
+            raise RepositoryConflictError("agent_profile_identity_conflict")
+        if str(existing.get("status") or "") != "active":
+            raise RepositoryConflictError("agent_inactive")
+        return
+    await conn.execute(
+        """
+        insert into agents(id, tenant_id, name, agent_type, description, default_skill_id, status)
+        values (%s, %s, %s, 'profile', '', %s, 'active')
+        """,
+        (agent_id, tenant_id, name, default_skill_id),
+    )
+
+
+async def create_agent_profile_revision(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    status: str,
+    name: str,
+    description: str,
+    instructions: str,
+    model_id: str,
+    skill_id: str,
+    skill_version: str,
+    mcp_tool_ids: list[str],
+    content_hash: str,
+    created_by: str,
+    published_by: str | None = None,
+    expected_previous_revision: int | None = None,
+    published_from_revision: int | None = None,
+) -> dict[str, Any]:
+    """Append one revision under an optimistic fence and transaction advisory lock."""
+
+    await conn.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"agent-profile:{tenant_id}:{agent_id}",),
+    )
+    cursor = await conn.execute(
+        """
+        select coalesce(max(revision), 0) as current_revision
+        from agent_profile_revisions
+        where tenant_id = %s and agent_id = %s
+        """,
+        (tenant_id, agent_id),
+    )
+    row = await cursor.fetchone()
+    current_revision = int(row["current_revision"] if row else 0)
+    if expected_previous_revision is not None and current_revision != expected_previous_revision:
+        raise RepositoryConflictError("agent_profile_revision_stale")
+    revision = current_revision + 1
+    cursor = await conn.execute(
+        """
+        insert into agent_profile_revisions(
+          tenant_id, agent_id, revision, status, name, description, instructions,
+          model_id, skill_id, skill_version, mcp_tool_ids, content_hash, created_by,
+          published_by, published_at, published_from_revision
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
+                %s, case when %s is null then null else now() end, %s)
+        returning tenant_id, agent_id, revision, status, name, description, instructions,
+                  model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
+                  created_at, published_at
+        """,
+        (
+            tenant_id,
+            agent_id,
+            revision,
+            status,
+            name,
+            description,
+            instructions,
+            model_id,
+            skill_id,
+            skill_version,
+            dumps_json(mcp_tool_ids),
+            content_hash,
+            created_by,
+            published_by,
+            published_by,
+            published_from_revision,
+        ),
+    )
+    saved = await cursor.fetchone()
+    if saved is None:
+        raise RepositoryConflictError("agent_profile_revision_write_failed")
+    return dict(saved)
+
+
+async def get_agent_profile_revision(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    revision: int,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Read one tenant-scoped immutable revision, optionally by lifecycle state."""
+
+    status_filter = "and agent_profile_revisions.status = %s" if status else ""
+    params: list[Any] = [tenant_id, agent_id, revision]
+    if status:
+        params.append(status)
+    cursor = await conn.execute(
+        f"""
+        select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
+               agent_profile_revisions.revision, agent_profile_revisions.status,
+               agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.instructions, agent_profile_revisions.model_id,
+               agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
+               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.created_at, agent_profile_revisions.published_at
+        from agent_profile_revisions
+        join agents on agents.id = agent_profile_revisions.agent_id
+          and agents.tenant_id = agent_profile_revisions.tenant_id
+        where agent_profile_revisions.tenant_id = %s
+          and agent_profile_revisions.agent_id = %s
+          and agent_profile_revisions.revision = %s
+          and agents.agent_type = 'profile'
+          and agents.status = 'active'
+          {status_filter}
+        """,
+        tuple(params),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def list_latest_agent_profile_revisions(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List only each profile's latest revision for the calling tenant."""
+
+    status_filter = "and agent_profile_revisions.status = %s" if status else ""
+    params: tuple[Any, ...] = (tenant_id, status) if status else (tenant_id,)
+    cursor = await conn.execute(
+        f"""
+        select distinct on (agent_profile_revisions.agent_id)
+               agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
+               agent_profile_revisions.revision, agent_profile_revisions.status,
+               agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.instructions, agent_profile_revisions.model_id,
+               agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
+               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.created_at, agent_profile_revisions.published_at
+        from agent_profile_revisions
+        join agents on agents.id = agent_profile_revisions.agent_id
+          and agents.tenant_id = agent_profile_revisions.tenant_id
+        where agent_profile_revisions.tenant_id = %s
+          and agents.agent_type = 'profile'
+          and agents.status = 'active'
+          {status_filter}
+        order by agent_profile_revisions.agent_id, agent_profile_revisions.revision desc
+        """,
+        params,
+    )
+    return [dict(row) for row in await cursor.fetchall()]
 
 
 async def list_scoped_context_messages(
@@ -3721,13 +3909,16 @@ async def create_session(
     user_id: str | None,
     title: str,
     session_id: str | None = None,
+    admitted_agent_profile_revision: int | None = None,
+    admitted_agent_profile_hash: str | None = None,
 ) -> str:
     resolved_id = session_id or new_id("ses")
     await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
     if session_id:
         cursor = await conn.execute(
             """
-            select id, tenant_id, workspace_id, user_id, agent_id
+            select id, tenant_id, workspace_id, user_id, agent_id,
+                   admitted_agent_profile_revision, admitted_agent_profile_hash
             from sessions
             where id = %s
             """,
@@ -3739,14 +3930,31 @@ async def create_session(
                 raise RepositoryConflictError("session_scope_mismatch")
             if row["user_id"] and user_id and row["user_id"] != user_id:
                 raise RepositoryConflictError("session_user_mismatch")
+            if (
+                row.get("admitted_agent_profile_revision") != admitted_agent_profile_revision
+                or row.get("admitted_agent_profile_hash") != admitted_agent_profile_hash
+            ):
+                raise RepositoryConflictError("session_agent_profile_mismatch")
             return resolved_id
     await conn.execute(
         """
-        insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title)
-        values (%s, %s, %s, %s, %s, %s)
+        insert into sessions(
+          id, tenant_id, workspace_id, user_id, agent_id, title,
+          admitted_agent_profile_revision, admitted_agent_profile_hash
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s)
         on conflict (id) do nothing
         """,
-        (resolved_id, tenant_id, workspace_id, user_id, agent_id, title),
+        (
+            resolved_id,
+            tenant_id,
+            workspace_id,
+            user_id,
+            agent_id,
+            title,
+            admitted_agent_profile_revision,
+            admitted_agent_profile_hash,
+        ),
     )
     return resolved_id
 
@@ -3798,6 +4006,8 @@ async def create_run(
     principal_department_id: str = "",
     auth_source: str | None = None,
     run_id: str | None = None,
+    admitted_agent_profile_revision: int | None = None,
+    admitted_agent_profile_hash: str | None = None,
 ) -> str:
     resolved_run_id = run_id or new_id("run")
     trace_id = standard_trace_id(resolved_run_id)
@@ -3816,11 +4026,12 @@ async def create_run(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
+          admitted_agent_profile_revision, admitted_agent_profile_hash,
           status, input_json, queued_at,
           session_generation,
           input_token_count, output_token_count, total_token_count, estimated_cost_minor
         )
-        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
         from sessions
         where sessions.tenant_id = %s
           and sessions.workspace_id = %s
@@ -3843,6 +4054,8 @@ async def create_run(
             dumps_json(normalize_roles(principal_roles or [])),
             str(principal_department_id or ""),
             auth_source,
+            admitted_agent_profile_revision,
+            admitted_agent_profile_hash,
             dumps_json(input_json),
             session_generation,
             tenant_id,
@@ -8709,6 +8922,10 @@ async def create_multi_agent_dispatch_child_run(
     }
 
     source_execution_snapshot = copied_run_execution_snapshot(source_input)
+    admitted_profile_revision, admitted_profile_hash = admitted_agent_profile_pins_for_copy(
+        parent,
+        source_execution_snapshot,
+    )
     skill_version = str(source_execution_snapshot.get("skill_version") or "")
     skill_manifests = source_execution_snapshot.get("skill_manifests") or []
     release_decision_payload = source_execution_snapshot.get("release_decision") or {}
@@ -8729,7 +8946,7 @@ async def create_multi_agent_dispatch_child_run(
         skill_manifests=skill_manifests,
         release_decision=release_decision_payload,
     )
-    skill = await authorize_replay_run_capabilities(
+    await authorize_replay_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=str(parent["agent_id"]),
@@ -8752,6 +8969,7 @@ async def create_multi_agent_dispatch_child_run(
         context_snapshot={},
         schema_version=RUN_PAYLOAD_SCHEMA_VERSION,
     )
+    child_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
     child_execution_snapshot = copied_run_execution_snapshot(child_input_json)
     child_input_json.update(child_execution_snapshot)
 
@@ -8770,9 +8988,10 @@ async def create_multi_agent_dispatch_child_run(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
+          admitted_agent_profile_revision, admitted_agent_profile_hash,
           status, input_json, queued_at, copied_from_run_id, session_generation
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
         """,
         (
             child_run_id,
@@ -8788,6 +9007,8 @@ async def create_multi_agent_dispatch_child_run(
             dumps_json(inherited_roles),
             inherited_department_id,
             inherited_auth_source,
+            admitted_profile_revision,
+            admitted_profile_hash,
             dumps_json(child_input_json),
             parent_run_id,
             session_generation,
@@ -10481,6 +10702,10 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     else:
         source_execution_input = {}
     source_execution_snapshot = copied_run_execution_snapshot(source_input)
+    admitted_profile_revision, admitted_profile_hash = admitted_agent_profile_pins_for_copy(
+        source,
+        source_execution_snapshot,
+    )
     skill_version = str(source_execution_snapshot.get("skill_version") or "")
     skill_manifests = source_execution_snapshot.get("skill_manifests") or []
     release_decision_payload = source_execution_snapshot.get("release_decision") or {}
@@ -10498,7 +10723,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         skill_manifests=skill_manifests,
         release_decision=release_decision_payload,
     )
-    skill = await authorize_replay_run_capabilities(
+    await authorize_replay_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=source["agent_id"],
@@ -10541,6 +10766,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         context_snapshot={},
         schema_version=RUN_PAYLOAD_SCHEMA_VERSION,
     )
+    copied_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
     copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
     copied_input_json.update(copied_execution_snapshot)
     session_generation = await allocate_session_run_generation(
@@ -10557,9 +10783,10 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
+          admitted_agent_profile_revision, admitted_agent_profile_hash,
           status, input_json, queued_at, copied_from_run_id, session_generation
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
         """,
         (
             new_run_id,
@@ -10575,6 +10802,8 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             dumps_json(inherited_roles),
             inherited_department_id,
             inherited_auth_source,
+            admitted_profile_revision,
+            admitted_profile_hash,
             dumps_json(copied_input_json),
             run_id,
             session_generation,
@@ -10752,8 +10981,9 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
     context_snapshot_id = source.get("context_snapshot_id")
     model_id = source.get("model_id")
     model_value = source.get("model_value")
+    agent_profile = source.get("agent_profile")
     schema_version = source.get("schema_version")
-    return {
+    snapshot = {
         "file_ids": list(file_ids) if isinstance(file_ids, list) else [],
         "input": dict(execution_input) if isinstance(execution_input, dict) else {},
         "executor_type": str(source.get("executor_type") or ""),
@@ -10770,6 +11000,58 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
         if isinstance(schema_version, str) and schema_version
         else RUN_PAYLOAD_SCHEMA_VERSION,
     }
+    if isinstance(agent_profile, dict):
+        snapshot["agent_profile"] = dict(agent_profile)
+    return snapshot
+
+
+def preserved_server_owned_execution_snapshot(source_snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return admitted execution facts that sanitization must never reconstruct from a caller."""
+
+    preserved = {
+        "model_id": source_snapshot.get("model_id"),
+        "model_value": source_snapshot.get("model_value"),
+    }
+    agent_profile = source_snapshot.get("agent_profile")
+    if isinstance(agent_profile, dict):
+        preserved["agent_profile"] = dict(agent_profile)
+    return preserved
+
+
+def admitted_agent_profile_pins_for_copy(
+    source_run: dict[str, Any],
+    source_snapshot: dict[str, Any],
+) -> tuple[int | None, str | None]:
+    """Require a profile's private snapshot and durable pins to remain identical on descendants."""
+
+    revision = source_run.get("admitted_agent_profile_revision")
+    content_hash = source_run.get("admitted_agent_profile_hash")
+    profile = source_snapshot.get("agent_profile")
+    if profile is None:
+        if revision is not None or content_hash is not None:
+            raise RepositoryConflictError("agent_profile_snapshot_missing")
+        return None, None
+    if not isinstance(profile, dict):
+        raise RepositoryConflictError("agent_profile_snapshot_invalid")
+    profile_revision = profile.get("revision")
+    profile_hash = profile.get("content_hash")
+    profile_agent_id = profile.get("agent_id")
+    if (
+        not isinstance(profile_revision, int)
+        or isinstance(profile_revision, bool)
+        or profile_revision < 1
+        or not isinstance(profile_hash, str)
+        or not profile_hash
+        or profile_agent_id != source_run.get("agent_id")
+        or revision != profile_revision
+        or content_hash != profile_hash
+        or not isinstance(source_snapshot.get("model_id"), str)
+        or not source_snapshot.get("model_id")
+        or not isinstance(source_snapshot.get("model_value"), str)
+        or not source_snapshot.get("model_value")
+    ):
+        raise RepositoryConflictError("agent_profile_snapshot_invalid")
+    return profile_revision, profile_hash
 
 
 async def update_run_input_execution_snapshot(

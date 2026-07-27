@@ -15,6 +15,7 @@ from app.runtime.sandbox.executor_client import SandboxExecutorClient
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime
+from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt_run-a") -> str:
@@ -55,6 +56,14 @@ def request(**overrides) -> SandboxRuntimeRequest:
     return SandboxRuntimeRequest(**values)
 
 
+def test_sandbox_system_prompt_uses_the_same_character_limit_as_profile_admission():
+    accepted = request(system_prompt="界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+
+    assert accepted.system_prompt == "界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+    with pytest.raises(ValueError):
+        request(system_prompt="界" * (MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS + 1))
+
+
 @pytest.mark.asyncio
 async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_executor(tmp_path, monkeypatch):
     sent = []
@@ -82,7 +91,10 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     )
 
     result = await runtime.submit(
-        request(materialized_file_names=["z.docx", "a.docx"]),
+        request(
+            materialized_file_names=["z.docx", "a.docx"],
+            system_prompt="Private profile instruction",
+        ),
         event_sink=events.append,
     )
 
@@ -127,6 +139,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "tool_policy_subjects": [],
         "input_files": ["file-a"],
         "materialized_file_names": ["z.docx", "a.docx"],
+        "system_prompt": "Private profile instruction",
     }
     assert [event.type for event in events] == ["runtime_container_started"]
     assert lease_calls[0][0] == "record"

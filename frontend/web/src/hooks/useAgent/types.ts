@@ -3,6 +3,7 @@ import type {
   ConnectionStatus,
   FormField,
   MessageAttachment,
+  SelectedAgentProfileRequest,
   SelectedSkillRequest,
 } from "../../types";
 import type { ExecutionTimelineKind } from "../../types/message";
@@ -418,6 +419,7 @@ export interface UseAgentReturn {
     agentOptions?: Record<string, boolean | string | number>,
     attachments?: MessageAttachment[],
     selectedSkill?: SelectedSkillRequest | null,
+    selectedAgentProfile?: SelectedAgentProfileRequest | null,
   ) => Promise<SubmissionOutcome>;
   canRetryPendingSubmission: boolean;
   retryPendingSubmission: () => Promise<void>;

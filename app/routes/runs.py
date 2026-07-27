@@ -42,6 +42,7 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     redact_raw_skill_references,
     sanitize_user_control_input,
+    strip_server_owned_control_metadata,
 )
 from app.queue import (
     QueueAdmissionMetadata,
@@ -2047,7 +2048,7 @@ async def get_run(
     )
     input_payload = run["input_json"] if isinstance(run["input_json"], dict) else {}
     if show_raw_skill:
-        input_payload = sanitize_public_payload(input_payload)
+        input_payload = sanitize_public_payload(strip_server_owned_control_metadata(input_payload))
         result_payload = sanitize_public_payload(result)
         multi_agent_snapshot = multi_agent_snapshot_from_steps(run_id, steps, principal=principal)
         if multi_agent_snapshot is not None:
