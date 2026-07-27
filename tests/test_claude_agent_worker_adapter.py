@@ -4795,7 +4795,8 @@ async def test_sdk_runner_requires_exact_selected_skill_despite_user_override(mo
         session_id="existing-sdk-session",
     )
 
-    assert result.message == "ok"
+    assert result.message == ""
+    assert result.error == "claude_agent_sdk_selected_skill_not_invoked"
     assert captured["max_turns"] == 12
     assert captured["effort"] == "xhigh"
     assert captured["max_thinking_tokens"] == 16384
@@ -5024,7 +5025,8 @@ async def test_sdk_runner_removes_project_settings_before_sdk_launch(monkeypatch
         skills=["qa-file-reviewer"],
     )
 
-    assert result.message == "ok"
+    assert result.message == ""
+    assert result.error == "claude_agent_sdk_selected_skill_not_invoked"
     assert captured["setting_sources"] == ["project"]
 
 

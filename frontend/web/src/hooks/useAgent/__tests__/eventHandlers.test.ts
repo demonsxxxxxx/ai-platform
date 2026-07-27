@@ -321,6 +321,117 @@ test("retains the run-event sequence replay guard after the event-id cap", () =>
   assert.equal(ctx.setMessagesCalls(), 1);
 });
 
+test("uses the existing cursor and event-id guard for public execution steps", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-active";
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-active",
+    streamVersion: 0,
+  };
+
+  const accepted = handleStreamEvent(
+    {
+      event: "execution_step",
+      data: JSON.stringify({
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: "evt-execution-started",
+        run_id: "run-active",
+        sequence: 9,
+        step_id: "step-prepare-report",
+        kind: "processing",
+        stage: "prepare",
+        status: "running",
+        title: "准备报告",
+        summary: "正在读取输入",
+        progress: { current: 0, total: 4 },
+        safe_file_name: null,
+        artifact_public_id: null,
+        created_at: null,
+      }),
+    } as StreamEvent,
+    "assistant-1",
+    "evt-execution-started",
+    undefined,
+    ctx,
+    binding,
+  );
+  const duplicateEventId = handleStreamEvent(
+    {
+      event: "execution_progress",
+      data: JSON.stringify({
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: "evt-execution-started",
+        run_id: "run-active",
+        sequence: 10,
+        step_id: "step-prepare-report",
+        kind: "processing",
+        stage: "prepare",
+        status: "running",
+        title: "准备报告",
+        summary: "重复事件不得更新",
+        progress: { current: 2, total: 4 },
+        safe_file_name: null,
+        artifact_public_id: null,
+        created_at: null,
+      }),
+    } as StreamEvent,
+    "assistant-1",
+    "evt-execution-started",
+    undefined,
+    ctx,
+    binding,
+  );
+  const staleSequence = handleStreamEvent(
+    {
+      event: "execution_progress",
+      data: JSON.stringify({
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: "evt-execution-stale",
+        run_id: "run-active",
+        sequence: 8,
+        step_id: "step-prepare-report",
+        kind: "processing",
+        stage: "prepare",
+        status: "running",
+        title: "准备报告",
+        summary: "乱序事件不得更新",
+        progress: { current: 1, total: 4 },
+        safe_file_name: null,
+        artifact_public_id: null,
+        created_at: null,
+      }),
+    } as StreamEvent,
+    "assistant-1",
+    "evt-execution-stale",
+    undefined,
+    ctx,
+    binding,
+  );
+
+  assert.equal(accepted, true);
+  assert.equal(duplicateEventId, false);
+  assert.equal(staleSequence, false);
+  assert.deepEqual(ctx.acceptedRunEventSequenceRef?.current, {
+    sessionId: "session-1",
+    runId: "run-active",
+    sequence: 9,
+  });
+  assert.equal(ctx.setMessagesCalls(), 1);
+});
+
 test("uses the durable sequence for assistant deltas and final replacement", () => {
   const ctx = createContext(
     [

@@ -30,6 +30,10 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     public_skill_display_label,
 )
+from app.public_execution import (
+    PUBLIC_EXECUTION_EVENT_TYPES,
+    public_execution_event_from_row,
+)
 from app.routes.auth import _login_principal
 from app.routes.files import upload_file as upload_platform_file
 from app.routes.runs import (
@@ -620,6 +624,20 @@ def _compatibility_events_for_run(
     trace_id = str(run.get("trace_id") or standard_trace_id(run_id))
     compatibility_events: list[_CompatibilityWireEvent] = []
     status = _platform_status(str(run.get("status") or ""))
+    has_strict_public_execution = any(
+        str(event.get("event_type") or "") in PUBLIC_EXECUTION_EVENT_TYPES
+        and public_execution_event_from_row(run_id, event) is not None
+        for event in run_events
+    )
+    legacy_capability_event_types = {
+        "skill_selected",
+        "capability_selected",
+        "skill_used",
+        "tool_call_completed",
+        "capability_invoking",
+        "capability_completed",
+        "capability_failed",
+    }
 
     for message in user_messages or []:
         message_id = str(message.get("id") or "")
@@ -663,10 +681,53 @@ def _compatibility_events_for_run(
         raw_event_type = str(event.get("event_type") or "")
         if raw_event_type in CHAT_STREAM_TERMINAL_EVENT_TYPES:
             continue
+        if has_strict_public_execution and raw_event_type in legacy_capability_event_types:
+            continue
         if (
             not _chat_event_marked_visible(event)
             or not event_visible_to_principal(event, principal)
         ):
+            continue
+        if raw_event_type in PUBLIC_EXECUTION_EVENT_TYPES:
+            execution_event = public_execution_event_from_row(run_id, event)
+            if execution_event is None:
+                continue
+            event_type = str(event["event_type"])
+            compatibility_events.append(
+                _CompatibilityWireEvent(
+                    id=str(execution_event["event_id"]),
+                    stream_event_type=event_type,
+                    stream_data=execution_event,
+                    history_event={
+                        "id": execution_event["event_id"],
+                        "schema_version": execution_event["schema_version"],
+                        "trace_id": str(event.get("trace_id") or trace_id),
+                    "type": event_type,
+                    "event_type": event_type,
+                        "stage": execution_event["stage"],
+                        "severity": "error" if execution_event["status"] == "failed" else "info",
+                        "visible_to_user": True,
+                        "payload": execution_event,
+                        "sequence": execution_event["sequence"],
+                        "data": execution_event,
+                        "timestamp": execution_event["created_at"],
+                        "run_id": run_id,
+                    },
+                )
+            )
+            continue
+        raw_payload = event.get("payload_json")
+        if raw_event_type.startswith("tool_call") and isinstance(raw_payload, dict) and {
+            "command",
+            "args",
+            "arguments",
+            "result",
+            "output",
+            "tool_input",
+            "tool_output",
+            "private_payload",
+            "executor_private_payload",
+        } & set(raw_payload):
             continue
         if raw_event_type == "assistant_delta":
             # Successful terminal history converges to the canonical final

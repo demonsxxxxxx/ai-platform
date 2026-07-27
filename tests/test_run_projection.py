@@ -466,3 +466,55 @@ def test_projection_module_rejects_invalid_event_schema_version():
 
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == "invalid_event_schema_version"
+
+
+def test_run_projection_returns_only_the_public_execution_event_v1_shape():
+    event = run_event_response(
+        "run-a",
+        event_row(
+            "execution_step",
+            payload_json={
+                "step_id": "step-opaque-a",
+                "kind": "processing",
+                "stage": "execution",
+                "status": "running",
+                "title": "Document review",
+                "summary": "Processing",
+                "progress": {"current": 1, "total": 4},
+            },
+        ),
+        principal=principal(),
+    )
+
+    assert event["schema_version"] == "ai-platform.public-execution-event.v1"
+    assert set(event) <= {
+        "schema_version",
+        "event_id",
+        "sequence",
+        "run_id",
+        "step_id",
+        "kind",
+        "stage",
+        "status",
+        "title",
+        "summary",
+        "progress",
+        "safe_file_name",
+        "artifact_public_id",
+        "created_at",
+    }
+
+    raw = run_event_response(
+        "run-a",
+        event_row(
+            "tool_call_started",
+            payload_json={
+                "command": "powershell -Command private-token",
+                "private_payload": {"path": "C:\\private\\workspace"},
+            },
+            sequence=2,
+        ),
+        principal=principal(),
+    )
+    assert raw["schema_version"] != "ai-platform.public-execution-event.v1"
+    assert raw.get("kind") not in {"execution_step", "execution_progress", "execution_step_completed"}

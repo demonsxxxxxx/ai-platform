@@ -1,16 +1,16 @@
-from contextlib import asynccontextmanager
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.main import create_app
+from app.models import ChatStreamRequest
 from app.repositories import append_message as real_append_message
 from app.repositories import (
     list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs,
 )
-from app.main import create_app
-from app.models import ChatStreamRequest
 
 
 def auth_settings():
@@ -430,8 +430,10 @@ def test_lambchat_bootstrap_endpoints_match_frontend_contract():
 
 
 def test_lambchat_bootstrap_routes_do_not_shadow_authenticated_workbench_projections(monkeypatch):
-    from tests.test_workbench_projection_routes import install_workbench_route_fakes
-    from tests.test_workbench_projection_routes import user_headers
+    from tests.test_workbench_projection_routes import (
+        install_workbench_route_fakes,
+        user_headers,
+    )
 
     install_workbench_route_fakes(monkeypatch)
     client = TestClient(create_app())
@@ -1795,6 +1797,23 @@ def test_lambchat_sse_stream_projects_only_safe_versioned_chat_progress(monkeypa
                     "visible_to_user": True,
                 },
             },
+            {
+                **base,
+                "id": "evt-public-execution",
+                "sequence": 13,
+                "event_type": "execution_step",
+                "stage": "execution",
+                "message": "private execution detail must not be projected",
+                "payload_json": {
+                    "step_id": "pex_public_1",
+                    "kind": "processing",
+                    "stage": "execution",
+                    "status": "running",
+                    "title": "Process request",
+                    "summary": "Running controlled processing",
+                    "progress": {"current": 0, "total": 1},
+                },
+            },
         ]
 
     async def empty_artifacts(conn, *, tenant_id, run_id):
@@ -1835,14 +1854,15 @@ def test_lambchat_sse_stream_projects_only_safe_versioned_chat_progress(monkeypa
     assert '"event_id": "evt-delta"' in response.text
     assert '"sequence": 3' in response.text
     assert '"content": "安全回答"' in response.text
+    assert "event: execution_step" in response.text
+    assert '"schema_version": "ai-platform.public-execution-event.v1"' in response.text
+    assert '"event_id": "evt-public-execution"' in response.text
+    assert '"step_id": "pex_public_1"' in response.text
     assert "evt-queued" not in response.text
     assert '"queue_position": 3' not in response.text
     assert "internal queue source" not in response.text
-    assert '"event_type": "run_started"' in response.text
-    assert '"event_type": "agent_step_started"' in response.text
-    assert "已完成请求准备，正在进入受控执行阶段" in response.text
-    assert "正在执行受控处理步骤" in response.text
     assert "worker-alpha" not in response.text
+    assert "private execution detail must not be projected" not in response.text
     assert "private chain of thought" not in response.text
     assert "/var/lib/private" not in response.text
     assert '"tool_id": "Bash"' not in response.text
@@ -1856,12 +1876,8 @@ def test_lambchat_sse_stream_projects_only_safe_versioned_chat_progress(monkeypa
     assert "message fallback must stay hidden" not in response.text
     assert "evt-extra-fields" not in response.text
     assert "delta with untrusted extras" not in response.text
-    assert '"activity": {"category": "execution", "status": "running"}' in response.text
-    assert '"activity": {"category": "tool", "status": "running"}' in response.text
-    assert '"status": "running"' in response.text
-    assert '"kind":' not in response.text
     assert "任务仍在处理中" not in response.text
-    assert "正在执行受控处理步骤" in response.text
+    assert "正在执行受控处理步骤" not in response.text
     assert '"name": "Bash"' not in response.text
     assert "Bash" not in response.text
     assert "已保存阶段性进度" in response.text
@@ -2399,7 +2415,6 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
 def test_lambchat_sse_stream_cannot_read_cross_tenant_run_events(monkeypatch):
     async def missing_authorized_run(conn, *, tenant_id, user_id, run_id):
         assert (tenant_id, user_id, run_id) == ("other", "user-a", "run_a")
-        return None
 
     async def forbidden_event_read(*args, **kwargs):
         raise AssertionError("unauthorized run must not reach event storage")
@@ -2731,7 +2746,6 @@ def test_lambchat_status_rejects_an_absent_explicit_run_without_falling_back(mon
 
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         assert (tenant_id, user_id, run_id) == ("default", "user-a", "run-requested")
-        return None
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
@@ -3656,7 +3670,6 @@ def test_lambchat_exact_session_events_restore_an_authorized_run_beyond_the_late
 def test_lambchat_session_events_reject_cross_tenant_before_listing_messages(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         assert (tenant_id, user_id, session_id) == ("tenant-b", "user-b", "ses_a")
-        return None
 
     async def fail_list_authorized_user_messages_for_runs(*args, **kwargs):
         raise AssertionError("unauthorized session must not list messages")

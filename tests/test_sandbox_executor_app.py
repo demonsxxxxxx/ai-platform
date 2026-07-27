@@ -427,16 +427,51 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
         ("completed", "tool-call-1"),
     ]
     capability_events = [item for item in callbacks if item.get("events")]
-    assert [item["events"][0]["type"] for item in capability_events] == [
-        "capability_invoking",
-        "capability_completed",
+    assert [[event["type"] for event in item["events"]] for item in capability_events] == [
+        ["capability_invoking", "execution_step"],
+        ["capability_completed", "execution_step_completed"],
     ]
     assert [item["events"][0]["payload"]["capability"] for item in capability_events] == [
         {"kind": "mcp", "name": "Tenant Search", "status": "invoking"},
         {"kind": "mcp", "name": "Tenant Search", "status": "completed"},
     ]
+    execution_events = [item["events"][1] for item in capability_events]
+    assert [item["type"] for item in execution_events] == [
+        "execution_step",
+        "execution_step_completed",
+    ]
+    assert execution_events[0]["payload"]["step_id"] == execution_events[1]["payload"]["step_id"]
+    assert set(execution_events[0]["payload"]) <= {
+        "step_id", "kind", "stage", "status", "title", "summary", "progress", "safe_file_name", "artifact_public_id"
+    }
     assert "mcp__tenant-server__search" not in json.dumps(capability_events)
     assert "tool-call-1" not in json.dumps(capability_events)
+
+
+def test_executor_callback_persists_only_strict_public_execution_event_shape(tmp_path):
+    callbacks = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(
+            AgentEvent(
+                type="tool_call_started",
+                message="private command",
+                payload={"command": "powershell -Command private-token"},
+            )
+        )
+        return {"status": "completed", "message": "trusted result"}
+
+    client = create_test_client(
+        tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=lambda _url, payload, _token: callbacks.append(payload) or callback_ack(payload),
+    )
+
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    emitted = [event for callback in callbacks for event in callback.get("events", [])]
+    assert emitted == []
 
 
 @pytest.mark.asyncio
@@ -553,10 +588,16 @@ def test_executor_rejects_duplicate_or_conflicting_sdk_lifecycle_before_public_p
     assert body["status"] == "failed"
     assert body["error_code"] == "capability_lifecycle_sequence_invalid"
     assert body["capability_evidence"] == []
-    assert [event["type"] for event in callbacks] == [
+    assert [event["type"] for event in callbacks if event["type"].startswith("capability_")] == [
         "capability_invoking",
         *(["capability_completed"] if "completed" in phases else []),
     ]
+    terminal_timeline = [
+        event["type"]
+        for event in callbacks
+        if event["type"] in {"execution_step_completed", "execution_step_failed"}
+    ]
+    assert terminal_timeline == (["execution_step_completed"] if "completed" in phases else [])
 
 
 def test_executor_execute_fails_closed_after_final_delta_without_structured_terminal(tmp_path, monkeypatch):

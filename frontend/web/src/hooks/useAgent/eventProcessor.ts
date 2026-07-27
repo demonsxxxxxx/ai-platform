@@ -23,12 +23,15 @@ import type {
   TodoPart,
   SummaryPart,
 } from "../../types";
+import type { ExecutionTimelinePart } from "../../types/message";
 import i18n from "../../i18n";
 import { translateBackendError } from "../../utils/backendErrors";
 import {
   CHAT_PUBLIC_PROGRESS_EVENT_TYPES,
   CHAT_PUBLIC_PROJECTION_VERSION,
   isAssistantTextProjection,
+  isPublicExecutionEvent,
+  PUBLIC_EXECUTION_EVENT_TYPES,
   type EventData,
   type SubagentStackItem,
 } from "./types";
@@ -36,9 +39,7 @@ import {
   addPartToDepth,
   createSubagentPart,
   createThinkingPart,
-  createToolPart,
   updateSubagentResult,
-  updateToolResultInDepth,
   clearAllLoadingStates,
 } from "./messageParts";
 import type { ThinkingPart } from "../../types";
@@ -51,49 +52,6 @@ type ToolPermissionPartWithMergeHints = ToolPermissionPart & {
   risk_level_from_event?: boolean;
   write_capable_from_event?: boolean;
 };
-
-const SENSITIVE_TOOL_PAYLOAD_KEYS = new Set([
-  "request_payload",
-  "decision_payload",
-  "private_payload",
-  "privatePayload",
-  "executor_private_payload",
-  "executorPrivatePayload",
-  "storage_key",
-  "storageKey",
-  "runtime_path",
-  "runtimePath",
-  "work_dir",
-  "workDir",
-  "sandbox_workdir",
-  "sandboxWorkdir",
-  "command_sha256",
-  "commandSha256",
-  "resource_limits",
-  "resourceLimits",
-  "used_skills_source",
-  "usedSkillsSource",
-]);
-
-const SENSITIVE_TOOL_PAYLOAD_KEY_PATTERNS = [
-  /private.?payload/i,
-  /executor.?private/i,
-  /storage.?key/i,
-  /runtime.?path/i,
-  /work.?dir/i,
-  /sandbox.?work/i,
-  /command.?sha/i,
-  /resource.?limits/i,
-  /used.?skills.?source/i,
-];
-
-const SENSITIVE_TOOL_PAYLOAD_VALUE_PATTERNS = [
-  /tenants\/[^/\s]+\/private/i,
-  /\.claude\/(?:runs|skills)/i,
-  /\/tmp\/tenants\//i,
-  /\/workspace\/\.claude\//i,
-  /storage[_-]?key=/i,
-];
 
 /**
  * Convert backend attachment format to frontend format.
@@ -118,67 +76,6 @@ export function convertAttachments(
     size: a.size,
     url: a.url,
   }));
-}
-
-function isSensitiveToolPayloadKey(key: string): boolean {
-  return (
-    SENSITIVE_TOOL_PAYLOAD_KEYS.has(key) ||
-    SENSITIVE_TOOL_PAYLOAD_KEY_PATTERNS.some((pattern) => pattern.test(key))
-  );
-}
-
-function isSensitiveToolPayloadString(value: string): boolean {
-  return SENSITIVE_TOOL_PAYLOAD_VALUE_PATTERNS.some((pattern) =>
-    pattern.test(value),
-  );
-}
-
-function sanitizeToolPayloadValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => sanitizeToolPayloadValue(item))
-      .filter((item) => item !== undefined);
-  }
-
-  if (value && typeof value === "object") {
-    const output: Record<string, unknown> = {};
-    for (const [key, childValue] of Object.entries(
-      value as Record<string, unknown>,
-    )) {
-      if (isSensitiveToolPayloadKey(key)) continue;
-      const sanitizedValue = sanitizeToolPayloadValue(childValue);
-      if (sanitizedValue !== undefined) {
-        output[key] = sanitizedValue;
-      }
-    }
-    return output;
-  }
-
-  if (typeof value === "string" && isSensitiveToolPayloadString(value)) {
-    return "[redacted]";
-  }
-
-  return value;
-}
-
-function sanitizeToolArgs(args: Record<string, unknown>): Record<string, unknown> {
-  const sanitized = sanitizeToolPayloadValue(args);
-  return sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)
-    ? (sanitized as Record<string, unknown>)
-    : {};
-}
-
-function sanitizeToolResult(
-  result: string | Record<string, unknown>,
-): string | Record<string, unknown> {
-  const sanitized = sanitizeToolPayloadValue(result);
-  if (typeof sanitized === "string") {
-    return sanitized;
-  }
-  if (sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)) {
-    return sanitized as Record<string, unknown>;
-  }
-  return "";
 }
 
 // ============================================
@@ -309,6 +206,11 @@ export function processMessageEvent(
 ): ProcessMessageEventResult {
   const result: ProcessMessageEventResult = { parts, content, toolCalls };
   const agentId = data.agent_id;
+  if (eventType === "tool:start" || eventType === "tool:result") {
+    // Legacy tool frames carry an unversioned raw-tool surface. They are not a
+    // fallback for public execution v1 and must not create renderable parts.
+    return result;
+  }
 
   switch (eventType) {
     // ---- Agent events ----
@@ -482,82 +384,13 @@ export function processMessageEvent(
 
     // ---- Tool events ----
 
-    case "tool:start": {
-      const toolCallId = data.tool_call_id as string | undefined;
-      const safeArgs = sanitizeToolArgs(data.args || {});
-      const toolCall: ToolCall = {
-        id: toolCallId,
-        name: data.tool || "",
-        args: safeArgs,
-      };
-      const toolPart = createToolPart(
-        data.tool || "",
-        safeArgs,
-        depth,
-        agentId,
-        toolCallId,
-      );
-
-      if (depth > 0) {
-        result.parts = addPartToDepth(
-          parts,
-          toolPart,
-          depth,
-          subagentStack,
-          agentId,
-          messageId,
-        );
-      } else {
-        result.parts = [...parts, toolPart];
-        result.toolCalls = [...toolCalls, toolCall];
-      }
-      break;
-    }
-
-    case "tool:result": {
-      const toolCallId = data.tool_call_id as string | undefined;
-      const toolName = data.tool || "";
-      const isSuccess = data.success !== false;
-      const errorMsg = safeEventError(data.error);
-      const resultContent = sanitizeToolResult(data.result || "");
-
-      if (depth > 0 || toolCallId) {
-        result.parts = updateToolResultInDepth(
-          parts,
-          toolCallId || "",
-          resultContent,
-          isSuccess,
-          errorMsg,
-          depth,
-          agentId,
-        );
-      } else {
-        let updated = false;
-        const newParts = parts.map((p) => {
-          if (
-            p.type === "tool" &&
-            p.name === toolName &&
-            p.isPending &&
-            !updated
-          ) {
-            updated = true;
-            return {
-              ...p,
-              result: resultContent,
-              success: isSuccess,
-              error: errorMsg,
-              isPending: false,
-            };
-          }
-          return p;
-        });
-        result.parts = newParts;
-        result.toolResult = {
-          id: toolCallId,
-          name: toolName,
-          result: resultContent,
-          success: isSuccess,
-        };
+    case "execution_step":
+    case "execution_progress":
+    case "execution_step_completed":
+    case "execution_step_failed": {
+      const executionPart = createExecutionTimelinePart(eventType, data);
+      if (executionPart) {
+        result.parts = upsertExecutionTimelinePart(parts, executionPart);
       }
       break;
     }
@@ -627,6 +460,14 @@ export function processMessageEvent(
     }
 
     case "run_event": {
+      const executionKind = String(data.event_type || "");
+      if (PUBLIC_EXECUTION_EVENT_TYPES.has(executionKind as never)) {
+        const executionPart = createExecutionTimelinePart(executionKind, data);
+        if (executionPart) {
+          result.parts = upsertExecutionTimelinePart(parts, executionPart);
+        }
+        break;
+      }
       if (data.event_type === "tool_permission_card") {
         const permissionCard = createToolPermissionCardPart(data);
         if (permissionCard) {
@@ -896,6 +737,53 @@ function upsertRunStatusPart(
     return nextParts.filter((_part, index) => !removedIndexes.has(index));
   }
   return [...parts, runStatusPart];
+}
+
+function createExecutionTimelinePart(
+  eventType: string,
+  data: EventData,
+): ExecutionTimelinePart | null {
+  if (!isPublicExecutionEvent(eventType, data)) {
+    return null;
+  }
+  return {
+    type: "execution_step",
+    schema_version: data.schema_version,
+    event_id: data.event_id,
+    sequence: data.sequence,
+    run_id: data.run_id,
+    step_id: data.step_id,
+    kind: data.kind as ExecutionTimelinePart["kind"],
+    stage: data.stage,
+    status: data.status as ExecutionTimelinePart["status"],
+    title: data.title,
+    summary: data.summary,
+    progress: data.progress,
+    safe_file_name: data.safe_file_name ?? null,
+    artifact_public_id: data.artifact_public_id ?? null,
+    created_at: data.created_at ?? null,
+  };
+}
+
+function upsertExecutionTimelinePart(
+  parts: MessagePart[],
+  executionPart: ExecutionTimelinePart,
+): MessagePart[] {
+  const existing = parts.find(
+    (part): part is ExecutionTimelinePart =>
+      part.type === "execution_step" && part.step_id === executionPart.step_id,
+  );
+  if (!existing) {
+    return [...parts, executionPart];
+  }
+  if (executionPart.sequence < existing.sequence) {
+    return parts;
+  }
+  return parts.map((part) =>
+    part.type === "execution_step" && part.step_id === executionPart.step_id
+      ? executionPart
+      : part,
+  );
 }
 
 function shouldProjectRunStatus(data: EventData): boolean {
