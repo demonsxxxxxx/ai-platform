@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -39,6 +40,22 @@ EXPECTED_WORKFLOW_PYTEST = (
     "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
 )
+PARSER_DIRECTIVE = re.compile(r"^\s*#\s*([A-Za-z][A-Za-z0-9_-]*)\s*=.*$")
+
+
+def leading_dockerfile_parser_directives(dockerfile: str) -> set[str]:
+    if dockerfile.startswith("\ufeff"):
+        dockerfile = dockerfile[1:]
+
+    directives = set()
+    for line in dockerfile.splitlines():
+        if not directives and not line.strip():
+            continue
+        match = PARSER_DIRECTIVE.match(line)
+        if match is None:
+            break
+        directives.add(match.group(1).lower())
+    return directives
 
 
 def test_frontend_release_traceability_records_ci_contract_without_local_paths():
@@ -445,12 +462,27 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
     assert trace["workflow"]["missing_path_filters"] == []
 
 
+@pytest.mark.parametrize(
+    "dockerfile",
+    [
+        "\ufeff\n\n# SyNtAx = docker/dockerfile:1.7\nFROM scratch\n",
+        "#\tSYNTAX\t=\tdocker/dockerfile:1.7\nFROM scratch\n",
+    ],
+)
+def test_frontend_dockerfile_parser_directive_scan_rejects_syntax_variants(dockerfile):
+    assert "syntax" in leading_dockerfile_parser_directives(dockerfile)
+
+
+def test_frontend_dockerfile_parser_directive_scan_ignores_body_comments():
+    dockerfile = "FROM scratch\n# syntax=docker/dockerfile:1.7\n"
+
+    assert "syntax" not in leading_dockerfile_parser_directives(dockerfile)
+
+
 def test_frontend_dockerfile_has_no_registry_resolved_syntax_directive():
     dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
 
-    assert not any(
-        line.lstrip().startswith("# syntax=") for line in dockerfile.splitlines()
-    )
+    assert "syntax" not in leading_dockerfile_parser_directives(dockerfile)
 
 
 def test_frontend_packaged_image_files_define_static_proxy_contract():
