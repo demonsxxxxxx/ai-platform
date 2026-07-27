@@ -1218,7 +1218,7 @@ test("does not persist sandbox runtime work directories in message parts", () =>
   assert.doesNotMatch(JSON.stringify(result.parts[0]), /work_dir|workspace/);
 });
 
-test("sanitizes legacy raw tool start events before storing message parts", () => {
+test("rejects legacy raw tool start events from ordinary chat", () => {
   const result = processMessageEvent(
     "tool:start",
     {
@@ -1253,33 +1253,12 @@ test("sanitizes legacy raw tool start events before storing message parts", () =
     "message-1",
   );
 
-  const serializedParts = JSON.stringify(result.parts);
-  const serializedCalls = JSON.stringify(result.toolCalls);
-
-  assert.match(serializedParts, /docs\/report\.docx/);
-  assert.match(serializedParts, /visible/);
-  assert.match(serializedParts, /public/);
-  assert.doesNotMatch(
-    serializedParts,
-    /storage_key|request_payload|work_dir|runtime_path|\.claude|tenants\/default\/private|\/tmp\/tenants/,
-  );
-  assert.doesNotMatch(
-    serializedCalls,
-    /storage_key|request_payload|work_dir|runtime_path|\.claude|tenants\/default\/private|\/tmp\/tenants/,
-  );
+  assert.deepEqual(result.parts, []);
+  assert.deepEqual(result.toolCalls, []);
+  assert.doesNotMatch(JSON.stringify(result), /docs\/report|visible|public/);
 });
 
-test("sanitizes legacy raw tool result events before rendering output", () => {
-  const parts: MessagePart[] = [
-    {
-      type: "tool",
-      id: "call-raw",
-      name: "execute",
-      args: { command: "echo ok" },
-      isPending: true,
-    },
-  ];
-
+test("rejects legacy raw tool result events from ordinary chat", () => {
   const result = processMessageEvent(
     "tool:result",
     {
@@ -1296,7 +1275,7 @@ test("sanitizes legacy raw tool result events before rendering output", () => {
         },
       },
     },
-    parts,
+    [],
     "",
     [],
     0,
@@ -1305,14 +1284,9 @@ test("sanitizes legacy raw tool result events before rendering output", () => {
     "message-1",
   );
 
-  const serializedParts = JSON.stringify(result.parts);
-
-  assert.match(serializedParts, /"output":"ok"/);
-  assert.match(serializedParts, /"safe_count":1/);
-  assert.doesNotMatch(
-    serializedParts,
-    /command_sha256|storage_key|runtime_path|tenants\/default\/private|\/tmp\/tenants/,
-  );
+  assert.deepEqual(result.parts, []);
+  assert.equal(result.toolResult, undefined);
+  assert.doesNotMatch(JSON.stringify(result), /output|safe_count|command_sha256|storage_key/);
 });
 
 test("sanitizes unknown diagnostics across chat error-bearing event parts", () => {
@@ -1463,4 +1437,185 @@ test("dedupes ai-platform artifact cards by artifact id", () => {
   assert.equal(part.download_url, "/api/ai/artifacts/art-reviewed/download");
   assert.equal(part.size_bytes, 123);
   assert.doesNotMatch(JSON.stringify(part), /storage_key|tenants\/default/);
+});
+
+test("upserts strict public execution steps by step id without merging them into assistant text", () => {
+  const started = processMessageEvent(
+    "execution_step",
+    {
+      schema_version: "ai-platform.public-execution-event.v1",
+      event_id: "evt-step-started",
+      run_id: "run-execution",
+      sequence: 4,
+      step_id: "step-prepare-report",
+      kind: "processing",
+      stage: "prepare",
+      status: "running",
+      title: "准备报告",
+      summary: "正在读取已批准的输入",
+      progress: { current: 0, total: 4 },
+      safe_file_name: null,
+      artifact_public_id: null,
+      created_at: null,
+    } as never,
+    [{ type: "text", content: "最终答复保持独立。" }],
+    "最终答复保持独立。",
+    [],
+    0,
+    [],
+    true,
+    "message-execution",
+  );
+  const progressed = processMessageEvent(
+    "execution_progress",
+    {
+      schema_version: "ai-platform.public-execution-event.v1",
+      event_id: "evt-step-progress",
+      run_id: "run-execution",
+      sequence: 5,
+      step_id: "step-prepare-report",
+      kind: "processing",
+      stage: "prepare",
+      status: "running",
+      title: "准备报告",
+      summary: "已读取已批准的输入",
+      progress: { current: 2, total: 4 },
+      safe_file_name: null,
+      artifact_public_id: null,
+      created_at: null,
+    } as never,
+    started.parts,
+    started.content,
+    [],
+    0,
+    [],
+    true,
+    "message-execution",
+  );
+  const completed = processMessageEvent(
+    "execution_step_completed",
+    {
+      schema_version: "ai-platform.public-execution-event.v1",
+      event_id: "evt-step-completed",
+      run_id: "run-execution",
+      sequence: 6,
+      step_id: "step-prepare-report",
+      kind: "processing",
+      stage: "prepare",
+      status: "completed",
+      title: "准备报告",
+      summary: "输入已准备完成",
+      progress: { current: 4, total: 4 },
+      safe_file_name: "report.docx",
+      artifact_public_id: "artifact-public-report",
+      created_at: "2026-07-27T08:00:00.000Z",
+    } as never,
+    progressed.parts,
+    progressed.content,
+    [],
+    0,
+    [],
+    true,
+    "message-execution",
+  );
+
+  assert.equal(completed.content, "最终答复保持独立。");
+  assert.equal(completed.parts.length, 2);
+  const executionStep = completed.parts[1] as {
+    type: string;
+    step_id: string;
+    title: string;
+    summary: string;
+    progress: { current: number; total: number };
+    status: string;
+  };
+  assert.equal(executionStep.type, "execution_step");
+  assert.equal(executionStep.step_id, "step-prepare-report");
+  assert.equal(executionStep.title, "准备报告");
+  assert.equal(executionStep.summary, "输入已准备完成");
+  assert.deepEqual(executionStep.progress, { current: 4, total: 4 });
+  assert.equal(executionStep.status, "completed");
+});
+
+test("fails closed for malformed, unknown, or step-id-less public execution events", () => {
+  for (const [eventType, data] of [
+    [
+      "execution_step",
+      {
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: "evt-without-step-id",
+        sequence: 4,
+        run_id: "run-execution",
+        kind: "processing",
+        stage: "prepare",
+        status: "running",
+        title: "准备报告",
+        summary: "缺少步骤标识",
+        progress: { current: 0, total: 4 },
+      },
+    ],
+    [
+      "execution_progress",
+      {
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: "evt-extra-content",
+        sequence: 5,
+        run_id: "run-execution",
+        step_id: "step-prepare-report",
+        kind: "processing",
+        stage: "prepare",
+        status: "running",
+        title: "准备报告",
+        summary: "额外字段不得显示",
+        progress: { current: 2, total: 4 },
+        content: "assistant text is not an execution event field",
+      },
+    ],
+    [
+      "execution_step_unknown",
+      {
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: "evt-unknown-step-event",
+        sequence: 6,
+        run_id: "run-execution",
+        step_id: "step-prepare-report",
+        kind: "processing",
+        stage: "prepare",
+        status: "running",
+        title: "准备报告",
+        summary: "未知事件不得显示",
+        progress: { current: 0, total: 4 },
+      },
+    ],
+    [
+      "execution_progress",
+      {
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: "evt-numeric-progress",
+        sequence: 7,
+        run_id: "run-execution",
+        step_id: "step-prepare-report",
+        kind: "processing",
+        stage: "prepare",
+        status: "running",
+        title: "准备报告",
+        summary: "数值进度不得显示",
+        progress: 2,
+      },
+    ],
+  ] as const) {
+    const result = processMessageEvent(
+      eventType,
+      data as never,
+      [],
+      "",
+      [],
+      0,
+      [],
+      true,
+      "message-execution",
+    );
+    assert.deepEqual(result.parts, []);
+    assert.equal(result.content, "");
+  }
 });

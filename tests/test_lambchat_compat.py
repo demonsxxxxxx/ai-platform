@@ -158,3 +158,79 @@ def test_capability_projection_is_safe_and_stable_for_live_reconnect_and_history
         "private failed message",
     ):
         assert private_term not in rendered
+
+
+def test_strict_execution_timeline_replaces_legacy_capability_rows():
+    """One strict execution row is authoritative for both stream and history."""
+
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User",
+        tenant_id="default",
+        roles=["user"],
+    )
+    run = {
+        "id": "run-timeline",
+        "trace_id": "trace-timeline",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+        "result_json": {},
+        "error_code": None,
+        "error_message": None,
+    }
+    base_event = {
+        "trace_id": "trace-timeline",
+        "schema_version": "ai-platform.event-envelope.v1",
+        "stage": "execution",
+        "severity": "info",
+        "visible_to_user": True,
+        "error_code": None,
+        "created_at": "2026-07-27T00:00:00Z",
+    }
+    events = [
+        {
+            **base_event,
+            "id": "evt-legacy",
+            "sequence": 1,
+            "event_type": "capability_invoking",
+            "message": "private legacy message",
+            "payload_json": {
+                "capability": {"kind": "mcp", "name": "Knowledge search", "status": "invoking"},
+                "tool_call_id": "private-call-id",
+            },
+        },
+        {
+            **base_event,
+            "id": "evt-execution",
+            "sequence": 2,
+            "event_type": "execution_step",
+            "message": "private projector message",
+            "payload_json": {
+                "step_id": "pex_public_1",
+                "kind": "capability",
+                "stage": "execution",
+                "status": "running",
+                "title": "Query knowledge",
+                "summary": "Querying authorized knowledge",
+                "progress": {"current": 0, "total": 1},
+            },
+        },
+    ]
+
+    records = lambchat_compat._compatibility_events_for_run(run, events, [], principal)
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.id == "evt-execution"
+    assert record.stream_event_type == "execution_step"
+    assert record.stream_data == record.history_event["data"]
+    assert record.history_event["payload"] == record.stream_data
+    assert set(record.stream_data) == {
+        "schema_version", "event_id", "sequence", "run_id", "step_id", "kind", "stage",
+        "status", "title", "summary", "progress", "safe_file_name", "artifact_public_id", "created_at",
+    }
+    rendered = json.dumps(record.stream_data)
+    assert "private-call-id" not in rendered
+    assert "private legacy message" not in rendered
+    assert "private projector message" not in rendered

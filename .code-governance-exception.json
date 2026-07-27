@@ -1,0 +1,16 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-08-15",
+  "owner": "public-execution-timeline",
+  "reason": "Issue #615 requires one atomic executor-callback-to-frontend public execution event contract.",
+  "violations": [
+    {
+      "code": "production_file_count",
+      "path": null
+    },
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}

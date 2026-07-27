@@ -5,6 +5,7 @@ import type {
   MessageAttachment,
   SelectedSkillRequest,
 } from "../../types";
+import type { ExecutionTimelineKind } from "../../types/message";
 import type { SelectedSkillRecoverableCode } from "../useSelectedSkillTask";
 import type { RunControlLifecycle } from "./runControlLifecycle";
 
@@ -15,6 +16,13 @@ export type SubmissionOutcome =
 
 export const CHAT_PUBLIC_PROJECTION_VERSION =
   "ai-platform.chat-public-projection.v1";
+export const PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION =
+  "ai-platform.public-execution-event.v1";
+export type PublicExecutionEventType = "execution_step" | "execution_progress" | "execution_step_completed" | "execution_step_failed";
+export const PUBLIC_EXECUTION_EVENT_TYPES: ReadonlySet<PublicExecutionEventType> = new Set(["execution_step", "execution_progress", "execution_step_completed", "execution_step_failed"]);
+const PUBLIC_EXECUTION_EVENT_FIELDS = "schema_version event_id sequence run_id step_id kind stage status title summary progress safe_file_name artifact_public_id created_at".split(" ");
+const PUBLIC_EXECUTION_STATUSES: Record<PublicExecutionEventType, string> = { execution_step: "running", execution_progress: "running", execution_step_completed: "completed", execution_step_failed: "failed" };
+const EXECUTION_TIMELINE_KINDS = new Set<ExecutionTimelineKind>(["analysis", "capability", "file_read", "processing", "generation", "verification", "artifact", "collaboration"]);
 
 export const CHAT_PUBLIC_PROGRESS_EVENT_TYPES: ReadonlySet<string> = new Set([
   "queued",
@@ -57,6 +65,10 @@ export type EventType =
   | "todo:updated"
   | "summary"
   | "run_event"
+  | "execution_step"
+  | "execution_progress"
+  | "execution_step_completed"
+  | "execution_step_failed"
   | "artifact_card"
   | "agent:call"
   | "agent:result"
@@ -150,6 +162,14 @@ export interface EventData {
   payload?: Record<string, unknown>;
   tool_permission_card?: Record<string, unknown>;
   created_at?: string;
+  // Strict ai-platform public execution timeline v1 fields
+  schema_version?: string;
+  kind?: string;
+  title?: string;
+  summary?: string;
+  progress?: { current: number; total: number };
+  safe_file_name?: string | null;
+  artifact_public_id?: string | null;
   // ai-platform artifact_card fields
   artifact_id?: string;
   artifact_type?: string;
@@ -185,6 +205,73 @@ export function isAssistantTextProjection(
   );
 }
 
+function isOpaquePublicId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+
+function isExecutionTimelineKind(value: unknown): value is ExecutionTimelineKind {
+  return EXECUTION_TIMELINE_KINDS.has(value as ExecutionTimelineKind);
+}
+
+function isExecutionProgress(value: unknown): value is { current: number; total: number } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const { current, total } = value as { current?: unknown; total?: unknown };
+  return (
+    Object.keys(value).length === 2 && Object.hasOwn(value, "current") && Object.hasOwn(value, "total") &&
+    typeof current === "number" && typeof total === "number" && Number.isInteger(current) && Number.isInteger(total) &&
+    total > 0 &&
+    current >= 0 &&
+    current <= total
+  );
+}
+
+/** Reject all partial, expanded, or raw-tool-shaped execution payloads. */
+export function isPublicExecutionEvent(
+  eventType: string,
+  data: EventData,
+): data is EventData & {
+  schema_version: typeof PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION;
+  event_id: string;
+  sequence: number;
+  run_id: string;
+  step_id: string;
+  kind: ExecutionTimelineKind;
+  stage: string;
+  status: "running" | "completed" | "failed";
+  title: string;
+  summary: string;
+  progress: { current: number; total: number };
+  safe_file_name: string | null;
+  artifact_public_id: string | null;
+  created_at: string | null;
+} {
+  if (!PUBLIC_EXECUTION_EVENT_TYPES.has(eventType as PublicExecutionEventType)) {
+    return false;
+  }
+  const source = data as unknown as Record<string, unknown>;
+  if (
+    Object.keys(source).length !== PUBLIC_EXECUTION_EVENT_FIELDS.length ||
+    !PUBLIC_EXECUTION_EVENT_FIELDS.every((key) => Object.hasOwn(source, key)) ||
+    source.schema_version !== PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION ||
+    !isOpaquePublicId(source.event_id) ||
+    !isOpaquePublicId(source.run_id) ||
+    !isOpaquePublicId(source.step_id) ||
+    typeof source.sequence !== "number" ||
+    !Number.isSafeInteger(source.sequence) ||
+    source.sequence < 0 ||
+    !["stage", "title", "summary"].every((key) => typeof source[key] === "string" && source[key]) ||
+    !isExecutionProgress(source.progress) ||
+    (source.safe_file_name !== null && typeof source.safe_file_name !== "string") ||
+    (source.artifact_public_id !== null && !isOpaquePublicId(source.artifact_public_id)) ||
+    (source.created_at !== null && typeof source.created_at !== "string")
+  ) {
+    return false;
+  }
+  return isExecutionTimelineKind(source.kind) && source.status === PUBLIC_EXECUTION_STATUSES[eventType as PublicExecutionEventType];
+}
+
 /** A persisted sequence that proves new public progress on this run. */
 export function isSequencedPublicChatEvent(
   eventType: string,
@@ -196,7 +283,9 @@ export function isSequencedPublicChatEvent(
     data.sequence >= 0;
   return (
     hasSequence &&
-    (eventType === "run_event" ||
+    (PUBLIC_EXECUTION_EVENT_TYPES.has(eventType as PublicExecutionEventType)
+      ? isPublicExecutionEvent(eventType, data)
+      : eventType === "run_event" ||
       (eventType === "message:chunk" &&
         isAssistantTextProjection(data) &&
         data.projection_kind === "assistant_delta"))
@@ -262,6 +351,13 @@ export interface HistoryEventData {
   payload?: Record<string, unknown>;
   tool_permission_card?: Record<string, unknown>;
   created_at?: string;
+  schema_version?: string;
+  kind?: string;
+  title?: string;
+  summary?: string;
+  progress?: { current: number; total: number };
+  safe_file_name?: string | null;
+  artifact_public_id?: string | null;
   artifact_id?: string;
   artifact_type?: string;
   label?: string;

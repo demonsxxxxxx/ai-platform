@@ -6,7 +6,15 @@ from app.runtime.kernel_contracts import AgentEvent
 
 @pytest.mark.parametrize(
     "event_type",
-    ["capability_invoking", "capability_completed", "capability_failed"],
+    [
+        "capability_invoking",
+        "capability_completed",
+        "capability_failed",
+        "execution_step",
+        "execution_progress",
+        "execution_step_completed",
+        "execution_step_failed",
+    ],
 )
 def test_capability_lifecycle_facts_are_typed_agent_events(event_type):
     event = AgentEvent(

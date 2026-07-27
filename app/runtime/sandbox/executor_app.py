@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, status
@@ -37,6 +37,10 @@ from app.file_parser_contracts import (
     attachment_requirements_from_contract,
     dispatched_context_file_ids,
     parse_xlsx_attachment,
+)
+from app.public_execution import (
+    PublicExecutionProjector,
+    public_execution_event_type_for_lifecycle,
 )
 from app.required_tool_contract import (
     RequiredCapabilityDeclaration,
@@ -59,11 +63,51 @@ from app.skills.execution_profiles import PLATFORM_CONTROLLED
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
 CallbackSender = Callable[[str, CallbackPayload, str], Awaitable[CallbackResult] | CallbackResult]
-ExecutorEventEmitter = Callable[[AgentEvent], Awaitable[bool]]
+
+class _PrivateExecutionFact(NamedTuple):
+    """Private runner fact paired with an optional public capability event."""
+
+    fact: dict[str, str] | None
+    public_event: AgentEvent | None = None
+
+    @property
+    def type(self) -> str:
+        """Keep in-process lifecycle observers on the public event vocabulary."""
+
+        return self.public_event.type if self.public_event is not None else "execution_step"
+
+    def public_events(self, projector: PublicExecutionProjector) -> list[AgentEvent]:
+        """Project this private fact into one ordered, public-safe callback batch."""
+
+        events = []
+        if self.public_event is not None:
+            events.append(AgentEvent.model_validate(self.public_event.model_dump()))
+        timeline = projector.project(self.fact)
+        timeline_type = public_execution_event_type_for_lifecycle(
+            self.fact.get("lifecycle") if self.fact is not None else None
+        )
+        if timeline is not None and timeline_type is not None:
+            events.append(AgentEvent(type=timeline_type, message="", payload=timeline))
+        return events
+
+
+ExecutorEventEmitter = Callable[[AgentEvent | _PrivateExecutionFact], Awaitable[bool]]
 ExecutorRunner = Callable[
     [ExecutorTaskRequest, Path, ExecutorEventEmitter],
     Awaitable[dict[str, Any]] | dict[str, Any],
 ]
+_PUBLIC_TOOL_LIFECYCLE_LABELS = {
+    "Read": "Reading authorized files",
+    "Glob": "Finding authorized files",
+    "Grep": "Searching authorized files",
+    "LS": "Listing authorized files",
+    "Bash": "Running controlled processing",
+    "Write": "Updating authorized files",
+    "Edit": "Updating authorized files",
+    "NotebookEdit": "Updating authorized files",
+    "Agent": "Coordinating task",
+    "Task": "Coordinating task",
+}
 
 
 def _callback_acknowledges_exact_batch(result: object, *, event_count: int) -> bool:
@@ -75,22 +119,31 @@ def _callback_acknowledges_exact_batch(result: object, *, event_count: int) -> b
     ) is int and acknowledged_count == 1 + event_count
 
 
-def _public_lifecycle_status(lifecycle_phase: str) -> str:
-    return {"invocation_requested": "invoking", "completed": "completed", "failed": "failed"}[
-        lifecycle_phase
-    ]
+def _private_capability_fact(
+    *,
+    evidence: RequiredCapabilityEvidence,
+    callback_label: str,
+    timeline_label: str,
+) -> _PrivateExecutionFact:
+    """Build both public views from one verified capability lifecycle fact."""
 
-
-def _lifecycle_callback_event(
-    *, capability_kind: str, label: str, lifecycle_phase: str
-) -> AgentEvent:
-    status_value = _public_lifecycle_status(lifecycle_phase)
-    return AgentEvent(
-        type=f"capability_{status_value}",
-        message="Capability lifecycle update",
-        payload={
-            "capability": {"kind": capability_kind, "name": label, "status": status_value}
+    callback_status, timeline_status = {"invocation_requested": ("invoking", "started"),
+                                        "completed": ("completed", "completed"),
+                                        "failed": ("failed", "failed")}[evidence.lifecycle_phase]
+    return _PrivateExecutionFact(
+        fact={
+            "fact_kind": "capability_invocation",
+            "invocation_id": str(evidence.tool_call_id),
+            "lifecycle": timeline_status,
+            "public_label": timeline_label,
         },
+        public_event=AgentEvent(
+            type=f"capability_{callback_status}",
+            message="Capability lifecycle update",
+            payload={"capability": {
+                "kind": evidence.capability_kind, "name": callback_label, "status": callback_status,
+            }},
+        ),
     )
 
 
@@ -902,12 +955,11 @@ async def _run_selected_authorized_file_skill(
             tool_call_id=invocation_id,
             lifecycle_phase=lifecycle_phase,
         )
-        label = "Skill"
         acknowledged = await emit_event(
-            _lifecycle_callback_event(
-                capability_kind="skill",
-                label=label,
-                lifecycle_phase=lifecycle_phase,
+            _private_capability_fact(
+                evidence=evidence,
+                callback_label="Skill",
+                timeline_label="Authorized file processing",
             )
         )
         if acknowledged is not True:
@@ -1125,6 +1177,23 @@ async def _default_executor_runner(
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
         del skill_name, metadata
 
+    async def on_tool_lifecycle(fact: dict[str, str]) -> None:
+        """Forward only a mapped server-owned lifecycle fact to the request projector."""
+
+        label = _PUBLIC_TOOL_LIFECYCLE_LABELS.get(str(fact.get("tool_name") or ""))
+        if label is None:
+            return
+        await emit_event(
+            _PrivateExecutionFact(
+                fact={
+                    "fact_kind": "tool_invocation",
+                    "invocation_id": str(fact.get("invocation_id") or ""),
+                    "lifecycle": str(fact.get("lifecycle") or ""),
+                    "public_label": label,
+                },
+            )
+        )
+
     bound_capability_evidence: list[dict[str, Any]] = []
     invocation_states: dict[tuple[str, str, str], str] = {}
     lifecycle_sequence_failed = {"value": False}
@@ -1170,10 +1239,10 @@ async def _default_executor_runner(
             lifecycle_sequence_failed["value"] = True
             return
         acknowledged = await emit_event(
-            _lifecycle_callback_event(
-                capability_kind=evidence.capability_kind,
-                label=label,
-                lifecycle_phase=evidence.lifecycle_phase,
+            _private_capability_fact(
+                evidence=evidence,
+                callback_label=label,
+                timeline_label=label,
             )
         )
         if acknowledged is True:
@@ -1197,6 +1266,7 @@ async def _default_executor_runner(
             on_text=on_text,
             on_skill_use=on_skill_use,
             on_capability_evidence=on_capability_evidence,
+            on_tool_lifecycle=on_tool_lifecycle,
             tool_policy_subjects=_task_tool_policy_subjects(request),
             execution_policy="sandbox_brokered",
             attachment_contexts=attachment_contexts,
@@ -1347,6 +1417,7 @@ def create_executor_app(
         artifact_upload_latency_ms = 0
         runner_events_open = {"value": True}
         capability_callback_failed = {"value": False}
+        public_execution_projector = PublicExecutionProjector()
 
         async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
             try:
@@ -1372,14 +1443,38 @@ def create_executor_app(
                 return acknowledged
             return True
 
-        async def emit_runner_event(event: AgentEvent) -> bool:
+        async def emit_runner_event(event: AgentEvent | _PrivateExecutionFact) -> bool:
             nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
             if not runner_events_open["value"]:
                 return False
-            agent_event = event if isinstance(event, AgentEvent) else AgentEvent.model_validate(event)
-            if agent_event.type == "assistant_delta" and executor_first_token_latency_ms is None:
+            if isinstance(event, _PrivateExecutionFact):
+                agent_event = event.public_event
+                agent_events = event.public_events(public_execution_projector)
+                if not agent_events:
+                    return True
+                event_type = event.type
+            else:
+                agent_event = event if isinstance(event, AgentEvent) else AgentEvent.model_validate(event)
+                raw_payload = dict(agent_event.payload)
+                if agent_event.type in {
+                    "execution_step", "execution_progress", "execution_step_completed", "execution_step_failed"
+                }:
+                    return False
+                if agent_event.type.startswith("tool_call") and {
+                    "command", "args", "arguments", "result", "output", "tool_input", "tool_output",
+                    "private_payload", "executor_private_payload",
+                } & set(raw_payload):
+                    return True
+                agent_events = [AgentEvent(
+                    type=agent_event.type,
+                    message=agent_event.message,
+                    payload=raw_payload,
+                    admin_only=agent_event.admin_only,
+                )]
+                event_type = agent_event.type
+            if event_type == "assistant_delta" and executor_first_token_latency_ms is None:
                 executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
-            if agent_event.type.startswith("tool_call") and executor_tool_call_latency_ms is None:
+            if event_type and event_type.startswith("tool_call") and executor_tool_call_latency_ms is None:
                 executor_tool_call_latency_ms = _elapsed_ms(executor_started_at)
 
             callback_event = ExecutorCallbackEvent(
@@ -1388,14 +1483,14 @@ def create_executor_app(
                 attempt_id=request.attempt_id,
                 callback_token_id=request.callback_token_id,
                 status="running",
-                progress=35 if agent_event.type.startswith("tool_call") else 60 if agent_event.type == "artifact_created" else 20,
-                state_patch={"stage": agent_event.type},
+                progress=35 if event_type and event_type.startswith("tool_call") else 60 if event_type == "artifact_created" else 20,
+                state_patch={"stage": event_type or "execution_step"},
                 sdk_session_id=request.sdk_session_id,
-                events=[agent_event],
+                events=agent_events,
             )
-            artifact_started_at = time.monotonic() if agent_event.type == "artifact_created" else None
+            artifact_started_at = time.monotonic() if event_type == "artifact_created" else None
             acknowledged = await dispatch_callback_event(callback_event)
-            if agent_event.type.startswith("capability_") and not acknowledged:
+            if agent_event is not None and agent_event.type.startswith("capability_") and not acknowledged:
                 capability_callback_failed["value"] = True
             if artifact_started_at is not None:
                 artifact_upload_latency_ms += _elapsed_ms(artifact_started_at)

@@ -8,6 +8,7 @@ import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from inspect import isawaitable
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -71,6 +72,8 @@ _SDK_SELECTED_SKILL_NOT_AUTHORIZED = "claude_agent_sdk_selected_skill_not_author
 _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
+_MAX_REPLAY_TEXT_BLOCKS = 32
+_MAX_REPLAY_TEXT_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
@@ -1363,6 +1366,7 @@ async def run_claude_agent_sdk(
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     on_capability_evidence: Callable[[dict[str, str]], Awaitable[None]] | None = None,
+    on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[None]] | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
     attachment_contexts: list[ParsedAttachmentContext] | None = None,
@@ -1382,6 +1386,7 @@ async def run_claude_agent_sdk(
     last_public_stage = "runtime"
     used_skill_names: list[str] = []
     capability_evidence: list[dict[str, str]] = []
+    started_tool_lifecycles: set[tuple[str, str]] = set()
 
     def turn_diagnostics(error_code: str | None) -> dict[str, Any]:
         return project_sdk_turn_diagnostics(
@@ -1585,6 +1590,37 @@ async def run_claude_agent_sdk(
         if on_capability_evidence:
             await on_capability_evidence(dict(evidence))
 
+    async def record_tool_lifecycle(
+        *, tool_name: object, tool_call_id: object, lifecycle: str
+    ) -> None:
+        """Report a private actual-tool fact without its input or output."""
+
+        name = str(tool_name or "").strip()
+        call_id = str(tool_call_id or "").strip()
+        if not name or not call_id or lifecycle not in {"started", "completed", "failed"}:
+            return
+        key = (name, call_id)
+        if lifecycle == "started":
+            if key in started_tool_lifecycles:
+                return
+            started_tool_lifecycles.add(key)
+        elif key not in started_tool_lifecycles:
+            return
+        if on_tool_lifecycle is None:
+            return
+        try:
+            await on_tool_lifecycle(
+                {
+                    "fact_kind": "tool_invocation",
+                    "tool_name": name,
+                    "invocation_id": call_id,
+                    "lifecycle": lifecycle,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            # Timeline publication is observational and cannot alter tool policy.
+            return
+
     def selected_skill_hook_error() -> str | None:
         if selected_sdk_skill is None or selected_sdk_skill in used_skill_names:
             return None
@@ -1722,6 +1758,12 @@ async def run_claude_agent_sdk(
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
             resolved_tool_call_id = str(hook_input.get("tool_use_id") or tool_use_id or "")
+            if tool_name.lower() != "skill" and not identity.startswith("mcp__"):
+                await record_tool_lifecycle(
+                    tool_name=tool_name,
+                    tool_call_id=resolved_tool_call_id,
+                    lifecycle="started",
+                )
             if tool_name.lower() == "skill":
                 for skill_name in _extract_skill_names_from_tool_input(
                     hook_input.get("tool_input"),
@@ -1806,6 +1848,19 @@ async def run_claude_agent_sdk(
         )
         return {}
 
+    def generic_tool_lifecycle_hook(lifecycle: str):
+        async def handler(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
+            hook_input = hook_input if isinstance(hook_input, dict) else {}
+            tool_name = str(hook_input.get("tool_name") or "")
+            if tool_name.lower() != "skill" and not adapter_identity(tool_name).startswith("mcp__"):
+                await record_tool_lifecycle(
+                    tool_name=tool_name,
+                    tool_call_id=str(hook_input.get("tool_use_id") or tool_use_id or ""),
+                    lifecycle=lifecycle,
+                )
+            return {}
+        return handler
+
     try:
         _scrub_project_setting_files(cwd)
     except OSError:
@@ -1838,6 +1893,8 @@ async def run_claude_agent_sdk(
             post_tool_failure_hooks.append(
                 HookMatcher(matcher="mcp__*", hooks=[record_failed_mcp_tool_use])
             )
+        post_tool_hooks.append(HookMatcher(matcher=None, hooks=[generic_tool_lifecycle_hook("completed")]))
+        post_tool_failure_hooks.append(HookMatcher(matcher=None, hooks=[generic_tool_lifecycle_hook("failed")]))
         if post_tool_hooks:
             hooks["PostToolUse"] = post_tool_hooks
             hooks["PostToolUseFailure"] = post_tool_failure_hooks
@@ -1869,14 +1926,26 @@ async def run_claude_agent_sdk(
         setting_sources=["project"],
     )
 
-    texts: list[str] = []
+    diagnostic_text_blocks: list[str] = []
+    diagnostic_text_characters = 0
+    diagnostic_text_overflowed = False
+    structured_result_text = ""
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
     received_structured_terminal = False
 
+    async def publish_terminal_text(value: str) -> None:
+        if on_text is None or not value:
+            return
+        callback_result = on_text(value)
+        if isawaitable(callback_result):
+            await callback_result
+
     async def consume() -> ClaudeAgentSdkRunResult:
-        nonlocal result_session_id, usage, terminal_reason, received_structured_terminal, last_public_stage
+        nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
+        nonlocal last_public_stage, structured_result_text
+        nonlocal diagnostic_text_characters, diagnostic_text_overflowed
         async for message in query(
             prompt=_sdk_user_prompt_stream(
                 sdk_prompt,
@@ -1891,9 +1960,18 @@ async def run_claude_agent_sdk(
                     if isinstance(block, TextBlock):
                         diagnostic_counters["text_blocks"] += 1
                         last_public_stage = "message"
-                        texts.append(block.text)
-                        if on_text and block.text:
-                            await on_text(block.text)
+                        text = getattr(block, "text", "")
+                        if (
+                            not diagnostic_text_overflowed
+                            and isinstance(text, str)
+                            and len(diagnostic_text_blocks) < _MAX_REPLAY_TEXT_BLOCKS
+                            and diagnostic_text_characters + len(text) <= _MAX_REPLAY_TEXT_CHARS
+                        ):
+                            diagnostic_text_blocks.append(text)
+                            diagnostic_text_characters += len(text)
+                        else:
+                            diagnostic_text_blocks.clear()
+                            diagnostic_text_overflowed = True
             elif isinstance(message, ResultMessage):
                 diagnostic_counters["result_messages"] += 1
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
@@ -1904,7 +1982,6 @@ async def run_claude_agent_sdk(
                     diagnostic_counters["tool_admission_denials"] += len(permission_denials)
                 result_session_id = message.session_id
                 usage = message.usage or message.model_usage or {}
-                _append_result_text(texts, message.result)
                 if message.is_error:
                     raw_error = (
                         "; ".join(message.errors or [])
@@ -1921,7 +1998,7 @@ async def run_claude_agent_sdk(
                     )
                     return ClaudeAgentSdkRunResult(
                         used_sdk=True,
-                        message="\n".join(texts).strip(),
+                        message="",
                         session_id=result_session_id,
                         usage=usage,
                         error=error_code,
@@ -1931,6 +2008,7 @@ async def run_claude_agent_sdk(
                         capability_evidence=list(capability_evidence),
                     )
                 received_structured_terminal = True
+                structured_result_text = str(message.result or "").strip()
                 stop_reason = getattr(message, "stop_reason", None)
                 terminal_reason = (
                     str(stop_reason).strip() if isinstance(stop_reason, str) and stop_reason.strip() else None
@@ -1940,9 +2018,21 @@ async def run_claude_agent_sdk(
             if received_structured_terminal
             else _SDK_MISSING_STRUCTURED_TERMINAL
         )
+        if terminal_error is None and received_structured_terminal:
+            diagnostic_text = "".join(diagnostic_text_blocks)
+            if on_text:
+                if (
+                    not diagnostic_text_overflowed
+                    and diagnostic_text
+                    and diagnostic_text == structured_result_text
+                ):
+                    for block in diagnostic_text_blocks:
+                        await publish_terminal_text(block)
+                elif structured_result_text:
+                    await publish_terminal_text(structured_result_text)
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
-            message="\n".join(texts).strip(),
+            message=structured_result_text if terminal_error is None else "",
             session_id=result_session_id,
             usage=usage,
             error=terminal_error,
@@ -1962,7 +2052,7 @@ async def run_claude_agent_sdk(
         error_code = _SDK_TIMEOUT
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
-            message="\n".join(texts).strip(),
+            message="",
             session_id=result_session_id,
             usage=usage,
             error=error_code,
@@ -1979,7 +2069,7 @@ async def run_claude_agent_sdk(
         )
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
-            message="\n".join(texts).strip(),
+            message="",
             session_id=result_session_id,
             usage=usage,
             error=error_code,

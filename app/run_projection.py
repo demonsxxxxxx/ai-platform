@@ -15,6 +15,10 @@ from app.control_plane_contracts import (
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
 from app.projection_redaction import required_tool_public_detail
+from app.public_execution import (
+    PUBLIC_EXECUTION_EVENT_TYPES,
+    public_execution_event_from_row,
+)
 
 
 def normalize_run_status(status: str) -> str:
@@ -700,6 +704,11 @@ def _ordinary_run_event_response(run_id: str, row: dict[str, object]) -> dict[st
 
 
 def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrincipal | None = None) -> dict[str, object]:
+    public_execution_event = public_execution_event_from_row(run_id, row)
+    if public_execution_event is not None:
+        return public_execution_event
+    if row.get("event_type") in PUBLIC_EXECUTION_EVENT_TYPES:
+        raise HTTPException(status_code=500, detail="invalid_public_execution_event")
     if principal is not None and not is_ai_admin(principal):
         return _ordinary_run_event_response(run_id, row)
     raw_event_type = str(row["event_type"])

@@ -44,6 +44,7 @@ export type MessagePart =
   | RunStatusPart
   | ToolPermissionPart
   | ArtifactPart
+  | ExecutionTimelinePart
   | TodoPart
   | SummaryPart;
 
@@ -95,6 +96,40 @@ export interface ArtifactPart {
   preview_url?: string | null;
   status?: string;
   created_at?: string;
+}
+
+export type ExecutionTimelineStatus = "running" | "completed" | "failed";
+export type ExecutionTimelineKind =
+  | "analysis"
+  | "capability"
+  | "file_read"
+  | "processing"
+  | "generation"
+  | "verification"
+  | "artifact"
+  | "collaboration";
+export interface ExecutionTimelineProgress {
+  current: number;
+  total: number;
+}
+
+/** Strict public execution timeline v1 record, never a raw tool payload. */
+export interface ExecutionTimelinePart {
+  type: "execution_step";
+  schema_version: "ai-platform.public-execution-event.v1";
+  event_id: string;
+  sequence: number;
+  run_id: string;
+  step_id: string;
+  kind: ExecutionTimelineKind;
+  stage: string;
+  status: ExecutionTimelineStatus;
+  title: string;
+  summary: string;
+  progress: ExecutionTimelineProgress;
+  safe_file_name: string | null;
+  artifact_public_id: string | null;
+  created_at: string | null;
 }
 
 export type ToolPermissionDecision = "allow_once" | "allow_for_run" | "deny";

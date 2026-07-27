@@ -11,14 +11,18 @@ from app.context_retrieval import (
     RepositoryContextRetrievalRepository,
 )
 from app.db import transaction
+from app.public_execution import PUBLIC_EXECUTION_EVENT_TYPES
+from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_matches_binding,
     callback_token_matches,
 )
-from app.runtime.sandbox.contracts import ExecutorCallbackEvent, ExecutorContextRetrievalRequest
+from app.runtime.sandbox.contracts import (
+    ExecutorCallbackEvent,
+    ExecutorContextRetrievalRequest,
+)
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
-from app.runtime.event_bridge import agent_event_to_executor_event
 from app.settings import get_settings
 from app.storage import ObjectStorage
 
@@ -161,13 +165,15 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
         )
         for event in events:
             executor_event = agent_event_to_executor_event(event)
+            executor_event_type = str(executor_event["event_type"])
             executor_payload = dict(executor_event["payload"])
-            executor_payload["source"] = "executor_callback"
+            if executor_event_type not in PUBLIC_EXECUTION_EVENT_TYPES:
+                executor_payload["source"] = "executor_callback"
             await repositories.append_event(
                 conn,
                 tenant_id=tenant_id,
                 run_id=callback.run_id,
-                event_type=str(executor_event["event_type"]),
+                event_type=executor_event_type,
                 stage=str(executor_event["stage"]),
                 message=str(executor_event["message"]),
                 payload=executor_payload,

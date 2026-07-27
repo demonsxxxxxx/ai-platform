@@ -19,7 +19,11 @@ import type {
   SubagentStackItem,
   UseAgentOptions,
 } from "./types";
-import { isSequencedPublicChatEvent } from "./types";
+import {
+  isPublicExecutionEvent,
+  isSequencedPublicChatEvent,
+  PUBLIC_EXECUTION_EVENT_TYPES,
+} from "./types";
 import { clearAllLoadingStates } from "./messageParts";
 import { convertAttachments, processMessageEvent } from "./eventProcessor";
 import {
@@ -73,8 +77,6 @@ const MESSAGE_EVENTS = new Set<string>([
   "thinking",
   "message:chunk",
   "final_detail",
-  "tool:start",
-  "tool:result",
   "sandbox:starting",
   "sandbox:ready",
   "sandbox:error",
@@ -82,6 +84,10 @@ const MESSAGE_EVENTS = new Set<string>([
   "todo:updated",
   "summary",
   "run_event",
+  "execution_step",
+  "execution_progress",
+  "execution_step_completed",
+  "execution_step_failed",
   "artifact_card",
   "error",
 ]);
@@ -174,6 +180,12 @@ export function handleStreamEvent(
   // Only a generation-bound SSE connection may bind a runless terminal frame.
   // Generic event handling, including history replay, must have an explicit id.
   if (terminalStatus && !eventRunId) {
+    return false;
+  }
+  if (
+    PUBLIC_EXECUTION_EVENT_TYPES.has(eventType as never) &&
+    !isPublicExecutionEvent(eventType, data)
+  ) {
     return false;
   }
 

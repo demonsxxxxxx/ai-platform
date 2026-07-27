@@ -303,3 +303,119 @@ async def test_sdk_mcp_hook_omits_unknown_or_missing_tool_call_identity(monkeypa
     )
 
     assert result.capability_evidence == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_assistant_text_blocks_never_publish_answer_or_delta(monkeypatch, tmp_path):
+    captured = {}
+
+    class AssistantMessage:
+        def __init__(self):
+            self.content = [TextBlock("Bash: cat C:\\private\\token.txt = secret-token")]
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = None
+        model_usage = None
+        result = "Trusted structured result"
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        num_turns = 1
+        permission_denials = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    async def query(*, prompt, options):
+        del prompt, options
+        yield AssistantMessage()
+        yield ResultMessage()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        types.SimpleNamespace(
+            AssistantMessage=AssistantMessage,
+            ClaudeAgentOptions=ClaudeAgentOptions,
+            ResultMessage=ResultMessage,
+            TextBlock=TextBlock,
+            query=query,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    deltas = []
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        on_text=deltas.append,
+    )
+
+    assert deltas == ["Trusted structured result"]
+    assert result.message == "Trusted structured result"
+    assert "secret-token" not in result.message
+
+
+@pytest.mark.asyncio
+async def test_sdk_discards_over_cap_diagnostic_text_and_publishes_terminal_result_once(monkeypatch, tmp_path):
+    captured = {}
+
+    class AssistantMessage:
+        def __init__(self):
+            self.content = [TextBlock("x" * 512)]
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = None
+        model_usage = None
+        result = "x" * (512 * 33)
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        num_turns = 1
+        permission_denials = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    async def query(*, prompt, options):
+        del prompt, options
+        for _ in range(33):
+            yield AssistantMessage()
+        yield ResultMessage()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        types.SimpleNamespace(
+            AssistantMessage=AssistantMessage,
+            ClaudeAgentOptions=ClaudeAgentOptions,
+            ResultMessage=ResultMessage,
+            TextBlock=TextBlock,
+            query=query,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    deltas = []
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        on_text=deltas.append,
+    )
+
+    assert deltas == [ResultMessage.result]
+    assert result.message == ResultMessage.result
