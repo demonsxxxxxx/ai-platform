@@ -440,7 +440,12 @@ def _public_run_event_envelope(
         if typed_product is not None
         else run_event_response(run_id, event, principal=principal)
     )
-    if projected.get("event_type") == "heartbeat":
+    raw_payload = event.get("payload_json")
+    if projected.get("event_type") == "heartbeat" or (
+        raw_event_type == "run_started"
+        and isinstance(raw_payload, dict)
+        and raw_payload.get("heartbeat") is True
+    ):
         presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS["heartbeat"]
     severity = str(projected.get("severity") or "info")
     if presentation.progress_kind == "failed":
@@ -527,6 +532,12 @@ def _compatibility_events_for_run(
         "capability_completed",
         "capability_failed",
     }
+    public_lifecycle_singletons = {
+        "intent_detected",
+        "capability_selected",
+        "run_started",
+    }
+    seen_public_lifecycle_singletons: set[str] = set()
 
     for message in user_messages or []:
         message_id = str(message.get("id") or "")
@@ -653,6 +664,11 @@ def _compatibility_events_for_run(
         envelope = _public_run_event_envelope(run, event, principal)
         if envelope is None:
             continue
+        public_event_type = str(envelope["event_type"])
+        if public_event_type in public_lifecycle_singletons:
+            if public_event_type in seen_public_lifecycle_singletons:
+                continue
+            seen_public_lifecycle_singletons.add(public_event_type)
         payload = envelope["payload"] if isinstance(envelope.get("payload"), dict) else {}
         history_data = {
             "projection_version": envelope["projection_version"],
