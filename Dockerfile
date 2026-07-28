@@ -36,7 +36,8 @@ RUN if [ -n "$APT_MIRROR" ]; then \
        /home/ai-platform/tmp \
        /home/ai-platform/.cache \
        /home/ai-platform/.config \
-       /home/ai-platform/.local/share
+       /home/ai-platform/.local/share \
+       /workspace
 
 COPY pyproject.toml /app/pyproject.toml
 RUN if [ -n "$PIP_INDEX_URL" ]; then pip config set global.index-url "$PIP_INDEX_URL"; fi \

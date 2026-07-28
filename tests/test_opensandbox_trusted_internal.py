@@ -4,6 +4,7 @@ import pytest
 
 from app.runtime.sandbox.opensandbox_trusted_internal import (
     OpenSandboxProfileConfigurationError,
+    trusted_internal_cleanup_labels_from_persisted_row,
     trusted_internal_cleanup_identity_is_authorized,
     trusted_internal_orphan_cleanup_metadata_filter,
     validate_opensandbox_image_reference,
@@ -14,6 +15,7 @@ from test_sandbox_container_provider import (
     OpenSandboxSettings,
     opensandbox_provider,
     request,
+    requires_secure_opensandbox_transfer,
     workspace,
 )
 
@@ -210,6 +212,53 @@ async def test_trusted_internal_opensandbox_uses_profile_bases_without_governed_
     stopped = await provider.stop(lease, reason="test_complete")
     assert stopped.status == "stopped"
     assert FakeOpenSandbox.instances[lease.container_id].killed is True
+
+
+@pytest.mark.asyncio
+async def test_trusted_internal_stop_accepts_only_passive_image_runtime_subject(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = TrustedInternalOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    sandbox.metadata["ai-platform.runtime_subject"] = "immutable-image-runtime-subject"
+
+    stopped = await provider.stop(lease, reason="workspace_stage_failed")
+
+    assert stopped.status == "stopped"
+    assert sandbox.killed is True
+
+
+@pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
+async def test_trusted_internal_stage_failure_stops_only_the_exact_running_sandbox(monkeypatch, tmp_path):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = TrustedInternalOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    leased_workspace = workspace(workspace_host_path=str(workspace_path), prepare_staged_skills=False)
+    runtime_request = request()
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(runtime_request, leased_workspace)
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+
+    def reject_workspace_root(_entries):
+        raise PermissionError("workspace denied")
+
+    sandbox.files.create_directories = reject_workspace_root
+    with pytest.raises(container_provider.ContainerStartFailedError, match="workspace staging failed"):
+        await provider.stage_workspace(lease, runtime_request, leased_workspace)
+
+    sandbox.metadata["ai-platform.runtime_subject"] = "immutable-image-runtime-subject"
+
+    stopped = await provider.stop(lease, reason="workspace_stage_failed")
+
+    assert stopped.status == "stopped"
+    assert sandbox.killed is True
 
 
 @pytest.mark.asyncio
@@ -410,6 +459,54 @@ def _trusted_orphan_metadata(**overrides):
     }
     values.update(overrides)
     return values
+
+
+def test_trusted_internal_persisted_scope_rebuilds_an_exact_normalized_cleanup_handle():
+    raw_run_id = "run-" + "r" * 64
+    row = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": raw_run_id,
+        "sandbox_mode": "ephemeral",
+        "browser_enabled": False,
+        "runtime_container_id": "osb-run-a",
+        "runtime_container_name": "opensandbox-run-a",
+        "runtime_executor_url": "http://opensandbox.test:18000",
+        "runtime_workspace_container_path": "/workspace",
+    }
+    payload = {
+        "attempt_id": "attempt-a",
+        "container_id": "osb-run-a",
+        "container_name": "opensandbox-run-a",
+        "executor_url": "http://opensandbox.test:18000",
+        "workspace_container_path": "/workspace",
+        "security_profile": "trusted_internal",
+        "labels": _trusted_orphan_metadata(**{"ai-platform.run_id": raw_run_id, "ai-platform.attempt_id": "attempt-a"}),
+    }
+
+    cleanup_labels = trusted_internal_cleanup_labels_from_persisted_row(row, payload)
+    remote_labels = normalize_opensandbox_metadata(payload["labels"])
+
+    assert cleanup_labels == payload["labels"]
+    assert trusted_internal_cleanup_identity_is_authorized(remote_labels, cleanup_labels)
+    assert trusted_internal_cleanup_identity_is_authorized(
+        {**remote_labels, "ai-platform.runtime_subject": "immutable-image-runtime-subject"},
+        cleanup_labels,
+    )
+    for forbidden_key in (
+        "ai-platform.external_egress.profile_id",
+        "ai-platform.governed_egress.proof",
+    ):
+        assert not trusted_internal_cleanup_identity_is_authorized(
+            {**remote_labels, forbidden_key: "unexpected"}, cleanup_labels
+        )
+    assert not trusted_internal_cleanup_identity_is_authorized(
+        remote_labels,
+        {**cleanup_labels, "ai-platform.run_id": "run-" + "s" * 64},
+    )
+    assert raw_run_id not in repr(remote_labels)
 
 
 def test_trusted_internal_cleanup_authorizes_only_the_exact_normalized_canonical_scope():
