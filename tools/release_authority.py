@@ -154,17 +154,10 @@ class _ManagedContainerOwnership:
 
 @dataclass(frozen=True)
 class _AptMirrorSelection:
-    """Validated optional Debian archive and security mirror endpoints."""
-
     debian_url: str | None = None
     security_url: str | None = None
     debian_hostname: str | None = None
     security_hostname: str | None = None
-
-    @property
-    def configured(self) -> bool:
-        """Return whether the complete mirror pair was configured."""
-        return self.debian_url is not None
 
 
 @dataclass
@@ -957,68 +950,48 @@ def _normalize_commit(value: str) -> str:
 
 
 _APT_MIRROR_HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$", re.IGNORECASE)
-_APT_MIRROR_PATH_RE = re.compile(r"^[A-Za-z0-9._~/-]+$")
-
-
-def _normalize_apt_mirror_endpoint(value: str, option_name: str) -> tuple[str, str]:
-    """Validate and normalize one non-secret HTTPS Debian mirror endpoint."""
-    if not isinstance(value, str) or not value:
-        raise ReleaseAuthorityError(f"{option_name} must be a non-empty HTTPS URL")
-    if any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in value):
-        raise ReleaseAuthorityError(f"{option_name} contains whitespace or control characters")
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
-        raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS URL") from None
-    if parsed.scheme != "https":
-        raise ReleaseAuthorityError(f"{option_name} must use https")
-    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
-        raise ReleaseAuthorityError(f"{option_name} must not contain userinfo")
-    if parsed.query or parsed.fragment or "?" in value or "#" in value:
-        raise ReleaseAuthorityError(f"{option_name} must not contain query or fragment")
-    try:
-        port = parsed.port
-    except ValueError:
-        raise ReleaseAuthorityError(f"{option_name} contains an invalid port") from None
-    if port is not None or ":" in parsed.netloc:
-        raise ReleaseAuthorityError(f"{option_name} must not contain an explicit port")
-    hostname = parsed.hostname
-    if (
-        hostname is None
-        or not _APT_MIRROR_HOST_RE.fullmatch(hostname.lower())
-        or any(not label for label in hostname.split("."))
-    ):
-        raise ReleaseAuthorityError(f"{option_name} contains an unsafe hostname")
-    path = parsed.path
-    if not path.startswith("/") or "%" in path or "\\" in path or "//" in path:
-        raise ReleaseAuthorityError(f"{option_name} contains an unsafe path")
-    normalized_path = path.rstrip("/")
-    if not normalized_path or not _APT_MIRROR_PATH_RE.fullmatch(normalized_path):
-        raise ReleaseAuthorityError(f"{option_name} contains an unsafe path")
-    if any(segment in {".", ".."} for segment in normalized_path.split("/")[1:]):
-        raise ReleaseAuthorityError(f"{option_name} contains an unsafe path")
-    normalized_hostname = hostname.lower()
-    return f"https://{normalized_hostname}{normalized_path}", normalized_hostname
-
 
 def _normalize_apt_mirror_pair(
     apt_mirror: str | None,
     apt_security_mirror: str | None,
 ) -> _AptMirrorSelection:
     """Require a complete HTTPS mirror pair or preserve upstream Debian defaults."""
-    archive_supplied = apt_mirror not in (None, "")
-    security_supplied = apt_security_mirror not in (None, "")
-    if archive_supplied != security_supplied:
+    supplied = (apt_mirror not in (None, ""), apt_security_mirror not in (None, ""))
+    if supplied[0] != supplied[1]:
         raise ReleaseAuthorityError(
             "--apt-mirror and --apt-security-mirror must be supplied together"
         )
-    if not archive_supplied:
+    if not any(supplied):
         return _AptMirrorSelection()
-    debian_url, debian_hostname = _normalize_apt_mirror_endpoint(apt_mirror, "--apt-mirror")
-    security_url, security_hostname = _normalize_apt_mirror_endpoint(
-        apt_security_mirror,
-        "--apt-security-mirror",
-    )
+    endpoints = []
+    for option_name, value in (
+        ("--apt-mirror", apt_mirror),
+        ("--apt-security-mirror", apt_security_mirror),
+    ):
+        if not isinstance(value, str) or any(
+            char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in value
+        ):
+            raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL")
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+            hostname = parsed.hostname
+        except ValueError:
+            raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL") from None
+        path = parsed.path.rstrip("/")
+        host = hostname.lower() if hostname is not None else ""
+        unsafe = (
+            parsed.scheme != "https" or parsed.username is not None or parsed.password is not None
+            or "@" in parsed.netloc or parsed.query or parsed.fragment or "?" in value or "#" in value
+            or port is not None or ":" in parsed.netloc or not _APT_MIRROR_HOST_RE.fullmatch(host)
+            or any(not label for label in host.split(".")) or not path.startswith("/")
+            or not re.fullmatch(r"[A-Za-z0-9._~/-]+", path) or "%" in parsed.path or "\\" in parsed.path
+            or "//" in parsed.path or any(segment in {".", ".."} for segment in path.split("/")[1:])
+        )
+        if unsafe:
+            raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL")
+        endpoints.append((f"https://{host}{path}", host))
+    (debian_url, debian_hostname), (security_url, security_hostname) = endpoints
     return _AptMirrorSelection(
         debian_url=debian_url,
         security_url=security_url,
@@ -2032,27 +2005,19 @@ def _build_args(
     commit: str,
     repository: str,
     *,
-    apt_mirror: str | None = None,
-    apt_security_mirror: str | None = None,
+    mirror_selection: _AptMirrorSelection | None = None,
 ) -> list[str]:
     """Build provenance args and optional validated backend APT mirror args."""
-    mirror_selection = _normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
     arguments = [
         "--build-arg", f"AI_PLATFORM_BUILD_COMMIT={commit}",
         "--build-arg", "AI_PLATFORM_BUILD_DIRTY=false",
         "--build-arg", f"AI_PLATFORM_BUILD_REPOSITORY={repository}",
     ]
-    if mirror_selection.configured:
-        assert mirror_selection.debian_url is not None
-        assert mirror_selection.security_url is not None
-        arguments.extend(
-            [
-                "--build-arg",
-                f"APT_MIRROR={mirror_selection.debian_url}",
-                "--build-arg",
-                f"APT_SECURITY_MIRROR={mirror_selection.security_url}",
-            ]
-        )
+    if mirror_selection is not None and mirror_selection.debian_url is not None:
+        arguments.extend([
+            "--build-arg", f"APT_MIRROR={mirror_selection.debian_url}",
+            "--build-arg", f"APT_SECURITY_MIRROR={mirror_selection.security_url}",
+        ])
     return arguments
 
 
@@ -2083,20 +2048,14 @@ def _canonical_or_source_build(
     repository: str,
     role: str,
     source_only: bool,
-    apt_mirror: str | None = None,
-    apt_security_mirror: str | None = None,
+    mirror_selection: _AptMirrorSelection | None = None,
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
 ) -> None:
     dockerfile = "Dockerfile" if role == "backend" else "frontend/web/Dockerfile"
-    build_mirror_args = (
-        {
-            "apt_mirror": apt_mirror,
-            "apt_security_mirror": apt_security_mirror,
-        }
-        if role == "backend" and not source_only
-        else {}
-    )
-    command = [*docker, "build", *_build_args(commit, repository, **build_mirror_args), "-t", reference]
+    mirror_selection = mirror_selection if role == "backend" and not source_only else None
+    command = [
+        *docker, "build", *_build_args(commit, repository, mirror_selection=mirror_selection), "-t", reference,
+    ]
     if source_only:
         command.extend(["--target", "runtime"])
     command.extend(["-f", dockerfile, "."])
@@ -2694,8 +2653,7 @@ def deploy_clean_commit(
     stage_events: list[dict[str, Any]] | None = None,
     managed_release_root: Path | None = None,
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
-    apt_mirror: str | None = None,
-    apt_security_mirror: str | None = None,
+    apt_mirrors: _AptMirrorSelection | None = None,
     allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Build immutable images and recreate the repo-local compose release."""
@@ -2720,7 +2678,7 @@ def deploy_clean_commit(
             canonical_dependency_build_timeout_seconds
         )
     )
-    apt_mirror_selection = _normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
+    apt_mirror_selection = apt_mirrors or _AptMirrorSelection()
     events = stage_events if stage_events is not None else []
     if managed_release_root is not None:
         compose_env_file = resolve_managed_env_file(managed_release_root, Path(env_file))
@@ -2781,16 +2739,7 @@ def deploy_clean_commit(
                         repository=repository,
                         role=role,
                         source_only=False,
-                        apt_mirror=(
-                            apt_mirror_selection.debian_url
-                            if role == "backend"
-                            else None
-                        ),
-                        apt_security_mirror=(
-                            apt_mirror_selection.security_url
-                            if role == "backend"
-                            else None
-                        ),
+                        mirror_selection=apt_mirror_selection if role == "backend" else None,
                         canonical_dependency_build_timeout_seconds=(
                             canonical_dependency_build_timeout_seconds
                         ),
@@ -2965,10 +2914,7 @@ def deploy_clean_commit(
         "compose_files": [str(path) for path in selection.absolute_paths],
         "strategy": strategy,
         "stages": events,
-        "apt_mirrors": {
-            "debian_hostname": apt_mirror_selection.debian_hostname,
-            "security_hostname": apt_mirror_selection.security_hostname,
-        },
+        "apt_mirrors": {"debian_hostname": apt_mirror_selection.debian_hostname, "security_hostname": apt_mirror_selection.security_hostname},
     }
     if auto_plan is not None:
         result["plan"] = _plan_as_dict(
@@ -3005,7 +2951,7 @@ def deploy_main_commit(
     canonical_dependency_build_timeout_seconds = _validate_canonical_dependency_build_timeout(
         canonical_dependency_build_timeout_seconds
     )
-    _normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
+    apt_mirrors = _normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
     normalized = _normalize_commit(commit)
     authority_commit: str | None = None
     if coordination_source is not None:
@@ -3025,8 +2971,7 @@ def deploy_main_commit(
             canonical_dependency_build_timeout_seconds=(
                 canonical_dependency_build_timeout_seconds
             ),
-            apt_mirror=apt_mirror,
-            apt_security_mirror=apt_security_mirror,
+            apt_mirrors=apt_mirrors,
             allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery,
         )
     except (ReleaseAuthorityError, BackendFlattenError) as exc:
@@ -3055,8 +3000,7 @@ def _deploy_main_commit_after_authority(
     compose_files: Sequence[str | Path] | None = None,
     strategy: str = "canonical",
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
-    apt_mirror: str | None = None,
-    apt_security_mirror: str | None = None,
+    apt_mirrors: _AptMirrorSelection | None = None,
     allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Execute target materialization and deployment after authority provenance is proven."""
@@ -3076,8 +3020,7 @@ def _deploy_main_commit_after_authority(
             canonical_dependency_build_timeout_seconds=(
                 canonical_dependency_build_timeout_seconds
             ),
-            apt_mirror=apt_mirror,
-            apt_security_mirror=apt_security_mirror,
+            apt_mirrors=apt_mirrors,
         )
         parity = collect_live_parity(
             checkout,
@@ -3135,8 +3078,7 @@ def _deploy_main_commit_after_authority(
             canonical_dependency_build_timeout_seconds=(
                 canonical_dependency_build_timeout_seconds
             ),
-            apt_mirror=apt_mirror,
-            apt_security_mirror=apt_security_mirror,
+            apt_mirrors=apt_mirrors,
             allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery,
         )
 
@@ -3204,14 +3146,6 @@ def main() -> int:
             f"{MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS}; "
             f"default: {CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS})"
         ),
-    )
-    deploy.add_argument(
-        "--apt-mirror",
-        help="Optional HTTPS Debian archive mirror; requires --apt-security-mirror",
-    )
-    deploy.add_argument(
-        "--apt-security-mirror",
-        help="Optional HTTPS Debian security mirror; requires --apt-mirror",
     )
     deploy.add_argument(
         "--compose-file",
@@ -3313,8 +3247,6 @@ def main() -> int:
                     canonical_dependency_build_timeout_seconds=(
                         args.canonical_build_timeout_seconds
                     ),
-                    apt_mirror=args.apt_mirror,
-                    apt_security_mirror=args.apt_security_mirror,
                 ),
                 None,
             )
