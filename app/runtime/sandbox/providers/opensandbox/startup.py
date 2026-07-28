@@ -259,7 +259,7 @@ async def cleanup_started_sandbox(
 
 
 def identity_unavailable_cleanup_subject(run_id: str, attempt_id: str) -> dict[str, str]:
-    """Return the minimal release-blocker subject when the provider supplied no ID."""
+    """Return the private release-blocker subject for a missing provider identity."""
 
     return {
         "provider": "opensandbox",
@@ -269,19 +269,122 @@ def identity_unavailable_cleanup_subject(run_id: str, attempt_id: str) -> dict[s
     }
 
 
-async def retry_untracked_sandbox_cleanup(
-    pending: dict[tuple[str, str], Any],
-    cleanup_key: tuple[str, str],
+async def reconcile_authoritative_identity_unavailable_cleanup(
+    provider: Any,
+    *,
+    request: Any,
+    workspace: Any,
+    settings: Any,
+    metadata: dict[str, str],
+    cache_key: tuple[str, str],
+    required: bool,
+    cleanup_subject: dict[str, str],
+    status_from_info: Callable[[Any], Any],
+    sealed_metadata_for_id: Callable[[str], dict[str, str]],
+    cleanup_error: Callable[[str, dict[str, str]], BaseException],
 ) -> bool:
-    """Retry only the retained SDK object and report whether cleanup is now confirmed."""
+    """Recover one exact remote candidate through the provider's tracked stop path only."""
 
-    sandbox = pending.get(cleanup_key)
-    if sandbox is None:
-        return True
-    if not await cleanup_started_sandbox(sandbox):
-        return False
-    pending.pop(cleanup_key, None)
-    return True
+    try:
+        manager = await provider._manager(provider._connection_config(settings))
+        try:
+            infos = await provider._list_all_sandbox_infos(manager, metadata)
+        finally:
+            await provider._close_manager(manager)
+        statuses = []
+        for info in infos or []:
+            status = status_from_info(info)
+            labels = status.detail.get("labels") if status is not None else None
+            if (
+                status is None
+                or not status.container_id
+                or not isinstance(labels, dict)
+                or any(str(labels.get(key) or "") != value for key, value in metadata.items())
+            ):
+                raise cleanup_error("sandbox cleanup inventory is not an exact authorized match", cleanup_subject)
+            statuses.append(status)
+        if not statuses:
+            if required:
+                raise cleanup_error("sandbox cleanup candidate is unavailable", cleanup_subject)
+            return False
+        if len(statuses) != 1:
+            raise cleanup_error("sandbox cleanup inventory is ambiguous", cleanup_subject)
+        candidate = statuses[0]
+        sandbox = await provider._connect(
+            candidate.container_id,
+            provider._connection_config(settings),
+            skip_health_check=True,
+        )
+        if str(getattr(sandbox, "id", "") or "") != candidate.container_id:
+            raise cleanup_error("sandbox cleanup candidate identity is unavailable", cleanup_subject)
+        provider._track_cleanup_pending_sandbox(
+            sandbox,
+            request,
+            workspace,
+            metadata=sealed_metadata_for_id(candidate.container_id),
+            executor_auth_token="",
+        )
+        result = await provider.stop(provider._leases[cache_key], reason="startup_identity_unavailable")
+        if result.status in {"stopped", "not_found"}:
+            return True
+        raise cleanup_error("sandbox cleanup could not be confirmed", cleanup_subject)
+    except asyncio.CancelledError:
+        raise
+    except BaseException as exc:
+        if getattr(exc, "error_code", None) == "container_cleanup_failed":
+            raise
+        raise cleanup_error("sandbox cleanup inventory is unavailable", cleanup_subject) from exc
+
+
+async def cleanup_new_sandbox_or_reconcile(
+    provider: Any,
+    *,
+    sandbox: Any | None,
+    request: Any,
+    workspace: Any,
+    metadata: dict[str, str],
+    executor_auth_token: str,
+    original_error: BaseException | None,
+    reconcile_identity: Callable[[dict[str, str]], Awaitable[bool]],
+    cleanup_error: Callable[[str, dict[str, str] | None, Any | None], BaseException],
+) -> None:
+    """Clean a rejected sandbox, recovering a missing SDK ID only through inventory."""
+
+    if await cleanup_started_sandbox(sandbox):
+        return
+    cleanup_subject = None
+    if sandbox is not None:
+        cleanup_subject = provider._track_cleanup_pending_sandbox(
+            sandbox,
+            request,
+            workspace,
+            metadata=metadata,
+            executor_auth_token=executor_auth_token,
+        )
+        if cleanup_subject is not None:
+            try:
+                await reconcile_identity(cleanup_subject)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                error = exc
+                if getattr(error, "error_code", None) != "container_cleanup_failed":
+                    error = cleanup_error("sandbox cleanup inventory is unavailable", cleanup_subject, original_error)
+                if hasattr(error, "readiness_evidence") and original_error is not None:
+                    error.readiness_evidence = getattr(original_error, "readiness_evidence", None)
+                if original_error is not None and hasattr(error, "attach_opensandbox_startup_evidence"):
+                    evidence = getattr(original_error, "opensandbox_startup_evidence", None)
+                    if evidence is not None:
+                        error.attach_opensandbox_startup_evidence(evidence)
+                raise error
+            return
+    message = "sandbox cleanup could not be confirmed without a provider identity" if cleanup_subject else "sandbox cleanup could not be confirmed"
+    error = cleanup_error(message, cleanup_subject, original_error)
+    if original_error is not None and hasattr(error, "attach_opensandbox_startup_evidence"):
+        evidence = getattr(original_error, "opensandbox_startup_evidence", None)
+        if evidence is not None:
+            error.attach_opensandbox_startup_evidence(evidence)
+    raise error
 
 
 def unhealthy_readiness_fields(elapsed_ms: int) -> dict[str, object]:

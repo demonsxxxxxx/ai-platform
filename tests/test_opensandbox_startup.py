@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 
 import pytest
 
@@ -144,3 +145,119 @@ async def test_startup_sequence_preserves_configured_policy_error():
         await startup.launch()
 
     assert exc_info.value is policy_error
+
+
+@pytest.mark.asyncio
+async def test_identityless_cleanup_recovers_one_exact_remote_candidate(monkeypatch):
+    from test_sandbox_container_provider import (
+        FakeOpenSandbox,
+        FakeOpenSandboxManager,
+        OpenSandboxSettings,
+        opensandbox_provider,
+        request,
+        workspace,
+    )
+
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    original_create = FakeOpenSandbox.create
+    recovered: list[object] = []
+
+    def create_without_id(**kwargs):
+        sandbox = original_create(**kwargs)
+        sandbox.id = ""
+        sandbox.kill_error = RuntimeError("private stop detail")
+        sandbox.close_error = RuntimeError("private close detail")
+        remote = FakeOpenSandbox(sandbox_id="osb-recovered", metadata=kwargs["metadata"])
+        FakeOpenSandbox.instances[remote.id] = remote
+        FakeOpenSandboxManager.sandboxes = [remote]
+        recovered.append(remote)
+        return sandbox
+
+    monkeypatch.setattr(FakeOpenSandbox, "create", create_without_id)
+    with pytest.raises(container_provider.ContainerStartFailedError, match="sandbox start failed"):
+        await opensandbox_provider().create_or_reuse(request(), workspace())
+
+    assert recovered[0].killed is True
+    assert recovered[0].closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inventory", ["zero", "ambiguous", "cross_scope"])
+async def test_identityless_cleanup_fails_closed_for_nonunique_or_mismatched_inventory(monkeypatch, inventory):
+    from test_sandbox_container_provider import (
+        FakeOpenSandbox,
+        FakeOpenSandboxManager,
+        OpenSandboxSettings,
+        opensandbox_provider,
+        request,
+        workspace,
+    )
+
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    original_create = FakeOpenSandbox.create
+    remote_candidates: list[object] = []
+
+    def create_without_id(**kwargs):
+        sandbox = original_create(**kwargs)
+        sandbox.id = ""
+        sandbox.kill_error = RuntimeError("private stop detail")
+        sandbox.close_error = RuntimeError("private close detail")
+        metadata = dict(kwargs["metadata"])
+        if inventory == "cross_scope":
+            metadata["ai-platform.tenant_id"] = "tenant-other"
+        count = 2 if inventory == "ambiguous" else 1
+        remote_candidates[:] = [
+            FakeOpenSandbox(sandbox_id=f"osb-candidate-{index}", metadata=metadata)
+            for index in range(count)
+        ]
+        for candidate in remote_candidates:
+            FakeOpenSandbox.instances[candidate.id] = candidate
+        FakeOpenSandboxManager.sandboxes = [] if inventory == "zero" else list(remote_candidates)
+        return sandbox
+
+    monkeypatch.setattr(FakeOpenSandbox, "create", create_without_id)
+    with pytest.raises(container_provider.ContainerCleanupFailedError) as exc_info:
+        await opensandbox_provider().create_or_reuse(request(), workspace())
+
+    assert exc_info.value.cleanup_subject["cleanup_state"] == "provider_identity_unavailable"
+    assert all(candidate.killed is False for candidate in remote_candidates)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_scope_inventory_is_never_kept_in_provider_memory(monkeypatch):
+    from test_sandbox_container_provider import (
+        FakeOpenSandbox,
+        FakeOpenSandboxManager,
+        OpenSandboxSettings,
+        opensandbox_provider,
+        request,
+        workspace,
+    )
+
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    seed = await opensandbox_provider().create_or_reuse(request(), workspace())
+    remote = FakeOpenSandbox.instances[seed.container_id]
+    duplicate = FakeOpenSandbox(sandbox_id="osb-duplicate", metadata=remote.metadata)
+    FakeOpenSandbox.instances[duplicate.id] = duplicate
+    FakeOpenSandboxManager.sandboxes = [remote, duplicate]
+    first, second = opensandbox_provider(), opensandbox_provider()
+
+    results = await asyncio.gather(
+        first.create_or_reuse(request(), workspace()),
+        second.create_or_reuse(request(), workspace()),
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(result, container_provider.ContainerCleanupFailedError) for result in results)
+    assert remote.killed is False and duplicate.killed is False
+    assert not hasattr(first, "_untracked_cleanup_pending")
+    assert not hasattr(second, "_untracked_cleanup_pending")

@@ -61,12 +61,13 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
     OpenSandboxStartupEvidenceCarrier,
     OpenSandboxStartupFailure,
     OpenSandboxStartupOperations,
+    cleanup_new_sandbox_or_reconcile,
     cleanup_started_sandbox,
     identity_unavailable_cleanup_subject,
     is_authoritative_not_found_error,
     launch_opensandbox_startup,
+    reconcile_authoritative_identity_unavailable_cleanup,
     resolve_executor_endpoint,
-    retry_untracked_sandbox_cleanup,
     unhealthy_readiness_fields,
 )
 from app.runtime.sandbox.opensandbox_trusted_internal import (
@@ -4460,7 +4461,6 @@ class OpenSandboxContainerProvider:
         self._monotonic = monotonic or time.monotonic
         self._sandboxes: dict[str, Any] = {}
         self._leases: dict[tuple[str, str], ContainerLease] = {}
-        self._untracked_cleanup_pending: dict[tuple[str, str], Any] = {}
 
     def _ensure_symbols(self) -> None:
         if self._sandbox_class is not None:
@@ -4605,8 +4605,6 @@ class OpenSandboxContainerProvider:
     ) -> dict[str, str] | None:
         sandbox_id = str(getattr(sandbox, "id", "") or "")
         if not sandbox_id:
-            cleanup_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
-            self._untracked_cleanup_pending[cleanup_key] = sandbox
             return identity_unavailable_cleanup_subject(request.run_id, request.attempt_id)
         lease = ContainerLease(
             container_id=sandbox_id,
@@ -4628,37 +4626,6 @@ class OpenSandboxContainerProvider:
         self._sandboxes[sandbox_id] = sandbox
         self._leases[_opensandbox_cache_key(request.run_id, request.attempt_id)] = lease
         return None
-
-    async def _cleanup_new_sandbox_or_track(
-        self,
-        sandbox: Any | None,
-        request: SandboxRuntimeRequest,
-        workspace: WorkspaceLease,
-        *,
-        metadata: dict[str, str],
-        executor_auth_token: str,
-        original_error: SandboxRuntimeError | None = None,
-    ) -> None:
-        if await cleanup_started_sandbox(sandbox):
-            return
-        cleanup_subject = None
-        if sandbox is not None:
-            cleanup_subject = self._track_cleanup_pending_sandbox(
-                sandbox,
-                request,
-                workspace,
-                metadata=metadata,
-                executor_auth_token=executor_auth_token,
-            )
-        message = "sandbox cleanup could not be confirmed without a provider identity" if cleanup_subject else "sandbox cleanup could not be confirmed"
-        cleanup_error = ContainerCleanupFailedError(
-            message,
-            readiness_evidence=original_error.readiness_evidence if isinstance(original_error, ExecutorHealthTimeoutError) else None,
-            cleanup_subject=cleanup_subject,
-        )
-        if original_error is not None and original_error.opensandbox_startup_evidence is not None:
-            cleanup_error.attach_opensandbox_startup_evidence(original_error.opensandbox_startup_evidence)
-        raise cleanup_error
 
     async def _cleanup_cached_lease_after_capability_rejection(self, request: SandboxRuntimeRequest) -> None:
         """Remove a tracked lease when its next admission profile has drifted or expired."""
@@ -4704,8 +4671,6 @@ class OpenSandboxContainerProvider:
     ) -> ContainerLease:
         settings = get_settings()
         cleanup_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
-        if not await retry_untracked_sandbox_cleanup(self._untracked_cleanup_pending, cleanup_key):
-            raise ContainerCleanupFailedError("sandbox cleanup could not be confirmed without a provider identity", cleanup_subject=identity_unavailable_cleanup_subject(request.run_id, request.attempt_id))
         try:
             profile = _opensandbox_security_profile(settings)
         except OpenSandboxCapabilityAdmissionError:
@@ -4733,6 +4698,7 @@ class OpenSandboxContainerProvider:
         # Remote OpenSandbox has no controller filesystem identity.  Stage the
         # controlled Skill tree only after this ready sandbox has a DB lease.
         skill_mount = None
+        metadata = _opensandbox_profile_labels(settings, request, profile, capability, skill_mount)
         cache_key = cleanup_key
         cached = self._leases.get(cache_key)
         if cached is not None and cached.container_id in self._sandboxes:
@@ -4879,28 +4845,93 @@ class OpenSandboxContainerProvider:
                     raise
             return cached
 
+        reconciled_identity_unavailable_cleanup = await reconcile_authoritative_identity_unavailable_cleanup(
+            self,
+            request=request,
+            workspace=workspace,
+            settings=settings,
+            metadata=metadata,
+            cache_key=cache_key,
+            required=False,
+            cleanup_subject=identity_unavailable_cleanup_subject(request.run_id, request.attempt_id),
+            status_from_info=_opensandbox_status_from_info,
+            sealed_metadata_for_id=lambda sandbox_id: _opensandbox_profile_labels(
+                settings,
+                request,
+                profile,
+                capability,
+                skill_mount,
+                lease_identity=f"opensandbox:{_opensandbox_container_name(request.run_id, request.attempt_id)}:{sandbox_id}",
+                now=self._utcnow(),
+            ),
+            cleanup_error=lambda message, subject: ContainerCleanupFailedError(message, cleanup_subject=subject),
+        )
+
         # A restarted provider has no durable executor credential to safely
         # re-authenticate a remote OpenSandbox process.  Detect an exact owned
         # remote first and fail closed rather than creating a same-scope peer.
-        remote_statuses = await self._list_remote_statuses(
-            {
-                "tenant_id": request.tenant_id,
-                "workspace_id": request.workspace_id,
-                "user_id": request.user_id,
-                "session_id": request.session_id,
-                "run_id": request.run_id,
-                "attempt_id": request.attempt_id,
-            }
-        )
-        if remote_statuses:
-            if len(remote_statuses) != 1 or remote_statuses[0].status != "running":
-                raise ContainerStartFailedError("OpenSandbox remote lease recovery is unsafe")
-            raise ContainerStartFailedError("OpenSandbox remote lease requires its existing credential")
+        if not reconciled_identity_unavailable_cleanup:
+            remote_statuses = await self._list_remote_statuses(
+                {
+                    "tenant_id": request.tenant_id,
+                    "workspace_id": request.workspace_id,
+                    "user_id": request.user_id,
+                    "session_id": request.session_id,
+                    "run_id": request.run_id,
+                    "attempt_id": request.attempt_id,
+                }
+            )
+            if remote_statuses:
+                if len(remote_statuses) != 1 or remote_statuses[0].status != "running":
+                    raise ContainerStartFailedError("OpenSandbox remote lease recovery is unsafe")
+                raise ContainerStartFailedError("OpenSandbox remote lease requires its existing credential")
 
         started_at = self._monotonic()
         connection_config = self._connection_config(settings)
-        metadata = _opensandbox_profile_labels(settings, request, profile, capability, skill_mount)
         executor_auth_token = _generate_executor_auth_token()
+
+        async def cleanup_new(sandbox: Any | None, original_error: SandboxRuntimeError | None = None) -> None:
+            return await cleanup_new_sandbox_or_reconcile(
+                self,
+                sandbox=sandbox,
+                request=request,
+                workspace=workspace,
+                metadata=metadata,
+                executor_auth_token=executor_auth_token,
+                original_error=original_error,
+                reconcile_identity=lambda subject: reconcile_authoritative_identity_unavailable_cleanup(
+                    self,
+                    request=request,
+                    workspace=workspace,
+                    settings=settings,
+                    metadata=metadata,
+                    cache_key=cache_key,
+                    required=True,
+                    cleanup_subject=subject,
+                    status_from_info=_opensandbox_status_from_info,
+                    sealed_metadata_for_id=lambda sandbox_id: _opensandbox_profile_labels(
+                        settings,
+                        request,
+                        profile,
+                        capability,
+                        skill_mount,
+                        lease_identity=f"opensandbox:{_opensandbox_container_name(request.run_id, request.attempt_id)}:{sandbox_id}",
+                        now=self._utcnow(),
+                    ),
+                    cleanup_error=lambda message, cleanup_subject: ContainerCleanupFailedError(
+                        message,
+                        cleanup_subject=cleanup_subject,
+                    ),
+                ),
+                cleanup_error=lambda message, cleanup_subject, error: ContainerCleanupFailedError(
+                    message,
+                    readiness_evidence=(
+                        error.readiness_evidence if isinstance(error, ExecutorHealthTimeoutError) else None
+                    ),
+                    cleanup_subject=cleanup_subject,
+                ),
+            )
+
         executor_egress_bases = (
             capability.executor_egress_bases()
             if capability is not None
@@ -5025,52 +5056,27 @@ class OpenSandboxContainerProvider:
             sandbox_healthcheck_latency_ms = startup_result.healthcheck_latency_ms
         except asyncio.CancelledError as exc:
             try:
-                await self._cleanup_new_sandbox_or_track(
-                    sandbox,
-                    request,
-                    workspace,
-                    metadata=metadata,
-                    executor_auth_token=executor_auth_token,
-                )
+                await cleanup_new(sandbox)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
         except OpenSandboxStartupFailure as exc:
             sandbox = exc.sandbox
             try:
-                await self._cleanup_new_sandbox_or_track(
-                    sandbox,
-                    request,
-                    workspace,
-                    metadata=metadata,
-                    executor_auth_token=executor_auth_token,
-                )
+                await cleanup_new(sandbox)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             message = str(exc.cause) if isinstance(exc.cause, SandboxRuntimeError) else "OpenSandbox sandbox start failed"
             raise OpenSandboxStartupFailedError(exc.evidence, message=message) from exc
         except SandboxRuntimeError as exc:
             try:
-                await self._cleanup_new_sandbox_or_track(
-                    sandbox,
-                    request,
-                    workspace,
-                    metadata=metadata,
-                    executor_auth_token=executor_auth_token,
-                    original_error=exc,
-                )
+                await cleanup_new(sandbox, exc)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
         except Exception as exc:
             try:
-                await self._cleanup_new_sandbox_or_track(
-                    sandbox,
-                    request,
-                    workspace,
-                    metadata=metadata,
-                    executor_auth_token=executor_auth_token,
-                )
+                await cleanup_new(sandbox)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise ContainerStartFailedError("OpenSandbox sandbox start failed") from exc
@@ -5112,13 +5118,7 @@ class OpenSandboxContainerProvider:
                 _ensure_capability_still_valid(capability, now=self._utcnow())
             except OpenSandboxCapabilityAdmissionError as exc:
                 try:
-                    await self._cleanup_new_sandbox_or_track(
-                        sandbox,
-                        request,
-                        workspace,
-                        metadata=metadata,
-                        executor_auth_token=executor_auth_token,
-                    )
+                    await cleanup_new(sandbox)
                 except ContainerCleanupFailedError as cleanup_exc:
                     raise cleanup_exc from exc
                 raise
