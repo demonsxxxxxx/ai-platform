@@ -79,6 +79,14 @@ class TestElement extends TestNode {
     return this.tagName.toUpperCase();
   }
 
+  set innerHTML(value: string) {
+    this.childNodes = value ? [new TestText(value)] : [];
+  }
+
+  get innerHTML() {
+    return this.childNodes.map((child) => child.nodeValue ?? "").join("");
+  }
+
   setAttribute(_name: string, _value: string) {}
   removeAttribute(_name: string) {}
   getAttribute(_name: string) {
@@ -95,6 +103,14 @@ class TestText extends TestNode {
 
   constructor(value: string) {
     super();
+    this.nodeValue = value;
+  }
+
+  get data() {
+    return this.nodeValue ?? "";
+  }
+
+  set data(value: string) {
     this.nodeValue = value;
   }
 }
