@@ -1103,6 +1103,7 @@ def opensandbox_provider(
 async def test_opensandbox_create_never_serializes_controller_workspace_paths(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
     monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
     local_workspace = tmp_path / "controller-local" / "workspace"
     local_workspace.mkdir(parents=True)
@@ -1148,6 +1149,7 @@ def test_secure_workspace_transfer_preflight_requires_openat_and_renameat(
 async def test_opensandbox_workspace_transfer_fails_closed_without_secure_controller_primitives(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
     monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
     monkeypatch.setattr(container_provider, "_secure_workspace_transfer_supported", lambda: False)
     local_workspace = tmp_path / "controller-local" / "workspace"
@@ -2581,7 +2583,7 @@ async def test_opensandbox_provider_retains_rotated_cached_lease_when_cleanup_ca
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_seals_actual_id_and_fails_closed_after_restart_without_duplicate(monkeypatch):
+async def test_opensandbox_reconciles_exact_scope_remote_candidate_after_restart(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     from app.execution_boundary import governed_egress_proof_from_labels
 
@@ -2600,12 +2602,14 @@ async def test_opensandbox_seals_actual_id_and_fails_closed_after_restart_withou
     )
 
     assert proof is not None
-    FakeOpenSandboxManager.sandboxes = [FakeOpenSandbox.instances[lease.container_id]]
+    remote = FakeOpenSandbox.instances[lease.container_id]
+    FakeOpenSandboxManager.sandboxes = [remote]
     restarted = opensandbox_provider()
-    with pytest.raises(container_provider.ContainerStartFailedError, match="existing credential"):
-        await restarted.create_or_reuse(request(), workspace())
+    recovered = await restarted.create_or_reuse(request(), workspace())
 
-    assert len(FakeOpenSandbox.created) == 1
+    assert remote.killed is True
+    assert recovered.container_id == "osb-run-a"
+    assert len(FakeOpenSandbox.created) == 2
     assert FakeOpenSandbox.instances[lease.container_id].killed is False
 
 
@@ -4499,6 +4503,94 @@ async def test_opensandbox_provider_cleans_up_when_created_sandbox_has_no_id(mon
     sandbox = FakeOpenSandbox.instances["osb-run-a"]
     assert sandbox.killed is True
     assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_blocks_release_when_unidentified_sandbox_cleanup_has_no_authoritative_candidate(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    original_create = FakeOpenSandbox.create
+    def create_without_id_and_with_cleanup_failure(**kwargs):
+        sandbox = original_create(**kwargs)
+        sandbox.id = ""
+        sandbox.kill_error = RuntimeError("private stop detail")
+        sandbox.close_error = RuntimeError("private close detail")
+        return sandbox
+    monkeypatch.setattr(FakeOpenSandbox, "create", create_without_id_and_with_cleanup_failure)
+    provider = opensandbox_provider()
+    runtime_request = request()
+    with pytest.raises(container_provider.ContainerCleanupFailedError) as exc_info:
+        await provider.create_or_reuse(runtime_request, workspace())
+    failure = exc_info.value
+    assert failure.cleanup_subject == {
+        "provider": "opensandbox",
+        "cleanup_state": "provider_identity_unavailable",
+        "run_id": "run-a",
+        "attempt_id": "qat-test-attempt",
+    }
+    assert provider._leases == {}
+    assert provider._sandboxes == {}
+    assert failure.opensandbox_startup_evidence is not None
+    assert failure.opensandbox_startup_evidence.stage.value == "create"
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_opensandbox_health_timeout_preserves_typed_error_evidence_and_cleanup_precedence(monkeypatch, cleanup_fails):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    original_create = FakeOpenSandbox.create
+    def create_with_cleanup_failure(**kwargs):
+        sandbox = original_create(**kwargs)
+        if cleanup_fails:
+            sandbox.kill_error = RuntimeError("private stop detail")
+            sandbox.close_error = RuntimeError("private close detail")
+        return sandbox
+    monkeypatch.setattr(FakeOpenSandbox, "create", create_with_cleanup_failure)
+    provider = opensandbox_provider(health_probe=lambda *_args: False)
+    expected_error = container_provider.ContainerCleanupFailedError if cleanup_fails else container_provider.ExecutorHealthTimeoutError
+    with pytest.raises(expected_error) as exc_info:
+        await provider.create_or_reuse(request(), workspace())
+    failure = exc_info.value
+    assert failure.opensandbox_startup_evidence is not None
+    assert failure.opensandbox_startup_evidence.private_payload() == {
+        "provider": "opensandbox",
+        "startup_stage": "health",
+        "sdk_error_code": None,
+        "request_id": None,
+    }
+    assert failure.readiness_evidence is not None
+    assert failure.readiness_evidence.readiness_phase == "health_probe"
+    assert failure.readiness_evidence.health_outcome == "unhealthy"
+    if cleanup_fails:
+        assert isinstance(failure.__cause__, container_provider.ExecutorHealthTimeoutError)
+        assert failure.__cause__.readiness_evidence is failure.readiness_evidence
+    else:
+        assert failure.error_code == "executor_health_timeout"
+@pytest.mark.asyncio
+async def test_opensandbox_container_provider_redacts_sdk_startup_failure(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    class SdkCreateFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("private endpoint https://secret.test token-private")
+            self.error = type("SdkError", (), {"code": "POOL_ACQUIRE_FAILED"})()
+            self.request_id = "request-668"
+    FakeOpenSandbox.create_error = SdkCreateFailure()
+    with pytest.raises(container_provider.OpenSandboxStartupFailedError) as exc_info:
+        await opensandbox_provider().create_or_reuse(request(), workspace())
+    failure = exc_info.value
+    assert str(failure) == "OpenSandbox sandbox start failed"
+    assert failure.private_evidence == {
+        "provider": "opensandbox",
+        "startup_stage": "create",
+        "sdk_error_code": "POOL_ACQUIRE_FAILED",
+        "request_id": "request-668",
+    }
 
 
 @pytest.mark.asyncio

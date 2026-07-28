@@ -316,6 +316,66 @@ async def test_runtime_and_execution_owner_elect_one_stop_terminator(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_runtime_logs_only_safe_opensandbox_startup_evidence(tmp_path, monkeypatch, caplog):
+    from app.runtime.sandbox.providers.opensandbox.startup import OpenSandboxStartupEvidence, OpenSandboxStartupStage
+
+    class StubSettings:
+        sandbox_container_provider = "fake"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    raw_provider_message = "private endpoint https://secret.test path C:\\runtime\\secret token-private"
+    startup_error = container_provider.OpenSandboxStartupFailedError(
+        OpenSandboxStartupEvidence(
+            stage=OpenSandboxStartupStage.CREATE,
+            sdk_error_code="POOL_ACQUIRE_FAILED",
+            request_id="request-668",
+        )
+    )
+    startup_error.__cause__ = RuntimeError(raw_provider_message)
+
+    class StartupFailedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            raise startup_error
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StartupFailedProvider(),
+        execute_task=lambda *_args: pytest.fail("executor dispatch must not occur after startup failure"),
+        record_lease=lambda *_args: pytest.fail("lease must not be persisted after startup failure"),
+    )
+    events = []
+
+    with caplog.at_level("ERROR", logger="app.runtime.sandbox.runtime"):
+        with pytest.raises(container_provider.OpenSandboxStartupFailedError) as exc_info:
+            await runtime.submit(request(), event_sink=events.append)
+
+    assert exc_info.value is startup_error
+    assert events == []
+    record = caplog.records[-1]
+    assert record.getMessage() == "OpenSandbox startup failed"
+    assert {
+        "run_id": record.run_id,
+        "attempt_id": record.attempt_id,
+        "provider": record.provider,
+        "startup_stage": record.startup_stage,
+        "sdk_error_code": record.sdk_error_code,
+        "request_id": record.request_id,
+    } == {
+        "run_id": "run-a",
+        "attempt_id": "qat_test-runtime-attempt",
+        "provider": "opensandbox",
+        "startup_stage": "create",
+        "sdk_error_code": "POOL_ACQUIRE_FAILED",
+        "request_id": "request-668",
+    }
+    rendered = caplog.text
+    for prohibited in (raw_provider_message, "secret.test", "C:\\runtime\\secret", "token-private"):
+        assert prohibited not in rendered
+
+
+@pytest.mark.asyncio
 async def test_runtime_persists_one_private_safe_readiness_event_before_rethrow(tmp_path, monkeypatch):
     from app.public_execution import public_execution_event_from_row
 
@@ -414,6 +474,70 @@ async def test_runtime_persists_one_private_safe_readiness_event_before_rethrow(
             "created_at": None,
         },
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_logs_opensandbox_health_stage_without_expanding_readiness_event(tmp_path, monkeypatch, caplog):
+    from app.runtime.sandbox.providers.opensandbox.startup import OpenSandboxStartupEvidence, OpenSandboxStartupStage
+
+    class StubSettings:
+        sandbox_container_provider = "fake"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    readiness = ExecutorReadinessEvidence(
+        readiness_phase="health_probe",
+        container_state="unknown",
+        exit_code=None,
+        oom_killed=None,
+        published_port_observed=True,
+        health_outcome="unhealthy",
+        elapsed_ms=17,
+    )
+    startup_error = container_provider.ExecutorHealthTimeoutError(readiness_evidence=readiness)
+    startup_error.attach_opensandbox_startup_evidence(
+        OpenSandboxStartupEvidence(OpenSandboxStartupStage.HEALTH, None, "request_668-A")
+    )
+
+    class HealthFailedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            raise startup_error
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    events = []
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=HealthFailedProvider(),
+        execute_task=lambda *_args: pytest.fail("executor dispatch must not occur after readiness failure"),
+        record_lease=lambda *_args: pytest.fail("lease must not be persisted after readiness failure"),
+    )
+
+    with caplog.at_level("ERROR", logger="app.runtime.sandbox.runtime"):
+        with pytest.raises(container_provider.ExecutorHealthTimeoutError) as exc_info:
+            await runtime.submit(request(), event_sink=events.append)
+
+    assert exc_info.value is startup_error
+    record = caplog.records[-1]
+    assert (record.provider, record.startup_stage, record.sdk_error_code, record.request_id) == (
+        "opensandbox",
+        "health",
+        None,
+        "request_668-A",
+    )
+    assert len(events) == 1
+    assert set(events[0].payload) == {
+        "schema_version",
+        "run_id",
+        "attempt_id",
+        "readiness_phase",
+        "container_state",
+        "exit_code",
+        "oom_killed",
+        "published_port_observed",
+        "health_outcome",
+        "elapsed_ms",
+    }
+    assert "startup_stage" not in events[0].payload
 
 
 @pytest.mark.asyncio
