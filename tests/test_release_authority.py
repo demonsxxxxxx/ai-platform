@@ -286,19 +286,16 @@ def test_apt_mirror_pair_normalizes_https_endpoints_and_redacts_to_hostnames():
         "https://mirrors.ustc.edu.cn/debian-security/",
     )
 
-    assert selection.debian_url == "https://mirrors.ustc.edu.cn/debian"
-    assert selection.security_url == "https://mirrors.ustc.edu.cn/debian-security"
-    assert selection.debian_hostname == "mirrors.ustc.edu.cn"
-    assert selection.security_hostname == "mirrors.ustc.edu.cn"
+    assert selection[:2] == ("https://mirrors.ustc.edu.cn/debian", "https://mirrors.ustc.edu.cn/debian-security")
+    assert selection[2:] == ("mirrors.ustc.edu.cn", "mirrors.ustc.edu.cn")
     evidence = json.dumps(
         {
-            "debian_hostname": selection.debian_hostname,
-            "security_hostname": selection.security_hostname,
+            "debian_hostname": selection[2],
+            "security_hostname": selection[3],
         }
     )
-    assert selection.debian_url not in evidence
-    assert selection.security_url not in evidence
-    assert release_authority._normalize_apt_mirror_pair("", "").debian_url is None
+    assert selection[0] not in evidence and selection[1] not in evidence
+    assert release_authority._normalize_apt_mirror_pair("", "")[0] is None
 
 
 def test_apt_mirror_pair_rejects_incomplete_or_unsafe_endpoints():
