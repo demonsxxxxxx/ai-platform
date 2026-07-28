@@ -596,6 +596,130 @@ test("useAgent defers the locked Skill label until the server projects it", asyn
   }
 });
 
+test("useAgent consumes Agent Market selection once and fail-closes rejection paths", async () => {
+  const { setPendingAgentMarketSelection, consumePendingAgentMarketSelection } =
+    await import("../../../features/agent-market/agentMarketSelection.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalPathname = dom.window.location.pathname;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const selectedAgentProfile = {
+    agent_id: "agt_support",
+    expected_revision: 4,
+  } as const;
+  const cases: Array<{
+    label: string;
+    error: Error;
+    allowsFreshRetry: boolean;
+  }> = [
+    {
+      label: "stale revision",
+      error: new ApiRequestError(
+        "stale published revision",
+        409,
+        "agent_profile_revision_stale",
+        "rejected_before_persist",
+      ),
+      allowsFreshRetry: true,
+    },
+    {
+      label: "unauthorized profile",
+      error: new ApiRequestError(
+        "profile not authorized",
+        403,
+        "agent_profile_not_authorized",
+        "rejected_before_persist",
+      ),
+      allowsFreshRetry: true,
+    },
+    {
+      label: "archived profile",
+      error: new ApiRequestError(
+        "profile archived",
+        409,
+        "agent_profile_archived",
+        "rejected_before_persist",
+      ),
+      allowsFreshRetry: true,
+    },
+    {
+      label: "draft profile",
+      error: new ApiRequestError(
+        "profile is still a draft",
+        409,
+        "agent_profile_draft",
+        "rejected_before_persist",
+      ),
+      allowsFreshRetry: true,
+    },
+    {
+      label: "submission transport failure",
+      error: new Error("connection failed"),
+      allowsFreshRetry: false,
+    },
+  ];
+
+  try {
+    for (const { label, error, allowsFreshRetry } of cases) {
+      dom.window.location.pathname = "/chat";
+      setPendingAgentMarketSelection(selectedAgentProfile);
+      const harness = await loadReactHarness();
+      const submissions: unknown[][] = [];
+      sessionApi.markRead = async () => {};
+      sessionApi.submitChat = (async (...args) => {
+        submissions.push(args);
+        if (submissions.length === 1) throw error;
+        return {
+          session_id: undefined,
+          run_id: null,
+          status: "needs_confirmation",
+          suggestions: [],
+        };
+      }) as typeof sessionApi.submitChat;
+
+      try {
+        let firstOutcome: { status: string } | undefined;
+        await harness.act(async () => {
+          firstOutcome = await harness.hook.sendMessage(`${label} first`);
+        });
+        await settle(harness.act);
+        assert.equal(firstOutcome?.status, "failed");
+        assert.deepEqual(submissions[0]?.[10], selectedAgentProfile);
+
+        let secondOutcome: { status: string } | undefined;
+        await harness.act(async () => {
+          secondOutcome = await harness.hook.sendMessage(`${label} second`);
+        });
+        await settle(harness.act);
+
+        if (allowsFreshRetry) {
+          assert.equal(secondOutcome?.status, "accepted");
+          assert.equal(submissions.length, 2);
+          assert.ok(
+            submissions[1]?.[10] == null,
+            "a fresh retry must not reuse the Agent Market profile lock",
+          );
+        } else {
+          assert.equal(secondOutcome?.status, "failed");
+          assert.equal(submissions.length, 1);
+        }
+        assert.equal(
+          consumePendingAgentMarketSelection(),
+          null,
+          `${label} must not leave a global market selection behind`,
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.location.pathname = originalPathname;
+    consumePendingAgentMarketSelection();
+  }
+});
+
 test("useAgent carries the routed agent into a same-tab continuation", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");

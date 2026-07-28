@@ -199,6 +199,7 @@ export function AgentMarketRoute() {
               {catalog.profiles.map((profile) => (
                 <button
                   key={`${profile.agent_id}:${profile.expected_revision}`}
+                  data-agent-market-card={profile.agent_id}
                   className="flex min-h-44 flex-col rounded-xl border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5 text-left transition-colors hover:border-[var(--theme-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--theme-primary)]"
                   onClick={() => handleSelectProfile(profile)}
                   type="button"

@@ -1809,12 +1809,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const pendingMarketSelection = !requestSessionId
         ? pendingAgentMarketSelectionRef.current
         : null;
-      const usesPendingMarketSelection =
-        selectedAgentProfile === undefined && pendingMarketSelection !== null;
       const selectedAgentProfileForRequest =
         selectedAgentProfile === undefined
           ? pendingMarketSelection
           : selectedAgentProfile;
+      // Agent Market selection is a one-shot admission input. Consume it at
+      // submission start so any rejection, transport failure, or superseding
+      // session cannot replay the locked profile into a later request.
+      pendingAgentMarketSelectionRef.current = null;
       streamVersionRef.current += 1;
       clearReconcileOwners();
       statusRetryCountRef.current = 0;
@@ -2027,9 +2029,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
         const newSessionId = submitData.session_id;
         const newRunId = submitData.run_id;
-        if (usesPendingMarketSelection) {
-          pendingAgentMarketSelectionRef.current = null;
-        }
         const routedAgentId = resolveChatSessionAgentId(
           submitData,
           requestAgentId,
