@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import { mock, test } from "node:test";
+import { register } from "node:module";
+import test from "node:test";
 
 import React from "react";
+
+register(new URL("./frontendAssetLoader.mjs", import.meta.url), import.meta.url);
+await new Promise<void>((resolve) => setImmediate(resolve));
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -52,6 +56,14 @@ class TestNode extends TestEventTarget {
   childNodes: TestNode[] = [];
   nodeValue: string | null = null;
 
+  get firstChild() {
+    return this.childNodes[0] ?? null;
+  }
+
+  get lastChild() {
+    return this.childNodes[this.childNodes.length - 1] ?? null;
+  }
+
   get textContent() {
     return this.childNodes.map((child) => child.textContent ?? "").join("");
   }
@@ -94,6 +106,18 @@ class TestElement extends TestNode {
     removeProperty: (_name: string) => {},
   };
   readonly attributes = new Map<string, string>();
+  private readonly classes = new Set<string>();
+  readonly classList = {
+    add: (...names: string[]) => names.forEach((name) => this.classes.add(name)),
+    remove: (...names: string[]) => names.forEach((name) => this.classes.delete(name)),
+    contains: (name: string) => this.classes.has(name),
+    toggle: (name: string, force?: boolean) => {
+      const next = force ?? !this.classes.has(name);
+      if (next) this.classes.add(name);
+      else this.classes.delete(name);
+      return next;
+    },
+  };
   ownerDocument!: TestDocument;
   className = "";
   isContentEditable = false;
@@ -114,6 +138,14 @@ class TestElement extends TestNode {
   set textContent(value: string) {
     this.text = value;
     this.childNodes = [];
+  }
+
+  get innerHTML() {
+    return this.childNodes.map((child) => child.nodeValue ?? "").join("");
+  }
+
+  set innerHTML(value: string) {
+    this.childNodes = value ? [new TestText(value)] : [];
   }
 
   setAttribute(name: string, value: string) {
@@ -176,6 +208,14 @@ class TestText extends TestNode {
     this.nodeValue = value;
   }
 
+  get data() {
+    return this.nodeValue ?? "";
+  }
+
+  set data(value: string) {
+    this.nodeValue = value;
+  }
+
   get textContent() {
     return this.nodeValue ?? "";
   }
@@ -208,6 +248,9 @@ class TestDocument extends TestNode {
   createElement(tagName: string) {
     const element = new TestElement(tagName);
     element.ownerDocument = this;
+    if (tagName.toLowerCase() === "style") {
+      element.appendChild(this.createTextNode(""));
+    }
     return element;
   }
 
@@ -297,22 +340,91 @@ function installDom() {
     HTMLIFrameElement: TestElement,
     SVGElement: TestElement,
     IS_REACT_ACT_ENVIRONMENT: true,
+    requestAnimationFrame: windowTarget.requestAnimationFrame,
+    cancelAnimationFrame: windowTarget.cancelAnimationFrame,
+    CustomEvent: class {
+      readonly bubbles = true;
+      cancelBubble = false;
+      defaultPrevented = false;
+
+      constructor(
+        readonly type: string,
+        readonly init: { detail?: unknown } = {},
+      ) {}
+
+      get detail() {
+        return this.init.detail;
+      }
+    },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
   });
   return { document, window: windowTarget };
 }
 
-mock.module(new URL("../../../components/layout/AppContent/AppShell.tsx", import.meta.url).href, {
-  namedExports: {
-    AppShell: ({ sidebar, children }: { sidebar: React.ReactNode; children: React.ReactNode }) =>
-      React.createElement("div", { "data-app-shell": true }, sidebar, children),
-  },
-});
-mock.module(new URL("../../../components/panels/SessionSidebar.tsx", import.meta.url).href, {
-  namedExports: {
-    SessionSidebar: () => React.createElement("aside", { "data-session-sidebar": true }),
-  },
-});
+async function prepareShellHarness() {
+  await import("../../../i18n/index.ts");
+  const { AuthProvider } = await import("../../../hooks/useAuth.tsx");
+  const { SettingsProvider } = await import("../../../contexts/SettingsContext.tsx");
+  const { ThemeProvider } = await import("../../../contexts/ThemeContext.tsx");
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { modelPublicApi } = await import("../../../services/api/modelPublic.ts");
+  const { notificationPublicApi } = await import("../../../services/api/notificationPublic.ts");
+  const originals = {
+    bootstrapAuthContext: authApi.bootstrapAuthContext,
+    getCurrentUser: authApi.getCurrentUser,
+    updateMetadata: authApi.updateMetadata,
+    listSessions: sessionApi.list,
+    listAvailableModels: modelPublicApi.listAvailable,
+    getPinnedModelIds: modelPublicApi.getPinnedModelIds,
+    getActiveNotifications: notificationPublicApi.getActive,
+  };
+  authApi.bootstrapAuthContext = async () => undefined;
+  authApi.getCurrentUser = async () => {
+    throw new Error("logged out test session");
+  };
+  authApi.updateMetadata = async () => {
+    throw new Error("no backend in mounted route test");
+  };
+  sessionApi.list = async () => ({
+    sessions: [],
+    total: 0,
+    skip: 0,
+    limit: 20,
+    has_more: false,
+  });
+  modelPublicApi.listAvailable = async () => ({
+    models: [],
+    count: 0,
+    enabled_count: 0,
+    default_model_id: null,
+  });
+  modelPublicApi.getPinnedModelIds = async () => [];
+  notificationPublicApi.getActive = async () => [];
+
+  return {
+    wrap(children: React.ReactNode) {
+      return React.createElement(
+        ThemeProvider,
+        null,
+        React.createElement(
+          AuthProvider,
+          null,
+          React.createElement(SettingsProvider, null, children),
+        ),
+      );
+    },
+    restore() {
+      authApi.bootstrapAuthContext = originals.bootstrapAuthContext;
+      authApi.getCurrentUser = originals.getCurrentUser;
+      authApi.updateMetadata = originals.updateMetadata;
+      sessionApi.list = originals.listSessions;
+      modelPublicApi.listAvailable = originals.listAvailableModels;
+      modelPublicApi.getPinnedModelIds = originals.getPinnedModelIds;
+      notificationPublicApi.getActive = originals.getActiveNotifications;
+    },
+  };
+}
 
 test("rendered Agent Market card uses the shell, navigates to Chat, and stages the exact lock", async () => {
   const dom = installDom();
@@ -321,6 +433,7 @@ test("rendered Agent Market card uses the shell, navigates to Chat, and stages t
   const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { consumePendingAgentMarketSelection } = await import("../agentMarketSelection.ts");
+  const shellHarness = await prepareShellHarness();
   const profile = {
     agent_id: "agt_support",
     expected_revision: 4,
@@ -343,21 +456,23 @@ test("rendered Agent Market card uses the shell, navigates to Chat, and stages t
         React.createElement(
           MemoryRouter,
           { initialEntries: ["/agent-market"] },
-          React.createElement(
-            React.Fragment,
-            null,
-            React.createElement(LocationProbe),
+          shellHarness.wrap(
             React.createElement(
-              Routes,
+              React.Fragment,
               null,
-              React.createElement(Route, {
-                path: "/agent-market",
-                element: React.createElement(AgentMarketRoute),
-              }),
-              React.createElement(Route, {
-                path: "/chat",
-                element: React.createElement("main", { "data-canonical-chat": true }),
-              }),
+              React.createElement(LocationProbe),
+              React.createElement(
+                Routes,
+                null,
+                React.createElement(Route, {
+                  path: "/agent-market",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+                React.createElement(Route, {
+                  path: "/chat",
+                  element: React.createElement("main", { "data-canonical-chat": true }),
+                }),
+              ),
             ),
           ),
         ),
@@ -366,13 +481,16 @@ test("rendered Agent Market card uses the shell, navigates to Chat, and stages t
       await Promise.resolve();
     });
 
-    const card = container.querySelector('[data-agent-market-card="agt_support"]');
+    const card = container
+      .querySelectorAll("button")
+      .find((button) => button.getAttribute("aria-label") === "与 支持助手 开始对话");
     assert.ok(card, "published card should render");
-    assert.ok(container.querySelector("[data-app-shell]"), "market must render in AppShell");
+    assert.ok(container.querySelector("[data-workbench-header]"), "market must render in AppShell");
     assert.ok(
-      container.querySelector("[data-session-sidebar]"),
+      container.querySelector("[data-librechat-desktop-sidebar]"),
       "market must retain SessionSidebar",
     );
+    assert.equal(container.querySelector("[data-agent-market-card]"), null);
     await React.act(async () => {
       card.dispatchEvent({ type: "click", bubbles: true });
       await Promise.resolve();
@@ -387,6 +505,7 @@ test("rendered Agent Market card uses the shell, navigates to Chat, and stages t
     assert.equal(consumePendingAgentMarketSelection(), null);
   } finally {
     agentProfileApi.listPublished = originalListPublished;
+    shellHarness.restore();
     await React.act(async () => root.unmount());
   }
 });
@@ -398,6 +517,7 @@ test("legacy Agent Market chat URLs fail closed without local Chat or selection"
   const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { consumePendingAgentMarketSelection } = await import("../agentMarketSelection.ts");
+  const shellHarness = await prepareShellHarness();
   const originalListPublished = agentProfileApi.listPublished;
   let catalogCalls = 0;
   agentProfileApi.listPublished = async () => {
@@ -412,13 +532,15 @@ test("legacy Agent Market chat URLs fail closed without local Chat or selection"
         React.createElement(
           MemoryRouter,
           { initialEntries: ["/agent-market/agt_support/4"] },
-          React.createElement(
-            Routes,
-            null,
-            React.createElement(Route, {
-              path: "/agent-market/:agentId/:revision",
-              element: React.createElement(AgentMarketRoute),
-            }),
+          shellHarness.wrap(
+            React.createElement(
+              Routes,
+              null,
+              React.createElement(Route, {
+                path: "/agent-market/:agentId/:revision",
+                element: React.createElement(AgentMarketRoute),
+              }),
+            ),
           ),
         ),
       );
@@ -426,12 +548,18 @@ test("legacy Agent Market chat URLs fail closed without local Chat or selection"
     });
 
     assert.ok(container.querySelector("[data-agent-market-invalid]"));
-    assert.equal(container.querySelector("[data-agent-market-card]"), null);
+    assert.equal(
+      container
+        .querySelectorAll("button")
+        .some((button) => button.getAttribute("aria-label")?.includes("开始对话")),
+      false,
+    );
     assert.equal(container.querySelector("textarea"), null);
     assert.equal(catalogCalls, 0, "legacy links must not rehydrate a market catalog");
     assert.equal(consumePendingAgentMarketSelection(), null);
   } finally {
     agentProfileApi.listPublished = originalListPublished;
+    shellHarness.restore();
     await React.act(async () => root.unmount());
   }
 });
