@@ -324,7 +324,7 @@ create table if not exists agent_profile_revisions (
   tenant_id text not null references tenants(id),
   agent_id text not null,
   revision bigint not null check (revision > 0),
-  status text not null check (status in ('draft', 'published')),
+  status text not null check (status in ('draft', 'published', 'withdrawn')),
   name text not null,
   description text not null default '',
   instructions text not null,
@@ -333,11 +333,21 @@ create table if not exists agent_profile_revisions (
   skill_version text not null,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
   content_hash text not null,
+  avatar_ref text not null default 'builtin:agent'
+    check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  category text not null default 'general'
+    check (category in ('general', 'support', 'writing', 'research', 'operations')),
+  visibility text not null default 'tenant'
+    check (visibility in ('tenant', 'restricted')),
+  allowed_department_ids jsonb not null default '[]'::jsonb,
+  allowed_roles jsonb not null default '[]'::jsonb,
+  allowed_user_ids jsonb not null default '[]'::jsonb,
   created_by text references users(id),
   created_at timestamptz not null default now(),
   published_by text references users(id),
   published_at timestamptz,
   published_from_revision bigint,
+  withdrawn_from_revision bigint,
   constraint fk_agent_profile_revisions_tenant_agent
     foreign key (tenant_id, agent_id) references agents(tenant_id, id),
   primary key (tenant_id, agent_id, revision)
@@ -346,6 +356,35 @@ create table if not exists agent_profile_revisions (
 create index if not exists idx_agent_profile_revisions_published
   on agent_profile_revisions(tenant_id, agent_id, revision desc)
   where status = 'published';
+
+-- The aggregate is the only current-lifecycle authority. Revisions remain
+-- append-only history, so a saved draft never accidentally replaces a live
+-- publication and withdrawal can block new admissions without erasing replay.
+create table if not exists agent_profiles (
+  tenant_id text not null references tenants(id),
+  agent_id text not null,
+  lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn')),
+  latest_revision bigint not null check (latest_revision > 0),
+  published_revision bigint,
+  published_hash text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fk_agent_profiles_tenant_agent
+    foreign key (tenant_id, agent_id) references agents(tenant_id, id),
+  constraint fk_agent_profiles_published_revision
+    foreign key (tenant_id, agent_id, published_revision)
+    references agent_profile_revisions(tenant_id, agent_id, revision),
+  primary key (tenant_id, agent_id),
+  constraint chk_agent_profiles_publication
+    check (
+      (lifecycle_status = 'published' and published_revision is not null and published_hash is not null)
+      or (lifecycle_status <> 'published' and published_revision is null and published_hash is null)
+    )
+);
+
+create index if not exists idx_agent_profiles_published
+  on agent_profiles(tenant_id, published_revision desc)
+  where lifecycle_status = 'published';
 
 create table if not exists sessions (
   id text primary key,
@@ -429,6 +468,42 @@ alter table sessions add column if not exists admitted_agent_profile_hash text;
 alter table runs add column if not exists admitted_agent_profile_revision bigint;
 alter table runs add column if not exists admitted_agent_profile_hash text;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
+alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
+alter table agent_profile_revisions add column if not exists avatar_ref text not null default 'builtin:agent';
+alter table agent_profile_revisions add column if not exists category text not null default 'general';
+alter table agent_profile_revisions add column if not exists visibility text not null default 'tenant';
+alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists allowed_roles jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists allowed_user_ids jsonb not null default '[]'::jsonb;
+
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
+alter table agent_profile_revisions add constraint agent_profile_revisions_status_check
+  check (status in ('draft', 'published', 'withdrawn'));
+
+-- Existing rows have no prior aggregate pointer. Backfill the newest published
+-- revision per identity as live and retain draft-only identities as draft.
+insert into agent_profiles(
+  tenant_id, agent_id, lifecycle_status, latest_revision, published_revision, published_hash
+)
+select
+  revisions.tenant_id,
+  revisions.agent_id,
+  case when publications.revision is null then 'draft' else 'published' end,
+  max(revisions.revision),
+  publications.revision,
+  publications.content_hash
+from agent_profile_revisions revisions
+left join lateral (
+  select revision, content_hash
+  from agent_profile_revisions candidate
+  where candidate.tenant_id = revisions.tenant_id
+    and candidate.agent_id = revisions.agent_id
+    and candidate.status = 'published'
+  order by candidate.revision desc
+  limit 1
+) publications on true
+group by revisions.tenant_id, revisions.agent_id, publications.revision, publications.content_hash
+on conflict (tenant_id, agent_id) do nothing;
 
 -- Add composite tenant+agent authority and profile-pin constraints for existing
 -- installations after all referenced tables and columns are present.

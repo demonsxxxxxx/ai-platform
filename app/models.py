@@ -32,6 +32,17 @@ def _normalize_capability_roles(values: list[str], field_name: str) -> list[str]
     return normalized
 
 
+def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> list[str]:
+    """Normalize explicit profile-user grants without weakening principal identity rules."""
+
+    normalized: list[str] = []
+    for value in values:
+        candidate = assert_safe_principal_user_id(value.strip(), field_name)
+        if candidate not in normalized:
+            normalized.append(candidate)
+    return normalized
+
+
 class CapabilityDistributionResponse(BaseModel):
     """Authoritative tenant capability distribution projection."""
 
@@ -151,6 +162,12 @@ class AgentProfileDraftRequest(BaseModel):
     model_id: str
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    visibility: Literal["tenant", "restricted"] = "tenant"
+    allowed_department_ids: list[str] = Field(default_factory=list)
+    allowed_roles: list[str] = Field(default_factory=list)
+    allowed_user_ids: list[str] = Field(default_factory=list)
     expected_draft_revision: int = Field(ge=0)
 
     @field_validator("model_id")
@@ -169,6 +186,21 @@ class AgentProfileDraftRequest(BaseModel):
             normalized.append(tool_id)
         return normalized
 
+    @field_validator("allowed_department_ids")
+    @classmethod
+    def normalize_allowed_department_ids(cls, value: list[str], info):
+        return _normalize_capability_department_ids(value, info.field_name)
+
+    @field_validator("allowed_roles")
+    @classmethod
+    def normalize_allowed_roles(cls, value: list[str], info):
+        return _normalize_capability_roles(value, info.field_name)
+
+    @field_validator("allowed_user_ids")
+    @classmethod
+    def normalize_allowed_user_ids(cls, value: list[str], info):
+        return _normalize_agent_profile_user_ids(value, info.field_name)
+
 
 class AgentProfilePublishRequest(BaseModel):
     """Admin optimistic lock for publishing one saved draft revision."""
@@ -176,6 +208,28 @@ class AgentProfilePublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_revision: int = Field(ge=1)
+
+
+class AgentProfileUnpublishRequest(BaseModel):
+    """Admin optimistic lock for withdrawing the current published profile revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class AgentProfileDraftTestRequest(BaseModel):
+    """Validation-only preview of the effective unsaved Agent Profile definition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    definition: AgentProfileDraftRequest
+    agent_id: str | None = None
+
+    @field_validator("agent_id")
+    @classmethod
+    def validate_agent_id(cls, value: str | None):
+        return assert_safe_id(value, "agent_id") if value is not None else None
 
 
 class AgentProfilePublicProjection(BaseModel):
@@ -187,6 +241,8 @@ class AgentProfilePublicProjection(BaseModel):
     expected_revision: int
     name: str
     description: str = ""
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
 
 
 class AgentProfileCatalogResponse(BaseModel):
@@ -204,13 +260,19 @@ class AgentProfileAdminProjection(BaseModel):
 
     agent_id: str
     revision: int
-    status: Literal["draft", "published"]
+    status: Literal["draft", "published", "withdrawn"]
     name: str
     description: str = ""
     instructions: str
     model_id: str
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    visibility: Literal["tenant", "restricted"] = "tenant"
+    allowed_department_ids: list[str] = Field(default_factory=list)
+    allowed_roles: list[str] = Field(default_factory=list)
+    allowed_user_ids: list[str] = Field(default_factory=list)
     content_hash: str
     created_at: Any | None = None
     published_at: Any | None = None
@@ -231,6 +293,51 @@ class AgentProfileMutationResponse(BaseModel):
 
     agent_profile: AgentProfileAdminProjection
     audit_id: str
+
+
+class AgentProfileHistoryResponse(BaseModel):
+    """Admin-only immutable revision history for one Agent Profile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_profiles: list[AgentProfileAdminProjection] = Field(default_factory=list)
+
+
+class AgentProfileValidationResponse(BaseModel):
+    """Safe result of validation-only draft preflight."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    valid: Literal[True] = True
+    audit_id: str
+
+
+class CreateAgentConversationRequest(BaseModel):
+    """Atomic admission request for one exact currently published Agent Profile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = "default"
+    selected_agent_profile: SelectedAgentProfileRequest
+    title: str = ""
+
+    @field_validator("workspace_id")
+    @classmethod
+    def validate_workspace_id(cls, value: str):
+        return assert_safe_id(value, "workspace_id")
+
+
+class AgentConversationIdentity(BaseModel):
+    """Only safe immutable Agent identity retained in public conversation recovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    revision: int = Field(ge=1)
+    name: str
+    description: str = ""
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
 
 
 class CreateRunRequest(BaseModel):
@@ -876,6 +983,7 @@ class ChatSessionResponse(BaseModel):
     workspace_id: str
     agent_id: str
     title: str
+    agent_conversation: AgentConversationIdentity | None = None
     created_at: Any | None = None
     updated_at: Any | None = None
 

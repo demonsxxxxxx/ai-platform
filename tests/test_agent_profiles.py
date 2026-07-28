@@ -81,6 +81,8 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "expected_revision": 4,
         "name": "Support assistant",
         "description": "Helps employees with approved support requests.",
+        "avatar_ref": "builtin:agent",
+        "category": "general",
     }
 
 
@@ -169,6 +171,8 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                 "expected_revision": 4,
                 "name": "Support assistant",
                 "description": "Approved support helper.",
+                "avatar_ref": "builtin:agent",
+                "category": "general",
             }
         ]
     }
@@ -362,6 +366,10 @@ def test_agent_profile_schema_is_idempotent_and_legacy_rows_can_remain_unpinned(
     assert "fk_runs_agent_profile_pin" in schema
     assert "published_from_revision bigint" in schema
     assert "idx_agent_profile_revisions_published_from_draft" in schema
+    assert "create table if not exists agent_profiles" in schema
+    assert "lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn'))" in schema
+    assert "published_revision bigint" in schema
+    assert "withdrawn_from_revision bigint" in schema
 
 
 def test_legacy_run_snapshot_without_agent_profile_remains_compatible():

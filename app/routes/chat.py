@@ -31,6 +31,7 @@ from app.intent_router import (
 from app.model_catalog import resolve_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
+    AgentConversationIdentity,
     ChatMessageResponse,
     ChatMessagesResponse,
     ChatSessionRequest,
@@ -934,11 +935,26 @@ def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, o
 
 def _session_response(row: dict[str, object]) -> ChatSessionResponse:
     raw_agent_id = str(row["agent_id"])
+    profile_revision = row.get("admitted_agent_profile_revision")
+    profile_name = row.get("agent_profile_name")
+    agent_conversation = None
+    if isinstance(profile_revision, int) and profile_revision > 0 and isinstance(profile_name, str) and profile_name:
+        avatar_ref = str(row.get("agent_profile_avatar_ref") or "")
+        category = str(row.get("agent_profile_category") or "")
+        agent_conversation = AgentConversationIdentity(
+            agent_id=raw_agent_id,
+            revision=profile_revision,
+            name=profile_name,
+            description=str(row.get("agent_profile_description") or ""),
+            avatar_ref=avatar_ref if avatar_ref in {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"} else "builtin:agent",
+            category=category if category in {"general", "support", "writing", "research", "operations"} else "general",
+        )
     return ChatSessionResponse(
         session_id=str(row["id"]),
         workspace_id=str(row["workspace_id"]),
         agent_id=public_agent_id_for_projection(raw_agent_id) or raw_agent_id,
         title=str(row.get("title") or ""),
+        agent_conversation=agent_conversation,
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -971,14 +987,33 @@ async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -
     )
 
 
-@router.get("/chat/sessions", response_model=ChatSessionsResponse)
+@router.get("/chat/sessions", response_model=ChatSessionsResponse, response_model_exclude_none=True)
 async def list_sessions(principal: AuthPrincipal = Depends(require_principal)) -> ChatSessionsResponse:  # noqa: B008
     async with transaction() as conn:
         rows = await repositories.list_authorized_sessions(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
     return ChatSessionsResponse(sessions=[_session_response(row) for row in rows])
 
 
-@router.post("/chat/sessions", response_model=ChatSessionResponse)
+@router.get("/chat/sessions/{session_id}", response_model=ChatSessionResponse, response_model_exclude_none=True)
+async def get_session(
+    session_id: str,
+    principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
+) -> ChatSessionResponse:
+    """Recover one owned Session with only its safe Agent Conversation identity."""
+
+    async with transaction() as conn:
+        row = await repositories.get_authorized_session_projection(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            session_id=session_id,
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    return _session_response(row)
+
+
+@router.post("/chat/sessions", response_model=ChatSessionResponse, response_model_exclude_none=True)
 async def create_chat_session(
     request: ChatSessionRequest,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
@@ -1346,6 +1381,7 @@ async def chat_stream(
                     agent_id=session_profile_agent_id,
                     expected_revision=session_profile_revision,
                 )
+                reject_profile_selector_conflicts(request, active=True)
             elif request.session_id and selected_agent_profile is not None:
                 raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
 
