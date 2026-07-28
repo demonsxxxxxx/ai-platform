@@ -27,7 +27,6 @@ from app.required_tool_contract import (
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     RequiredToolContractError,
-    selected_capability_completion_decision,
 )
 from app.settings import get_settings
 from app.skills.catalog import (
@@ -1409,7 +1408,7 @@ async def run_claude_agent_sdk(
     query_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
-    on_capability_evidence: Callable[[dict[str, str]], Awaitable[None]] | None = None,
+    on_capability_evidence: Callable[[dict[str, str]], Awaitable[object]] | None = None,
     on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[None]] | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
@@ -1650,9 +1649,11 @@ async def run_claude_agent_sdk(
             )
         except RequiredToolContractError:
             return
+        if on_capability_evidence is None and selected_mcp_identities:
+            return
+        if on_capability_evidence and await on_capability_evidence(dict(evidence)) is False:
+            return
         capability_evidence.append(evidence)
-        if on_capability_evidence:
-            await on_capability_evidence(dict(evidence))
 
     async def record_tool_lifecycle(
         *, tool_name: object, tool_call_id: object, lifecycle: str
@@ -2010,53 +2011,49 @@ async def run_claude_agent_sdk(
         if trusted_internal_raw_streaming
         else None
     )
-    selected_mcp_stream_buffer: str | None = ""
-    selected_mcp_publication_gate_open = not selected_mcp_identities
-    public_stream_text_emitted = False
 
-    def selected_mcp_completion_error() -> str | None:
-        binding = dict.fromkeys(("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"), "sdk-publication-gate")
-        decision = selected_capability_completion_decision(
-            declarations=[RequiredCapabilityDeclaration.from_authorized_subject(capability_kind="mcp", canonical_identity=identity) for identity in selected_mcp_identities],
-            binding=binding,
-            evidence=[{**item, **binding} for item in capability_evidence if item.get("capability_kind") == "mcp" and item.get("canonical_identity") in selected_mcp_identities],
-        )
-        return None if decision.allowed else decision.reason
+    def selected_capability_completion_error() -> str | None:
+        declarations = [
+            RequiredCapabilityDeclaration.from_authorized_subject(capability_kind=kind, canonical_identity=identity)
+            for kind, identity in ([("skill", selected_sdk_skill)] if selected_sdk_skill else [])
+            + [("mcp", identity) for identity in selected_mcp_identities]
+        ]
+        if not capability_evidence:
+            return "required_tool_completion_evidence_missing"
+        expected = {(item.capability_kind, item.canonical_identity): item.declaration_sha256 for item in declarations}
+        observed = {(item.get("capability_kind"), item.get("canonical_identity")) for item in capability_evidence}
+        if len(expected) != len(declarations) or observed != set(expected) or len({item.get("tool_call_id") for item in capability_evidence}) != len(declarations):
+            return "required_tool_completion_evidence_mismatch"
+        for identity, declaration_sha256 in expected.items():
+            matching = [item for item in capability_evidence if (item.get("capability_kind"), item.get("canonical_identity")) == identity]
+            if len(matching) != 2 or [item.get("lifecycle_phase") for item in matching] != ["invocation_requested", "completed"] or [item.get("lifecycle_status") for item in matching] != ["invoking", "succeeded"] or not matching[0].get("tool_call_id") or matching[0].get("tool_call_id") != matching[1].get("tool_call_id") or any(item.get("declaration_sha256") != declaration_sha256 for item in matching):
+                return "required_tool_completion_evidence_mismatch"
+        return None
 
-    def redact_selected_mcp_identities(value: str) -> str:
-        redacted = value
-        for identity in sorted(selected_mcp_identities, key=lambda item: (-len(item), item)):
-            redacted = redacted.replace(identity, "selected MCP tool")
-        return sanitize_public_text(redacted)
+    def buffer_candidate_text(value: object) -> None:
+        nonlocal diagnostic_text_characters, diagnostic_text_overflowed
+        if not diagnostic_text_overflowed and isinstance(value, str) and len(diagnostic_text_blocks) < _MAX_REPLAY_TEXT_BLOCKS and diagnostic_text_characters + len(value) <= _MAX_REPLAY_TEXT_CHARS:
+            diagnostic_text_blocks.append(value)
+            diagnostic_text_characters += len(value)
+        else:
+            diagnostic_text_blocks.clear()
+            diagnostic_text_overflowed = True
 
-    async def publish_terminal_text(value: str, *, stream: bool = False) -> None:
-        nonlocal public_stream_text_emitted
+    def redact_selected_mcp_private_tokens(value: str) -> str | None:
+        replacements = {identity: "selected MCP tool" for identity in selected_mcp_identities}
+        replacements.update({item["tool_call_id"]: "tool invocation" for item in capability_evidence if item.get("tool_call_id")})
+        if replacements:
+            pattern = re.compile("|".join(re.escape(item) for item in sorted(replacements, key=lambda item: (-len(item), item))))
+            value = pattern.sub(lambda match: replacements[match.group(0)], value)
+        value = sanitize_public_text(value)
+        return None if any(item in value for item in replacements) else value
+
+    async def publish_terminal_text(value: str) -> None:
         if on_text is None or not value:
             return
         callback_result = on_text(value)
         if isawaitable(callback_result):
             await callback_result
-        public_stream_text_emitted = public_stream_text_emitted or stream
-
-    async def accept_selected_mcp_stream_text(value: str) -> None:
-        nonlocal selected_mcp_publication_gate_open, selected_mcp_stream_buffer
-        evidence_error = selected_mcp_completion_error()
-        if selected_mcp_publication_gate_open and evidence_error is not None:
-            selected_mcp_stream_buffer = None
-        if selected_mcp_stream_buffer is None:
-            return
-        if not selected_mcp_publication_gate_open and evidence_error is not None:
-            if len(selected_mcp_stream_buffer) + len(value) > _MAX_REPLAY_TEXT_CHARS:
-                selected_mcp_stream_buffer = None
-            else:
-                selected_mcp_stream_buffer += value
-            return
-        selected_mcp_publication_gate_open = True
-        buffered, selected_mcp_stream_buffer = selected_mcp_stream_buffer, ""
-        if buffered:
-            await publish_terminal_text(redact_selected_mcp_identities(buffered), stream=True)
-        if value:
-            await publish_terminal_text(redact_selected_mcp_identities(value), stream=True)
 
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
@@ -2073,9 +2070,9 @@ async def run_claude_agent_sdk(
             if stream_projector is not None and isinstance(message, StreamEvent):
                 for text in stream_projector.accept(message.event):
                     if selected_mcp_identities:
-                        await accept_selected_mcp_stream_text(text)
+                        buffer_candidate_text(text)
                     else:
-                        await publish_terminal_text(text, stream=True)
+                        await publish_terminal_text(text)
                 continue
             if isinstance(message, AssistantMessage):
                 diagnostic_counters["assistant_messages"] += 1
@@ -2083,18 +2080,7 @@ async def run_claude_agent_sdk(
                     if isinstance(block, TextBlock):
                         diagnostic_counters["text_blocks"] += 1
                         last_public_stage = "message"
-                        text = getattr(block, "text", "")
-                        if (
-                            not diagnostic_text_overflowed
-                            and isinstance(text, str)
-                            and len(diagnostic_text_blocks) < _MAX_REPLAY_TEXT_BLOCKS
-                            and diagnostic_text_characters + len(text) <= _MAX_REPLAY_TEXT_CHARS
-                        ):
-                            diagnostic_text_blocks.append(text)
-                            diagnostic_text_characters += len(text)
-                        else:
-                            diagnostic_text_blocks.clear()
-                            diagnostic_text_overflowed = True
+                        buffer_candidate_text(getattr(block, "text", ""))
             elif isinstance(message, ResultMessage):
                 diagnostic_counters["result_messages"] += 1
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
@@ -2139,21 +2125,33 @@ async def run_claude_agent_sdk(
                 break
         if stream_projector is not None:
             stream_projector.close_unfinished()
+            if selected_mcp_identities and stream_projector.disabled:
+                diagnostic_text_blocks.clear()
+                diagnostic_text_overflowed = True
         terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL if not received_structured_terminal else selected_skill_hook_error()
         if terminal_error is None and selected_mcp_identities:
-            terminal_error = selected_mcp_completion_error()
-        public_structured_result_text = redact_selected_mcp_identities(structured_result_text) if selected_mcp_identities else structured_result_text
+            terminal_error = selected_capability_completion_error()
+        if terminal_error is None and selected_mcp_identities and (diagnostic_text_overflowed or len(structured_result_text) > _MAX_REPLAY_TEXT_CHARS):
+            terminal_error = _SDK_TOOL_ADMISSION_FAILED
+        public_structured_result_text = ""
+        if terminal_error is None and selected_mcp_identities:
+            diagnostic_text = "".join(diagnostic_text_blocks)
+            private_candidate = diagnostic_text if diagnostic_text == structured_result_text else structured_result_text
+            redacted_candidate = redact_selected_mcp_private_tokens(private_candidate)
+            if redacted_candidate is None:
+                terminal_error = _SDK_TOOL_ADMISSION_FAILED
+            else:
+                public_structured_result_text = redacted_candidate
+        elif terminal_error is None:
+            public_structured_result_text = structured_result_text
         if terminal_error is None and received_structured_terminal:
-            if selected_mcp_identities:
-                await accept_selected_mcp_stream_text("")
             diagnostic_text = "".join(diagnostic_text_blocks)
             if on_text:
-                if public_stream_text_emitted:
-                    # The terminal ResultMessage remains authoritative downstream;
-                    # do not replay it through the delta callback after a raw beta delta.
-                    pass
-                elif selected_mcp_identities and public_structured_result_text:
+                if selected_mcp_identities and public_structured_result_text:
                     await publish_terminal_text(public_structured_result_text)
+                elif stream_projector is not None and stream_projector.partial_emitted:
+                    # ResultMessage is authoritative; do not replay after a raw beta delta.
+                    pass
                 elif (
                     not diagnostic_text_overflowed
                     and diagnostic_text
