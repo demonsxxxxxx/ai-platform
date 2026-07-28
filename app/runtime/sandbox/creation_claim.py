@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from app import repositories
 from app.db import connect
 
 
@@ -47,6 +46,54 @@ class SandboxCreationClaim:
 ConnectionFactory = Callable[[], Awaitable[Any]]
 
 
+async def _try_acquire_session_lock(connection: Any, lock_key: str) -> bool:
+    cursor = await connection.execute(
+        "select pg_try_advisory_lock(hashtextextended(%s::text, 0::bigint)) as acquired",
+        (lock_key,),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row.get("acquired") is True)
+
+
+async def _release_session_lock(connection: Any, lock_key: str) -> None:
+    await connection.execute(
+        "select pg_advisory_unlock(hashtextextended(%s::text, 0::bigint))",
+        (lock_key,),
+    )
+
+
+async def _has_active_exact_attempt_lease(connection: Any, scope: SandboxCreationScope) -> bool:
+    cursor = await connection.execute(
+        """
+        select exists(
+          select 1
+          from sandbox_leases
+          where provider = %s
+            and tenant_id = %s
+            and workspace_id = %s
+            and user_id = %s
+            and session_id = %s
+            and run_id = %s
+            and lease_payload_json ->> 'attempt_id' = %s
+            and status = 'active'
+            and expires_at is not null
+            and expires_at > clock_timestamp()
+        ) as active
+        """,
+        (
+            scope.provider,
+            scope.tenant_id,
+            scope.workspace_id,
+            scope.user_id,
+            scope.session_id,
+            scope.run_id,
+            scope.attempt_id,
+        ),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row.get("active") is True)
+
+
 @asynccontextmanager
 async def acquire_sandbox_creation_claim(
     scope: SandboxCreationScope,
@@ -75,28 +122,19 @@ async def acquire_sandbox_creation_claim(
         except TimeoutError as exc:
             raise SandboxCreationClaimTimeoutError("sandbox creation claim unavailable") from exc
         while True:
-            acquired = await repositories.try_acquire_sandbox_creation_claim(connection, lock_key=lock_key)
+            acquired = await _try_acquire_session_lock(connection, lock_key)
             if acquired:
                 break
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise SandboxCreationClaimTimeoutError("sandbox creation claim unavailable")
             await asyncio.sleep(min(0.05, remaining))
-        active_lease_exists = await repositories.has_active_sandbox_creation_lease(
-            connection,
-            provider=scope.provider,
-            tenant_id=scope.tenant_id,
-            workspace_id=scope.workspace_id,
-            user_id=scope.user_id,
-            session_id=scope.session_id,
-            run_id=scope.run_id,
-            attempt_id=scope.attempt_id,
-        )
+        active_lease_exists = await _has_active_exact_attempt_lease(connection, scope)
         yield SandboxCreationClaim(active_lease_exists=active_lease_exists)
     finally:
         if connection is not None:
             try:
                 if acquired:
-                    await repositories.release_sandbox_creation_claim(connection, lock_key=lock_key)
+                    await _release_session_lock(connection, lock_key)
             finally:
                 await connection.close()

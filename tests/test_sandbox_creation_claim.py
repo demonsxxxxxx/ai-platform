@@ -137,7 +137,7 @@ async def test_creation_claim_cancellation_closes_session_and_releases_scope():
 
 
 class _ClaimedFakeProvider(FakeContainerProvider):
-    requires_creation_claim = True
+    provider_name = "opensandbox"
 
     def __init__(self):
         super().__init__(executor_url="http://executor.test")

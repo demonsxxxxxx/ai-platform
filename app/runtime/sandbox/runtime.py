@@ -22,6 +22,7 @@ from app.runtime.sandbox.container_provider import (
     ContainerCleanupFailedError,
     ContainerProvider,
     ExecutorHealthTimeoutError,
+    OpenSandboxContainerProvider,
     OpenSandboxStartupFailedError,
     SandboxRuntimeError,
     create_container_provider,
@@ -386,7 +387,7 @@ class SandboxRuntime:
             return lease
 
         try:
-            if getattr(self.provider, "requires_creation_claim", False):
+            if isinstance(self.provider, OpenSandboxContainerProvider) or getattr(self.provider, "provider_name", "") == "opensandbox":
                 claim_scope = SandboxCreationScope(
                     provider="opensandbox",
                     tenant_id=request.tenant_id,
