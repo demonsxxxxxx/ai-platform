@@ -19,7 +19,7 @@ from app.context_manifest import (
     utf8_token_estimate,
 )
 from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
-from app.control_plane_contracts import sanitize_public_payload
+from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.executors.claude_stream_projection import TrustedInternalClaudeStreamProjector
 from app.file_parser_contracts import ParsedAttachmentContext
 from app.public_context_keys import safe_public_context_pack_version
@@ -27,6 +27,7 @@ from app.required_tool_contract import (
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     RequiredToolContractError,
+    selected_capability_completion_decision,
 )
 from app.settings import get_settings
 from app.skills.catalog import (
@@ -672,6 +673,17 @@ def _with_selected_skill_invocation_requirement(
     )
 
 
+def _selected_registered_external_mcp_identities(
+    *, authorized_subjects: dict[str, dict[str, Any]], registered_mcp_servers: dict[str, object]
+) -> tuple[str, ...]:
+    """Return exact selected external MCP identities in canonical stable order."""
+
+    registered_server_ids = set(registered_mcp_servers)
+    return tuple(
+        sorted(identity for identity, subject in authorized_subjects.items() if not identity.startswith(_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX) and subject.get("mcp_server") != "ai-platform-context" and subject.get("mcp_server") in registered_server_ids and bool(subject.get("mcp_tool")) and identity == f"mcp__{subject.get('mcp_server')}__{subject.get('mcp_tool')}")
+    )
+
+
 def _with_selected_mcp_invocation_requirement(
     prompt: str,
     *,
@@ -680,30 +692,13 @@ def _with_selected_mcp_invocation_requirement(
 ) -> str:
     """Require each exact registered external MCP selected by server authority."""
 
-    registered_server_ids = set(registered_mcp_servers)
-    selected_identities: set[str] = set()
-    for identity, subject in authorized_subjects.items():
-        if not identity.startswith("mcp__") or identity.startswith(
-            _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX
-        ):
-            continue
-        identity_server_id = identity.removeprefix("mcp__").split("__", 1)[0]
-        subject_server_id = str(subject.get("mcp_server") or "")
-        if (
-            subject_server_id == "ai-platform-context"
-            or identity_server_id != subject_server_id
-            or subject_server_id not in registered_server_ids
-        ):
-            continue
-        selected_identities.add(identity)
-    ordered_identities = sorted(selected_identities)
+    ordered_identities = _selected_registered_external_mcp_identities(
+        authorized_subjects=authorized_subjects,
+        registered_mcp_servers=registered_mcp_servers,
+    )
     if not ordered_identities:
         return prompt
-    rendered_identities = json.dumps(
-        ordered_identities,
-        ensure_ascii=True,
-        separators=(",", ":"),
-    )
+    rendered_identities = json.dumps(ordered_identities, ensure_ascii=True, separators=(",", ":"))
     requirement = (
         "Authoritative platform MCP requirement: Before producing the final answer, "
         "invoke each exact MCP tool identity in this server-selected list exactly once: "
@@ -1605,6 +1600,7 @@ async def run_claude_agent_sdk(
     mcp_servers = _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
     if context_retrieval_server is not None and (not sandbox_brokered or internal_context_subjects):
         mcp_servers["ai-platform-context"] = context_retrieval_server
+    selected_mcp_identities = _selected_registered_external_mcp_identities(authorized_subjects=authorized_subjects, registered_mcp_servers=mcp_servers)
     try:
         sdk_prompt = _with_selected_mcp_invocation_requirement(
             prompt,
@@ -2010,17 +2006,57 @@ async def run_claude_agent_sdk(
     terminal_reason: str | None = None
     received_structured_terminal = False
     stream_projector = (
-        TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload)
+        TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload, trailing_chars=_MAX_REPLAY_TEXT_CHARS if selected_mcp_identities else 512)
         if trusted_internal_raw_streaming
         else None
     )
+    selected_mcp_stream_buffer: str | None = ""
+    selected_mcp_publication_gate_open = not selected_mcp_identities
+    public_stream_text_emitted = False
 
-    async def publish_terminal_text(value: str) -> None:
+    def selected_mcp_completion_error() -> str | None:
+        binding = dict.fromkeys(("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"), "sdk-publication-gate")
+        decision = selected_capability_completion_decision(
+            declarations=[RequiredCapabilityDeclaration.from_authorized_subject(capability_kind="mcp", canonical_identity=identity) for identity in selected_mcp_identities],
+            binding=binding,
+            evidence=[{**item, **binding} for item in capability_evidence if item.get("capability_kind") == "mcp" and item.get("canonical_identity") in selected_mcp_identities],
+        )
+        return None if decision.allowed else decision.reason
+
+    def redact_selected_mcp_identities(value: str) -> str:
+        redacted = value
+        for identity in sorted(selected_mcp_identities, key=lambda item: (-len(item), item)):
+            redacted = redacted.replace(identity, "selected MCP tool")
+        return sanitize_public_text(redacted)
+
+    async def publish_terminal_text(value: str, *, stream: bool = False) -> None:
+        nonlocal public_stream_text_emitted
         if on_text is None or not value:
             return
         callback_result = on_text(value)
         if isawaitable(callback_result):
             await callback_result
+        public_stream_text_emitted = public_stream_text_emitted or stream
+
+    async def accept_selected_mcp_stream_text(value: str) -> None:
+        nonlocal selected_mcp_publication_gate_open, selected_mcp_stream_buffer
+        evidence_error = selected_mcp_completion_error()
+        if selected_mcp_publication_gate_open and evidence_error is not None:
+            selected_mcp_stream_buffer = None
+        if selected_mcp_stream_buffer is None:
+            return
+        if not selected_mcp_publication_gate_open and evidence_error is not None:
+            if len(selected_mcp_stream_buffer) + len(value) > _MAX_REPLAY_TEXT_CHARS:
+                selected_mcp_stream_buffer = None
+            else:
+                selected_mcp_stream_buffer += value
+            return
+        selected_mcp_publication_gate_open = True
+        buffered, selected_mcp_stream_buffer = selected_mcp_stream_buffer, ""
+        if buffered:
+            await publish_terminal_text(redact_selected_mcp_identities(buffered), stream=True)
+        if value:
+            await publish_terminal_text(redact_selected_mcp_identities(value), stream=True)
 
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
@@ -2036,7 +2072,10 @@ async def run_claude_agent_sdk(
         ):
             if stream_projector is not None and isinstance(message, StreamEvent):
                 for text in stream_projector.accept(message.event):
-                    await publish_terminal_text(text)
+                    if selected_mcp_identities:
+                        await accept_selected_mcp_stream_text(text)
+                    else:
+                        await publish_terminal_text(text, stream=True)
                 continue
             if isinstance(message, AssistantMessage):
                 diagnostic_counters["assistant_messages"] += 1
@@ -2097,23 +2136,24 @@ async def run_claude_agent_sdk(
                 terminal_reason = (
                     str(stop_reason).strip() if isinstance(stop_reason, str) and stop_reason.strip() else None
                 )
+                break
         if stream_projector is not None:
             stream_projector.close_unfinished()
-        terminal_error = (
-            selected_skill_hook_error()
-            if received_structured_terminal
-            else _SDK_MISSING_STRUCTURED_TERMINAL
-        )
+        terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL if not received_structured_terminal else selected_skill_hook_error()
+        if terminal_error is None and selected_mcp_identities:
+            terminal_error = selected_mcp_completion_error()
+        public_structured_result_text = redact_selected_mcp_identities(structured_result_text) if selected_mcp_identities else structured_result_text
         if terminal_error is None and received_structured_terminal:
+            if selected_mcp_identities:
+                await accept_selected_mcp_stream_text("")
             diagnostic_text = "".join(diagnostic_text_blocks)
             if on_text:
-                if (
-                    stream_projector is not None
-                    and stream_projector.partial_emitted
-                ):
+                if public_stream_text_emitted:
                     # The terminal ResultMessage remains authoritative downstream;
                     # do not replay it through the delta callback after a raw beta delta.
                     pass
+                elif selected_mcp_identities and public_structured_result_text:
+                    await publish_terminal_text(public_structured_result_text)
                 elif (
                     not diagnostic_text_overflowed
                     and diagnostic_text
@@ -2125,7 +2165,7 @@ async def run_claude_agent_sdk(
                     await publish_terminal_text(structured_result_text)
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
-            message=structured_result_text if terminal_error is None else "",
+            message=public_structured_result_text if terminal_error is None else "",
             session_id=result_session_id,
             usage=usage,
             error=terminal_error,
