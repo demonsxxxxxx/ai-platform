@@ -266,17 +266,20 @@ def sdk_mcp_evidence(identity: str, call_id: str, phase: str) -> dict[str, str]:
     }
 
 
-def successful_sdk_result(message: str = "done"):
-    return type(
-        "SdkResult",
-        (),
-        {
-            "used_sdk": True,
-            "message": message,
-            "error": None,
-            "received_structured_terminal": True,
-        },
-    )()
+def sdk_result(message: str = "done", **overrides):
+    values = {
+        "used_sdk": True,
+        "message": message,
+        "session_id": "sdk-session-a",
+        "usage": {},
+        "error": None,
+        "received_structured_terminal": True,
+        "terminal_reason": "end_turn",
+        "used_skills": [],
+        "used_skills_source": "",
+    }
+    values.update(overrides)
+    return type("SdkResult", (), values)()
 
 
 def test_executor_health_returns_ready(tmp_path):
@@ -347,21 +350,7 @@ def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, 
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "sdk final",
-                "session_id": "sdk-session-a",
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
+        return sdk_result("sdk final", usage={"input_tokens": 1, "output_tokens": 1})
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
@@ -399,21 +388,7 @@ def test_executor_system_prompt_uses_private_sdk_channel_without_public_leakage(
 
     async def fake_run_claude_agent_sdk(**kwargs):
         captured.update(kwargs)
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "sdk final",
-                "session_id": "sdk-session-a",
-                "usage": {},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
+        return sdk_result("sdk final")
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -496,7 +471,7 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
                     sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
                 )
             )
-        return successful_sdk_result()
+        return sdk_result()
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
@@ -582,7 +557,7 @@ async def test_executor_rejects_unknown_capability_identity_without_inference(mo
                 sdk_mcp_evidence("mcp__foreign__unknown", "tool-call-x", "completed")
             )
         )
-        return successful_sdk_result()
+        return sdk_result()
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -637,7 +612,7 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
         release_callback.set()
         acknowledgements.extend(await asyncio.wait_for(asyncio.gather(first, later), timeout=2.0))
         await asyncio.wait_for(asyncio.gather(*outputs), timeout=2.0)
-        return successful_sdk_result("must not qualify")
+        return sdk_result("must not qualify")
 
     async def executor_runner(request, workspace_root, emit_event):
         runner_task = asyncio.create_task(_default_executor_runner(request, workspace_root, emit_event))
@@ -702,6 +677,132 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
     assert capability_attempts == 1
 
 
+def test_executor_capability_callback_cancellation_poison_seals_run(
+    tmp_path,
+    monkeypatch,
+):
+    cancellation_propagated = []
+    later_capability_results = []
+    post_cancel_emit_results = []
+    acknowledged_events = []
+    possibly_persisted_events = []
+    terminal_callbacks = []
+    completion_callback_started = asyncio.Event()
+    capability_attempts = 0
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        record = kwargs["on_capability_evidence"]
+        completion = None
+        queued_retry = None
+        try:
+            assert await record(
+                sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", "invocation_requested")
+            ) is True
+            completion = asyncio.create_task(
+                record(sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", "completed"))
+            )
+            await asyncio.wait_for(completion_callback_started.wait(), timeout=2.0)
+            retry_started = asyncio.Event()
+
+            async def retry_same_fact():
+                retry_started.set()
+                return await record(
+                    sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", "completed")
+                )
+
+            queued_retry = asyncio.create_task(retry_same_fact())
+            await asyncio.wait_for(retry_started.wait(), timeout=2.0)
+            completion.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(completion, timeout=2.0)
+            cancellation_propagated.append(True)
+
+            later_capability_results.extend(
+                [
+                    await asyncio.wait_for(queued_retry, timeout=2.0),
+                    await asyncio.wait_for(
+                        record(
+                            sdk_mcp_evidence(
+                                "mcp__tenant-server__search", "tool-call-2", "invocation_requested"
+                            )
+                        ),
+                        timeout=2.0,
+                    ),
+                ]
+            )
+            await asyncio.wait_for(kwargs["on_text"]("must remain sealed"), timeout=2.0)
+            await asyncio.wait_for(
+                kwargs["on_tool_lifecycle"](
+                    {"tool_name": "Bash", "invocation_id": "tool-call-2", "lifecycle": "started"}
+                ),
+                timeout=2.0,
+            )
+            return sdk_result("must not qualify")
+        finally:
+            pending = [task for task in (completion, queued_retry) if task is not None and not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+    async def executor_runner(request, workspace_root, emit_event):
+        result = await _default_executor_runner(request, workspace_root, emit_event)
+        post_cancel_emit_results.extend(
+            [
+                await asyncio.wait_for(emit_event(AgentEvent(type="artifact_created")), timeout=2.0),
+                await asyncio.wait_for(emit_event(AgentEvent(type="capability_completed")), timeout=2.0),
+            ]
+        )
+        return result
+
+    async def callback_sender(_url, payload, _token):
+        nonlocal capability_attempts
+        events = payload.get("events", [])
+        capability_events = [event for event in events if event["type"].startswith("capability_")]
+        if capability_events:
+            capability_attempts += 1
+            if capability_attempts == 1:
+                acknowledged_events.extend(events)
+                return callback_ack(payload)
+            if capability_attempts == 2:
+                possibly_persisted_events.extend(events)
+                completion_callback_started.set()
+                await asyncio.Future()
+        terminal_callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(tmp_path, callback_sender=callback_sender, executor_runner=executor_runner)
+
+    body = client.post("/v1/tasks/execute", json=selected_mcp_task_payload(), headers=auth_headers()).json()
+
+    assert cancellation_propagated == [True]
+    assert later_capability_results == [False, False]
+    assert post_cancel_emit_results == [False, False]
+    assert [event["type"] for event in acknowledged_events] == [
+        "capability_invoking",
+        "execution_step",
+    ]
+    assert [event["type"] for event in possibly_persisted_events] == [
+        "capability_completed",
+        "execution_step_completed",
+    ]
+    assert capability_attempts == 2
+    assert all(not callback.get("events") for callback in terminal_callbacks)
+    assert terminal_callbacks[-1]["state_patch"] == {
+        "stage": "executor_finished",
+        "error_code": "capability_callback_not_acknowledged",
+    }
+    assert body["status"] == "failed"
+    assert body["message"] == ""
+    assert body["error_code"] == "capability_callback_not_acknowledged"
+    assert body["capability_evidence"] == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("seed_call_ids", "first_phase", "second_call_id", "second_phase", "second_accepted"),
@@ -749,7 +850,7 @@ async def test_executor_serializes_concurrent_capability_transitions(
         await asyncio.wait_for(second_started.wait(), timeout=2.0)
         release_first_callback.set()
         race_results.extend(await asyncio.wait_for(asyncio.gather(first, second), timeout=2.0))
-        return successful_sdk_result()
+        return sdk_result()
 
     async def emit_event(event):
         persisted_phases.append(event.type)
@@ -789,21 +890,15 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
 
     async def fake_run_claude_agent_sdk(**kwargs):
         await kwargs["on_text"]("completed delivery at outputs/delivery/result.md")
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "completed delivery at outputs/delivery/result.md",
-                "session_id": "sdk-session-a",
-                "usage": {"input_tokens": 1, "output_tokens": 8},
-                "error": "claude_agent_sdk_missing_structured_terminal",
-                "received_structured_terminal": False,
-                "terminal_reason": None,
-                "used_skills": ["audit-finding-rca"],
-                "used_skills_source": "executor_hook",
-            },
-        )()
+        return sdk_result(
+            "completed delivery at outputs/delivery/result.md",
+            usage={"input_tokens": 1, "output_tokens": 8},
+            error="claude_agent_sdk_missing_structured_terminal",
+            received_structured_terminal=False,
+            terminal_reason=None,
+            used_skills=["audit-finding-rca"],
+            used_skills_source="executor_hook",
+        )
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
@@ -860,25 +955,16 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": used_sdk,
-                "message": "sdk execution failed",
-                "session_id": "sdk-session-a",
-                "usage": {"input_tokens": 1, "output_tokens": 8},
-                "error": sdk_error,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-                "turn_diagnostics": {
-                    "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
-                    "terminal_class": "upstream_error",
-                },
+        return sdk_result(
+            "sdk execution failed",
+            used_sdk=used_sdk,
+            usage={"input_tokens": 1, "output_tokens": 8},
+            error=sdk_error,
+            turn_diagnostics={
+                "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
+                "terminal_class": "upstream_error",
             },
-        )()
+        )
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
@@ -986,21 +1072,7 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         calls["subjects"] = kwargs["tool_policy_subjects"]
         assert "on_tool_permission" not in kwargs
         await kwargs["on_text"]("sdk partial")
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "sdk final",
-                "session_id": "sdk-session-a",
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
+        return sdk_result("sdk final", usage={"input_tokens": 1, "output_tokens": 1})
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
@@ -1587,21 +1659,11 @@ async def test_executor_routes_uploaded_controlled_id_collision_to_sdk_native(mo
 
     async def fake_run_claude_agent_sdk(**kwargs):
         captured.update(kwargs)
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "native uploaded skill completed",
-                "session_id": "sdk-session-a",
-                "usage": {},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": ["qa-file-reviewer"],
-                "used_skills_source": "executor_hook",
-            },
-        )()
+        return sdk_result(
+            "native uploaded skill completed",
+            used_skills=["qa-file-reviewer"],
+            used_skills_source="executor_hook",
+        )
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -1658,21 +1720,7 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
     async def fake_run_claude_agent_sdk(**kwargs):
         captured["context_retrieval"] = kwargs["context_retrieval"]
         captured["context_retrieval_identity"] = kwargs["context_retrieval_identity"]
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "sdk final",
-                "session_id": "sdk-session-a",
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
+        return sdk_result("sdk final", usage={"input_tokens": 1, "output_tokens": 1})
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -1741,21 +1789,11 @@ async def test_default_executor_preparses_dimensionless_xlsx_and_forwards_typed_
 
     async def fake_sdk(**kwargs):
         captured["attachment_contexts"] = kwargs["attachment_contexts"]
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "xlsx answer",
-                "session_id": "sdk-session-a",
-                "usage": {},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": ["qa-rag-skill"],
-                "used_skills_source": "executor_hook",
-            },
-        )()
+        return sdk_result(
+            "xlsx answer",
+            used_skills=["qa-rag-skill"],
+            used_skills_source="executor_hook",
+        )
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr(
@@ -1845,21 +1883,11 @@ async def test_default_executor_keeps_duplicate_xlsx_basenames_bound_to_distinct
 
     async def fake_sdk(**kwargs):
         captured["attachment_contexts"] = kwargs["attachment_contexts"]
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "two workbook answer",
-                "session_id": "sdk-session-a",
-                "usage": {},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": ["qa-rag-skill"],
-                "used_skills_source": "executor_hook",
-            },
-        )()
+        return sdk_result(
+            "two workbook answer",
+            used_skills=["qa-rag-skill"],
+            used_skills_source="executor_hook",
+        )
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr(
@@ -2703,21 +2731,7 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monk
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "sdk final",
-                "session_id": "sdk-session-a",
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
+        return sdk_result("sdk final", usage={"input_tokens": 1, "output_tokens": 1})
 
     def callback_sender(url, payload, token):
         callbacks.append((payload["status"], payload.get("state_patch", {}).get("stage")))
@@ -2748,21 +2762,7 @@ def test_executor_finished_observation_marker_path_is_container_path(tmp_path, m
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "sdk final",
-                "session_id": "sdk-session-a",
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
+        return sdk_result("sdk final", usage={"input_tokens": 1, "output_tokens": 1})
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
@@ -2809,19 +2809,11 @@ def test_executor_execute_rejects_replay_after_first_dispatch(tmp_path, monkeypa
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "sdk final",
-                "session_id": "sdk-session-a",
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-                "error": None,
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
+        return sdk_result(
+            "sdk final",
+            usage={"input_tokens": 1, "output_tokens": 1},
+            received_structured_terminal=False,
+        )
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)

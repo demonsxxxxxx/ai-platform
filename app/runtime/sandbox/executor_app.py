@@ -1217,7 +1217,7 @@ async def _default_executor_runner(
     model_id = str(request.config.get("model") or "") or None
 
     async def on_text(delta: str) -> None:
-        if not delta:
+        if not delta or capability_evidence_error["code"]:
             return
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
 
@@ -1227,6 +1227,8 @@ async def _default_executor_runner(
     async def on_tool_lifecycle(fact: dict[str, str]) -> None:
         """Forward only a mapped server-owned lifecycle fact to the request projector."""
 
+        if capability_evidence_error["code"]:
+            return
         label = _PUBLIC_TOOL_LIFECYCLE_LABELS.get(str(fact.get("tool_name") or ""))
         if label is None:
             return
@@ -1300,6 +1302,9 @@ async def _default_executor_runner(
                 )
             )
         except asyncio.CancelledError:
+            invocation_states[invocation_key] = "rejected"
+            bound_capability_evidence.clear()
+            reject_capability_evidence("capability_callback_not_acknowledged")
             raise
         except Exception:
             invocation_states[invocation_key] = "rejected"
@@ -1494,6 +1499,10 @@ def create_executor_app(
         public_execution_projector = PublicExecutionProjector()
         runner_event_lock = asyncio.Lock()
 
+        def seal_runner_events_after_capability_failure() -> None:
+            capability_callback_failed["value"] = True
+            runner_events_open["value"] = False
+
         async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
             try:
                 result = await _dispatch_callback(
@@ -1564,17 +1573,28 @@ def create_executor_app(
                 events=agent_events,
             )
             artifact_started_at = time.monotonic() if event_type == "artifact_created" else None
+            is_capability_event = agent_event is not None and agent_event.type.startswith("capability_")
             acknowledged = await dispatch_callback_event(callback_event)
-            if agent_event is not None and agent_event.type.startswith("capability_") and not acknowledged:
-                capability_callback_failed["value"] = True
-                runner_events_open["value"] = False
+            if is_capability_event and not acknowledged:
+                seal_runner_events_after_capability_failure()
             if artifact_started_at is not None:
                 artifact_upload_latency_ms += _elapsed_ms(artifact_started_at)
             return acknowledged
 
         async def emit_runner_event(event: AgentEvent | _PrivateExecutionFact) -> bool:
-            async with runner_event_lock:
-                return await emit_runner_event_locked(event)
+            is_capability_event = str(getattr(event, "type", "")).startswith("capability_")
+            try:
+                async with runner_event_lock:
+                    try:
+                        return await emit_runner_event_locked(event)
+                    except asyncio.CancelledError:
+                        if is_capability_event:
+                            seal_runner_events_after_capability_failure()
+                        raise
+            except asyncio.CancelledError:
+                if is_capability_event:
+                    seal_runner_events_after_capability_failure()
+                raise
 
         await dispatch_callback_event(running_event)
         runner_result: dict[str, Any] = {}
