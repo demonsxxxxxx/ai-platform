@@ -29,6 +29,7 @@ from typing import Any, Callable, Iterator, Mapping, Protocol
 CONTRACT_VERSION = "ai-platform.opensandbox.topology-attestation.v1"
 CAPABILITY_VERSION = "ai-platform.opensandbox.external-egress-capability.v1"
 UPSTREAM_BRIDGE_VERSION = "v1"
+EXPECTED_EXECUTOR_IDENTITY = "10001:10001"
 API_KEY_HEADER = "OPEN-SANDBOX-API-KEY"
 ROUTE_HEADER = "OPEN-SANDBOX-ROUTE-TOKEN"
 MAX_BODY_BYTES = 1024 * 1024
@@ -628,10 +629,11 @@ class GatewayApplication:
         }
         if any(metadata.get(k) != v for k, v in expected_subjects.items()):
             raise GatewayError(400, "attestation_subject_mismatch")
+        expected_uid, expected_gid = EXPECTED_EXECUTOR_IDENTITY.split(":")
         if (
-            metadata.get("ai-platform.executor.user") != "1000:1000"
-            or metadata.get("ai-platform.executor.uid") != "1000"
-            or metadata.get("ai-platform.executor.gid") != "1000"
+            metadata.get("ai-platform.executor.user") != EXPECTED_EXECUTOR_IDENTITY
+            or metadata.get("ai-platform.executor.uid") != expected_uid
+            or metadata.get("ai-platform.executor.gid") != expected_gid
             or metadata.get("ai-platform.executor.identity_evidence") != "authenticated-runtime-endpoint"
         ):
             raise GatewayError(400, "executor_identity_mismatch")
@@ -1043,8 +1045,8 @@ class GatewayApplication:
             not isinstance(metadata, dict)
             or set(metadata) != {"path", "owner", "group", "mode"}
             or metadata.get("path") != sentinel
-            or metadata.get("owner") != "1000"
-            or metadata.get("group") != "1000"
+            or metadata.get("owner") != EXPECTED_EXECUTOR_IDENTITY.split(":")[0]
+            or metadata.get("group") != EXPECTED_EXECUTOR_IDENTITY.split(":")[1]
             or metadata.get("mode") != "0600"
             or parts[1].get_filename() not in {sentinel, sentinel.rsplit("/", 1)[1]}
             or sentinel_payload != expected_payload
@@ -1079,15 +1081,16 @@ class GatewayApplication:
     def _validate_evidence(self, record: LeaseRecord, evidence: RuntimeEvidence) -> None:
         expected_mounts = tuple(sorted((m["host"], m["mountPath"], bool(m["readOnly"])) for m in record.mounts))
         expected_skill_fingerprint = record.metadata["ai-platform.skill_mount.fingerprint"]
+        expected_uid, expected_gid = EXPECTED_EXECUTOR_IDENTITY.split(":")
         if (
             evidence.sandbox_id != record.sandbox_id
             or not evidence.running
             or evidence.runtime != "runsc"
             or evidence.network_mode != "none"
             or evidence.no_new_privileges is not True
-            or evidence.user != "1000:1000"
-            or evidence.uid != "1000"
-            or evidence.gid != "1000"
+            or evidence.user != EXPECTED_EXECUTOR_IDENTITY
+            or evidence.uid != expected_uid
+            or evidence.gid != expected_gid
             or evidence.image != record.image
             or evidence.image_digest != record.image_digest
             or tuple(sorted(evidence.mounts)) != expected_mounts

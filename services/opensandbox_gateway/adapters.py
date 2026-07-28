@@ -28,6 +28,7 @@ from typing import Any, Mapping
 from .gateway import (
     CALLBACK_PATHS,
     DeadlineExceeded,
+    EXPECTED_EXECUTOR_IDENTITY,
     GatewayError,
     LeaseRecord,
     Request,
@@ -1134,7 +1135,12 @@ class MailboxBroker:
             claim_fd = os.open("claims", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
             response_fd = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
             _require_directory(mailbox_fd, uid=0, gid=0, mode=0o711)
-            _require_directory(request_fd, uid=1000, gid=os.getgid(), mode=0o2770)
+            _require_directory(
+                request_fd,
+                uid=int(EXPECTED_EXECUTOR_IDENTITY.split(":")[0]),
+                gid=os.getgid(),
+                mode=0o2770,
+            )
             _require_directory(claim_fd, uid=os.getuid(), gid=os.getgid(), mode=0o700)
             _require_directory(response_fd, uid=os.getuid(), gid=os.getgid(), mode=0o755)
             return workspace_fd, mailbox_fd, request_fd, claim_fd, response_fd
@@ -1171,7 +1177,7 @@ class MailboxBroker:
                 if (
                     not stat.S_ISREG(evidence.st_mode)
                     or evidence.st_size > 2 * 1024 * 1024
-                    or evidence.st_uid != 1000
+                    or evidence.st_uid != int(EXPECTED_EXECUTOR_IDENTITY.split(":")[0])
                     or evidence.st_gid != os.getgid()
                     or stat.S_IMODE(evidence.st_mode) != 0o640
                 ):
@@ -1525,14 +1531,19 @@ def _prepare_mailbox(workspace_fd: int, workspace_path: str, broker_uid: int, br
         claim_fd = os.open("claims", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
         response_fd = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=mailbox_fd)
         try:
-            os.fchown(request_fd, 1000, broker_gid)
+            os.fchown(request_fd, int(EXPECTED_EXECUTOR_IDENTITY.split(":")[0]), broker_gid)
             os.fchmod(request_fd, 0o2770)
             os.fchown(claim_fd, broker_uid, broker_gid)
             os.fchmod(claim_fd, 0o700)
             os.fchown(response_fd, broker_uid, broker_gid)
             os.fchmod(response_fd, 0o755)
             _require_directory(mailbox_fd, uid=0, gid=0, mode=0o711)
-            _require_directory(request_fd, uid=1000, gid=broker_gid, mode=0o2770)
+            _require_directory(
+                request_fd,
+                uid=int(EXPECTED_EXECUTOR_IDENTITY.split(":")[0]),
+                gid=broker_gid,
+                mode=0o2770,
+            )
             _require_directory(claim_fd, uid=broker_uid, gid=broker_gid, mode=0o700)
             _require_directory(response_fd, uid=broker_uid, gid=broker_gid, mode=0o755)
         finally:

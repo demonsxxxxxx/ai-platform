@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from .gateway import EXPECTED_EXECUTOR_IDENTITY
+
+
+_EXECUTOR_UID = EXPECTED_EXECUTOR_IDENTITY.split(":")[0]
 
 # This source is passed as a fixed argv item to ``docker exec``.  Request data is
 # read from HTTP and written to the scoped workspace; it is never interpolated
@@ -26,7 +30,7 @@ def require_dir(fd, uid, gid, mode):
         raise RuntimeError("mailbox ownership protocol mismatch")
 
 require_dir(ROOT_FD, 0, 0, 0o711)
-require_dir(REQ_FD, 1000, BROKER_GID, 0o2770)
+require_dir(REQ_FD, __EXECUTOR_UID__, BROKER_GID, 0o2770)
 require_dir(RESP_FD, BROKER_UID, BROKER_GID, 0o755)
 pid_fd = os.open("relay.pid", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o640, dir_fd=REQ_FD)
 try:
@@ -145,7 +149,7 @@ class BoundedServer(http.server.ThreadingHTTPServer):
 server = BoundedServer(("127.0.0.1", LISTEN_PORT), Handler)
 server.daemon_threads = True
 server.serve_forever()
-'''
+'''.replace("__EXECUTOR_UID__", _EXECUTOR_UID)
 
 
 PROXY_SOURCE = r'''
