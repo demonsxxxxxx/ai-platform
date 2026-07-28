@@ -750,7 +750,10 @@ def flattened_backend_base(
         primary_error = exc
         raise
     except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
-        primary_error = _operation_error("source_export", exc)
+        operation = getattr(exc, "backend_flatten_operation", "source_export")
+        if not isinstance(operation, str) or operation not in _BACKEND_FLATTEN_OPERATION_ERROR_CODES:
+            operation = "source_export"
+        primary_error = _operation_error(operation, exc)
         raise primary_error from None
     except BaseException as exc:
         primary_error = exc

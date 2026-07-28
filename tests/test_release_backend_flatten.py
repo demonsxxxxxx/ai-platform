@@ -477,6 +477,28 @@ def test_authority_stage_retains_safe_source_export_timeout_code_without_archive
     assert str(tmp_path) not in json.dumps(event)
 
 
+def test_flattened_backend_base_labels_import_called_process_error_with_import_evidence(tmp_path):
+    docker = _FakeDocker(tmp_path, fail_stage="import")
+
+    with pytest.raises(BackendFlattenError) as error:
+        with flattened_backend_base(
+            docker=["docker"],
+            source_reference=CURRENT_REFERENCE,
+            expected_commit=COMMIT,
+            expected_repository=REPOSITORY,
+            archive_root=tmp_path,
+            runner=docker,
+        ):
+            raise AssertionError("a failed import must not yield a flat base")
+
+    assert error.value.backend_flatten_operation == "import"
+    assert error.value.backend_flatten_error_code == "backend_flatten_import_failed"
+    assert error.value.safe_backend_flatten_evidence == {
+        "backend_flatten_operation": "import",
+        "backend_flatten_error_code": "backend_flatten_import_failed",
+    }
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
@@ -603,6 +625,32 @@ def test_rebuild_from_flattened_backend_preserves_target_release_authority_error
     assert error.value is target_error
     assert error.value.backend_flatten_operation == "target_build"
     assert error.value.backend_flatten_error_code == "backend_flatten_target_build_failed"
+
+
+def test_rebuild_from_flattened_backend_labels_target_called_process_error_with_safe_code(tmp_path):
+    docker = _FakeDocker(tmp_path)
+    target_error = subprocess.CalledProcessError(7, ["docker", "target-build"])
+
+    def fail_target(_):
+        raise target_error
+
+    with pytest.raises(BackendFlattenError) as error:
+        release_authority.rebuild_from_flattened_backend(
+            docker=["docker"],
+            source_reference=CURRENT_REFERENCE,
+            expected_commit=COMMIT,
+            expected_repository=REPOSITORY,
+            archive_root=tmp_path,
+            runner=docker,
+            target_build=fail_target,
+        )
+
+    assert error.value.backend_flatten_operation == "target_build"
+    assert error.value.backend_flatten_error_code == "backend_flatten_target_build_failed"
+    assert error.value.safe_backend_flatten_evidence == {
+        "backend_flatten_operation": "target_build",
+        "backend_flatten_error_code": "backend_flatten_target_build_failed",
+    }
 
 
 def test_authority_stage_records_target_timeout_cleanup_evidence_in_one_bounded_event(tmp_path):
