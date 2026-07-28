@@ -5,7 +5,7 @@ import test from "node:test";
 
 test("AgentBuilderRoute refreshes public catalogs without owning Chat or MCP selection state", () => {
   const source = readFileSync(
-    join(process.cwd(), "src/components/agent-builder/AgentBuilderRoute.tsx"),
+    join(process.cwd(), "src/features/agent-builder/AgentBuilderRoute.tsx"),
     "utf8",
   );
 
@@ -14,6 +14,8 @@ test("AgentBuilderRoute refreshes public catalogs without owning Chat or MCP sel
   assert.match(source, /mapAuthorizedBuilderSkills/);
   assert.match(source, /mapSafeBuilderMcpTools/);
   assert.match(source, /modelsResolved: !modelsLoading && modelsError === null/);
+  assert.match(source, /BUILDER_CATALOG_LOAD_ERROR/);
+  assert.doesNotMatch(source, /error instanceof Error \? error\.message/);
   assert.doesNotMatch(source, /useAgent/);
   assert.doesNotMatch(source, /selectedMcpToolIdsRef/);
 });

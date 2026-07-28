@@ -5,7 +5,7 @@ import test from "node:test";
 
 test("AgentBuilderWorkbench snapshots revalidated MCP identities into one useAgent submission", () => {
   const source = readFileSync(
-    join(process.cwd(), "src/components/agent-builder/AgentBuilderWorkbench.tsx"),
+    join(process.cwd(), "src/features/agent-builder/AgentBuilderWorkbench.tsx"),
     "utf8",
   );
 
@@ -19,7 +19,7 @@ test("AgentBuilderWorkbench snapshots revalidated MCP identities into one useAge
 
 test("production and harness wrappers forward admin profile authority while persistence remains guarded", () => {
   const source = readFileSync(
-    join(process.cwd(), "src/components/agent-builder/AgentBuilderWorkbench.tsx"),
+    join(process.cwd(), "src/features/agent-builder/AgentBuilderWorkbench.tsx"),
     "utf8",
   );
 
@@ -28,4 +28,5 @@ test("production and harness wrappers forward admin profile authority while pers
   assert.match(source, /canManageProfiles=\{canManageProfiles\}/);
   assert.match(source, /if \(!canManageProfiles\) return;/);
   assert.match(source, /expected_draft_revision: draft\.draftRevision \?\? 0/);
+  assert.doesNotMatch(source, /error instanceof Error \? error\.message/);
 });

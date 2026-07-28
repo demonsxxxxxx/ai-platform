@@ -252,7 +252,7 @@ test("maps public Skills fail-closed and MCP catalog entries to safe identity on
 
 test("controller delegates admission to useAgent and does not manufacture Chat state", () => {
   const source = readFileSync(
-    join(process.cwd(), "src/components/agent-builder/agentBuilderController.ts"),
+    join(process.cwd(), "src/features/agent-builder/agentBuilderController.ts"),
     "utf8",
   );
   const imports = source
