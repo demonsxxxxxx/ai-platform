@@ -1336,7 +1336,7 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
-            **getattr(exc, "safe_backend_flatten_evidence", {}),
+            **{**getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})},
         }
     if isinstance(exc, subprocess.CalledProcessError):
         return {
@@ -1348,10 +1348,10 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
-            **getattr(exc, "safe_backend_flatten_evidence", {}),
+            **{**getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})},
         }
     if isinstance(exc, OSError):
-        return {"failure_kind": "os-error", **({"errno": exc.errno} if isinstance(exc.errno, int) else {}), **getattr(exc, "safe_backend_flatten_evidence", {})}
+        return {"failure_kind": "os-error", **({"errno": exc.errno} if isinstance(exc.errno, int) else {}), **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
     return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
 
 

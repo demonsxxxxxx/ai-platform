@@ -5483,3 +5483,21 @@ def test_backend_flatten_cleanup_status_evidence_is_bounded():
 
     assert evidence == {"failure_kind": "authority-error", "cleanup_status": "failed"}
     assert "private-marker" not in json.dumps(evidence)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        subprocess.TimeoutExpired(["private-command"], 17),
+        subprocess.CalledProcessError(7, ["private-command"]),
+        OSError(5, "private-command"),
+        release_authority.BackendFlattenError("private-command"),
+    ],
+)
+def test_stage_failure_evidence_merges_cleanup_status_for_every_error_kind(error):
+    error.cleanup_status = "failed"
+
+    evidence = release_authority._stage_failure_evidence(error)
+
+    assert evidence["cleanup_status"] == "failed"
+    assert "private-command" not in json.dumps(evidence)

@@ -191,6 +191,14 @@ class _ArchiveIdentity:
     st_uid: int | None
 
 
+@dataclass(frozen=True)
+class _VerifiedArchive:
+    """One exported archive bound to the identity verified before its next consumer."""
+
+    path: Path
+    identity: _ArchiveIdentity
+
+
 Runner = Callable[..., subprocess.CompletedProcess[Any]]
 
 
@@ -217,12 +225,9 @@ def _run_flatten_operation(operation: str, callback: Callable[[], Any]) -> Any:
     """Map a bounded operation to a fixed safe code while retaining timeout semantics."""
     try:
         return callback()
-    except subprocess.TimeoutExpired as exc:
-        raise _annotate_backend_flatten_operation(exc, operation) from None
-    except BackendFlattenError as exc:
-        raise _annotate_backend_flatten_operation(exc, operation) from None
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
-        raise _operation_error(operation, exc) from None
+    except Exception as exc:
+        _annotate_backend_flatten_operation(exc, operation)
+        raise
 
 
 def _safe_text(value: Any) -> str:
@@ -424,30 +429,70 @@ def _create_archive_sink(directory: Path, name: str) -> tuple[Path, BinaryIO, _A
         raise
 
 
-def _verify_archive(path: Path, identity: _ArchiveIdentity) -> None:
+def _assert_verified_archive_binding(archive: _VerifiedArchive, handle: BinaryIO) -> None:
+    """Recheck both the managed path and retained descriptor against one verified identity."""
+    _assert_archive_metadata(
+        archive.path.stat(follow_symlinks=False),
+        identity=archive.identity,
+        require_content=True,
+    )
+    _assert_archive_metadata(
+        os.fstat(handle.fileno()),
+        identity=archive.identity,
+        require_content=True,
+    )
+
+
+def _open_verified_archive(archive: _VerifiedArchive) -> BinaryIO:
+    """Open an O_NOFOLLOW read descriptor only after validating the exact managed path."""
     descriptor: int | None = None
     try:
-        path_metadata = path.stat(follow_symlinks=False)
-        _assert_archive_metadata(path_metadata, identity=identity, require_content=True)
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        descriptor_metadata = os.fstat(descriptor)
-        _assert_archive_metadata(descriptor_metadata, identity=identity, require_content=True)
-        handle = os.fdopen(descriptor, "rb")
+        _assert_archive_metadata(
+            archive.path.stat(follow_symlinks=False),
+            identity=archive.identity,
+            require_content=True,
+        )
+        descriptor = os.open(archive.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        _assert_archive_metadata(
+            os.fstat(descriptor),
+            identity=archive.identity,
+            require_content=True,
+        )
+        handle: BinaryIO = os.fdopen(descriptor, "rb")
         descriptor = None
-        digest = hashlib.sha256()
-        with handle:
-            while True:
-                chunk = handle.read(128 * 1024)
-                if not chunk:
-                    break
-                digest.update(chunk)
+        return handle
     except OSError:
         raise BackendFlattenError("backend flatten archive is unavailable") from None
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def _verify_archive(path: Path, identity: _ArchiveIdentity) -> _VerifiedArchive:
+    archive = _VerifiedArchive(path=path, identity=identity)
+    digest = hashlib.sha256()
+    try:
+        with _open_verified_archive(archive) as handle:
+            while True:
+                chunk = handle.read(128 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            _assert_verified_archive_binding(archive, handle)
+    except OSError:
+        raise BackendFlattenError("backend flatten archive is unavailable") from None
     if not digest.hexdigest():
         raise BackendFlattenError("backend flatten archive checksum failed")
+    return archive
+
+
+def _consume_verified_archive(archive: _VerifiedArchive, consumer: Callable[[Path], Any]) -> Any:
+    """Bind a path-based consumer to the archive's retained descriptor before and after use."""
+    with _open_verified_archive(archive) as handle:
+        try:
+            return consumer(archive.path)
+        finally:
+            _assert_verified_archive_binding(archive, handle)
 
 
 def _export_container_archive(
@@ -459,7 +504,7 @@ def _export_container_archive(
     runner: Runner,
     export_operation: str,
     verification_operation: str,
-) -> Path:
+) -> _VerifiedArchive:
     """Stream one stopped-container rootfs into the exact descriptor, then verify it."""
     archive, sink, identity = _run_flatten_operation(
         export_operation,
@@ -476,9 +521,12 @@ def _export_container_archive(
         )
         _run_flatten_operation(
             verification_operation,
-            lambda: (sink.flush(), os.fsync(sink.fileno()), _verify_archive(archive, identity)),
+            lambda: (sink.flush(), os.fsync(sink.fileno())),
         )
-        return archive
+        return _run_flatten_operation(
+            verification_operation,
+            lambda: _verify_archive(archive, identity),
+        )
     finally:
         try:
             sink.close()
@@ -508,49 +556,51 @@ def _archive_members(archive: tarfile.TarFile) -> dict[str, tarfile.TarInfo]:
     return members
 
 
-def _verify_flat_rootfs(path: Path, *, commit: str) -> None:
+def _verify_flat_rootfs(archive_record: _VerifiedArchive, *, commit: str) -> None:
     try:
-        with tarfile.open(path, "r") as archive:
-            members = _archive_members(archive)
-            for marker in (
-                "app/.ai-platform-source-revision",
-                "app/.codex-source-revision",
-                "app/.source-commit",
-            ):
-                member = members.get(marker)
-                if member is None or not member.isfile() or _member_content(archive, member) != f"{commit}\n":
+        with _open_verified_archive(archive_record) as handle:
+            with tarfile.open(fileobj=handle, mode="r:") as archive:
+                members = _archive_members(archive)
+                for marker in (
+                    "app/.ai-platform-source-revision",
+                    "app/.codex-source-revision",
+                    "app/.source-commit",
+                ):
+                    member = members.get(marker)
+                    if member is None or not member.isfile() or _member_content(archive, member) != f"{commit}\n":
+                        raise BackendFlattenError("backend flatten marker validation failed")
+                snapshot_member = members.get("app/.ai-platform-source-snapshot.json")
+                if snapshot_member is None or not snapshot_member.isfile():
                     raise BackendFlattenError("backend flatten marker validation failed")
-            snapshot_member = members.get("app/.ai-platform-source-snapshot.json")
-            if snapshot_member is None or not snapshot_member.isfile():
-                raise BackendFlattenError("backend flatten marker validation failed")
-            snapshot = json.loads(_member_content(archive, snapshot_member))
-            if not isinstance(snapshot, dict) or (
-                snapshot.get("schema_version") != "ai-platform.source-snapshot.v1"
-                or snapshot.get("source_tree_commit_sha") != commit
-                or snapshot.get("runtime_subject_commit_sha") != commit
-                or snapshot.get("source_tree_dirty") is not False
-            ):
-                raise BackendFlattenError("backend flatten marker validation failed")
-            entrypoint = members.get("app/docker-entrypoint.sh")
-            if entrypoint is None or not entrypoint.isfile() or stat.S_IMODE(entrypoint.mode) != 0o755:
-                raise BackendFlattenError("backend flatten entrypoint validation failed")
-            for executable in ("usr/local/bin/python", "usr/local/bin/uvicorn"):
-                member = members.get(executable)
-                if member is None or not (member.isfile() or member.issym() or member.islnk()):
-                    raise BackendFlattenError("backend flatten runtime executable validation failed")
-                if member.isfile() and not (member.mode & stat.S_IXUSR):
-                    raise BackendFlattenError("backend flatten runtime executable validation failed")
-            passwd = members.get("etc/passwd")
-            group = members.get("etc/group")
-            if (
-                passwd is None
-                or group is None
-                or not passwd.isfile()
-                or not group.isfile()
-                or "ai-platform:x:10001:10001:" not in _member_content(archive, passwd)
-                or "ai-platform:x:10001:" not in _member_content(archive, group)
-            ):
-                raise BackendFlattenError("backend flatten runtime identity validation failed")
+                snapshot = json.loads(_member_content(archive, snapshot_member))
+                if not isinstance(snapshot, dict) or (
+                    snapshot.get("schema_version") != "ai-platform.source-snapshot.v1"
+                    or snapshot.get("source_tree_commit_sha") != commit
+                    or snapshot.get("runtime_subject_commit_sha") != commit
+                    or snapshot.get("source_tree_dirty") is not False
+                ):
+                    raise BackendFlattenError("backend flatten marker validation failed")
+                entrypoint = members.get("app/docker-entrypoint.sh")
+                if entrypoint is None or not entrypoint.isfile() or stat.S_IMODE(entrypoint.mode) != 0o755:
+                    raise BackendFlattenError("backend flatten entrypoint validation failed")
+                for executable in ("usr/local/bin/python", "usr/local/bin/uvicorn"):
+                    member = members.get(executable)
+                    if member is None or not (member.isfile() or member.issym() or member.islnk()):
+                        raise BackendFlattenError("backend flatten runtime executable validation failed")
+                    if member.isfile() and not (member.mode & stat.S_IXUSR):
+                        raise BackendFlattenError("backend flatten runtime executable validation failed")
+                passwd = members.get("etc/passwd")
+                group = members.get("etc/group")
+                if (
+                    passwd is None
+                    or group is None
+                    or not passwd.isfile()
+                    or not group.isfile()
+                    or "ai-platform:x:10001:10001:" not in _member_content(archive, passwd)
+                    or "ai-platform:x:10001:" not in _member_content(archive, group)
+                ):
+                    raise BackendFlattenError("backend flatten runtime identity validation failed")
+            _assert_verified_archive_binding(archive_record, handle)
     except (OSError, tarfile.TarError, json.JSONDecodeError):
         raise BackendFlattenError("backend flatten rootfs validation failed") from None
 
@@ -639,15 +689,18 @@ def flattened_backend_base(
             )
             _run_flatten_operation(
                 "import",
-                lambda: runner(
-                    [
-                        *docker,
-                        "image",
-                        "import",
-                        *_import_changes(config),
-                        str(source_archive),
-                        temporary.flat_reference,
-                    ]
+                lambda: _consume_verified_archive(
+                    source_archive,
+                    lambda archive_path: runner(
+                        [
+                            *docker,
+                            "image",
+                            "import",
+                            *_import_changes(config),
+                            str(archive_path),
+                            temporary.flat_reference,
+                        ]
+                    ),
                 ),
             )
             flat_image, flat_layers = _run_flatten_operation(

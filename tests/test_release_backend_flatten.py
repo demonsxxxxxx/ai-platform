@@ -142,6 +142,13 @@ def _cleanup_commands(fake):
     return [command for command, _ in fake.commands if command[1:3] in (["container", "rm"], ["image", "rm"])]
 
 
+def _replace_archive(path):
+    path.unlink()
+    path.write_bytes(b"replacement")
+    if os.name == "posix":
+        os.chmod(path, 0o600)
+
+
 def test_flattened_backend_base_streams_two_secure_archives_then_imports_only_the_noncanonical_ref(
     tmp_path, monkeypatch
 ):
@@ -151,11 +158,12 @@ def test_flattened_backend_base_streams_two_secure_archives_then_imports_only_th
     original_verify_archive = release_backend_flatten._verify_archive
 
     def observe_verified_archive(path, identity):
-        original_verify_archive(path, identity)
+        archive = original_verify_archive(path, identity)
         metadata = path.stat(follow_symlinks=False)
         with path.open("rb") as handle:
             assert handle.read(1)
         verified_archives.append((metadata, identity))
+        return archive
 
     monkeypatch.setattr(release_backend_flatten, "_verify_archive", observe_verified_archive)
 
@@ -221,6 +229,95 @@ def test_verify_archive_refuses_a_replaced_inode_after_streaming(tmp_path):
 
     with pytest.raises(BackendFlattenError, match="archive is unsafe"):
         release_backend_flatten._verify_archive(archive, identity)
+
+
+def test_flattened_backend_base_rejects_source_archive_replaced_after_export_before_import(tmp_path, monkeypatch):
+    docker = _FakeDocker(tmp_path)
+    original_export = release_backend_flatten._export_container_archive
+
+    def replace_source_archive(**kwargs):
+        archive = original_export(**kwargs)
+        if kwargs["name"] == "source-rootfs.tar":
+            _replace_archive(archive.path)
+        return archive
+
+    monkeypatch.setattr(release_backend_flatten, "_export_container_archive", replace_source_archive)
+
+    with pytest.raises(BackendFlattenError, match="archive is unsafe"):
+        with flattened_backend_base(
+            docker=["docker"],
+            source_reference=CURRENT_REFERENCE,
+            expected_commit=COMMIT,
+            expected_repository=REPOSITORY,
+            archive_root=tmp_path,
+            runner=docker,
+        ):
+            raise AssertionError("a replaced source archive must not reach target build")
+
+    assert not any(command[1:3] == ["image", "import"] for command, _ in docker.commands)
+
+
+def test_flattened_backend_base_rechecks_source_archive_after_import_returns(tmp_path, monkeypatch):
+    docker = _FakeDocker(tmp_path)
+    original_runner = docker.__call__
+    original_binding_check = release_backend_flatten._assert_verified_archive_binding
+
+    def replace_after_import(command, **kwargs):
+        result = original_runner(command, **kwargs)
+        return result
+
+    def reject_replaced_after_import(archive, handle):
+        if any(command[1:3] == ["image", "import"] for command, _ in docker.commands):
+            raise BackendFlattenError("backend flatten archive is unsafe")
+        return original_binding_check(archive, handle)
+
+    monkeypatch.setattr(
+        release_backend_flatten,
+        "_assert_verified_archive_binding",
+        reject_replaced_after_import,
+    )
+
+    with pytest.raises(BackendFlattenError, match="archive is unsafe"):
+        with flattened_backend_base(
+            docker=["docker"],
+            source_reference=CURRENT_REFERENCE,
+            expected_commit=COMMIT,
+            expected_repository=REPOSITORY,
+            archive_root=tmp_path,
+            runner=replace_after_import,
+        ):
+            raise AssertionError("a replaced source archive must fail after import returns")
+
+    assert any(command[1:3] == ["image", "import"] for command, _ in docker.commands)
+
+
+def test_flattened_backend_base_rejects_validation_archive_replaced_before_rootfs_read(tmp_path, monkeypatch):
+    docker = _FakeDocker(tmp_path)
+    original_export = release_backend_flatten._export_container_archive
+
+    def replace_validation_archive(**kwargs):
+        archive = original_export(**kwargs)
+        if kwargs["name"] == "flat-rootfs.tar":
+            _replace_archive(archive.path)
+        return archive
+
+    monkeypatch.setattr(release_backend_flatten, "_export_container_archive", replace_validation_archive)
+    monkeypatch.setattr(
+        release_backend_flatten,
+        "_archive_members",
+        lambda *_: pytest.fail("replaced validation archive must not reach tarfile parsing"),
+    )
+
+    with pytest.raises(BackendFlattenError, match="archive is unsafe"):
+        with flattened_backend_base(
+            docker=["docker"],
+            source_reference=CURRENT_REFERENCE,
+            expected_commit=COMMIT,
+            expected_repository=REPOSITORY,
+            archive_root=tmp_path,
+            runner=docker,
+        ):
+            raise AssertionError("a replaced validation archive must not reach target build")
 
 
 @pytest.mark.parametrize(
@@ -483,6 +580,64 @@ def test_rebuild_from_flattened_backend_passes_only_the_verified_flat_ref_to_tar
         ),
     )
     assert staged and staged[0] not in json.dumps(events)
+
+
+def test_rebuild_from_flattened_backend_preserves_target_release_authority_error_with_safe_code(tmp_path):
+    docker = _FakeDocker(tmp_path)
+    target_error = release_authority.ReleaseAuthorityError("target build denied")
+
+    def fail_target(_):
+        raise target_error
+
+    with pytest.raises(release_authority.ReleaseAuthorityError) as error:
+        release_authority.rebuild_from_flattened_backend(
+            docker=["docker"],
+            source_reference=CURRENT_REFERENCE,
+            expected_commit=COMMIT,
+            expected_repository=REPOSITORY,
+            archive_root=tmp_path,
+            runner=docker,
+            target_build=fail_target,
+        )
+
+    assert error.value is target_error
+    assert error.value.backend_flatten_operation == "target_build"
+    assert error.value.backend_flatten_error_code == "backend_flatten_target_build_failed"
+
+
+def test_authority_stage_records_target_timeout_cleanup_evidence_in_one_bounded_event(tmp_path):
+    docker = _FakeDocker(tmp_path, cleanup_nonzero=True)
+    events = []
+
+    def timeout_target(_):
+        error = subprocess.TimeoutExpired(["docker", "private-marker", str(tmp_path)], 17)
+        error.safe_stderr_diagnostic = {"stderr_status": "redacted"}
+        raise error
+
+    with pytest.raises(release_authority.ReleaseAuthorityError, match="backend-layer-flatten-recovery"):
+        release_authority._stage(
+            events,
+            name="backend-layer-flatten-recovery",
+            strategy="auto",
+            action="flatten-recovery",
+            operation=lambda: release_authority.rebuild_from_flattened_backend(
+                docker=["docker"],
+                source_reference=CURRENT_REFERENCE,
+                expected_commit=COMMIT,
+                expected_repository=REPOSITORY,
+                archive_root=tmp_path,
+                runner=docker,
+                target_build=timeout_target,
+            ),
+        )
+
+    event = events[-1]
+    assert event["failure_kind"] == "timeout"
+    assert event["backend_flatten_operation"] == "target_build"
+    assert event["backend_flatten_error_code"] == "backend_flatten_target_build_failed"
+    assert event["cleanup_status"] == "failed"
+    assert "private-marker" not in json.dumps(event)
+    assert str(tmp_path) not in json.dumps(event)
 
 
 @pytest.mark.parametrize(
