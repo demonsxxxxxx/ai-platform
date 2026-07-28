@@ -4,6 +4,20 @@ import types
 import pytest
 
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
+from app.required_tool_contract import (
+    RequiredCapabilityDeclaration,
+    selected_capability_completion_decision,
+)
+
+
+_CAPABILITY_BINDING = {
+    "tenant_id": "tenant-a",
+    "workspace_id": "workspace-a",
+    "user_id": "user-a",
+    "session_id": "session-a",
+    "run_id": "run-a",
+    "attempt_id": "attempt-a",
+}
 
 
 def _settings():
@@ -72,6 +86,21 @@ def _skill_subject(skill_name="qa-review"):
 
 def _captured_sdk_prompt(captured):
     return captured["sdk_user_messages"][0]["message"]["content"]
+
+
+def _selected_mcp_completion_decision(subjects, evidence):
+    declarations = [
+        RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind="mcp",
+            canonical_identity=identity,
+        )
+        for identity in sorted({subject["identity"] for subject in subjects})
+    ]
+    return selected_capability_completion_decision(
+        declarations=declarations,
+        binding=_CAPABILITY_BINDING,
+        evidence=[{**item, **_CAPABILITY_BINDING} for item in evidence],
+    )
 
 
 def _fake_sdk(captured, *, hook_invocations):
@@ -229,6 +258,45 @@ async def test_sdk_selected_external_mcp_prompt_requires_each_registered_identit
     }
     assert set(expected_identities).issubset(captured["allowed_tools"])
     assert all(subject["mcp_server_config"]["url"] not in sdk_prompt for subject in subjects)
+    assert not _selected_mcp_completion_decision(subjects, result.capability_evidence).allowed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "denied_field",
+    [
+        "registered",
+        "declared",
+        "active",
+        "distributed",
+        "identity_authorized",
+        "object_authorized",
+        "parameters_authorized",
+    ],
+)
+async def test_sdk_selected_external_mcp_prompt_excludes_authority_denied_subject(
+    monkeypatch,
+    tmp_path,
+    denied_field,
+):
+    captured = {}
+    denied_subject = _subject(server_id="denied-server", tool_name="lookup")
+    denied_subject[denied_field] = False
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="do not register denied tools",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[denied_subject],
+    )
+
+    assert result.error is None
+    assert denied_subject["identity"] not in _captured_sdk_prompt(captured)
+    assert denied_subject["identity"] not in captured["allowed_tools"]
+    assert denied_subject["mcp_server"] not in captured["mcp_servers"]
 
 
 @pytest.mark.asyncio
@@ -358,6 +426,65 @@ async def test_sdk_selected_external_mcp_prompt_cannot_be_overridden_by_user_con
     assert "mcp__attacker__steal" not in requirement
     assert "derive arguments only from the user request and the authorized tool schema" in requirement
     assert "never fabricate argument values" in requirement
+
+
+@pytest.mark.asyncio
+async def test_sdk_multiple_selected_external_mcp_hooks_satisfy_each_exact_completion(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    subjects = [
+        _subject(tool_name="alpha"),
+        _subject(tool_name="zeta"),
+    ]
+    hook_invocations = []
+    for index, subject in enumerate(subjects, start=1):
+        tool_call_id = f"mcp-call-{index}"
+        hook_input = {
+            "tool_name": subject["identity"],
+            "tool_use_id": tool_call_id,
+            "tool_input": {"private": "safe-synthetic-value"},
+        }
+        hook_invocations.extend(
+            [
+                ("PreToolUse", hook_input, tool_call_id),
+                ("PostToolUse", hook_input, tool_call_id),
+            ]
+        )
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=hook_invocations),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="use both selected tools",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=subjects,
+    )
+
+    assert [
+        (
+            item["canonical_identity"],
+            item["tool_call_id"],
+            item["lifecycle_phase"],
+        )
+        for item in result.capability_evidence
+    ] == [
+        ("mcp__tenant-server__alpha", "mcp-call-1", "invocation_requested"),
+        ("mcp__tenant-server__alpha", "mcp-call-1", "completed"),
+        ("mcp__tenant-server__zeta", "mcp-call-2", "invocation_requested"),
+        ("mcp__tenant-server__zeta", "mcp-call-2", "completed"),
+    ]
+    assert _selected_mcp_completion_decision(subjects, result.capability_evidence).allowed
+    assert not _selected_mcp_completion_decision(
+        subjects,
+        result.capability_evidence[:-1],
+    ).allowed
 
 
 @pytest.mark.asyncio
@@ -545,6 +672,10 @@ async def test_sdk_mcp_pre_tool_hook_starts_once_before_matching_terminal_fact(
         assert all(
             item["lifecycle_phase"] != "completed" for item in result.capability_evidence
         )
+    assert _selected_mcp_completion_decision(
+        [_subject()],
+        result.capability_evidence,
+    ).allowed is (terminal_phase == "completed")
 
 
 @pytest.mark.asyncio
@@ -582,6 +713,10 @@ async def test_sdk_mcp_selection_or_authorization_without_valid_pre_tool_use_nev
 
     assert not result.capability_evidence
     assert "mcp__tenant-server__search" in _captured_sdk_prompt(captured)
+    assert not _selected_mcp_completion_decision(
+        [_subject()],
+        result.capability_evidence,
+    ).allowed
 
 
 @pytest.mark.parametrize(("allowed", "outcome"), [(True, "ask"), (True, "defer"), (False, "allow")])
