@@ -1,0 +1,12 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-08-12",
+  "owner": "frontend-issue-683",
+  "reason": "Issue #683 only: the published Agent Market card-to-canonical-Chat atomic flow must cross frontend/web/src/features and frontend/web/src/hooks to reuse the existing useAgent submission authority rather than duplicate Chat or session logic. This exception applies only to the exact governance range 7eb4f0f7b58ca67e8dbf9eba2824ca30b4c672e9..ba489142a84043123798c59ffd4ba01506cead17 and expires on 2026-08-12.",
+  "violations": [
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}
