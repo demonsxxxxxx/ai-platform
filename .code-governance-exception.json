@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v1",
   "expires_on": "2026-08-05",
   "owner": "ai-platform-controller",
-  "reason": "Issue #679 exact range 7eb4f0f7b58ca67e8dbf9eba2824ca30b4c672e9 -> 167f0183 requires Dockerfile's dual Debian mirror source contract and tools/release_authority.py's sole canonical backend caller in one atomic delivery; splitting would leave an unusable contract.",
+  "reason": "Issue #679 requires Dockerfile's dual Debian mirror source contract and tools/release_authority.py's sole canonical backend caller in one atomic delivery; splitting would leave an unusable contract.",
   "violations": [
     {
       "code": "production_subsystem_count",
