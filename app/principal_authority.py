@@ -295,6 +295,7 @@ def _validated_identity_aliases(payload: dict[str, Any], *, expected_work_id: st
         raise PrincipalAuthorityDenied()
 
     values = set(work_ids)
+    username_aliases: set[str] = set()
     for key in _OPTIONAL_IDENTITY_ALIAS_KEYS:
         if key not in payload:
             continue
@@ -306,9 +307,10 @@ def _validated_identity_aliases(payload: dict[str, Any], *, expected_work_id: st
         candidate = value.strip()
         if not candidate:
             continue
-        if candidate != expected_work_id:
-            raise PrincipalAuthorityDenied()
-        values.add(candidate)
+        username_aliases.add(candidate)
+    if len(username_aliases) > 1:
+        raise PrincipalAuthorityDenied()
+    values.update(username_aliases)
     return values
 
 
