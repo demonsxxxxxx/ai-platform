@@ -37,6 +37,9 @@ WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
+USTC_APT_MIRRORS = release_authority._normalize_apt_mirror_pair(
+    "https://mirrors.ustc.edu.cn/debian", "https://mirrors.ustc.edu.cn/debian-security"
+)
 
 
 def test_repo_local_compose_is_the_only_frontend_owner_and_binds_one_commit():
@@ -280,6 +283,86 @@ def test_backend_and_frontend_images_publish_release_authority_labels():
     assert "ARG AI_PLATFORM_BUILD_REPOSITORY=unknown" in backend_stage
 
 
+def test_apt_mirror_pair_normalizes_https_endpoints_and_redacts_to_hostnames():
+    selection = release_authority._normalize_apt_mirror_pair(
+        "https://MIRRORS.USTC.EDU.CN/debian/",
+        "https://mirrors.ustc.edu.cn/debian-security/",
+    )
+
+    assert selection[:2] == ("https://mirrors.ustc.edu.cn/debian", "https://mirrors.ustc.edu.cn/debian-security")
+    assert selection[2:] == ("mirrors.ustc.edu.cn", "mirrors.ustc.edu.cn")
+    evidence = json.dumps(
+        {
+            "debian_hostname": selection[2],
+            "security_hostname": selection[3],
+        }
+    )
+    assert selection[0] not in evidence and selection[1] not in evidence
+    assert release_authority._normalize_apt_mirror_pair("", "")[0] is None
+
+
+def test_apt_mirror_pair_rejects_incomplete_or_unsafe_endpoints():
+    security = "https://mirror.example/debian-security"
+    invalid = [("https://mirror.example/debian", None), (None, security),
+        ("http://mirror.example/debian", security), ("https://user:pass@mirror.example/debian", security),
+        ("https://mirror.example/debian?token=secret", security), ("https://mirror.example/debian#fragment", security),
+        ("https://mirror.example/debian path", security), ("https://mirror.example/debian\tpath", security),
+        ("https://mirror.example/debian\x01path", security), ("https://mirror.example/debian/../private", security),
+        ("https://mirror.example/debian%2fprivate", security), ("https://[::1]/debian", security),
+        ("https://mirror.example:8443/debian", security),
+        ("https://foo.-bar.example/debian", security), ("https://foo-.bar.example/debian", security),
+        ("https://\u212a.example/debian", security)]
+    for apt_mirror, apt_security_mirror in invalid:
+        with pytest.raises(ReleaseAuthorityError):
+            release_authority._normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
+
+
+def test_apt_mirror_build_args_are_only_added_to_canonical_backend_build(monkeypatch, tmp_path):
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+    common = {
+        "docker": ["docker"],
+        "repo_root": tmp_path,
+        "reference": "ai-platform:" + "a" * 40,
+        "commit": "a" * 40,
+        "repository": AUTHORITATIVE_REPOSITORY,
+        "mirror_selection": USTC_APT_MIRRORS,
+    }
+    release_authority._canonical_or_source_build(
+        **common,
+        role="backend",
+        source_only=False,
+    )
+    release_authority._canonical_or_source_build(
+        **common,
+        role="frontend",
+        source_only=False,
+    )
+    release_authority._canonical_or_source_build(
+        **common,
+        role="backend",
+        source_only=True,
+    )
+    release_authority._build_from_verified_role_image(
+        ["docker"],
+        repo_root=tmp_path,
+        reference="ai-platform:" + "a" * 40,
+        base_reference="ai-platform:" + "b" * 40,
+        commit="a" * 40,
+        repository=AUTHORITATIVE_REPOSITORY,
+        role="backend",
+        action="promote",
+    )
+
+    assert "APT_MIRROR=https://mirrors.ustc.edu.cn/debian" in commands[0]
+    assert "APT_SECURITY_MIRROR=https://mirrors.ustc.edu.cn/debian-security" in commands[0]
+    for command in commands[1:]:
+        assert not any(argument.startswith("APT_") for argument in command)
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args],
@@ -2097,15 +2180,17 @@ def test_deploy_reuses_valid_existing_commit_tag_without_rebuilding(monkeypatch,
 
     monkeypatch.setattr("tools.release_authority._run", fake_run)
 
-    deploy_clean_commit(
+    deployment = deploy_clean_commit(
         tmp_path,
         commit,
         docker_cmd="docker",
         env_file=tmp_path / ".env",
         replace_known_manual_frontend=False,
+        apt_mirrors=USTC_APT_MIRRORS,
     )
 
     assert build_commands == []
+    assert deployment["apt_mirrors"]["applied"] == {"status": "reused"}
 
 
 def test_sandbox_executor_preflight_requires_exact_clean_backend_image(monkeypatch):
@@ -3986,6 +4071,8 @@ def test_release_authority_cli_exposes_git_native_main_commit_deploy():
     assert "--commit" in help_text
     assert "--compose-file" in help_text
     assert "--strategy" in help_text
+    assert "--apt-mirror" in help_text
+    assert "--apt-security-mirror" in help_text
     assert "--canonical-build-timeout-seconds SECONDS" in help_text
     assert "default: 1800" in help_text
 
@@ -4105,6 +4192,7 @@ def test_auto_backend_source_only_uses_runtime_rebuild_without_dependency_comman
         auto_plan=plan,
         current_references=current_refs,
         canonical_dependency_build_timeout_seconds=2400,
+        apt_mirrors=USTC_APT_MIRRORS,
     )
 
     builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
@@ -4123,6 +4211,7 @@ def test_auto_backend_source_only_uses_runtime_rebuild_without_dependency_comman
         release_authority.RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
         > release_authority.BACKEND_STAGE_TIMEOUT_SECONDS
     )
+    assert deployment["apt_mirrors"]["applied"] == {"status": "not-used"}
 
 
 def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_path):
@@ -4137,7 +4226,7 @@ def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_p
         release_authority.classify_runtime_changes(["pyproject.toml"]),
     )
 
-    deploy_clean_commit(
+    deployment = deploy_clean_commit(
         tmp_path,
         target,
         docker_cmd="docker",
@@ -4146,6 +4235,7 @@ def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_p
         strategy="auto",
         auto_plan=plan,
         current_references=current_refs,
+        apt_mirrors=USTC_APT_MIRRORS,
     )
 
     builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
@@ -4153,6 +4243,7 @@ def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_p
     assert all("frontend/web/Dockerfile" not in command for command, _ in builds)
     promoted_frontend = next(kwargs["input"] for command, kwargs in builds if "frontend" in command[command.index("-t") + 1])
     assert "ai-platform-build-provenance.json" in promoted_frontend
+    assert deployment["apt_mirrors"]["applied"] == {"status": "applied", "scope": "canonical-backend-dependency-build", "debian_hostname": "mirrors.ustc.edu.cn", "security_hostname": "mirrors.ustc.edu.cn"}
 
 
 def test_auto_no_runtime_change_promotes_roles_without_role_builds(monkeypatch, tmp_path):
@@ -4176,12 +4267,14 @@ def test_auto_no_runtime_change_promotes_roles_without_role_builds(monkeypatch, 
         strategy="auto",
         auto_plan=plan,
         current_references=current_refs,
+        apt_mirrors=USTC_APT_MIRRORS,
     )
 
     builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
     assert all(command[command.index("-f") + 1] == "-" for command, _ in builds)
     assert {event["action"] for event in deployment["stages"] if event["stage"].endswith("-image")} == {"promote"}
     assert deployment["plan"]["no_runtime_change"] is True
+    assert deployment["apt_mirrors"]["applied"] == {"status": "not-used"}
 
 
 def test_auto_promote_rewrites_target_labels_and_embedded_markers():
@@ -4710,7 +4803,7 @@ def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, t
     )
 
     for _ in range(2):
-        deploy_clean_commit(
+        deployment = deploy_clean_commit(
             tmp_path,
             target,
             docker_cmd="docker",
@@ -4719,7 +4812,9 @@ def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, t
             strategy="auto",
             auto_plan=plan,
             current_references=references,
+            apt_mirrors=USTC_APT_MIRRORS,
         )
+        assert deployment["apt_mirrors"]["applied"] == {"status": "reused"}
 
     assert not any("build" in command for command, _ in commands)
     assert sum("compose" in command for command, _ in commands) == 2

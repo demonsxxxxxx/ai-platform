@@ -23,6 +23,7 @@ import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO, Sequence
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 if __package__:
@@ -151,6 +152,8 @@ class _ManagedContainerOwnership:
     manual_frontend_id: str | None
 
 
+_AptMirrorSelection = tuple[str | None, str | None, str | None, str | None]
+_EMPTY_APT_MIRRORS: _AptMirrorSelection = (None, None, None, None)
 @dataclass
 class _BuildProgressStep:
     """Bounded allowlisted state retained for one observed BuildKit step."""
@@ -938,6 +941,48 @@ def _normalize_commit(value: str) -> str:
     if not FULL_COMMIT_RE.fullmatch(commit):
         raise ReleaseAuthorityError("release commit must be a full 40-character lowercase SHA")
     return commit
+
+
+def _normalize_apt_mirror_pair(
+    apt_mirror: str | None,
+    apt_security_mirror: str | None,
+) -> _AptMirrorSelection:
+    """Require a complete HTTPS mirror pair or preserve upstream Debian defaults."""
+    supplied = (apt_mirror not in (None, ""), apt_security_mirror not in (None, ""))
+    if supplied[0] != supplied[1]:
+        raise ReleaseAuthorityError(
+            "--apt-mirror and --apt-security-mirror must be supplied together"
+        )
+    if not any(supplied):
+        return _EMPTY_APT_MIRRORS
+    endpoints = []
+    for option_name, value in (("--apt-mirror", apt_mirror), ("--apt-security-mirror", apt_security_mirror)):
+        if not isinstance(value, str) or not value.isascii() or any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+            raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL")
+        try:
+            parsed = urlsplit(value)
+            port, hostname = parsed.port, parsed.hostname
+        except ValueError:
+            raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL") from None
+        path = parsed.path.rstrip("/")
+        host = hostname.lower() if hostname is not None and hostname.isascii() else ""
+        labels = host.split(".")
+        unsafe = (
+            parsed.scheme != "https" or parsed.username is not None or parsed.password is not None or "@" in parsed.netloc
+            or parsed.query or parsed.fragment or "?" in value or "#" in value or port is not None or ":" in parsed.netloc
+            or not 1 <= len(host) <= 253 or any(
+                not label or len(label) > 63 or label[0] == "-" or label[-1] == "-"
+                or re.fullmatch(r"[a-z0-9-]+", label, re.ASCII) is None
+                for label in labels
+            ) or not path.startswith("/")
+            or not re.fullmatch(r"[A-Za-z0-9._~/-]+", path) or "%" in parsed.path or "\\" in parsed.path or "//" in parsed.path
+            or any(segment in {".", ".."} for segment in path.split("/")[1:])
+        )
+        if unsafe:
+            raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL")
+        endpoints.append((f"https://{host}{path}", host))
+    (debian_url, debian_hostname), (security_url, security_hostname) = endpoints
+    return debian_url, security_url, debian_hostname, security_hostname
 
 
 def _validate_canonical_dependency_build_timeout(value: int) -> int:
@@ -1941,11 +1986,21 @@ def _existing_release_image(
     return image
 
 
-def _build_args(commit: str, repository: str) -> list[str]:
+def _build_args(
+    commit: str,
+    repository: str,
+    *,
+    mirror_selection: _AptMirrorSelection | None = None,
+) -> list[str]:
+    """Build provenance args and optional validated backend APT mirror args."""
     return [
         "--build-arg", f"AI_PLATFORM_BUILD_COMMIT={commit}",
         "--build-arg", "AI_PLATFORM_BUILD_DIRTY=false",
         "--build-arg", f"AI_PLATFORM_BUILD_REPOSITORY={repository}",
+        *([
+            "--build-arg", f"APT_MIRROR={mirror_selection[0]}",
+            "--build-arg", f"APT_SECURITY_MIRROR={mirror_selection[1]}",
+        ] if mirror_selection is not None and mirror_selection[0] is not None else []),
     ]
 
 
@@ -1976,10 +2031,14 @@ def _canonical_or_source_build(
     repository: str,
     role: str,
     source_only: bool,
+    mirror_selection: _AptMirrorSelection | None = None,
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
 ) -> None:
     dockerfile = "Dockerfile" if role == "backend" else "frontend/web/Dockerfile"
-    command = [*docker, "build", *_build_args(commit, repository), "-t", reference]
+    mirror_selection = mirror_selection if role == "backend" and not source_only else None
+    command = [
+        *docker, "build", *_build_args(commit, repository, mirror_selection=mirror_selection), "-t", reference,
+    ]
     if source_only:
         command.extend(["--target", "runtime"])
     command.extend(["-f", dockerfile, "."])
@@ -1987,13 +2046,7 @@ def _canonical_or_source_build(
         command,
         cwd=repo_root,
         classify_build_progress=not source_only,
-        timeout=_role_timeout(
-            role,
-            canonical_dependency=not source_only,
-            canonical_dependency_build_timeout_seconds=(
-                canonical_dependency_build_timeout_seconds
-            ),
-        ),
+        timeout=_role_timeout(role, canonical_dependency=not source_only, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds),
     )
 
 
@@ -2560,7 +2613,6 @@ def _auto_release_plan(
     )
     return build_auto_release_plan(current_commit, target_commit, changes)
 
-
 def deploy_clean_commit(
     repo_root: Path,
     commit: str,
@@ -2577,6 +2629,7 @@ def deploy_clean_commit(
     stage_events: list[dict[str, Any]] | None = None,
     managed_release_root: Path | None = None,
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+    apt_mirrors: _AptMirrorSelection | None = None,
     allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Build immutable images and recreate the repo-local compose release."""
@@ -2587,20 +2640,12 @@ def deploy_clean_commit(
     if allow_backend_layer_flatten_recovery:
         if auto_plan is None:
             raise ReleaseAuthorityError("backend layer flatten recovery requires an auto release plan")
-        validate_backend_layer_flatten_recovery_request(
-            enabled=True,
-            strategy=strategy,
-            backend_action=next(
-                (item.action for item in auto_plan.roles if item.role == "backend"), None
-            ),
-        )
+        validate_backend_layer_flatten_recovery_request(enabled=True, strategy=strategy, backend_action=next((item.action for item in auto_plan.roles if item.role == "backend"), None))
         if managed_release_root is None:
             raise ReleaseAuthorityError("backend layer flatten recovery requires a managed release root")
-    canonical_dependency_build_timeout_seconds = (
-        _validate_canonical_dependency_build_timeout(
-            canonical_dependency_build_timeout_seconds
-        )
-    )
+    canonical_dependency_build_timeout_seconds = _validate_canonical_dependency_build_timeout(canonical_dependency_build_timeout_seconds)
+    apt_mirror_selection = apt_mirrors or _EMPTY_APT_MIRRORS
+    apt_mirror_status = "not-requested" if apt_mirror_selection[0] is None else "not-used"
     events = stage_events if stage_events is not None else []
     if managed_release_root is not None:
         compose_env_file = resolve_managed_env_file(managed_release_root, Path(env_file))
@@ -2613,24 +2658,14 @@ def deploy_clean_commit(
     selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
     repository = authoritative_repository(repo_root)
-    ownership = _preflight_managed_container_ownership(
-        docker,
-        selection,
-        replace_known_manual_frontend=replace_known_manual_frontend,
-        expected_manual_frontend_image=expected_manual_frontend_image,
-        expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-    )
+    ownership = _preflight_managed_container_ownership(docker, selection, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id)
     refs = build_image_references(normalized)
     images: dict[str, dict[str, Any]] = {}
     for role, reference in refs.items():
         image_lookup_started = time.monotonic()
-        image = _existing_release_image(
-            docker,
-            reference,
-            commit=normalized,
-            repository=repository,
-            role=role,
-        )
+        image = _existing_release_image(docker, reference, commit=normalized, repository=repository, role=role)
+        if role == "backend" and image is not None and apt_mirror_status != "not-requested":
+            apt_mirror_status = "reused"
         if image is not None and strategy == "auto":
             events.append(
                 {
@@ -2648,6 +2683,8 @@ def deploy_clean_commit(
                 else RolePlan(role, "dependency", "canonical-build", ())
             )
             if item.action == "canonical-build":
+                if role == "backend" and apt_mirror_selection[0] is not None:
+                    apt_mirror_status = "applied"
                 _stage(
                     events,
                     name=f"{role}-image",
@@ -2661,6 +2698,7 @@ def deploy_clean_commit(
                         repository=repository,
                         role=role,
                         source_only=False,
+                        mirror_selection=apt_mirror_selection if role == "backend" else None,
                         canonical_dependency_build_timeout_seconds=(
                             canonical_dependency_build_timeout_seconds
                         ),
@@ -2688,13 +2726,7 @@ def deploy_clean_commit(
                 base_reference = current_references.get(role)
                 if not base_reference:
                     raise ReleaseAuthorityError("verified current role image is unavailable")
-                base_image = _existing_release_image(
-                    docker,
-                    base_reference,
-                    commit=auto_plan.current_commit if auto_plan is not None else normalized,
-                    repository=repository,
-                    role=role,
-                )
+                base_image = _existing_release_image(docker, base_reference, commit=auto_plan.current_commit if auto_plan is not None else normalized, repository=repository, role=role)
                 if base_image is None:
                     raise ReleaseAuthorityError("verified current role image is unavailable")
                 if allow_backend_layer_flatten_recovery and role == "backend" and item.action == "runtime-rebuild":
@@ -2753,12 +2785,7 @@ def deploy_clean_commit(
             _validate_release_image(image, commit=normalized, repository=repository, role=role)
         images[role] = image
 
-    images["backend"] = _require_sandbox_executor_image(
-        docker,
-        refs["backend"],
-        commit=normalized,
-        repository=repository,
-    )
+    images["backend"] = _require_sandbox_executor_image(docker, refs["backend"], commit=normalized, repository=repository)
 
     if managed_release_root is not None:
         assert_managed_target_checkout(repo_root, normalized, managed_release_root)
@@ -2767,13 +2794,7 @@ def deploy_clean_commit(
     revalidated = resolve_compose_files(repo_root, selection.relative_paths)
     if revalidated != selection:
         raise ReleaseAuthorityError("compose file selection changed during release preflight")
-    revalidated_ownership = _preflight_managed_container_ownership(
-        docker,
-        selection,
-        replace_known_manual_frontend=replace_known_manual_frontend,
-        expected_manual_frontend_image=expected_manual_frontend_image,
-        expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-    )
+    revalidated_ownership = _preflight_managed_container_ownership(docker, selection, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id)
     if revalidated_ownership != ownership:
         raise ReleaseAuthorityError("managed container ownership changed during release preflight")
     if managed_release_root is not None:
@@ -2801,11 +2822,7 @@ def deploy_clean_commit(
         compose_command = ["sudo", "-n", "env", *compose_environment, "docker"]
     else:
         compose_command = ["env", *compose_environment, *docker]
-    compose_file_args = [
-        argument
-        for path in selection.absolute_paths
-        for argument in ("-f", str(path))
-    ]
+    compose_file_args = [argument for path in selection.absolute_paths for argument in ("-f", str(path))]
     _stage(
         events,
         name="compose-recreate",
@@ -2835,6 +2852,18 @@ def deploy_clean_commit(
         "compose_files": [str(path) for path in selection.absolute_paths],
         "strategy": strategy,
         "stages": events,
+        "apt_mirrors": {
+            "requested": {
+                "status": "requested" if apt_mirror_selection[0] is not None else "not-requested",
+                "debian_hostname": apt_mirror_selection[2],
+                "security_hostname": apt_mirror_selection[3],
+            },
+            "applied": (
+                {"status": "applied", "scope": "canonical-backend-dependency-build", "debian_hostname": apt_mirror_selection[2], "security_hostname": apt_mirror_selection[3]}
+                if apt_mirror_status == "applied"
+                else {"status": apt_mirror_status}
+            ),
+        },
     }
     if auto_plan is not None:
         result["plan"] = _plan_as_dict(
@@ -2859,6 +2888,8 @@ def deploy_main_commit(
     strategy: str = "canonical",
     coordination_source: Path | None = None,
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+    apt_mirror: str | None = None,
+    apt_security_mirror: str | None = None,
     allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Deploy and verify an exact fetched main commit from an isolated checkout."""
@@ -2869,27 +2900,14 @@ def deploy_main_commit(
     canonical_dependency_build_timeout_seconds = _validate_canonical_dependency_build_timeout(
         canonical_dependency_build_timeout_seconds
     )
+    apt_mirrors = _normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
     normalized = _normalize_commit(commit)
     authority_commit: str | None = None
     if coordination_source is not None:
         assert_clean_coordination_source(coordination_source, normalized)
         authority_commit = normalized
     try:
-        result = _deploy_main_commit_after_authority(
-            release_root,
-            normalized,
-            docker_cmd=docker_cmd,
-            env_file=env_file,
-            replace_known_manual_frontend=replace_known_manual_frontend,
-            expected_manual_frontend_image=expected_manual_frontend_image,
-            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-            compose_files=compose_files,
-            strategy=strategy,
-            canonical_dependency_build_timeout_seconds=(
-                canonical_dependency_build_timeout_seconds
-            ),
-            allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery,
-        )
+        result = _deploy_main_commit_after_authority(release_root, normalized, docker_cmd=docker_cmd, env_file=env_file, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id, compose_files=compose_files, strategy=strategy, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds, apt_mirrors=apt_mirrors, allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery)
     except (ReleaseAuthorityError, BackendFlattenError) as exc:
         error = ReleaseAuthorityError("backend layer flatten recovery failed") if isinstance(exc, BackendFlattenError) else exc
         if authority_commit is not None:
@@ -2916,26 +2934,14 @@ def _deploy_main_commit_after_authority(
     compose_files: Sequence[str | Path] | None = None,
     strategy: str = "canonical",
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+    apt_mirrors: _AptMirrorSelection | None = None,
     allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Execute target materialization and deployment after authority provenance is proven."""
     managed_env_file = resolve_managed_env_file(release_root, env_file)
     checkout = materialize_main_checkout(release_root, normalized)
     if strategy == "canonical":
-        deployment = deploy_clean_commit(
-            checkout,
-            normalized,
-            docker_cmd=docker_cmd,
-            env_file=managed_env_file,
-            replace_known_manual_frontend=replace_known_manual_frontend,
-            expected_manual_frontend_image=expected_manual_frontend_image,
-            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-            compose_files=compose_files,
-            managed_release_root=release_root,
-            canonical_dependency_build_timeout_seconds=(
-                canonical_dependency_build_timeout_seconds
-            ),
-        )
+        deployment = deploy_clean_commit(checkout, normalized, docker_cmd=docker_cmd, env_file=managed_env_file, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id, compose_files=compose_files, managed_release_root=release_root, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds, apt_mirrors=apt_mirrors)
         parity = collect_live_parity(
             checkout,
             normalized,
@@ -2975,25 +2981,7 @@ def _deploy_main_commit_after_authority(
                 strategy=strategy,
                 backend_action=next((item.action for item in plan.roles if item.role == "backend"), None),
             )
-        deployment = deploy_clean_commit(
-            checkout,
-            normalized,
-            docker_cmd=docker_cmd,
-            env_file=managed_env_file,
-            replace_known_manual_frontend=replace_known_manual_frontend,
-            expected_manual_frontend_image=expected_manual_frontend_image,
-            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-            compose_files=compose_files,
-            strategy=strategy,
-            auto_plan=plan,
-            current_references=current["references"],
-            stage_events=events,
-            managed_release_root=release_root,
-            canonical_dependency_build_timeout_seconds=(
-                canonical_dependency_build_timeout_seconds
-            ),
-            allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery,
-        )
+        deployment = deploy_clean_commit(checkout, normalized, docker_cmd=docker_cmd, env_file=managed_env_file, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id, compose_files=compose_files, strategy=strategy, auto_plan=plan, current_references=current["references"], stage_events=events, managed_release_root=release_root, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds, apt_mirrors=apt_mirrors, allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery)
 
         def collect_final_parity(_: float) -> dict[str, Any]:
             return collect_live_parity(
@@ -3099,6 +3087,14 @@ def main() -> int:
         ),
     )
     deploy_main.add_argument(
+        "--apt-mirror",
+        help="Optional HTTPS Debian archive mirror; requires --apt-security-mirror",
+    )
+    deploy_main.add_argument(
+        "--apt-security-mirror",
+        help="Optional HTTPS Debian security mirror; requires --apt-mirror",
+    )
+    deploy_main.add_argument(
         "--strategy",
         choices=("auto", "canonical"),
         default="auto",
@@ -3171,6 +3167,8 @@ def main() -> int:
                     canonical_dependency_build_timeout_seconds=(
                         args.canonical_build_timeout_seconds
                     ),
+                    apt_mirror=args.apt_mirror,
+                    apt_security_mirror=args.apt_security_mirror,
                     allow_backend_layer_flatten_recovery=(
                         args.allow_backend_layer_flatten_recovery
                     ),
