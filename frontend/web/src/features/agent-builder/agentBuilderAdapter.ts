@@ -109,8 +109,8 @@ export function revalidateAgentBuilderDraft(
   draft: AgentBuilderDraft,
   catalog: AgentBuilderCurrentCatalog,
 ): { sanitizedDraft: AgentBuilderDraft; code: AgentBuilderSubmissionBlockCode | null } {
-  let selectedSkill = draft.selectedSkill;
-  let selectedMcpToolIds = Array.from(
+  const selectedSkill = draft.selectedSkill;
+  const selectedMcpToolIds = Array.from(
     new Set(draft.selectedMcpToolIds.filter((toolId) => toolId.trim().length > 0)),
   );
 

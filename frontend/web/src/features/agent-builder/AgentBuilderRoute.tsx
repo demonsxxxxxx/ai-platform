@@ -11,6 +11,8 @@ import {
   mapSafeBuilderMcpTools,
 } from "./agentBuilderAdapter";
 
+const BUILDER_CATALOG_LOAD_ERROR = "暂时无法加载授权目录，请稍后刷新后重试。";
+
 /** Activated route bridge: catalog refresh stays outside the draft submission authority. */
 export function AgentBuilderRoute() {
   const navigate = useNavigate();
@@ -45,10 +47,10 @@ export function AgentBuilderRoute() {
       .then((response) => {
         if (current) setModels(response.models);
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (!current || controller.signal.aborted) return;
         setModels([]);
-        setModelsError(error instanceof Error ? error.message : "Unable to load models.");
+        setModelsError(BUILDER_CATALOG_LOAD_ERROR);
       })
       .finally(() => {
         if (current) setModelsLoading(false);
@@ -65,6 +67,9 @@ export function AgentBuilderRoute() {
     void refreshTools();
     setModelRequestRevision((revision) => revision + 1);
   }, [fetchSkills, refreshTools]);
+  const catalogError = skillsError || toolsError || modelsError
+    ? BUILDER_CATALOG_LOAD_ERROR
+    : null;
 
   const catalog = useMemo(
     () => ({
@@ -80,18 +85,18 @@ export function AgentBuilderRoute() {
       modelsResolved: !modelsLoading && modelsError === null,
       effectivePermissionsKnown,
       isLoading: skillsLoading || toolsLoading || modelsLoading,
-      error: skillsError || toolsError || modelsError,
+      error: catalogError,
       retry: retryCatalog,
     }),
     [
       catalogReadResolved,
+      catalogError,
       effectivePermissionsKnown,
       models,
       modelsError,
       modelsLoading,
       retryCatalog,
       skills,
-      skillsError,
       skillsLoading,
       tools,
       toolsError,

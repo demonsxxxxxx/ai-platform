@@ -69,6 +69,7 @@ export function SidebarRail({
   const skillsNavigationLabel = isAiAdmin
     ? t("nav.skillManagement")
     : t("skills.available.title");
+  const agentNavigationLabel = isAiAdmin ? "智能体管理" : "智能体市场";
   const isRailItemActive = (item: WorkbenchNavItem) =>
     showActiveRailState && activeRailItem === item;
 
@@ -164,8 +165,8 @@ export function SidebarRail({
           onClick={onOpenAgentBuilder}
           className={railBtn}
           aria-current={isRailItemActive("agentBuilder") ? "page" : undefined}
-          title="Agent Builder"
-          aria-label="Agent Builder"
+          title={agentNavigationLabel}
+          aria-label={agentNavigationLabel}
           itemKey="agentBuilder"
           active={isRailItemActive("agentBuilder")}
         >

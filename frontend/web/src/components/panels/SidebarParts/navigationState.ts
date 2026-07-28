@@ -14,6 +14,7 @@ export type WorkbenchNavItem =
 const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/apps(?:\/|$)/, "apps"],
   [/^\/agent-builder(?:\/|$)/, "agentBuilder"],
+  [/^\/agent-market(?:\/|$)/, "agentBuilder"],
   [/^\/skills(?:\/|$)/, "skills"],
   [/^\/files(?:\/|$)/, "files"],
   [/^\/mcp(?:\/|$)/, "mcp"],
@@ -50,5 +51,8 @@ export function getSafeWorkbenchNavPath(
   item: WorkbenchNavItem,
   user: WorkbenchAccessUser,
 ): string {
+  if (item === "agentBuilder") {
+    return user?.is_admin === true ? "/agent-builder" : "/agent-market";
+  }
   return canAccessWorkbenchItem(user, item) ? navItemToPath[item] : "/chat";
 }

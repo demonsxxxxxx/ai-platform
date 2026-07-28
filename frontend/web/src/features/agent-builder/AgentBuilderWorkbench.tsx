@@ -15,11 +15,10 @@ import type { ModelOption } from "../../services/api/modelPublic";
 import { agentProfileApi } from "../../services/api/agentProfile";
 import type {
   AgentProfileAdminProjection,
-  AgentProfilePublicProjection,
   PublicSkillResponse,
 } from "../../types";
 import { useAgent } from "../../hooks/useAgent";
-import { AgentBuilderDialog } from "./AgentBuilderDialog";
+import { AgentBuilderDialog } from "../../components/agent-builder/AgentBuilderDialog";
 import {
   type AgentBuilderCurrentCatalog,
   type AgentBuilderDraft,
@@ -90,23 +89,23 @@ function updateDraft(
 
 function controllerMessage(state: AgentBuilderControllerState): string | null {
   if (state.phase === "blocked" && state.code === "file_attachment_unavailable") {
-    return "This Skill requires a file. File upload is unavailable in Agent Builder.";
+    return "该 Skill 需要文件，但智能体构建器暂不支持文件上传。";
   }
   if (state.phase === "blocked" && state.code === "catalog_unavailable") {
-    return "The authorized catalog is refreshing. Wait before submitting.";
+    return "授权目录正在刷新，请稍后再提交。";
   }
   if (state.phase === "blocked" && state.code === "selected_skill_stale") {
-    return "The selected Skill changed or is no longer authorized. Choose it again.";
+    return "所选 Skill 已变更或不再获授权，请重新选择。";
   }
   if (state.phase === "blocked" && state.code === "selected_mcp_tool_unavailable") {
-    return "One or more selected MCP tools changed or are no longer authorized. Choose the current tools again.";
+    return "一个或多个已选 MCP 工具已变更或不再获授权，请重新选择。";
   }
   if (state.phase === "blocked" && state.code === "selected_model_stale") {
-    return "The selected model changed or is no longer available. Choose it again.";
+    return "所选模型已变更或不可用，请重新选择。";
   }
-  if (state.phase === "blocked") return "Enter a message before submitting.";
-  if (state.phase === "error") return "Chat submission was not accepted. Update the draft and retry.";
-  if (state.phase === "awaiting_chat_identity") return "Opening the authoritative Chat run...";
+  if (state.phase === "blocked") return "请输入预览消息后再提交。";
+  if (state.phase === "error") return "对话提交未被接受，请更新草稿后重试。";
+  if (state.phase === "awaiting_chat_identity") return "正在打开已确认的对话运行…";
   return null;
 }
 
@@ -124,7 +123,6 @@ interface AgentBuilderWorkbenchState {
   acceptChatIdentity: (identity: AgentBuilderChatIdentity | null) => void;
   markProfileDraft: (profile: AgentProfileAdminProjection) => void;
   markProfilePublished: (profile: AgentProfileAdminProjection) => void;
-  selectPublishedProfile: (profile: AgentProfilePublicProjection) => void;
 }
 
 function useAgentBuilderWorkbenchState(
@@ -135,8 +133,8 @@ function useAgentBuilderWorkbenchState(
     controllerRef.current.state,
   );
   const [drafts, setDrafts] = useState<LocalDraft[]>(() => [
-    createLocalDraft("local-draft-1", "New agent"),
-    createLocalDraft("local-draft-2", "Research agent"),
+    createLocalDraft("local-draft-1", "新建智能体"),
+    createLocalDraft("local-draft-2", "研究智能体"),
   ]);
   const [activeDraftId, setActiveDraftId] = useState("local-draft-1");
   const nextDraftIdRef = useRef(3);
@@ -200,7 +198,7 @@ function useAgentBuilderWorkbenchState(
   const createDraft = useCallback(() => {
     const id = `local-draft-${nextDraftIdRef.current++}`;
     setControllerState(controllerRef.current.invalidateDraft());
-    setDrafts((current) => [...current, createLocalDraft(id, "New agent")]);
+    setDrafts((current) => [...current, createLocalDraft(id, "新建智能体")]);
     setActiveDraftId(id);
   }, []);
 
@@ -240,17 +238,6 @@ function useAgentBuilderWorkbenchState(
     })));
   }, [activeDraft.id]);
 
-  const selectPublishedProfile = useCallback((profile: AgentProfilePublicProjection) => {
-    setControllerState(controllerRef.current.invalidateDraft());
-    setDrafts((current) => updateDraft(current, activeDraft.id, (draft) => ({
-      ...draft,
-      selectedAgentProfile: {
-        agent_id: profile.agent_id,
-        expected_revision: profile.expected_revision,
-      },
-    })));
-  }, [activeDraft.id]);
-
   return {
     controllerState,
     drafts,
@@ -265,7 +252,6 @@ function useAgentBuilderWorkbenchState(
     acceptChatIdentity,
     markProfileDraft,
     markProfilePublished,
-    selectPublishedProfile,
   };
 }
 
@@ -291,35 +277,12 @@ function AgentBuilderWorkbenchContent({
     acceptChatIdentity,
     markProfileDraft,
     markProfilePublished,
-    selectPublishedProfile,
   } = workbench;
   const draft = activeDraft.draft;
   const [persistenceState, setPersistenceState] = useState<{
     busy: boolean;
     error: string | null;
   }>({ busy: false, error: null });
-  const [marketState, setMarketState] = useState<{
-    profiles: AgentProfilePublicProjection[];
-    loading: boolean;
-    error: string | null;
-  }>({ profiles: [], loading: true, error: null });
-  const refreshPublishedProfiles = useCallback(async () => {
-    setMarketState((current) => ({ ...current, loading: true, error: null }));
-    try {
-      const response = await agentProfileApi.listPublished();
-      setMarketState({
-        profiles: response.agent_profiles,
-        loading: false,
-        error: null,
-      });
-    } catch (error) {
-      setMarketState((current) => ({
-        ...current,
-        loading: false,
-        error: error instanceof Error ? error.message : "Unable to load published Agents.",
-      }));
-    }
-  }, []);
   const canPersist = Boolean(
     activeDraft.name.trim() &&
     draft.instructions.trim() &&
@@ -329,7 +292,7 @@ function AgentBuilderWorkbenchContent({
   const saveDraft = useCallback(async () => {
     if (!canManageProfiles) return;
     if (!canPersist || !draft.model || !draft.selectedSkill) {
-      setPersistenceState({ busy: false, error: "Choose a name, instructions, model, and Skill before saving." });
+      setPersistenceState({ busy: false, error: "请填写名称、说明、模型和 Skill 后再保存。" });
       return;
     }
     setPersistenceState({ busy: true, error: null });
@@ -351,10 +314,10 @@ function AgentBuilderWorkbenchContent({
       );
       markProfileDraft(response.agent_profile);
       setPersistenceState({ busy: false, error: null });
-    } catch (error) {
+    } catch {
       setPersistenceState({
         busy: false,
-        error: error instanceof Error ? error.message : "Unable to save the Agent draft.",
+        error: "无法保存智能体草稿，请检查配置后重试。",
       });
     }
   }, [activeDraft.name, canManageProfiles, canPersist, draft, markProfileDraft]);
@@ -366,17 +329,17 @@ function AgentBuilderWorkbenchContent({
       const response = await agentProfileApi.publish(draft.agentId, draft.draftRevision);
       markProfilePublished(response.agent_profile);
       setPersistenceState({ busy: false, error: null });
-    } catch (error) {
+    } catch {
       setPersistenceState({
         busy: false,
-        error: error instanceof Error ? error.message : "Unable to publish the Agent draft.",
+        error: "无法发布智能体草稿，请刷新后重试。",
       });
     }
   }, [canManageProfiles, draft.agentId, draft.draftRevision, markProfilePublished]);
   const stateMessage =
     controllerMessage(controllerState) ??
     (draft.selectedSkill?.requires_file
-      ? "This Skill requires a file. File upload is unavailable in Agent Builder."
+      ? "该 Skill 需要文件，但智能体构建器暂不支持文件上传。"
       : null);
   const selectedModelIsCurrent =
     draft.model !== null &&
@@ -388,10 +351,6 @@ function AgentBuilderWorkbenchContent({
     if (controllerState.phase !== "awaiting_chat_identity") return;
     acceptChatIdentity(chatIdentity);
   }, [acceptChatIdentity, chatIdentity, controllerState.phase]);
-
-  useEffect(() => {
-    void refreshPublishedProfiles();
-  }, [refreshPublishedProfiles]);
 
   useEffect(() => {
     if (controllerState.phase === "handoff_ready") {
@@ -425,19 +384,19 @@ function AgentBuilderWorkbenchContent({
         <div className="flex min-w-0 items-center gap-3">
           <Bot size={20} className="shrink-0 text-[var(--theme-primary)]" aria-hidden="true" />
           <div className="min-w-0">
-            <h1 className="truncate text-lg font-semibold">Agent Builder</h1>
+            <h1 className="truncate text-lg font-semibold">智能体构建器</h1>
             <p className="text-sm text-[var(--theme-text-secondary)]">
               {draft.selectedAgentProfile
-                ? `Published revision ${draft.selectedAgentProfile.expected_revision}`
+                ? `已发布版本 ${draft.selectedAgentProfile.expected_revision}`
                 : draft.draftRevision
-                  ? `Saved draft revision ${draft.draftRevision}`
-                  : "Unsaved local draft"}
+                  ? `已保存草稿版本 ${draft.draftRevision}`
+                  : "未保存的本地草稿"}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button
-            aria-label="Refresh catalogs"
+            aria-label="刷新目录"
             className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
             disabled={catalog.isLoading}
             onClick={catalog.retry}
@@ -448,7 +407,7 @@ function AgentBuilderWorkbenchContent({
               className={catalog.isLoading ? "animate-spin" : undefined}
               aria-hidden="true"
             />
-            <span className="hidden sm:inline">Refresh catalogs</span>
+            <span className="hidden sm:inline">刷新目录</span>
           </button>
           {canManageProfiles ? (
             <>
@@ -459,7 +418,7 @@ function AgentBuilderWorkbenchContent({
                 type="button"
               >
                 <Save size={16} aria-hidden="true" />
-                Save draft
+                保存草稿
               </button>
               <button
                 className="btn-primary hidden items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 sm:inline-flex"
@@ -467,7 +426,7 @@ function AgentBuilderWorkbenchContent({
                 onClick={() => void publishDraft()}
                 type="button"
               >
-                Publish
+                发布
               </button>
             </>
           ) : null}
@@ -477,12 +436,12 @@ function AgentBuilderWorkbenchContent({
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[15rem_minmax(0,1fr)_18rem] lg:overflow-hidden">
         <aside className="border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] lg:overflow-y-auto lg:border-b-0 lg:border-r">
           <div className="flex items-center justify-between px-4 py-3">
-            <h2 className="text-sm font-semibold">Agents</h2>
+            <h2 className="text-sm font-semibold">智能体草稿</h2>
             <button
-              aria-label="Create local draft"
+              aria-label="创建本地草稿"
               className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--theme-text-secondary)] hover:bg-[var(--theme-workbench-canvas)] hover:text-[var(--theme-text)]"
               onClick={createDraft}
-              title="Create local draft"
+              title="创建本地草稿"
               type="button"
             >
               <Plus size={17} aria-hidden="true" />
@@ -510,7 +469,7 @@ function AgentBuilderWorkbenchContent({
               <div className="flex items-center justify-between gap-3 border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-200">
                 <span className="min-w-0">{catalog.error}</span>
                 <button className="btn-secondary shrink-0" onClick={catalog.retry} type="button">
-                  Retry
+                  重试
                 </button>
               </div>
             ) : null}
@@ -527,7 +486,7 @@ function AgentBuilderWorkbenchContent({
             ) : null}
 
             <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">Name</span>
+              <span className="text-sm font-medium">名称</span>
               <input
                 className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm outline-none focus:border-[var(--theme-primary)]"
                 onChange={(event) => renameActiveDraft(event.target.value)}
@@ -536,19 +495,19 @@ function AgentBuilderWorkbenchContent({
             </label>
 
             <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">Description</span>
+              <span className="text-sm font-medium">简介</span>
               <textarea
-                aria-label="Agent description"
+                aria-label="智能体简介"
                 className="min-h-20 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)]"
                 onChange={(event) => replaceActiveDraft((current) => ({ ...current, description: event.target.value }))}
-                placeholder="Safe market description"
+                placeholder="展示给普通用户的安全简介"
                 value={draft.description ?? ""}
               />
             </label>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className="flex flex-col gap-2">
-                <span className="text-sm font-medium">Model</span>
+                <span className="text-sm font-medium">模型</span>
                 <select
                   className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm outline-none focus:border-[var(--theme-primary)]"
                   disabled={catalog.isLoading}
@@ -560,8 +519,8 @@ function AgentBuilderWorkbenchContent({
                 >
                   <option value="">
                     {draft.model && !selectedModelIsCurrent
-                      ? "Choose the current model again"
-                      : "Default model"}
+                      ? "请重新选择当前可用模型"
+                      : "选择模型"}
                   </option>
                   {catalog.models.map((item) => (
                     <option key={item.id} value={item.id}>{item.label}</option>
@@ -569,13 +528,13 @@ function AgentBuilderWorkbenchContent({
                 </select>
               </label>
               <div className="flex flex-col gap-2">
-                <span className="text-sm font-medium">Capabilities</span>
+                <span className="text-sm font-medium">能力</span>
                 <div className="flex h-10 items-center gap-2">
                   <button className="btn-secondary inline-flex flex-1 items-center justify-center gap-2" onClick={() => setDialog("skills")} type="button">
                     <Settings2 size={16} aria-hidden="true" />
-                    {draft.selectedSkill?.name ?? "Select Skill"}
+                    {draft.selectedSkill?.name ?? "选择 Skill"}
                   </button>
-                  <button aria-label="Configure MCP tools" className="btn-secondary inline-flex h-10 w-10 items-center justify-center" onClick={() => setDialog("tools")} title="Configure MCP tools" type="button">
+                  <button aria-label="配置 MCP 工具" className="btn-secondary inline-flex h-10 w-10 items-center justify-center" onClick={() => setDialog("tools")} title="配置 MCP 工具" type="button">
                     <Wrench size={16} aria-hidden="true" />
                   </button>
                 </div>
@@ -584,111 +543,66 @@ function AgentBuilderWorkbenchContent({
 
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-medium">Instructions</span>
+                <span className="text-sm font-medium">系统说明</span>
                 <button className="text-sm text-[var(--theme-primary)] hover:underline" onClick={() => setDialog("instructions")} type="button">
-                  Edit
+                  编辑
                 </button>
               </div>
               <textarea
-                aria-label="Local draft instructions"
+                aria-label="本地草稿系统说明"
                 className="min-h-28 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)]"
                 onChange={(event) => replaceActiveDraft((current) => ({ ...current, instructions: event.target.value }))}
-                placeholder="Local draft instructions"
+                placeholder="仅管理员可编辑的系统说明"
                 value={draft.instructions}
               />
             </div>
 
             <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">Preview message</span>
+              <span className="text-sm font-medium">预览消息</span>
               <textarea
-                aria-label="Preview message"
+                aria-label="预览消息"
                 className="min-h-32 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)]"
                 onChange={(event) => replaceActiveDraft((current) => ({ ...current, message: event.target.value }))}
-                placeholder="Write a message for the selected Chat run"
+                placeholder="输入用于预览运行的消息"
                 value={draft.message}
               />
             </label>
             <div className="flex justify-end">
               <button className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60" disabled={submitDisabled} onClick={() => void submit(chat)} type="button">
                 {controllerState.phase === "submitting" ? <RefreshCw size={16} className="animate-spin" aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
-                Open Chat run
+                打开对话运行
               </button>
             </div>
           </div>
         </section>
 
         <aside className="border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-5 lg:overflow-y-auto lg:border-l lg:border-t-0">
-          <div className="border-b border-[var(--theme-border)] pb-4">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold">Published Agents</h2>
-              <button
-                className="text-xs text-[var(--theme-primary)] hover:underline"
-                disabled={marketState.loading}
-                onClick={() => void refreshPublishedProfiles()}
-                type="button"
-              >
-                Refresh
-              </button>
-            </div>
-            {marketState.error ? (
-              <p className="mt-2 text-xs text-red-700 dark:text-red-300">{marketState.error}</p>
-            ) : marketState.loading ? (
-              <p className="mt-2 text-xs text-[var(--theme-text-secondary)]">Loading market…</p>
-            ) : marketState.profiles.length === 0 ? (
-              <p className="mt-2 text-xs text-[var(--theme-text-secondary)]">No published Agents are available.</p>
-            ) : (
-              <div className="mt-3 space-y-2">
-                {marketState.profiles.map((profile) => {
-                  const selected =
-                    draft.selectedAgentProfile?.agent_id === profile.agent_id &&
-                    draft.selectedAgentProfile.expected_revision === profile.expected_revision;
-                  return (
-                    <button
-                      key={`${profile.agent_id}:${profile.expected_revision}`}
-                      className={`w-full rounded-md border p-2 text-left text-xs transition-colors ${
-                        selected
-                          ? "border-[var(--theme-primary)] bg-[var(--theme-workbench-canvas)]"
-                          : "border-[var(--theme-border)] hover:border-[var(--theme-border-strong)]"
-                      }`}
-                      onClick={() => selectPublishedProfile(profile)}
-                      type="button"
-                    >
-                      <span className="block truncate font-medium">{profile.name}</span>
-                      <span className="mt-1 block line-clamp-2 text-[var(--theme-text-secondary)]">
-                        {profile.description || "Published Agent"}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <h2 className="mt-4 text-sm font-semibold">Chat handoff</h2>
+          <h2 className="text-sm font-semibold">对话交接</h2>
           <dl className="mt-4 space-y-3 text-sm">
             <div>
               <dt className="text-[var(--theme-text-secondary)]">Skill</dt>
-              <dd className="mt-1 break-words">{draft.selectedSkill?.name ?? "None"}</dd>
+              <dd className="mt-1 break-words">{draft.selectedSkill?.name ?? "未选择"}</dd>
             </div>
             <div>
-              <dt className="text-[var(--theme-text-secondary)]">MCP tools</dt>
+              <dt className="text-[var(--theme-text-secondary)]">MCP 工具</dt>
               <dd className="mt-1">{draft.selectedMcpToolIds.length}</dd>
             </div>
             <div>
-              <dt className="text-[var(--theme-text-secondary)]">Run</dt>
-              <dd className="mt-1 break-all">{controllerState.phase === "handoff_ready" ? controllerState.identity.runId : "Not started"}</dd>
+              <dt className="text-[var(--theme-text-secondary)]">运行</dt>
+              <dd className="mt-1 break-all">{controllerState.phase === "handoff_ready" ? controllerState.identity.runId : "尚未开始"}</dd>
             </div>
           </dl>
         </aside>
       </div>
 
-      <AgentBuilderDialog isOpen={dialog === "instructions"} onClose={() => setDialog(null)} title="Instructions">
+      <AgentBuilderDialog isOpen={dialog === "instructions"} onClose={() => setDialog(null)} title="系统说明">
         <textarea
           className="min-h-72 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)]"
           onChange={(event) => replaceActiveDraft((current) => ({ ...current, instructions: event.target.value }))}
           value={draft.instructions}
         />
       </AgentBuilderDialog>
-      <AgentBuilderDialog isOpen={dialog === "skills"} onClose={() => setDialog(null)} title="Skills">
+      <AgentBuilderDialog isOpen={dialog === "skills"} onClose={() => setDialog(null)} title="Skill">
         <div className="divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
           {catalog.skills.map((item) => {
             return (
@@ -702,13 +616,13 @@ function AgentBuilderWorkbenchContent({
                 type="button"
               >
                 <span className="min-w-0"><span className="block font-medium">{item.name}</span><span className="mt-1 block text-sm text-[var(--theme-text-secondary)]">{item.description}</span></span>
-                <span className="shrink-0 text-xs text-[var(--theme-text-secondary)]">{item.requires_file ? "File required" : item.expected_version}</span>
+                <span className="shrink-0 text-xs text-[var(--theme-text-secondary)]">{item.requires_file ? "需要文件" : item.expected_version}</span>
               </button>
             );
           })}
         </div>
       </AgentBuilderDialog>
-      <AgentBuilderDialog isOpen={dialog === "tools"} onClose={() => setDialog(null)} title="MCP tools">
+      <AgentBuilderDialog isOpen={dialog === "tools"} onClose={() => setDialog(null)} title="MCP 工具">
         <div className="divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
           {catalog.tools.map((tool) => {
             const selected = draft.selectedMcpToolIds.includes(tool.id);
@@ -760,7 +674,7 @@ export function AgentBuilderWorkbench({
         );
       },
     }),
-    [chat.sendMessage],
+    [chat],
   );
   const chatIdentity =
     chat.sessionId && chat.currentRunId

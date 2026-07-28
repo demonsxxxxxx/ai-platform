@@ -64,8 +64,13 @@ const AppContent = lazy(() =>
   })),
 );
 const AgentBuilderRoute = lazy(() =>
-  import("./components/agent-builder/AgentBuilderRoute").then((m) => ({
+  import("./features/agent-builder/AgentBuilderRoute").then((m) => ({
     default: m.AgentBuilderRoute,
+  })),
+);
+const AgentMarketRoute = lazy(() =>
+  import("./features/agent-market/AgentMarketRoute").then((m) => ({
+    default: m.AgentMarketRoute,
   })),
 );
 const NotFoundPage = lazy(() =>
@@ -377,8 +382,24 @@ function App() {
             <Route
               path={APP_ROUTE_PATHS.agentBuilder}
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
                   <AgentBuilderRoute />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.agentMarket}
+              element={
+                <ProtectedRoute>
+                  <AgentMarketRoute />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.agentMarketChat}
+              element={
+                <ProtectedRoute>
+                  <AgentMarketRoute />
                 </ProtectedRoute>
               }
             />
