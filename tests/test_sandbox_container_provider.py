@@ -658,8 +658,12 @@ class FakeOpenSandboxFiles:
     async def read_bytes_stream(self, path: str, *, chunk_size: int = 65536):
         value = self.read_file(path)
         data = value if isinstance(value, bytes) else value.encode("utf-8")
-        for offset in range(0, len(data), chunk_size):
-            yield data[offset : offset + chunk_size]
+
+        async def chunks():
+            for offset in range(0, len(data), chunk_size):
+                yield data[offset : offset + chunk_size]
+
+        return chunks()
 
     def get_file_info(self, paths: list[str]) -> dict[str, dict[str, object]]:
         details: dict[str, dict[str, object]] = {}
@@ -1252,6 +1256,48 @@ async def test_opensandbox_filesystem_modes_use_execd_octal_digit_wire_values():
     assert captured[1][0] == "/files/upload"
     assert b'"mode": 600' in captured[1][1]
     assert b'"mode": 384' not in captured[1][1]
+
+
+@pytest.mark.parametrize("mode", ("sdk", "direct", "sync", "nonbytes", "oversize"))
+@pytest.mark.asyncio
+async def test_opensandbox_workspace_stream_contract(mode):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    provider = container_provider.OpenSandboxContainerProvider()
+
+    async def chunks():
+        if mode == "oversize":
+            chunk = b"x" * (64 * 1024)
+            for _ in range(1024):
+                yield chunk
+            yield b"x"
+        else:
+            yield "not-bytes" if mode == "nonbytes" else b"artifact"
+
+    class Files:
+        def read_bytes_stream(self, _path, *, chunk_size):
+            assert chunk_size == 64 * 1024
+            if mode == "sync":
+                return [b"artifact"]
+            stream = chunks()
+            if mode != "sdk":
+                return stream
+
+            async def resolve():
+                return stream
+
+            return resolve()
+
+    if mode == "oversize":
+        assert container_provider._OPENSANDBOX_COLLECT_MAX_FILE_BYTES == 64 * 1024 * 1024
+    error = "per-file byte limit" if mode == "oversize" else "collection is invalid"
+    if mode in {"sync", "nonbytes", "oversize"}:
+        with pytest.raises(container_provider.ContainerStartFailedError, match=error):
+            await provider._stream_remote_workspace_file(Files(), "/workspace/output/artifact")
+    else:
+        total, digest = await provider._stream_remote_workspace_file(Files(), "/workspace/output/artifact")
+        assert (total, digest) == (8, hashlib.sha256(b"artifact").hexdigest())
+
+
 @pytest.mark.asyncio
 @requires_secure_opensandbox_transfer
 async def test_opensandbox_collects_only_legacy_and_delivery_outputs_atomically(monkeypatch, tmp_path):
