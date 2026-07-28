@@ -56,6 +56,27 @@ class OpenSandboxStartupEvidence:
         }
 
 
+class OpenSandboxStartupEvidenceCarrier:
+    """Explicit private-evidence capability for preserving an existing typed error."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._opensandbox_startup_evidence: OpenSandboxStartupEvidence | None = None
+
+    def attach_opensandbox_startup_evidence(self, evidence: OpenSandboxStartupEvidence) -> None:
+        """Attach validated private evidence without changing a public error taxonomy."""
+
+        if not isinstance(evidence, OpenSandboxStartupEvidence):
+            raise TypeError("OpenSandbox startup evidence is invalid")
+        self._opensandbox_startup_evidence = evidence
+
+    @property
+    def opensandbox_startup_evidence(self) -> OpenSandboxStartupEvidence | None:
+        """Return the typed private evidence, if this error originated during startup."""
+
+        return self._opensandbox_startup_evidence
+
+
 class OpenSandboxStartupFailure(Exception):
     """Internal failure carrying the stage, safe SDK evidence, and cleanup subject."""
 
@@ -171,6 +192,23 @@ class OpenSandboxStartupSequence:
             raise OpenSandboxStartupFailure(stage=stage, cause=exc, sandbox=sandbox) from None
 
 
+async def launch_opensandbox_startup(
+    operations: OpenSandboxStartupOperations,
+    *,
+    passthrough_error_types: tuple[type[BaseException], ...] = (),
+    typed_error_types: tuple[type[BaseException], ...] = (),
+    typed_error_evidence_attacher: Callable[[BaseException, OpenSandboxStartupEvidence], None] | None = None,
+) -> OpenSandboxStartupResult:
+    """Launch one sequence while keeping typed provider errors intact."""
+
+    return await OpenSandboxStartupSequence(
+        operations,
+        passthrough_error_types=passthrough_error_types,
+        typed_error_types=typed_error_types,
+        typed_error_evidence_attacher=typed_error_evidence_attacher,
+    ).launch()
+
+
 async def resolve_executor_endpoint(
     sandbox: Any,
     settings: Any,
@@ -218,6 +256,46 @@ async def cleanup_started_sandbox(
     if not_found_error is not None:
         raise not_found_error
     return killed
+
+
+def identity_unavailable_cleanup_subject(run_id: str, attempt_id: str) -> dict[str, str]:
+    """Return the minimal release-blocker subject when the provider supplied no ID."""
+
+    return {
+        "provider": "opensandbox",
+        "cleanup_state": "provider_identity_unavailable",
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+    }
+
+
+async def retry_untracked_sandbox_cleanup(
+    pending: dict[tuple[str, str], Any],
+    cleanup_key: tuple[str, str],
+) -> bool:
+    """Retry only the retained SDK object and report whether cleanup is now confirmed."""
+
+    sandbox = pending.get(cleanup_key)
+    if sandbox is None:
+        return True
+    if not await cleanup_started_sandbox(sandbox):
+        return False
+    pending.pop(cleanup_key, None)
+    return True
+
+
+def unhealthy_readiness_fields(elapsed_ms: int) -> dict[str, object]:
+    """Return the fixed safe fields for an unhealthy OpenSandbox executor probe."""
+
+    return {
+        "readiness_phase": "health_probe",
+        "container_state": "unknown",
+        "exit_code": None,
+        "oom_killed": None,
+        "published_port_observed": True,
+        "health_outcome": "unhealthy",
+        "elapsed_ms": elapsed_ms,
+    }
 
 
 async def _maybe_await(value: Awaitable[Any] | Any) -> Any:

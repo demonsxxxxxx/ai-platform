@@ -58,12 +58,16 @@ from app.runtime.sandbox import governed_egress_diagnostics as egress_diagnostic
 from app.runtime.sandbox.opensandbox_attestation import build_opensandbox_attestation_probe
 from app.runtime.sandbox.providers.opensandbox.startup import (
     OpenSandboxStartupEvidence,
+    OpenSandboxStartupEvidenceCarrier,
     OpenSandboxStartupFailure,
     OpenSandboxStartupOperations,
-    OpenSandboxStartupSequence,
     cleanup_started_sandbox,
+    identity_unavailable_cleanup_subject,
     is_authoritative_not_found_error,
+    launch_opensandbox_startup,
     resolve_executor_endpoint,
+    retry_untracked_sandbox_cleanup,
+    unhealthy_readiness_fields,
 )
 from app.runtime.sandbox.opensandbox_trusted_internal import (
     SANDBOX_SECURITY_PROFILE_GOVERNED,
@@ -91,24 +95,10 @@ from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
 
 
-class SandboxRuntimeError(RuntimeError):
+class SandboxRuntimeError(OpenSandboxStartupEvidenceCarrier, RuntimeError):
     def __init__(self, error_code: str, message: str) -> None:
         super().__init__(message)
         self.error_code = error_code
-        self._opensandbox_startup_evidence: OpenSandboxStartupEvidence | None = None
-
-    def attach_opensandbox_startup_evidence(self, evidence: OpenSandboxStartupEvidence) -> None:
-        """Attach validated private startup evidence without changing public error taxonomy."""
-
-        if not isinstance(evidence, OpenSandboxStartupEvidence):
-            raise TypeError("OpenSandbox startup evidence is invalid")
-        self._opensandbox_startup_evidence = evidence
-
-    @property
-    def opensandbox_startup_evidence(self) -> OpenSandboxStartupEvidence | None:
-        """Return the typed private evidence, if this error originated during OpenSandbox startup."""
-
-        return self._opensandbox_startup_evidence
 
 
 class DockerUnavailableError(SandboxRuntimeError):
@@ -149,7 +139,6 @@ class ContainerStartFailedError(SandboxRuntimeError):
 
 class OpenSandboxStartupFailedError(ContainerStartFailedError):
     """Generic public startup failure with safe private OpenSandbox evidence."""
-
     def __init__(self, evidence: OpenSandboxStartupEvidence, message: str = "OpenSandbox sandbox start failed") -> None:
         super().__init__(message)
         self.private_evidence = evidence.private_payload()
@@ -165,16 +154,9 @@ class NativeToolAdmissionError(SandboxRuntimeError):
 class ContainerCleanupFailedError(SandboxRuntimeError):
     """Raised when a rejected executor cannot be confirmed stopped and removed."""
 
-    def __init__(
-        self,
-        message: str = "Container cleanup failed",
-        *,
-        readiness_evidence: readiness_evidence.ExecutorReadinessEvidence | None = None,
-        cleanup_subject: dict[str, str] | None = None,
-    ) -> None:
+    def __init__(self, message: str = "Container cleanup failed", *, readiness_evidence: readiness_evidence.ExecutorReadinessEvidence | None = None, cleanup_subject: dict[str, str] | None = None) -> None:
         super().__init__("container_cleanup_failed", message)
-        self.readiness_evidence = readiness_evidence
-        self.cleanup_subject = dict(cleanup_subject) if cleanup_subject is not None else None
+        self.readiness_evidence, self.cleanup_subject = readiness_evidence, cleanup_subject
 
 
 class ExecutorHealthTimeoutError(SandboxRuntimeError):
@@ -4625,7 +4607,7 @@ class OpenSandboxContainerProvider:
         if not sandbox_id:
             cleanup_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
             self._untracked_cleanup_pending[cleanup_key] = sandbox
-            return self._untracked_cleanup_subject(request)
+            return identity_unavailable_cleanup_subject(request.run_id, request.attempt_id)
         lease = ContainerLease(
             container_id=sandbox_id,
             container_name=_opensandbox_container_name(request.run_id, request.attempt_id),
@@ -4646,32 +4628,6 @@ class OpenSandboxContainerProvider:
         self._sandboxes[sandbox_id] = sandbox
         self._leases[_opensandbox_cache_key(request.run_id, request.attempt_id)] = lease
         return None
-
-    @staticmethod
-    def _untracked_cleanup_subject(request: SandboxRuntimeRequest) -> dict[str, str]:
-        """Identify an untracked cleanup only by its controller-owned scope."""
-
-        return {
-            "provider": "opensandbox",
-            "cleanup_state": "provider_identity_unavailable",
-            "run_id": request.run_id,
-            "attempt_id": request.attempt_id,
-        }
-
-    async def _retry_untracked_cleanup_pending(self, request: SandboxRuntimeRequest) -> None:
-        """Retry only the retained SDK object; never manufacture a remote lease identity."""
-
-        cleanup_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
-        sandbox = self._untracked_cleanup_pending.get(cleanup_key)
-        if sandbox is None:
-            return
-        if await cleanup_started_sandbox(sandbox):
-            self._untracked_cleanup_pending.pop(cleanup_key, None)
-            return
-        raise ContainerCleanupFailedError(
-            "sandbox cleanup could not be confirmed without a provider identity",
-            cleanup_subject=self._untracked_cleanup_subject(request),
-        )
 
     async def _cleanup_new_sandbox_or_track(
         self,
@@ -4694,18 +4650,10 @@ class OpenSandboxContainerProvider:
                 metadata=metadata,
                 executor_auth_token=executor_auth_token,
             )
-        message = (
-            "sandbox cleanup could not be confirmed without a provider identity"
-            if cleanup_subject is not None
-            else "sandbox cleanup could not be confirmed"
-        )
+        message = "sandbox cleanup could not be confirmed without a provider identity" if cleanup_subject else "sandbox cleanup could not be confirmed"
         cleanup_error = ContainerCleanupFailedError(
             message,
-            readiness_evidence=(
-                original_error.readiness_evidence
-                if isinstance(original_error, ExecutorHealthTimeoutError)
-                else None
-            ),
+            readiness_evidence=original_error.readiness_evidence if isinstance(original_error, ExecutorHealthTimeoutError) else None,
             cleanup_subject=cleanup_subject,
         )
         if original_error is not None and original_error.opensandbox_startup_evidence is not None:
@@ -4755,7 +4703,9 @@ class OpenSandboxContainerProvider:
         workspace: WorkspaceLease,
     ) -> ContainerLease:
         settings = get_settings()
-        await self._retry_untracked_cleanup_pending(request)
+        cleanup_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
+        if not await retry_untracked_sandbox_cleanup(self._untracked_cleanup_pending, cleanup_key):
+            raise ContainerCleanupFailedError("sandbox cleanup could not be confirmed without a provider identity", cleanup_subject=identity_unavailable_cleanup_subject(request.run_id, request.attempt_id))
         try:
             profile = _opensandbox_security_profile(settings)
         except OpenSandboxCapabilityAdmissionError:
@@ -4783,7 +4733,7 @@ class OpenSandboxContainerProvider:
         # Remote OpenSandbox has no controller filesystem identity.  Stage the
         # controlled Skill tree only after this ready sandbox has a DB lease.
         skill_mount = None
-        cache_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
+        cache_key = cleanup_key
         cached = self._leases.get(cache_key)
         if cached is not None and cached.container_id in self._sandboxes:
             sandbox = self._sandboxes[cached.container_id]
@@ -4988,14 +4938,12 @@ class OpenSandboxContainerProvider:
             "connection_config": connection_config,
         }
         sandbox: Any | None = None
-
         async def create_sandbox() -> Any:
             nonlocal sandbox
             sandbox = await _maybe_await(self._sandbox_class.create(**kwargs))
             if not str(getattr(sandbox, "id", "") or ""):
                 raise ContainerStartFailedError("OpenSandbox sandbox start failed")
             return sandbox
-
         async def read_back_started_sandbox(started_sandbox: Any, executor_url: str) -> str:
             sandbox_id = str(getattr(started_sandbox, "id", "") or "")
             if not sandbox_id:
@@ -5039,17 +4987,7 @@ class OpenSandboxContainerProvider:
             )
             sandbox_healthcheck_latency_ms = self._elapsed_ms(health_started_at)
             if not healthy:
-                raise ExecutorHealthTimeoutError(
-                    readiness_evidence=readiness_evidence.ExecutorReadinessEvidence(
-                        readiness_phase="health_probe",
-                        container_state="unknown",
-                        exit_code=None,
-                        oom_killed=None,
-                        published_port_observed=True,
-                        health_outcome="unhealthy",
-                        elapsed_ms=sandbox_healthcheck_latency_ms,
-                    )
-                )
+                raise ExecutorHealthTimeoutError(readiness_evidence=readiness_evidence.ExecutorReadinessEvidence(**unhealthy_readiness_fields(sandbox_healthcheck_latency_ms)))
             return sandbox_healthcheck_latency_ms
 
         async def verify_executor_identity(executor_url: str, endpoint_headers: dict[str, str]) -> None:
@@ -5063,26 +5001,23 @@ class OpenSandboxContainerProvider:
             if capability is not None:
                 _ensure_capability_still_valid(capability, now=self._utcnow())
 
-        startup = OpenSandboxStartupSequence(
-            OpenSandboxStartupOperations(
-                create=create_sandbox,
-                resolve_endpoint=lambda started_sandbox: resolve_executor_endpoint(
-                    started_sandbox,
-                    settings,
-                    error_factory=ContainerStartFailedError,
-                ),
-                readback=read_back_started_sandbox,
-                health=check_executor_health,
-                identity=verify_executor_identity,
-            ),
-            passthrough_error_types=(OpenSandboxCapabilityAdmissionError,),
-            typed_error_types=(SandboxRuntimeError,),
-            typed_error_evidence_attacher=lambda error, evidence: error.attach_opensandbox_startup_evidence(evidence)
-            if isinstance(error, SandboxRuntimeError)
-            else None,
-        )
         try:
-            startup_result = await startup.launch()
+            startup_result = await launch_opensandbox_startup(
+                OpenSandboxStartupOperations(
+                    create=create_sandbox,
+                    resolve_endpoint=lambda started_sandbox: resolve_executor_endpoint(
+                        started_sandbox, settings, error_factory=ContainerStartFailedError
+                    ),
+                    readback=read_back_started_sandbox,
+                    health=check_executor_health,
+                    identity=verify_executor_identity,
+                ),
+                passthrough_error_types=(OpenSandboxCapabilityAdmissionError,),
+                typed_error_types=(SandboxRuntimeError,),
+                typed_error_evidence_attacher=lambda error, evidence: error.attach_opensandbox_startup_evidence(evidence)
+                if isinstance(error, SandboxRuntimeError)
+                else None,
+            )
             sandbox = startup_result.sandbox
             sandbox_id = startup_result.sandbox_id
             executor_url = startup_result.executor_url
