@@ -4502,6 +4502,34 @@ async def test_opensandbox_provider_cleans_up_when_created_sandbox_has_no_id(mon
 
 
 @pytest.mark.asyncio
+async def test_opensandbox_container_provider_redacts_sdk_startup_failure(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    class SdkCreateFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("private endpoint https://secret.test token-private")
+            self.error = type("SdkError", (), {"code": "POOL_ACQUIRE_FAILED"})()
+            self.request_id = "request-668"
+
+    FakeOpenSandbox.create_error = SdkCreateFailure()
+
+    with pytest.raises(container_provider.OpenSandboxStartupFailedError) as exc_info:
+        await opensandbox_provider().create_or_reuse(request(), workspace())
+
+    failure = exc_info.value
+    assert str(failure) == "OpenSandbox sandbox start failed"
+    assert failure.private_evidence == {
+        "provider": "opensandbox",
+        "startup_stage": "create",
+        "sdk_error_code": "POOL_ACQUIRE_FAILED",
+        "request_id": "request-668",
+    }
+
+
+@pytest.mark.asyncio
 @requires_secure_opensandbox_transfer
 async def test_opensandbox_provider_defers_created_sandbox_cleanup_to_runtime_on_stage_cancel(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
