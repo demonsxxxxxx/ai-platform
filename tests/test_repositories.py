@@ -309,6 +309,73 @@ class SingleRowConnection:
         return SingleRowCursor(self.row)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "published_by", "published_from_revision", "expected_published_at"),
+    [("draft", None, None, None), ("published", "publisher-a", 7, "database-timestamp")],
+)
+async def test_create_agent_profile_revision_preserves_typed_publication_bindings(
+    status, published_by, published_from_revision, expected_published_at
+):
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, statement, params):
+            normalized = " ".join(statement.split())
+            self.calls.append((normalized, params))
+            if "select coalesce(max(revision), 0) as current_revision" in normalized:
+                return SingleRowCursor({"current_revision": 7})
+            if "insert into agent_profile_revisions" in normalized:
+                return SingleRowCursor(
+                    {"published_at": None if params[14] is None else "database-timestamp"}
+                )
+            return SingleRowCursor(None)
+
+    conn = Connection()
+    saved = await repositories.create_agent_profile_revision(
+        conn,
+        tenant_id="tenant-a",
+        agent_id="agt_support",
+        status=status,
+        name="Support assistant",
+        description="Approved support helper.",
+        instructions="Private instruction",
+        model_id="model-a",
+        skill_id="general-chat",
+        skill_version="version-a",
+        mcp_tool_ids=["mcp-a", "mcp-b"],
+        content_hash="a" * 64,
+        created_by="creator-a",
+        published_by=published_by,
+        expected_previous_revision=7,
+        published_from_revision=published_from_revision,
+    )
+
+    insert_sql, params = conn.calls[2]
+    assert insert_sql == " ".join(
+        """
+        insert into agent_profile_revisions(
+          tenant_id, agent_id, revision, status, name, description, instructions,
+          model_id, skill_id, skill_version, mcp_tool_ids, content_hash, created_by,
+          published_by, published_at, published_from_revision
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
+                %s, case when %s::text is null then null else now() end, %s)
+        returning tenant_id, agent_id, revision, status, name, description, instructions,
+                  model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
+                  created_at, published_at
+        """.split()
+    )
+    assert len(params) == insert_sql.count("%s") == 16
+    assert params == (
+        "tenant-a", "agt_support", 8, status, "Support assistant", "Approved support helper.",
+        "Private instruction", "model-a", "general-chat", "version-a", '["mcp-a", "mcp-b"]',
+        "a" * 64, "creator-a", published_by, published_by, published_from_revision,
+    )
+    assert saved["published_at"] == expected_published_at
+
+
 class TwoSnapshotFileMembershipConnection:
     """Model S1 as persisted authority even though S2 is created later."""
 
@@ -1402,7 +1469,6 @@ def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
         "source": {"kind": "uploaded", "storage_key": "private/package.zip"},
         "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
         "dependency_ids": [],
-        "mcp_tool_ids": [],
         "mcp_tool_ids": [],
         "snapshot_governance": {"selected_files": [{"sha256": "caller-controlled"}]},
     }
