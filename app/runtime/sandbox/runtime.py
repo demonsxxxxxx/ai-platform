@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ from app.runtime.sandbox.container_provider import (
     ContainerCleanupFailedError,
     ContainerProvider,
     ExecutorHealthTimeoutError,
+    OpenSandboxStartupFailedError,
     create_container_provider,
     executor_callback_target,
 )
@@ -57,6 +59,8 @@ ExecuteTask = Callable[..., Awaitable[dict[str, Any]]]
 TokenResolver = Callable[[str], str]
 LeaseRecorder = Callable[[ContainerLease, SandboxRuntimeRequest, WorkspaceLease], Awaitable[Any] | Any]
 LeaseReleaser = Callable[..., Awaitable[Any] | Any]
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -340,6 +344,20 @@ class SandboxRuntime:
         lease_started_at = time.monotonic()
         try:
             lease = await self.provider.create_or_reuse(request, workspace)
+        except OpenSandboxStartupFailedError as exc:
+            evidence = exc.private_evidence
+            _logger.error(
+                "OpenSandbox startup failed",
+                extra={
+                    "run_id": request.run_id,
+                    "attempt_id": request.attempt_id,
+                    "provider": evidence["provider"],
+                    "startup_stage": evidence["startup_stage"],
+                    "sdk_error_code": evidence["sdk_error_code"],
+                    "request_id": evidence["request_id"],
+                },
+            )
+            raise
         except (ContainerCleanupFailedError, ExecutorHealthTimeoutError) as exc:
             evidence = exc.readiness_evidence
             if isinstance(evidence, ExecutorReadinessEvidence):

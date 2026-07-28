@@ -163,6 +163,55 @@ class OpenSandboxStartupSequence:
             raise OpenSandboxStartupFailure(stage=stage, cause=exc, sandbox=sandbox) from None
 
 
+async def resolve_executor_endpoint(
+    sandbox: Any,
+    settings: Any,
+    *,
+    error_factory: Callable[[str], BaseException],
+) -> tuple[str, dict[str, str]]:
+    """Resolve the executor endpoint without exposing an SDK response object."""
+
+    endpoint = await _maybe_await(sandbox.get_endpoint(port=18000))
+    headers = _endpoint_headers(endpoint)
+    url = getattr(endpoint, "endpoint", None)
+    if url is None and isinstance(endpoint, dict):
+        url = endpoint.get("endpoint")
+    if not isinstance(url, str) or not url.strip():
+        raise error_factory("OpenSandbox executor endpoint unavailable")
+    return _opensandbox_executor_url(url, settings), headers
+
+
+async def cleanup_started_sandbox(
+    sandbox: Any | None,
+    *,
+    propagate_authoritative_not_found: bool = False,
+) -> bool:
+    """Stop then close a rejected sandbox while retaining only an explicit SDK 404."""
+
+    if sandbox is None:
+        return True
+    killed = False
+    not_found_error: BaseException | None = None
+    try:
+        kill = getattr(sandbox, "kill", None)
+        if kill is None:
+            raise RuntimeError("OpenSandbox sandbox stop failed")
+        await _maybe_await(kill())
+        killed = True
+    except Exception as exc:
+        if propagate_authoritative_not_found and is_authoritative_not_found_error(exc):
+            not_found_error = exc
+    try:
+        close = getattr(sandbox, "close", None)
+        if close is not None:
+            await _maybe_await(close())
+    except Exception:
+        pass
+    if not_found_error is not None:
+        raise not_found_error
+    return killed
+
+
 async def _maybe_await(value: Awaitable[Any] | Any) -> Any:
     if inspect.isawaitable(value):
         return await value
@@ -179,3 +228,43 @@ def _safe_request_id(value: object) -> str | None:
     if not isinstance(value, str) or _REQUEST_ID.fullmatch(value) is None:
         return None
     return value
+
+
+def _endpoint_headers(endpoint: Any) -> dict[str, str]:
+    headers = getattr(endpoint, "headers", None)
+    if headers is None and isinstance(endpoint, dict):
+        headers = endpoint.get("headers")
+    if not isinstance(headers, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in headers.items():
+        if key is None or value is None:
+            continue
+        header_name = str(key).strip()
+        header_value = str(value)
+        if header_name:
+            normalized[header_name] = header_value
+    return normalized
+
+
+def _opensandbox_executor_url(raw_url: str, settings: Any) -> str:
+    url = raw_url.strip().rstrip("/")
+    if not url:
+        return ""
+    if url.startswith("//"):
+        protocol = str(getattr(settings, "opensandbox_protocol", "http") or "http").strip() or "http"
+        return f"{protocol}:{url}"
+    if "://" not in url:
+        protocol = str(getattr(settings, "opensandbox_protocol", "http") or "http").strip() or "http"
+        return f"{protocol}://{url.lstrip('/')}"
+    return url
+
+
+def is_authoritative_not_found_error(exc: BaseException) -> bool:
+    """Recognize only the OpenSandbox SDK's explicit HTTP 404 response."""
+
+    try:
+        from opensandbox.exceptions import SandboxApiException
+    except ImportError:
+        return False
+    return isinstance(exc, SandboxApiException) and getattr(exc, "status_code", None) == 404
