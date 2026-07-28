@@ -565,10 +565,16 @@ def governed_opensandbox_lease_labels(
     return labels
 
 
-def _has_governed_projection(labels: Mapping[object, object]) -> bool:
+def _has_governed_projection(
+    labels: Mapping[object, object],
+    *,
+    allow_passive_image_runtime_subject: bool = False,
+) -> bool:
+    """Reject governed authority, allowing only the OpenSandbox image's passive subject on readback."""
+
     return _GOVERNED_EGRESS_PROOF_LABEL in labels or any(
         str(key).startswith(("ai-platform.external_egress.", "ai-platform.governed_egress."))
-        or str(key) == "ai-platform.runtime_subject"
+        or (str(key) == "ai-platform.runtime_subject" and not allow_passive_image_runtime_subject)
         for key in labels
     )
 
@@ -671,7 +677,7 @@ def trusted_internal_cleanup_identity_is_authorized(
         and status_labels.get("ai-platform.provider_backend") == "opensandbox"
         and opensandbox_metadata_matches(status_labels, lease_labels)
         and not _has_governed_projection(lease_labels)
-        and not _has_governed_projection(status_labels)
+        and not _has_governed_projection(status_labels, allow_passive_image_runtime_subject=True)
     )
 
 

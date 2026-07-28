@@ -261,6 +261,65 @@ async def test_runtime_workspace_transfer_failure_is_terminal_and_cleans_up(tmp_
 
 
 @pytest.mark.asyncio
+async def test_runtime_trusted_workspace_stage_failure_stops_and_releases_once_without_residue(monkeypatch):
+    calls: list[str] = []
+    owned: set[str] = set()
+
+    class StubSettings:
+        sandbox_container_provider = "opensandbox"
+        sandbox_security_profile = "trusted_internal"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        opensandbox_domain = "10.56.1.72:8080"
+        opensandbox_protocol = "http"
+        opensandbox_api_key = "test-stock-opensandbox-key"
+        opensandbox_use_server_proxy = False
+        opensandbox_executor_image = "sha256:" + "a" * 64
+        opensandbox_executor_image_digest = "sha256:" + "a" * 64
+        opensandbox_trusted_internal_callback_base_url = "http://10.56.0.211:8020"
+        opensandbox_trusted_internal_openai_base_url = "http://10.56.0.211:3002/v1"
+        opensandbox_trusted_internal_anthropic_base_url = "http://10.56.0.211:3002"
+
+    class TrustedOpenSandboxProvider(FakeContainerProvider):
+        async def create_or_reuse(self, runtime_request, workspace):
+            lease = await super().create_or_reuse(runtime_request, workspace)
+            lease.provider = "opensandbox"
+            lease.labels.update(
+                {
+                    "ai-platform.provider_backend": "opensandbox",
+                    "ai-platform.security_profile": "trusted_internal",
+                }
+            )
+            owned.add(lease.container_id)
+            return lease
+
+        async def stage_workspace(self, *_args):
+            calls.append("stage")
+            raise RuntimeError("workspace stage denied")
+
+        async def stop(self, lease, *, reason):
+            calls.append(reason)
+            owned.discard(lease.container_id)
+            return await super().stop(lease, reason=reason)
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=Path(".pytest-tmp") / "r675-runtime-stage",
+        provider=TrustedOpenSandboxProvider(executor_url="http://executor.test"),
+        execute_task=lambda *_args, **_kwargs: pytest.fail("stage failure must not dispatch"),
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: calls.append("record") or "lease-trusted-a",
+        release_lease=lambda *_args: calls.append("release"),
+    )
+
+    with pytest.raises(RuntimeError, match="workspace stage denied"):
+        await runtime.submit(request(attempt_id="trusted-stage-a", sandbox_mode="persistent"))
+
+    assert calls == ["record", "stage", "workspace_stage_failed", "release"]
+    assert owned == set()
+
+
+@pytest.mark.asyncio
 async def test_runtime_and_execution_owner_elect_one_stop_terminator(tmp_path, monkeypatch):
     started = asyncio.Event()
     stop_calls: list[str] = []

@@ -215,6 +215,23 @@ async def test_trusted_internal_opensandbox_uses_profile_bases_without_governed_
 
 
 @pytest.mark.asyncio
+async def test_trusted_internal_stop_accepts_only_passive_image_runtime_subject(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = TrustedInternalOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    sandbox.metadata["ai-platform.runtime_subject"] = "immutable-image-runtime-subject"
+
+    stopped = await provider.stop(lease, reason="workspace_stage_failed")
+
+    assert stopped.status == "stopped"
+    assert sandbox.killed is True
+
+
+@pytest.mark.asyncio
 @requires_secure_opensandbox_transfer
 async def test_trusted_internal_stage_failure_stops_only_the_exact_running_sandbox(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
@@ -235,6 +252,8 @@ async def test_trusted_internal_stage_failure_stops_only_the_exact_running_sandb
     sandbox.files.create_directories = reject_workspace_root
     with pytest.raises(container_provider.ContainerStartFailedError, match="workspace staging failed"):
         await provider.stage_workspace(lease, runtime_request, leased_workspace)
+
+    sandbox.metadata["ai-platform.runtime_subject"] = "immutable-image-runtime-subject"
 
     stopped = await provider.stop(lease, reason="workspace_stage_failed")
 
@@ -472,6 +491,17 @@ def test_trusted_internal_persisted_scope_rebuilds_an_exact_normalized_cleanup_h
 
     assert cleanup_labels == payload["labels"]
     assert trusted_internal_cleanup_identity_is_authorized(remote_labels, cleanup_labels)
+    assert trusted_internal_cleanup_identity_is_authorized(
+        {**remote_labels, "ai-platform.runtime_subject": "immutable-image-runtime-subject"},
+        cleanup_labels,
+    )
+    for forbidden_key in (
+        "ai-platform.external_egress.profile_id",
+        "ai-platform.governed_egress.proof",
+    ):
+        assert not trusted_internal_cleanup_identity_is_authorized(
+            {**remote_labels, forbidden_key: "unexpected"}, cleanup_labels
+        )
     assert not trusted_internal_cleanup_identity_is_authorized(
         remote_labels,
         {**cleanup_labels, "ai-platform.run_id": "run-" + "s" * 64},
