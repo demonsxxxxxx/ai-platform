@@ -29,14 +29,16 @@ export APT_MIRROR="https://mirrors.ustc.edu.cn/debian"
 export APT_SECURITY_MIRROR="https://mirrors.ustc.edu.cn/debian-security"
 : "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
 : "${TARGET:?set TARGET to the exact fetched main commit}"
-PYTHONPATH="$SOURCE/tools" python3 -B -c 'import os; from release_authority import _normalize_apt_mirror_pair; _normalize_apt_mirror_pair(os.environ["APT_MIRROR"], os.environ["APT_SECURITY_MIRROR"])'
-curl --fail --silent --show-error --head \
-  "$APT_MIRROR/dists/bookworm/InRelease" >/dev/null
-curl --fail --silent --show-error --head \
-  "$APT_SECURITY_MIRROR/dists/bookworm-security/InRelease" >/dev/null
+python3 -B "$SOURCE/tools/release_authority.py" probe-apt-mirrors \
+  --apt-mirror "$APT_MIRROR" \
+  --apt-security-mirror "$APT_SECURITY_MIRROR" \
+  --suite bookworm >/dev/null
 ```
 
-After the read-only endpoint checks, this bounded probe exercises the canonical
+The authority probe uses HTTPS GET with a small Range request and bounded read;
+it accepts only Debian InRelease content for the requested suite and rejects
+unsafe redirects, empty or oversized responses, timeouts, and non-2xx status.
+After the read-only endpoint checks, this bounded Docker probe exercises the canonical
 backend Dockerfile dependency layer only. It does not invoke Compose, recreate a
 service, or deploy an image; remove the temporary probe image after inspection.
 

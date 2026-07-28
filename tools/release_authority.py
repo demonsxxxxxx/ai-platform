@@ -23,8 +23,9 @@ import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO, Sequence
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 if __package__:
     from .release_backend_flatten import (
@@ -112,6 +113,8 @@ AUTHORITATIVE_REPOSITORY_ALIASES = {
 SECRET_PATH_NAMES = {".env", ".env.local", ".env.production", ".env.development"}
 DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
 HTTP_PROBE_TIMEOUT_SECONDS = 15
+APT_MIRROR_PROBE_MAX_BYTES = 64 * 1024
+APT_MIRROR_PROBE_RANGE_END = 4095
 BACKEND_STAGE_TIMEOUT_SECONDS = 90
 FRONTEND_STAGE_TIMEOUT_SECONDS = 180
 RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS = 300
@@ -983,6 +986,83 @@ def _normalize_apt_mirror_pair(
         endpoints.append((f"https://{host}{path}", host))
     (debian_url, debian_hostname), (security_url, security_hostname) = endpoints
     return debian_url, security_url, debian_hostname, security_hostname
+
+
+class _AptMirrorProbeRedirectHandler(HTTPRedirectHandler):
+    """Allow only HTTPS redirects that stay on the validated mirror host."""
+
+    def __init__(self, expected_hostname: str) -> None:
+        super().__init__()
+        self._expected_hostname = expected_hostname
+
+    def redirect_request(self, request, fp, code, msg, newurl, headers, method=None):
+        try:
+            parsed = urlsplit(newurl)
+            hostname = parsed.hostname
+            port = parsed.port
+        except (TypeError, ValueError):
+            raise ReleaseAuthorityError("APT mirror probe redirect is unsafe") from None
+        safe = (isinstance(newurl, str) and newurl.isascii() and parsed.scheme == "https"
+            and hostname == self._expected_hostname and parsed.username is None and parsed.password is None
+            and not parsed.query and not parsed.fragment and port is None and parsed.path.startswith("/")
+            and re.fullmatch(r"/[A-Za-z0-9._~/-]+", parsed.path) is not None and "%" not in parsed.path
+            and "\\" not in parsed.path and "//" not in parsed.path
+            and not any(segment in {".", ".."} for segment in parsed.path.split("/")[1:])
+            and not any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in newurl))
+        if not safe:
+            raise ReleaseAuthorityError("APT mirror probe redirect is unsafe")
+        return super().redirect_request(request, fp, code, msg, newurl, headers, method)
+
+
+def _probe_apt_endpoint(endpoint: str, hostname: str, suite: str, security: bool) -> None:
+    suite_path = f"{suite}-security" if security else suite
+    url = f"{endpoint}/dists/{suite_path}/InRelease"
+    request = Request(url, headers={"Accept": "text/plain", "Range": f"bytes=0-{APT_MIRROR_PROBE_RANGE_END}"}, method="GET")
+    opener = build_opener(_AptMirrorProbeRedirectHandler(hostname))
+    try:
+        response = opener.open(request, timeout=HTTP_PROBE_TIMEOUT_SECONDS)
+    except ReleaseAuthorityError:
+        raise
+    except (HTTPError, URLError, TimeoutError, OSError):
+        raise ReleaseAuthorityError("APT mirror probe request failed") from None
+    try:
+        status = getattr(response, "status", None) or response.getcode()
+        if status not in {200, 206}:
+            raise ReleaseAuthorityError("APT mirror probe returned an unexpected status")
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None:
+            try:
+                if int(content_length) > APT_MIRROR_PROBE_MAX_BYTES:
+                    raise ReleaseAuthorityError("APT mirror probe returned oversized content")
+            except ValueError:
+                raise ReleaseAuthorityError("APT mirror probe returned invalid content metadata") from None
+        payload = response.read(APT_MIRROR_PROBE_MAX_BYTES + 1)
+        if not payload or len(payload) > APT_MIRROR_PROBE_MAX_BYTES:
+            raise ReleaseAuthorityError("APT mirror probe returned empty or oversized content")
+        try:
+            lines = payload.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            raise ReleaseAuthorityError("APT mirror probe returned invalid content") from None
+        if not any(line in {f"Suite: {suite_path}", f"Codename: {suite_path}"} for line in lines):
+            raise ReleaseAuthorityError("APT mirror probe returned unexpected content")
+    except ReleaseAuthorityError:
+        raise
+    except (OSError, TypeError, ValueError):
+        raise ReleaseAuthorityError("APT mirror probe response could not be read") from None
+    finally:
+        response.close()
+
+
+def _probe_apt_mirrors(apt_mirror: str, apt_security_mirror: str, suite: str = "bookworm") -> dict[str, Any]:
+    """Probe both validated Debian mirrors with bounded GET requests."""
+    selection = _normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
+    if selection[0] is None:
+        raise ReleaseAuthorityError("APT mirror probe requires a complete mirror pair")
+    if not isinstance(suite, str) or not suite.isascii() or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?", suite) is None:
+        raise ReleaseAuthorityError("APT mirror probe suite is invalid")
+    _probe_apt_endpoint(selection[0], selection[2], suite, security=False)
+    _probe_apt_endpoint(selection[1], selection[3], suite, security=True)
+    return {"verified": True, "apt_mirrors": {"requested": {"status": "validated", "debian_hostname": selection[2], "security_hostname": selection[3]}, "applied": {"status": "not-proven"}}}
 
 
 def _validate_canonical_dependency_build_timeout(value: int) -> int:
@@ -3116,6 +3196,14 @@ def main() -> int:
         help="Ordered repo-relative Compose file; repeat for overlays",
     )
 
+    probe = subparsers.add_parser(
+        "probe-apt-mirrors",
+        help="Boundedly probe one validated Debian mirror pair",
+    )
+    probe.add_argument("--apt-mirror", required=True)
+    probe.add_argument("--apt-security-mirror", required=True)
+    probe.add_argument("--suite", default="bookworm")
+
     verify = subparsers.add_parser("verify", help="Verify source/image/runtime commit parity")
     verify.add_argument("--repo-root", type=Path, required=True)
     verify.add_argument("--commit", required=True)
@@ -3172,6 +3260,15 @@ def main() -> int:
                     allow_backend_layer_flatten_recovery=(
                         args.allow_backend_layer_flatten_recovery
                     ),
+                ),
+                None,
+            )
+        elif args.command == "probe-apt-mirrors":
+            _write_json(
+                _probe_apt_mirrors(
+                    args.apt_mirror,
+                    args.apt_security_mirror,
+                    suite=args.suite,
                 ),
                 None,
             )

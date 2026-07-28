@@ -237,9 +237,13 @@ def test_release_authority_and_runbook_keep_debian_mirrors_in_the_backend_build_
     assert "https://deb.debian.org/debian-security" in dockerfile_text
     assert "--apt-mirror" in release_authority_text
     assert "--apt-security-mirror" in release_authority_text
+    assert "probe-apt-mirrors" in release_authority_text
+    assert "Range" in release_authority_text
     assert '"requested"' in release_authority_text and '"applied"' in release_authority_text
     assert "mirrors.ustc.edu.cn/debian" in runbook_text
     assert "mirrors.ustc.edu.cn/debian-security" in runbook_text
+    assert "probe-apt-mirrors" in runbook_text
+    assert "curl --fail --silent --show-error --head" not in runbook_text
     assert "registry-mirrors" not in dockerfile_text
     assert "PIP_TRUSTED_HOST" not in release_authority_text
     assert "trusted=yes" not in dockerfile_text
