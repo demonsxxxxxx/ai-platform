@@ -28,4 +28,5 @@ test("production and harness wrappers forward admin profile authority while pers
   assert.match(source, /canManageProfiles=\{canManageProfiles\}/);
   assert.match(source, /if \(!canManageProfiles\) return;/);
   assert.match(source, /expected_draft_revision: draft\.draftRevision \?\? 0/);
+  assert.doesNotMatch(source, /error instanceof Error \? error\.message/);
 });

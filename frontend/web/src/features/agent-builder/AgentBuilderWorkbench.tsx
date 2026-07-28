@@ -314,10 +314,10 @@ function AgentBuilderWorkbenchContent({
       );
       markProfileDraft(response.agent_profile);
       setPersistenceState({ busy: false, error: null });
-    } catch (error) {
+    } catch {
       setPersistenceState({
         busy: false,
-        error: error instanceof Error ? error.message : "无法保存智能体草稿。",
+        error: "无法保存智能体草稿，请检查配置后重试。",
       });
     }
   }, [activeDraft.name, canManageProfiles, canPersist, draft, markProfileDraft]);
@@ -329,10 +329,10 @@ function AgentBuilderWorkbenchContent({
       const response = await agentProfileApi.publish(draft.agentId, draft.draftRevision);
       markProfilePublished(response.agent_profile);
       setPersistenceState({ busy: false, error: null });
-    } catch (error) {
+    } catch {
       setPersistenceState({
         busy: false,
-        error: error instanceof Error ? error.message : "无法发布智能体草稿。",
+        error: "无法发布智能体草稿，请刷新后重试。",
       });
     }
   }, [canManageProfiles, draft.agentId, draft.draftRevision, markProfilePublished]);

@@ -12,6 +12,8 @@ test("market reads published cards and starts a Chat submission with only the ex
   assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\)/);
   assert.match(source, /marketProfileRequest\(profile\)/);
   assert.match(source, /chat\.sendMessage\([\s\S]*marketProfileRequest\(profile\)/);
+  assert.match(source, /MARKET_CATALOG_LOAD_ERROR/);
+  assert.doesNotMatch(source, /error instanceof Error \? error\.message/);
   assert.doesNotMatch(source, /selected_skill/);
   assert.doesNotMatch(source, /mcp_tool_ids/);
 });

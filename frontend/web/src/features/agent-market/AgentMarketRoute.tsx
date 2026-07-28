@@ -13,6 +13,8 @@ type CatalogState =
   | { phase: "ready"; profiles: readonly AgentProfilePublicProjection[]; error: null }
   | { phase: "error"; profiles: readonly AgentProfilePublicProjection[]; error: string };
 
+const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的智能体，请稍后重新加载。";
+
 function profileChatPath(profile: AgentProfilePublicProjection): string {
   return APP_ROUTE_PATHS.agentMarketChat
     .replace(":agentId", encodeURIComponent(profile.agent_id))
@@ -44,12 +46,12 @@ export function AgentMarketRoute() {
           setCatalog({ phase: "ready", profiles: response.agent_profiles, error: null });
         }
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (active) {
           setCatalog({
             phase: "error",
             profiles: [],
-            error: error instanceof Error ? error.message : "暂时无法加载已发布的智能体。",
+            error: MARKET_CATALOG_LOAD_ERROR,
           });
         }
       });

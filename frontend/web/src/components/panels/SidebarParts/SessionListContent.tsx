@@ -88,6 +88,8 @@ export function SessionListContent({
   const skillsNavigationLabel = isAiAdmin
     ? t("nav.skillManagement")
     : t("skills.available.title");
+  const agentNavigationLabel = isAiAdmin ? "智能体管理" : "智能体市场";
+  const agentNavigationPath = isAiAdmin ? "/agent-builder" : "/agent-market";
 
   const chatsUnreadCount = getUnreadCount({
     loadedSessions: sessions,
@@ -109,8 +111,8 @@ export function SessionListContent({
     {
       key: "agentBuilder",
       icon: Bot,
-      label: "Agent Builder",
-      onClick: () => navigate("/agent-builder"),
+      label: agentNavigationLabel,
+      onClick: () => navigate(agentNavigationPath),
     },
     {
       key: "skills",
