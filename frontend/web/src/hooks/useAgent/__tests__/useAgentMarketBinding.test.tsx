@@ -293,6 +293,59 @@ async function loadHarness() {
   };
 }
 
+test("useAgent sends the market lock on the first successful Chat submission and does not reuse it", async () => {
+  const { setPendingAgentMarketSelection, consumePendingAgentMarketSelection } =
+    await import("../../../features/agent-market/agentMarketSelection.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const selectedAgentProfile = {
+    agent_id: "agt_support",
+    expected_revision: 4,
+  } as const;
+
+  setPendingAgentMarketSelection(selectedAgentProfile);
+  const harness = await loadHarness();
+  const submissions: unknown[][] = [];
+  sessionApi.markRead = async () => {};
+  sessionApi.submitChat = (async (...args) => {
+    submissions.push(args);
+    return {
+      session_id: undefined,
+      run_id: null,
+      status: "needs_confirmation",
+      suggestions: [],
+    };
+  }) as typeof sessionApi.submitChat;
+
+  try {
+    let firstOutcome: { status: string } | undefined;
+    await harness.act(async () => {
+      firstOutcome = await harness.hook.sendMessage("market first");
+    });
+    await settle(harness.act);
+
+    assert.equal(firstOutcome?.status, "accepted");
+    assert.deepEqual(submissions[0]?.[10], selectedAgentProfile);
+
+    let secondOutcome: { status: string } | undefined;
+    await harness.act(async () => {
+      secondOutcome = await harness.hook.sendMessage("normal second");
+    });
+    await settle(harness.act);
+
+    assert.equal(secondOutcome?.status, "accepted");
+    assert.equal(submissions.length, 2);
+    assert.equal(submissions[1]?.[10], null);
+    assert.equal(consumePendingAgentMarketSelection(), null);
+  } finally {
+    await harness.cleanup();
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    consumePendingAgentMarketSelection();
+  }
+});
+
 test("useAgent sends the Agent Market lock once and clears it across rejection and failure paths", async () => {
   const { setPendingAgentMarketSelection, consumePendingAgentMarketSelection } =
     await import("../../../features/agent-market/agentMarketSelection.ts");
