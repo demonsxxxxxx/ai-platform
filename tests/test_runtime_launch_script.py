@@ -218,13 +218,14 @@ def test_runbook_documents_ustc_pair_preflight_no_deploy_probe_and_upstream_roll
 
     assert 'https://mirrors.ustc.edu.cn/debian"' in text
     assert 'https://mirrors.ustc.edu.cn/debian-security"' in text
-    assert "curl --fail --silent --show-error --head" in text
+    assert "probe-apt-mirrors" in text
+    assert "--head" not in text
+    assert "HTTPS GET" in text
     assert "does not invoke Compose" in text
     assert "sudo -n docker build" in text
     assert "--apt-mirror \"$APT_MIRROR\"" in text
     assert "--apt-security-mirror \"$APT_SECURITY_MIRROR\"" in text
-    assert 'PYTHONPATH="$SOURCE/tools" python3 -B -c' in text
-    assert "_normalize_apt_mirror_pair" in text
+    assert 'python3 -B "$SOURCE/tools/release_authority.py" probe-apt-mirrors' in text
     assert 'MIRROR_ARGS=()' in text
     assert 'if test -n "${APT_MIRROR:-}"' in text
     assert "leave both" in text
