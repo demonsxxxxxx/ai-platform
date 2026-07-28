@@ -15,10 +15,52 @@ and `ROOT` from the current 211 host mapping in
 `docs/agent-rules/ai-platform-guardrails.md`, the authoritative source for those
 host subjects.
 
+### Governed Debian mirror preflight and no-deploy probe
+
+The following is the explicit 211 operator example. The release authority accepts
+only this complete pair of HTTPS endpoints; it records only their normalized
+hostnames in safe release evidence. The product and Docker daemon do not hard-code
+this vendor choice.
+
+```sh
+set -eu
+export APT_MIRROR="https://mirrors.ustc.edu.cn/debian"
+export APT_SECURITY_MIRROR="https://mirrors.ustc.edu.cn/debian-security"
+: "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
+: "${TARGET:?set TARGET to the exact fetched main commit}"
+test -n "$APT_MIRROR" && test -n "$APT_SECURITY_MIRROR"
+case "$APT_MIRROR" in https://*) ;; *) exit 1 ;; esac
+case "$APT_SECURITY_MIRROR" in https://*) ;; *) exit 1 ;; esac
+curl --fail --silent --show-error --head \
+  "$APT_MIRROR/dists/bookworm/InRelease" >/dev/null
+curl --fail --silent --show-error --head \
+  "$APT_SECURITY_MIRROR/dists/bookworm-security/InRelease" >/dev/null
+```
+
+After the read-only endpoint checks, this bounded probe exercises the canonical
+backend Dockerfile dependency layer only. It does not invoke Compose, recreate a
+service, or deploy an image; remove the temporary probe image after inspection.
+
+```sh
+PROBE_IMAGE="ai-platform:apt-mirror-probe-${TARGET}"
+sudo -n docker build \
+  --build-arg "AI_PLATFORM_BUILD_COMMIT=${TARGET}" \
+  --build-arg AI_PLATFORM_BUILD_DIRTY=false \
+  --build-arg AI_PLATFORM_BUILD_REPOSITORY=https://github.com/demonsxxxxxx/ai-platform.git \
+  --build-arg "APT_MIRROR=${APT_MIRROR}" \
+  --build-arg "APT_SECURITY_MIRROR=${APT_SECURITY_MIRROR}" \
+  -t "$PROBE_IMAGE" \
+  -f "$ROOT/releases/$TARGET/Dockerfile" \
+  "$ROOT/releases/$TARGET"
+sudo -n docker image rm "$PROBE_IMAGE"
+```
+
 ```bash
 set -eu
 : "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"
 : "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
+: "${APT_MIRROR:?set APT_MIRROR to the reviewed HTTPS Debian archive endpoint}"
+: "${APT_SECURITY_MIRROR:?set APT_SECURITY_MIRROR to the reviewed HTTPS Debian security endpoint}"
 umask 077
 git -C "$SOURCE" fetch --no-tags origin main:refs/remotes/origin/main
 TARGET="$(git -C "$SOURCE" rev-parse refs/remotes/origin/main)"
@@ -36,6 +78,8 @@ timeout --signal=INT --kill-after=30s 24000s \
   --commit "$TARGET" \
   --strategy auto \
   --canonical-build-timeout-seconds 1800 \
+  --apt-mirror "$APT_MIRROR" \
+  --apt-security-mirror "$APT_SECURITY_MIRROR" \
   --docker-cmd "sudo -n docker" \
   --compose-file deploy/ai-platform/docker-compose.yml \
   --compose-file deploy/ai-platform/docker-compose.sandbox.yml
@@ -61,6 +105,11 @@ the same owner and mode. The canonical file must be an existing regular
 non-symlink owned by the managed-root owner with mode `0600`. The authority
 validates metadata before target materialization and again before Compose
 mutation; it never reads, copies, or prints contents.
+
+To roll back the mirror choice while keeping the same release authority, rerun the
+canonical invocation after omitting both `--apt-mirror` and
+`--apt-security-mirror` (and their optional variables). Supplying only one option
+is invalid; omitting the pair preserves the upstream Debian endpoints.
 
 `$ROOT/releases/$TARGET` is the immutable target checkout and the only target
 build context. Its HEAD, tracked/staged/ordinary untracked state, ignored-file

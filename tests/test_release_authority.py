@@ -280,6 +280,119 @@ def test_backend_and_frontend_images_publish_release_authority_labels():
     assert "ARG AI_PLATFORM_BUILD_REPOSITORY=unknown" in backend_stage
 
 
+def test_apt_mirror_pair_normalizes_https_endpoints_and_redacts_to_hostnames():
+    selection = release_authority._normalize_apt_mirror_pair(
+        "https://MIRRORS.USTC.EDU.CN/debian/",
+        "https://mirrors.ustc.edu.cn/debian-security/",
+    )
+
+    assert selection.debian_url == "https://mirrors.ustc.edu.cn/debian"
+    assert selection.security_url == "https://mirrors.ustc.edu.cn/debian-security"
+    assert selection.debian_hostname == "mirrors.ustc.edu.cn"
+    assert selection.security_hostname == "mirrors.ustc.edu.cn"
+    evidence = json.dumps(
+        {
+            "debian_hostname": selection.debian_hostname,
+            "security_hostname": selection.security_hostname,
+        }
+    )
+    assert selection.debian_url not in evidence
+    assert selection.security_url not in evidence
+
+
+def test_empty_apt_mirror_pair_preserves_upstream_defaults():
+    assert release_authority._normalize_apt_mirror_pair("", "") == release_authority._AptMirrorSelection()
+
+
+@pytest.mark.parametrize(
+    "apt_mirror,apt_security_mirror",
+    [
+        ("https://mirror.example/debian", None),
+        (None, "https://mirror.example/debian-security"),
+        ("http://mirror.example/debian", "https://mirror.example/debian-security"),
+        ("https://user:pass@mirror.example/debian", "https://mirror.example/debian-security"),
+        ("https://mirror.example/debian?token=secret", "https://mirror.example/debian-security"),
+        ("https://mirror.example/debian#fragment", "https://mirror.example/debian-security"),
+        ("https://mirror.example/debian path", "https://mirror.example/debian-security"),
+        ("https://mirror.example/debian\tpath", "https://mirror.example/debian-security"),
+        ("https://mirror.example/debian\x01path", "https://mirror.example/debian-security"),
+        ("https://mirror.example/debian/../private", "https://mirror.example/debian-security"),
+        ("https://mirror.example/debian%2fprivate", "https://mirror.example/debian-security"),
+        ("https://mirror.example/debian?", "https://mirror.example/debian-security"),
+        ("https://mirror.example/debian#", "https://mirror.example/debian-security"),
+        ("https://[::1]/debian", "https://mirror.example/debian-security"),
+        ("https://mirror.example:8443/debian", "https://mirror.example/debian-security"),
+    ],
+)
+def test_apt_mirror_pair_rejects_incomplete_or_unsafe_endpoints(
+    apt_mirror,
+    apt_security_mirror,
+):
+    with pytest.raises(ReleaseAuthorityError):
+        release_authority._normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
+
+
+def test_apt_mirror_build_args_are_only_added_to_canonical_backend_build(monkeypatch, tmp_path):
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+    common = {
+        "docker": ["docker"],
+        "repo_root": tmp_path,
+        "reference": "ai-platform:" + "a" * 40,
+        "commit": "a" * 40,
+        "repository": AUTHORITATIVE_REPOSITORY,
+        "apt_mirror": "https://mirrors.ustc.edu.cn/debian",
+        "apt_security_mirror": "https://mirrors.ustc.edu.cn/debian-security",
+    }
+    release_authority._canonical_or_source_build(
+        **common,
+        role="backend",
+        source_only=False,
+    )
+    release_authority._canonical_or_source_build(
+        **common,
+        role="frontend",
+        source_only=False,
+    )
+    release_authority._canonical_or_source_build(
+        **common,
+        role="backend",
+        source_only=True,
+    )
+    release_authority._build_from_verified_role_image(
+        ["docker"],
+        repo_root=tmp_path,
+        reference="ai-platform:" + "a" * 40,
+        base_reference="ai-platform:" + "b" * 40,
+        commit="a" * 40,
+        repository=AUTHORITATIVE_REPOSITORY,
+        role="backend",
+        action="promote",
+    )
+
+    assert "APT_MIRROR=https://mirrors.ustc.edu.cn/debian" in commands[0]
+    assert "APT_SECURITY_MIRROR=https://mirrors.ustc.edu.cn/debian-security" in commands[0]
+    for command in commands[1:]:
+        assert not any(argument.startswith("APT_") for argument in command)
+
+
+def test_release_authority_cli_exposes_apt_mirror_options():
+    result = subprocess.run(
+        [sys.executable, "tools/release_authority.py", "deploy-main-commit", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "--apt-mirror" in result.stdout
+    assert "--apt-security-mirror" in result.stdout
+
+
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args],

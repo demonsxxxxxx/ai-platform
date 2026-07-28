@@ -21,11 +21,15 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ARG PIP_INDEX_URL
 ARG PIP_TRUSTED_HOST
 ARG APT_MIRROR
+ARG APT_SECURITY_MIRROR
 
 WORKDIR /app
 
 RUN if [ -n "$APT_MIRROR" ]; then \
-        sed -i "s|http://deb.debian.org/debian|$APT_MIRROR|g; s|http://security.debian.org/debian-security|$APT_MIRROR-security|g" /etc/apt/sources.list.d/debian.sources; \
+        sed -i -E "s|https?://deb\\.debian\\.org/debian|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && if [ -n "$APT_SECURITY_MIRROR" ]; then \
+        sed -i -E "s|https?://security\\.debian\\.org/debian-security|$APT_SECURITY_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
     fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git passwd \
