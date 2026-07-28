@@ -13,6 +13,11 @@ from app.runtime.sandbox.contracts import (
     ContainerStatus,
     build_trusted_callback_target,
 )
+from app.runtime.sandbox.providers.opensandbox.metadata import (
+    OpenSandboxMetadataError,
+    normalize_opensandbox_metadata,
+    opensandbox_metadata_matches,
+)
 
 SANDBOX_SECURITY_PROFILE_GOVERNED = "governed"
 SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL = "trusted_internal"
@@ -592,11 +597,15 @@ def trusted_internal_orphan_cleanup_metadata_filter(
         or values[SANDBOX_SECURITY_PROFILE_LABEL] != SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
     ):
         return None
-    return {
+    raw_metadata = {
         "ai-platform.owner": "sandbox-runtime",
         "ai-platform.provider_backend": "opensandbox",
         **values,
     }
+    try:
+        return normalize_opensandbox_metadata(raw_metadata)
+    except OpenSandboxMetadataError:
+        return None
 
 
 def trusted_internal_orphan_cleanup_identity_is_authorized(
@@ -636,8 +645,7 @@ def trusted_internal_cleanup_identity_is_authorized(
         image_valid
         and status_labels.get(SANDBOX_SECURITY_PROFILE_LABEL) == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
         and status_labels.get("ai-platform.provider_backend") == "opensandbox"
-        and status_labels.get("ai-platform.executor.requested_image") == image
-        and status_labels.get("ai-platform.executor.requested_image_digest") == digest
+        and opensandbox_metadata_matches(status_labels, lease_labels)
         and not _has_governed_projection(lease_labels)
         and not _has_governed_projection(status_labels)
     )
