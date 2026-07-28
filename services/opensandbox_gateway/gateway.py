@@ -111,8 +111,10 @@ CALLBACK_PATHS = {
 }
 EXECD_ALLOWED = {
     ("GET", "/ping"),
+    ("GET", "/directories/list"),
     ("POST", "/files/upload"),
     ("GET", "/files/download"),
+    ("GET", "/files/info"),
     ("POST", "/command"),
 }
 EXECUTOR_ALLOWED = {
@@ -988,8 +990,12 @@ class GatewayApplication:
         if (request.method.upper(), clean_path) not in allowed:
             raise GatewayError(404, "proxy_route_not_allowed")
         forwarded = request
+        if port == 44772 and clean_path in {"/directories/list", "/files/info"}:
+            forwarded = replace(request, target=_validate_workspace_collection_request(request, clean_path, query))
         if port == 44772 and clean_path in {"/files/upload", "/files/download"}:
-            self._validate_workspace_file_request(record, request, clean_path)
+            collection_target = self._validate_workspace_file_request(record, request, clean_path)
+            if collection_target is not None:
+                forwarded = replace(request, target=collection_target)
         if port == 44772 and clean_path == "/command":
             command = _json_object(request.body)
             if command != {"command": "test -f /workspace/.ai-platform-opensandbox-lease.json"}:
@@ -1005,16 +1011,17 @@ class GatewayApplication:
             raise GatewayError(502, "upstream_response_too_large")
         return result
 
-    def _validate_workspace_file_request(self, record: LeaseRecord, request: Request, path: str) -> None:
+    def _validate_workspace_file_request(self, record: LeaseRecord, request: Request, path: str) -> str | None:
         sentinel = "/workspace/.ai-platform-opensandbox-lease.json"
         if path == "/files/download":
             try:
                 pairs = urllib.parse.parse_qsl(urllib.parse.urlsplit(request.target).query, keep_blank_values=True, strict_parsing=True)
             except ValueError:
                 raise GatewayError(400, "workspace_file_request_invalid") from None
-            if pairs != [("path", sentinel)] or urllib.parse.urlencode(pairs) != urllib.parse.urlsplit(request.target).query:
-                raise GatewayError(400, "workspace_file_request_invalid")
-            return
+            query = urllib.parse.urlsplit(request.target).query
+            if pairs == [("path", sentinel)] and urllib.parse.urlencode(pairs) == query:
+                return None
+            return _validate_workspace_collection_request(request, path, query)
         content_type = _header(request.headers, "content-type")
         if not content_type.startswith("multipart/form-data; boundary="):
             raise GatewayError(400, "workspace_file_request_invalid")
@@ -1050,6 +1057,7 @@ class GatewayApplication:
             or sentinel_payload != expected_payload
         ):
             raise GatewayError(400, "workspace_file_request_invalid")
+        return None
 
     def _validate_task_scope(self, task: Mapping[str, Any], record: LeaseRecord) -> None:
         for name in SCOPE_KEYS:
@@ -1222,6 +1230,45 @@ def _bounded_json(response: Response, limit: int) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise GatewayError(502, "upstream_invalid_response")
     return value
+
+
+def _validate_workspace_collection_request(request: Request, route: str, query: str) -> str:
+    expected_keys = ("path", "depth") if route == "/directories/list" else ("path",)
+    try:
+        pairs = urllib.parse.parse_qsl(
+            query,
+            keep_blank_values=True,
+            strict_parsing=True,
+            max_num_fields=len(expected_keys),
+            encoding="utf-8",
+            errors="strict",
+        )
+    except (UnicodeDecodeError, ValueError):
+        raise GatewayError(400, "workspace_collection_request_invalid") from None
+    if (
+        tuple(key for key, _ in pairs) != expected_keys
+        or urllib.parse.urlencode(pairs) != query
+        or (route == "/directories/list" and pairs[1][1] != "1")
+        or request.body
+        or (route == "/files/download" and any(str(key).lower() == "range" for key in request.headers))
+        or not _workspace_collection_path_allowed(route, pairs[0][1])
+    ):
+        raise GatewayError(400, "workspace_collection_request_invalid")
+    return f"{route}?{query}"
+
+
+def _workspace_collection_path_allowed(route: str, value: str) -> bool:
+    if any(character in value for character in "\\%?#") or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        return False
+    segments = value.split("/")
+    if len(segments) < 2 or segments[:2] != ["", "workspace"] or any(segment in {"", ".", ".."} for segment in segments[2:]):
+        return False
+    relative = segments[2:]
+    if route == "/directories/list":
+        return not relative or relative[0] in {"output", "outputs"}
+    if len(relative) >= 2 and relative[0] == "output":
+        return True
+    return len(relative) >= 4 and relative[0] == "outputs" and "delivery" in relative[2:-1]
 
 
 def _safe_target(target: str) -> tuple[str, str]:

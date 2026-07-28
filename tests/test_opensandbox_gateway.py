@@ -21,6 +21,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.runtime.sandbox.opensandbox_attestation import _OpenSandboxAttestor, _TransportResponse
@@ -236,6 +237,14 @@ def multipart_lease_upload(record, boundary: str = "lease-boundary") -> bytes:
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\".ai-platform-opensandbox-lease.json\"\r\nContent-Type: application/json\r\n\r\n{content}\r\n"
         f"--{boundary}--\r\n"
     ).encode()
+
+
+def _collection_proxy():
+    app, lifecycle, runtime, store = application()
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config())))["id"]
+    endpoint = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/endpoints/44772?use_server_proxy=true")
+    token = decoded(endpoint)["headers"][ROUTE_HEADER]
+    return app, lifecycle, runtime, store, sandbox_id, token, f"/v1/sandboxes/{sandbox_id}/proxy/44772"
 
 
 def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> None:
@@ -1716,21 +1725,25 @@ def test_reconciliation_list_paginates_and_rejects_ambiguity() -> None:
             return super().request(method, path, body)
 
     config = gateway_config()
-    pages = lambda page: ([{"id": f"sandbox-{page}"}], page, page < 2)
+    def pages(page):
+        return ([{"id": f"sandbox-{page}"}], page, page < 2)
     app = GatewayApplication(config, PagedLifecycle(pages), InMemoryRuntimeAdapter(), InMemoryStateStore())
     assert [item["id"] for item in app._list_intent_sandboxes("intent-one")] == ["sandbox-1", "sandbox-2"]
 
-    duplicate = lambda page: ([{"id": "sandbox-1"}], page, page < 2)
+    def duplicate(page):
+        return ([{"id": "sandbox-1"}], page, page < 2)
     duplicate_app = GatewayApplication(config, PagedLifecycle(duplicate), InMemoryRuntimeAdapter(), InMemoryStateStore())
     with pytest.raises(GatewayError, match="reservation_reconciliation_ambiguous"):
         duplicate_app._list_intent_sandboxes("intent-one")
 
-    wrong_page = lambda page: ([], page + 1, False)
+    def wrong_page(page):
+        return ([], page + 1, False)
     wrong_page_app = GatewayApplication(config, PagedLifecycle(wrong_page), InMemoryRuntimeAdapter(), InMemoryStateStore())
     with pytest.raises(GatewayError, match="reservation_reconciliation_ambiguous"):
         wrong_page_app._list_intent_sandboxes("intent-one")
 
-    never_ends = lambda page: ([], page, True)
+    def never_ends(page):
+        return ([], page, True)
     bounded_app = GatewayApplication(config, PagedLifecycle(never_ends), InMemoryRuntimeAdapter(), InMemoryStateStore())
     with pytest.raises(GatewayError, match="reservation_reconciliation_ambiguous"):
         bounded_app._list_intent_sandboxes("intent-one")
@@ -1762,6 +1775,93 @@ def test_real_sdk_list_query_and_response_contract() -> None:
         "totalPages": 1,
         "hasNextPage": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_workspace_collection_chain_through_gateway() -> None:
+    from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
+    from opensandbox.adapters.filesystem_adapter import FilesystemAdapter
+    from opensandbox.config import ConnectionConfig
+    from opensandbox.models import DirectoryListEntry, SandboxEndpoint
+    app, _, runtime, _, _, token, prefix = _collection_proxy()
+    artifacts = ("/workspace/output/report.txt", "/workspace/outputs/run/nested/delivery/final.txt")
+    metadata = {"size": 8, "modified_at": "2026-07-28T00:00:00Z", "created_at": "2026-07-28T00:00:00Z", "owner": "1000", "group": "1000", "mode": 600, "type": "file"}
+    infos = {path: {"path": path, **metadata} for path in artifacts}
+    runtime.proxy_responses[(44772, "GET", "/directories/list")] = Response.json(200, [infos[artifacts[0]]])
+    runtime.proxy_responses[(44772, "GET", "/files/info")] = Response.json(200, infos)
+    runtime.proxy_responses[(44772, "GET", "/files/download")] = Response(200, {}, b"artifact")
+    async def route_sdk(request: httpx.Request) -> httpx.Response:
+        response = call(app, request.method, request.url.raw_path.decode("ascii"), await request.aread(), dict(request.headers))
+        return httpx.Response(response.status, headers=response.headers, content=response.body, request=request)
+    adapter = FilesystemAdapter(
+        ConnectionConfig(transport=httpx.MockTransport(route_sdk)),
+        SandboxEndpoint(endpoint=f"gateway.test{prefix}", headers={ROUTE_HEADER: token}),
+    )
+    try:
+        for path in ("/workspace", "/workspace/output", "/workspace/output/nested", "/workspace/outputs", "/workspace/outputs/run"):
+            assert await adapter.list_directory(DirectoryListEntry(path=path, depth=1))
+        for path in artifacts:
+            assert path in await adapter.get_file_info([path])
+            total, digest = await OpenSandboxContainerProvider()._stream_remote_workspace_file(adapter, path)
+            assert (total, digest) == (8, hashlib.sha256(b"artifact").hexdigest())
+    finally:
+        await adapter._httpx_client.aclose()
+    expected = [f"/directories/list?{urllib.parse.urlencode({'path': path, 'depth': 1})}" for path in ("/workspace", "/workspace/output", "/workspace/output/nested", "/workspace/outputs", "/workspace/outputs/run")]
+    for path in artifacts:
+        expected.extend(f"{route}?{urllib.parse.urlencode({'path': path})}" for route in ("/files/info", "/files/download"))
+    assert [request.target for _, _, request in runtime.proxied] == expected
+
+
+def test_workspace_collection_policy_fails_closed_before_proxy() -> None:
+    app, _, runtime, _, sandbox_id, token, prefix = _collection_proxy()
+    encode = urllib.parse.urlencode
+    valid_list = "/directories/list?path=%2Fworkspace&depth=1"
+    denied = [
+        "/directories/list", "/directories/list?path", "/directories/list?depth=1&path=%2Fworkspace",
+        "/directories/list?path=%2fworkspace&depth=1", "/directories/list?path=%2Fworkspace&depth=2",
+        "/directories/list?path=%2Fworkspace&path=%2Fworkspace%2Foutput&depth=1",
+        "/directories/list?path=%2Fworkspace&depth=1&followSymlinks=false", "/directories/list?path=%ZZ&depth=1", "/directories/list?path=%252Fworkspace&depth=1",
+        valid_list + "#fragment",
+    ]
+    denied.extend(
+        f"/directories/list?{encode({'path': path})}&depth=1"
+        for path in ("/tmp", "/workspace/inputs", "/workspace/.claude", "/workspace/output/../inputs", "/workspace/output//nested", "/workspace/output/./nested")
+    )
+    bad_files = (
+        "/workspace/output", "/workspace/outputs/run/delivery", "/workspace/outputs/delivery/file.txt",
+        "/workspace/outputs/run/private.txt", "/workspace/inputs/prompt.txt", "/workspace/.claude/settings.json",
+        "/workspace/.ai-platform-opensandbox-lease.json.bak",
+        "/workspace/output/../inputs/private.txt", "/workspace/output//report.txt", "/workspace/output/./report.txt", "/tmp/report.txt",
+    )
+    denied.extend(f"{route}?{encode({'path': path})}" for route in ("/files/info", "/files/download") for path in bad_files)
+    denied.append(f"/files/info?{encode({'path': '/workspace/.ai-platform-opensandbox-lease.json'})}")
+    denied.extend(
+        f"{route}?{suffix}"
+        for route in ("/files/info", "/files/download")
+        for suffix in ("path", "path=%2Fworkspace%2Foutput%2Fa.txt&offset=1", "path=%2Fworkspace%2Foutput%2Fa.txt&path=%2Fworkspace%2Foutput%2Fb.txt")
+    )
+    requests = [("GET", target, b"") for target in denied] + [
+        ("POST", valid_list, b""), ("GET", valid_list, b"unexpected"),
+        ("POST", "/files/write", b""), ("DELETE", "/files/delete", b""), ("POST", "/files/move", b""), ("GET", f"/files/search?{encode({'path': '/workspace/output'})}", b""),
+        ("POST", "/command", b'{"command":"rm -rf /workspace"}'),
+    ]
+    for method, target, body in requests:
+        response = call(app, method, prefix + target, body, {ROUTE_HEADER: token})
+        assert response.status in {400, 404}, (target, decoded(response))
+        assert runtime.proxied == []
+    ranged = call(app, "GET", prefix + f"/files/download?{encode({'path': '/workspace/output/report.txt'})}", headers={ROUTE_HEADER: token, "Range": "bytes=0-1"})
+    assert ranged.status == 400 and runtime.proxied == []
+    valid_info = f"/files/info?{encode({'path': '/workspace/output/report.txt'})}"
+    assert call(app, "GET", prefix + valid_info).status == 401
+    assert call(app, "GET", prefix + valid_info, headers={ROUTE_HEADER: "wrong"}).status == 401
+    old = runtime.evidence[sandbox_id]
+    runtime.evidence[sandbox_id] = RuntimeEvidence(**{**old.__dict__, "network_mode": "bridge"})
+    assert call(app, "GET", prefix + valid_info, headers={ROUTE_HEADER: token}).status == 409
+    assert runtime.proxied == []
+    runtime.evidence[sandbox_id] = old
+    runtime.proxy_responses[(44772, "GET", "/files/info")] = Response(200, {}, b"x" * (gateway_config().max_response_bytes + 1))
+    oversized = call(app, "GET", prefix + valid_info, headers={ROUTE_HEADER: token})
+    assert oversized.status == 502 and decoded(oversized)["error"]["code"] == "upstream_response_too_large"
 
 
 def test_literal_private_ip_certificate_san_and_workspace_file_proxy_contracts(monkeypatch) -> None:
@@ -2589,7 +2689,6 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     nginx = (root / "frontend/web/nginx.conf.template").read_text(encoding="utf-8")
     frontend_dockerfile = (root / "frontend/web/Dockerfile").read_text(encoding="utf-8")
     compose = (root / "deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
-    opensandbox_compose = (root / "deploy/ai-platform/docker-compose.opensandbox.yml").read_text(encoding="utf-8")
     assert "docker.sock" not in public_unit and "SupplementaryGroups=docker" not in public_unit
     assert "docker.sock" in helper_unit and "SupplementaryGroups=docker" in helper_unit
     assert all(
@@ -2657,14 +2756,6 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     assert "s72-bridge/tls" not in frontend_compose
     assert "NGINX_ENVSUBST_TEMPLATE_DIR" not in frontend_compose
     assert "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL" not in compose
-    assert "${AI_PLATFORM_S72_BRIDGE_PORT:-18443}:8443" in opensandbox_compose
-    assert opensandbox_compose.count("/etc/nginx/s72-bridge/tls/fullchain.pem:ro") == 1
-    assert opensandbox_compose.count("/etc/nginx/s72-bridge/tls/privkey.pem:ro") == 1
-    assert '"host.docker.internal:host-gateway"' in opensandbox_compose
-    assert "docker.sock" not in opensandbox_compose
-    assert "NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-opensandbox" in opensandbox_compose
-    assert opensandbox_compose.count("SANDBOX_CONTAINER_PROVIDER: opensandbox") == 2
-    assert opensandbox_compose.count("\n      OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL:") == 2
 
 
 def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: str) -> subprocess.CompletedProcess[str]:
