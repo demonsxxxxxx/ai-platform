@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
@@ -133,8 +134,17 @@ async def acquire_sandbox_creation_claim(
         yield SandboxCreationClaim(active_lease_exists=active_lease_exists)
     finally:
         if connection is not None:
+            body_raised = sys.exc_info()[0] is not None
             try:
                 if acquired:
-                    await _release_session_lock(connection, lock_key)
+                    try:
+                        await _release_session_lock(connection, lock_key)
+                    except Exception:
+                        if not body_raised:
+                            raise
             finally:
-                await connection.close()
+                try:
+                    await connection.close()
+                except Exception:
+                    if not body_raised:
+                        raise

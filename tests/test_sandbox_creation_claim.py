@@ -27,6 +27,7 @@ class _ClaimStore:
         self.active = False
         self.closed = 0
         self.active_observed = asyncio.Event()
+        self.release_fails = False
 
     async def connect(self):
         return _ClaimConnection(self)
@@ -47,6 +48,8 @@ class _ClaimConnection:
                 self.held.add(key)
             return _Cursor({"acquired": acquired})
         if "pg_advisory_unlock" in query:
+            if self.store.release_fails:
+                raise RuntimeError("unlock failed")
             key = params[0]
             self.store.locks.discard(key)
             self.held.discard(key)
@@ -104,6 +107,18 @@ async def test_creation_claim_winner_failure_releases_its_session_lock():
 
     assert store.locks == set()
     assert store.closed == 2
+
+
+@pytest.mark.asyncio
+async def test_creation_claim_release_failure_does_not_mask_winner_failure():
+    store = _ClaimStore()
+    store.release_fails = True
+
+    with pytest.raises(RuntimeError, match="winner failed"):
+        async with acquire_sandbox_creation_claim(_scope(), timeout_seconds=1, connection_factory=store.connect):
+            raise RuntimeError("winner failed")
+
+    assert store.closed == 1
 
 
 @pytest.mark.asyncio
