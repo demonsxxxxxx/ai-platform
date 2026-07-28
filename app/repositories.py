@@ -509,7 +509,7 @@ async def create_agent_profile_revision(
           published_by, published_at, published_from_revision
         )
         values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
-                %s, case when %s is null then null else now() end, %s)
+                %s, case when %s::text is null then null else now() end, %s)
         returning tenant_id, agent_id, revision, status, name, description, instructions,
                   model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
                   created_at, published_at
