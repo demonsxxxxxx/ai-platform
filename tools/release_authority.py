@@ -113,7 +113,8 @@ AUTHORITATIVE_REPOSITORY_ALIASES = {
 SECRET_PATH_NAMES = {".env", ".env.local", ".env.production", ".env.development"}
 DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
 HTTP_PROBE_TIMEOUT_SECONDS = 15
-APT_MIRROR_PROBE_MAX_BYTES = 64 * 1024
+APT_MIRROR_PROBE_MAX_BYTES = 256 * 1024
+APT_CONTENT_RANGE_RE = re.compile(r"^bytes ([0-9]+)-([0-9]+)/([0-9]+)$", re.ASCII)
 BACKEND_STAGE_TIMEOUT_SECONDS = 90
 FRONTEND_STAGE_TIMEOUT_SECONDS = 180
 RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS = 300
@@ -967,28 +968,27 @@ def _probe_apt_endpoint(endpoint: str, hostname: str, suite: str, security: bool
         status = getattr(response, "status", None) or response.getcode()
         if status not in {200, 206}:
             raise ReleaseAuthorityError("APT mirror probe returned an unexpected status")
-        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-        if content_type not in {"text/plain", "application/octet-stream"}:
+        if response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() not in {"text/plain", "application/octet-stream"}:
             raise ReleaseAuthorityError("APT mirror probe returned an unsafe content type")
-        if (content_length := response.headers.get("Content-Length")) is not None:
-            if int(content_length) > APT_MIRROR_PROBE_MAX_BYTES:
-                raise ReleaseAuthorityError("APT mirror probe returned oversized content")
-        if not (payload := response.read(APT_MIRROR_PROBE_MAX_BYTES + 1)) or len(payload) > APT_MIRROR_PROBE_MAX_BYTES:
-            raise ReleaseAuthorityError("APT mirror probe returned empty or oversized content")
+        if re.fullmatch(r"[0-9]+", content_length := response.headers.get("Content-Length", ""), re.ASCII) is None:
+            raise ReleaseAuthorityError("APT mirror probe returned an unknown content length")
+        content_length = int(content_length)
+        range_match = APT_CONTENT_RANGE_RE.fullmatch(response.headers.get("Content-Range", "")) if status == 206 else None
+        range_values = tuple(int(value) for value in range_match.groups()) if range_match else ()
+        if status == 206 and (not range_values or range_values[0] != 0 or range_values[1] != range_values[2] - 1 or range_values[2] > APT_MIRROR_PROBE_MAX_BYTES or content_length != range_values[2]):
+            raise ReleaseAuthorityError("APT mirror probe returned an invalid or incomplete content range")
+        if status != 206 and (response.headers.get("Content-Range") is not None or content_length > APT_MIRROR_PROBE_MAX_BYTES):
+            raise ReleaseAuthorityError("APT mirror probe returned an unbounded response")
+        payload = response.read((range_values[2] if status == 206 else content_length) + 1)
+        if not payload or len(payload) != (range_values[2] if status == 206 else content_length):
+            raise ReleaseAuthorityError("APT mirror probe returned empty, truncated, or oversized content")
         lines = payload.decode("utf-8").splitlines()
         signature_start = lines.index("-----BEGIN PGP SIGNATURE-----")
-        signed = "\n".join(lines[1:signature_start])
-        if (
-            lines[0] != "-----BEGIN PGP SIGNED MESSAGE-----"
-            or lines[-1] != "-----END PGP SIGNATURE-----"
-            or [lines.count(marker) for marker in ("-----BEGIN PGP SIGNED MESSAGE-----", "-----BEGIN PGP SIGNATURE-----", "-----END PGP SIGNATURE-----")] != [1, 1, 1]
-            or signature_start <= 2 or lines[2] != ""
-            or lines[1] not in {"Hash: SHA1", "Hash: SHA224", "Hash: SHA256", "Hash: SHA384", "Hash: SHA512"}
-            or signed.count("Hash: ") != 1
-            or signed.count("Origin: ") != 1 or "Origin: Debian" not in signed
-            or signed.count("Suite: ") != 1 or f"Suite: {suite_path}" not in signed
-            or signed.count("Codename: ") != 1 or f"Codename: {suite_path}" not in signed
-        ):
+        fields = {key: [line.removeprefix(f"{key}: ") for line in lines[3:signature_start] if line.startswith(f"{key}: ")] for key in ("Codename", "Origin", "Suite")}
+        if (lines[0] != "-----BEGIN PGP SIGNED MESSAGE-----" or lines[-1] != "-----END PGP SIGNATURE-----" or [lines.count(marker) for marker in ("-----BEGIN PGP SIGNED MESSAGE-----", "-----BEGIN PGP SIGNATURE-----", "-----END PGP SIGNATURE-----")] != [1, 1, 1]
+                or signature_start <= 2 or lines[2] != "" or lines[1] not in {"Hash: SHA1", "Hash: SHA224", "Hash: SHA256", "Hash: SHA384", "Hash: SHA512"}
+                or any(len(fields.get(key, ())) != 1 for key in ("Codename", "Origin", "Suite")) or fields["Origin"] != ["Debian"] or fields["Codename"] != [suite_path]
+                or fields["Suite"][0] not in ({"stable-security", "oldstable-security", "oldoldstable-security"} if security else {"stable", "oldstable", "oldoldstable"})):
             raise ReleaseAuthorityError("APT mirror probe returned unexpected content")
     except (HTTPError, URLError, TimeoutError, OSError, TypeError, ValueError) as exc:
         if isinstance(exc, HTTPError):

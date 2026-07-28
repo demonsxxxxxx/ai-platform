@@ -34,9 +34,13 @@ python3 -B "$SOURCE/tools/release_authority.py" probe-apt-mirrors \
   --apt-security-mirror "$APT_SECURITY_MIRROR" >/dev/null
 ```
 
-The authority probe uses HTTPS GET with a small Range request and bounded read;
-it accepts only Debian InRelease content for the requested suite and rejects
-unsafe redirects, empty or oversized responses, timeouts, and non-2xx status.
+The authority probe uses HTTPS GET with a bounded Range covering the complete
+InRelease (up to 256 KiB), then verifies Content-Range/Content-Length and the
+complete clear-signed PGP envelope. Release identity is the exact Codename;
+Suite accepts Debian lifecycle aliases stable, oldstable, or oldoldstable, with
+the matching `-security` suffix for the security endpoint. It rejects unsafe
+redirects, unknown or oversized/truncated responses, invalid content, timeouts,
+and non-2xx status.
 After the read-only endpoint checks, this bounded Docker probe exercises the canonical
 backend Dockerfile dependency layer only. It does not invoke Compose, recreate a
 service, or deploy an image; remove the temporary probe image after inspection.
