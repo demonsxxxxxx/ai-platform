@@ -200,8 +200,11 @@ def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabli
 
     assert "ARG APT_MIRROR" in content
     assert "ARG APT_SECURITY_MIRROR" in content
-    assert r"https?://deb\\.debian\\.org/debian" in content
-    assert r"https?://security\\.debian\\.org/debian-security" in content
+    assert content.count("FROM python:3.11-slim-bookworm") == 2
+    assert "http://deb.debian.org/debian-security" in content
+    assert "https://deb.debian.org/debian-security" in content
+    assert "http://security.debian.org/debian-security" in content
+    assert "sed -i" not in content
     assert "APT_MIRROR-security" not in content
     assert "trusted=yes" not in content
     assert "allow-unauthenticated" not in content
@@ -220,7 +223,11 @@ def test_runbook_documents_ustc_pair_preflight_no_deploy_probe_and_upstream_roll
     assert "sudo -n docker build" in text
     assert "--apt-mirror \"$APT_MIRROR\"" in text
     assert "--apt-security-mirror \"$APT_SECURITY_MIRROR\"" in text
-    assert "omitting both `--apt-mirror` and" in text
+    assert 'PYTHONPATH="$SOURCE/tools" python3 -B -c' in text
+    assert "_normalize_apt_mirror_pair" in text
+    assert 'MIRROR_ARGS=()' in text
+    assert 'if test -n "${APT_MIRROR:-}"' in text
+    assert "leave both" in text
     assert "upstream Debian endpoints" in text
 
 

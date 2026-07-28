@@ -24,13 +24,12 @@ this vendor choice.
 
 ```sh
 set -eu
+: "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"
 export APT_MIRROR="https://mirrors.ustc.edu.cn/debian"
 export APT_SECURITY_MIRROR="https://mirrors.ustc.edu.cn/debian-security"
 : "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
 : "${TARGET:?set TARGET to the exact fetched main commit}"
-test -n "$APT_MIRROR" && test -n "$APT_SECURITY_MIRROR"
-case "$APT_MIRROR" in https://*) ;; *) exit 1 ;; esac
-case "$APT_SECURITY_MIRROR" in https://*) ;; *) exit 1 ;; esac
+PYTHONPATH="$SOURCE/tools" python3 -B -c 'import os; from release_authority import _normalize_apt_mirror_pair; _normalize_apt_mirror_pair(os.environ["APT_MIRROR"], os.environ["APT_SECURITY_MIRROR"])'
 curl --fail --silent --show-error --head \
   "$APT_MIRROR/dists/bookworm/InRelease" >/dev/null
 curl --fail --silent --show-error --head \
@@ -59,8 +58,6 @@ sudo -n docker image rm "$PROBE_IMAGE"
 set -eu
 : "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"
 : "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
-: "${APT_MIRROR:?set APT_MIRROR to the reviewed HTTPS Debian archive endpoint}"
-: "${APT_SECURITY_MIRROR:?set APT_SECURITY_MIRROR to the reviewed HTTPS Debian security endpoint}"
 umask 077
 git -C "$SOURCE" fetch --no-tags origin main:refs/remotes/origin/main
 TARGET="$(git -C "$SOURCE" rev-parse refs/remotes/origin/main)"
@@ -72,14 +69,20 @@ git -C "$SOURCE" checkout --detach "$TARGET"
 test "$(git -C "$SOURCE" rev-parse HEAD)" = "$TARGET"
 test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=all)"
 cd "$SOURCE"
+MIRROR_ARGS=()
+if test -n "${APT_MIRROR:-}" || test -n "${APT_SECURITY_MIRROR:-}"; then
+  : "${APT_MIRROR:?set APT_MIRROR to the reviewed HTTPS Debian archive endpoint}"
+  : "${APT_SECURITY_MIRROR:?set APT_SECURITY_MIRROR to the reviewed HTTPS Debian security endpoint}"
+  PYTHONPATH="$SOURCE/tools" python3 -B -c 'import os; from release_authority import _normalize_apt_mirror_pair; _normalize_apt_mirror_pair(os.environ["APT_MIRROR"], os.environ["APT_SECURITY_MIRROR"])'
+  MIRROR_ARGS=(--apt-mirror "$APT_MIRROR" --apt-security-mirror "$APT_SECURITY_MIRROR")
+fi
 timeout --signal=INT --kill-after=30s 24000s \
   python3 -B tools/release_authority.py deploy-main-commit \
   --release-root "$ROOT/releases" \
   --commit "$TARGET" \
   --strategy auto \
   --canonical-build-timeout-seconds 1800 \
-  --apt-mirror "$APT_MIRROR" \
-  --apt-security-mirror "$APT_SECURITY_MIRROR" \
+  "${MIRROR_ARGS[@]}" \
   --docker-cmd "sudo -n docker" \
   --compose-file deploy/ai-platform/docker-compose.yml \
   --compose-file deploy/ai-platform/docker-compose.sandbox.yml
@@ -106,10 +109,11 @@ non-symlink owned by the managed-root owner with mode `0600`. The authority
 validates metadata before target materialization and again before Compose
 mutation; it never reads, copies, or prints contents.
 
-To roll back the mirror choice while keeping the same release authority, rerun the
-canonical invocation after omitting both `--apt-mirror` and
-`--apt-security-mirror` (and their optional variables). Supplying only one option
-is invalid; omitting the pair preserves the upstream Debian endpoints.
+To roll back the mirror choice while keeping the same release authority, leave both
+mirror variables unset and rerun the canonical invocation: `MIRROR_ARGS` stays empty
+and the CLI omits both mirror flags. Supplying only one option is invalid; omitting
+the pair preserves the upstream Debian endpoints. The mirror preflight/probe block
+above is only required when selecting a mirror pair.
 
 `$ROOT/releases/$TARGET` is the immutable target checkout and the only target
 build context. Its HEAD, tracked/staged/ordinary untracked state, ignored-file

@@ -943,8 +943,6 @@ def _normalize_commit(value: str) -> str:
     return commit
 
 
-_APT_MIRROR_HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$", re.IGNORECASE)
-
 def _normalize_apt_mirror_pair(
     apt_mirror: str | None,
     apt_security_mirror: str | None,
@@ -959,7 +957,7 @@ def _normalize_apt_mirror_pair(
         return _EMPTY_APT_MIRRORS
     endpoints = []
     for option_name, value in (("--apt-mirror", apt_mirror), ("--apt-security-mirror", apt_security_mirror)):
-        if not isinstance(value, str) or any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        if not isinstance(value, str) or not value.isascii() or any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in value):
             raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL")
         try:
             parsed = urlsplit(value)
@@ -967,11 +965,16 @@ def _normalize_apt_mirror_pair(
         except ValueError:
             raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL") from None
         path = parsed.path.rstrip("/")
-        host = hostname.lower() if hostname is not None else ""
+        host = hostname.lower() if hostname is not None and hostname.isascii() else ""
+        labels = host.split(".")
         unsafe = (
             parsed.scheme != "https" or parsed.username is not None or parsed.password is not None or "@" in parsed.netloc
             or parsed.query or parsed.fragment or "?" in value or "#" in value or port is not None or ":" in parsed.netloc
-            or not _APT_MIRROR_HOST_RE.fullmatch(host) or any(not label for label in host.split(".")) or not path.startswith("/")
+            or not 1 <= len(host) <= 253 or any(
+                not label or len(label) > 63 or label[0] == "-" or label[-1] == "-"
+                or re.fullmatch(r"[a-z0-9-]+", label, re.ASCII) is None
+                for label in labels
+            ) or not path.startswith("/")
             or not re.fullmatch(r"[A-Za-z0-9._~/-]+", path) or "%" in parsed.path or "\\" in parsed.path or "//" in parsed.path
             or any(segment in {".", ".."} for segment in path.split("/")[1:])
         )
@@ -2043,13 +2046,7 @@ def _canonical_or_source_build(
         command,
         cwd=repo_root,
         classify_build_progress=not source_only,
-        timeout=_role_timeout(
-            role,
-            canonical_dependency=not source_only,
-            canonical_dependency_build_timeout_seconds=(
-                canonical_dependency_build_timeout_seconds
-            ),
-        ),
+        timeout=_role_timeout(role, canonical_dependency=not source_only, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds),
     )
 
 
@@ -2648,6 +2645,7 @@ def deploy_clean_commit(
             raise ReleaseAuthorityError("backend layer flatten recovery requires a managed release root")
     canonical_dependency_build_timeout_seconds = _validate_canonical_dependency_build_timeout(canonical_dependency_build_timeout_seconds)
     apt_mirror_selection = apt_mirrors or _EMPTY_APT_MIRRORS
+    apt_mirror_status = "not-requested" if apt_mirror_selection[0] is None else "not-used"
     events = stage_events if stage_events is not None else []
     if managed_release_root is not None:
         compose_env_file = resolve_managed_env_file(managed_release_root, Path(env_file))
@@ -2666,6 +2664,8 @@ def deploy_clean_commit(
     for role, reference in refs.items():
         image_lookup_started = time.monotonic()
         image = _existing_release_image(docker, reference, commit=normalized, repository=repository, role=role)
+        if role == "backend" and image is not None and apt_mirror_status != "not-requested":
+            apt_mirror_status = "reused"
         if image is not None and strategy == "auto":
             events.append(
                 {
@@ -2683,6 +2683,8 @@ def deploy_clean_commit(
                 else RolePlan(role, "dependency", "canonical-build", ())
             )
             if item.action == "canonical-build":
+                if role == "backend" and apt_mirror_selection[0] is not None:
+                    apt_mirror_status = "applied"
                 _stage(
                     events,
                     name=f"{role}-image",
@@ -2850,7 +2852,18 @@ def deploy_clean_commit(
         "compose_files": [str(path) for path in selection.absolute_paths],
         "strategy": strategy,
         "stages": events,
-        "apt_mirrors": {"debian_hostname": apt_mirror_selection[2], "security_hostname": apt_mirror_selection[3]},
+        "apt_mirrors": {
+            "requested": {
+                "status": "requested" if apt_mirror_selection[0] is not None else "not-requested",
+                "debian_hostname": apt_mirror_selection[2],
+                "security_hostname": apt_mirror_selection[3],
+            },
+            "applied": (
+                {"status": "applied", "scope": "canonical-backend-dependency-build", "debian_hostname": apt_mirror_selection[2], "security_hostname": apt_mirror_selection[3]}
+                if apt_mirror_status == "applied"
+                else {"status": apt_mirror_status}
+            ),
+        },
     }
     if auto_plan is not None:
         result["plan"] = _plan_as_dict(
@@ -2894,22 +2907,7 @@ def deploy_main_commit(
         assert_clean_coordination_source(coordination_source, normalized)
         authority_commit = normalized
     try:
-        result = _deploy_main_commit_after_authority(
-            release_root,
-            normalized,
-            docker_cmd=docker_cmd,
-            env_file=env_file,
-            replace_known_manual_frontend=replace_known_manual_frontend,
-            expected_manual_frontend_image=expected_manual_frontend_image,
-            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-            compose_files=compose_files,
-            strategy=strategy,
-            canonical_dependency_build_timeout_seconds=(
-                canonical_dependency_build_timeout_seconds
-            ),
-            apt_mirrors=apt_mirrors,
-            allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery,
-        )
+        result = _deploy_main_commit_after_authority(release_root, normalized, docker_cmd=docker_cmd, env_file=env_file, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id, compose_files=compose_files, strategy=strategy, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds, apt_mirrors=apt_mirrors, allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery)
     except (ReleaseAuthorityError, BackendFlattenError) as exc:
         error = ReleaseAuthorityError("backend layer flatten recovery failed") if isinstance(exc, BackendFlattenError) else exc
         if authority_commit is not None:

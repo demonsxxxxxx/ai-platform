@@ -232,8 +232,12 @@ def test_release_authority_and_runbook_keep_debian_mirrors_in_the_backend_build_
 
     assert "ARG APT_MIRROR" in dockerfile_text
     assert "ARG APT_SECURITY_MIRROR" in dockerfile_text
+    assert dockerfile_text.count("FROM python:3.11-slim-bookworm") == 2
+    assert "http://deb.debian.org/debian-security" in dockerfile_text
+    assert "https://deb.debian.org/debian-security" in dockerfile_text
     assert "--apt-mirror" in release_authority_text
     assert "--apt-security-mirror" in release_authority_text
+    assert '"requested"' in release_authority_text and '"applied"' in release_authority_text
     assert "mirrors.ustc.edu.cn/debian" in runbook_text
     assert "mirrors.ustc.edu.cn/debian-security" in runbook_text
     assert "registry-mirrors" not in dockerfile_text
