@@ -31,8 +31,7 @@ export APT_SECURITY_MIRROR="https://mirrors.ustc.edu.cn/debian-security"
 : "${TARGET:?set TARGET to the exact fetched main commit}"
 python3 -B "$SOURCE/tools/release_authority.py" probe-apt-mirrors \
   --apt-mirror "$APT_MIRROR" \
-  --apt-security-mirror "$APT_SECURITY_MIRROR" \
-  --suite bookworm >/dev/null
+  --apt-security-mirror "$APT_SECURITY_MIRROR" >/dev/null
 ```
 
 The authority probe uses HTTPS GET with a small Range request and bounded read;

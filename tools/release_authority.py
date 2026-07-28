@@ -114,7 +114,6 @@ SECRET_PATH_NAMES = {".env", ".env.local", ".env.production", ".env.development"
 DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
 HTTP_PROBE_TIMEOUT_SECONDS = 15
 APT_MIRROR_PROBE_MAX_BYTES = 64 * 1024
-APT_MIRROR_PROBE_RANGE_END = 4095
 BACKEND_STAGE_TIMEOUT_SECONDS = 90
 FRONTEND_STAGE_TIMEOUT_SECONDS = 180
 RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS = 300
@@ -149,7 +148,6 @@ class _ComposeSelection:
 @dataclass(frozen=True)
 class _ManagedContainerOwnership:
     """One preflight snapshot of existing release-authority container ownership."""
-
     compose_selection: _ComposeSelection | None
     compose_roles: tuple[str, ...]
     manual_frontend_id: str | None
@@ -160,7 +158,6 @@ _EMPTY_APT_MIRRORS: _AptMirrorSelection = (None, None, None, None)
 @dataclass
 class _BuildProgressStep:
     """Bounded allowlisted state retained for one observed BuildKit step."""
-
     ordinal: int
     total: int | None
     stage_kind: str
@@ -172,7 +169,6 @@ class _BuildProgressStep:
 
 class _BuildProgressClassifier:
     """Stream BuildKit stdout into fixed categories without retaining raw output."""
-
     _ANSI_ESCAPE_RE = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
     _HEADER_RE = re.compile(
         rb"^#(?P<ordinal>[1-9][0-9]{0,3})(?:\s+\[(?P<label>[^\]\r\n]{1,1024})\])?\s+",
@@ -198,7 +194,6 @@ class _BuildProgressClassifier:
         b"private key",
         b"credential",
     )
-
     def __init__(self) -> None:
         self.line_count = 0
         self._buffer = bytearray()
@@ -206,7 +201,6 @@ class _BuildProgressClassifier:
         self._unsafe = False
         self._latest_structural_step_unclassifiable = False
         self._steps: OrderedDict[int, _BuildProgressStep] = OrderedDict()
-
     def feed(self, chunk: str | bytes | None) -> None:
         """Consume one stdout chunk while bounding line memory and parsed state."""
         if not chunk:
@@ -225,7 +219,6 @@ class _BuildProgressClassifier:
                 else:
                     self._buffer.clear()
                     self._discarding_line = True
-
     def finish(self) -> None:
         """Finalize a trailing partial line after the process pipes have drained."""
         if self._buffer or self._discarding_line:
@@ -234,7 +227,6 @@ class _BuildProgressClassifier:
                 self._consume_line(bytes(self._buffer).rstrip(b"\r"))
         self._buffer.clear()
         self._discarding_line = False
-
     def summary(self) -> dict[str, Any]:
         """Return only fixed allowlist values and bounded numeric progress facts."""
         if self._unsafe or self._latest_structural_step_unclassifiable or not self._steps:
@@ -253,7 +245,6 @@ class _BuildProgressClassifier:
         if step.last_timestamp_seconds is not None:
             summary["last_progress_timestamp_seconds"] = step.last_timestamp_seconds
         return summary
-
     def _consume_line(self, line: bytes) -> None:
         cleaned = self._ANSI_ESCAPE_RE.sub(b"", line).strip()
         if not cleaned:
@@ -270,7 +261,6 @@ class _BuildProgressClassifier:
         header = self._HEADER_RE.match(cleaned)
         if header is not None:
             self._consume_header(header, cleaned[header.end() :].strip())
-
     def _consume_header(self, match: re.Match[bytes], instruction: bytes) -> None:
         ordinal = int(match.group("ordinal"))
         if ordinal > BUILD_PROGRESS_MAX_STEP_ORDINAL:
@@ -304,7 +294,6 @@ class _BuildProgressClassifier:
         self._steps.move_to_end(ordinal)
         while len(self._steps) > BUILD_PROGRESS_MAX_TRACKED_STEPS:
             self._steps.popitem(last=False)
-
     def _consume_progress(self, match: re.Match[bytes], payload: bytes) -> None:
         ordinal = int(match.group("ordinal"))
         step = self._steps.get(ordinal)
@@ -318,7 +307,6 @@ class _BuildProgressClassifier:
                 step.advancing = True
             step.last_progress_units = progress
         self._steps.move_to_end(ordinal)
-
     @staticmethod
     def _classify_stage(label: bytes | None) -> str:
         if label is None:
@@ -333,7 +321,6 @@ class _BuildProgressClassifier:
         if lowered == b"build":
             return "build"
         return "unknown"
-
     @staticmethod
     def _classify_instruction(instruction: bytes) -> str:
         normalized = b" ".join(instruction.lower().split())
@@ -373,7 +360,6 @@ class _BuildProgressClassifier:
                 return "run-frontend-verify"
             return "unknown"
         return "unknown"
-
     def _progress_units(self, payload: bytes) -> float | None:
         byte_progress = self._BYTE_PROGRESS_RE.search(payload)
         if byte_progress is not None:
@@ -390,9 +376,7 @@ class _BuildProgressClassifier:
 
 class _BoundedBuildProgressCapture:
     """Drain raw build stdout into a fixed-size in-memory window for later classification."""
-
     _STRUCTURAL_HEADER_RE = re.compile(rb"^#[1-9][0-9]{0,3}(?:\s+\[[^\]\r\n]{1,1024}\])?\s+")
-
     def __init__(self) -> None:
         self.line_count = 0
         self._buffer = bytearray()
@@ -403,7 +387,6 @@ class _BoundedBuildProgressCapture:
         self._scan_tail = b""
         self._headers: OrderedDict[int, bytes] = OrderedDict()
         self._tail: deque[bytes] = deque(maxlen=BUILD_PROGRESS_MAX_TAIL_LINES)
-
     def feed(self, chunk: bytes) -> None:
         """Capture one bytes chunk without decoding partial UTF-8 or growing without bound."""
         if not chunk:
@@ -433,7 +416,6 @@ class _BoundedBuildProgressCapture:
                     self._buffer.clear()
                     self._discarding_line = True
                     self._unsafe = True
-
     def finish(self) -> None:
         """Capture a trailing partial line only after the stdout reader has stopped."""
         if not self._utf8_invalid:
@@ -448,7 +430,6 @@ class _BoundedBuildProgressCapture:
         self._buffer.clear()
         self._discarding_line = False
         self._scan_tail = b""
-
     def classify(self) -> dict[str, Any]:
         """Classify only after process cleanup/drain, returning no captured raw text."""
         if self._unsafe:
@@ -461,7 +442,6 @@ class _BoundedBuildProgressCapture:
         classifier.finish()
         classifier.line_count = self.line_count
         return classifier.summary()
-
     def _capture_line(self, line: bytes) -> None:
         self._tail.append(line)
         match = self._STRUCTURAL_HEADER_RE.match(_BuildProgressClassifier._ANSI_ESCAPE_RE.sub(b"", line).strip())
@@ -479,13 +459,11 @@ class _BoundedBuildProgressCapture:
 
 class _BoundedStderrDiagnosticCapture:
     """Scan stderr into fixed diagnostic phrases without retaining its raw output."""
-
     def __init__(self) -> None:
         self._has_data = False
         self._unsafe = False
         self._scan_tail = b""
         self._recognized: set[str] = set()
-
     def feed(self, chunk: bytes) -> None:
         """Scan a bounded overlap window so total stderr size never controls memory use."""
         if not chunk:
@@ -500,7 +478,6 @@ class _BoundedStderrDiagnosticCapture:
             if pattern.search(text):
                 self._recognized.add(summary)
         self._scan_tail = scan[-BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES:]
-
     def summary(self) -> dict[str, Any]:
         """Return the existing fixed stderr diagnostic schema."""
         if not self._has_data:
@@ -526,7 +503,6 @@ def _communicate_with_bounded_build_progress(
     assert process.stderr is not None
     stderr_capture = _BoundedStderrDiagnosticCapture()
     reader_errors: list[BaseException] = []
-
     def drain_stdout() -> None:
         try:
             while True:
@@ -536,7 +512,6 @@ def _communicate_with_bounded_build_progress(
                 capture.feed(chunk)
         except BaseException as exc:
             reader_errors.append(exc)
-
     def drain_stderr() -> None:
         try:
             while True:
@@ -546,7 +521,6 @@ def _communicate_with_bounded_build_progress(
                 stderr_capture.feed(chunk)
         except BaseException as exc:
             reader_errors.append(exc)
-
     stdout_reader = threading.Thread(target=drain_stdout, daemon=True)
     stderr_reader = threading.Thread(target=drain_stderr, daemon=True)
     stdout_reader.start()
@@ -744,12 +718,10 @@ def _terminate_owned_process_tree(
 def _close_process_pipes(process: subprocess.Popen[Any]) -> None:
     """Close authority-owned pipes after bounded cleanup cannot drain them."""
     streams = [stream for stream in (process.stdin, process.stdout, process.stderr) if stream is not None]
-
     def close_stream(stream: Any) -> None:
         if os.name == "nt":
             try:
                 import msvcrt
-
                 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
                 cancel_io = kernel32.CancelIoEx
                 cancel_io.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -762,7 +734,6 @@ def _close_process_pipes(process: subprocess.Popen[Any]) -> None:
             stream.close()
         except (OSError, ValueError):
             pass
-
     if os.name == "nt":
         closers = [threading.Thread(target=close_stream, args=(stream,), daemon=True) for stream in streams]
         for closer in closers:
@@ -852,7 +823,6 @@ def _run(
                 except BaseException:
                     pass
             raise
-
         if classify_build_progress:
             if input is not None:
                 raise TypeError("build progress classification does not accept stdin")
@@ -901,7 +871,6 @@ def _run(
                 setattr(failure, "safe_stderr_diagnostic", safe_stderr_diagnostic)
                 raise failure
             return result
-
         try:
             stdout, stderr = process.communicate(input=input, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
@@ -989,27 +958,17 @@ def _normalize_apt_mirror_pair(
 
 
 class _AptMirrorProbeRedirectHandler(HTTPRedirectHandler):
-    """Allow only HTTPS redirects that stay on the validated mirror host."""
-
     def __init__(self, expected_hostname: str) -> None:
-        super().__init__()
         self._expected_hostname = expected_hostname
-
     def redirect_request(self, request, fp, code, msg, newurl, headers, method=None):
         try:
             parsed = urlsplit(newurl)
-            hostname = parsed.hostname
-            port = parsed.port
         except (TypeError, ValueError):
             raise ReleaseAuthorityError("APT mirror probe redirect is unsafe") from None
-        safe = (isinstance(newurl, str) and newurl.isascii() and parsed.scheme == "https"
-            and hostname == self._expected_hostname and parsed.username is None and parsed.password is None
-            and not parsed.query and not parsed.fragment and port is None and parsed.path.startswith("/")
-            and re.fullmatch(r"/[A-Za-z0-9._~/-]+", parsed.path) is not None and "%" not in parsed.path
-            and "\\" not in parsed.path and "//" not in parsed.path
-            and not any(segment in {".", ".."} for segment in parsed.path.split("/")[1:])
-            and not any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in newurl))
-        if not safe:
+        if not (isinstance(newurl, str) and newurl.isascii() and parsed.scheme == "https"
+                and parsed.hostname == self._expected_hostname and parsed.username is None and parsed.password is None
+                and not parsed.query and not parsed.fragment and parsed.port is None
+                and not any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in newurl)):
             raise ReleaseAuthorityError("APT mirror probe redirect is unsafe")
         return super().redirect_request(request, fp, code, msg, newurl, headers, method)
 
@@ -1017,51 +976,34 @@ class _AptMirrorProbeRedirectHandler(HTTPRedirectHandler):
 def _probe_apt_endpoint(endpoint: str, hostname: str, suite: str, security: bool) -> None:
     suite_path = f"{suite}-security" if security else suite
     url = f"{endpoint}/dists/{suite_path}/InRelease"
-    request = Request(url, headers={"Accept": "text/plain", "Range": f"bytes=0-{APT_MIRROR_PROBE_RANGE_END}"}, method="GET")
-    opener = build_opener(_AptMirrorProbeRedirectHandler(hostname))
+    request = Request(url, headers={"Range": "bytes=0-4095"}, method="GET")
+    response = None
     try:
-        response = opener.open(request, timeout=HTTP_PROBE_TIMEOUT_SECONDS)
-    except ReleaseAuthorityError:
-        raise
-    except (HTTPError, URLError, TimeoutError, OSError):
-        raise ReleaseAuthorityError("APT mirror probe request failed") from None
-    try:
+        response = build_opener(_AptMirrorProbeRedirectHandler(hostname)).open(request, timeout=HTTP_PROBE_TIMEOUT_SECONDS)
         status = getattr(response, "status", None) or response.getcode()
         if status not in {200, 206}:
             raise ReleaseAuthorityError("APT mirror probe returned an unexpected status")
-        content_length = response.headers.get("Content-Length")
-        if content_length is not None:
-            try:
-                if int(content_length) > APT_MIRROR_PROBE_MAX_BYTES:
-                    raise ReleaseAuthorityError("APT mirror probe returned oversized content")
-            except ValueError:
-                raise ReleaseAuthorityError("APT mirror probe returned invalid content metadata") from None
-        payload = response.read(APT_MIRROR_PROBE_MAX_BYTES + 1)
-        if not payload or len(payload) > APT_MIRROR_PROBE_MAX_BYTES:
+        if (content_length := response.headers.get("Content-Length")) is not None:
+            if int(content_length) > APT_MIRROR_PROBE_MAX_BYTES:
+                raise ReleaseAuthorityError("APT mirror probe returned oversized content")
+        if not (payload := response.read(APT_MIRROR_PROBE_MAX_BYTES + 1)) or len(payload) > APT_MIRROR_PROBE_MAX_BYTES:
             raise ReleaseAuthorityError("APT mirror probe returned empty or oversized content")
-        try:
-            lines = payload.decode("utf-8").splitlines()
-        except UnicodeDecodeError:
-            raise ReleaseAuthorityError("APT mirror probe returned invalid content") from None
+        lines = payload.decode("utf-8").splitlines()
         if not any(line in {f"Suite: {suite_path}", f"Codename: {suite_path}"} for line in lines):
             raise ReleaseAuthorityError("APT mirror probe returned unexpected content")
-    except ReleaseAuthorityError:
-        raise
-    except (OSError, TypeError, ValueError):
-        raise ReleaseAuthorityError("APT mirror probe response could not be read") from None
+    except (HTTPError, URLError, TimeoutError, OSError, TypeError, ValueError):
+        raise ReleaseAuthorityError("APT mirror probe request or response failed") from None
     finally:
-        response.close()
+        if response is not None:
+            response.close()
 
 
-def _probe_apt_mirrors(apt_mirror: str, apt_security_mirror: str, suite: str = "bookworm") -> dict[str, Any]:
-    """Probe both validated Debian mirrors with bounded GET requests."""
+def _probe_apt_mirrors(apt_mirror: str, apt_security_mirror: str) -> dict[str, Any]:
     selection = _normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
     if selection[0] is None:
         raise ReleaseAuthorityError("APT mirror probe requires a complete mirror pair")
-    if not isinstance(suite, str) or not suite.isascii() or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?", suite) is None:
-        raise ReleaseAuthorityError("APT mirror probe suite is invalid")
-    _probe_apt_endpoint(selection[0], selection[2], suite, security=False)
-    _probe_apt_endpoint(selection[1], selection[3], suite, security=True)
+    _probe_apt_endpoint(selection[0], selection[2], "bookworm", security=False)
+    _probe_apt_endpoint(selection[1], selection[3], "bookworm", security=True)
     return {"verified": True, "apt_mirrors": {"requested": {"status": "validated", "debian_hostname": selection[2], "security_hostname": selection[3]}, "applied": {"status": "not-proven"}}}
 
 
@@ -1223,7 +1165,6 @@ def assert_managed_target_pre_fetch_trust(
     )
     managed_owner, _ = _target_owner_mode(managed_root)
     _validate_target_owner_mode(normalized_release_root, managed_owner)
-
     pending = [checkout]
     while pending:
         current = pending.pop()
@@ -1277,10 +1218,8 @@ def assert_managed_target_checkout(
     )
     normalized = assert_clean_commit(checkout, normalized)
     managed_owner, _ = _target_owner_mode(managed_root)
-
     for path in (normalized_release_root, checkout):
         _validate_target_owner_mode(path, managed_owner)
-
     tracked_entries = _git_tracked_entries(checkout, normalized)
     for git_mode, relative_path in tracked_entries:
         if git_mode == "120000":
@@ -1676,7 +1615,6 @@ def resolve_managed_env_file(release_root: Path, env_file: Path | None) -> Path:
                 "the canonical <managed-root>/deploy/ai-platform/.env path; use that managed "
                 "file before requesting the release lease"
             )
-
     if _is_link_or_junction(candidate):
         raise ReleaseAuthorityError(
             "managed-env-file-safety gate failed: the environment file must be a regular "
@@ -1703,7 +1641,6 @@ def resolve_managed_env_file(release_root: Path, env_file: Path | None) -> Path:
             "non-link file with no linked parent; have the managed owner provision it before "
             "requesting the release lease"
         )
-
     managed_owner, _ = _posix_owner_mode(managed_root)
     env_owner, env_mode = _posix_owner_mode(candidate)
     if env_owner != managed_owner:
@@ -1737,7 +1674,6 @@ def resolve_compose_files(
         or absolute_root != root
     ):
         raise ReleaseAuthorityError("release checkout path is invalid")
-
     values: Sequence[str | Path]
     if compose_files is None:
         values = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),)
@@ -1745,7 +1681,6 @@ def resolve_compose_files(
         values = compose_files
     if not values:
         raise ReleaseAuthorityError("compose file selection is invalid")
-
     relative_paths: list[str] = []
     absolute_paths: list[Path] = []
     identities: set[str] = set()
@@ -1783,7 +1718,6 @@ def resolve_compose_files(
             raise ReleaseAuthorityError("canonical main compose file must be first")
         if raw in relative_paths:
             raise ReleaseAuthorityError("duplicate compose file is forbidden")
-
         candidate = root.joinpath(*pure.parts)
         current = root
         for part in pure.parts:
@@ -1806,7 +1740,6 @@ def resolve_compose_files(
         identities.add(identity)
         relative_paths.append(raw)
         absolute_paths.append(resolved)
-
     working_dir = absolute_paths[0].parent.as_posix()
     return _ComposeSelection(
         checkout_root=root,
@@ -1928,7 +1861,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     destination = output_root / f"{timestamp}-{head}"
     destination.mkdir(parents=True, exist_ok=False)
-
     status = str(_git(repo_root, "status", "--short", "--branch", "--untracked-files=all"))
     status_bytes = status.encode("utf-8")
     tracked_patch = bytes(_git(repo_root, "diff", "--binary", text=False))
@@ -1936,7 +1868,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
     modified = set(_git_paths(repo_root, "diff", "--name-only"))
     staged = set(_git_paths(repo_root, "diff", "--cached", "--name-only"))
     untracked = set(_git_paths(repo_root, "ls-files", "--others", "--exclude-standard"))
-
     inventory: list[dict[str, Any]] = []
     for relative_path in sorted(modified | staged | untracked):
         path = repo_root / relative_path
@@ -1955,7 +1886,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
             "sha256": _sha256_path(path) if path.is_file() and not secret else None,
         }
         inventory.append(record)
-
     inventory_path = destination / "inventory.json"
     inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     artifacts = {
@@ -1967,7 +1897,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
             "sha256": _sha256_path(inventory_path),
         },
     }
-
     tar_path = destination / "untracked.tar"
     with tarfile.open(tar_path, "w") as archive:
         for relative_path in sorted(untracked):
@@ -1975,7 +1904,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
             if path.is_file() and not _is_secret_path(relative_path):
                 archive.add(path, arcname=relative_path, recursive=False)
     artifacts["untracked.tar"] = {"size": tar_path.stat().st_size, "sha256": _sha256_path(tar_path)}
-
     manifest = {
         "schema_version": PRESERVATION_SCHEMA_VERSION,
         "captured_at": datetime.now(timezone.utc).isoformat(),
@@ -2228,7 +2156,6 @@ def _compose_ownership_selection(
         return None
     if working_dir == target.working_dir and config_files == target.config_files:
         return target
-
     observed_files = config_files.split(",")
     if not observed_files or any(not value for value in observed_files):
         return None
@@ -2247,7 +2174,6 @@ def _compose_ownership_selection(
         ):
             return None
         observed_paths.append(path)
-
     observed_main = observed_paths[0]
     observed_root = observed_main
     for _ in DEFAULT_COMPOSE_RELATIVE_PATH.parts:
@@ -2451,7 +2377,6 @@ def _worker_heartbeat_path(inspected: dict[str, Any]) -> str:
         not isinstance(entry, str) for entry in environment
     ):
         raise ReleaseAuthorityError(invalid)
-
     entries = [
         entry
         for entry in environment
@@ -2864,9 +2789,7 @@ def deploy_clean_commit(
             )
             _validate_release_image(image, commit=normalized, repository=repository, role=role)
         images[role] = image
-
     images["backend"] = _require_sandbox_executor_image(docker, refs["backend"], commit=normalized, repository=repository)
-
     if managed_release_root is not None:
         assert_managed_target_checkout(repo_root, normalized, managed_release_root)
     else:
@@ -2889,7 +2812,6 @@ def deploy_clean_commit(
                 [*docker, "container", "rm", "-f", ownership.manual_frontend_id]
             ),
         )
-
     compose_environment = [
         f"AI_PLATFORM_IMAGE={refs['backend']}",
         f"AI_PLATFORM_FRONTEND_IMAGE={refs['frontend']}",
@@ -3062,7 +2984,6 @@ def _deploy_main_commit_after_authority(
                 backend_action=next((item.action for item in plan.roles if item.role == "backend"), None),
             )
         deployment = deploy_clean_commit(checkout, normalized, docker_cmd=docker_cmd, env_file=managed_env_file, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id, compose_files=compose_files, strategy=strategy, auto_plan=plan, current_references=current["references"], stage_events=events, managed_release_root=release_root, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds, apt_mirrors=apt_mirrors, allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery)
-
         def collect_final_parity(_: float) -> dict[str, Any]:
             return collect_live_parity(
                 checkout,
@@ -3070,7 +2991,6 @@ def _deploy_main_commit_after_authority(
                 docker_cmd=docker_cmd,
                 compose_files=compose_files,
             )
-
         parity = _stage(
             events,
             name="final-parity",
@@ -3103,11 +3023,9 @@ def main() -> int:
     """Run the release-authority preservation, deployment, or verification command."""
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-
     preserve = subparsers.add_parser("preserve-dirty", help="Preserve dirty source without cleaning it")
     preserve.add_argument("--repo-root", type=Path, required=True)
     preserve.add_argument("--output-root", type=Path, required=True)
-
     deploy = subparsers.add_parser("deploy", help="Build and deploy one clean commit")
     deploy.add_argument("--repo-root", type=Path, required=True)
     deploy.add_argument("--commit", required=True)
@@ -3135,7 +3053,6 @@ def main() -> int:
         metavar="REPO_RELATIVE_PATH",
         help="Ordered repo-relative Compose file; repeat for overlays",
     )
-
     deploy_main = subparsers.add_parser(
         "deploy-main-commit",
         help="Fetch, deploy, and verify one exact main commit",
@@ -3195,15 +3112,9 @@ def main() -> int:
         metavar="REPO_RELATIVE_PATH",
         help="Ordered repo-relative Compose file; repeat for overlays",
     )
-
-    probe = subparsers.add_parser(
-        "probe-apt-mirrors",
-        help="Boundedly probe one validated Debian mirror pair",
-    )
+    probe = subparsers.add_parser("probe-apt-mirrors", help="Boundedly probe one validated Debian mirror pair")
     probe.add_argument("--apt-mirror", required=True)
     probe.add_argument("--apt-security-mirror", required=True)
-    probe.add_argument("--suite", default="bookworm")
-
     verify = subparsers.add_parser("verify", help="Verify source/image/runtime commit parity")
     verify.add_argument("--repo-root", type=Path, required=True)
     verify.add_argument("--commit", required=True)
@@ -3216,7 +3127,6 @@ def main() -> int:
         metavar="REPO_RELATIVE_PATH",
         help="Ordered repo-relative Compose file; repeat for overlays",
     )
-
     args = parser.parse_args()
     try:
         if args.command == "preserve-dirty":
@@ -3264,14 +3174,7 @@ def main() -> int:
                 None,
             )
         elif args.command == "probe-apt-mirrors":
-            _write_json(
-                _probe_apt_mirrors(
-                    args.apt_mirror,
-                    args.apt_security_mirror,
-                    suite=args.suite,
-                ),
-                None,
-            )
+            _write_json(_probe_apt_mirrors(args.apt_mirror, args.apt_security_mirror), None)
         else:
             report = collect_live_parity(
                 args.repo_root,
