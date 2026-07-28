@@ -1244,12 +1244,13 @@ async def _default_executor_runner(
     bound_capability_evidence: list[dict[str, Any]] = []
     invocation_states: dict[tuple[str, str, str], str] = {}
     capability_evidence_error = {"code": ""}
+    capability_evidence_lock = asyncio.Lock()
 
     def reject_capability_evidence(error_code: str) -> bool:
         capability_evidence_error["code"] = capability_evidence_error["code"] or error_code
         return False
 
-    async def on_capability_evidence(raw: dict[str, str]) -> bool:
+    async def bind_capability_evidence(raw: dict[str, str]) -> bool:
         """Bind SDK-hook facts to this request and emit only a safe public event."""
 
         if capability_evidence_error["code"]:
@@ -1311,6 +1312,10 @@ async def _default_executor_runner(
             "invoking" if evidence.lifecycle_phase == "invocation_requested" else "terminal"
         )
         return True
+
+    async def on_capability_evidence(raw: dict[str, str]) -> bool:
+        async with capability_evidence_lock:
+            return await bind_capability_evidence(raw)
 
     try:
         sdk_kwargs = {

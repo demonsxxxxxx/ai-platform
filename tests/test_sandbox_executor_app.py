@@ -266,6 +266,19 @@ def sdk_mcp_evidence(identity: str, call_id: str, phase: str) -> dict[str, str]:
     }
 
 
+def successful_sdk_result(message: str = "done"):
+    return type(
+        "SdkResult",
+        (),
+        {
+            "used_sdk": True,
+            "message": message,
+            "error": None,
+            "received_structured_terminal": True,
+        },
+    )()
+
+
 def test_executor_health_returns_ready(tmp_path):
     client = create_test_client(tmp_path)
 
@@ -483,22 +496,7 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
                     sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
                 )
             )
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "done",
-                "session_id": "sdk-session-a",
-                "usage": {},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-                "capability_evidence": [],
-            },
-        )()
+        return successful_sdk_result()
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
@@ -584,21 +582,7 @@ async def test_executor_rejects_unknown_capability_identity_without_inference(mo
                 sdk_mcp_evidence("mcp__foreign__unknown", "tool-call-x", "completed")
             )
         )
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "done",
-                "session_id": "sdk-session-a",
-                "usage": {},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
+        return successful_sdk_result()
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -653,16 +637,7 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
         release_callback.set()
         acknowledgements.extend(await asyncio.wait_for(asyncio.gather(first, later), timeout=2.0))
         await asyncio.wait_for(asyncio.gather(*outputs), timeout=2.0)
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "must not qualify",
-                "error": None,
-                "received_structured_terminal": True,
-            },
-        )()
+        return successful_sdk_result("must not qualify")
 
     async def executor_runner(request, workspace_root, emit_event):
         runner_task = asyncio.create_task(_default_executor_runner(request, workspace_root, emit_event))
@@ -727,69 +702,83 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
     assert capability_attempts == 1
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "phases",
+    ("seed_call_ids", "first_phase", "second_call_id", "second_phase", "second_accepted"),
     [
-        ["invocation_requested", "invocation_requested"],
-        ["invocation_requested", "completed", "completed"],
-        ["invocation_requested", "completed", "failed"],
+        ((), "invocation_requested", "call-a", "invocation_requested", False),
+        (("call-a",), "completed", "call-a", "completed", False),
+        (("call-a",), "completed", "call-a", "failed", False),
+        (("call-a", "call-b"), "completed", "call-b", "completed", True),
     ],
 )
-def test_executor_rejects_duplicate_or_conflicting_sdk_lifecycle_before_public_persist(
+async def test_executor_serializes_concurrent_capability_transitions(
     tmp_path,
     monkeypatch,
-    phases,
+    seed_call_ids,
+    first_phase,
+    second_call_id,
+    second_phase,
+    second_accepted,
 ):
-    callbacks = []
+    race_results = []
+    persisted_phases = []
+    first_callback_started = asyncio.Event()
+    release_first_callback = asyncio.Event()
 
     class StubSettings:
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        for phase in phases:
-            await kwargs["on_capability_evidence"](
-                sdk_mcp_evidence("mcp__tenant-server__search", "call-a", phase)
-            )
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "done",
-                "session_id": "sdk-a",
-                "usage": {},
-                "error": None,
-                "received_structured_terminal": True,
-                "terminal_reason": "end_turn",
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
+        record = kwargs["on_capability_evidence"]
+        for call_id in seed_call_ids:
+            assert await record(sdk_mcp_evidence("mcp__tenant-server__search", call_id, "invocation_requested")) is True
+        first = asyncio.create_task(
+            record(sdk_mcp_evidence("mcp__tenant-server__search", "call-a", first_phase))
+        )
+        await asyncio.wait_for(first_callback_started.wait(), timeout=2.0)
+        second_started = asyncio.Event()
 
-    def callback_sender(_url, payload, _token):
-        callbacks.extend(payload.get("events", []))
-        return callback_ack(payload)
+        async def submit_second():
+            second_started.set()
+            return await record(
+                sdk_mcp_evidence("mcp__tenant-server__search", second_call_id, second_phase)
+            )
+
+        second = asyncio.create_task(submit_second())
+        await asyncio.wait_for(second_started.wait(), timeout=2.0)
+        release_first_callback.set()
+        race_results.extend(await asyncio.wait_for(asyncio.gather(first, second), timeout=2.0))
+        return successful_sdk_result()
+
+    async def emit_event(event):
+        persisted_phases.append(event.type)
+        if len(persisted_phases) == len(seed_call_ids) + 1:
+            first_callback_started.set()
+            await asyncio.wait_for(release_first_callback.wait(), timeout=2.0)
+        return True
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    raw = selected_mcp_task_payload()
-    client = create_test_client(tmp_path, callback_sender=callback_sender)
+    request = ExecutorTaskRequest.model_validate(selected_mcp_task_payload())
 
-    body = client.post("/v1/tasks/execute", json=raw, headers=auth_headers()).json()
+    result = await _default_executor_runner(request, tmp_path, emit_event)
 
-    assert body["status"] == "failed"
-    assert body["error_code"] == "capability_lifecycle_sequence_invalid"
-    assert body["capability_evidence"] == []
-    assert [event["type"] for event in callbacks if event["type"].startswith("capability_")] == [
-        "capability_invoking",
-        *(["capability_completed"] if "completed" in phases else []),
-    ]
-    terminal_timeline = [
-        event["type"]
-        for event in callbacks
-        if event["type"] in {"execution_step_completed", "execution_step_failed"}
-    ]
-    assert terminal_timeline == (["execution_step_completed"] if "completed" in phases else [])
+    phase_event = {
+        "invocation_requested": "capability_invoking",
+        "completed": "capability_completed",
+        "failed": "capability_failed",
+    }
+    expected_phases = ["capability_invoking"] * len(seed_call_ids) + [phase_event[first_phase]]
+    if second_accepted:
+        expected_phases.append(phase_event[second_phase])
+    assert race_results[0] is True
+    assert race_results[1] is second_accepted
+    assert persisted_phases == expected_phases
+    assert result["status"] == ("completed" if second_accepted else "failed")
+    assert len(result["capability_evidence"]) == (4 if second_accepted else 0)
+    if not second_accepted:
+        assert result["error_code"] == "capability_lifecycle_sequence_invalid"
 
 
 def test_executor_execute_fails_closed_after_final_delta_without_structured_terminal(tmp_path, monkeypatch):
