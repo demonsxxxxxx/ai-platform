@@ -949,6 +949,13 @@ class FakeOpenSandbox:
         self.closed = True
 
 
+class FakeOpenSandboxSdkError(RuntimeError):
+    def __init__(self, *, error_code: str, request_id: str) -> None:
+        super().__init__("private OpenSandbox SDK failure")
+        self.error = type("FakeOpenSandboxError", (), {"code": error_code})()
+        self.request_id = request_id
+
+
 class FakeOpenSandboxManager:
     sandboxes: list[FakeOpenSandbox] = []
     killed: list[str] = []
@@ -4499,6 +4506,56 @@ async def test_opensandbox_provider_cleans_up_when_created_sandbox_has_no_id(mon
     sandbox = FakeOpenSandbox.instances["osb-run-a"]
     assert sandbox.killed is True
     assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ("create", "endpoint", "readback", "health", "identity"))
+async def test_opensandbox_startup_failure_keeps_safe_structured_private_evidence(monkeypatch, stage):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    sdk_error = FakeOpenSandboxSdkError(error_code="POOL_ACQUIRE_FAILED", request_id="request-668")
+
+    def healthy_probe(*_args):
+        return True
+
+    def expected_identity_probe(*_args):
+        return {"uid": 10001, "gid": 10001}
+
+    def failing_probe(*_args):
+        raise sdk_error
+
+    health_probe = healthy_probe
+    identity_probe = expected_identity_probe
+    if stage == "create":
+        FakeOpenSandbox.create_error = sdk_error
+    elif stage == "endpoint":
+        monkeypatch.setattr(FakeOpenSandbox, "get_endpoint", lambda *_args, **_kwargs: (_ for _ in ()).throw(sdk_error))
+    elif stage == "readback":
+        monkeypatch.setattr(FakeOpenSandbox, "get_info", lambda *_args, **_kwargs: (_ for _ in ()).throw(sdk_error))
+    elif stage == "health":
+        health_probe = failing_probe
+    else:
+        identity_probe = failing_probe
+    provider = opensandbox_provider(health_probe=health_probe, identity_probe=identity_probe)
+
+    with pytest.raises(container_provider.ContainerStartFailedError) as exc_info:
+        await provider.create_or_reuse(request(), workspace())
+
+    failure = exc_info.value
+    assert str(failure) == "OpenSandbox sandbox start failed"
+    assert failure.private_evidence == {
+        "provider": "opensandbox",
+        "startup_stage": stage,
+        "sdk_error_code": "POOL_ACQUIRE_FAILED",
+        "request_id": "request-668",
+    }
+    assert "private OpenSandbox SDK failure" not in str(failure)
+    if stage != "create":
+        sandbox = FakeOpenSandbox.instances["osb-run-a"]
+        assert sandbox.killed is True
+        assert sandbox.closed is True
 
 
 @pytest.mark.asyncio

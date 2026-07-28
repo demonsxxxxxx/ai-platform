@@ -56,6 +56,12 @@ from app.runtime.sandbox.executor_client import (
 )
 from app.runtime.sandbox import governed_egress_diagnostics as egress_diagnostics
 from app.runtime.sandbox.opensandbox_attestation import build_opensandbox_attestation_probe
+from app.runtime.sandbox.providers.opensandbox.startup import (
+    OpenSandboxStartupEvidence,
+    OpenSandboxStartupFailure,
+    OpenSandboxStartupOperations,
+    OpenSandboxStartupSequence,
+)
 from app.runtime.sandbox.opensandbox_trusted_internal import (
     SANDBOX_SECURITY_PROFILE_GOVERNED,
     SANDBOX_SECURITY_PROFILE_LABEL,
@@ -122,6 +128,14 @@ class DockerPermissionDeniedError(SandboxRuntimeError):
 class ContainerStartFailedError(SandboxRuntimeError):
     def __init__(self, message: str = "Container start failed") -> None:
         super().__init__("container_start_failed", message)
+
+
+class OpenSandboxStartupFailedError(ContainerStartFailedError):
+    """Generic public startup failure with safe private OpenSandbox evidence."""
+
+    def __init__(self, evidence: OpenSandboxStartupEvidence, message: str = "OpenSandbox sandbox start failed") -> None:
+        super().__init__(message)
+        self.private_evidence = evidence.private_payload()
 
 
 class NativeToolAdmissionError(SandboxRuntimeError):
@@ -4986,13 +5000,17 @@ class OpenSandboxContainerProvider:
             "connection_config": connection_config,
         }
         sandbox: Any | None = None
-        try:
+
+        async def create_sandbox() -> Any:
+            nonlocal sandbox
             sandbox = await _maybe_await(self._sandbox_class.create(**kwargs))
-            executor_url, executor_headers = await self._executor_endpoint(sandbox, settings)
-            sandbox_id = str(getattr(sandbox, "id", "") or "")
+            return sandbox
+
+        async def read_back_started_sandbox(started_sandbox: Any, executor_url: str) -> str:
+            sandbox_id = str(getattr(started_sandbox, "id", "") or "")
             if not sandbox_id:
                 raise ContainerStartFailedError("OpenSandbox sandbox start failed")
-            info = await _maybe_await(sandbox.get_info())
+            info = await _maybe_await(started_sandbox.get_info())
             remote_status = _opensandbox_status_from_info(info)
             expected_unsealed = _lease_from_request(
                 "opensandbox",
@@ -5014,6 +5032,9 @@ class OpenSandboxContainerProvider:
                     sandbox_id,
                     info,
                 )
+            return sandbox_id
+
+        async def check_executor_health(executor_url: str, endpoint_headers: dict[str, str]) -> int:
             health_started_at = self._monotonic()
             healthy = await asyncio.to_thread(
                 _call_executor_health_probe,
@@ -5021,23 +5042,44 @@ class OpenSandboxContainerProvider:
                 executor_url,
                 int(getattr(settings, "sandbox_executor_health_timeout_seconds", 60) or 60),
                 (
-                    executor_headers
+                    endpoint_headers
                     if profile.governed
-                    else _executor_auth_headers(executor_auth_token, executor_headers)
+                    else _executor_auth_headers(executor_auth_token, endpoint_headers)
                 ),
             )
             sandbox_healthcheck_latency_ms = self._elapsed_ms(health_started_at)
             if not healthy:
                 raise ExecutorHealthTimeoutError()
+            return sandbox_healthcheck_latency_ms
+
+        async def verify_executor_identity(executor_url: str, endpoint_headers: dict[str, str]) -> None:
             identity = await asyncio.to_thread(
                 self._identity_probe,
                 executor_url,
                 int(getattr(settings, "sandbox_executor_health_timeout_seconds", 60) or 60),
-                _executor_auth_headers(executor_auth_token, executor_headers),
+                _executor_auth_headers(executor_auth_token, endpoint_headers),
             )
             _require_expected_executor_identity(identity)
             if capability is not None:
                 _ensure_capability_still_valid(capability, now=self._utcnow())
+
+        startup = OpenSandboxStartupSequence(
+            OpenSandboxStartupOperations(
+                create=create_sandbox,
+                resolve_endpoint=lambda started_sandbox: self._executor_endpoint(started_sandbox, settings),
+                readback=read_back_started_sandbox,
+                health=check_executor_health,
+                identity=verify_executor_identity,
+            ),
+            passthrough_error_types=(OpenSandboxCapabilityAdmissionError,),
+        )
+        try:
+            startup_result = await startup.launch()
+            sandbox = startup_result.sandbox
+            sandbox_id = startup_result.sandbox_id
+            executor_url = startup_result.executor_url
+            executor_headers = startup_result.executor_headers
+            sandbox_healthcheck_latency_ms = startup_result.healthcheck_latency_ms
         except asyncio.CancelledError as exc:
             try:
                 await self._cleanup_new_sandbox_or_track(
@@ -5050,6 +5092,20 @@ class OpenSandboxContainerProvider:
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
+        except OpenSandboxStartupFailure as exc:
+            sandbox = exc.sandbox
+            try:
+                await self._cleanup_new_sandbox_or_track(
+                    sandbox,
+                    request,
+                    workspace,
+                    metadata=metadata,
+                    executor_auth_token=executor_auth_token,
+                )
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
+            message = str(exc.cause) if isinstance(exc.cause, SandboxRuntimeError) else "OpenSandbox sandbox start failed"
+            raise OpenSandboxStartupFailedError(exc.evidence, message=message) from exc
         except SandboxRuntimeError as exc:
             try:
                 await self._cleanup_new_sandbox_or_track(
