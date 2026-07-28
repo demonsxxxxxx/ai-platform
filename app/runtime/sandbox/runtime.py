@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 import time
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -17,6 +18,7 @@ from app.execution_boundary import (
 from app.executors.base import RunExecutionOwner
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import (
+    ContainerStartFailedError,
     ContainerCleanupFailedError,
     ContainerProvider,
     ExecutorHealthTimeoutError,
@@ -24,6 +26,12 @@ from app.runtime.sandbox.container_provider import (
     SandboxRuntimeError,
     create_container_provider,
     executor_callback_target,
+)
+from app.runtime.sandbox.creation_claim import (
+    SandboxCreationClaim,
+    SandboxCreationClaimError,
+    SandboxCreationScope,
+    acquire_sandbox_creation_claim,
 )
 from app.runtime.sandbox.contracts import (
     EXECUTOR_AUTH_HEADER,
@@ -60,6 +68,7 @@ ExecuteTask = Callable[..., Awaitable[dict[str, Any]]]
 TokenResolver = Callable[[str], str]
 LeaseRecorder = Callable[[ContainerLease, SandboxRuntimeRequest, WorkspaceLease], Awaitable[Any] | Any]
 LeaseReleaser = Callable[..., Awaitable[Any] | Any]
+CreationClaimFactory = Callable[..., AbstractAsyncContextManager[SandboxCreationClaim]]
 
 _logger = logging.getLogger(__name__)
 
@@ -93,6 +102,7 @@ class SandboxRuntime:
         callback_token_resolver: TokenResolver | None = None,
         record_lease: LeaseRecorder | None = None,
         release_lease: LeaseReleaser | None = None,
+        creation_claim_factory: CreationClaimFactory = acquire_sandbox_creation_claim,
     ) -> None:
         self.settings = get_settings()
         self.workspace_manager = SandboxWorkspaceManager(root=workspace_root)
@@ -104,6 +114,7 @@ class SandboxRuntime:
         )
         self.record_lease = record_lease or self._record_runtime_lease
         self.release_lease = release_lease or self._release_runtime_lease
+        self.creation_claim_factory = creation_claim_factory
 
     async def _emit(self, sink: EventSink | None, event: AgentEvent) -> None:
         if sink is None:
@@ -360,8 +371,43 @@ class SandboxRuntime:
         trusted_callback_target = self._trusted_callback_target(configured_provider)
         workspace = self.workspace_manager.prepare(request)
         lease_started_at = time.monotonic()
-        try:
+        lease_record_id: str | None = None
+
+        async def create_and_record_lease() -> ContainerLease:
+            nonlocal lease_record_id
             lease = await self.provider.create_or_reuse(request, workspace)
+            try:
+                lease_record_id = await self._call_record_lease(lease, request, workspace)
+            except BaseException as exc:
+                stop_result = await self.provider.stop(lease, reason="lease_record_failed")
+                if stop_result.status == "failed":
+                    raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
+                raise
+            return lease
+
+        try:
+            if getattr(self.provider, "requires_creation_claim", False):
+                claim_scope = SandboxCreationScope(
+                    provider="opensandbox",
+                    tenant_id=request.tenant_id,
+                    workspace_id=request.workspace_id,
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                    run_id=request.run_id,
+                    attempt_id=request.attempt_id,
+                )
+                timeout_seconds = max(
+                    float(getattr(self.settings, "sandbox_container_start_timeout_seconds", 30) or 30),
+                    0.001,
+                )
+                async with self.creation_claim_factory(claim_scope, timeout_seconds=timeout_seconds) as claim:
+                    if claim.active_lease_exists:
+                        raise ContainerStartFailedError("OpenSandbox exact-attempt lease is already active")
+                    lease = await create_and_record_lease()
+            else:
+                lease = await create_and_record_lease()
+        except SandboxCreationClaimError as exc:
+            raise ContainerStartFailedError("OpenSandbox creation claim is unavailable") from exc
         except OpenSandboxStartupFailedError as exc:
             self._log_opensandbox_startup_evidence(request, exc.private_evidence)
             raise
@@ -384,14 +430,6 @@ class SandboxRuntime:
         if lease.provider != configured_provider:
             trusted_callback_target = self._trusted_callback_target(lease.provider)
         lease_acquire_latency_ms = self._elapsed_ms(lease_started_at)
-        lease_record_id: str | None = None
-        try:
-            lease_record_id = await self._call_record_lease(lease, request, workspace)
-        except BaseException as exc:
-            stop_result = await self.provider.stop(lease, reason="lease_record_failed")
-            if stop_result.status == "failed":
-                raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
-            raise
         externally_stopped = False
         terminal_stop_result: StopResult | None = None
         terminal_stop_lock = asyncio.Lock()

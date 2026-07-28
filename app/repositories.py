@@ -7102,6 +7102,62 @@ async def list_current_sandbox_runtime_leases_for_attempt(
     return list(await cursor.fetchall())
 
 
+async def try_acquire_sandbox_creation_claim(conn: AsyncConnection, *, lock_key: str) -> bool:
+    """Try to acquire one dedicated PostgreSQL session lock for sandbox creation."""
+
+    cursor = await conn.execute(
+        "select pg_try_advisory_lock(hashtextextended(%s::text, 0::bigint)) as acquired",
+        (lock_key,),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row.get("acquired") is True)
+
+
+async def release_sandbox_creation_claim(conn: AsyncConnection, *, lock_key: str) -> None:
+    """Release one creation claim before its dedicated connection is closed."""
+
+    await conn.execute(
+        "select pg_advisory_unlock(hashtextextended(%s::text, 0::bigint))",
+        (lock_key,),
+    )
+
+
+async def has_active_sandbox_creation_lease(
+    conn: AsyncConnection,
+    *,
+    provider: str,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> bool:
+    """Return whether a current lease already owns this exact creation scope."""
+
+    cursor = await conn.execute(
+        """
+        select exists(
+          select 1
+          from sandbox_leases
+          where provider = %s
+            and tenant_id = %s
+            and workspace_id = %s
+            and user_id = %s
+            and session_id = %s
+            and run_id = %s
+            and lease_payload_json ->> 'attempt_id' = %s
+            and status = 'active'
+            and expires_at is not null
+            and expires_at > clock_timestamp()
+        ) as active
+        """,
+        (provider, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row.get("active") is True)
+
+
 async def list_sandbox_leases_for_run(
     conn: AsyncConnection,
     *,

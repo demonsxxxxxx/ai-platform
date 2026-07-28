@@ -4423,6 +4423,8 @@ def _opensandbox_cache_key_for_lease(lease: ContainerLease) -> tuple[str, str] |
 class OpenSandboxContainerProvider:
     """ContainerProvider implementation backed by the OpenSandbox API/SDK."""
 
+    requires_creation_claim = True
+
     def __init__(
         self,
         *,
