@@ -231,6 +231,41 @@ def context_stage_policy() -> list[dict[str, object]]:
     ]
 
 
+def selected_mcp_task_payload() -> dict[str, object]:
+    raw = task_payload()
+    raw["config"]["mcp_tool_ids"] = ["tenant-search"]
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "mcp__tenant-server__search",
+            "mcp_server": "tenant-server",
+            "mcp_tool": "search",
+            "public_tool_label": "Tenant Search",
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+        }
+    ]
+    return raw
+
+
+def sdk_mcp_evidence(identity: str, call_id: str, phase: str) -> dict[str, str]:
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp",
+        canonical_identity=identity,
+    )
+    return {
+        "capability_kind": "mcp",
+        "canonical_identity": identity,
+        "tool_call_id": call_id,
+        "lifecycle_phase": phase,
+        "declaration_sha256": declaration.declaration_sha256,
+    }
+
+
 def test_executor_health_returns_ready(tmp_path):
     client = create_test_client(tmp_path)
 
@@ -436,28 +471,17 @@ def test_executor_rejects_invalid_private_system_prompt_before_sdk_or_public_lea
 
 def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tmp_path, monkeypatch):
     callbacks = []
+    acknowledgements = []
 
     class StubSettings:
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind="mcp",
-            canonical_identity="mcp__tenant-server__search",
-        )
-        for phase, status_value in (
-            ("invocation_requested", "invoking"),
-            ("completed", "succeeded"),
-        ):
-            await kwargs["on_capability_evidence"](
-                {
-                    "capability_kind": "mcp",
-                    "canonical_identity": "mcp__tenant-server__search",
-                    "tool_call_id": "tool-call-1",
-                    "lifecycle_phase": phase,
-                    "lifecycle_status": status_value,
-                    "declaration_sha256": declaration.declaration_sha256,
-                }
+        for phase in ("invocation_requested", "completed"):
+            acknowledgements.append(
+                await kwargs["on_capability_evidence"](
+                    sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
+                )
             )
         return type(
             "SdkResult",
@@ -482,46 +506,24 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    raw = task_payload()
-    raw["config"]["mcp_tool_ids"] = ["tenant-search"]
-    raw["config"]["context_retrieval_scope"] = {
-        "tenant_id": "tenant-a",
-        "workspace_id": "workspace-a",
-        "user_id": "user-a",
-        "session_id": "session-a",
-        "run_id": "run-a",
-        "agent_id": "agent-a",
-        "context_snapshot_id": "ctx-a",
-        "allowed_message_ids": [],
-        "allowed_file_ids": [],
-        "allowed_artifact_ids": [],
-        "memory_scope": {},
-    }
-    raw["config"]["tool_policy_subjects"] = [
-        {
-            "identity": "mcp__tenant-server__search",
-            "mcp_server": "tenant-server",
-            "public_tool_label": "Tenant Search",
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "identity_authorized": True,
-            "object_authorized": True,
-            "parameters_authorized": True,
-        }
-    ]
+    raw = selected_mcp_task_payload()
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
     response = client.post("/v1/tasks/execute", json=raw, headers=auth_headers())
 
     assert response.status_code == 200
+    assert len(acknowledgements) == 2
+    assert all(item is True for item in acknowledgements)
     evidence = response.json()["capability_evidence"]
     assert [(item["lifecycle_phase"], item["tool_call_id"]) for item in evidence] == [
         ("invocation_requested", "tool-call-1"),
         ("completed", "tool-call-1"),
     ]
     capability_events = [item for item in callbacks if item.get("events")]
+    assert {
+        (item["session_id"], item["run_id"], item["attempt_id"])
+        for item in capability_events
+    } == {("session-a", "run-a", "qat-attempt-a")}
     assert [[event["type"] for event in item["events"]] for item in capability_events] == [
         ["capability_invoking", "execution_step"],
         ["capability_completed", "execution_step_completed"],
@@ -570,20 +572,17 @@ def test_executor_callback_persists_only_strict_public_execution_event_shape(tmp
 
 
 @pytest.mark.asyncio
-async def test_executor_omits_unknown_capability_identity_without_inference(monkeypatch, tmp_path):
+async def test_executor_rejects_unknown_capability_identity_without_inference(monkeypatch, tmp_path):
+    acknowledgements = []
+
     class StubSettings:
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        await kwargs["on_capability_evidence"](
-            {
-                "capability_kind": "mcp",
-                "canonical_identity": "mcp__foreign__unknown",
-                "tool_call_id": "tool-call-x",
-                "lifecycle_phase": "completed",
-                "lifecycle_status": "succeeded",
-                "declaration_sha256": "forged",
-            }
+        acknowledgements.append(
+            await kwargs["on_capability_evidence"](
+                sdk_mcp_evidence("mcp__foreign__unknown", "tool-call-x", "completed")
+            )
         )
         return type(
             "SdkResult",
@@ -608,9 +607,103 @@ async def test_executor_omits_unknown_capability_identity_without_inference(monk
 
     result = await _default_executor_runner(request, tmp_path, events.append)
 
-    assert result["status"] == "completed"
+    assert len(acknowledgements) == 1
+    assert acknowledgements[0] is False
+    assert result["status"] == "failed"
+    assert result["message"] == ""
     assert result["capability_evidence"] == []
     assert events == []
+
+
+@pytest.mark.parametrize(
+    "receipt_mode",
+    [
+        "rejected",
+        "missing",
+        "malformed",
+        "nonliteral_true",
+        "wrong_count",
+        "exception",
+        "stale_run",
+        "mismatched_attempt",
+    ],
+)
+def test_executor_capability_binder_rejection_returns_false_without_local_claim(
+    tmp_path,
+    monkeypatch,
+    receipt_mode,
+):
+    acknowledgements = []
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        for phase in ("invocation_requested", "completed"):
+            acknowledgements.append(
+                await kwargs["on_capability_evidence"](
+                    sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
+                )
+            )
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "must not qualify",
+                "error": None,
+                "received_structured_terminal": True,
+            },
+        )()
+
+    def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        if any(event["type"].startswith("capability_") for event in payload.get("events", [])):
+            if receipt_mode == "exception":
+                raise RuntimeError(f"{receipt_mode} rejected")
+            if receipt_mode == "missing":
+                return None
+            if receipt_mode == "malformed":
+                return {"accepted": True}
+            if receipt_mode == "nonliteral_true":
+                return {"accepted": 1, "event_count": 1 + len(payload["events"])}
+            if receipt_mode == "wrong_count":
+                return {"accepted": True, "event_count": len(payload["events"])}
+            if receipt_mode == "stale_run":
+                return {
+                    "accepted": payload["run_id"] == "run-current",
+                    "event_count": 1 + len(payload["events"]),
+                }
+            if receipt_mode == "mismatched_attempt":
+                return {
+                    "accepted": payload["attempt_id"] == "qat-attempt-current",
+                    "event_count": 1 + len(payload["events"]),
+                }
+            return {"accepted": False, "event_count": 1 + len(payload["events"])}
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+
+    body = client.post(
+        "/v1/tasks/execute",
+        json=selected_mcp_task_payload(),
+        headers=auth_headers(),
+    ).json()
+
+    assert len(acknowledgements) == 2
+    assert all(item is False for item in acknowledgements)
+    assert body["status"] == "failed"
+    assert body["message"] == ""
+    assert body["error_code"] == "capability_callback_not_acknowledged"
+    assert body["capability_evidence"] == []
+    assert body["callback_errors"] == ["running"]
+    assert sum(
+        any(event["type"].startswith("capability_") for event in item.get("events", []))
+        for item in callbacks
+    ) == 1
 
 
 @pytest.mark.parametrize(
@@ -632,19 +725,9 @@ def test_executor_rejects_duplicate_or_conflicting_sdk_lifecycle_before_public_p
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind="mcp",
-            canonical_identity="mcp__tenant-server__search",
-        )
         for phase in phases:
             await kwargs["on_capability_evidence"](
-                {
-                    "capability_kind": "mcp",
-                    "canonical_identity": declaration.identity,
-                    "tool_call_id": "call-a",
-                    "lifecycle_phase": phase,
-                    "declaration_sha256": declaration.declaration_sha256,
-                }
+                sdk_mcp_evidence("mcp__tenant-server__search", "call-a", phase)
             )
         return type(
             "SdkResult",
@@ -668,14 +751,7 @@ def test_executor_rejects_duplicate_or_conflicting_sdk_lifecycle_before_public_p
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    raw = task_payload()
-    raw["config"]["tool_policy_subjects"] = [
-        {
-            "identity": "mcp__tenant-server__search",
-            "mcp_server": "tenant-server",
-            "public_tool_label": "Tenant Search",
-        }
-    ]
+    raw = selected_mcp_task_payload()
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
     body = client.post("/v1/tasks/execute", json=raw, headers=auth_headers()).json()

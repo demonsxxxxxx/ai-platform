@@ -1243,33 +1243,39 @@ async def _default_executor_runner(
 
     bound_capability_evidence: list[dict[str, Any]] = []
     invocation_states: dict[tuple[str, str, str], str] = {}
-    lifecycle_sequence_failed = {"value": False}
+    capability_evidence_error = {"code": ""}
 
-    async def on_capability_evidence(raw: dict[str, str]) -> None:
+    def reject_capability_evidence(error_code: str) -> bool:
+        capability_evidence_error["code"] = capability_evidence_error["code"] or error_code
+        return False
+
+    async def on_capability_evidence(raw: dict[str, str]) -> bool:
         """Bind SDK-hook facts to this request and emit only a safe public event."""
 
+        if capability_evidence_error["code"]:
+            return False
         try:
             declaration = RequiredCapabilityDeclaration.from_authorized_subject(
                 capability_kind=str(raw.get("capability_kind") or ""),
                 canonical_identity=str(raw.get("canonical_identity") or ""),
             )
             if declaration.declaration_sha256 != raw.get("declaration_sha256"):
-                return
+                return reject_capability_evidence("capability_lifecycle_sequence_invalid")
             evidence = RequiredCapabilityEvidence.from_sdk_hook(
                 declaration=declaration,
                 binding=_evidence_binding(request),
                 tool_call_id=str(raw.get("tool_call_id") or ""),
                 lifecycle_phase=str(raw.get("lifecycle_phase") or ""),
             )
-        except RequiredToolContractError:
-            return
+        except (AttributeError, RequiredToolContractError):
+            return reject_capability_evidence("capability_lifecycle_sequence_invalid")
         label = _public_capability_label(
             capability_kind=evidence.capability_kind,
             canonical_identity=evidence.canonical_identity,
             subjects=_task_tool_policy_subjects(request),
         )
         if not label:
-            return
+            return reject_capability_evidence("capability_lifecycle_sequence_invalid")
         invocation_key = (
             evidence.capability_kind,
             evidence.canonical_identity,
@@ -1283,22 +1289,28 @@ async def _default_executor_runner(
         )
         if invalid_sequence:
             invocation_states[invocation_key] = "rejected"
-            lifecycle_sequence_failed["value"] = True
-            return
-        acknowledged = await emit_event(
-            _private_capability_fact(
-                evidence=evidence,
-                callback_label=label,
-                timeline_label=label,
+            return reject_capability_evidence("capability_lifecycle_sequence_invalid")
+        try:
+            acknowledged = await emit_event(
+                _private_capability_fact(
+                    evidence=evidence,
+                    callback_label=label,
+                    timeline_label=label,
+                )
             )
-        )
-        if acknowledged is True:
-            bound_capability_evidence.append(asdict(evidence))
-            invocation_states[invocation_key] = (
-                "invoking" if evidence.lifecycle_phase == "invocation_requested" else "terminal"
-            )
-        else:
+        except asyncio.CancelledError:
+            raise
+        except Exception:
             invocation_states[invocation_key] = "rejected"
+            return reject_capability_evidence("capability_callback_not_acknowledged")
+        if acknowledged is not True:
+            invocation_states[invocation_key] = "rejected"
+            return reject_capability_evidence("capability_callback_not_acknowledged")
+        bound_capability_evidence.append(asdict(evidence))
+        invocation_states[invocation_key] = (
+            "invoking" if evidence.lifecycle_phase == "invocation_requested" else "terminal"
+        )
+        return True
 
     try:
         sdk_kwargs = {
@@ -1361,10 +1373,15 @@ async def _default_executor_runner(
     elif not used_sdk:
         response["error_code"] = "claude_agent_sdk_disabled"
         response["error_message"] = "Claude Agent SDK is disabled"
-    if lifecycle_sequence_failed["value"]:
+    if capability_evidence_error["code"]:
         response["status"] = "failed"
-        response["error_code"] = "capability_lifecycle_sequence_invalid"
-        response["error_message"] = "Capability lifecycle sequence is invalid"
+        response["message"] = ""
+        response["error_code"] = capability_evidence_error["code"]
+        response["error_message"] = (
+            "Capability lifecycle callback was not acknowledged"
+            if capability_evidence_error["code"] == "capability_callback_not_acknowledged"
+            else "Capability lifecycle sequence is invalid"
+        )
         response["capability_evidence"] = []
     return response
 
@@ -1593,6 +1610,7 @@ def create_executor_app(
 
         if capability_callback_failed["value"]:
             runner_result["status"] = "failed"
+            runner_result["message"] = ""
             runner_result["error_code"] = "capability_callback_not_acknowledged"
             runner_result["error_message"] = "Capability lifecycle callback was not acknowledged"
             runner_result["capability_evidence"] = []
