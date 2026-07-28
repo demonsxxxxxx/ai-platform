@@ -18,8 +18,11 @@ class TestEventTarget {
     this.listeners.get(type)?.delete(listener);
   }
 
-  dispatchEvent(input: Record<string, unknown>) {
-    const event = input;
+  getListeners(type: string) {
+    return this.listeners.get(type);
+  }
+
+  dispatchEvent(event: Record<string, unknown>) {
     if (event.bubbles === undefined) event.bubbles = true;
     if (event.target === undefined) event.target = this;
     if (event.defaultPrevented === undefined) event.defaultPrevented = false;
@@ -29,14 +32,18 @@ class TestEventTarget {
     event.stopPropagation ??= () => {
       event.cancelBubble = true;
     };
-    let current: TestEventTarget | null = this;
-    while (current) {
-      event.currentTarget = current;
-      current.listeners.get(String(event.type))?.forEach((listener) => listener(event));
-      if (event.cancelBubble || event.bubbles !== true) break;
-      current = current instanceof TestNode ? current.parentNode : null;
-    }
+    dispatchEventFromTarget(this, event);
     return true;
+  }
+}
+
+function dispatchEventFromTarget(target: TestEventTarget, event: Record<string, unknown>) {
+  let current: TestEventTarget | null = target;
+  while (current) {
+    event.currentTarget = current;
+    current.getListeners(String(event.type))?.forEach((listener) => listener(event));
+    if (event.cancelBubble || event.bubbles !== true) break;
+    current = current instanceof TestNode ? current.parentNode : null;
   }
 }
 
