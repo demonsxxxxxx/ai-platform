@@ -78,8 +78,14 @@ async def test_startup_sequence_preserves_stage_evidence_and_cleanup_subject(fai
     ("error_code", "request_id", "expected_code", "expected_request_id"),
     (
         ("POOL_ACQUIRE_FAILED", "request-668", "POOL_ACQUIRE_FAILED", "request-668"),
+        ("POOL_ACQUIRE_FAILED", "123e4567-e89b-12d3-a456-426614174000", "POOL_ACQUIRE_FAILED", "123e4567-e89b-12d3-a456-426614174000"),
+        ("POOL_ACQUIRE_FAILED", "request_668-A", "POOL_ACQUIRE_FAILED", "request_668-A"),
         ("unsafe code", "request-668", None, "request-668"),
         ("POOL_ACQUIRE_FAILED", "request id contains whitespace", "POOL_ACQUIRE_FAILED", None),
+        ("POOL_ACQUIRE_FAILED", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature", "POOL_ACQUIRE_FAILED", None),
+        ("POOL_ACQUIRE_FAILED", "request/path", "POOL_ACQUIRE_FAILED", None),
+        ("POOL_ACQUIRE_FAILED", "request+token", "POOL_ACQUIRE_FAILED", None),
+        ("POOL_ACQUIRE_FAILED", "request=token", "POOL_ACQUIRE_FAILED", None),
         ("x" * 129, "x" * 129, None, None),
     ),
 )

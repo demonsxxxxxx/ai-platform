@@ -21,7 +21,7 @@ class OpenSandboxStartupStage(str, Enum):
 
 
 _SDK_ERROR_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}")
-_REQUEST_ID = re.compile(r"[A-Za-z0-9._~+/=-]{1,128}")
+_REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 @dataclass(frozen=True)
@@ -103,9 +103,13 @@ class OpenSandboxStartupSequence:
         operations: OpenSandboxStartupOperations,
         *,
         passthrough_error_types: tuple[type[BaseException], ...] = (),
+        typed_error_types: tuple[type[BaseException], ...] = (),
+        typed_error_evidence_attacher: Callable[[BaseException, OpenSandboxStartupEvidence], None] | None = None,
     ) -> None:
         self._operations = operations
         self._passthrough_error_types = passthrough_error_types
+        self._typed_error_types = typed_error_types
+        self._typed_error_evidence_attacher = typed_error_evidence_attacher
 
     async def launch(self) -> OpenSandboxStartupResult:
         sandbox = await self._at_stage(OpenSandboxStartupStage.CREATE, None, self._operations.create)
@@ -156,6 +160,10 @@ class OpenSandboxStartupSequence:
         except asyncio.CancelledError:
             raise
         except self._passthrough_error_types:
+            raise
+        except self._typed_error_types as exc:
+            if self._typed_error_evidence_attacher is not None:
+                self._typed_error_evidence_attacher(exc, OpenSandboxStartupEvidence.from_exception(stage, exc))
             raise
         except OpenSandboxStartupFailure:
             raise

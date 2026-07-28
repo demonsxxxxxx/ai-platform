@@ -21,6 +21,7 @@ from app.runtime.sandbox.container_provider import (
     ContainerProvider,
     ExecutorHealthTimeoutError,
     OpenSandboxStartupFailedError,
+    SandboxRuntimeError,
     create_container_provider,
     executor_callback_target,
 )
@@ -331,6 +332,23 @@ class SandboxRuntime:
             },
         )
 
+    @staticmethod
+    def _log_opensandbox_startup_evidence(
+        request: SandboxRuntimeRequest,
+        evidence: dict[str, str | None],
+    ) -> None:
+        _logger.error(
+            "OpenSandbox startup failed",
+            extra={
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+                "provider": evidence["provider"],
+                "startup_stage": evidence["startup_stage"],
+                "sdk_error_code": evidence["sdk_error_code"],
+                "request_id": evidence["request_id"],
+            },
+        )
+
     async def submit(
         self,
         request: SandboxRuntimeRequest,
@@ -345,26 +363,23 @@ class SandboxRuntime:
         try:
             lease = await self.provider.create_or_reuse(request, workspace)
         except OpenSandboxStartupFailedError as exc:
-            evidence = exc.private_evidence
-            _logger.error(
-                "OpenSandbox startup failed",
-                extra={
-                    "run_id": request.run_id,
-                    "attempt_id": request.attempt_id,
-                    "provider": evidence["provider"],
-                    "startup_stage": evidence["startup_stage"],
-                    "sdk_error_code": evidence["sdk_error_code"],
-                    "request_id": evidence["request_id"],
-                },
-            )
+            self._log_opensandbox_startup_evidence(request, exc.private_evidence)
             raise
         except (ContainerCleanupFailedError, ExecutorHealthTimeoutError) as exc:
+            startup_evidence = exc.opensandbox_startup_evidence
+            if startup_evidence is not None:
+                self._log_opensandbox_startup_evidence(request, startup_evidence.private_payload())
             evidence = exc.readiness_evidence
             if isinstance(evidence, ExecutorReadinessEvidence):
                 try:
                     await self._emit(event_sink, self._readiness_failure_event(request, evidence))
                 except Exception:
                     pass
+            raise
+        except SandboxRuntimeError as exc:
+            startup_evidence = exc.opensandbox_startup_evidence
+            if startup_evidence is not None:
+                self._log_opensandbox_startup_evidence(request, startup_evidence.private_payload())
             raise
         if lease.provider != configured_provider:
             trusted_callback_target = self._trusted_callback_target(lease.provider)

@@ -477,6 +477,70 @@ async def test_runtime_persists_one_private_safe_readiness_event_before_rethrow(
 
 
 @pytest.mark.asyncio
+async def test_runtime_logs_opensandbox_health_stage_without_expanding_readiness_event(tmp_path, monkeypatch, caplog):
+    from app.runtime.sandbox.providers.opensandbox.startup import OpenSandboxStartupEvidence, OpenSandboxStartupStage
+
+    class StubSettings:
+        sandbox_container_provider = "fake"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    readiness = ExecutorReadinessEvidence(
+        readiness_phase="health_probe",
+        container_state="unknown",
+        exit_code=None,
+        oom_killed=None,
+        published_port_observed=True,
+        health_outcome="unhealthy",
+        elapsed_ms=17,
+    )
+    startup_error = container_provider.ExecutorHealthTimeoutError(readiness_evidence=readiness)
+    startup_error.attach_opensandbox_startup_evidence(
+        OpenSandboxStartupEvidence(OpenSandboxStartupStage.HEALTH, None, "request_668-A")
+    )
+
+    class HealthFailedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            raise startup_error
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    events = []
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=HealthFailedProvider(),
+        execute_task=lambda *_args: pytest.fail("executor dispatch must not occur after readiness failure"),
+        record_lease=lambda *_args: pytest.fail("lease must not be persisted after readiness failure"),
+    )
+
+    with caplog.at_level("ERROR", logger="app.runtime.sandbox.runtime"):
+        with pytest.raises(container_provider.ExecutorHealthTimeoutError) as exc_info:
+            await runtime.submit(request(), event_sink=events.append)
+
+    assert exc_info.value is startup_error
+    record = caplog.records[-1]
+    assert (record.provider, record.startup_stage, record.sdk_error_code, record.request_id) == (
+        "opensandbox",
+        "health",
+        None,
+        "request_668-A",
+    )
+    assert len(events) == 1
+    assert set(events[0].payload) == {
+        "schema_version",
+        "run_id",
+        "attempt_id",
+        "readiness_phase",
+        "container_state",
+        "exit_code",
+        "oom_killed",
+        "published_port_observed",
+        "health_outcome",
+        "elapsed_ms",
+    }
+    assert "startup_stage" not in events[0].payload
+
+
+@pytest.mark.asyncio
 async def test_runtime_readiness_sink_failure_does_not_mask_original_error(tmp_path, monkeypatch):
     class StubSettings:
         sandbox_container_provider = "docker"
