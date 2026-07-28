@@ -1,0 +1,28 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-08-12",
+  "owner": "issue-701-agent-apps",
+  "reason": "Issue #701 is one coupled authoritative lifecycle slice spanning the required aggregate, repository adapters, public routes, and durable Chat recovery seam.",
+  "violations": [
+    {
+      "code": "functional_hot_file_growth",
+      "path": "app/repositories.py"
+    },
+    {
+      "code": "hot_file_growth",
+      "path": "app/models.py"
+    },
+    {
+      "code": "hot_file_growth",
+      "path": "app/repositories.py"
+    },
+    {
+      "code": "production_net_loc",
+      "path": null
+    },
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}

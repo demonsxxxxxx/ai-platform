@@ -1788,6 +1788,41 @@ async def test_list_sessions_returns_authorized_rows(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_session_recovers_safe_agent_conversation_identity(monkeypatch):
+    from app.routes.chat import get_session
+
+    async def projection(_conn, *, tenant_id, user_id, session_id):
+        assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "ses_profile")
+        return {
+            "id": "ses_profile",
+            "workspace_id": "default",
+            "agent_id": "agt_support",
+            "title": "Support thread",
+            "admitted_agent_profile_revision": 7,
+            "admitted_agent_profile_hash": "a" * 64,
+            "agent_profile_name": "Support assistant",
+            "agent_profile_description": "Approved support help.",
+            "agent_profile_avatar_ref": "builtin:assistant",
+            "agent_profile_category": "support",
+        }
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session_projection", projection)
+
+    response = await get_session("ses_profile", principal=principal())
+
+    assert response.agent_conversation is not None
+    assert response.agent_conversation.model_dump() == {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "name": "Support assistant",
+        "description": "Approved support help.",
+        "avatar_ref": "builtin:assistant",
+        "category": "support",
+    }
+
+
+@pytest.mark.asyncio
 async def test_create_chat_session_uses_platform_principal(monkeypatch):
     calls = []
 
