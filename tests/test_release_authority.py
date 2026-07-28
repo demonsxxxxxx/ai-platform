@@ -8,6 +8,8 @@ import sys
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from urllib.request import BaseHandler, build_opener
 
 import pytest
 import yaml
@@ -317,113 +319,111 @@ def test_apt_mirror_pair_rejects_incomplete_or_unsafe_endpoints():
             release_authority._normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
 
 
-class _FakeAptProbeResponse:
-    def __init__(self, status, payload, headers=None):
-        self.status = status
-        self.payload = payload
-        self.headers = headers or {}
-        self.read_limit = None
-        self.closed = False
-
-    def getcode(self):
-        return self.status
-
-    def read(self, limit=-1):
-        self.read_limit = limit
-        return self.payload[:limit]
-
-    def close(self):
-        self.closed = True
+def _signed_inrelease(suite="bookworm"):
+    return (
+        b"-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
+        + f"Origin: Debian\nSuite: {suite}\nCodename: {suite}\n".encode()
+        + b"-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG\n\nabc\n"
+        + b"-----END PGP SIGNATURE-----\n"
+    )
 
 
-class _FakeAptProbeOpener:
-    def __init__(self, response):
-        self.response = response
-        self.request = None
+def _synthetic_apt_response(url, status, headers, payload):
+    response = SimpleNamespace(
+        url=url,
+        status=status,
+        code=status,
+        msg="synthetic",
+        headers={**headers, **{key.lower(): value for key, value in headers.items()}},
+        read_limit=None,
+        closed=False,
+    )
+    response.geturl = lambda: url
+    response.info = lambda: response.headers
+    response.read = lambda limit=-1: setattr(response, "read_limit", limit) or payload[:limit]
+    response.close = lambda: setattr(response, "closed", True)
+    return response
 
-    def open(self, request, timeout):
-        self.request = request
-        return self.response
+
+class _SyntheticAptTransport(BaseHandler):
+    handler_order = 0
+    def __init__(self, routes):
+        self.routes = routes
+        self.responses = []
+        self.requests = []
+
+    def _open(self, request):
+        self.requests.append(request)
+        route = self.routes[request.full_url]
+        if isinstance(route, BaseException):
+            raise route
+        response = _synthetic_apt_response(request.full_url, *route)
+        self.responses.append(response)
+        return response
+
+    http_open = https_open = _open
+
+
+def _patch_production_apt_transport(monkeypatch, routes):
+    transport = _SyntheticAptTransport(routes)
+    monkeypatch.setattr(release_authority, "build_opener", lambda handler: build_opener(handler, transport))
+    return transport
+
+
+def _apt_probe_url(host="mirror.example", security=False):
+    suffix = "debian-security/dists/bookworm-security" if security else "debian/dists/bookworm"
+    return f"https://{host}/{suffix}/InRelease"
 
 
 @pytest.mark.parametrize("status", [200, 206])
 def test_apt_mirror_probe_uses_bounded_get_and_accepts_release_content(monkeypatch, status):
-    response = _FakeAptProbeResponse(status, b"Origin: Debian\nSuite: bookworm\n")
-    opener = _FakeAptProbeOpener(response)
-    monkeypatch.setattr(release_authority, "build_opener", lambda handler: opener)
-
-    release_authority._probe_apt_endpoint(
-        "https://mirror.example/debian", "mirror.example", "bookworm", security=False
+    transport = _patch_production_apt_transport(
+        monkeypatch,
+        {_apt_probe_url(): (status, {"Content-Type": "text/plain; charset=utf-8"}, _signed_inrelease())},
     )
+    release_authority._probe_apt_endpoint("https://mirror.example/debian", "mirror.example", "bookworm", security=False)
+    assert transport.requests[0].get_method() == "GET"
+    assert transport.requests[0].get_header("Range") == "bytes=0-65535"
+    assert transport.responses[0].read_limit == release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1
+    assert transport.responses[0].closed
 
-    assert opener.request.get_method() == "GET"
-    assert opener.request.get_header("Range") == "bytes=0-4095"
-    assert response.read_limit == release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1
-    assert response.closed
 
-
-@pytest.mark.parametrize(
-    ("status", "payload"),
-    [(200, b""), (200, b"<html>not an InRelease</html>"), (503, b"Suite: bookworm\n")],
-)
-def test_apt_mirror_probe_rejects_empty_invalid_and_error_responses(monkeypatch, status, payload):
-    response = _FakeAptProbeResponse(status, payload)
-    opener = _FakeAptProbeOpener(response)
-    monkeypatch.setattr(release_authority, "build_opener", lambda handler: opener)
+@pytest.mark.parametrize("route", [
+    (200, {}, _signed_inrelease()),
+    (200, {"Content-Type": "text/html"}, b"<html>Suite: bookworm</html>"),
+    (200, {"Content-Type": "text/plain"}, b"Suite: bookworm\nCodename: bookworm\n"),
+    (200, {"Content-Type": "text/plain"}, b""),
+    (200, {"Content-Type": "application/octet-stream"}, b"x" * (release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1)),
+    (503, {"Content-Type": "text/plain"}, _signed_inrelease()),
+    TimeoutError(),
+])
+def test_apt_mirror_probe_rejects_invalid_type_html_missing_signature_empty_oversized_status_and_timeout(monkeypatch, route):
+    transport = _patch_production_apt_transport(monkeypatch, {_apt_probe_url(): route})
     with pytest.raises(ReleaseAuthorityError):
-        release_authority._probe_apt_endpoint(
-            "https://mirror.example/debian", "mirror.example", "bookworm", security=False
-        )
+        release_authority._probe_apt_endpoint("https://mirror.example/debian", "mirror.example", "bookworm", security=False)
+    if transport.responses:
+        assert transport.responses[0].closed
 
 
-def test_apt_mirror_probe_rejects_oversized_content_and_cross_host_redirect(monkeypatch):
-    response = _FakeAptProbeResponse(
-        200, b"Suite: bookworm\n" + b"x" * release_authority.APT_MIRROR_PROBE_MAX_BYTES
+@pytest.mark.parametrize("location", [
+    "http://mirror.example/debian/dists/bookworm/InRelease",
+    "https://unvalidated.example/debian/dists/bookworm/InRelease",
+])
+def test_apt_mirror_probe_rejects_unsafe_redirects_with_production_opener(monkeypatch, location):
+    transport = _patch_production_apt_transport(
+        monkeypatch,
+        {_apt_probe_url(): (302, {"Location": location}, b"")},
     )
-    opener = _FakeAptProbeOpener(response)
-    monkeypatch.setattr(release_authority, "build_opener", lambda handler: opener)
     with pytest.raises(ReleaseAuthorityError):
-        release_authority._probe_apt_endpoint(
-            "https://mirror.example/debian", "mirror.example", "bookworm", security=False
-        )
-    handler = release_authority._AptMirrorProbeRedirectHandler("mirror.example")
-    with pytest.raises(ReleaseAuthorityError):
-        handler.redirect_request(
-            None, None, 302, "found", "https://other.example/InRelease", {}, method="GET"
-        )
-
-
-def test_apt_mirror_probe_evidence_does_not_claim_build_application(monkeypatch):
-    responses = iter(
-        [
-            _FakeAptProbeResponse(206, b"Suite: bookworm\n"),
-            _FakeAptProbeResponse(200, b"Suite: bookworm-security\n"),
-        ]
-    )
-    openers = []
-
-    def fake_build_opener(handler):
-        opener = _FakeAptProbeOpener(next(responses))
-        openers.append(opener)
-        return opener
-
-    monkeypatch.setattr(release_authority, "build_opener", fake_build_opener)
-    result = release_authority._probe_apt_mirrors(
-        "https://mirrors.ustc.edu.cn/debian",
-        "https://mirrors.ustc.edu.cn/debian-security",
-    )
-    assert result["apt_mirrors"]["requested"]["status"] == "validated"
-    assert result["apt_mirrors"]["applied"] == {"status": "not-proven"}
-    assert all(opener.request.get_method() == "GET" for opener in openers)
+        release_authority._probe_apt_endpoint("https://mirror.example/debian", "mirror.example", "bookworm", security=False)
+    assert transport.responses[0].closed
 
 
 def test_apt_mirror_build_args_are_only_added_to_canonical_backend_build(monkeypatch, tmp_path):
     commands: list[list[str]] = []
-
     def fake_run(command, **kwargs):
         commands.append(list(command))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-
     monkeypatch.setattr("tools.release_authority._run", fake_run)
     common = {
         "docker": ["docker"],

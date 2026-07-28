@@ -131,7 +131,6 @@ BUILD_PROGRESS_MAX_STEP_ORDINAL = 9999
 BUILD_PROGRESS_MAX_TAIL_LINES = 512
 BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES = 4096
 
-
 class ReleaseAuthorityError(RuntimeError):
     """Raised when a release-authority invariant is not satisfied."""
 
@@ -165,7 +164,6 @@ class _BuildProgressStep:
     last_timestamp_seconds: float | None = None
     last_progress_units: float | None = None
     advancing: bool = False
-
 
 class _BuildProgressClassifier:
     """Stream BuildKit stdout into fixed categories without retaining raw output."""
@@ -373,7 +371,6 @@ class _BuildProgressClassifier:
             return min(float(count_progress.group("current")), 1_000_000_000_000.0)
         return None
 
-
 class _BoundedBuildProgressCapture:
     """Drain raw build stdout into a fixed-size in-memory window for later classification."""
     _STRUCTURAL_HEADER_RE = re.compile(rb"^#[1-9][0-9]{0,3}(?:\s+\[[^\]\r\n]{1,1024}\])?\s+")
@@ -456,7 +453,6 @@ class _BoundedBuildProgressCapture:
         while len(self._headers) > BUILD_PROGRESS_MAX_TRACKED_STEPS:
             self._headers.popitem(last=False)
 
-
 class _BoundedStderrDiagnosticCapture:
     """Scan stderr into fixed diagnostic phrases without retaining its raw output."""
     def __init__(self) -> None:
@@ -488,7 +484,6 @@ class _BoundedStderrDiagnosticCapture:
             if summary in self._recognized:
                 return {"stderr_status": "recognized", "stderr_summary": summary}
         return {"stderr_status": "redacted"}
-
 
 def _communicate_with_bounded_build_progress(
     process: subprocess.Popen[Any],
@@ -602,7 +597,6 @@ def _communicate_with_bounded_build_progress(
         setattr(timeout_error, "safe_build_progress_diagnostic", safe_build_progress)
         raise timeout_error from None
     return ("" if text else b"", "" if text else b"", safe_build_progress, safe_stderr)
-
 def _create_owned_windows_job() -> int | None:
     """Create the Windows Job Object that will retain the complete child tree."""
     if os.name != "nt":
@@ -615,7 +609,6 @@ def _create_owned_windows_job() -> int | None:
     if not handle:
         raise OSError(ctypes.get_last_error(), "unable to create owned Windows Job Object")
     return int(handle)
-
 
 def _close_owned_windows_job(job_handle: int | None) -> None:
     """Release an owned Job Object without terminating successful descendants."""
@@ -630,7 +623,6 @@ def _close_owned_windows_job(job_handle: int | None) -> None:
     except Exception:
         pass
 
-
 def _assign_owned_windows_job(process: subprocess.Popen[Any], job_handle: int) -> None:
     """Assign a still-suspended child before it can create untracked descendants."""
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -640,7 +632,6 @@ def _assign_owned_windows_job(process: subprocess.Popen[Any], job_handle: int) -
     process_handle = int(getattr(process, "_handle"))
     if not assign_process(ctypes.c_void_p(job_handle), ctypes.c_void_p(process_handle)):
         raise OSError(ctypes.get_last_error(), "unable to assign subprocess to owned Windows Job Object")
-
 
 def _resume_owned_windows_process(process: subprocess.Popen[Any]) -> None:
     """Resume a Windows child only after Job Object assignment is complete."""
@@ -653,7 +644,6 @@ def _resume_owned_windows_process(process: subprocess.Popen[Any]) -> None:
     if status != 0:
         raise OSError(f"unable to resume owned Windows subprocess: NTSTATUS 0x{status & 0xFFFFFFFF:08x}")
 
-
 def _terminate_owned_windows_job(job_handle: int) -> bool:
     """Force every process assigned to one authority-owned Windows Job Object to exit."""
     try:
@@ -665,7 +655,6 @@ def _terminate_owned_windows_job(job_handle: int) -> bool:
     except Exception:
         return False
 
-
 def _owned_process_group_kwargs(*, umask: int = -1) -> dict[str, Any]:
     """Start each bounded subprocess in a group that this authority exclusively owns."""
     if os.name == "posix":
@@ -676,7 +665,6 @@ def _owned_process_group_kwargs(*, umask: int = -1) -> dict[str, Any]:
             | WINDOWS_CREATE_SUSPENDED,
         }
     return {}
-
 
 def _terminate_owned_process_tree(
     process: subprocess.Popen[Any],
@@ -714,7 +702,6 @@ def _terminate_owned_process_tree(
     except OSError:
         pass
 
-
 def _close_process_pipes(process: subprocess.Popen[Any]) -> None:
     """Close authority-owned pipes after bounded cleanup cannot drain them."""
     streams = [stream for stream in (process.stdin, process.stdout, process.stderr) if stream is not None]
@@ -745,7 +732,6 @@ def _close_process_pipes(process: subprocess.Popen[Any]) -> None:
     for stream in streams:
         close_stream(stream)
 
-
 def _terminate_and_drain_owned_process(
     process: subprocess.Popen[Any],
     *,
@@ -775,7 +761,6 @@ def _terminate_and_drain_owned_process(
         except BaseException:
             pass
         return (None, None)
-
 
 def _run(
     command: Sequence[str],
@@ -903,17 +888,14 @@ def _run(
     finally:
         _close_owned_windows_job(windows_job_handle)
 
-
 def _git(repo_root: Path, *args: str, text: bool = True, umask: int = -1) -> str | bytes:
     return _run(["git", *args], cwd=repo_root, text=text, umask=umask).stdout
-
 
 def _normalize_commit(value: str) -> str:
     commit = value.strip().lower()
     if not FULL_COMMIT_RE.fullmatch(commit):
         raise ReleaseAuthorityError("release commit must be a full 40-character lowercase SHA")
     return commit
-
 
 def _normalize_apt_mirror_pair(
     apt_mirror: str | None,
@@ -956,11 +938,10 @@ def _normalize_apt_mirror_pair(
     (debian_url, debian_hostname), (security_url, security_hostname) = endpoints
     return debian_url, security_url, debian_hostname, security_hostname
 
-
 class _AptMirrorProbeRedirectHandler(HTTPRedirectHandler):
     def __init__(self, expected_hostname: str) -> None:
         self._expected_hostname = expected_hostname
-    def redirect_request(self, request, fp, code, msg, newurl, headers, method=None):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
         try:
             parsed = urlsplit(newurl)
         except (TypeError, ValueError):
@@ -968,35 +949,54 @@ class _AptMirrorProbeRedirectHandler(HTTPRedirectHandler):
         if not (isinstance(newurl, str) and newurl.isascii() and parsed.scheme == "https"
                 and parsed.hostname == self._expected_hostname and parsed.username is None and parsed.password is None
                 and not parsed.query and not parsed.fragment and parsed.port is None
+                and re.fullmatch(r"/[A-Za-z0-9._~/-]+", parsed.path) is not None and "%" not in parsed.path
+                and "\\" not in parsed.path and "//" not in parsed.path
+                and not any(segment in {".", ".."} for segment in parsed.path.split("/")[1:])
                 and not any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in newurl)):
+            if fp is not None:
+                fp.close()
             raise ReleaseAuthorityError("APT mirror probe redirect is unsafe")
-        return super().redirect_request(request, fp, code, msg, newurl, headers, method)
-
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 def _probe_apt_endpoint(endpoint: str, hostname: str, suite: str, security: bool) -> None:
-    suite_path = f"{suite}-security" if security else suite
-    url = f"{endpoint}/dists/{suite_path}/InRelease"
-    request = Request(url, headers={"Range": "bytes=0-4095"}, method="GET")
+    suite_path, url = (f"{suite}-security" if security else suite, f"{endpoint}/dists/{f'{suite}-security' if security else suite}/InRelease")
+    request = Request(url, headers={"Range": f"bytes=0-{APT_MIRROR_PROBE_MAX_BYTES - 1}"}, method="GET")
     response = None
     try:
         response = build_opener(_AptMirrorProbeRedirectHandler(hostname)).open(request, timeout=HTTP_PROBE_TIMEOUT_SECONDS)
         status = getattr(response, "status", None) or response.getcode()
         if status not in {200, 206}:
             raise ReleaseAuthorityError("APT mirror probe returned an unexpected status")
+        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type not in {"text/plain", "application/octet-stream"}:
+            raise ReleaseAuthorityError("APT mirror probe returned an unsafe content type")
         if (content_length := response.headers.get("Content-Length")) is not None:
             if int(content_length) > APT_MIRROR_PROBE_MAX_BYTES:
                 raise ReleaseAuthorityError("APT mirror probe returned oversized content")
         if not (payload := response.read(APT_MIRROR_PROBE_MAX_BYTES + 1)) or len(payload) > APT_MIRROR_PROBE_MAX_BYTES:
             raise ReleaseAuthorityError("APT mirror probe returned empty or oversized content")
         lines = payload.decode("utf-8").splitlines()
-        if not any(line in {f"Suite: {suite_path}", f"Codename: {suite_path}"} for line in lines):
+        signature_start = lines.index("-----BEGIN PGP SIGNATURE-----")
+        signed = "\n".join(lines[1:signature_start])
+        if (
+            lines[0] != "-----BEGIN PGP SIGNED MESSAGE-----"
+            or lines[-1] != "-----END PGP SIGNATURE-----"
+            or [lines.count(marker) for marker in ("-----BEGIN PGP SIGNED MESSAGE-----", "-----BEGIN PGP SIGNATURE-----", "-----END PGP SIGNATURE-----")] != [1, 1, 1]
+            or signature_start <= 2 or lines[2] != ""
+            or lines[1] not in {"Hash: SHA1", "Hash: SHA224", "Hash: SHA256", "Hash: SHA384", "Hash: SHA512"}
+            or signed.count("Hash: ") != 1
+            or signed.count("Origin: ") != 1 or "Origin: Debian" not in signed
+            or signed.count("Suite: ") != 1 or f"Suite: {suite_path}" not in signed
+            or signed.count("Codename: ") != 1 or f"Codename: {suite_path}" not in signed
+        ):
             raise ReleaseAuthorityError("APT mirror probe returned unexpected content")
-    except (HTTPError, URLError, TimeoutError, OSError, TypeError, ValueError):
+    except (HTTPError, URLError, TimeoutError, OSError, TypeError, ValueError) as exc:
+        if isinstance(exc, HTTPError):
+            exc.close()
         raise ReleaseAuthorityError("APT mirror probe request or response failed") from None
     finally:
         if response is not None:
             response.close()
-
 
 def _probe_apt_mirrors(apt_mirror: str, apt_security_mirror: str) -> dict[str, Any]:
     selection = _normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
