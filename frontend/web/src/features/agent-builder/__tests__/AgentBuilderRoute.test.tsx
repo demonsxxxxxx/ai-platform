@@ -5,7 +5,7 @@ import test from "node:test";
 
 test("AgentBuilderRoute refreshes public catalogs without owning Chat or MCP selection state", () => {
   const source = readFileSync(
-    join(process.cwd(), "src/components/agent-builder/AgentBuilderRoute.tsx"),
+    join(process.cwd(), "src/features/agent-builder/AgentBuilderRoute.tsx"),
     "utf8",
   );
 
