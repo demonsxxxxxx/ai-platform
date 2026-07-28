@@ -72,6 +72,25 @@ async def test_login_and_current_principal_accept_the_observed_legacy_company_re
 
 
 @pytest.mark.parametrize("kind", ["login", "current"])
+@pytest.mark.asyncio
+async def test_login_and_current_principal_accept_trusted_username_alias_distinct_from_work_id(kind):
+    principal = await _resolve(
+        kind,
+        {
+            "workId": "user-a",
+            "userName": "trusted-user-a",
+            "username": "trusted-user-a",
+            "user_name": "trusted-user-a",
+            "roles": ["user"],
+            "active": True,
+        },
+    )
+
+    assert principal.user_id == "user-a"
+    assert principal.roles == ["user"]
+
+
+@pytest.mark.parametrize("kind", ["login", "current"])
 @pytest.mark.parametrize(
     ("role_aliases", "expected_role"),
     [
@@ -232,6 +251,25 @@ async def test_current_principal_honors_current_configured_admin_identity():
     assert principal.permissions == [*AI_USER_PERMISSIONS, *AI_ADMIN_PERMISSIONS]
 
 
+@pytest.mark.parametrize("kind", ["login", "current"])
+@pytest.mark.asyncio
+async def test_login_and_current_principal_honor_validated_username_alias_for_configured_admin(kind):
+    principal = await _resolve(
+        kind,
+        {
+            "workId": "user-a",
+            "userName": "trusted-admin-a",
+            "roles": [],
+            "active": True,
+        },
+        login_name="untrusted-submitted-login",
+        settings=_settings(ai_admin_work_ids="TRUSTED-ADMIN-A"),
+    )
+
+    assert principal.roles == ["admin"]
+    assert principal.permissions == [*AI_USER_PERMISSIONS, *AI_ADMIN_PERMISSIONS]
+
+
 @pytest.mark.asyncio
 async def test_current_principal_rejects_missing_eligibility_without_nonempty_roles():
     with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
@@ -359,8 +397,13 @@ async def test_current_principal_rejects_non_company_tenant_without_calling_adap
         pytest.param(_http_failure(), id="endpoint-failure"),
         pytest.param({"roles": ["user"]}, id="missing-workid"),
         pytest.param(
-            {"workid": "user-a", "username": "user-b", "roles": ["user"]},
-            id="conflicting-nonempty-alias",
+            {
+                "workid": "user-a",
+                "userName": "trusted-user-a",
+                "username": "trusted-user-b",
+                "roles": ["user"],
+            },
+            id="conflicting-nonempty-username-aliases",
         ),
         pytest.param(
             {"workId": "user-a", "workid": "user-b", "roles": ["user"]},
@@ -384,6 +427,61 @@ async def test_current_principal_rejects_non_company_tenant_without_calling_adap
 async def test_login_and_current_principal_fail_closed_for_untrusted_company_records(kind, result):
     with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
         await _resolve(kind, result)
+
+
+@pytest.mark.parametrize("kind", ["login", "current"])
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param({"workId": " ", "roles": ["user"]}, id="blank-workid"),
+        pytest.param({"workId": 42, "roles": ["user"]}, id="non-string-workid"),
+        pytest.param(
+            {"workId": "user-a", "workid": None, "roles": ["user"]},
+            id="null-workid-synonym",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_login_and_current_principal_reject_malformed_canonical_work_id_aliases(kind, result):
+    with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
+        await _resolve(kind, result)
+
+
+@pytest.mark.parametrize("kind", ["login", "current"])
+@pytest.mark.asyncio
+async def test_login_and_current_principal_reject_conflicting_trusted_username_aliases(kind):
+    with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
+        await _resolve(
+            kind,
+            {
+                "workId": "user-a",
+                "userName": "trusted-user-a",
+                "username": "trusted-user-b",
+                "roles": ["user"],
+            },
+        )
+
+
+@pytest.mark.parametrize("kind", ["login", "current"])
+@pytest.mark.parametrize(
+    ("alias_key", "alias_value"),
+    [
+        pytest.param("userName", 42, id="integer"),
+        pytest.param("username", ["trusted-user-a"], id="list"),
+        pytest.param("user_name", {"id": "trusted-user-a"}, id="object"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_login_and_current_principal_reject_malformed_trusted_username_aliases(
+    kind,
+    alias_key,
+    alias_value,
+):
+    with pytest.raises(PrincipalAuthorityDenied, match=CURRENT_PRINCIPAL_DENIAL_REASON):
+        await _resolve(
+            kind,
+            {"workId": "user-a", alias_key: alias_value, "roles": ["user"]},
+        )
 
 
 @pytest.mark.asyncio
