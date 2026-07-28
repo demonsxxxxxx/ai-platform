@@ -254,6 +254,23 @@ test("keeps the fixed capability path unchanged without a selected Skill", () =>
   assert.equal("skill_id" in body, false);
 });
 
+test("submits only the exact published Agent profile lock", () => {
+  const body = buildSubmitChatBody({
+    message: "review this request",
+    selectedAgentProfile: {
+      agent_id: "agt_support",
+      expected_revision: 4,
+    },
+  });
+
+  assert.deepEqual(body.selected_agent_profile, {
+    agent_id: "agt_support",
+    expected_revision: 4,
+  });
+  assert.equal("instructions" in body, false);
+  assert.equal("mcp_tool_ids" in body, false);
+});
+
 test("detects chat stream confirmation responses without a run id", () => {
   assert.equal(
     isChatStreamNeedsConfirmation({

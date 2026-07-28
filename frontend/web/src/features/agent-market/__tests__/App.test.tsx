@@ -8,5 +8,6 @@ test("App protects the Builder for administrators and exposes the ordinary-user 
 
   assert.match(source, /path=\{APP_ROUTE_PATHS\.agentBuilder\}[\s\S]*requireAdmin/);
   assert.match(source, /path=\{APP_ROUTE_PATHS\.agentMarket\}/);
-  assert.match(source, /path=\{APP_ROUTE_PATHS\.agentMarketChat\}/);
+  assert.doesNotMatch(source, /agentMarketChat/);
+  assert.match(source, /path=\{APP_ROUTE_PATHS\.chat\}[\s\S]*<ChatPage \/>/);
 });
