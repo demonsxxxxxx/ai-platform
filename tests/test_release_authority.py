@@ -5192,6 +5192,53 @@ def test_run_preserves_text_binary_environment_cwd_and_check_contract(tmp_path):
     assert exc_info.value.stderr == "failed-error\n"
 
 
+def test_run_streams_binary_stdout_to_authority_owned_sink_without_capturing_it(tmp_path):
+    archive = tmp_path / "export.tar"
+    payload = b"rootfs-stream-" * 4096
+
+    with archive.open("w+b") as sink:
+        result = release_authority._run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'rootfs-stream-' * 4096); sys.stderr.write('permission denied\\n')",
+            ],
+            text=False,
+            stdout_sink=sink,
+            timeout=2,
+        )
+        sink.flush()
+
+    assert result.returncode == 0
+    assert result.stdout is None
+    assert result.stderr is not None and result.stderr.rstrip(b"\r\n") == b"permission denied"
+    assert archive.read_bytes() == payload
+
+
+def test_run_rejects_stdout_sink_in_text_or_build_progress_modes_before_popen(tmp_path, monkeypatch):
+    archive = tmp_path / "export.tar"
+    popen_calls = 0
+
+    def fail_popen(*args, **kwargs):
+        nonlocal popen_calls
+        popen_calls += 1
+        pytest.fail("Popen must not run for incompatible stdout sink modes")
+
+    monkeypatch.setattr(subprocess, "Popen", fail_popen)
+    with archive.open("wb") as sink:
+        with pytest.raises(TypeError, match="stdout sink requires binary output"):
+            release_authority._run(["docker", "container", "export"], stdout_sink=sink)
+        with pytest.raises(TypeError, match="stdout sink requires binary output"):
+            release_authority._run(
+                ["docker", "container", "export"],
+                text=False,
+                stdout_sink=sink,
+                classify_build_progress=True,
+            )
+
+    assert popen_calls == 0
+
+
 @pytest.mark.parametrize("invalid_input", [b"bytes", bytearray(b"bytearray"), memoryview(b"memoryview")])
 def test_run_rejects_bytes_like_text_input_before_popen(monkeypatch, invalid_input):
     popen_calls = 0
@@ -5436,3 +5483,21 @@ def test_backend_flatten_cleanup_status_evidence_is_bounded():
 
     assert evidence == {"failure_kind": "authority-error", "cleanup_status": "failed"}
     assert "private-marker" not in json.dumps(evidence)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        subprocess.TimeoutExpired(["private-command"], 17),
+        subprocess.CalledProcessError(7, ["private-command"]),
+        OSError(5, "private-command"),
+        release_authority.BackendFlattenError("private-command"),
+    ],
+)
+def test_stage_failure_evidence_merges_cleanup_status_for_every_error_kind(error):
+    error.cleanup_status = "failed"
+
+    evidence = release_authority._stage_failure_evidence(error)
+
+    assert evidence["cleanup_status"] == "failed"
+    assert "private-command" not in json.dumps(evidence)

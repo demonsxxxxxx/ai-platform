@@ -22,7 +22,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Sequence
+from typing import Any, BinaryIO, Sequence
 from urllib.request import urlopen
 
 if __package__:
@@ -808,12 +808,13 @@ def _run(
     text: bool = True,
     env: dict[str, str] | None = None,
     timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
-    input: str | bytes | None = None,
-    classify_build_progress: bool = False,
-    umask: int = -1,
+    input: str | bytes | None = None, classify_build_progress: bool = False,
+    stdout_sink: BinaryIO | None = None, umask: int = -1,
 ) -> subprocess.CompletedProcess[Any]:
     if text and isinstance(input, (bytes, bytearray, memoryview)):
         raise TypeError("text mode input must be str, not bytes-like")
+    if stdout_sink is not None and (text or classify_build_progress or input is not None):
+        raise TypeError("stdout sink requires binary output without stdin or build progress classification")
     timeout = bounded_parity_attempt_timeout(timeout)
     arguments = list(command)
     windows_job_handle = _create_owned_windows_job()
@@ -825,7 +826,7 @@ def _run(
                 arguments,
                 cwd=cwd,
                 stdin=subprocess.PIPE if input is not None else None,
-                stdout=subprocess.PIPE,
+                stdout=stdout_sink if stdout_sink is not None else subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=text and not classify_build_progress,
                 env=env,
@@ -1335,6 +1336,7 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
+            **{**getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})},
         }
     if isinstance(exc, subprocess.CalledProcessError):
         return {
@@ -1346,13 +1348,11 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
+            **{**getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})},
         }
     if isinstance(exc, OSError):
-        evidence: dict[str, Any] = {"failure_kind": "os-error"}
-        if isinstance(exc.errno, int):
-            evidence["errno"] = exc.errno
-        return evidence
-    return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
+        return {"failure_kind": "os-error", **({"errno": exc.errno} if isinstance(exc.errno, int) else {}), **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
+    return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
 
 
 def _stage(
