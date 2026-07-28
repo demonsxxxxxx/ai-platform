@@ -617,35 +617,42 @@ async def test_executor_rejects_unknown_capability_identity_without_inference(mo
 
 @pytest.mark.parametrize(
     "receipt_mode",
-    [
-        "rejected",
-        "missing",
-        "malformed",
-        "nonliteral_true",
-        "wrong_count",
-        "exception",
-        "stale_run",
-        "mismatched_attempt",
-    ],
+    "rejected missing malformed nonliteral_true wrong_count exception stale_run mismatched_attempt".split(),
 )
-def test_executor_capability_binder_rejection_returns_false_without_local_claim(
+def test_executor_capability_rejection_seals_public_events_without_local_claim(
     tmp_path,
     monkeypatch,
     receipt_mode,
 ):
     acknowledgements = []
-    callbacks = []
+    persisted_events = []
+    capability_attempts = 0
+    reopen_results = []
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+    outer_events_queued = asyncio.Event()
 
     class StubSettings:
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        for phase in ("invocation_requested", "completed"):
-            acknowledgements.append(
-                await kwargs["on_capability_evidence"](
-                    sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
-                )
-            )
+        facts = [
+            sdk_mcp_evidence("mcp__tenant-server__search", call_id, "invocation_requested")
+            for call_id in ("tool-call-1", "tool-call-2")
+        ]
+        first = asyncio.create_task(kwargs["on_capability_evidence"](facts[0]))
+        await asyncio.wait_for(callback_started.wait(), timeout=2.0)
+        later = asyncio.create_task(kwargs["on_capability_evidence"](facts[1]))
+        outputs = [
+            asyncio.create_task(kwargs["on_text"]("sealed text")),
+            asyncio.create_task(kwargs["on_tool_lifecycle"]({
+                "tool_name": "Bash", "invocation_id": "tool-call-2", "lifecycle": "started",
+            })),
+        ]
+        await asyncio.wait_for(outer_events_queued.wait(), timeout=2.0)
+        release_callback.set()
+        acknowledgements.extend(await asyncio.wait_for(asyncio.gather(first, later), timeout=2.0))
+        await asyncio.wait_for(asyncio.gather(*outputs), timeout=2.0)
         return type(
             "SdkResult",
             (),
@@ -657,9 +664,28 @@ def test_executor_capability_binder_rejection_returns_false_without_local_claim(
             },
         )()
 
-    def callback_sender(_url, payload, _token):
-        callbacks.append(payload)
-        if any(event["type"].startswith("capability_") for event in payload.get("events", [])):
+    async def executor_runner(request, workspace_root, emit_event):
+        runner_task = asyncio.create_task(_default_executor_runner(request, workspace_root, emit_event))
+        await asyncio.wait_for(callback_started.wait(), timeout=2.0)
+        pending = [
+            asyncio.create_task(emit_event(AgentEvent(type=event_type)))
+            for event_type in ("artifact_created", "capability_completed")
+        ]
+        outer_events_queued.set()
+        result = await asyncio.wait_for(runner_task, timeout=2.0)
+        reopen_results.extend(await asyncio.wait_for(asyncio.gather(*pending), timeout=2.0))
+        return result
+
+    async def callback_sender(_url, payload, _token):
+        nonlocal capability_attempts
+        events = payload.get("events", [])
+        if any(event["type"].startswith("capability_") for event in events):
+            capability_attempts += 1
+            if capability_attempts > 1:
+                persisted_events.extend(events)
+                return callback_ack(payload)
+            callback_started.set()
+            await asyncio.wait_for(release_callback.wait(), timeout=2.0)
             if receipt_mode == "exception":
                 raise RuntimeError(f"{receipt_mode} rejected")
             if receipt_mode == "missing":
@@ -681,29 +707,24 @@ def test_executor_capability_binder_rejection_returns_false_without_local_claim(
                     "event_count": 1 + len(payload["events"]),
                 }
             return {"accepted": False, "event_count": 1 + len(payload["events"])}
+        persisted_events.extend(events)
         return callback_ack(payload)
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    client = create_test_client(tmp_path, callback_sender=callback_sender)
+    client = create_test_client(tmp_path, callback_sender=callback_sender, executor_runner=executor_runner)
 
-    body = client.post(
-        "/v1/tasks/execute",
-        json=selected_mcp_task_payload(),
-        headers=auth_headers(),
-    ).json()
+    body = client.post("/v1/tasks/execute", json=selected_mcp_task_payload(), headers=auth_headers()).json()
 
-    assert len(acknowledgements) == 2
-    assert all(item is False for item in acknowledgements)
+    assert [item is False for item in acknowledgements] == [True, True]
     assert body["status"] == "failed"
     assert body["message"] == ""
     assert body["error_code"] == "capability_callback_not_acknowledged"
     assert body["capability_evidence"] == []
     assert body["callback_errors"] == ["running"]
-    assert sum(
-        any(event["type"].startswith("capability_") for event in item.get("events", []))
-        for item in callbacks
-    ) == 1
+    assert [result is False for result in reopen_results] == [True, True]
+    assert persisted_events == []
+    assert capability_attempts == 1
 
 
 @pytest.mark.parametrize(

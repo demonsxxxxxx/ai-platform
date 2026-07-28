@@ -1487,6 +1487,7 @@ def create_executor_app(
         runner_events_open = {"value": True}
         capability_callback_failed = {"value": False}
         public_execution_projector = PublicExecutionProjector()
+        runner_event_lock = asyncio.Lock()
 
         async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
             try:
@@ -1512,9 +1513,9 @@ def create_executor_app(
                 return acknowledged
             return True
 
-        async def emit_runner_event(event: AgentEvent | _PrivateExecutionFact) -> bool:
+        async def emit_runner_event_locked(event: AgentEvent | _PrivateExecutionFact) -> bool:
             nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
-            if not runner_events_open["value"]:
+            if capability_callback_failed["value"] or not runner_events_open["value"]:
                 return False
             if isinstance(event, _PrivateExecutionFact):
                 agent_event = event.public_event
@@ -1561,9 +1562,14 @@ def create_executor_app(
             acknowledged = await dispatch_callback_event(callback_event)
             if agent_event is not None and agent_event.type.startswith("capability_") and not acknowledged:
                 capability_callback_failed["value"] = True
+                runner_events_open["value"] = False
             if artifact_started_at is not None:
                 artifact_upload_latency_ms += _elapsed_ms(artifact_started_at)
             return acknowledged
+
+        async def emit_runner_event(event: AgentEvent | _PrivateExecutionFact) -> bool:
+            async with runner_event_lock:
+                return await emit_runner_event_locked(event)
 
         await dispatch_callback_event(running_event)
         runner_result: dict[str, Any] = {}
