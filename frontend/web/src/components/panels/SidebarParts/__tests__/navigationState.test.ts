@@ -9,7 +9,7 @@ import {
 test("maps authenticated workbench routes to sidebar navigation items", () => {
   assert.equal(getWorkbenchNavItemFromPathname("/apps"), "apps");
   assert.equal(getWorkbenchNavItemFromPathname("/agent-builder"), "agentBuilder");
-  assert.equal(getWorkbenchNavItemFromPathname("/agent-market/agt_support/4"), "agentBuilder");
+  assert.equal(getWorkbenchNavItemFromPathname("/agent-market"), "agentBuilder");
   assert.equal(getWorkbenchNavItemFromPathname("/skills"), "skills");
   assert.equal(getWorkbenchNavItemFromPathname("/marketplace"), null);
   assert.equal(getWorkbenchNavItemFromPathname("/files"), "files");

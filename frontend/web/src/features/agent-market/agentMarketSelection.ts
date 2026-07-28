@@ -34,3 +34,22 @@ export function marketProfileRequest(
     expected_revision: profile.expected_revision,
   };
 }
+
+let pendingAgentMarketSelection: SelectedAgentProfileRequest | null = null;
+
+/** Hold one server-owned market selection until the canonical Chat hook mounts. */
+export function setPendingAgentMarketSelection(
+  selection: SelectedAgentProfileRequest,
+): void {
+  pendingAgentMarketSelection = {
+    agent_id: selection.agent_id,
+    expected_revision: selection.expected_revision,
+  };
+}
+
+/** Consume the pending selection once so a later generic Chat cannot inherit it. */
+export function consumePendingAgentMarketSelection(): SelectedAgentProfileRequest | null {
+  const selection = pendingAgentMarketSelection;
+  pendingAgentMarketSelection = null;
+  return selection;
+}

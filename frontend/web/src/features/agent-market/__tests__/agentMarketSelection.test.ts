@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  consumePendingAgentMarketSelection,
   marketProfileRequest,
   selectPublishedMarketProfile,
+  setPendingAgentMarketSelection,
 } from "../agentMarketSelection";
 
 const profile = {
@@ -24,4 +26,13 @@ test("market forwards only the immutable profile lock to Chat", () => {
     agent_id: "agt_support",
     expected_revision: 4,
   });
+});
+
+test("market selection is one-shot and never persisted in a URL or local storage", () => {
+  setPendingAgentMarketSelection(marketProfileRequest(profile));
+  assert.deepEqual(consumePendingAgentMarketSelection(), {
+    agent_id: "agt_support",
+    expected_revision: 4,
+  });
+  assert.equal(consumePendingAgentMarketSelection(), null);
 });

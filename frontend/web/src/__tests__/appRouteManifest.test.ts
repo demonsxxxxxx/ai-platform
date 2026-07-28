@@ -10,5 +10,6 @@ test("appRouteManifest separates the admin Builder from the ordinary-user Agent 
   assert.equal(resolveAppRoute("/agent-builder"), "agentBuilder");
   assert.equal(resolveAppRoute("/agent-market"), "agentMarket");
   assert.equal(resolveAppRoute("/agent-market/agt_support/4"), "agentMarketChat");
+  assert.equal(resolveAppRoute("/chat"), "chat");
   assert.equal(resolveAppRoute("/agents"), "notFound");
 });

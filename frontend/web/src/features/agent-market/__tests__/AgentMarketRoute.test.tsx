@@ -3,17 +3,23 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-test("market reads published cards and starts a Chat submission with only the exact profile selector", () => {
+test("market stays in the production shell and hands cards to canonical Chat", () => {
   const source = readFileSync(
     join(process.cwd(), "src/features/agent-market/AgentMarketRoute.tsx"),
     "utf8",
   );
 
   assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\)/);
+  assert.match(source, /AppShell/);
+  assert.match(source, /SessionSidebar/);
+  assert.match(source, /mobileSidebarOpen/);
+  assert.match(source, /useParams/);
+  assert.match(source, /data-agent-market-invalid/);
   assert.match(source, /marketProfileRequest\(profile\)/);
-  assert.match(source, /chat\.sendMessage\([\s\S]*marketProfileRequest\(profile\)/);
+  assert.match(source, /setPendingAgentMarketSelection\(marketProfileRequest\(profile\)\)/);
+  assert.match(source, /CANONICAL_CHAT_PATH/);
   assert.match(source, /MARKET_CATALOG_LOAD_ERROR/);
-  assert.doesNotMatch(source, /error instanceof Error \? error\.message/);
-  assert.doesNotMatch(source, /selected_skill/);
-  assert.doesNotMatch(source, /mcp_tool_ids/);
+  assert.doesNotMatch(source, /AgentMarketChat/);
+  assert.doesNotMatch(source, /<textarea/);
+  assert.doesNotMatch(source, /agentMarketChat/);
 });

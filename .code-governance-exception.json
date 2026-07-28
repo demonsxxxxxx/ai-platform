@@ -1,0 +1,12 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-08-12",
+  "owner": "frontend-issue-683",
+  "reason": "Issue #683 only: the published Agent Market card-to-canonical-Chat atomic flow must cross frontend/web/src/features and frontend/web/src/hooks to reuse the existing useAgent submission authority rather than duplicate Chat or session logic. The fixed product implementation is ba489142a84043123798c59ffd4ba01506cead17. That fixed implementation commit is distinct from the Git-evaluated range: governance evaluates this waiver over current-main base 93409d896ea7cf423d5650dae104ec71c350ffb7 through the current HEAD carrying this file. The ending commit is intentionally described as current HEAD rather than an embedded self-referential hash. No other waiver is added.",
+  "violations": [
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}
