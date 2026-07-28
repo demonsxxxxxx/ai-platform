@@ -225,6 +225,27 @@ def test_guardrails_document_exists_and_is_named_by_authority_docs():
     assert "docs/agent-rules/ai-platform-guardrails.md" in read(AGENTS)
 
 
+def test_release_authority_and_runbook_keep_debian_mirrors_in_the_backend_build_boundary():
+    dockerfile_text = read(BACKEND_DOCKERFILE)
+    release_authority_text = read(ROOT / "tools/release_authority.py")
+    runbook_text = read(ROOT / "docs/operations/211-release-operations-runbook.md")
+
+    assert "ARG APT_MIRROR" in dockerfile_text
+    assert "ARG APT_SECURITY_MIRROR" in dockerfile_text
+    assert dockerfile_text.count("FROM python:3.11-slim-bookworm") == 2
+    assert "http://deb.debian.org/debian-security" in dockerfile_text
+    assert "https://deb.debian.org/debian-security" in dockerfile_text
+    assert "--apt-mirror" in release_authority_text
+    assert "--apt-security-mirror" in release_authority_text
+    assert '"requested"' in release_authority_text and '"applied"' in release_authority_text
+    assert "mirrors.ustc.edu.cn/debian" in runbook_text
+    assert "mirrors.ustc.edu.cn/debian-security" in runbook_text
+    assert "registry-mirrors" not in dockerfile_text
+    assert "PIP_TRUSTED_HOST" not in release_authority_text
+    assert "trusted=yes" not in dockerfile_text
+    assert "allow-unauthenticated" not in dockerfile_text
+
+
 def test_agent_rules_keep_main_session_authority_separate_from_subagents():
     agents_text = read(AGENTS)
     workflow_text = read(MULTI_AGENT_CONTEXT_WORKFLOW)
