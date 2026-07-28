@@ -55,6 +55,7 @@ from app.runtime.sandbox.executor_client import (
     prepare_executor_http_request,
 )
 from app.runtime.sandbox import governed_egress_diagnostics as egress_diagnostics
+from app.runtime.sandbox.filesystem_contract import encode_execd_mode
 from app.runtime.sandbox.opensandbox_attestation import build_opensandbox_attestation_probe
 from app.runtime.sandbox.providers.opensandbox.startup import (
     OpenSandboxStartupEvidence,
@@ -137,14 +138,6 @@ class DockerPermissionDeniedError(SandboxRuntimeError):
 class ContainerStartFailedError(SandboxRuntimeError):
     def __init__(self, message: str = "Container start failed") -> None:
         super().__init__("container_start_failed", message)
-
-
-def _opensandbox_filesystem_mode(mode: int) -> int:
-    """Encode Unix permission bits as the octal digits parsed by deployed execd."""
-
-    if type(mode) is not int or not 0 <= mode <= 0o777:
-        raise ContainerStartFailedError("OpenSandbox filesystem mode is invalid")
-    return int(f"{mode:o}")
 
 
 class OpenSandboxStartupFailedError(ContainerStartFailedError):
@@ -4575,15 +4568,7 @@ class OpenSandboxContainerProvider:
             sort_keys=True,
         )
         await _maybe_await(
-            sandbox.files.write_files(
-                [
-                    self._file_class(
-                        path=sentinel_path,
-                        data=payload,
-                        mode=_opensandbox_filesystem_mode(0o600),
-                    )
-                ]
-            )
+            sandbox.files.write_files([self._file_class(path=sentinel_path, data=payload, mode=encode_execd_mode(0o600))])
         )
         readback = await _maybe_await(sandbox.files.read_file(sentinel_path))
         if isinstance(readback, bytes):
@@ -5281,27 +5266,14 @@ class OpenSandboxContainerProvider:
                 raise ContainerStartFailedError("OpenSandbox filesystem staging is unavailable")
             directories, files = _build_opensandbox_workspace_manifest(request, workspace)
             remote_root = workspace.workspace_container_path.rstrip("/")
-            remote_directories = [
-                self._file_class(
-                    path=remote_root,
-                    data=None,
-                    mode=_opensandbox_filesystem_mode(0o700),
-                )
-            ] + [
-                self._file_class(
-                    path=f"{remote_root}/{relative_path}",
-                    data=None,
-                    mode=_opensandbox_filesystem_mode(0o700),
-                )
+            remote_directories = [self._file_class(path=remote_root, data=None, mode=encode_execd_mode(0o700))] + [
+                self._file_class(path=f"{remote_root}/{relative_path}", data=None, mode=encode_execd_mode(0o700))
                 for relative_path in directories
             ]
-            if remote_directories:
-                await _maybe_await(filesystem.create_directories(remote_directories))
+            await _maybe_await(filesystem.create_directories(remote_directories))
             for entry in files:
                 payload = _read_stable_workspace_file(entry)
-                mode = _opensandbox_filesystem_mode(
-                    0o700 if entry.snapshot.mode & stat.S_IXUSR else 0o600
-                )
+                mode = encode_execd_mode(0o700 if entry.snapshot.mode & stat.S_IXUSR else 0o600)
                 await _maybe_await(
                     filesystem.write_files(
                         [
