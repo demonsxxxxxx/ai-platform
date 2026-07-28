@@ -239,6 +239,9 @@ def test_release_authority_and_runbook_keep_debian_mirrors_in_the_backend_build_
     assert "--apt-security-mirror" in release_authority_text
     assert "probe-apt-mirrors" in release_authority_text
     assert "Range" in release_authority_text
+    assert "complete clear-signed PGP envelope" in runbook_text
+    assert "Codename" in runbook_text
+    assert "oldoldstable" in runbook_text and "`-security` suffix" in runbook_text
     assert '"requested"' in release_authority_text and '"applied"' in release_authority_text
     assert "mirrors.ustc.edu.cn/debian" in runbook_text
     assert "mirrors.ustc.edu.cn/debian-security" in runbook_text

@@ -319,13 +319,20 @@ def test_apt_mirror_pair_rejects_incomplete_or_unsafe_endpoints():
             release_authority._normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
 
 
-def _signed_inrelease(suite="bookworm"):
+def _signed_inrelease(suite="oldstable", codename="bookworm", footer=True):
+    signature = b"-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG\n\nabc\n-----END PGP SIGNATURE-----\n"
     return (
         b"-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
-        + f"Origin: Debian\nSuite: {suite}\nCodename: {suite}\n".encode()
-        + b"-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG\n\nabc\n"
-        + b"-----END PGP SIGNATURE-----\n"
+        + f"Origin: Debian\nSuite: {suite}\nCodename: {codename}\n".encode()
+        + (signature if footer else b"")
     )
+
+
+def _padded_inrelease(total, suite="oldstable", codename="bookworm"):
+    body = _signed_inrelease(suite, codename)
+    signature = b"-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG\n\nabc\n-----END PGP SIGNATURE-----\n"
+    padding = total - len(body)
+    return body[:-len(signature)] + (b"X" * (padding - 1) + b"\n" if padding else b"") + body[-len(signature):]
 
 
 def _synthetic_apt_response(url, status, headers, payload):
@@ -376,25 +383,38 @@ def _apt_probe_url(host="mirror.example", security=False):
 
 
 @pytest.mark.parametrize("status", [200, 206])
-def test_apt_mirror_probe_uses_bounded_get_and_accepts_release_content(monkeypatch, status):
+def test_apt_mirror_probe_uses_bounded_get_and_accepts_complete_release_content(monkeypatch, status):
+    body = _padded_inrelease(151075) if status == 206 else _signed_inrelease()
+    headers = {"Content-Type": "application/octet-stream", "Content-Length": str(len(body))}
+    if status == 206:
+        headers["Content-Range"] = f"bytes 0-{len(body) - 1}/{len(body)}"
     transport = _patch_production_apt_transport(
         monkeypatch,
-        {_apt_probe_url(): (status, {"Content-Type": "text/plain; charset=utf-8"}, _signed_inrelease())},
+        {_apt_probe_url(): (status, headers, body)},
     )
     release_authority._probe_apt_endpoint("https://mirror.example/debian", "mirror.example", "bookworm", security=False)
     assert transport.requests[0].get_method() == "GET"
-    assert transport.requests[0].get_header("Range") == "bytes=0-65535"
-    assert transport.responses[0].read_limit == release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1
+    assert transport.requests[0].get_header("Range") == "bytes=0-262143"
+    assert transport.responses[0].read_limit == len(body) + 1
     assert transport.responses[0].closed
+
+
+def _206_route(body, start=0, end=None, total=None, content_length=None):
+    end = len(body) - 1 if end is None else end
+    total = len(body) if total is None else total
+    headers = {"Content-Type": "application/octet-stream", "Content-Range": f"bytes {start}-{end}/{total}"}
+    if content_length is not None:
+        headers["Content-Length"] = str(content_length)
+    return 206, headers, body
 
 
 @pytest.mark.parametrize("route", [
     (200, {}, _signed_inrelease()),
-    (200, {"Content-Type": "text/html"}, b"<html>Suite: bookworm</html>"),
-    (200, {"Content-Type": "text/plain"}, b"Suite: bookworm\nCodename: bookworm\n"),
-    (200, {"Content-Type": "text/plain"}, b""),
-    (200, {"Content-Type": "application/octet-stream"}, b"x" * (release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1)),
-    (503, {"Content-Type": "text/plain"}, _signed_inrelease()),
+    (200, {"Content-Type": "text/html", "Content-Length": "30"}, b"<html>Suite: bookworm</html>"),
+    (200, {"Content-Type": "text/plain", "Content-Length": "35"}, b"Suite: bookworm\nCodename: bookworm\n"),
+    (200, {"Content-Type": "text/plain", "Content-Length": "0"}, b""),
+    (200, {"Content-Type": "application/octet-stream", "Content-Length": str(release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1)}, b"x"),
+    (503, {"Content-Type": "text/plain", "Content-Length": str(len(_signed_inrelease()))}, _signed_inrelease()),
     TimeoutError(),
 ])
 def test_apt_mirror_probe_rejects_invalid_type_html_missing_signature_empty_oversized_status_and_timeout(monkeypatch, route):
@@ -403,6 +423,46 @@ def test_apt_mirror_probe_rejects_invalid_type_html_missing_signature_empty_over
         release_authority._probe_apt_endpoint("https://mirror.example/debian", "mirror.example", "bookworm", security=False)
     if transport.responses:
         assert transport.responses[0].closed
+
+
+@pytest.mark.parametrize("route", [
+    _206_route(_signed_inrelease(), end=65535, total=151075, content_length=65536),
+    _206_route(_signed_inrelease(), start=1, total=len(_signed_inrelease()), content_length=len(_signed_inrelease())),
+    _206_route(_signed_inrelease(), end=len(_signed_inrelease()) - 2, content_length=len(_signed_inrelease())),
+    _206_route(_signed_inrelease() + b"X", end=len(_signed_inrelease()) - 1, total=len(_signed_inrelease()), content_length=len(_signed_inrelease())),
+    _206_route(_signed_inrelease(), total=release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1, end=release_authority.APT_MIRROR_PROBE_MAX_BYTES, content_length=release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1),
+    _206_route(_signed_inrelease(footer=False), content_length=len(_signed_inrelease(footer=False))),
+    _206_route(_signed_inrelease(suite="oldstable-security"), content_length=len(_signed_inrelease(suite="oldstable-security"))),
+    _206_route(_signed_inrelease(codename="trixie"), content_length=len(_signed_inrelease(codename="trixie"))),
+    _206_route(_signed_inrelease(suite="oldstable-security", codename="bookworm-security"), content_length=len(_signed_inrelease(suite="oldstable-security", codename="bookworm-security"))),
+    (200, {"Content-Type": "application/octet-stream", "Content-Length": str(len(_signed_inrelease()) - 1)}, _signed_inrelease()),
+])
+def test_apt_mirror_probe_rejects_incomplete_ranges_and_wrong_release_identity(monkeypatch, route):
+    transport = _patch_production_apt_transport(monkeypatch, {_apt_probe_url(): route})
+    with pytest.raises(ReleaseAuthorityError):
+        release_authority._probe_apt_endpoint("https://mirror.example/debian", "mirror.example", "bookworm", security=False)
+    assert transport.responses[0].closed
+
+
+def test_apt_mirror_probe_accepts_security_lifecycle_suite(monkeypatch):
+    body = _signed_inrelease(suite="oldstable-security", codename="bookworm-security")
+    transport = _patch_production_apt_transport(
+        monkeypatch,
+        {_apt_probe_url(security=True): _206_route(body, content_length=len(body))},
+    )
+    release_authority._probe_apt_endpoint("https://mirror.example/debian-security", "mirror.example", "bookworm", security=True)
+    assert transport.responses[0].closed
+
+
+def test_apt_mirror_probe_rejects_security_archive_suite(monkeypatch):
+    body = _signed_inrelease(suite="oldstable", codename="bookworm-security")
+    transport = _patch_production_apt_transport(
+        monkeypatch,
+        {_apt_probe_url(security=True): _206_route(body, content_length=len(body))},
+    )
+    with pytest.raises(ReleaseAuthorityError):
+        release_authority._probe_apt_endpoint("https://mirror.example/debian-security", "mirror.example", "bookworm", security=True)
+    assert transport.responses[0].closed
 
 
 @pytest.mark.parametrize("location", [
