@@ -70,6 +70,7 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
     resolve_executor_endpoint,
     unhealthy_readiness_fields,
 )
+from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_metadata
 from app.runtime.sandbox.opensandbox_trusted_internal import (
     SANDBOX_SECURITY_PROFILE_GOVERNED,
     SANDBOX_SECURITY_PROFILE_LABEL,
@@ -405,6 +406,8 @@ def _container_config_user(container: Any) -> str:
 
 
 def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> bool:
+    if lease.provider == "opensandbox":
+        return opensandbox_metadata.opensandbox_status_matches_lease(status.detail.get("labels"), lease.labels)
     if not (
         status.tenant_id == lease.tenant_id
         and status.workspace_id == lease.workspace_id
@@ -912,7 +915,6 @@ def _provider_lease_labels(labels: dict[str, str]) -> dict[str, str]:
         for key, value in labels.items()
         if (
             (not str(key).startswith("ai-platform.executor.") or str(key) in public_executor_labels)
-            and str(key) != "ai-platform.external_egress.endpoint_sha256"
         )
     }
 
@@ -2152,8 +2154,9 @@ def _opensandbox_cleanup_expected_binding(
     """Derive signed cleanup subjects only from complete authoritative remote metadata."""
 
     labels = status.detail.get("labels")
-    if not isinstance(labels, dict):
+    if not opensandbox_metadata.opensandbox_status_matches_lease(labels, lease.labels):
         return None
+    labels = lease.labels
     runtime_identity = str(labels.get("ai-platform.external_egress.runtime_identity") or "")
     runtime_subject = str(labels.get("ai-platform.runtime_subject") or "")
     gateway_policy_subject = str(labels.get("ai-platform.external_egress.gateway_policy_subject") or "")
@@ -2269,26 +2272,6 @@ def _opensandbox_cleanup_identity_is_authorized(
         expected_binding=expected_binding,
         now=now,
         require_fresh=False,
-    )
-
-
-def _opensandbox_matches_filters(metadata: dict[str, str], filters: dict[str, str]) -> bool:
-    return _matches_filters(
-        ContainerStatus(
-            container_id="",
-            container_name="",
-            provider="opensandbox",
-            status="unknown",
-            tenant_id=metadata.get("ai-platform.tenant_id"),
-            workspace_id=metadata.get("ai-platform.workspace_id"),
-            user_id=metadata.get("ai-platform.user_id"),
-            session_id=metadata.get("ai-platform.session_id"),
-            run_id=metadata.get("ai-platform.run_id"),
-            sandbox_mode=metadata.get("ai-platform.sandbox_mode") if metadata.get("ai-platform.sandbox_mode") in {"ephemeral", "persistent"} else None,
-            browser_enabled=metadata.get("ai-platform.browser_enabled", "false").lower() == "true",
-            detail={key.removeprefix("ai-platform."): value for key, value in metadata.items()},
-        ),
-        filters,
     )
 
 
@@ -4699,6 +4682,10 @@ class OpenSandboxContainerProvider:
         # controlled Skill tree only after this ready sandbox has a DB lease.
         skill_mount = None
         metadata = _opensandbox_profile_labels(settings, request, profile, capability, skill_mount)
+        try:
+            provider_metadata = opensandbox_metadata.normalize_opensandbox_metadata(metadata)
+        except opensandbox_metadata.OpenSandboxMetadataError as exc:
+            raise ContainerStartFailedError("OpenSandbox metadata is invalid") from exc
         cache_key = cleanup_key
         cached = self._leases.get(cache_key)
         if cached is not None and cached.container_id in self._sandboxes:
@@ -4718,7 +4705,7 @@ class OpenSandboxContainerProvider:
                     executor_url=cached.executor_url,
                 )
                 expected_lease.labels.update(
-                    _opensandbox_profile_labels(settings, request, profile, capability, skill_mount)
+                    provider_metadata
                 )
                 sealed_labels = _opensandbox_profile_labels(
                     settings,
@@ -4850,7 +4837,7 @@ class OpenSandboxContainerProvider:
             request=request,
             workspace=workspace,
             settings=settings,
-            metadata=metadata,
+            metadata=provider_metadata,
             cache_key=cache_key,
             required=False,
             cleanup_subject=identity_unavailable_cleanup_subject(request.run_id, request.attempt_id),
@@ -4904,7 +4891,7 @@ class OpenSandboxContainerProvider:
                     request=request,
                     workspace=workspace,
                     settings=settings,
-                    metadata=metadata,
+                    metadata=provider_metadata,
                     cache_key=cache_key,
                     required=True,
                     cleanup_subject=subject,
@@ -4951,7 +4938,7 @@ class OpenSandboxContainerProvider:
                 seconds=max(int(getattr(settings, "sandbox_container_start_timeout_seconds", 30) or 30), 1)
             ),
             "env": environment,
-            "metadata": metadata,
+            "metadata": provider_metadata,
             "resource": _opensandbox_resource_limits(request.resource_limits),
             "network_policy": (
                 _opensandbox_network_policy(settings, self._network_policy_class, self._network_rule_class)
@@ -4987,7 +4974,7 @@ class OpenSandboxContainerProvider:
                 workspace,
                 executor_url=executor_url,
             )
-            expected_unsealed.labels.update(metadata)
+            expected_unsealed.labels.update(provider_metadata)
             if (
                 remote_status is None
                 or remote_status.container_id != sandbox_id
@@ -5193,7 +5180,9 @@ class OpenSandboxContainerProvider:
                 or remote_status.container_id != lease.container_id
                 or remote_status.status != "running"
                 or not _status_matches_lease(remote_status, expected_lease)
-                or not _status_has_expected_executor_identity_labels(remote_status)
+                or not opensandbox_metadata.opensandbox_metadata_matches(
+                    remote_status.detail.get("labels", {}), _executor_identity_labels()
+                )
                 or lease.labels != _provider_lease_labels(expected_labels)
                 or GOVERNED_EGRESS_PROOF_LABEL in lease.labels
                 or any(
@@ -5741,6 +5730,7 @@ class OpenSandboxContainerProvider:
                 status="failed",
                 message="OpenSandbox sandbox stop failed",
             )
+        lease = self._leases.get(cache_key, lease)
         sandbox = self._sandboxes.get(lease.container_id)
         if sandbox is None:
             try:
@@ -5781,7 +5771,9 @@ class OpenSandboxContainerProvider:
                 or status.provider != lease.provider
                 or not _status_matches_lease(status, lease)
                 or status.status not in _OPENSANDBOX_CONFIRMED_STOP_STATUSES
-                or not _status_has_expected_executor_identity_labels(status)
+                or not opensandbox_metadata.opensandbox_metadata_matches(
+                    status.detail.get("labels", {}), _executor_identity_labels()
+                )
                 or not _opensandbox_cleanup_identity_is_authorized(
                     status,
                     lease,
@@ -5823,19 +5815,27 @@ class OpenSandboxContainerProvider:
         settings = get_settings()
         manager = await self._manager(self._connection_config(settings))
         try:
-            metadata_filter = {
+            raw_metadata_filter = {
                 f"ai-platform.{key}": value
                 for key, value in filters.items()
                 if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id", "sandbox_mode"}
             }
-            metadata_filter["ai-platform.owner"] = "sandbox-runtime"
+            raw_metadata_filter["ai-platform.owner"] = "sandbox-runtime"
+            try:
+                metadata_filter = opensandbox_metadata.normalize_opensandbox_metadata(raw_metadata_filter)
+            except opensandbox_metadata.OpenSandboxMetadataError as exc:
+                raise ContainerStartFailedError("OpenSandbox metadata is invalid") from exc
             infos = await self._list_all_sandbox_infos(manager, metadata_filter)
             statuses = [
                 status
                 for info in (infos or [])
                 if (status := _opensandbox_status_from_info(info)) is not None
             ]
-            return [status for status in statuses if _matches_filters(status, filters)]
+            return [
+                status
+                for status in statuses
+                if opensandbox_metadata.opensandbox_metadata_matches_filters(status.detail.get("labels", {}), filters)
+            ]
         finally:
             await self._close_manager(manager)
 

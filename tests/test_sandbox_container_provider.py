@@ -1568,11 +1568,10 @@ async def test_opensandbox_provider_admits_only_authenticated_runsc_external_egr
     assert proof["policy_bound_enforcement"] is True
     assert "gateway-policy-subject-a" not in lease.labels["ai-platform.governed_egress.proof"]
     assert "ai-platform.external_egress.endpoint" not in lease.labels
-    assert "ai-platform.external_egress.endpoint_sha256" not in lease.labels
     remote_metadata = FakeOpenSandbox.created[0]["metadata"]
-    assert remote_metadata["ai-platform.external_egress.endpoint_sha256"] == hashlib.sha256(
-        b"http://opensandbox.local:8080"
-    ).hexdigest()
+    assert remote_metadata["ai-platform.external_egress.endpoint_sha256"] != lease.labels[
+        "ai-platform.external_egress.endpoint_sha256"
+    ] == hashlib.sha256(b"http://opensandbox.local:8080").hexdigest()
     assert remote_metadata["ai-platform.external_egress.upstream_bridge_version"] == "v1"
     assert FakeOpenSandbox.created[0]["env"]["AI_PLATFORM_CALLBACK_BASE_URL"] == (
         "https://bridge.internal.example:18443"
@@ -4265,7 +4264,7 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert created["metadata"]["ai-platform.owner"] == "sandbox-runtime"
     assert created["metadata"]["ai-platform.tenant_id"] == "tenant-a"
     assert created["metadata"]["ai-platform.run_id"] == "run-a"
-    assert created["metadata"]["ai-platform.executor.user"] == "10001:10001"
+    assert created["metadata"]["ai-platform.executor.user"].startswith("osb1-")
     assert created["metadata"]["ai-platform.executor.uid"] == "10001"
     assert created["metadata"]["ai-platform.executor.gid"] == "10001"
     assert created["metadata"]["ai-platform.executor.identity_evidence"] == "authenticated-runtime-endpoint"
