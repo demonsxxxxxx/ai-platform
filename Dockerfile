@@ -36,8 +36,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
        /home/ai-platform/tmp \
        /home/ai-platform/.cache \
        /home/ai-platform/.config \
-       /home/ai-platform/.local/share \
-       /workspace
+       /home/ai-platform/.local/share
 
 COPY pyproject.toml /app/pyproject.toml
 RUN if [ -n "$PIP_INDEX_URL" ]; then pip config set global.index-url "$PIP_INDEX_URL"; fi \
@@ -74,6 +73,8 @@ COPY --from=source-markers /app/.ai-platform-source-revision /app/.codex-source-
 
 RUN chmod -R a+rX /app \
     && chmod 0755 /app/docker-entrypoint.sh
+
+RUN install -d -o 10001 -g 10001 -m 0700 /workspace
 
 ENV APP_MODULE=app.main:create_app
 ENV APP_PORT=8020
