@@ -4,9 +4,11 @@ import pytest
 
 from app.runtime.sandbox.opensandbox_trusted_internal import (
     OpenSandboxProfileConfigurationError,
+    trusted_internal_cleanup_identity_is_authorized,
     trusted_internal_orphan_cleanup_metadata_filter,
     validate_opensandbox_image_reference,
 )
+from app.runtime.sandbox.providers.opensandbox.metadata import normalize_opensandbox_metadata
 from test_sandbox_container_provider import (
     FakeOpenSandbox,
     OpenSandboxSettings,
@@ -408,6 +410,23 @@ def _trusted_orphan_metadata(**overrides):
     }
     values.update(overrides)
     return values
+
+
+def test_trusted_internal_cleanup_authorizes_only_the_exact_normalized_canonical_scope():
+    raw_run_id = "run-" + "r" * 64
+    lease_labels = _trusted_orphan_metadata(
+        **{
+            "ai-platform.run_id": raw_run_id,
+            "ai-platform.executor.requested_image": "registry.example/ai-platform@sha256:" + "a" * 64,
+            "ai-platform.executor.requested_image_digest": "sha256:" + "a" * 64,
+        }
+    )
+    remote_labels = normalize_opensandbox_metadata(lease_labels)
+    other_scope = {**lease_labels, "ai-platform.run_id": "run-" + "s" * 64}
+
+    assert trusted_internal_cleanup_identity_is_authorized(remote_labels, lease_labels)
+    assert not trusted_internal_cleanup_identity_is_authorized(remote_labels, other_scope)
+    assert raw_run_id not in repr(remote_labels)
 
 
 @pytest.mark.asyncio
