@@ -13,6 +13,8 @@ test("market stays in the production shell and hands cards to canonical Chat", (
   assert.match(source, /AppShell/);
   assert.match(source, /SessionSidebar/);
   assert.match(source, /mobileSidebarOpen/);
+  assert.match(source, /useParams/);
+  assert.match(source, /data-agent-market-invalid/);
   assert.match(source, /marketProfileRequest\(profile\)/);
   assert.match(source, /setPendingAgentMarketSelection\(marketProfileRequest\(profile\)\)/);
   assert.match(source, /CANONICAL_CHAT_PATH/);

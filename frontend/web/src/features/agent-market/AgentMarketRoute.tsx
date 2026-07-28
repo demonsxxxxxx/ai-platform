@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Bot, RefreshCw } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { AppShell } from "../../components/layout/AppContent/AppShell";
 import { SessionSidebar } from "../../components/panels/SessionSidebar";
@@ -75,6 +75,8 @@ function AgentMarketShell({ children }: AgentMarketShellProps) {
 /** Ordinary-user published-profile catalog; Chat remains the canonical route. */
 export function AgentMarketRoute() {
   const navigate = useNavigate();
+  const { agentId, revision } = useParams<{ agentId?: string; revision?: string }>();
+  const isLegacyMarketChatRoute = Boolean(agentId || revision);
   const [catalog, setCatalog] = useState<CatalogState>({
     phase: "loading",
     profiles: [],
@@ -83,6 +85,10 @@ export function AgentMarketRoute() {
   const [requestRevision, setRequestRevision] = useState(0);
 
   useEffect(() => {
+    if (isLegacyMarketChatRoute) {
+      setCatalog({ phase: "ready", profiles: [], error: null });
+      return;
+    }
     let active = true;
     setCatalog((current) => ({ ...current, phase: "loading", error: null }));
     void agentProfileApi
@@ -104,7 +110,7 @@ export function AgentMarketRoute() {
     return () => {
       active = false;
     };
-  }, [requestRevision]);
+  }, [isLegacyMarketChatRoute, requestRevision]);
 
   const refresh = useCallback(() => {
     setRequestRevision((current) => current + 1);
@@ -117,6 +123,31 @@ export function AgentMarketRoute() {
     },
     [navigate],
   );
+
+  if (isLegacyMarketChatRoute) {
+    return (
+      <AgentMarketShell>
+        <main
+          data-agent-market-invalid
+          className="min-h-0 flex-1 overflow-y-auto text-[var(--theme-text)]"
+        >
+          <section className="mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 py-10 sm:px-6">
+            <h1 className="text-xl font-semibold">该智能体入口已失效</h1>
+            <p className="text-sm text-[var(--theme-text-secondary)]">
+              为保护已发布版本绑定，不能从过期或未知链接启动对话。请返回市场重新选择已发布的智能体。
+            </p>
+            <button
+              className="btn-secondary w-fit"
+              onClick={() => navigate(APP_ROUTE_PATHS.agentMarket, { replace: true })}
+              type="button"
+            >
+              返回智能体市场
+            </button>
+          </section>
+        </main>
+      </AgentMarketShell>
+    );
+  }
 
   return (
     <AgentMarketShell>
