@@ -1205,6 +1205,54 @@ async def test_opensandbox_stages_skills_inputs_and_attempt_sentinel_after_ready
 
 
 @pytest.mark.asyncio
+async def test_opensandbox_filesystem_modes_use_execd_octal_digit_wire_values():
+    """Mirror the real SDK requests accepted by the deployed execd filesystem API."""
+
+    from opensandbox.adapters.filesystem_adapter import FilesystemAdapter
+    from opensandbox.config import ConnectionConfig
+    from opensandbox.models.filesystem import WriteEntry
+    from opensandbox.models.sandboxes import SandboxEndpoint
+    from app.runtime.sandbox.filesystem_contract import encode_execd_mode
+
+    captured: list[tuple[str, bytes]] = []
+
+    async def capture_request(request: httpx.Request) -> httpx.Response:
+        captured.append((request.url.path, await request.aread()))
+        return httpx.Response(200, request=request)
+
+    adapter = FilesystemAdapter(
+        ConnectionConfig(transport=httpx.MockTransport(capture_request)),
+        SandboxEndpoint(endpoint="execd.test"),
+    )
+    try:
+        await adapter.create_directories(
+            [
+                WriteEntry(
+                    path="/workspace",
+                    mode=encode_execd_mode(0o700),
+                )
+            ]
+        )
+        await adapter.write_files(
+            [
+                WriteEntry(
+                    path="/workspace/.ai-platform-opensandbox-lease.json",
+                    data=b"sentinel",
+                    mode=encode_execd_mode(0o600),
+                )
+            ]
+        )
+    finally:
+        await adapter._httpx_client.aclose()
+
+    assert captured[0][0] == "/directories"
+    assert json.loads(captured[0][1]) == {
+        "/workspace": {"mode": 700, "owner": None, "group": None}
+    }
+    assert captured[1][0] == "/files/upload"
+    assert b'"mode": 600' in captured[1][1]
+    assert b'"mode": 384' not in captured[1][1]
+@pytest.mark.asyncio
 @requires_secure_opensandbox_transfer
 async def test_opensandbox_collects_only_legacy_and_delivery_outputs_atomically(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
