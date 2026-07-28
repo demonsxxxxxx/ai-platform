@@ -337,8 +337,7 @@ create table if not exists agent_profile_revisions (
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
   category text not null default 'general'
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
-  visibility text not null default 'tenant'
-    check (visibility in ('tenant', 'restricted')),
+  visibility text not null default 'restricted',
   allowed_department_ids jsonb not null default '[]'::jsonb,
   allowed_roles jsonb not null default '[]'::jsonb,
   allowed_user_ids jsonb not null default '[]'::jsonb,
@@ -348,6 +347,10 @@ create table if not exists agent_profile_revisions (
   published_at timestamptz,
   published_from_revision bigint,
   withdrawn_from_revision bigint,
+  constraint chk_agent_profile_revisions_visibility
+    check (visibility in ('tenant', 'restricted')),
+  constraint uq_agent_profile_revision_publication
+    unique (tenant_id, agent_id, revision, content_hash, status),
   constraint fk_agent_profile_revisions_tenant_agent
     foreign key (tenant_id, agent_id) references agents(tenant_id, id),
   primary key (tenant_id, agent_id, revision)
@@ -356,6 +359,20 @@ create table if not exists agent_profile_revisions (
 create index if not exists idx_agent_profile_revisions_published
   on agent_profile_revisions(tenant_id, agent_id, revision desc)
   where status = 'published';
+
+-- Install the publication identity before creating or repairing its aggregate
+-- reference, including after a partially applied older migration.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'agent_profile_revisions'::regclass
+      and conname = 'uq_agent_profile_revision_publication'
+  ) then
+    alter table agent_profile_revisions add constraint uq_agent_profile_revision_publication
+      unique (tenant_id, agent_id, revision, content_hash, status);
+  end if;
+end $$;
 
 -- The aggregate is the only current-lifecycle authority. Revisions remain
 -- append-only history, so a saved draft never accidentally replaces a live
@@ -367,18 +384,29 @@ create table if not exists agent_profiles (
   latest_revision bigint not null check (latest_revision > 0),
   published_revision bigint,
   published_hash text,
+  published_status text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint fk_agent_profiles_tenant_agent
     foreign key (tenant_id, agent_id) references agents(tenant_id, id),
-  constraint fk_agent_profiles_published_revision
-    foreign key (tenant_id, agent_id, published_revision)
-    references agent_profile_revisions(tenant_id, agent_id, revision),
+  constraint fk_agent_profiles_current_publication
+    foreign key (tenant_id, agent_id, published_revision, published_hash, published_status)
+    references agent_profile_revisions(tenant_id, agent_id, revision, content_hash, status),
   primary key (tenant_id, agent_id),
   constraint chk_agent_profiles_publication
     check (
-      (lifecycle_status = 'published' and published_revision is not null and published_hash is not null)
-      or (lifecycle_status <> 'published' and published_revision is null and published_hash is null)
+      (
+        lifecycle_status = 'published'
+        and published_revision is not null
+        and published_hash is not null
+        and published_status = 'published'
+      )
+      or (
+        lifecycle_status <> 'published'
+        and published_revision is null
+        and published_hash is null
+        and published_status is null
+      )
     )
 );
 
@@ -471,19 +499,40 @@ alter table agent_profile_revisions add column if not exists published_from_revi
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
 alter table agent_profile_revisions add column if not exists avatar_ref text not null default 'builtin:agent';
 alter table agent_profile_revisions add column if not exists category text not null default 'general';
-alter table agent_profile_revisions add column if not exists visibility text not null default 'tenant';
+alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists allowed_roles jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists allowed_user_ids jsonb not null default '[]'::jsonb;
+alter table agent_profiles add column if not exists published_status text;
 
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
+update agent_profile_revisions
+set status = 'withdrawn'
+where status is null or status not in ('draft', 'published', 'withdrawn');
 alter table agent_profile_revisions add constraint agent_profile_revisions_status_check
   check (status in ('draft', 'published', 'withdrawn'));
+
+alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_visibility;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_visibility_check;
+update agent_profile_revisions
+set visibility = 'restricted'
+where visibility is null or visibility not in ('tenant', 'restricted');
+alter table agent_profile_revisions alter column visibility set default 'restricted';
+alter table agent_profile_revisions alter column visibility set not null;
+alter table agent_profile_revisions add constraint chk_agent_profile_revisions_visibility
+  check (visibility in ('tenant', 'restricted'));
+
+alter table agent_profiles drop constraint if exists fk_agent_profiles_published_revision;
+alter table agent_profiles drop constraint if exists fk_agent_profiles_current_publication;
+alter table agent_profiles drop constraint if exists chk_agent_profiles_publication;
+alter table agent_profiles drop constraint if exists agent_profiles_lifecycle_status_check;
+alter table agent_profiles drop constraint if exists chk_agent_profiles_lifecycle_status;
 
 -- Existing rows have no prior aggregate pointer. Backfill the newest published
 -- revision per identity as live and retain draft-only identities as draft.
 insert into agent_profiles(
-  tenant_id, agent_id, lifecycle_status, latest_revision, published_revision, published_hash
+  tenant_id, agent_id, lifecycle_status, latest_revision, published_revision,
+  published_hash, published_status
 )
 select
   revisions.tenant_id,
@@ -491,7 +540,8 @@ select
   case when publications.revision is null then 'draft' else 'published' end,
   max(revisions.revision),
   publications.revision,
-  publications.content_hash
+  publications.content_hash,
+  case when publications.revision is null then null else 'published' end
 from agent_profile_revisions revisions
 left join lateral (
   select revision, content_hash
@@ -504,6 +554,73 @@ left join lateral (
 ) publications on true
 group by revisions.tenant_id, revisions.agent_id, publications.revision, publications.content_hash
 on conflict (tenant_id, agent_id) do nothing;
+
+-- Repair existing aggregate rows before installing the stronger publication
+-- reference. Unknown state and mismatched pointers are withdrawn, never made
+-- tenant-visible. Valid live pointers receive the normalized status key.
+update agent_profiles profiles
+set published_status = 'published'
+where profiles.lifecycle_status = 'published'
+  and exists (
+    select 1
+    from agent_profile_revisions revisions
+    where revisions.tenant_id = profiles.tenant_id
+      and revisions.agent_id = profiles.agent_id
+      and revisions.revision = profiles.published_revision
+      and revisions.content_hash = profiles.published_hash
+      and revisions.status = 'published'
+  );
+
+update agent_profiles profiles
+set lifecycle_status = 'withdrawn',
+    published_revision = null,
+    published_hash = null,
+    published_status = null,
+    updated_at = now()
+where profiles.lifecycle_status is null
+   or profiles.lifecycle_status not in ('draft', 'published', 'withdrawn')
+   or (
+     profiles.lifecycle_status = 'published'
+     and not exists (
+       select 1
+       from agent_profile_revisions revisions
+       where revisions.tenant_id = profiles.tenant_id
+         and revisions.agent_id = profiles.agent_id
+         and revisions.revision = profiles.published_revision
+         and revisions.content_hash = profiles.published_hash
+         and revisions.status = 'published'
+     )
+   );
+
+update agent_profiles
+set published_revision = null,
+    published_hash = null,
+    published_status = null,
+    updated_at = now()
+where lifecycle_status <> 'published'
+  and (published_revision is not null or published_hash is not null or published_status is not null);
+
+alter table agent_profiles add constraint chk_agent_profiles_lifecycle_status
+  check (lifecycle_status in ('draft', 'published', 'withdrawn'));
+alter table agent_profiles add constraint chk_agent_profiles_publication
+  check (
+    (
+      lifecycle_status = 'published'
+      and published_revision is not null
+      and published_hash is not null
+      and published_status = 'published'
+    )
+    or (
+      lifecycle_status <> 'published'
+      and published_revision is null
+      and published_hash is null
+      and published_status is null
+    )
+  );
+
+alter table agent_profiles add constraint fk_agent_profiles_current_publication
+  foreign key (tenant_id, agent_id, published_revision, published_hash, published_status)
+  references agent_profile_revisions(tenant_id, agent_id, revision, content_hash, status);
 
 -- Add composite tenant+agent authority and profile-pin constraints for existing
 -- installations after all referenced tables and columns are present.

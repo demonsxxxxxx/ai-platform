@@ -13,7 +13,11 @@ from fastapi.routing import APIRoute
 from starlette.responses import PlainTextResponse
 
 from app import repositories
-from app.agent_profiles import reject_profile_selector_conflicts, resolve_profile_for_admission
+from app.agent_profiles import (
+    reject_profile_selector_conflicts,
+    resolve_bound_profile_for_submission,
+    resolve_profile_for_admission,
+)
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessDecision,
@@ -1369,6 +1373,8 @@ async def chat_stream(
             )
             if request.session_id and isinstance(session_profile_revision, int) and session_profile_revision > 0:
                 session_profile_agent_id = str(continuation_session.get("agent_id") or "")
+                if not isinstance(session_profile_hash, str) or not session_profile_hash:
+                    raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
                 if (
                     selected_agent_profile is not None
                     and (
@@ -1386,13 +1392,20 @@ async def chat_stream(
                 raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
 
             if selected_agent_profile is not None:
-                admitted_agent_profile = await resolve_profile_for_admission(
-                    conn,
-                    principal=principal,
-                    selection=selected_agent_profile,
-                )
-                if session_profile_hash and session_profile_hash != admitted_agent_profile.content_hash:
-                    raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
+                if request.session_id and isinstance(session_profile_revision, int):
+                    admitted_agent_profile = await resolve_bound_profile_for_submission(
+                        conn,
+                        principal=principal,
+                        agent_id=selected_agent_profile.agent_id,
+                        revision=selected_agent_profile.expected_revision,
+                        content_hash=session_profile_hash,
+                    )
+                else:
+                    admitted_agent_profile = await resolve_profile_for_admission(
+                        conn,
+                        principal=principal,
+                        selection=selected_agent_profile,
+                    )
                 requested_agent_id = admitted_agent_profile.agent_id
                 requested_skill_id = str(admitted_agent_profile.skill["skill_id"])
                 selected_skill_for_execution = SelectedSkillRequest(

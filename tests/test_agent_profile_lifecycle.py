@@ -38,6 +38,8 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
 
     assert profile_acl_allows(row, principal=_principal(department_id="support")) is True
     assert profile_acl_allows(row, principal=_principal(department_id="finance")) is False
+    invalid_visibility = {**row, "visibility": "unknown", "allowed_department_ids": [], "allowed_roles": []}
+    assert profile_acl_allows(invalid_visibility, principal=_principal(department_id="support")) is False
     assert profile_public_projection(row) == {
         "agent_id": "agt_support",
         "expected_revision": 7,
@@ -72,7 +74,12 @@ async def test_unpublished_profile_is_not_admitted_to_an_existing_agent_conversa
     assert getattr(caught.value, "detail", None) == "agent_profile_not_available"
 
 
-def _profile_row(*, status: str = "published", revision: int = 7) -> dict[str, object]:
+def _profile_row(
+    *,
+    status: str = "published",
+    revision: int = 7,
+    content_hash: str = "a" * 64,
+) -> dict[str, object]:
     return {
         "agent_id": "agt_support",
         "revision": revision,
@@ -90,8 +97,97 @@ def _profile_row(*, status: str = "published", revision: int = 7) -> dict[str, o
         "skill_id": "general-chat",
         "skill_version": "version-a",
         "mcp_tool_ids": [],
-        "content_hash": "a" * 64,
+        "content_hash": content_hash,
     }
+
+
+@pytest.mark.asyncio
+async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggregate_access(monkeypatch):
+    """Record call order without claiming PostgreSQL lock-manager coverage."""
+
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+
+    order: list[str] = []
+
+    async def lock_profile(*_args, **_kwargs):
+        order.append("advisory_lock")
+
+    async def ensure_user(*_args, **_kwargs):
+        order.append("user")
+
+    async def ensure_identity(*_args, **_kwargs):
+        order.append("identity")
+
+    async def append_revision(*_args, **kwargs):
+        order.append("revision_append")
+        return _profile_row(
+            status=kwargs["status"],
+            revision=kwargs["expected_previous_revision"] + 1,
+            content_hash=kwargs["content_hash"],
+        )
+
+    async def record_draft(*_args, **_kwargs):
+        order.append("aggregate_update")
+
+    async def read_draft(*_args, **_kwargs):
+        order.append("revision_read")
+        return _profile_row(status="draft", revision=7)
+
+    async def record_publication(*_args, **_kwargs):
+        order.append("aggregate_update")
+
+    async def audit(*_args, **_kwargs):
+        return "aud_profile"
+
+    async def validate(*_args, **_kwargs):
+        return (
+            {"skill_id": "general-chat", "skill_version": "version-a"},
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        lock_profile,
+        raising=False,
+    )
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_user", ensure_user)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_agent_profile_identity", ensure_identity)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.create_agent_profile_revision", append_revision)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_draft", record_draft)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", read_draft)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_publication", record_publication)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    definition = AgentProfileDraftRequest(
+        name="Support assistant",
+        description="Approved support help.",
+        instructions="private instruction",
+        model_id="model-a",
+        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        expected_draft_revision=7,
+    )
+
+    await authority.save_draft(
+        object(),
+        principal=_principal(roles=["admin"]),
+        definition=definition,
+        agent_id="agt_support",
+    )
+    assert order.index("advisory_lock") < order.index("revision_append")
+    assert order.index("advisory_lock") < order.index("aggregate_update")
+
+    order.clear()
+    await authority.publish_draft(
+        object(),
+        principal=_principal(roles=["admin"]),
+        agent_id="agt_support",
+        expected_revision=7,
+    )
+    assert order.index("advisory_lock") < order.index("revision_read")
+    assert order.index("advisory_lock") < order.index("revision_append")
+    assert order.index("advisory_lock") < order.index("aggregate_update")
 
 
 @pytest.mark.asyncio
@@ -193,12 +289,251 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
 
 
 @pytest.mark.asyncio
+async def test_revision_bound_conversations_stay_on_their_publication_until_unpublish(monkeypatch):
+    """This in-memory mirror proves policy; the PostgreSQL test proves storage locking."""
+
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import SelectedAgentProfileRequest
+
+    publications = {
+        7: _profile_row(revision=7, content_hash="a" * 64),
+        9: _profile_row(revision=9, content_hash="b" * 64),
+    }
+    state = {"current_revision": 7, "lifecycle_status": "published"}
+    observed: list[tuple[str, int, str | None, bool | None]] = []
+    created_sessions: list[dict[str, object]] = []
+
+    async def get_current(*_args, **kwargs):
+        revision = kwargs.get("expected_revision")
+        observed.append(("current", revision, None, kwargs.get("for_update")))
+        if state["lifecycle_status"] != "published" or revision != state["current_revision"]:
+            return None
+        return publications[revision]
+
+    async def get_bound(*_args, **kwargs):
+        revision = kwargs["revision"]
+        content_hash = kwargs["content_hash"]
+        observed.append(("bound", revision, content_hash, kwargs.get("for_update")))
+        row = publications.get(revision)
+        if (
+            state["lifecycle_status"] != "published"
+            or row is None
+            or row["content_hash"] != content_hash
+        ):
+            return None
+        return row
+
+    async def validate(*_args, **_kwargs):
+        return (
+            {"skill_id": "general-chat", "skill_version": "version-a"},
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def create_session(*_args, **kwargs):
+        created_sessions.append(kwargs)
+        return f"ses_{len(created_sessions)}"
+
+    async def audit(*_args, **_kwargs):
+        return "aud_conversation"
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        get_bound,
+        raising=False,
+    )
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.create_session", create_session)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    first = await authority.create_conversation(
+        object(),
+        principal=_principal(),
+        workspace_id="default",
+        selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7),
+        title="",
+    )
+    # Publishing N+1 changes the current aggregate pointer but not the existing pin.
+    state["current_revision"] = 9
+    existing = await authority.resolve_bound_for_submission(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        revision=7,
+        content_hash="a" * 64,
+    )
+    second = await authority.create_conversation(
+        object(),
+        principal=_principal(),
+        workspace_id="default",
+        selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=9),
+        title="",
+    )
+
+    assert (first.agent_conversation.revision, existing.revision, second.agent_conversation.revision) == (7, 7, 9)
+    assert existing.content_hash == "a" * 64
+    assert [
+        (session["admitted_agent_profile_revision"], session["admitted_agent_profile_hash"])
+        for session in created_sessions
+    ] == [(7, "a" * 64), (9, "b" * 64)]
+    assert observed[-2:] == [
+        ("bound", 7, "a" * 64, True),
+        ("current", 9, None, True),
+    ]
+
+    with pytest.raises(HTTPException, match="agent_profile_not_available"):
+        await authority.resolve_for_admission(
+            object(),
+            principal=_principal(),
+            selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7),
+        )
+    with pytest.raises(HTTPException, match="agent_profile_not_available"):
+        await authority.resolve_bound_for_submission(
+            object(),
+            principal=_principal(),
+            agent_id="agt_support",
+            revision=7,
+            content_hash="forged-hash",
+        )
+
+    state["lifecycle_status"] = "withdrawn"
+    for revision, content_hash in ((7, "a" * 64), (9, "b" * 64)):
+        with pytest.raises(HTTPException, match="agent_profile_not_available"):
+            await authority.resolve_bound_for_submission(
+                object(),
+                principal=_principal(),
+                agent_id="agt_support",
+                revision=revision,
+                content_hash=content_hash,
+            )
+
+
+@pytest.mark.asyncio
+async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_override(monkeypatch):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from app import repositories
+    from app.agent_apps import AgentProfileAdmission
+    from app.models import AgentConversationIdentity, ChatStreamRequest, SelectedAgentProfileRequest
+    from app.routes.chat import chat_stream
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    bound_calls = []
+    noop = AsyncMock(return_value=None)
+
+    async def owned_session(*_args, **_kwargs):
+        return {
+            "id": "session-profile",
+            "workspace_id": "workspace-owned",
+            "agent_id": "agt_support",
+            "admitted_agent_profile_revision": 7,
+            "admitted_agent_profile_hash": "a" * 64,
+        }
+
+    async def bound_profile(*_args, **kwargs):
+        bound_calls.append(kwargs)
+        return AgentProfileAdmission(
+            agent_id="agt_support",
+            revision=7,
+            content_hash="a" * 64,
+            skill={"skill_id": "general-chat", "skill_version": "version-a"},
+            model={"id": "model-a", "value": "model-a"},
+            mcp_tool_ids=(),
+            private_execution_input={"agent_id": "agt_support", "revision": 7, "instructions": "private"},
+            public_identity=AgentConversationIdentity(
+                agent_id="agt_support",
+                revision=7,
+                name="Support assistant",
+                description="Approved support help.",
+            ),
+        )
+
+    async def claim_submission(*_args, **kwargs):
+        return (
+            {
+                "request_fingerprint_sha256": kwargs["request_fingerprint_sha256"],
+                "state": "queued",
+                "outcome_json": {
+                    "session_id": "session-profile",
+                    "run_id": "run-profile",
+                    "status": "queued",
+                    "submission_id": kwargs["submission_id"],
+                },
+            },
+            False,
+        )
+
+    monkeypatch.setattr("app.routes.chat.transaction", transaction)
+    monkeypatch.setattr(repositories, "get_chat_submission", AsyncMock(return_value=None))
+    monkeypatch.setattr(repositories, "ensure_submission_principal", noop)
+    monkeypatch.setattr(repositories, "get_authorized_session", owned_session)
+    monkeypatch.setattr(repositories, "acquire_user_active_run_admission_lock", noop)
+    monkeypatch.setattr(repositories, "get_latest_authorized_session_run_input", noop)
+    monkeypatch.setattr(repositories, "claim_chat_submission", claim_submission)
+    monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
+    monkeypatch.setattr(
+        "app.routes.chat.resolve_profile_for_admission",
+        AsyncMock(side_effect=AssertionError("a continuation must not resolve the current publication")),
+    )
+
+    response = await chat_stream(
+        ChatStreamRequest(
+            message="continue on revision seven",
+            session_id="session-profile",
+            submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        ),
+        principal=_principal(),
+    )
+
+    assert response.run_id == "run-profile"
+    assert bound_calls[0]["principal"] == _principal()
+    assert (bound_calls[0]["agent_id"], bound_calls[0]["revision"], bound_calls[0]["content_hash"]) == (
+        "agt_support", 7, "a" * 64
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        await chat_stream(
+            ChatStreamRequest(
+                message="try to move this session",
+                session_id="session-profile",
+                submission_id="854b63f1-89f8-46cb-bc76-bc25891ba717",
+                selected_agent_profile=SelectedAgentProfileRequest(
+                    agent_id="agt_support",
+                    expected_revision=9,
+                ),
+            ),
+            principal=_principal(),
+        )
+    assert caught.value.status_code == 409
+    assert caught.value.detail == {
+        "code": "agent_profile_session_mismatch",
+        "submission_disposition": "rejected_before_persist",
+    }
+    assert len(bound_calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admission(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
 
     observed: dict[str, object] = {}
+    order: list[str] = []
+
+    async def lock_profile(*_args, **_kwargs):
+        order.append("advisory_lock")
 
     async def aggregate(*_args, **kwargs):
+        order.append("aggregate_lock")
         observed["aggregate_lock"] = kwargs.get("for_update")
         return {"lifecycle_status": "published", "published_revision": 7, "latest_revision": 8}
 
@@ -217,6 +552,11 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
         observed["audit"] = kwargs
         return "aud_profile_withdrawn"
 
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        lock_profile,
+        raising=False,
+    )
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", aggregate)
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", get_revision)
     monkeypatch.setattr("app.agent_apps.authority.repositories.create_agent_profile_revision", append_revision)
@@ -231,6 +571,7 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
     )
 
     assert observed["aggregate_lock"] is True
+    assert order[:2] == ["advisory_lock", "aggregate_lock"]
     assert observed["append"]["status"] == "withdrawn"
     assert observed["append"]["expected_previous_revision"] == 8
     assert observed["append"]["withdrawn_from_revision"] == 7

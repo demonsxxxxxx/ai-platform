@@ -57,7 +57,7 @@ def _safe_category(value: Any) -> str:
 
 def _safe_visibility(value: Any) -> str:
     candidate = str(value or "").strip()
-    return candidate if candidate in _VISIBILITIES else "tenant"
+    return candidate if candidate in _VISIBILITIES else "restricted"
 
 
 def _safe_string_list(value: Any) -> list[str]:
@@ -253,6 +253,11 @@ class AgentProfileAuthority:
         if agent_id is not None and definition.expected_draft_revision < 1:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
         resolved_agent_id = agent_id or repositories.new_id("agt")
+        await repositories.acquire_agent_profile_lifecycle_lock(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=resolved_agent_id,
+        )
         await repositories.ensure_user(
             conn,
             tenant_id=principal.tenant_id,
@@ -317,6 +322,11 @@ class AgentProfileAuthority:
         """Publish a revalidated immutable copy and move the aggregate publication pointer."""
 
         self._require_admin(principal)
+        await repositories.acquire_agent_profile_lifecycle_lock(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+        )
         draft_row = await repositories.get_agent_profile_revision(
             conn,
             tenant_id=principal.tenant_id,
@@ -382,6 +392,11 @@ class AgentProfileAuthority:
         """Withdraw the current publication while preserving immutable version history."""
 
         self._require_admin(principal)
+        await repositories.acquire_agent_profile_lifecycle_lock(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+        )
         aggregate = await repositories.get_agent_profile_aggregate(
             conn,
             tenant_id=principal.tenant_id,
@@ -574,18 +589,54 @@ class AgentProfileAuthority:
         )
         if row is None:
             raise HTTPException(status_code=409, detail="agent_profile_not_available")
+        return await self._admission_from_row(conn, principal=principal, row=row)
+
+    async def resolve_bound_for_submission(
+        self,
+        conn,
+        *,
+        principal: AuthPrincipal,
+        agent_id: str,
+        revision: int,
+        content_hash: str,
+    ) -> AgentProfileAdmission:
+        """Reauthorize a conversation's immutable publication while its Agent is live."""
+
+        row = await repositories.get_bound_published_agent_profile(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+            revision=revision,
+            content_hash=content_hash,
+            for_update=True,
+        )
+        if row is None:
+            raise HTTPException(status_code=409, detail="agent_profile_not_available")
+        return await self._admission_from_row(conn, principal=principal, row=row)
+
+    async def _admission_from_row(
+        self,
+        conn,
+        *,
+        principal: AuthPrincipal,
+        row: dict[str, Any],
+    ) -> AgentProfileAdmission:
+        """Reauthorize current capabilities and build private/public admission views."""
+
         skill, model = await self._authorize_public_row(conn, principal=principal, row=row)
+        agent_id = str(row["agent_id"])
+        revision = int(row["revision"])
         content_hash = str(row["content_hash"])
         return AgentProfileAdmission(
-            agent_id=selection.agent_id,
-            revision=selection.expected_revision,
+            agent_id=agent_id,
+            revision=revision,
             content_hash=content_hash,
             skill=skill,
             model=model,
             mcp_tool_ids=tuple(_mcp_tool_ids(row)),
             private_execution_input={
-                "agent_id": selection.agent_id,
-                "revision": selection.expected_revision,
+                "agent_id": agent_id,
+                "revision": revision,
                 "content_hash": content_hash,
                 "instructions": str(row["instructions"]),
             },

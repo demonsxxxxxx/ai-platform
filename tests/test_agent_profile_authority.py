@@ -12,6 +12,7 @@ def test_agent_profile_authority_exposes_one_deep_lifecycle_interface():
         "list_public",
         "get_public",
         "resolve_for_admission",
+        "resolve_bound_for_submission",
         "create_conversation",
     ):
         assert callable(getattr(authority, method))

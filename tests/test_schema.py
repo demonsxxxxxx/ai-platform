@@ -35,8 +35,10 @@ def test_schema_declares_agent_profile_aggregate_and_immutable_withdrawal_histor
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
     assert "lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn'))" in schema
-    assert "fk_agent_profiles_published_revision" in schema
+    assert "fk_agent_profiles_current_publication" in schema
     assert "published_hash text" in schema
+    assert "published_status text" in schema
+    assert "unique (tenant_id, agent_id, revision, content_hash, status)" in schema
     assert "withdrawn_from_revision bigint" in schema
 
 

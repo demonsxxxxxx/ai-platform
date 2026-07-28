@@ -20,6 +20,7 @@ __all__ = [
     "profile_public_projection",
     "publish_draft",
     "reject_profile_selector_conflicts",
+    "resolve_bound_profile_for_submission",
     "resolve_profile_for_admission",
     "save_draft",
 ]
@@ -69,3 +70,22 @@ async def resolve_profile_for_admission(conn, *, principal, selection) -> AgentP
     if legacy_row is None:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
     return await _authority.resolve_for_admission(conn, principal=principal, selection=selection)
+
+
+async def resolve_bound_profile_for_submission(
+    conn,
+    *,
+    principal,
+    agent_id,
+    revision,
+    content_hash,
+) -> AgentProfileAdmission:
+    """Resolve a durable conversation pin without moving it to a later publication."""
+
+    return await _authority.resolve_bound_for_submission(
+        conn,
+        principal=principal,
+        agent_id=agent_id,
+        revision=revision,
+        content_hash=content_hash,
+    )

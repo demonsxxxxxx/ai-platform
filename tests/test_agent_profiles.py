@@ -137,6 +137,19 @@ def test_selected_profile_is_an_optimistic_revision_lock():
     assert request.selected_agent_profile.expected_revision == 4
 
 
+def test_selected_profile_rejects_client_owned_definition_hash():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        SelectedAgentProfileRequest.model_validate(
+            {
+                "agent_id": "agt_support",
+                "expected_revision": 4,
+                "content_hash": "a" * 64,
+            }
+        )
+
+
 def test_agent_profile_market_requires_authenticated_principal():
     response = TestClient(create_app()).get("/api/ai/agent-profiles")
 
@@ -369,7 +382,55 @@ def test_agent_profile_schema_is_idempotent_and_legacy_rows_can_remain_unpinned(
     assert "create table if not exists agent_profiles" in schema
     assert "lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn'))" in schema
     assert "published_revision bigint" in schema
+    assert "published_status text" in schema
+    assert "uq_agent_profile_revision_publication" in schema
+    assert "fk_agent_profiles_current_publication" in schema
+    assert "published_revision, published_hash, published_status" in schema
+    assert "revision, content_hash, status" in schema
+    visibility_repair = "set visibility = 'restricted'"
+    visibility_check = "constraint chk_agent_profile_revisions_visibility"
+    assert visibility_repair in schema
+    assert visibility_check in schema
+    assert schema.index(visibility_repair) < schema.rindex(visibility_check)
     assert "withdrawn_from_revision bigint" in schema
+
+
+async def test_bound_profile_repository_uses_the_session_revision_and_hash_but_requires_live_agent():
+    from app.repositories import get_bound_published_agent_profile
+
+    class Cursor:
+        async def fetchone(self):
+            return None
+
+    class RecordingConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()).lower(), params))
+            return Cursor()
+
+    conn = RecordingConnection()
+    assert (
+        await get_bound_published_agent_profile(
+            conn,
+            tenant_id="tenant-a",
+            agent_id="agt_support",
+            revision=4,
+            content_hash="a" * 64,
+            for_update=True,
+        )
+        is None
+    )
+
+    sql, params = conn.calls[-1]
+    assert "agent_profiles.lifecycle_status = 'published'" in sql
+    assert "agent_profile_revisions.revision = %s" in sql
+    assert "agent_profile_revisions.content_hash = %s" in sql
+    assert "agent_profile_revisions.status = 'published'" in sql
+    assert "agent_profiles.published_revision = %s" not in sql
+    assert "for update of agent_profiles" in sql
+    assert params == ("tenant-a", "agt_support", 4, "a" * 64)
 
 
 def test_legacy_run_snapshot_without_agent_profile_remains_compatible():
@@ -478,7 +539,7 @@ async def test_profile_draft_save_requires_explicit_create_or_update_preconditio
     assert update_error.value.detail == "agent_profile_revision_stale"
 
 
-async def test_profile_revision_fence_allows_one_concurrent_publish_from_the_same_draft():
+async def test_mock_profile_revision_fence_allows_one_concurrent_publish_from_the_same_draft():
     from app.repositories import create_agent_profile_revision
 
     class Cursor:
