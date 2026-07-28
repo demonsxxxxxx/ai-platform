@@ -179,6 +179,14 @@ def test_dockerfile_can_start_sandbox_executor_app():
     assert 'CMD ["uvicorn"]' in content
 
 
+def test_dockerfile_precreates_private_workspace_before_nonroot_executor():
+    content = Path("Dockerfile").read_text(encoding="utf-8")
+
+    assert "       /workspace" in content
+    assert "-o 10001 -g 10001 -m 0700" in content
+    assert content.index("       /workspace") < content.index("USER 10001:10001")
+
+
 def test_dockerfile_installs_git_for_sdk_agent_worktrees():
     content = Path("Dockerfile").read_text(encoding="utf-8")
 

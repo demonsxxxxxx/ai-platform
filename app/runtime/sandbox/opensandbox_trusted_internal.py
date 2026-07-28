@@ -633,16 +633,40 @@ def trusted_internal_cleanup_identity_is_authorized(
         return False
     image = str(lease_labels.get("ai-platform.executor.requested_image") or "")
     digest = str(lease_labels.get("ai-platform.executor.requested_image_digest") or "")
+    if bool(image) != bool(digest):
+        return False
     try:
-        image_valid = validate_opensandbox_image_reference(
+        image_valid = bool(image) and validate_opensandbox_image_reference(
             image,
             digest,
             allow_local_image_id=True,
         ) == (image, digest)
     except OpenSandboxProfileConfigurationError:
         image_valid = False
+    persisted_scope = {
+        "ai-platform.owner",
+        "ai-platform.tenant_id",
+        "ai-platform.workspace_id",
+        "ai-platform.user_id",
+        "ai-platform.session_id",
+        "ai-platform.run_id",
+        "ai-platform.attempt_id",
+        "ai-platform.sandbox_mode",
+        "ai-platform.browser_enabled",
+        "ai-platform.provider_backend",
+        SANDBOX_SECURITY_PROFILE_LABEL,
+    }
+    scope_valid = (
+        set(lease_labels) == persisted_scope
+        and all(isinstance(value, str) and value for value in lease_labels.values())
+        and lease_labels.get("ai-platform.owner") == "sandbox-runtime"
+        and lease_labels.get("ai-platform.provider_backend") == "opensandbox"
+        and lease_labels.get(SANDBOX_SECURITY_PROFILE_LABEL) == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
+        and lease_labels.get("ai-platform.sandbox_mode") in {"ephemeral", "persistent"}
+        and lease_labels.get("ai-platform.browser_enabled") in {"true", "false"}
+    )
     return (
-        image_valid
+        (image_valid or scope_valid)
         and status_labels.get(SANDBOX_SECURITY_PROFILE_LABEL) == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
         and status_labels.get("ai-platform.provider_backend") == "opensandbox"
         and opensandbox_metadata_matches(status_labels, lease_labels)
@@ -750,3 +774,18 @@ def trusted_internal_runtime_lease_payload_matches_row(
         key == "governed_egress_proof" or str(key).startswith("governed_egress_")
         for key in payload
     )
+
+
+def trusted_internal_cleanup_labels_from_persisted_row(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> dict[str, str] | None:
+    """Rebuild only a complete persisted trusted scope for provider-side cleanup."""
+
+    if (
+        payload.get("security_profile") != SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
+        or not trusted_internal_runtime_lease_payload_matches_row(row, payload)
+    ):
+        return None
+    labels = payload.get("labels")
+    return {str(key): str(value) for key, value in labels.items()} if isinstance(labels, dict) else None
