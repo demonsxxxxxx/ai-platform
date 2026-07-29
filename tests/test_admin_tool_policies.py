@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
+import pytest
 
+from app import repositories
 from app.main import create_app
 from app.repositories import RepositoryNotFoundError
 from app.settings import Settings
@@ -57,6 +59,108 @@ def tool_policy_row(**overrides):
     }
     values.update(overrides)
     return values
+
+
+@pytest.mark.asyncio
+async def test_admin_catalog_policy_mutation_refuses_foreign_opaque_tool_id():
+    """A global mcp_tools row is insufficient without the caller tenant's current catalog row."""
+
+    class Cursor:
+        async def fetchone(self):
+            return None
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = ()
+
+        async def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+            return Cursor()
+
+    conn = Connection()
+    with pytest.raises(RepositoryNotFoundError, match="mcp_tool_not_found"):
+        await repositories.upsert_admin_tool_policy(
+            conn,
+            tenant_id="tenant-a",
+            tool_id="mcpt-owned-by-tenant-b",
+            status="active",
+            risk_level="low",
+            write_capable=False,
+            visible_to_user=True,
+            reason="tenant-b ownership must not be mutable",
+            updated_by="tool-admin",
+        )
+
+    assert "catalog_entry.tenant_id = %s" in conn.sql
+    assert "catalog_entry.catalog_generation = catalog_server.catalog_generation" in conn.sql
+    assert conn.params[-1] == "tenant-a"
+
+
+@pytest.mark.asyncio
+async def test_admin_catalog_policy_mutation_refuses_unknown_legacy_tool_id():
+    class Cursor:
+        async def fetchone(self):
+            return None
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+
+        async def execute(self, sql, params):
+            self.sql = sql
+            return Cursor()
+
+    conn = Connection()
+    with pytest.raises(RepositoryNotFoundError, match="mcp_tool_not_found"):
+        await repositories.upsert_admin_tool_policy(
+            conn,
+            tenant_id="tenant-a",
+            tool_id="legacy-untrusted",
+            status="active",
+            risk_level="low",
+            write_capable=False,
+            visible_to_user=True,
+            reason="unknown rows are not repository-native builtins",
+            updated_by="tool-admin",
+        )
+
+    assert "ragflow-knowledge-search" in conn.sql
+    assert "catalog_entry.tenant_id = %s" in conn.sql
+    assert "catalog_any" not in conn.sql
+
+
+@pytest.mark.asyncio
+async def test_admin_catalog_policy_list_excludes_foreign_or_stale_catalog_rows():
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = ()
+
+        async def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+            return Cursor()
+
+    conn = Connection()
+    rows = await repositories.list_admin_tool_policies(
+        conn,
+        tenant_id="tenant-a",
+        include_disabled=True,
+        limit=25,
+    )
+
+    assert rows == []
+    assert "ragflow-knowledge-search" in conn.sql
+    assert "catalog_any" not in conn.sql
+    assert "catalog_entry.tenant_id = %s" in conn.sql
+    assert "catalog_entry.status = 'active'" in conn.sql
+    assert conn.params == ("tenant-a", "tenant-a", True, 25)
 
 
 def test_admin_list_tool_policies_requires_admin(monkeypatch):

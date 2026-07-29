@@ -1239,10 +1239,12 @@ async def test_registry_entry_returns_tenant_scoped_external_mcp_runtime_metadat
 
     class Connection:
         async def execute(self, query, params):
-            assert params == ("tenant-a", "corp-search")
+            assert params == ("tenant-a", "corp-search", "tenant-a")
             assert "mcp_tools.endpoint" in query
             assert "mcp_tools.auth_mode" in query
             assert "mcp_tools.allowed_tools" in query
+            assert "catalog_entry.tenant_id = %s" in query
+            assert "catalog_any" not in query
             return Cursor()
 
     entry = await repository_module.get_mcp_tool_registry_entry(

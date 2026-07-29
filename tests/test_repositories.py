@@ -5750,7 +5750,7 @@ async def test_ensure_mcp_tool_active_applies_tenant_tool_policy_fail_closed():
     sql, params = conn.calls[0]
     assert "left join tool_policies" in sql
     assert "tool_policies.tenant_id = %s" in sql
-    assert params == ("tenant-a", "ragflow-knowledge-search")
+    assert params == ("tenant-a", "ragflow-knowledge-search", "tenant-a")
 
 
 @pytest.mark.asyncio
@@ -5864,7 +5864,7 @@ async def test_list_admin_tool_policies_returns_missing_tenant_policy_as_disable
     assert "from mcp_tools" in sql
     assert "left join tool_policies" in sql
     assert "tool_policies.tenant_id = %s" in sql
-    assert params == ("tenant-a", True, 500)
+    assert params == ("tenant-a", "tenant-a", True, 500)
     assert "endpoint" not in rows[0]
     assert "auth_mode" not in rows[0]
     assert rows == [
@@ -5924,7 +5924,7 @@ async def test_list_admin_tool_policies_filters_hidden_when_disabled_excluded():
     assert "coalesce(mcp_tools.visible_to_user, false) = true" in sql
     assert "tool_policies.status = 'active'" in sql
     assert "tool_policies.visible_to_user = true" in sql
-    assert params == ("tenant-a", False, 50)
+    assert params == ("tenant-a", "tenant-a", False, 50)
 
 
 @pytest.mark.asyncio
@@ -5984,6 +5984,7 @@ async def test_upsert_admin_tool_policy_writes_tenant_policy_and_returns_effecti
         "controlled write",
         "tool-admin",
         "ragflow-knowledge-search",
+        "tenant-a",
     )
     assert row["source"] == "tenant"
     assert row["effective_status"] == "active"
@@ -6074,6 +6075,13 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
             "department_ids": ["qa"],
             "credential_state": "configured",
             "credential_metadata": {"header_names": ["Authorization"]},
+            "catalog_generation": 0,
+            "catalog_revision": 0,
+            "catalog_status": "legacy",
+            "catalog_unavailable_reason": "",
+            "catalog_discovered_count": 0,
+            "catalog_selectable_count": 0,
+            "catalog_last_synced_at": None,
             "created_at": "2026-06-23T00:00:00Z",
             "updated_at": "2026-06-23T00:00:00Z",
         }
@@ -6206,8 +6214,12 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
     assert "mcp_servers.tenant_id = %s" in sql
     assert "mcp_servers.name = mcp_tools.server_id" in sql
     assert "mcp_tools.id = %s" in sql
+    assert "catalog_entry.tenant_id = %s" in sql
+    assert "catalog_entry.catalog_generation = catalog_server.catalog_generation" in sql
+    assert "catalog_server.catalog_status = 'available'" in sql
+    assert "catalog_any" not in sql
     assert sql.count("%s") == len(params)
-    assert params == ("tenant-a", "qa-search")
+    assert params == ("tenant-a", "qa-search", "tenant-a")
     assert row is not None
     assert {
         key: row[key]
@@ -6237,6 +6249,31 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
         "effective_status": "active",
         "source": "tenant",
     }
+
+
+@pytest.mark.asyncio
+async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tenant_catalog():
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = ()
+
+        async def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+            return Cursor()
+
+    conn = Connection()
+    assert await repositories.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
+
+    assert "ragflow-knowledge-search" in conn.sql
+    assert "catalog_entry.tenant_id = %s" in conn.sql
+    assert "catalog_any" not in conn.sql
+    assert conn.params == ("tenant-a", "tenant-a")
 
 
 @pytest.mark.asyncio

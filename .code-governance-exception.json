@@ -1,0 +1,16 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-08-15",
+  "owner": "ai-platform-controller",
+  "reason": "Issue #499 Stack A reviewed candidate 399f35cf58ee3cb15094d4cedb3eed46257328c5 from original base 1a155df4fcb2add0630f1846f98325a209ed0e3b was integrated by ordinary merge of current main 1f6189432385ab79a986979ed735af1ae1fae24d; mandatory immediate post-merge cleanup must split the catalog feature below structural limits and remove this exception.",
+  "violations": [
+    {
+      "code": "production_net_loc",
+      "path": null
+    },
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}
