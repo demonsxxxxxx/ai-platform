@@ -188,6 +188,15 @@ class ParsedAttachmentContext(BaseModel):
 
 
 @dataclass(frozen=True)
+class XlsxAttachmentPreflight:
+    """Bounded byte-level XLSX identity proven by the shared OOXML preflight."""
+
+    byte_count: int
+    sha256: str
+    sheet_count: int
+
+
+@dataclass(frozen=True)
 class AttachmentParserSpec:
     """Immutable platform-owned parser registration; never loaded from a Skill."""
 
@@ -432,12 +441,22 @@ def _validate_xlsx_archive(raw: bytes) -> frozenset[str]:
         raise AttachmentPreprocessingError("xlsx_parse_failed") from exc
     total_bytes = 0
     checked_xml_entries: set[str] = set()
+    entry_names: set[str] = set()
     try:
         entries = archive.infolist()
         if len(entries) > MAX_XLSX_ZIP_ENTRIES:
             raise AttachmentPreprocessingError("xlsx_archive_too_large")
         for entry in entries:
             normalized_name = entry.filename.replace("\\", "/").casefold()
+            entry_path = PurePosixPath(normalized_name)
+            if (
+                not normalized_name
+                or normalized_name.startswith("/")
+                or normalized_name in entry_names
+                or any(part in {"", ".", ".."} for part in entry_path.parts)
+            ):
+                raise AttachmentPreprocessingError("xlsx_parse_failed")
+            entry_names.add(normalized_name)
             if entry.flag_bits & 0x1:
                 raise AttachmentPreprocessingError("xlsx_encrypted_unsupported")
             if normalized_name.endswith("vbaproject.bin"):
@@ -925,6 +944,23 @@ def _preflight_xlsx_worksheets(
     finally:
         archive.close()
     return facts, cells_seen, len(worksheet_entries)
+
+
+def preflight_xlsx_attachment_bytes(raw: bytes) -> XlsxAttachmentPreflight:
+    """Validate bounded XLSX bytes with the exact parser OOXML and ZIP preflight."""
+
+    if not isinstance(raw, bytes) or len(raw) > MAX_XLSX_FILE_BYTES:
+        raise AttachmentPreprocessingError("attachment_parser_file_too_large")
+    content_security_checked_entries = _validate_xlsx_archive(raw)
+    _facts, _cells_seen, sheet_count = _preflight_xlsx_worksheets(
+        raw,
+        content_security_checked_entries=content_security_checked_entries,
+    )
+    return XlsxAttachmentPreflight(
+        byte_count=len(raw),
+        sha256=hashlib.sha256(raw).hexdigest(),
+        sheet_count=sheet_count,
+    )
 
 
 def _bounded_cell_payload(cell: Any) -> tuple[dict[str, Any] | None, bool]:
