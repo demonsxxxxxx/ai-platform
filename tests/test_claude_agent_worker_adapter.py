@@ -2380,10 +2380,12 @@ def test_claude_sandbox_admission_passes_explicit_mcp_requirement(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned(monkeypatch, tmp_path):
+@pytest.mark.parametrize(("reuse_call_id", "expected_status", "expected_error"), [(False, "succeeded", None), (True, "failed", "required_tool_completion_evidence_mismatch")])
+async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned(monkeypatch, tmp_path, reuse_call_id, expected_status, expected_error):
     current_settings = settings(tmp_path, sdk_enabled=True)
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     events = []
+    other_subject = {**_mcp_subject(), "identity": "mcp__other-server__fetch", "mcp_server": "other-server", "mcp_tool": "fetch"}
 
     async def no_files(payload, workspace):
         return []
@@ -2394,11 +2396,14 @@ async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     def completed_response(request):
+        evidence = _selected_capability_evidence(request)
+        if reuse_call_id:
+            evidence[2]["tool_call_id"] = evidence[3]["tool_call_id"] = "invocation-0"
         return {
             "status": "completed",
             "message": "sandbox completed",
             "sdk_used": True,
-            "capability_evidence": _selected_capability_evidence(request),
+            "capability_evidence": evidence,
         }
 
     requests = install_sandbox_runtime(monkeypatch, executor_response=completed_response)
@@ -2407,21 +2412,21 @@ async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned
         skill_id="general-chat",
         input={
             "message": "search with the selected tool",
-            "mcp_tool_ids": ["tenant-search"],
-            "_runtime_tool_policy_subjects": [_mcp_subject()],
+            "mcp_tool_ids": ["tenant-search", "other-fetch"],
+            "_runtime_tool_policy_subjects": [_mcp_subject(), other_subject],
         },
     )
 
     result = await adapter.submit_run(current_payload, event_sink=event_sink)
 
-    assert result.status == "succeeded"
+    assert result.status == expected_status
+    assert result.result.get("error_code") == expected_error
     assert len(requests) == 1
-    assert requests[0].mcp_tool_ids == ["tenant-search"]
+    assert requests[0].mcp_tool_ids == ["tenant-search", "other-fetch"]
     mcp_events = [event for event in events if event["payload"].get("tool_category") == "mcp"]
     assert mcp_events == []
     encoded = json.dumps(mcp_events)
-    assert "private.example" not in encoded
-    assert "mcp__tenant-server__search" not in encoded
+    assert "private.example" not in encoded and "mcp__tenant-server__search" not in encoded
 
 
 @pytest.mark.parametrize(
@@ -2435,12 +2440,8 @@ async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned
         ("replace", "tool_call_id", "conflicting-call", "required_tool_completion_evidence_mismatch"),
     ],
 )
-def test_worker_external_mcp_rejects_stale_missing_or_conflicting_evidence(
-    mode, field, value, expected_error
-):
-    current_payload = payload(skill_id="general-chat", input={
-        "message": "search", "_runtime_tool_policy_subjects": [_mcp_subject()],
-    })
+def test_worker_external_mcp_rejects_stale_missing_or_conflicting_evidence(mode, field, value, expected_error):
+    current_payload = payload(skill_id="general-chat", input={"message": "search", "_runtime_tool_policy_subjects": [_mcp_subject()]})
     request = types.SimpleNamespace(
         **{key: getattr(current_payload, key) for key in (
             "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"

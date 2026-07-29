@@ -200,13 +200,8 @@ def _selected_capability_invocation_error(payload: RunPayload, evidence: object)
         for subject in _external_mcp_subjects(payload)
     ]
     if payload.skill_id != "general-chat":
-        declarations.insert(
-            0,
-            RequiredCapabilityDeclaration.from_authorized_subject(
-                capability_kind="skill",
-                canonical_identity=payload.skill_id,
-            ),
-        )
+        declarations.insert(0, RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind="skill", canonical_identity=payload.skill_id))
     if not declarations:
         return None
     decision = selected_capability_completion_decision(
@@ -221,7 +216,13 @@ def _selected_capability_invocation_error(payload: RunPayload, evidence: object)
         },
         evidence=evidence,
     )
-    return None if decision.allowed else decision.reason
+    if not decision.allowed:
+        return decision.reason
+    mcp_count = sum(item.capability_kind == "mcp" for item in declarations)
+    mcp_call_ids = {item["tool_call_id"] for item in evidence if item["capability_kind"] == "mcp"}
+    if len(mcp_call_ids) != mcp_count:
+        return "required_tool_completion_evidence_mismatch"
+    return None
 
 
 @dataclass(frozen=True)

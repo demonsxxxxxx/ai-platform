@@ -1598,7 +1598,7 @@ async def run_claude_agent_sdk(
         return ClaudeAgentSdkRunResult(used_sdk=True, error=error_code, turn_diagnostics=turn_diagnostics(error_code))
     selected_capability_declarations = {
         (kind, identity): RequiredCapabilityDeclaration.from_authorized_subject(capability_kind=kind, canonical_identity=identity)
-        for kind, identity in ([("skill", selected_sdk_skill)] if selected_sdk_skill and on_capability_evidence is not None else [])
+        for kind, identity in ([("skill", selected_sdk_skill)] if selected_sdk_skill else [])
         + [("mcp", identity) for identity in selected_mcp_identities]
     }
     selected_answer_gate = bool(selected_capability_declarations)
@@ -1609,51 +1609,50 @@ async def run_claude_agent_sdk(
         full_access=full_access,
     )
 
-    async def record_used_skill(skill_name: str, metadata: dict[str, Any]) -> None:
+    def claim_used_skill(skill_name: str) -> bool:
         nonlocal last_public_stage
-        if allowed_skill_names and skill_name not in allowed_skill_names:
-            return
-        if skill_name in used_skill_names:
-            return
+        if (allowed_skill_names and skill_name not in allowed_skill_names) or skill_name in used_skill_names:
+            return False
         used_skill_names.append(skill_name)
         diagnostic_counters["skill_invocations"] += 1
         last_public_stage = "skills"
-        if on_skill_use:
-            await on_skill_use(skill_name, metadata)
+        return True
 
     def reject_capability_evidence() -> bool:
         nonlocal capability_evidence_rejected
-        capability_evidence_rejected = True
-        capability_evidence.clear()
-        used_skill_names.clear()
+        if not capability_evidence_rejected:
+            capability_evidence_rejected = True
+            capability_evidence.clear()
+            used_skill_names.clear()
         return False
 
-    async def record_capability_evidence(
-        *, capability_kind: str, canonical_identity: str, tool_call_id: str, lifecycle_phase: str
-    ) -> bool:
+    async def record_capability_evidence(*, capability_kind: str, canonical_identity: str, tool_call_id: str,
+                                         lifecycle_phase: str, skill_metadata: dict[str, Any] | None = None) -> bool:
         """Record one bounded actual-call fact without tool input or output."""
 
         declaration = selected_capability_declarations.get((capability_kind, canonical_identity))
         if capability_evidence_rejected:
             return False
-        if declaration is None:
-            return True
-        try:
-            evidence = RequiredCapabilityEvidence.sdk_hook_payload(
-                declaration=declaration,
-                tool_call_id=tool_call_id,
-                lifecycle_phase=lifecycle_phase,
-            )
-            acknowledged = await on_capability_evidence(dict(evidence)) if on_capability_evidence else False
-        except asyncio.CancelledError:
-            reject_capability_evidence()
-            raise
-        except Exception:  # noqa: BLE001
-            acknowledged = False
-        if acknowledged is not True:
-            return reject_capability_evidence()
-        capability_evidence.append(evidence)
-        return True
+        if declaration is not None:
+            try:
+                evidence = RequiredCapabilityEvidence.sdk_hook_payload(
+                    declaration=declaration, tool_call_id=tool_call_id, lifecycle_phase=lifecycle_phase)
+                acknowledged = await on_capability_evidence(dict(evidence)) if on_capability_evidence else False
+            except asyncio.CancelledError:
+                reject_capability_evidence()
+                raise
+            except Exception:  # noqa: BLE001
+                return reject_capability_evidence()
+            # One event-loop task executes this no-await commit section at a time.
+            if acknowledged is not True:
+                return reject_capability_evidence()
+            if capability_evidence_rejected:
+                return False
+            capability_evidence.append(evidence)
+        claimed = skill_metadata is not None and claim_used_skill(canonical_identity)
+        if claimed and on_skill_use:
+            await on_skill_use(canonical_identity, skill_metadata)
+        return not capability_evidence_rejected
 
     def exact_hook_tool_call_id(hook_input: dict[str, Any], tool_use_id: object) -> str:
         """Resolve the SDK's duplicated call-id fields only when they agree exactly."""
@@ -1865,16 +1864,15 @@ async def run_claude_agent_sdk(
             for skill_name in _extract_skill_names_from_tool_input(hook_input.get("tool_input"), allowed_skill_names):
                 if lifecycle_phase == "failed" and skill_name not in failed_skill_names:
                     failed_skill_names.append(skill_name)
-                acknowledged = await record_capability_evidence(
+                await record_capability_evidence(
                     capability_kind="skill", canonical_identity=skill_name,
                     tool_call_id=call_id, lifecycle_phase=lifecycle_phase,
-                )
-                if lifecycle_phase == "completed" and acknowledged:
-                    await record_used_skill(skill_name, {
+                    skill_metadata={
                         "source": "claude_agent_sdk_hook",
                         "hook_event_name": str(hook_input.get("hook_event_name") or ""),
                         "tool_name": "Skill", "tool_use_id": call_id,
-                    })
+                    } if lifecycle_phase == "completed" else None,
+                )
             return {}
         return handler
 

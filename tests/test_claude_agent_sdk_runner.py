@@ -202,6 +202,18 @@ def _scripted_sdk(captured, steps, *, result_text="done"):
     async def query(*, prompt, options):
         del options
         captured["sdk_user_messages"] = [item async for item in prompt]
+
+        async def invoke_hook(value):
+            hook_name, hook_input, tool_call_id = value
+            matchers = captured["hooks"][hook_name]
+            if hook_name == "PreToolUse":
+                matcher = matchers[0]
+            else:
+                tool_name = str(hook_input.get("tool_name") or "")
+                matcher_name = "Skill" if tool_name.lower() == "skill" else "mcp__*"
+                matcher = next(item for item in matchers if item.matcher == matcher_name)
+            await matcher.hooks[0](hook_input, tool_call_id, {})
+
         for step in steps:
             kind, value = step
             if kind == "assistant":
@@ -209,18 +221,8 @@ def _scripted_sdk(captured, steps, *, result_text="done"):
             elif kind == "stream":
                 yield StreamEvent(value)
             elif kind in {"hook", "cancel_hook"}:
-                hook_name, hook_input, tool_call_id = value
-                matchers = captured["hooks"][hook_name]
-                if hook_name == "PreToolUse":
-                    matcher = matchers[0]
-                else:
-                    tool_name = str(hook_input.get("tool_name") or "")
-                    matcher_name = "Skill" if tool_name.lower() == "skill" else "mcp__*"
-                    matcher = next(item for item in matchers if item.matcher == matcher_name)
                 if kind == "cancel_hook":
-                    hook_task = asyncio.create_task(
-                        matcher.hooks[0](hook_input, tool_call_id, {})
-                    )
+                    hook_task = asyncio.create_task(invoke_hook(value))
                     await asyncio.sleep(0)
                     hook_task.cancel()
                     try:
@@ -228,7 +230,9 @@ def _scripted_sdk(captured, steps, *, result_text="done"):
                     except asyncio.CancelledError:
                         pass
                 else:
-                    await matcher.hooks[0](hook_input, tool_call_id, {})
+                    await invoke_hook(value)
+            elif kind == "concurrent_hooks":
+                await asyncio.gather(*(invoke_hook(item) for item in value))
             elif kind == "probe":
                 value()
         yield ResultMessage()
@@ -1944,7 +1948,7 @@ async def test_sdk_selected_skill_without_external_mcp_releases_once_after_termi
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("callback_outcome", [False, "raise", "cancel"])
+@pytest.mark.parametrize("callback_outcome", [False, "raise", "cancel", "missing"])
 async def test_sdk_selected_skill_rejected_post_ack_seals_all_public_output(
     monkeypatch, tmp_path, callback_outcome
 ):
@@ -1979,15 +1983,46 @@ async def test_sdk_selected_skill_rejected_post_ack_seals_all_public_output(
     result = await run_claude_agent_sdk(
         prompt="review", cwd=tmp_path, skill_id="qa-review", skills=["qa-review"],
         execution_policy="sandbox_brokered", tool_policy_subjects=[_skill_subject()],
-        on_text=deltas.append, on_capability_evidence=acknowledge,
+        on_text=deltas.append, on_skill_use=lambda *_: asyncio.sleep(0, result=deltas.append("skill_used")),
+        on_capability_evidence=None if callback_outcome == "missing" else acknowledge,
     )
 
-    assert callback_phases == ["invocation_requested", "completed"]
-    assert result.error == "required_tool_completion_evidence_mismatch"
-    assert result.message == ""
-    assert result.used_skills == []
-    assert result.capability_evidence == []
-    assert deltas == []
+    assert callback_phases == ([] if callback_outcome == "missing" else ["invocation_requested", "completed"])
+    assert (result.error, result.message, result.used_skills, result.capability_evidence, deltas) == (
+        "required_tool_completion_evidence_mismatch", "", [], [], [])
+
+
+@pytest.mark.asyncio
+async def test_sdk_selected_skill_concurrent_rejection_prevents_inflight_commit(monkeypatch, tmp_path):
+    captured, deltas, callback_facts = {}, [], []
+    success_started, rejection_started = asyncio.Event(), asyncio.Event()
+    def skill_input(call_id):
+        return {"tool_name": "Skill", "tool_use_id": call_id, "tool_input": {"skill": "qa-review"}}
+    async def acknowledge(evidence):
+        fact = (evidence["tool_call_id"], evidence["lifecycle_phase"])
+        callback_facts.append(fact)
+        if fact[1] == "invocation_requested":
+            return True
+        if fact[0] == "skill-call-success":
+            success_started.set()
+            await rejection_started.wait()
+            return True
+        await success_started.wait()
+        rejection_started.set()
+        return False
+    success, rejected = skill_input("skill-call-success"), skill_input("skill-call-rejected")
+    steps = [("hook", ("PreToolUse", success, "skill-call-success")), ("concurrent_hooks", [
+        ("PostToolUse", success, "skill-call-success"), ("PostToolUse", rejected, "skill-call-rejected"),
+    ]), ("hook", ("PostToolUse", success, "skill-call-success")), ("assistant", "sealed")]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps, result_text="sealed"))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+    result = await run_claude_agent_sdk(
+        prompt="review", cwd=tmp_path, skill_id="qa-review", skills=["qa-review"],
+        execution_policy="sandbox_brokered", tool_policy_subjects=[_skill_subject()], on_text=deltas.append,
+        on_skill_use=lambda *_: asyncio.sleep(0, result=deltas.append("skill_used")), on_capability_evidence=acknowledge,
+    )
+    assert callback_facts == [("skill-call-success", "invocation_requested"), ("skill-call-success", "completed"), ("skill-call-rejected", "completed")]
+    assert (result.error, result.message, result.used_skills, result.capability_evidence, deltas) == ("required_tool_completion_evidence_mismatch", "", [], [], [])
 
 
 @pytest.mark.asyncio
