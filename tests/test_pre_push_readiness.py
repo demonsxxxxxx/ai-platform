@@ -236,6 +236,43 @@ def test_authority_worktree_never_executes_a_candidate_tool_replacement(
     assert payload["authority"]["status"] == "verified"
 
 
+def test_candidate_authority_governance_tamper_cannot_change_the_sealed_result(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, base = readiness_repo
+    _write(
+        repo,
+        "tests/test_authority_tamper.py",
+        "import subprocess\n"
+        "from pathlib import Path\n\n\n"
+        "def test_tamper_authority_governance():\n"
+        "    worktrees = subprocess.check_output(['git', 'worktree', 'list', '--porcelain'], text=True)\n"
+        "    authority = next(\n"
+        "        Path(line.removeprefix('worktree '))\n"
+        "        for line in worktrees.splitlines()\n"
+        "        if line.startswith('worktree ') and Path(line.removeprefix('worktree ')).name == 'authority'\n"
+        "    )\n"
+        "    (authority / 'tools' / 'code_governance.py').write_text(\n"
+        "        \"raise RuntimeError('candidate changed authority governance')\\n\", encoding='utf-8'\n"
+        "    )\n",
+    )
+    head = _commit(repo, "tamper authority governance from candidate test")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "governance_violation"
+    assert payload["failure"]["code"] == "authority_post_candidate_integrity_mismatch"
+    governance_index = next(index for index, stage in enumerate(payload["stages"]) if stage["name"] == "governance")
+    tests_index = next(index for index, stage in enumerate(payload["stages"]) if stage["name"] == "responsibility_tests")
+    assert governance_index < tests_index
+    governance_stage = payload["stages"][governance_index]
+    assert governance_stage["status"] == "pass"
+    assert Path(governance_stage["command"][2]).name == "authority-governance.py"
+    assert next(stage for stage in payload["stages"] if stage["name"] == "authority_integrity")["status"] == "failed"
+
+
 def test_frontend_typescript_change_runs_the_repository_native_frontend_suite(
     readiness_repo: tuple[Path, str], tmp_path: Path
 ) -> None:
@@ -279,6 +316,37 @@ def test_shared_test_fixture_runs_the_explicit_bounded_suite(readiness_repo: tup
     assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
     responsibility_stage = next(stage for stage in payload["stages"] if stage["name"] == "responsibility_tests")
     assert responsibility_stage["tests"] == ["tests/test_shared_fixture.py"]
+
+
+def test_shared_suite_requires_a_changed_shared_fixture(readiness_repo: tuple[Path, str]) -> None:
+    repo, base = readiness_repo
+    _write(repo, "tests/test_explicit_suite.py", "def test_explicit_suite():\n    assert True\n")
+    _write(repo, "docs/readiness.md", "ready\n")
+    head = _commit(repo, "unrelated suite flag")
+
+    result = _check(repo, base, head, shared_test_suites=("tests/test_explicit_suite.py",))
+    payload = _payload(result)
+
+    assert result.returncode == 2
+    assert payload["category"] == "governance_violation"
+    assert payload["failure"]["code"] == "unexpected_shared_test_suite"
+
+
+def test_unowned_production_change_remains_external_with_an_unrelated_suite(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, base = readiness_repo
+    _write(repo, "config/policy.json", "{\"enabled\": true}\n")
+    _write(repo, "tests/test_explicit_suite.py", "def test_explicit_suite():\n    assert True\n")
+    head = _commit(repo, "unowned path with unrelated suite")
+
+    result = _check(repo, base, head, shared_test_suites=("tests/test_explicit_suite.py",))
+    payload = _payload(result)
+
+    assert result.returncode == 2
+    assert payload["category"] == "external_check"
+    assert payload["failure"]["code"] == "responsibility_suite_required"
+    assert payload["failure"]["path"] == "config/policy.json"
 
 
 def test_deleted_test_file_is_not_sent_to_pytest(readiness_repo: tuple[Path, str]) -> None:
@@ -328,12 +396,10 @@ def test_mixed_backend_and_frontend_changes_run_both_responsibility_suites(
 
     assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
     assert payload["category"] == "governance_violation"
-    assert {stage["name"] for stage in payload["stages"]} >= {
-        "frontend_responsibility",
-        "responsibility_tests",
-    }
-    assert next(stage for stage in payload["stages"] if stage["name"] == "frontend_responsibility")["status"] == "pass"
-    assert next(stage for stage in payload["stages"] if stage["name"] == "responsibility_tests")["status"] == "pass"
+    stages = {stage["name"]: stage for stage in payload["stages"]}
+    assert stages["governance"]["status"] == "failed"
+    assert "responsibility_tests" not in stages
+    assert "frontend_responsibility" not in stages
 
 
 def test_stale_base_fails_before_any_local_checks(readiness_repo: tuple[Path, str]) -> None:
@@ -462,6 +528,7 @@ def test_success_uses_the_exact_resolved_range_and_stable_taxonomy(
         "stale_base",
     }
     assert {stage["name"] for stage in payload["stages"]} == {
+        "authority_integrity",
         "compileall",
         "diff_check",
         "governance",
@@ -523,6 +590,11 @@ def test_pr_workflow_requires_the_exact_ref_gate_before_push_and_after_merge_up(
     assert "after every ordinary merge-up" in normalized
     assert "corepack pnpm run ci:verify" in workflow
     assert "--shared-test-suite" in workflow
+    assert "before candidate compile, pytest," in normalized
+    assert "frontend, or candidate configuration executes" in normalized
+    assert "immutable authority git object" in normalized
+    assert "cannot discharge an" in normalized
+    assert "unowned production path" in normalized
     assert "stale_base" in workflow
     assert "product_test_failure" in workflow
     assert "governance_violation" in workflow

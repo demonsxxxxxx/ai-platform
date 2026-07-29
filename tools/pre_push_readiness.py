@@ -19,6 +19,7 @@ REPORT_SCHEMA_VERSION = "ai-platform.pre-push-readiness.v1"
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 MAX_RESPONSIBILITY_TESTS = 24
 AUTHORITY_TOOL_PATH = "tools/pre_push_readiness.py"
+AUTHORITY_GOVERNANCE_PATH = "tools/code_governance.py"
 
 FAILURE_TAXONOMY = {
     "stale_base": "The supplied base is not an ancestor of head; merge the current base before push.",
@@ -38,6 +39,7 @@ class ReadinessError(RuntimeError):
         self.path = path
         self.result: dict[str, Any] | None = None
         self.cleanup_failure: ReadinessError | None = None
+        self.authority_integrity_failure: ReadinessError | None = None
 
 
 class _ReadinessArgumentParser(argparse.ArgumentParser):
@@ -79,6 +81,7 @@ class PrePushReadiness:
         self._repo_root = repo_root.resolve()
         self._runner = runner or _CommandRunner()
         self._authority_root: Path | None = None
+        self._sealed_governance_path: Path | None = None
 
     def check(
         self,
@@ -116,12 +119,24 @@ class PrePushReadiness:
             self._add_worktree(head_worktree, head)
             head_added = True
             self._run_diff_check(result, base, head)
-            self._run_compileall(result, head_worktree)
+            self._seal_trusted_governance(result, authority, base, head, temporary_root, head_worktree)
             plan = self._plan_responsibilities(base, head, head_worktree, shared_test_suites)
-            self._run_responsibility_tests(result, head_worktree, plan.tests)
-            if plan.frontend:
-                self._run_frontend_responsibility(result, head_worktree)
-            self._run_governance(result, base, head, head_worktree)
+            candidate_failure: ReadinessError | None = None
+            try:
+                self._run_compileall(result, head_worktree)
+                self._run_responsibility_tests(result, head_worktree, plan.tests)
+                if plan.frontend:
+                    self._run_frontend_responsibility(result, head_worktree)
+            except ReadinessError as error:
+                candidate_failure = error
+            try:
+                self._assert_post_candidate_authority_integrity(result, authority)
+            except ReadinessError as error:
+                if candidate_failure is None:
+                    raise
+                candidate_failure.authority_integrity_failure = error
+            if candidate_failure is not None:
+                raise candidate_failure
         except ReadinessError as error:
             primary_failure = error
 
@@ -186,18 +201,47 @@ class PrePushReadiness:
                 "authority_source_mismatch",
                 "the running readiness script is not checked out at authority_ref",
             )
-        expected = self._run(("git", "rev-parse", "--verify", f"{authority}:{AUTHORITY_TOOL_PATH}"), self._repo_root)
-        actual = self._run(
-            ("git", "-C", str(authority_root), "hash-object", "--path", AUTHORITY_TOOL_PATH, "--", str(source_path)),
-            self._repo_root,
-        )
-        if expected.returncode != 0 or actual.returncode != 0 or expected.stdout.strip() != actual.stdout.strip():
+        if source_path != (authority_root / AUTHORITY_TOOL_PATH).resolve():
             raise ReadinessError(
                 "governance_violation",
                 "authority_provenance_mismatch",
-                "the running readiness script does not match the authority_ref Git object",
+                "the running readiness script is not the authority worktree copy",
             )
+        self._assert_authority_path_matches_ref(
+            authority,
+            authority_root,
+            AUTHORITY_TOOL_PATH,
+            source_path,
+            code="authority_provenance_mismatch",
+            message="the running readiness script does not match the authority_ref Git object",
+        )
+        self._assert_authority_path_matches_ref(
+            authority,
+            authority_root,
+            AUTHORITY_GOVERNANCE_PATH,
+            authority_root / AUTHORITY_GOVERNANCE_PATH,
+            code="authority_provenance_mismatch",
+            message="the authority governance script does not match the authority_ref Git object",
+        )
         self._authority_root = authority_root
+
+    def _assert_authority_path_matches_ref(
+        self,
+        authority: str,
+        authority_root: Path,
+        relative_path: str,
+        actual_path: Path,
+        *,
+        code: str,
+        message: str,
+    ) -> None:
+        expected = self._run(("git", "rev-parse", "--verify", f"{authority}:{relative_path}"), self._repo_root)
+        actual = self._run(
+            ("git", "-C", str(authority_root), "hash-object", "--path", relative_path, "--", str(actual_path)),
+            self._repo_root,
+        )
+        if expected.returncode != 0 or actual.returncode != 0 or expected.stdout.strip() != actual.stdout.strip():
+            raise ReadinessError("governance_violation", code, message, path=relative_path)
 
     def _resolve_full_commit(self, value: str, label: str) -> str:
         if FULL_SHA.fullmatch(value) is None:
@@ -296,6 +340,21 @@ class PrePushReadiness:
                 selected.add(mirrored)
                 continue
             unowned_paths.append(path)
+        if frontend and not (head_worktree / "frontend" / "web" / "package.json").is_file():
+            unowned_paths.append("frontend/web/package.json")
+        if unowned_paths:
+            raise ReadinessError(
+                "external_check",
+                "responsibility_suite_required",
+                "each affected production path requires a bounded responsible suite",
+                path=sorted(unowned_paths)[0],
+            )
+        if shared_test_suites and not shared_paths:
+            raise ReadinessError(
+                "governance_violation",
+                "unexpected_shared_test_suite",
+                "--shared-test-suite is only valid when a named shared test fixture changed",
+            )
         if shared_paths and not shared_test_suites:
             raise ReadinessError(
                 "external_check",
@@ -313,15 +372,6 @@ class PrePushReadiness:
                     path=suite,
                 )
             selected.add(suite)
-        if frontend and not (head_worktree / "frontend" / "web" / "package.json").is_file():
-            unowned_paths.append("frontend/web/package.json")
-        if unowned_paths:
-            raise ReadinessError(
-                "external_check",
-                "responsibility_suite_required",
-                "each affected production path requires a bounded responsible suite",
-                path=sorted(unowned_paths)[0],
-            )
         tests = tuple(sorted(selected))
         if len(tests) > MAX_RESPONSIBILITY_TESTS:
             raise ReadinessError(
@@ -365,19 +415,20 @@ class PrePushReadiness:
             )
         result["stages"].append(_stage("frontend_responsibility", command, "pass", verified))
 
-    def _run_governance(
+    def _seal_trusted_governance(
         self,
         result: dict[str, Any],
+        authority: str,
         base: str,
         head: str,
+        temporary_root: Path,
         head_worktree: Path,
     ) -> None:
-        if self._authority_root is None:
-            raise ReadinessError("governance_violation", "authority_source_untrusted", "authority source is unavailable")
+        snapshot = self._materialize_authority_governance(authority, temporary_root)
         command = (
             sys.executable,
             "-P",
-            str(self._authority_root / "tools" / "code_governance.py"),
+            str(snapshot),
             "check",
             "--base-ref",
             base,
@@ -399,6 +450,50 @@ class PrePushReadiness:
                 path=violation["path"],
             )
         result["stages"].append(_stage("governance", command, "pass", governed, ruff=ruff))
+        result["authority"]["governance"] = "sealed"
+
+    def _materialize_authority_governance(self, authority: str, temporary_root: Path) -> Path:
+        source = self._run(("git", "show", f"{authority}:{AUTHORITY_GOVERNANCE_PATH}"), self._repo_root)
+        if source.returncode != 0:
+            raise ReadinessError(
+                "governance_violation",
+                "authority_provenance_mismatch",
+                "the authority governance Git object is unavailable",
+                path=AUTHORITY_GOVERNANCE_PATH,
+            )
+        snapshot = temporary_root / "authority-governance.py"
+        try:
+            snapshot.write_text(source.stdout, encoding="utf-8", newline="\n")
+        except OSError as error:
+            raise ReadinessError("infrastructure_failure", "authority_snapshot_failed", str(error)) from error
+        self._sealed_governance_path = snapshot
+        return snapshot
+
+    def _assert_post_candidate_authority_integrity(self, result: dict[str, Any], authority: str) -> None:
+        if self._authority_root is None or self._sealed_governance_path is None:
+            raise ReadinessError("governance_violation", "authority_source_untrusted", "authority source is unavailable")
+        try:
+            self._assert_authority_path_matches_ref(
+                authority,
+                self._authority_root,
+                AUTHORITY_TOOL_PATH,
+                self._authority_root / AUTHORITY_TOOL_PATH,
+                code="authority_post_candidate_integrity_mismatch",
+                message="candidate activity changed the authority readiness script after governance was sealed",
+            )
+            self._assert_authority_path_matches_ref(
+                authority,
+                self._authority_root,
+                AUTHORITY_GOVERNANCE_PATH,
+                self._authority_root / AUTHORITY_GOVERNANCE_PATH,
+                code="authority_post_candidate_integrity_mismatch",
+                message="candidate activity changed authority governance after governance was sealed",
+            )
+        except ReadinessError:
+            result["stages"].append({"name": "authority_integrity", "status": "failed"})
+            raise
+        result["authority"]["integrity"] = "verified"
+        result["stages"].append({"name": "authority_integrity", "status": "pass"})
 
     def _cleanup_worktrees(
         self,
@@ -626,6 +721,11 @@ def _failure_result(
         result["cleanup_failure"] = {
             "code": error.cleanup_failure.code,
             "message": str(error.cleanup_failure),
+        }
+    if error.authority_integrity_failure is not None:
+        result["authority_integrity_failure"] = {
+            "code": error.authority_integrity_failure.code,
+            "message": str(error.authority_integrity_failure),
         }
     return result
 

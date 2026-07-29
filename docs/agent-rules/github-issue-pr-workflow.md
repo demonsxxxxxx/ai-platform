@@ -94,8 +94,15 @@ finally {
 `authority`, `base`, and `head` must each resolve to full 40-hex commits. The
 authority copy verifies that its own Git object matches `authority`, and that
 the authority is accepted by `origin/main`, before it resolves or executes any
-candidate-owned code, configuration, or import. The normal post-merge command
-always derives a fresh immutable authority SHA from accepted `origin/main`.
+candidate-owned code, configuration, or import. It materializes the trusted
+governance implementation from the immutable authority Git object and executes
+it under `-P` and `PYTHONSAFEPATH=1` before candidate compile, pytest,
+frontend, or candidate configuration executes. That governance result is
+sealed before candidate commands run; no later stage executes or consults a
+mutable authority script for an allow/deny decision. A post-candidate integrity
+check reports any authority-worktree mutation instead of silently accepting it.
+The normal post-merge command always derives a fresh immutable authority SHA
+from accepted `origin/main`.
 
 This tool has a one-time bootstrap boundary: while the introducing change is
 only a candidate and accepted `origin/main` does not yet contain the tool, that
@@ -111,10 +118,13 @@ changed `tests/test_<stem>.py` mirror; changed test modules are selected only
 when present at `head`. A deleted test is never passed to pytest. A changed
 `frontend/web` TypeScript or TSX path runs the repository-native
 `corepack pnpm run ci:verify` responsibility command. A changed shared fixture
-such as `tests/conftest.py`, fixture/helper module, or otherwise unclassifiable
-affected path fails closed with `external_check` until an explicit bounded
-`--shared-test-suite tests/test_<name>.py` is supplied or the separate external
-suite is recorded. Preserve the emitted category and identity in the PR record:
+such as `tests/conftest.py` or a fixture/helper module requires an explicit
+bounded `--shared-test-suite tests/test_<name>.py`; the option is invalid when
+no named shared fixture changed. An otherwise unclassifiable affected path
+always fails closed with `external_check`. A shared suite cannot discharge an
+unowned production path; that path remains external until an explicit bounded
+responsibility mapping exists. Preserve the emitted category and identity in
+the PR record:
 
 - `stale_base`: merge the current base through the ordinary merge-up flow, then
   run the gate again before pushing.
