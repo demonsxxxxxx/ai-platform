@@ -10,7 +10,13 @@ import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { useAgent } from "../../../hooks/useAgent";
 import { useApprovals } from "../../../hooks/useApprovals";
 import { useAuth } from "../../../hooks/useAuth";
-import { useTools } from "../../../hooks/useTools";
+import {
+  canSelectChatMcpTools,
+  ChatMcpCatalogContext,
+  hasValidatedChatMcpCatalog,
+  reconcileChatMcpToolSelection,
+  useTools,
+} from "../../../hooks/useTools";
 import { useSkills } from "../../../hooks/useSkills";
 import { useSelectedSkillTask, type SelectedSkillTaskState } from "../../../hooks/useSelectedSkillTask";
 import { useSessionConfig } from "../../../hooks/useSessionConfig";
@@ -333,6 +339,8 @@ export function ChatAppContent({
     serverSelectedToolIds,
     isLoading: toolsLoading,
     totalCount: totalToolsCount,
+    catalogState: mcpCatalogState,
+    refreshTools,
   } = useTools({
     enabled: !agentConversationControlsLocked,
     sessionId: agentConversationControlsLocked ? null : sessionId,
@@ -373,49 +381,75 @@ export function ChatAppContent({
   useEffect(() => {
     if (
       agentConversationControlsLocked ||
-      toolsLoading ||
-      !sessionId ||
-      serverSelectedToolIds === undefined
+      !hasValidatedChatMcpCatalog(mcpCatalogState.status)
     )
       return;
-    const authorizedIds = new Set(tools.map((tool) => tool.name));
-    const reconciled = serverSelectedToolIds.filter((toolId) =>
-      authorizedIds.has(toolId),
-    );
-    const restoreKey = `${sessionId}:${JSON.stringify(reconciled)}`;
-    if (restoredMcpSelectionRef.current === restoreKey) return;
-    restoredMcpSelectionRef.current = restoreKey;
+
+    const serverSelection =
+      sessionId && serverSelectedToolIds !== undefined
+        ? reconcileChatMcpToolSelection(
+            serverSelectedToolIds,
+            tools,
+            mcpCatalogState.status,
+          )
+        : undefined;
+    const restoreKey =
+      serverSelection === undefined ? null : `${sessionId}:${JSON.stringify(serverSelection)}`;
+    const shouldRestoreServerSelection =
+      restoreKey !== null && restoredMcpSelectionRef.current !== restoreKey;
+    if (shouldRestoreServerSelection) {
+      restoredMcpSelectionRef.current = restoreKey;
+    }
+
+    const reconciled = shouldRestoreServerSelection
+      ? serverSelection
+      : reconcileChatMcpToolSelection(
+          sessionConfig.selectedMcpToolIds,
+          tools,
+          mcpCatalogState.status,
+        );
+    if (
+      reconciled === undefined ||
+      (sessionConfig.selectedMcpToolIds !== undefined &&
+        reconciled.length === sessionConfig.selectedMcpToolIds.length &&
+        reconciled.every((toolId, index) => toolId === sessionConfig.selectedMcpToolIds?.[index]))
+    ) {
+      return;
+    }
     setSelectedMcpToolIds(reconciled);
   }, [
     agentConversationControlsLocked,
+    mcpCatalogState.status,
     serverSelectedToolIds,
+    sessionConfig.selectedMcpToolIds,
     sessionId,
     setSelectedMcpToolIds,
     tools,
-    toolsLoading,
   ]);
 
-  useEffect(() => {
-    if (
-      agentConversationControlsLocked ||
-      toolsLoading ||
-      sessionConfig.selectedMcpToolIds === undefined
-    )
-      return;
-    const authorizedIds = new Set(tools.map((tool) => tool.name));
-    const reconciled = sessionConfig.selectedMcpToolIds.filter((toolId) =>
-      authorizedIds.has(toolId),
-    );
-    if (reconciled.length !== sessionConfig.selectedMcpToolIds.length) {
-      setSelectedMcpToolIds(reconciled);
-    }
-  }, [
-    agentConversationControlsLocked,
-    sessionConfig.selectedMcpToolIds,
-    setSelectedMcpToolIds,
-    tools,
-    toolsLoading,
-  ]);
+  const authoritativeMcpSelection = useMemo(
+    () =>
+      reconcileChatMcpToolSelection(
+        sessionConfig.selectedMcpToolIds,
+        tools,
+        mcpCatalogState.status,
+      ),
+    [mcpCatalogState.status, sessionConfig.selectedMcpToolIds, tools],
+  );
+
+  const mcpCatalogContextValue = useMemo(
+    () => ({
+      catalogState: mcpCatalogState,
+      retryTools: agentConversationControlsLocked
+        ? undefined
+        : () => {
+            void refreshTools();
+          },
+    }),
+    [agentConversationControlsLocked, mcpCatalogState, refreshTools],
+  );
+
+  const canSelectMcpTools = canSelectChatMcpTools(mcpCatalogState.status);
 
   const [currentModelId, setCurrentModelId] = useState<string>(() => {
     return localStorage.getItem("defaultModelId") || "";
@@ -477,8 +511,9 @@ export function ChatAppContent({
         selectedMcpToolIds: undefined,
         agentOptions: {},
       }
-    : {
+      : {
         ...sessionConfig,
+        selectedMcpToolIds: authoritativeMcpSelection,
         agentOptions: {
           ...agentOptionValues,
           ...(currentModelValue ? { model: currentModelValue } : {}),
@@ -487,12 +522,12 @@ export function ChatAppContent({
       };
 
   const effectiveTools = useMemo(() => {
-    const selected = new Set(sessionConfig.selectedMcpToolIds ?? []);
+    const selected = new Set(authoritativeMcpSelection);
     return tools.map((t) => {
       if (t.category !== "mcp") return t;
       return { ...t, enabled: selected.has(t.name) };
     });
-  }, [tools, sessionConfig.selectedMcpToolIds]);
+  }, [authoritativeMcpSelection, tools]);
 
   const effectiveSkills = useMemo(() => {
     return buildEffectiveSkills({
@@ -508,6 +543,7 @@ export function ChatAppContent({
 
   const effectiveToggleTool = useCallback(
     (toolName: string) => {
+      if (!canSelectMcpTools) return;
       const tool = tools.find((t) => t.name === toolName);
       if (!tool) return;
 
@@ -515,12 +551,12 @@ export function ChatAppContent({
         toggleSessionMcpTool(toolName);
       }
     },
-    [tools, toggleSessionMcpTool],
+    [canSelectMcpTools, tools, toggleSessionMcpTool],
   );
 
   const effectiveToggleCategory = useCallback(
     (category: ToolCategory, enabled: boolean) => {
-      if (category === "mcp") {
+      if (canSelectMcpTools && category === "mcp") {
         setSelectedMcpToolIds(
           enabled
             ? tools
@@ -530,11 +566,12 @@ export function ChatAppContent({
         );
       }
     },
-    [setSelectedMcpToolIds, tools],
+    [canSelectMcpTools, setSelectedMcpToolIds, tools],
   );
 
   const effectiveToggleAll = useCallback(
     (enabled: boolean) => {
+      if (!canSelectMcpTools) return;
       setSelectedMcpToolIds(
         enabled
           ? tools
@@ -543,7 +580,7 @@ export function ChatAppContent({
           : [],
       );
     },
-    [setSelectedMcpToolIds, tools],
+    [canSelectMcpTools, setSelectedMcpToolIds, tools],
   );
 
   const effectiveEnabledToolsCount = useMemo(
@@ -812,76 +849,78 @@ export function ChatAppContent({
           />
         ) : null}
 
-        <ChatView
-          messages={messages}
-          sessionId={sessionId}
-          currentRunId={currentRunId}
-          isLoading={isLoading}
-          isLoadingHistory={isLoadingHistory}
-          connectionStatus={connectionStatus}
-          canSendMessage={canSendMessage}
-          tools={agentConversationControlsLocked ? [] : effectiveTools}
-          onToggleTool={exposedMcpControls.onToggleTool}
-          onToggleCategory={exposedMcpControls.onToggleCategory}
-          onToggleAll={exposedMcpControls.onToggleAll}
-          toolsLoading={agentConversationControlsLocked ? false : toolsLoading}
-          enabledToolsCount={
-            agentConversationControlsLocked ? 0 : effectiveEnabledToolsCount
-          }
-          totalToolsCount={agentConversationControlsLocked ? 0 : totalToolsCount}
-          skills={agentConversationControlsLocked ? [] : effectiveSkills}
-          taskSkills={agentConversationControlsLocked ? [] : skills}
-          selectedSkillState={
-            agentConversationControlsLocked
-              ? LOCKED_SELECTED_SKILL_STATE
-              : selectedSkillState
-          }
-          onSelectSkill={selectSkill}
-          onClearSelectedSkill={clearSelectedSkill}
-          onSelectedSkillRecoverable={recoverSelectedSkill}
-          onSelectedSkillFilesReady={markSelectedSkillFilesReady}
-          skillsLoading={agentConversationControlsLocked ? false : skillsLoading}
-          enabledSkillsCount={
-            agentConversationControlsLocked
-              ? 0
-              : countEnabledSkills(effectiveSkills)
-          }
-          totalSkillsCount={
-            agentConversationControlsLocked ? 0 : effectiveSkills.length
-          }
-          enableSkills={
-            !agentConversationControlsLocked &&
-            composerSkillsAvailability.enableComposerSkills
-          }
-          agentOptions={agentConversationControlsLocked ? {} : currentAgentOptions}
-          agentOptionValues={
-            agentConversationControlsLocked ? {} : agentOptionValues
-          }
-          onToggleAgentOption={handleToggleAgentOption}
-          availableModels={
-            agentConversationControlsLocked ? [] : filteredModels ?? []
-          }
-          currentModelId={currentModelId}
-          onSelectModel={handleSelectModel}
-          approvals={approvals}
-          onRespondApproval={respondToApproval}
-          approvalLoading={approvalLoading}
-          onSendMessage={sendMessage}
-          canRetryPendingSubmission={canRetryPendingSubmission}
-          onRetryPendingSubmission={retryPendingSubmission}
-          onStopGeneration={stopGeneration}
-          attachments={pageDragAttachments}
-          onAttachmentsChange={setPageDragAttachments}
-          externalNavigationToken={externalNavigationToken}
-          externalNavigationTargetFile={externalNavigationTargetFile}
-          externalNavigationTargetRunId={externalNavigationTargetRunId}
-          externalNavigationTargetRunPending={
-            externalNavigationTargetRunPending
-          }
-          externalScrollToBottom={externalScrollToBottom}
-          outlineToggleRef={outlineToggleRef}
-          WorkbenchShellComponent={WorkbenchShell}
-        />
+        <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
+          <ChatView
+            messages={messages}
+            sessionId={sessionId}
+            currentRunId={currentRunId}
+            isLoading={isLoading}
+            isLoadingHistory={isLoadingHistory}
+            connectionStatus={connectionStatus}
+            canSendMessage={canSendMessage}
+            tools={agentConversationControlsLocked ? [] : effectiveTools}
+            onToggleTool={exposedMcpControls.onToggleTool}
+            onToggleCategory={exposedMcpControls.onToggleCategory}
+            onToggleAll={exposedMcpControls.onToggleAll}
+            toolsLoading={agentConversationControlsLocked ? false : toolsLoading}
+            enabledToolsCount={
+              agentConversationControlsLocked ? 0 : effectiveEnabledToolsCount
+            }
+            totalToolsCount={agentConversationControlsLocked ? 0 : totalToolsCount}
+            skills={agentConversationControlsLocked ? [] : effectiveSkills}
+            taskSkills={agentConversationControlsLocked ? [] : skills}
+            selectedSkillState={
+              agentConversationControlsLocked
+                ? LOCKED_SELECTED_SKILL_STATE
+                : selectedSkillState
+            }
+            onSelectSkill={selectSkill}
+            onClearSelectedSkill={clearSelectedSkill}
+            onSelectedSkillRecoverable={recoverSelectedSkill}
+            onSelectedSkillFilesReady={markSelectedSkillFilesReady}
+            skillsLoading={agentConversationControlsLocked ? false : skillsLoading}
+            enabledSkillsCount={
+              agentConversationControlsLocked
+                ? 0
+                : countEnabledSkills(effectiveSkills)
+            }
+            totalSkillsCount={
+              agentConversationControlsLocked ? 0 : effectiveSkills.length
+            }
+            enableSkills={
+              !agentConversationControlsLocked &&
+              composerSkillsAvailability.enableComposerSkills
+            }
+            agentOptions={agentConversationControlsLocked ? {} : currentAgentOptions}
+            agentOptionValues={
+              agentConversationControlsLocked ? {} : agentOptionValues
+            }
+            onToggleAgentOption={handleToggleAgentOption}
+            availableModels={
+              agentConversationControlsLocked ? [] : filteredModels ?? []
+            }
+            currentModelId={currentModelId}
+            onSelectModel={handleSelectModel}
+            approvals={approvals}
+            onRespondApproval={respondToApproval}
+            approvalLoading={approvalLoading}
+            onSendMessage={sendMessage}
+            canRetryPendingSubmission={canRetryPendingSubmission}
+            onRetryPendingSubmission={retryPendingSubmission}
+            onStopGeneration={stopGeneration}
+            attachments={pageDragAttachments}
+            onAttachmentsChange={setPageDragAttachments}
+            externalNavigationToken={externalNavigationToken}
+            externalNavigationTargetFile={externalNavigationTargetFile}
+            externalNavigationTargetRunId={externalNavigationTargetRunId}
+            externalNavigationTargetRunPending={
+              externalNavigationTargetRunPending
+            }
+            externalScrollToBottom={externalScrollToBottom}
+            outlineToggleRef={outlineToggleRef}
+            WorkbenchShellComponent={WorkbenchShell}
+          />
+        </ChatMcpCatalogContext.Provider>
         <BlockPreviewPortal />
       </>
     </AppShell>

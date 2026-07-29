@@ -2501,6 +2501,18 @@
       "sandbox": "沙箱",
       "skill": "技能"
     },
+    "catalog": {
+      "degraded": "部分 MCP 工具暂不可用",
+      "empty": "当前没有可选择的 MCP 工具",
+      "error": "MCP 工具目录暂时无法加载",
+      "loading": "正在加载 MCP 工具目录…",
+      "retry": "重试",
+      "unavailable": {
+        "discoveryFailed": "部分已配置工具暂时不可用。",
+        "generic": "部分已配置工具当前不可用。",
+        "noTools": "部分已配置工具尚未提供可选择项。"
+      }
+    },
     "deselectAll": "取消全选",
     "done": "完成",
     "loadFailed": "加载工具失败",
