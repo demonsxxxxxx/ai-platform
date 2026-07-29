@@ -58,6 +58,39 @@ review requirements, runtime requirement when relevant, and known blockers.
   required runtime evidence will be satisfied by that merge. Otherwise link the
   issue without auto-close wording.
 
+## Pre-Push Readiness
+
+Before the first push, and after every ordinary merge-up from the PR base, run
+the exact-ref readiness gate from the repository root. It is a bounded local
+gate; it does not run full-repository pytest.
+
+```powershell
+git fetch origin main
+$base = git rev-parse origin/main
+$head = git rev-parse HEAD
+python tools/pre_push_readiness.py check --base-ref $base --head-ref $head --format text
+```
+
+The command requires full 40-hex commits, fails `stale_base` before local
+checks, and runs the bounded responsibility tests, compileall, diff check,
+changed-file Ruff, and trusted-base exact-ref governance. Preserve the emitted
+category and identity in the PR record:
+
+- `stale_base`: merge the current base through the ordinary merge-up flow, then
+  run the gate again before pushing.
+- `product_test_failure`: fix the named deterministic local test or compile
+  failure; the report includes the failing pytest node identity when available.
+- `governance_violation`: fix the named policy rule and path; do not treat it
+  as a runner failure.
+- `infrastructure_failure`: repair the unavailable local command or worktree
+  condition and rerun the same candidate range.
+- `external_check`: record a GitHub or other provider check separately from
+  local readiness.
+
+Do not automatically rerun a failed GitHub check. A same-SHA rerun is allowed
+only after positive infrastructure evidence on the same SHA identifies an
+`infrastructure_failure`; test and governance failures require a new fixed SHA.
+
 ## Review And Verification
 
 - Use independent review for high-risk paths and stage-gate work when a suitable
