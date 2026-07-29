@@ -22,6 +22,10 @@ AUTHORITY_TOOL_PATH = "tools/pre_push_readiness.py"
 AUTHORITY_GOVERNANCE_PATH = "tools/code_governance.py"
 CODE_GOVERNANCE_EXCEPTION_PATH = ".code-governance-exception.json"
 CODE_GOVERNANCE_TEST_PATH = "tests/test_code_governance.py"
+FRONTEND_ROOT_PATH = "frontend/web"
+FRONTEND_PACKAGE_PATH = f"{FRONTEND_ROOT_PATH}/package.json"
+FRONTEND_LOCKFILE_PATH = f"{FRONTEND_ROOT_PATH}/pnpm-lock.yaml"
+PINNED_PNPM_PACKAGE_MANAGER = re.compile(r"pnpm@(?P<version>[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z.-]+)?)\Z")
 
 FAILURE_TAXONOMY = {
     "stale_base": "The supplied base is not an ancestor of head; merge the current base before push.",
@@ -83,6 +87,11 @@ class _ChangedPath:
     destination_path: str | None
 
 
+@dataclass(frozen=True)
+class _FrontendDependencyPaths:
+    node_modules: Path
+
+
 class PrePushReadiness:
     """Keep exact-ref validation, local checks, and failure taxonomy in one seam."""
 
@@ -106,6 +115,7 @@ class PrePushReadiness:
         head_worktree: Path | None = None
         base_added = False
         head_added = False
+        frontend_dependencies: tuple[tuple[str, Path], ...] = ()
         try:
             self._assert_repository()
             authority = self._resolve_full_commit(authority_ref, "authority_ref")
@@ -129,12 +139,21 @@ class PrePushReadiness:
             self._run_diff_check(result, base, head)
             self._seal_trusted_governance(result, authority, base, head, temporary_root, head_worktree)
             plan = self._plan_responsibilities(base, head, head_worktree, shared_test_suites)
+            dependency_paths = _FrontendDependencyPaths(head_worktree / FRONTEND_ROOT_PATH / "node_modules")
+            if plan.frontend:
+                frontend_dependencies = (("node_modules", dependency_paths.node_modules),)
             candidate_failure: ReadinessError | None = None
             try:
                 self._run_compileall(result, head_worktree)
                 self._run_responsibility_tests(result, head_worktree, plan.tests)
                 if plan.frontend:
-                    self._run_frontend_responsibility(result, head_worktree)
+                    package_manager = self._bootstrap_frontend_dependencies(
+                        result,
+                        head,
+                        head_worktree,
+                        dependency_paths,
+                    )
+                    self._run_frontend_responsibility(result, head_worktree, package_manager)
             except ReadinessError as error:
                 candidate_failure = error
             try:
@@ -152,6 +171,7 @@ class PrePushReadiness:
             result,
             temporary_root,
             (("head", head_worktree, head_added), ("base", base_worktree, base_added)),
+            frontend_dependencies=frontend_dependencies,
         )
         if primary_failure is not None:
             primary_failure.result = result
@@ -459,9 +479,151 @@ class PrePushReadiness:
             )
         result["stages"].append(_stage("responsibility_tests", command, "pass", tested, tests=tests))
 
-    def _run_frontend_responsibility(self, result: dict[str, Any], head_worktree: Path) -> None:
-        command = _frontend_command()
-        frontend_root = head_worktree / "frontend" / "web"
+    def _bootstrap_frontend_dependencies(
+        self,
+        result: dict[str, Any],
+        head: str,
+        head_worktree: Path,
+        dependencies: _FrontendDependencyPaths,
+    ) -> str:
+        command: tuple[str, ...] = ()
+        package_manager: str | None = None
+        completed: _CommandResult | None = None
+        try:
+            package_manager = self._frontend_package_manager(head, head_worktree)
+            if _path_lexists(dependencies.node_modules):
+                raise ReadinessError(
+                    "infrastructure_failure",
+                    "frontend_dependency_provenance_mismatch",
+                    "the detached frontend worktree must not reuse an existing node_modules tree",
+                    path=f"{FRONTEND_ROOT_PATH}/node_modules",
+                )
+            version_command = _frontend_command(package_manager, "--version")
+            completed = self._run(version_command, head_worktree / FRONTEND_ROOT_PATH, env=_candidate_environment())
+            if completed.returncode != 0:
+                command = version_command
+                raise ReadinessError(
+                    "infrastructure_failure",
+                    "frontend_dependency_bootstrap_failed",
+                    _command_failure("pinned Corepack pnpm --version", completed),
+                    path=FRONTEND_PACKAGE_PATH,
+                )
+            expected_version = package_manager.removeprefix("pnpm@")
+            if completed.stdout.strip() != expected_version:
+                command = version_command
+                raise ReadinessError(
+                    "infrastructure_failure",
+                    "frontend_dependency_provenance_mismatch",
+                    f"Corepack resolved pnpm {completed.stdout.strip()!r}, expected {expected_version!r}",
+                    path=FRONTEND_PACKAGE_PATH,
+                )
+            command = _frontend_install_command(package_manager)
+            completed = self._run(command, head_worktree / FRONTEND_ROOT_PATH, env=_candidate_environment())
+            if completed.returncode != 0:
+                raise ReadinessError(
+                    "infrastructure_failure",
+                    "frontend_dependency_bootstrap_failed",
+                    _command_failure("pinned Corepack pnpm install", completed),
+                    path=FRONTEND_LOCKFILE_PATH,
+                )
+            if not dependencies.node_modules.is_dir():
+                raise ReadinessError(
+                    "infrastructure_failure",
+                    "frontend_dependency_bootstrap_failed",
+                    "pinned Corepack pnpm install did not create detached frontend/web/node_modules",
+                    path=f"{FRONTEND_ROOT_PATH}/node_modules",
+                )
+        except ReadinessError as error:
+            if error.code == "command_unavailable":
+                error = ReadinessError(
+                    "infrastructure_failure",
+                    "frontend_dependency_bootstrap_failed",
+                    str(error),
+                    path=FRONTEND_PACKAGE_PATH,
+                )
+            self._record_frontend_dependency_stage(
+                result,
+                "failed",
+                command=command,
+                package_manager=package_manager,
+                completed=completed,
+            )
+            raise error
+        self._record_frontend_dependency_stage(
+            result,
+            "pass",
+            command=command,
+            package_manager=package_manager,
+            completed=completed,
+        )
+        return package_manager
+
+    def _frontend_package_manager(self, head: str, head_worktree: Path) -> str:
+        self._assert_frontend_metadata_matches_head(head, head_worktree, FRONTEND_PACKAGE_PATH)
+        self._assert_frontend_metadata_matches_head(head, head_worktree, FRONTEND_LOCKFILE_PATH)
+        package_path = head_worktree / PurePosixPath(FRONTEND_PACKAGE_PATH)
+        try:
+            metadata = json.loads(package_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ReadinessError(
+                "infrastructure_failure",
+                "frontend_dependency_provenance_mismatch",
+                f"frontend package metadata is unreadable: {error}",
+                path=FRONTEND_PACKAGE_PATH,
+            ) from error
+        package_manager = metadata.get("packageManager") if isinstance(metadata, dict) else None
+        if not isinstance(package_manager, str) or PINNED_PNPM_PACKAGE_MANAGER.fullmatch(package_manager) is None:
+            raise ReadinessError(
+                "infrastructure_failure",
+                "frontend_dependency_metadata_missing",
+                "frontend package.json must declare an exact pnpm@<version> packageManager",
+                path=FRONTEND_PACKAGE_PATH,
+            )
+        return package_manager
+
+    def _assert_frontend_metadata_matches_head(self, head: str, head_worktree: Path, path: str) -> None:
+        candidate_path = head_worktree / PurePosixPath(path)
+        if not self._git_tree_has_exact_file(head, path) or not candidate_path.is_file():
+            raise ReadinessError(
+                "infrastructure_failure",
+                "frontend_dependency_metadata_missing",
+                "frontend dependency bootstrap requires package.json and pnpm-lock.yaml at head_ref",
+                path=path,
+            )
+        expected = self._run(("git", "rev-parse", f"{head}:{path}"), self._repo_root)
+        actual = self._run(("git", "hash-object", f"--path={path}", "--", path), head_worktree)
+        if expected.returncode != 0 or actual.returncode != 0 or expected.stdout.strip() != actual.stdout.strip():
+            raise ReadinessError(
+                "infrastructure_failure",
+                "frontend_dependency_provenance_mismatch",
+                "detached frontend dependency metadata no longer matches the exact head Git tree",
+                path=path,
+            )
+
+    def _record_frontend_dependency_stage(
+        self,
+        result: dict[str, Any],
+        status: str,
+        *,
+        command: Sequence[str],
+        package_manager: str | None,
+        completed: _CommandResult | None,
+    ) -> None:
+        stage: dict[str, Any] = {
+            "command": list(command),
+            "dependency_store": "host_content_addressed",
+            "lockfile": FRONTEND_LOCKFILE_PATH,
+            "name": "frontend_dependency_bootstrap",
+            "package_manager": package_manager,
+            "status": status,
+        }
+        if status == "failed" and completed is not None:
+            stage["output"] = _command_output(completed)
+        result["stages"].append(stage)
+
+    def _run_frontend_responsibility(self, result: dict[str, Any], head_worktree: Path, package_manager: str) -> None:
+        command = _frontend_command(package_manager, "run", "ci:verify")
+        frontend_root = head_worktree / FRONTEND_ROOT_PATH
         verified = self._run(command, frontend_root, env=_candidate_environment())
         if verified.returncode != 0:
             result["stages"].append(_stage("frontend_responsibility", command, "failed", verified))
@@ -555,6 +717,8 @@ class PrePushReadiness:
         result: dict[str, Any],
         temporary_root: Path | None,
         worktrees: Sequence[tuple[str, Path | None, bool]],
+        *,
+        frontend_dependencies: Sequence[tuple[str, Path]] = (),
     ) -> ReadinessError | None:
         if temporary_root is None:
             return None
@@ -580,7 +744,18 @@ class PrePushReadiness:
             shutil.rmtree(temporary_root)
         except OSError as error:
             failures.append(f"temporary worktree directory removal failed: {error}")
-        stage: dict[str, Any] = {"name": "worktree_cleanup", "status": "failed" if failures else "pass", "worktrees": records}
+        dependency_records: list[dict[str, Any]] = []
+        for label, path in frontend_dependencies:
+            exists_after = _path_lexists(path)
+            dependency_records.append({"label": label, "path": str(path), "exists_after": exists_after})
+            if exists_after:
+                failures.append(f"frontend dependency path remains after cleanup: {label}")
+        stage: dict[str, Any] = {
+            "frontend_dependencies": dependency_records,
+            "name": "worktree_cleanup",
+            "status": "failed" if failures else "pass",
+            "worktrees": records,
+        }
         if failures:
             stage["failures"] = failures
         result["stages"].append(stage)
@@ -677,15 +852,23 @@ def _same_worktree_path(expected: Path, registered: str) -> bool:
     return os.path.normcase(os.path.normpath(str(expected))) == os.path.normcase(os.path.normpath(registered))
 
 
+def _path_lexists(path: Path) -> bool:
+    return os.path.lexists(path)
+
+
 def _candidate_environment() -> dict[str, str]:
     environment = os.environ.copy()
     environment.pop("PYTHONSAFEPATH", None)
     return environment
 
 
-def _frontend_command() -> tuple[str, str, str, str]:
-    """Use Corepack's executable name on the current platform."""
-    return ("corepack.cmd" if os.name == "nt" else "corepack", "pnpm", "run", "ci:verify")
+def _frontend_command(package_manager: str, *arguments: str) -> tuple[str, ...]:
+    """Run the exact package-manager pin through Corepack on the current platform."""
+    return ("corepack.cmd" if os.name == "nt" else "corepack", package_manager, *arguments)
+
+
+def _frontend_install_command(package_manager: str) -> tuple[str, ...]:
+    return _frontend_command(package_manager, "install", "--frozen-lockfile", "--prefer-offline")
 
 
 def _governance_environment() -> dict[str, str]:

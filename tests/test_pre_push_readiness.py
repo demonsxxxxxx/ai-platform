@@ -18,6 +18,7 @@ GOVERNANCE_TOOL = REPO_ROOT / "tools" / "code_governance.py"
 CODE_GOVERNANCE_TEST = REPO_ROOT / "tests" / "test_code_governance.py"
 ISSUE_WORKFLOW = REPO_ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
 EXCEPTION_PATH = ".code-governance-exception.json"
+FRONTEND_PACKAGE_MANAGER = "pnpm@10.32.1"
 
 
 def _run(
@@ -136,6 +137,29 @@ def _python_assignments(count: int) -> str:
     return "".join(f"VALUE_{index} = {index}\n" for index in range(count))
 
 
+def _write_frontend_project(
+    repo: Path,
+    *,
+    package_manager: str = FRONTEND_PACKAGE_MANAGER,
+    include_lockfile: bool = True,
+) -> None:
+    _write(
+        repo,
+        "frontend/web/package.json",
+        json.dumps(
+            {
+                "name": "readiness-frontend-fixture",
+                "packageManager": package_manager,
+                "scripts": {"ci:verify": "true"},
+            }
+        )
+        + "\n",
+    )
+    if include_lockfile:
+        _write(repo, "frontend/web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+    _write(repo, "frontend/web/src/App.test.tsx", "export const appTest = true;\n")
+
+
 def _exception_transition(
     repo: Path,
     *,
@@ -165,17 +189,70 @@ def _exception_transition(
     return base, head
 
 
-def _fake_corepack_environment(tmp_path: Path) -> dict[str, str]:
+def _fake_corepack_environment(
+    tmp_path: Path,
+    *,
+    reported_version: str = "10.32.1",
+    version_returncode: int = 0,
+    install_returncode: int = 0,
+    verify_returncode: int = 0,
+    require_fresh_node_modules: bool = False,
+    expected_corepack_home: str | None = None,
+) -> dict[str, str]:
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
+    log = tmp_path / "fake-corepack.log"
     if os.name == "nt":
-        (fake_bin / "corepack.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+        (fake_bin / "corepack.cmd").write_text(
+            "@echo off\r\n"
+            "if not \"%FAKE_COREPACK_LOG%\"==\"\" echo %*>>\"%FAKE_COREPACK_LOG%\"\r\n"
+            "if not \"%FAKE_COREPACK_EXPECT_COREPACK_HOME%\"==\"\" if not \"%COREPACK_HOME%\"==\"%FAKE_COREPACK_EXPECT_COREPACK_HOME%\" exit /b 98\r\n"
+            "if \"%2\"==\"--version\" (\r\n"
+            "  echo %FAKE_PNPM_VERSION%\r\n"
+            "  exit /b %FAKE_COREPACK_VERSION_EXIT%\r\n"
+            ")\r\n"
+            "if \"%2\"==\"install\" (\r\n"
+            "  if not \"%FAKE_COREPACK_INSTALL_EXIT%\"==\"0\" exit /b %FAKE_COREPACK_INSTALL_EXIT%\r\n"
+            "  if \"%FAKE_COREPACK_REQUIRE_FRESH_NODE_MODULES%\"==\"1\" if exist node_modules exit /b 97\r\n"
+            "  if not exist node_modules mkdir node_modules\r\n"
+            "  exit /b 0\r\n"
+            ")\r\n"
+            "if \"%2\"==\"run\" exit /b %FAKE_COREPACK_VERIFY_EXIT%\r\n"
+            "exit /b 0\r\n",
+            encoding="utf-8",
+        )
     else:
         corepack = fake_bin / "corepack"
-        corepack.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        corepack.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$FAKE_COREPACK_LOG\"\n"
+            "if [ -n \"$FAKE_COREPACK_EXPECT_COREPACK_HOME\" ] && [ \"$COREPACK_HOME\" != \"$FAKE_COREPACK_EXPECT_COREPACK_HOME\" ]; then exit 98; fi\n"
+            "if [ \"$2\" = \"--version\" ]; then\n"
+            "  printf '%s\\n' \"$FAKE_PNPM_VERSION\"\n"
+            "  exit \"$FAKE_COREPACK_VERSION_EXIT\"\n"
+            "fi\n"
+            "if [ \"$2\" = \"install\" ]; then\n"
+            "  if [ \"$FAKE_COREPACK_INSTALL_EXIT\" != \"0\" ]; then exit \"$FAKE_COREPACK_INSTALL_EXIT\"; fi\n"
+            "  if [ \"$FAKE_COREPACK_REQUIRE_FRESH_NODE_MODULES\" = \"1\" ] && [ -e node_modules ]; then exit 97; fi\n"
+            "  mkdir -p node_modules\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$2\" = \"run\" ]; then exit \"$FAKE_COREPACK_VERIFY_EXIT\"; fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
         corepack.chmod(0o755)
     environment = os.environ.copy()
     environment["PATH"] = str(fake_bin) + os.pathsep + environment["PATH"]
+    environment["FAKE_COREPACK_LOG"] = str(log)
+    environment["FAKE_PNPM_VERSION"] = reported_version
+    environment["FAKE_COREPACK_VERSION_EXIT"] = str(version_returncode)
+    environment["FAKE_COREPACK_INSTALL_EXIT"] = str(install_returncode)
+    environment["FAKE_COREPACK_VERIFY_EXIT"] = str(verify_returncode)
+    environment["FAKE_COREPACK_REQUIRE_FRESH_NODE_MODULES"] = "1" if require_fresh_node_modules else "0"
+    if expected_corepack_home is not None:
+        environment["COREPACK_HOME"] = expected_corepack_home
+        environment["FAKE_COREPACK_EXPECT_COREPACK_HOME"] = expected_corepack_home
     return environment
 
 
@@ -225,6 +302,31 @@ def test_worktree_cleanup_records_successful_remove_and_absent_registration(tmp_
     assert temporary_root.exists() is False
 
 
+def test_worktree_cleanup_removes_detached_frontend_node_modules_and_normalizes_windows_separators(tmp_path: Path) -> None:
+    module = _readiness_module()
+    runner = _CleanupRunner(module)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    temporary_root = tmp_path / "temporary"
+    node_modules = temporary_root / "head" / "frontend" / "web" / "node_modules"
+    node_modules.mkdir(parents=True)
+    result = module._new_result(None, None, None)
+
+    failure = readiness._cleanup_worktrees(
+        result,
+        temporary_root,
+        (),
+        frontend_dependencies=(
+            ("node_modules", node_modules),
+        ),
+    )
+
+    assert failure is None
+    cleanup = result["stages"][-1]
+    assert cleanup["status"] == "pass"
+    assert all(resource["exists_after"] is False for resource in cleanup["frontend_dependencies"])
+    assert module._same_worktree_path(node_modules, str(node_modules).replace("\\", "/"))
+
+
 def test_cleanup_only_failure_is_an_infrastructure_failure(tmp_path: Path) -> None:
     module = _readiness_module()
     runner = _CleanupRunner(module, remove_returncode=1)
@@ -257,7 +359,7 @@ def test_primary_product_failure_is_preserved_when_cleanup_also_fails(tmp_path: 
     monkeypatch.setattr(readiness, "_create_temporary_root", lambda: temporary_root)
     monkeypatch.setattr(readiness, "_add_worktree", lambda path, commit: path.mkdir(parents=True, exist_ok=True))
     monkeypatch.setattr(readiness, "_run_diff_check", lambda result, base, head: (_ for _ in ()).throw(primary))
-    monkeypatch.setattr(readiness, "_cleanup_worktrees", lambda result, root, worktrees: cleanup)
+    monkeypatch.setattr(readiness, "_cleanup_worktrees", lambda result, root, worktrees, **kwargs: cleanup)
 
     with pytest.raises(module.ReadinessError) as raised:
         readiness.check("a" * 40, "b" * 40, "c" * 40)
@@ -332,17 +434,170 @@ def test_frontend_typescript_change_runs_the_repository_native_frontend_suite(
     readiness_repo: tuple[Path, str], tmp_path: Path
 ) -> None:
     repo, base = readiness_repo
-    _write(repo, "frontend/web/package.json", "{\"scripts\": {\"ci:verify\": \"true\"}}\n")
+    _write_frontend_project(repo)
     _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
     _write(repo, "frontend/web/src/App.test.tsx", "export const appTest = true;\n")
     head = _commit(repo, "frontend responsibility")
 
-    result = _check(repo, base, head, env=_fake_corepack_environment(tmp_path))
+    environment = _fake_corepack_environment(tmp_path)
+    result = _check(repo, base, head, env=environment)
     payload = _payload(result)
 
     assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    bootstrap_stage = next(stage for stage in payload["stages"] if stage["name"] == "frontend_dependency_bootstrap")
+    assert bootstrap_stage["status"] == "pass"
+    assert bootstrap_stage["package_manager"] == FRONTEND_PACKAGE_MANAGER
+    assert bootstrap_stage["lockfile"] == "frontend/web/pnpm-lock.yaml"
+    assert "--frozen-lockfile" in bootstrap_stage["command"]
+    assert "--prefer-offline" in bootstrap_stage["command"]
+    assert "--store-dir" not in bootstrap_stage["command"]
+    assert bootstrap_stage["dependency_store"] == "host_content_addressed"
     frontend_stage = next(stage for stage in payload["stages"] if stage["name"] == "frontend_responsibility")
-    assert frontend_stage["command"] == ["corepack.cmd" if os.name == "nt" else "corepack", "pnpm", "run", "ci:verify"]
+    assert frontend_stage["command"] == [
+        "corepack.cmd" if os.name == "nt" else "corepack",
+        FRONTEND_PACKAGE_MANAGER,
+        "run",
+        "ci:verify",
+    ]
+    cleanup_stage = next(stage for stage in payload["stages"] if stage["name"] == "worktree_cleanup")
+    assert all(resource["exists_after"] is False for resource in cleanup_stage["frontend_dependencies"])
+    commands = Path(environment["FAKE_COREPACK_LOG"]).read_text(encoding="utf-8")
+    assert f"{FRONTEND_PACKAGE_MANAGER} --version" in commands
+    assert f"{FRONTEND_PACKAGE_MANAGER} install" in commands
+    assert f"{FRONTEND_PACKAGE_MANAGER} run ci:verify" in commands
+
+
+def test_frontend_bootstrap_does_not_reuse_source_worktree_node_modules(
+    readiness_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    repo, base = readiness_repo
+    _write_frontend_project(repo)
+    _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
+    head = _commit(repo, "frontend bootstrap uses detached modules")
+    source_sentinel = repo / "frontend" / "web" / "node_modules" / "source-only-sentinel.txt"
+    source_sentinel.parent.mkdir(parents=True)
+    source_sentinel.write_text("must not be linked", encoding="utf-8")
+
+    host_corepack_home = str(tmp_path / "host-corepack-cache")
+    result = _check(
+        repo,
+        base,
+        head,
+        env=_fake_corepack_environment(
+            tmp_path,
+            require_fresh_node_modules=True,
+            expected_corepack_home=host_corepack_home,
+        ),
+    )
+    payload = _payload(result)
+
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    assert source_sentinel.read_text(encoding="utf-8") == "must not be linked"
+    bootstrap_stage = next(stage for stage in payload["stages"] if stage["name"] == "frontend_dependency_bootstrap")
+    assert "--store-dir" not in bootstrap_stage["command"]
+    assert bootstrap_stage["dependency_store"] == "host_content_addressed"
+
+
+def test_frontend_dependency_bootstrap_requires_a_lockfile(
+    readiness_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    repo, base = readiness_repo
+    _write_frontend_project(repo, include_lockfile=False)
+    _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
+    head = _commit(repo, "frontend without lockfile")
+
+    result = _check(repo, base, head, env=_fake_corepack_environment(tmp_path))
+    payload = _payload(result)
+
+    assert result.returncode == 3, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "infrastructure_failure"
+    assert payload["failure"]["code"] == "frontend_dependency_metadata_missing"
+    assert payload["failure"]["path"] == "frontend/web/pnpm-lock.yaml"
+    assert next(stage for stage in payload["stages"] if stage["name"] == "frontend_dependency_bootstrap")["status"] == "failed"
+    assert all(stage["name"] != "frontend_responsibility" for stage in payload["stages"])
+
+
+def test_frontend_dependency_bootstrap_requires_a_pinned_package_manager(
+    readiness_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    repo, base = readiness_repo
+    _write(repo, "frontend/web/package.json", json.dumps({"scripts": {"ci:verify": "true"}}) + "\n")
+    _write(repo, "frontend/web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+    _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
+    _write(repo, "frontend/web/src/App.test.tsx", "export const appTest = true;\n")
+    head = _commit(repo, "frontend without package manager pin")
+
+    result = _check(repo, base, head, env=_fake_corepack_environment(tmp_path))
+    payload = _payload(result)
+
+    assert result.returncode == 3, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "infrastructure_failure"
+    assert payload["failure"]["code"] == "frontend_dependency_metadata_missing"
+    assert payload["failure"]["path"] == "frontend/web/package.json"
+    assert all(stage["name"] != "frontend_responsibility" for stage in payload["stages"])
+
+
+def test_frontend_dependency_bootstrap_rejects_a_package_manager_version_mismatch(
+    readiness_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    repo, base = readiness_repo
+    _write_frontend_project(repo)
+    _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
+    head = _commit(repo, "frontend mismatched package manager")
+    environment = _fake_corepack_environment(tmp_path, reported_version="10.31.0")
+
+    result = _check(repo, base, head, env=environment)
+    payload = _payload(result)
+
+    assert result.returncode == 3, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "infrastructure_failure"
+    assert payload["failure"]["code"] == "frontend_dependency_provenance_mismatch"
+    assert payload["failure"]["path"] == "frontend/web/package.json"
+    commands = Path(environment["FAKE_COREPACK_LOG"]).read_text(encoding="utf-8")
+    assert f"{FRONTEND_PACKAGE_MANAGER} --version" in commands
+    assert " install" not in commands
+    assert all(stage["name"] != "frontend_responsibility" for stage in payload["stages"])
+
+
+def test_frontend_dependency_bootstrap_failure_is_infrastructure_and_cleans_resources(
+    readiness_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    repo, base = readiness_repo
+    _write_frontend_project(repo)
+    _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
+    head = _commit(repo, "frontend dependency bootstrap failure")
+
+    result = _check(repo, base, head, env=_fake_corepack_environment(tmp_path, install_returncode=7))
+    payload = _payload(result)
+
+    assert result.returncode == 3, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "infrastructure_failure"
+    assert payload["failure"]["code"] == "frontend_dependency_bootstrap_failed"
+    assert next(stage for stage in payload["stages"] if stage["name"] == "frontend_dependency_bootstrap")["status"] == "failed"
+    assert all(stage["name"] != "frontend_responsibility" for stage in payload["stages"])
+    cleanup_stage = next(stage for stage in payload["stages"] if stage["name"] == "worktree_cleanup")
+    assert cleanup_stage["status"] == "pass"
+    assert all(resource["exists_after"] is False for resource in cleanup_stage["frontend_dependencies"])
+
+
+def test_frontend_product_failure_cleans_detached_node_modules(
+    readiness_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    repo, base = readiness_repo
+    _write_frontend_project(repo)
+    _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
+    head = _commit(repo, "frontend verification failure")
+
+    result = _check(repo, base, head, env=_fake_corepack_environment(tmp_path, verify_returncode=9))
+    payload = _payload(result)
+
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "product_test_failure"
+    assert payload["failure"]["code"] == "frontend_ci_verify_failed"
+    cleanup_stage = next(stage for stage in payload["stages"] if stage["name"] == "worktree_cleanup")
+    assert cleanup_stage["status"] == "pass"
+    assert all(record["registered_after"] is False for record in cleanup_stage["worktrees"])
+    assert all(resource["exists_after"] is False for resource in cleanup_stage["frontend_dependencies"])
 
 
 def test_shared_test_fixture_requires_an_explicit_bounded_suite(readiness_repo: tuple[Path, str]) -> None:
@@ -849,6 +1104,11 @@ def test_pr_workflow_requires_the_exact_ref_gate_before_push_and_after_merge_up(
     assert "before the first push" in normalized
     assert "after every ordinary merge-up" in normalized
     assert "corepack pnpm run ci:verify" in workflow
+    assert "`packageManager` `pnpm@<version>`" in workflow
+    assert "`pnpm install\n--frozen-lockfile --prefer-offline`" in workflow
+    assert "normal host\ncontent-addressed pnpm store and Corepack cache" in workflow
+    assert "never links or reuses a\nmutable `node_modules` tree" in workflow
+    assert "actionable `infrastructure_failure`" in workflow
     assert "--shared-test-suite" in workflow
     assert "or modified `.code-governance-exception.json`" in workflow
     assert "`tests/test_code_governance.py` suite" in workflow
