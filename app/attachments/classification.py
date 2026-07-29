@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import io
 import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Literal, TypeAlias
+from zipfile import BadZipFile, ZipFile
 
 from app.file_parser_contracts import (
     AttachmentPreprocessingError,
     MAX_XLSX_FILE_BYTES,
     XLSX_CONTENT_TYPE,
-    preflight_xlsx_attachment_bytes,
+    _preflight_xlsx_worksheets,
+    _validate_xlsx_archive,
 )
 from app.validation import assert_safe_id
 
@@ -129,7 +132,7 @@ def classify_attachment_bytes(source: AttachmentBytesForClassification) -> Attac
     if not _looks_like_zip(raw):
         return _rejected("attachment_classification_type_unsupported")
     try:
-        preflight = preflight_xlsx_attachment_bytes(raw)
+        _preflight_xlsx_bytes(raw)
     except AttachmentPreprocessingError:
         return _rejected("attachment_classification_xlsx_invalid")
     if _source_extension(source.source_filename) != ".xlsx":
@@ -138,8 +141,8 @@ def classify_attachment_bytes(source: AttachmentBytesForClassification) -> Attac
         file_id=source.file_id,
         media_type=XLSX_CONTENT_TYPE,
         verified_extension=".xlsx",
-        size_bytes=preflight.byte_count,
-        sha256=preflight.sha256,
+        size_bytes=len(raw),
+        sha256=actual_sha256,
         classifier_version=ATTACHMENT_CLASSIFIER_VERSION,
         _seal=_CLASSIFICATION_SEAL,
     )
@@ -161,6 +164,38 @@ def _source_extension(source_filename: object) -> str:
 
     normalized = PurePosixPath(str(source_filename or "").replace("\\", "/")).name
     return PurePosixPath(normalized).suffix.casefold()
+
+
+def _preflight_xlsx_bytes(raw: bytes) -> None:
+    """Reuse the parser's exact ZIP and OOXML checks while rejecting ambiguous ZIP identity."""
+
+    _reject_ambiguous_zip_entries(raw)
+    checked_entries = _validate_xlsx_archive(raw)
+    _preflight_xlsx_worksheets(raw, content_security_checked_entries=checked_entries)
+
+
+def _reject_ambiguous_zip_entries(raw: bytes) -> None:
+    """Reject duplicate entry identities before the shared parser selects any OOXML part."""
+
+    try:
+        archive = ZipFile(io.BytesIO(raw))
+    except (BadZipFile, ValueError) as exc:
+        raise AttachmentPreprocessingError("xlsx_parse_failed") from exc
+    seen_names: set[str] = set()
+    try:
+        for entry in archive.infolist():
+            normalized = entry.filename.replace("\\", "/").casefold()
+            path = PurePosixPath(normalized)
+            if (
+                not normalized
+                or normalized.startswith("/")
+                or normalized in seen_names
+                or any(part in {"", ".", ".."} for part in path.parts)
+            ):
+                raise AttachmentPreprocessingError("xlsx_parse_failed")
+            seen_names.add(normalized)
+    finally:
+        archive.close()
 
 
 def _looks_like_zip(raw: bytes) -> bool:
