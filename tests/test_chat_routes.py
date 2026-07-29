@@ -4265,6 +4265,7 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         (None, True, False, None, False),
         ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", True, False, None, False),
         (None, False, False, "before_publish", False),
+        (None, False, False, "definitive_rejection", False),
         ("8f2cf18b-e414-4ddd-b99e-c21c32d4f086", False, True, None, False),
         (
             "9c356f6d-360b-41d0-a97e-3ab16d70a874",
@@ -4281,6 +4282,7 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         "unkeyed-rollback",
         "keyed-rollback",
         "unkeyed-publish-failure",
+        "unkeyed-definitive-rejection",
         "restored-continuation",
         "restored-lost-ack",
         "unkeyed-file-denied",
@@ -4308,6 +4310,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     queue_admission: QueueAdmissionMetadata | None = None
     queue_readback_available = enqueue_failure_mode != "after_publish_unknown"
     enqueue_payloads: list[dict[str, object]] = []
+    published_payloads: list[dict[str, object]] = []
 
     class TransactionState:
         def __init__(self) -> None:
@@ -4469,11 +4472,28 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 and value is not None
             }
         )
+        if kwargs.get("state") == "enqueue_failed":
+            calls.append("terminalize_submission")
 
-    async def reauthorize(*_args, **_kwargs):
+    async def mark_enqueue_failed(conn, **kwargs):
+        assert conn.run is not None
+        assert kwargs["run_id"] == "run-profile-lock-order"
+        conn.run["status"] = "failed"
+        conn.run["error_code"] = "queue_enqueue_failed"
+        calls.append("terminalize_run")
+        return repository_module.ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    async def reauthorize(*_args, **kwargs):
         assert transaction_depth == 1
         assert committed_run is not None
         assert committed_submission is not None
+        assert kwargs["run_id"] == "run-profile-lock-order"
+        assert committed_run["admitted_agent_profile_revision"] == 7
+        assert committed_run["admitted_agent_profile_hash"] == "a" * 64
         calls.append("profile_reauth")
 
     async def enqueue(payload):
@@ -4485,8 +4505,11 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert committed_submission["state"] == "accepted_pending_enqueue"
         calls.append("enqueue")
         enqueue_payloads.append(dict(payload))
+        if enqueue_failure_mode == "definitive_rejection":
+            raise QueueAdmissionRejected("queue_payload_invalid")
         if len(enqueue_payloads) == 1 and enqueue_failure_mode == "before_publish":
             raise RuntimeError("queue publication failed")
+        published_payloads.append(dict(payload))
         queue_admission = QueueAdmissionMetadata(1, 7, "profile-message")
         if len(enqueue_payloads) == 1 and enqueue_failure_mode == "after_publish_unknown":
             raise RuntimeError("queue acknowledgement unavailable")
@@ -4532,6 +4555,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr("app.routes.chat.repositories.get_chat_submission", get_submission)
     monkeypatch.setattr("app.routes.chat.repositories.get_authorized_run", get_run)
     monkeypatch.setattr("app.routes.chat.repositories.finalize_chat_submission", finalize_submission)
+    monkeypatch.setattr("app.routes.chat.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
     monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
@@ -4591,6 +4615,43 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert "enqueue" not in calls
         return
 
+    if enqueue_failure_mode == "definitive_rejection":
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_stream(
+                chat_request,
+                agent_id=query_agent_id,
+                principal=principal(),
+            )
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "queue_enqueue_failed"
+        assert committed_transactions >= 2
+        assert committed_run is not None
+        assert committed_run["status"] == "failed"
+        assert committed_run["error_code"] == "queue_enqueue_failed"
+        assert committed_submission is not None
+        assert committed_submission["submission_id"]
+        assert committed_submission["run_id"] == "run-profile-lock-order"
+        assert committed_submission["state"] == "enqueue_failed"
+        assert committed_submission["rejection_code"] == "queue_enqueue_failed"
+        assert calls == [
+            "user_lock",
+            "principal",
+            "profile_lock",
+            "skill_auth",
+            "workspace_auth",
+            "file_auth",
+            "claim",
+            "create_session",
+            "create_run",
+            "profile_reauth",
+            "enqueue",
+            "terminalize_run",
+            "terminalize_submission",
+        ]
+        assert len(enqueue_payloads) == 1
+        assert published_payloads == []
+        return
+
     response = await chat_stream(
         chat_request,
         agent_id=query_agent_id,
@@ -4632,6 +4693,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     if enqueue_failure_mode is None:
         assert response.status == "queued"
         assert len(enqueue_payloads) == 1
+        assert published_payloads == enqueue_payloads
         return
 
     assert response.status == "accepted_pending_enqueue"

@@ -1166,6 +1166,11 @@ async def test_postgres_profile_queue_dispatch_is_not_emitted_after_producer_rol
             ("tenant-profile-chat",),
         )
         assert (await persisted_cursor.fetchone())["run_count"] == 0
+        submission_cursor = await observer_conn.execute(
+            "select count(*) as submission_count from chat_submissions where tenant_id = %s",
+            ("tenant-profile-chat",),
+        )
+        assert (await submission_cursor.fetchone())["submission_count"] == 0
     finally:
         try:
             await observer_conn.close()
