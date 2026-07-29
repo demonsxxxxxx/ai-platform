@@ -65,6 +65,24 @@ def test_explicit_builtin_pin_grants_only_native_bash_to_worker_subject():
     assert not {"Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Agent"} & set(subjects)
 
 
+def test_legacy_no_profile_builtin_dependency_keeps_pre_rollout_authority():
+    legacy_dependency = {
+        "skill_id": "document-helper",
+        "source": {"kind": "builtin", "asset_dir": "document-helper"},
+    }
+    newly_built_pin = build_skill_version_manifest_pin(_builtin_skill_version("document-helper"))
+
+    legacy_profile = canonical_skill_execution_profile(legacy_dependency)
+    new_profile = canonical_skill_execution_profile(newly_built_pin)
+
+    assert legacy_profile["strategy"] == SDK_RESTRICTED
+    assert legacy_profile["builtin_tool_identities"] == []
+    assert legacy_profile["command_isolation"] == "none"
+    assert new_profile["strategy"] == SDK_NATIVE
+    assert new_profile["builtin_tool_identities"] == ["Bash"]
+    assert new_profile["command_isolation"] == NATIVE_COMMAND_ISOLATION
+
+
 @pytest.mark.parametrize("lifecycle_status", ["released", "reviewed", "active"])
 def test_trusted_explicit_builtin_lifecycle_grants_native_bash(lifecycle_status: str):
     profile = resolve_skill_execution_profile(

@@ -65,6 +65,26 @@ def _known_tool_identities(values: tuple[str, ...]) -> list[str]:
     return [identity for identity in values if identity in BUILTIN_TOOL_IDENTITIES]
 
 
+def _builtin_execution_profile(skill_id: str, identities: list[str]) -> SkillExecutionProfile:
+    controlled = skill_id in _PLATFORM_CONTROLLED_SKILLS
+    return {
+        "schema_version": SKILL_EXECUTION_PROFILE_SCHEMA_VERSION,
+        "strategy": (
+            PLATFORM_CONTROLLED
+            if controlled
+            else SDK_NATIVE if identities else SDK_RESTRICTED
+        ),
+        "trust_basis": "repository_builtin",
+        "builtin_tool_identities": identities,
+        "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
+        "command_isolation": (
+            CONTROLLED_COMMAND_ISOLATION
+            if controlled
+            else NATIVE_COMMAND_ISOLATION if "Bash" in identities else "none"
+        ),
+    }
+
+
 def resolve_skill_execution_profile(
     *,
     skill_id: str,
@@ -83,23 +103,7 @@ def resolve_skill_execution_profile(
             _EXPLICIT_SKILL_BASH_IDENTITY
             + _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS.get(skill_id, ())
         )
-        controlled = skill_id in _PLATFORM_CONTROLLED_SKILLS
-        return {
-            "schema_version": SKILL_EXECUTION_PROFILE_SCHEMA_VERSION,
-            "strategy": (
-                PLATFORM_CONTROLLED
-                if controlled
-                else SDK_NATIVE if identities else SDK_RESTRICTED
-            ),
-            "trust_basis": "repository_builtin",
-            "builtin_tool_identities": identities,
-            "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
-            "command_isolation": (
-                CONTROLLED_COMMAND_ISOLATION
-                if controlled
-                else NATIVE_COMMAND_ISOLATION if "Bash" in identities else "none"
-            ),
-        }
+        return _builtin_execution_profile(skill_id, identities)
     if source_kind == "uploaded" and normalized_status in _TRUSTED_UPLOADED_STATUSES:
         return {
             "schema_version": SKILL_EXECUTION_PROFILE_SCHEMA_VERSION,
@@ -125,11 +129,14 @@ def legacy_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutionPr
     source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
     source_kind = str(source.get("kind") or "")
     if source_kind == "builtin":
-        return resolve_skill_execution_profile(
-            skill_id=str(manifest.get("skill_id") or ""),
-            source_kind=source_kind,
-            lifecycle_status=SKILL_VERSION_RELEASED,
+        skill_id = str(manifest.get("skill_id") or "")
+        legacy_declarations = (
+            _EXPLICIT_SKILL_BASH_IDENTITY
+            + _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS.get(skill_id, ())
+            if skill_id in _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS
+            else ()
         )
+        return _builtin_execution_profile(skill_id, _known_tool_identities(legacy_declarations))
     return resolve_skill_execution_profile(
         skill_id=str(manifest.get("skill_id") or ""),
         source_kind=source_kind,
