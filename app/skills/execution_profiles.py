@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal, TypedDict
 
 from app.skills.lifecycle import (
+    SKILL_VERSION_LEGACY_ACTIVE,
     SKILL_VERSION_RELEASED,
     SKILL_VERSION_REVIEWED,
     normalize_skill_version_status,
@@ -20,11 +21,13 @@ SDK_RESTRICTED = "sdk_restricted"
 NATIVE_COMMAND_ISOLATION = "sibling-tool-sandbox-v1"
 CONTROLLED_COMMAND_ISOLATION = "minimal-environment-v1"
 
-_SERVER_BUILTIN_TOOL_DECLARATIONS = {
-    "baoyu-translate": ("Bash", "Write"),
-    "ctd-32s73-stability-template-fill": ("Bash", "Write"),
-    "minimax-docx": ("Bash", "Write"),
-    "qa-file-reviewer": ("Bash", "Write"),
+_IMPLICIT_GENERAL_CHAT_SKILL_ID = "general-chat"
+_EXPLICIT_SKILL_BASH_IDENTITY = ("Bash",)
+_SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS = {
+    "baoyu-translate": ("Write",),
+    "ctd-32s73-stability-template-fill": ("Write",),
+    "minimax-docx": ("Write",),
+    "qa-file-reviewer": ("Write",),
 }
 _PLATFORM_CONTROLLED_SKILLS = frozenset({"baoyu-translate", "qa-file-reviewer"})
 _NATIVE_UPLOADED_TOOL_IDENTITIES = (
@@ -36,6 +39,9 @@ _NATIVE_UPLOADED_TOOL_IDENTITIES = (
     "Edit",
 )
 _TRUSTED_UPLOADED_STATUSES = frozenset({SKILL_VERSION_REVIEWED, SKILL_VERSION_RELEASED})
+_TRUSTED_BUILTIN_STATUSES = frozenset(
+    {SKILL_VERSION_LEGACY_ACTIVE, SKILL_VERSION_RELEASED, SKILL_VERSION_REVIEWED}
+)
 
 
 class SkillExecutionProfile(TypedDict):
@@ -68,8 +74,15 @@ def resolve_skill_execution_profile(
     """Resolve the server-owned runtime strategy for one immutable Skill version."""
 
     normalized_status = normalize_skill_version_status(lifecycle_status)
-    if source_kind == "builtin":
-        identities = _known_tool_identities(_SERVER_BUILTIN_TOOL_DECLARATIONS.get(skill_id, ()))
+    if (
+        source_kind == "builtin"
+        and skill_id != _IMPLICIT_GENERAL_CHAT_SKILL_ID
+        and normalized_status in _TRUSTED_BUILTIN_STATUSES
+    ):
+        identities = _known_tool_identities(
+            _EXPLICIT_SKILL_BASH_IDENTITY
+            + _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS.get(skill_id, ())
+        )
         controlled = skill_id in _PLATFORM_CONTROLLED_SKILLS
         return {
             "schema_version": SKILL_EXECUTION_PROFILE_SCHEMA_VERSION,
