@@ -1,7 +1,15 @@
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from app.control_plane_contracts import RUN_PAYLOAD_SCHEMA_VERSION
 from app.skills.release_policy import validate_release_decision_lock, validate_release_decision_payload
@@ -1017,6 +1025,58 @@ class ChatMessagesResponse(BaseModel):
 class ChatStreamRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    _PROFILE_CAPABILITY_SELECTOR_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "agentid",
+            "agentids",
+            "agentoptions",
+            "capabilityid",
+            "confirmedcapabilityid",
+            "disabledmcptools",
+            "disabledskills",
+            "enabledmcptools",
+            "enabledskills",
+            "mcptool",
+            "mcptoolid",
+            "mcptoolids",
+            "mcptools",
+            "mcpserver",
+            "mcpserverid",
+            "mcpserverids",
+            "mcpservers",
+            "model",
+            "modelid",
+            "modelids",
+            "modelvalue",
+            "models",
+            "multiagentsteps",
+            "selectedmcptoolid",
+            "selectedmcptoolids",
+            "selectedmodel",
+            "selectedmodelid",
+            "selectedmodelids",
+            "selectedmodelvalue",
+            "selectedcapability",
+            "selectedcapabilityid",
+            "selectedskill",
+            "selectedskillid",
+            "selectedskillids",
+            "selectedtools",
+            "skill",
+            "skillid",
+            "skillids",
+            "skillversion",
+            "skills",
+            "executor",
+            "executortype",
+            "toolids",
+            "tools",
+        }
+    )
+    _PROFILE_SELECTOR_NESTING_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"agentoptions", "input"}
+    )
+
     workspace_id: str = "default"
     session_id: str | None = None
     agent_id: str | None = None
@@ -1036,6 +1096,100 @@ class ChatStreamRequest(BaseModel):
     user_timezone: str | None = None
     confirmed_capability_id: str | None = None
     submission_id: UUID | None = None
+    _submitted_profile_capability_selector_paths: tuple[str, ...] = PrivateAttr(
+        default_factory=tuple
+    )
+
+    @staticmethod
+    def _normalized_selector_key(value: object) -> str:
+        return "".join(character.casefold() for character in str(value) if character.isalnum())
+
+    @classmethod
+    def _collect_profile_capability_selector_paths(
+        cls,
+        value: object,
+        *,
+        prefix: str,
+        recurse_all: bool,
+    ) -> set[str]:
+        paths: set[str] = set()
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                paths.update(
+                    cls._collect_profile_capability_selector_paths(
+                        item,
+                        prefix=f"{prefix}[{index}]",
+                        recurse_all=recurse_all,
+                    )
+                )
+            return paths
+        if not isinstance(value, dict):
+            return paths
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            normalized_key = cls._normalized_selector_key(key)
+            path = f"{prefix}.{key}"
+            if normalized_key in cls._PROFILE_CAPABILITY_SELECTOR_KEYS:
+                paths.add(path)
+            if recurse_all or normalized_key in cls._PROFILE_SELECTOR_NESTING_KEYS:
+                paths.update(
+                    cls._collect_profile_capability_selector_paths(
+                        item,
+                        prefix=path,
+                        recurse_all=True,
+                    )
+                )
+        return paths
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def capture_profile_capability_selector_surface(cls, value: Any, handler):
+        """Retain ignored aliases needed to fail closed for profile-bound Chat."""
+
+        paths = (
+            cls._collect_profile_capability_selector_paths(
+                value,
+                prefix="$",
+                recurse_all=False,
+            )
+            if isinstance(value, dict)
+            else set()
+        )
+        request = handler(value)
+        request._submitted_profile_capability_selector_paths = tuple(sorted(paths))
+        return request
+
+    def profile_capability_selector_paths(self) -> tuple[str, ...]:
+        """Return the complete submitted model, Skill, Agent, and tool selector surface."""
+
+        paths = set(self._submitted_profile_capability_selector_paths)
+        dynamic = {
+            "agent_id": self.agent_id,
+            "skill_id": self.skill_id,
+            "selected_skill": self.selected_skill,
+            "disabled_skills": self.disabled_skills,
+            "enabled_skills": self.enabled_skills,
+            "disabled_mcp_tools": self.disabled_mcp_tools,
+            "selected_mcp_tool_ids": self.selected_mcp_tool_ids,
+            "confirmed_capability_id": self.confirmed_capability_id,
+            "agent_options": self.agent_options,
+            "input": self.input,
+        }
+        for field_name, field_value in dynamic.items():
+            if field_name not in self.model_fields_set:
+                continue
+            normalized_key = self._normalized_selector_key(field_name)
+            if normalized_key in self._PROFILE_CAPABILITY_SELECTOR_KEYS:
+                paths.add(f"$.{field_name}")
+            if normalized_key in self._PROFILE_SELECTOR_NESTING_KEYS:
+                paths.update(
+                    self._collect_profile_capability_selector_paths(
+                        field_value,
+                        prefix=f"$.{field_name}",
+                        recurse_all=True,
+                    )
+                )
+        return tuple(sorted(paths))
 
     @field_validator("workspace_id")
     @classmethod

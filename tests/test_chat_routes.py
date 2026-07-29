@@ -1237,6 +1237,90 @@ def _durable_run_row(*, status: str = "queued") -> dict[str, object]:
 
 
 @pytest.mark.asyncio
+async def test_profile_retry_admission_holds_authority_transaction_through_enqueue(monkeypatch):
+    submission = _pending_submission_row()
+    run = _durable_run_row()
+    run.update(
+        {
+            "agent_id": "agt_support",
+            "skill_id": "profile-specialist",
+            "admitted_agent_profile_revision": 7,
+            "admitted_agent_profile_hash": "a" * 64,
+            "input_json": {
+                "input": {"message": "retry profile run", "mcp_tool_ids": []},
+                "executor_type": "claude-agent-worker",
+                "skill_version": "version-profile",
+                "skill_manifests": [],
+                "model_id": "model-a",
+                "model_value": "provider-model-a",
+                "agent_profile": {
+                    "agent_id": "agt_support",
+                    "revision": 7,
+                    "content_hash": "a" * 64,
+                    "instructions": "private",
+                },
+            },
+        }
+    )
+    transaction_depth = 0
+    calls: list[str] = []
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+
+    async def get_submission(*_args, **_kwargs):
+        return submission
+
+    async def get_run(*_args, **_kwargs):
+        return run
+
+    async def reauthorize(*_args, **_kwargs):
+        assert transaction_depth == 1
+        calls.append("profile_authority")
+
+    async def no_existing(_payload):
+        calls.append("read")
+        return None
+
+    async def enqueue(_payload):
+        assert transaction_depth == 1
+        calls.append("enqueue")
+        return QueueAdmissionMetadata(1, 3, "profile-message")
+
+    async def append_event(*_args, **_kwargs):
+        calls.append("event")
+
+    async def finalize(*_args, **kwargs):
+        submission["state"] = kwargs["state"]
+        submission["outcome_json"] = kwargs["outcome_json"]
+        calls.append("finalize")
+
+    monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission)
+    monkeypatch.setattr(repository_module, "get_authorized_run", get_run)
+    monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
+    monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing)
+    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr(repository_module, "append_event", append_event)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize)
+
+    response = await _admit_chat_submission(
+        principal=principal(),
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+
+    assert response.state == "queued"
+    assert calls == ["profile_authority", "read", "enqueue", "event", "finalize"]
+
+
+@pytest.mark.asyncio
 async def test_retry_admission_marks_committed_submission_enqueue_failed_only_for_definitive_rejection(monkeypatch):
     submission = _pending_submission_row()
     finalized: list[dict[str, object]] = []
@@ -4035,7 +4119,12 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
 
 
 @pytest.mark.asyncio
-async def test_new_profile_submit_takes_user_lock_before_profile_admission(monkeypatch):
+@pytest.mark.parametrize(
+    "submission_id",
+    [None, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"],
+    ids=["unkeyed", "keyed"],
+)
+async def test_new_profile_submit_takes_user_lock_before_profile_admission(monkeypatch, submission_id):
     """Route/persistence mirror only; PostgreSQL lock-manager behavior is opt-in coverage."""
 
     from app.agent_apps import AgentProfileAdmission
@@ -4044,6 +4133,16 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
 
     calls: list[str] = []
     persisted: dict[str, dict] = {}
+    transaction_depth = 0
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
 
     async def admission_lock(*_args, **_kwargs):
         calls.append("user_lock")
@@ -4105,13 +4204,24 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
     async def append_message(*_args, **_kwargs):
         return "msg-profile-lock-order"
 
+    async def claim_submission(*_args, **kwargs):
+        return (
+            {
+                "request_fingerprint_sha256": kwargs["request_fingerprint_sha256"],
+                "state": "resolving",
+            },
+            True,
+        )
+
     async def enqueue(*_args, **_kwargs):
+        assert transaction_depth == 1, "profile queue admission must occur before the authoritative transaction exits"
+        calls.append("enqueue")
         return 1
 
     async def noop(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
     monkeypatch.setattr(
         "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
         admission_lock,
@@ -4135,6 +4245,8 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
     monkeypatch.setattr("app.routes.chat.repositories.create_run", create_run)
     monkeypatch.setattr("app.routes.chat.repositories.insert_run_skill_snapshots_at_creation", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", append_message)
+    monkeypatch.setattr("app.routes.chat.repositories.claim_chat_submission", claim_submission)
+    monkeypatch.setattr("app.routes.chat.repositories.finalize_chat_submission", noop)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
@@ -4150,13 +4262,14 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
                 agent_id="agt_support",
                 expected_revision=7,
             ),
+            submission_id=submission_id,
         ),
         principal=principal(),
     )
 
     assert response.session_id == "ses-profile-lock-order"
     assert response.run_id == "run-profile-lock-order"
-    assert calls == ["user_lock", "principal", "profile_lock", "create_session", "create_run"]
+    assert calls == ["user_lock", "principal", "profile_lock", "create_session", "create_run", "enqueue"]
     assert persisted["session"]["admitted_agent_profile_revision"] == 7
     assert persisted["session"]["admitted_agent_profile_hash"] == "a" * 64
     assert persisted["run"]["admitted_agent_profile_revision"] == 7

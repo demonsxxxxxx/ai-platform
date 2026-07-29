@@ -30,21 +30,3 @@ test("production and harness wrappers forward admin profile authority while pers
   assert.match(source, /expected_draft_revision: draft\.draftRevision \?\? 0/);
   assert.doesNotMatch(source, /error instanceof Error \? error\.message/);
 });
-
-test("withdrawn profiles remain visibly withdrawn and cannot publish or open Chat", () => {
-  const source = readFileSync(
-    join(process.cwd(), "src/features/agent-builder/AgentBuilderWorkbench.tsx"),
-    "utf8",
-  );
-  const typeSource = readFileSync(
-    join(process.cwd(), "src/types/agentProfile.ts"),
-    "utf8",
-  );
-
-  assert.match(typeSource, /status: "draft" \| "published" \| "withdrawn"/);
-  assert.match(source, /profileStatus: profile\.status/);
-  assert.match(source, /已撤回版本 \$\{draft\.draftRevision\}/);
-  assert.match(source, /const profileIsWithdrawn = draft\.profileStatus === "withdrawn"/);
-  assert.match(source, /submitDisabled[\s\S]*profileIsWithdrawn/);
-  assert.match(source, /disabled=\{persistenceState\.busy \|\| profileIsWithdrawn/);
-});

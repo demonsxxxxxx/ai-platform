@@ -398,7 +398,12 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
 
     async def read_prior(*_args, **kwargs):
         assert kwargs["revision"] == 7
+        assert kwargs["status"] == "draft"
         return prior
+
+    async def read_aggregate(*_args, **kwargs):
+        assert kwargs["for_update"] is True
+        return {"latest_revision": 7}
 
     async def validate(*_args, **kwargs):
         validated.append(kwargs["definition"])
@@ -411,6 +416,8 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
         return "aud_preview"
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", read_aggregate)
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", read_prior)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
     authority = AgentProfileAuthority()
@@ -455,6 +462,59 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
     assert validated[-1].allowed_department_ids == []
     assert validated[-1].allowed_roles == []
     assert validated[-1].allowed_user_ids == []
+
+
+@pytest.mark.asyncio
+async def test_draft_preview_rejects_a_superseded_revision_before_validation_or_audit(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+
+    order: list[str] = []
+
+    async def ensure_user(*_args, **_kwargs):
+        order.append("user")
+
+    async def lifecycle_lock(*_args, **_kwargs):
+        order.append("lifecycle_lock")
+
+    async def aggregate(*_args, **kwargs):
+        order.append("aggregate_lock")
+        assert kwargs["for_update"] is True
+        return {"latest_revision": 8}
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("superseded preview must fail before revision validation or audit")
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        lifecycle_lock,
+    )
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", aggregate)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", forbidden)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", forbidden)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", forbidden)
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.validate_draft(
+            object(),
+            principal=_principal(roles=["admin"]),
+            definition=AgentProfileDraftRequest(
+                name="Superseded draft",
+                instructions="private instructions",
+                model_id="model-a",
+                selected_skill=SelectedSkillRequest(
+                    skill_id="general-chat",
+                    expected_version="version-a",
+                ),
+                expected_draft_revision=7,
+            ),
+            agent_id="agt_support",
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (409, "agent_profile_revision_stale")
+    assert order == ["user", "lifecycle_lock", "aggregate_lock"]
 
 
 @pytest.mark.asyncio
@@ -916,6 +976,89 @@ def test_profile_bound_continuation_rejects_client_execution_overrides():
 
     with pytest.raises(HTTPException) as caught:
         reject_profile_selector_conflicts(request, active=True)
+    assert (caught.value.status_code, caught.value.detail) == (400, "agent_profile_selector_conflict")
+
+
+@pytest.mark.parametrize("bound", [False, True], ids=["new", "continued"])
+@pytest.mark.parametrize(
+    ("request_payload", "query_agent_id"),
+    [
+        ({"agent_id": "general-agent"}, None),
+        ({"modelId": "model-b"}, None),
+        ({"disabled_skills": []}, None),
+        ({"agent_options": {"temperature": 0.2}}, None),
+        ({"confirmed_capability_id": "general_chat"}, None),
+        ({"input": {"model": "model-b"}}, None),
+        ({"input": {"multi_agent_steps": [{"skillIds": ["other-skill"]}]}}, None),
+        ({"input": {"multi_agent_steps": [{"tools": [{"mcpToolIds": ["other-tool"]}]}]}}, None),
+        ({"input": {"multiAgentSteps": [{"mcpServerIds": ["other-server"]}]}}, None),
+        ({}, "general-agent"),
+    ],
+    ids=[
+        "top-level-agent",
+        "top-level-model-alias",
+        "empty-disabled-skill-selector",
+        "agent-options",
+        "confirmed-capability",
+        "nested-model",
+        "nested-step-skill-alias",
+        "nested-tool-mcp-alias",
+        "nested-mcp-server-alias",
+        "query-agent",
+    ],
+)
+@pytest.mark.asyncio
+async def test_profile_authority_rejects_the_complete_client_selector_surface_before_storage(
+    monkeypatch,
+    bound,
+    request_payload,
+    query_agent_id,
+):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import ChatStreamRequest, SelectedAgentProfileRequest
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("selector conflict must fail before profile storage access")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        forbidden,
+    )
+    request = ChatStreamRequest.model_validate(
+        {
+            "message": "do not broaden the published definition",
+            **request_payload,
+        }
+    )
+    authority = AgentProfileAuthority()
+
+    with pytest.raises(HTTPException) as caught:
+        if bound:
+            await authority.resolve_bound_for_submission(
+                object(),
+                principal=_principal(),
+                agent_id="agt_support",
+                revision=7,
+                content_hash="a" * 64,
+                submitted_request=request,
+                query_agent_id=query_agent_id,
+            )
+        else:
+            await authority.resolve_for_admission(
+                object(),
+                principal=_principal(),
+                selection=SelectedAgentProfileRequest(
+                    agent_id="agt_support",
+                    expected_revision=7,
+                ),
+                submitted_request=request,
+                query_agent_id=query_agent_id,
+            )
+
     assert (caught.value.status_code, caught.value.detail) == (400, "agent_profile_selector_conflict")
 
 

@@ -1,6 +1,5 @@
 import type { ModelOption } from "../../services/api/modelPublic";
 import type {
-  AgentProfileAdminProjection,
   PublicSkillResponse,
   SelectedAgentProfileRequest,
   SelectedSkillRequest,
@@ -23,7 +22,6 @@ export interface AgentBuilderDraft {
   selectedMcpToolIds: string[];
   agentId?: string;
   draftRevision?: number;
-  profileStatus?: AgentProfileAdminProjection["status"];
   selectedAgentProfile?: SelectedAgentProfileRequest | null;
 }
 
@@ -49,7 +47,6 @@ export type AgentBuilderSubmissionBlockCode =
   | "message_required"
   | "file_attachment_unavailable"
   | "catalog_unavailable"
-  | "selected_agent_profile_withdrawn"
   | "selected_skill_stale"
   | "selected_mcp_tool_unavailable"
   | "selected_model_stale";
@@ -199,13 +196,6 @@ export function prepareAgentBuilderSubmission(
   draft: AgentBuilderDraft,
   catalog: AgentBuilderCurrentCatalog,
 ): AgentBuilderSubmissionPreparation {
-  if (draft.profileStatus === "withdrawn") {
-    return {
-      kind: "blocked",
-      code: "selected_agent_profile_withdrawn",
-      sanitizedDraft: draft,
-    };
-  }
   const message = draft.message.trim();
   if (!message) {
     return { kind: "blocked", code: "message_required", sanitizedDraft: draft };

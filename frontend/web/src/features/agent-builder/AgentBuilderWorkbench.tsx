@@ -103,9 +103,6 @@ function controllerMessage(state: AgentBuilderControllerState): string | null {
   if (state.phase === "blocked" && state.code === "selected_model_stale") {
     return "所选模型已变更或不可用，请重新选择。";
   }
-  if (state.phase === "blocked" && state.code === "selected_agent_profile_withdrawn") {
-    return "该智能体已撤回，请先保存并发布新版本。";
-  }
   if (state.phase === "blocked") return "请输入预览消息后再提交。";
   if (state.phase === "error") return "对话提交未被接受，请更新草稿后重试。";
   if (state.phase === "awaiting_chat_identity") return "正在打开已确认的对话运行…";
@@ -225,7 +222,6 @@ function useAgentBuilderWorkbenchState(
       ...draft,
       agentId: profile.agent_id,
       draftRevision: profile.revision,
-      profileStatus: profile.status,
       selectedAgentProfile: null,
     })));
   }, [activeDraft.id]);
@@ -235,13 +231,10 @@ function useAgentBuilderWorkbenchState(
       ...draft,
       agentId: profile.agent_id,
       draftRevision: profile.revision,
-      profileStatus: profile.status,
-      selectedAgentProfile: profile.status === "published"
-        ? {
-            agent_id: profile.agent_id,
-            expected_revision: profile.revision,
-          }
-        : null,
+      selectedAgentProfile: {
+        agent_id: profile.agent_id,
+        expected_revision: profile.revision,
+      },
     })));
   }, [activeDraft.id]);
 
@@ -330,7 +323,6 @@ function AgentBuilderWorkbenchContent({
   }, [activeDraft.name, canManageProfiles, canPersist, draft, markProfileDraft]);
   const publishDraft = useCallback(async () => {
     if (!canManageProfiles) return;
-    if (draft.profileStatus === "withdrawn") return;
     if (!draft.agentId || !draft.draftRevision) return;
     setPersistenceState({ busy: true, error: null });
     try {
@@ -343,7 +335,7 @@ function AgentBuilderWorkbenchContent({
         error: "无法发布智能体草稿，请刷新后重试。",
       });
     }
-  }, [canManageProfiles, draft.agentId, draft.draftRevision, draft.profileStatus, markProfilePublished]);
+  }, [canManageProfiles, draft.agentId, draft.draftRevision, markProfilePublished]);
   const stateMessage =
     controllerMessage(controllerState) ??
     (draft.selectedSkill?.requires_file
@@ -354,7 +346,6 @@ function AgentBuilderWorkbenchContent({
     catalog.models.some(
       (model) => model.id === draft.model?.id && model.value === draft.model.value,
     );
-  const profileIsWithdrawn = draft.profileStatus === "withdrawn";
 
   useEffect(() => {
     if (controllerState.phase !== "awaiting_chat_identity") return;
@@ -381,7 +372,6 @@ function AgentBuilderWorkbenchContent({
   };
 
   const submitDisabled =
-    profileIsWithdrawn ||
     catalog.isLoading ||
     !draft.message.trim() ||
     (!draft.selectedAgentProfile && draft.selectedSkill?.requires_file === true) ||
@@ -396,9 +386,7 @@ function AgentBuilderWorkbenchContent({
           <div className="min-w-0">
             <h1 className="truncate text-lg font-semibold">智能体构建器</h1>
             <p className="text-sm text-[var(--theme-text-secondary)]">
-              {profileIsWithdrawn && draft.draftRevision
-                ? `已撤回版本 ${draft.draftRevision}`
-                : draft.selectedAgentProfile
+              {draft.selectedAgentProfile
                 ? `已发布版本 ${draft.selectedAgentProfile.expected_revision}`
                 : draft.draftRevision
                   ? `已保存草稿版本 ${draft.draftRevision}`
@@ -434,7 +422,7 @@ function AgentBuilderWorkbenchContent({
               </button>
               <button
                 className="btn-primary hidden items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 sm:inline-flex"
-                disabled={persistenceState.busy || profileIsWithdrawn || !draft.agentId || !draft.draftRevision}
+                disabled={persistenceState.busy || !draft.agentId || !draft.draftRevision}
                 onClick={() => void publishDraft()}
                 type="button"
               >

@@ -53,10 +53,22 @@ async def list_public_profiles(conn, *, principal, query=None, category=None):
     return await _authority.list_public(conn, principal=principal, query=query, category=category)
 
 
-async def resolve_profile_for_admission(conn, *, principal, selection) -> AgentProfileAdmission:
+async def resolve_profile_for_admission(
+    conn,
+    *,
+    principal,
+    selection,
+    submitted_request=None,
+    query_agent_id=None,
+) -> AgentProfileAdmission:
     """Resolve a current publication through the authoritative module."""
 
-    return await _authority.resolve_for_admission(conn, principal=principal, selection=selection)
+    authority_kwargs = {"principal": principal, "selection": selection}
+    if submitted_request is not None:
+        authority_kwargs["submitted_request"] = submitted_request
+    if query_agent_id is not None:
+        authority_kwargs["query_agent_id"] = query_agent_id
+    return await _authority.resolve_for_admission(conn, **authority_kwargs)
 
 
 async def resolve_bound_profile_for_submission(
@@ -66,16 +78,22 @@ async def resolve_bound_profile_for_submission(
     agent_id,
     revision,
     content_hash,
+    submitted_request=None,
+    query_agent_id=None,
 ) -> AgentProfileAdmission:
     """Resolve a durable conversation pin without moving it to a later publication."""
 
-    return await _authority.resolve_bound_for_submission(
-        conn,
-        principal=principal,
-        agent_id=agent_id,
-        revision=revision,
-        content_hash=content_hash,
-    )
+    authority_kwargs = {
+        "principal": principal,
+        "agent_id": agent_id,
+        "revision": revision,
+        "content_hash": content_hash,
+    }
+    if submitted_request is not None:
+        authority_kwargs["submitted_request"] = submitted_request
+    if query_agent_id is not None:
+        authority_kwargs["query_agent_id"] = query_agent_id
+    return await _authority.resolve_bound_for_submission(conn, **authority_kwargs)
 
 
 async def reauthorize_pinned_run_for_replay(conn, *, principal, run_id) -> None:

@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v1",
   "expires_on": "2026-08-12",
   "owner": "issue-701-agent-apps",
-  "reason": "Issue #701 is one coupled authoritative lifecycle slice spanning the required aggregate, rollback-safe schema, repository adapters, public routes, durable Chat recovery seam, and the authorized run-control and Agent Builder responsibility mirrors.",
+  "reason": "Issue #701 is one coupled authoritative lifecycle slice spanning the required aggregate, rollback-safe schema, repository adapters, public routes, durable Chat recovery seam, and the existing authorized run-control test mirror.",
   "violations": [
     {
       "code": "functional_hot_file_growth",
@@ -15,6 +15,10 @@
     {
       "code": "hot_file_growth",
       "path": "app/repositories.py"
+    },
+    {
+      "code": "hot_file_growth",
+      "path": "app/routes/chat.py"
     },
     {
       "code": "hot_file_growth",
@@ -35,10 +39,6 @@
     {
       "code": "test_hot_file_growth",
       "path": "tests/test_run_control_routes.py"
-    },
-    {
-      "code": "test_responsibility_mirror",
-      "path": "frontend/web/src/types/agentProfile.ts"
     },
     {
       "code": "test_responsibility_mirror",

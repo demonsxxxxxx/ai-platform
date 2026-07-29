@@ -1,5 +1,7 @@
 import asyncio
+import base64
 from contextlib import asynccontextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -177,6 +179,119 @@ async def _agent_profile_storage_projection(
         (tenant_id,),
     )
     return profiles, await revisions_cursor.fetchall()
+
+
+def _profile_chat_manifest(skill_id: str) -> dict[str, object]:
+    """Build one valid immutable Skill pin for the real Chat persistence mirror."""
+
+    content = f"---\nname: {skill_id}\ndescription: Profile chat test\n---\n\n# {skill_id}\n".encode()
+    digest = hashlib.sha256()
+    path = b"SKILL.md"
+    digest.update(len(path).to_bytes(8, "big"))
+    digest.update(path)
+    digest.update(len(content).to_bytes(8, "big"))
+    digest.update(content)
+    version = digest.hexdigest()
+    return {
+        "skill_id": skill_id,
+        "description": "Profile chat test",
+        "version": version,
+        "content_hash": version,
+        "source": {"kind": "builtin", "asset_dir": skill_id, "version": version},
+        "files": [
+            {
+                "relative_path": "SKILL.md",
+                "content_base64": base64.b64encode(content).decode("ascii"),
+                "size_bytes": len(content),
+            }
+        ],
+        "dependency_ids": [],
+        "allowed": True,
+        "staged": False,
+        "used": False,
+    }
+
+
+async def _seed_profile_chat_storage(
+    conn: psycopg.AsyncConnection,
+    *,
+    skill_version: str,
+) -> None:
+    """Seed the minimum real storage graph for a profile-bound Chat submission."""
+
+    await conn.execute(
+        "insert into tenants(id, name) values (%s, %s)",
+        ("tenant-profile-chat", "Profile Chat tenant"),
+    )
+    await conn.execute(
+        "insert into workspaces(id, tenant_id, name) values (%s, %s, %s)",
+        ("workspace-profile-chat", "tenant-profile-chat", "Profile Chat workspace"),
+    )
+    await conn.execute(
+        """
+        insert into users(id, tenant_id, display_name)
+        values (%s, %s, %s), (%s, %s, %s)
+        """,
+        (
+            "user-profile-chat",
+            "tenant-profile-chat",
+            "Profile Chat user",
+            "admin-profile-chat",
+            "tenant-profile-chat",
+            "Profile Chat admin",
+        ),
+    )
+    await conn.execute(
+        "insert into skills(id, name, version, executor_type) values (%s, %s, %s, %s)",
+        ("profile-chat-skill", "Profile Chat skill", skill_version, "claude-agent-worker"),
+    )
+    await conn.execute(
+        """
+        insert into agents(id, tenant_id, name, agent_type, default_skill_id)
+        values (%s, %s, %s, 'profile', %s)
+        """,
+        ("agt_profile_chat", "tenant-profile-chat", "Profile Chat Agent", "profile-chat-skill"),
+    )
+    await conn.execute(
+        """
+        insert into agent_profile_revisions(
+          tenant_id, agent_id, revision, status, revision_status,
+          name, description, instructions, model_id, skill_id,
+          skill_version, mcp_tool_ids, content_hash, avatar_ref,
+          category, visibility, allowed_department_ids, allowed_roles,
+          allowed_user_ids, legacy_compatibility_write, created_by,
+          published_by, published_at, published_from_revision
+        ) values (
+          %s, %s, 1, 'published', 'published',
+          %s, %s, %s, %s, %s,
+          %s, '[]'::jsonb, %s, 'builtin:agent',
+          'general', 'tenant', '[]'::jsonb, '[]'::jsonb,
+          '[]'::jsonb, false, %s, %s, now(), 1
+        )
+        """,
+        (
+            "tenant-profile-chat",
+            "agt_profile_chat",
+            "Profile Chat Agent",
+            "Published profile for Chat locking",
+            "private profile chat instructions",
+            "model-a",
+            "profile-chat-skill",
+            skill_version,
+            "a" * 64,
+            "admin-profile-chat",
+            "admin-profile-chat",
+        ),
+    )
+    await conn.execute(
+        """
+        insert into agent_profiles(
+          tenant_id, agent_id, lifecycle_status, latest_revision,
+          published_revision, published_hash, published_status
+        ) values (%s, %s, 'published', 1, 1, %s, 'published')
+        """,
+        ("tenant-profile-chat", "agt_profile_chat", "a" * 64),
+    )
 
 
 @pytest.mark.asyncio
@@ -773,6 +888,321 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
             await admission_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         finally:
             await admission_conn.close()
+
+
+@pytest.mark.parametrize(
+    "submission_id",
+    [None, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"],
+    ids=["unkeyed", "keyed"],
+)
+@pytest.mark.asyncio
+async def test_postgres_chat_persistence_and_profile_lock_reach_queue_admission(
+    monkeypatch,
+    submission_id,
+):
+    """Exercise real Chat authority and persistence while the queue adapter is paused."""
+
+    from app.agent_apps.authority import AgentProfileAuthority
+    from app.auth import AuthPrincipal
+    from app.models import ChatStreamRequest, SelectedAgentProfileRequest
+    from app.routes.chat import chat_stream
+
+    dsn = _postgres_dsn()
+    schema_name = f"agent_profile_chat_queue_{uuid.uuid4().hex}"
+    admission_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    lifecycle_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    observer_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    manifest = _profile_chat_manifest("profile-chat-skill")
+    release_queue = asyncio.Event()
+    queue_entered = asyncio.Event()
+    admission_task = None
+    withdrawal_task = None
+    try:
+        await admission_conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        for conn in (admission_conn, lifecycle_conn, observer_conn):
+            await _set_search_path(conn, schema_name)
+        await admission_conn.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await _seed_profile_chat_storage(
+            admission_conn,
+            skill_version=str(manifest["content_hash"]),
+        )
+
+        @asynccontextmanager
+        async def admission_transaction():
+            async with admission_conn.transaction():
+                yield admission_conn
+
+        async def authorize_profile_skill(_conn, **kwargs):
+            assert kwargs["agent_id"] == "agt_profile_chat"
+            assert kwargs["skill_id"] == "profile-chat-skill"
+            return {
+                "skill_id": "profile-chat-skill",
+                "skill_version": str(manifest["content_hash"]),
+                "skill_content_hash": str(manifest["content_hash"]),
+                "executor_type": "claude-agent-worker",
+                "input_modes": [],
+            }
+
+        async def governed_manifest(*_args, **_kwargs):
+            return [dict(manifest)]
+
+        async def paused_enqueue(payload):
+            assert payload["agent_profile"] == {
+                "agent_id": "agt_profile_chat",
+                "revision": 1,
+                "content_hash": "a" * 64,
+                "instructions": "private profile chat instructions",
+            }
+            queue_entered.set()
+            await release_queue.wait()
+            return 1
+
+        async def queue_insight(*_args, **_kwargs):
+            return {}
+
+        monkeypatch.setattr("app.routes.chat.transaction", admission_transaction)
+        monkeypatch.setattr(
+            "app.agent_apps.authority.resolve_model_selection",
+            lambda model_id, _settings: {"id": model_id, "value": "provider-model-a"},
+        )
+        monkeypatch.setattr(repositories, "authorize_selected_run_capabilities", authorize_profile_skill)
+        monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
+        monkeypatch.setattr("app.routes.chat.enqueue_run", paused_enqueue)
+        monkeypatch.setattr("app.routes.chat.get_queue_insight", queue_insight)
+
+        admission_pid_cursor = await admission_conn.execute("select pg_backend_pid() as pid")
+        admission_pid = (await admission_pid_cursor.fetchone())["pid"]
+        lifecycle_pid_cursor = await lifecycle_conn.execute("select pg_backend_pid() as pid")
+        lifecycle_pid = (await lifecycle_pid_cursor.fetchone())["pid"]
+        user = AuthPrincipal(
+            user_id="user-profile-chat",
+            display_name="Profile Chat user",
+            tenant_id="tenant-profile-chat",
+            roles=["user"],
+        )
+        admin = AuthPrincipal(
+            user_id="admin-profile-chat",
+            display_name="Profile Chat admin",
+            tenant_id="tenant-profile-chat",
+            roles=["admin"],
+        )
+        admission_task = asyncio.create_task(
+            chat_stream(
+                ChatStreamRequest(
+                    workspace_id="workspace-profile-chat",
+                    message="run the published profile",
+                    selected_agent_profile=SelectedAgentProfileRequest(
+                        agent_id="agt_profile_chat",
+                        expected_revision=1,
+                    ),
+                    submission_id=submission_id,
+                ),
+                principal=user,
+            )
+        )
+        await asyncio.wait_for(queue_entered.wait(), timeout=2)
+
+        uncommitted_cursor = await observer_conn.execute(
+            "select count(*) as count from runs where tenant_id = %s",
+            ("tenant-profile-chat",),
+        )
+        assert (await uncommitted_cursor.fetchone())["count"] == 0
+
+        async def withdraw_profile():
+            async with lifecycle_conn.transaction():
+                return await AgentProfileAuthority().unpublish(
+                    lifecycle_conn,
+                    principal=admin,
+                    agent_id="agt_profile_chat",
+                    expected_revision=1,
+                )
+
+        withdrawal_task = asyncio.create_task(withdraw_profile())
+
+        async def wait_for_row_block() -> None:
+            while True:
+                cursor = await observer_conn.execute(
+                    "select pg_blocking_pids(%s) as blockers",
+                    (lifecycle_pid,),
+                )
+                if admission_pid in (await cursor.fetchone())["blockers"]:
+                    return
+                await asyncio.sleep(0.02)
+
+        await asyncio.wait_for(wait_for_row_block(), timeout=2)
+        assert not withdrawal_task.done()
+        release_queue.set()
+        response = await asyncio.wait_for(admission_task, timeout=3)
+        withdrawn, _audit_id = await asyncio.wait_for(withdrawal_task, timeout=3)
+
+        assert response.status == "queued"
+        assert withdrawn.status == "withdrawn"
+        persisted_cursor = await observer_conn.execute(
+            """
+            select runs.status, runs.admitted_agent_profile_revision,
+                   runs.admitted_agent_profile_hash,
+                   sessions.admitted_agent_profile_revision as session_revision,
+                   sessions.admitted_agent_profile_hash as session_hash
+            from runs
+            join sessions on sessions.tenant_id = runs.tenant_id and sessions.id = runs.session_id
+            where runs.tenant_id = %s and runs.id = %s
+            """,
+            ("tenant-profile-chat", response.run_id),
+        )
+        assert await persisted_cursor.fetchone() == {
+            "status": "queued",
+            "admitted_agent_profile_revision": 1,
+            "admitted_agent_profile_hash": "a" * 64,
+            "session_revision": 1,
+            "session_hash": "a" * 64,
+        }
+        submission_cursor = await observer_conn.execute(
+            "select state from chat_submissions where tenant_id = %s and submission_id = %s",
+            ("tenant-profile-chat", submission_id or "missing"),
+        )
+        submission_row = await submission_cursor.fetchone()
+        assert submission_row == ({"state": "queued"} if submission_id is not None else None)
+    finally:
+        release_queue.set()
+        pending = [task for task in (admission_task, withdrawal_task) if task is not None and not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        try:
+            await observer_conn.close()
+            await lifecycle_conn.close()
+            await admission_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        finally:
+            await admission_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_profile_queue_payload_is_not_executable_after_producer_rollback(monkeypatch):
+    """A queue write preceding a failed DB commit cannot pass the worker's run gate."""
+
+    from app.auth import AuthPrincipal
+    from app.models import ChatStreamRequest, SelectedAgentProfileRequest
+    from app.routes.chat import chat_stream
+
+    dsn = _postgres_dsn()
+    schema_name = f"agent_profile_chat_rollback_{uuid.uuid4().hex}"
+    producer_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    worker_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    observer_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    manifest = _profile_chat_manifest("profile-chat-skill")
+    enqueued_payloads: list[dict[str, object]] = []
+    queue_entered = asyncio.Event()
+    release_queue = asyncio.Event()
+    producer_task = None
+    worker_task = None
+    try:
+        await producer_conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        for conn in (producer_conn, worker_conn, observer_conn):
+            await _set_search_path(conn, schema_name)
+        await producer_conn.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await _seed_profile_chat_storage(
+            producer_conn,
+            skill_version=str(manifest["content_hash"]),
+        )
+
+        @asynccontextmanager
+        async def rolled_back_transaction():
+            async with producer_conn.transaction(force_rollback=True):
+                yield producer_conn
+            raise RuntimeError("forced producer commit failure")
+
+        async def authorize_profile_skill(_conn, **_kwargs):
+            return {
+                "skill_id": "profile-chat-skill",
+                "skill_version": str(manifest["content_hash"]),
+                "skill_content_hash": str(manifest["content_hash"]),
+                "executor_type": "claude-agent-worker",
+                "input_modes": [],
+            }
+
+        async def governed_manifest(*_args, **_kwargs):
+            return [dict(manifest)]
+
+        async def capture_enqueue(payload):
+            enqueued_payloads.append(payload)
+            queue_entered.set()
+            await release_queue.wait()
+            return 1
+
+        monkeypatch.setattr("app.routes.chat.transaction", rolled_back_transaction)
+        monkeypatch.setattr(
+            "app.agent_apps.authority.resolve_model_selection",
+            lambda model_id, _settings: {"id": model_id, "value": "provider-model-a"},
+        )
+        monkeypatch.setattr(repositories, "authorize_selected_run_capabilities", authorize_profile_skill)
+        monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
+        monkeypatch.setattr("app.routes.chat.enqueue_run", capture_enqueue)
+
+        producer_pid_cursor = await producer_conn.execute("select pg_backend_pid() as pid")
+        producer_pid = (await producer_pid_cursor.fetchone())["pid"]
+        worker_pid_cursor = await worker_conn.execute("select pg_backend_pid() as pid")
+        worker_pid = (await worker_pid_cursor.fetchone())["pid"]
+        producer_task = asyncio.create_task(
+            chat_stream(
+                ChatStreamRequest(
+                    workspace_id="workspace-profile-chat",
+                    message="enqueue before forced rollback",
+                    selected_agent_profile=SelectedAgentProfileRequest(
+                        agent_id="agt_profile_chat",
+                        expected_revision=1,
+                    ),
+                ),
+                principal=AuthPrincipal(
+                    user_id="user-profile-chat",
+                    display_name="Profile Chat user",
+                    tenant_id="tenant-profile-chat",
+                    roles=["user"],
+                ),
+            )
+        )
+        await asyncio.wait_for(queue_entered.wait(), timeout=2)
+        assert len(enqueued_payloads) == 1
+        payload = enqueued_payloads[0]
+        worker_task = asyncio.create_task(
+            repositories.mark_run_running(
+                worker_conn,
+                tenant_id="tenant-profile-chat",
+                run_id=str(payload["run_id"]),
+            )
+        )
+
+        async def wait_for_worker_block() -> None:
+            while True:
+                cursor = await observer_conn.execute(
+                    "select pg_blocking_pids(%s) as blockers",
+                    (worker_pid,),
+                )
+                if producer_pid in (await cursor.fetchone())["blockers"]:
+                    return
+                await asyncio.sleep(0.02)
+
+        await asyncio.wait_for(wait_for_worker_block(), timeout=2)
+        assert not worker_task.done()
+        release_queue.set()
+        with pytest.raises(RuntimeError, match="forced producer commit failure"):
+            await asyncio.wait_for(producer_task, timeout=3)
+        assert await asyncio.wait_for(worker_task, timeout=3) is None
+
+        persisted_cursor = await observer_conn.execute(
+            "select count(*) as run_count from runs where tenant_id = %s",
+            ("tenant-profile-chat",),
+        )
+        assert (await persisted_cursor.fetchone())["run_count"] == 0
+    finally:
+        release_queue.set()
+        pending = [task for task in (producer_task, worker_task) if task is not None and not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        try:
+            await observer_conn.close()
+            await worker_conn.close()
+            await producer_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        finally:
+            await producer_conn.close()
 
 
 @pytest.mark.asyncio

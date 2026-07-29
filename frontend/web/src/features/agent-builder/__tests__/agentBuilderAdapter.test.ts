@@ -196,27 +196,3 @@ test("prepares a published Agent selection without forwarding local builder sele
     },
   });
 });
-
-test("blocks a withdrawn Agent even when a stale published selector is still present", () => {
-  const withdrawn = draft({
-    profileStatus: "withdrawn",
-    selectedAgentProfile: {
-      agent_id: "profile-doc-review",
-      expected_revision: 7,
-    },
-  });
-
-  const prepared = prepareAgentBuilderSubmission(
-    withdrawn,
-    catalog({ modelsResolved: false, skillsResolved: false, mcpToolsResolved: false }),
-  );
-
-  assert.equal(prepared.kind, "blocked");
-  if (prepared.kind !== "blocked") return;
-  assert.equal(prepared.code, "selected_agent_profile_withdrawn");
-  assert.equal(prepared.sanitizedDraft.profileStatus, "withdrawn");
-  assert.deepEqual(prepared.sanitizedDraft.selectedAgentProfile, {
-    agent_id: "profile-doc-review",
-    expected_revision: 7,
-  });
-});

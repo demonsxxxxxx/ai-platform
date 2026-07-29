@@ -534,11 +534,29 @@ class AgentProfileAuthority:
         if validation_agent_id is not None:
             if definition.expected_draft_revision < 1:
                 raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
+            await repositories.acquire_agent_profile_lifecycle_lock(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=validation_agent_id,
+            )
+            aggregate = await repositories.get_agent_profile_aggregate(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=validation_agent_id,
+                for_update=True,
+            )
+            if (
+                aggregate is None
+                or int(aggregate.get("latest_revision") or 0)
+                != definition.expected_draft_revision
+            ):
+                raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
             prior_row = await repositories.get_agent_profile_revision(
                 conn,
                 tenant_id=principal.tenant_id,
                 agent_id=validation_agent_id,
                 revision=definition.expected_draft_revision,
+                status="draft",
             )
             if prior_row is None:
                 raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
@@ -648,8 +666,17 @@ class AgentProfileAuthority:
         *,
         principal: AuthPrincipal,
         selection: SelectedAgentProfileRequest,
+        submitted_request: ChatStreamRequest | None = None,
+        query_agent_id: str | None = None,
     ) -> AgentProfileAdmission:
         """Lock and reauthorize exactly the current published revision for one submission."""
+
+        if submitted_request is not None:
+            self.reject_profile_selector_conflicts(
+                submitted_request,
+                active=True,
+                query_agent_id=query_agent_id,
+            )
 
         row = await repositories.get_current_published_agent_profile(
             conn,
@@ -670,8 +697,17 @@ class AgentProfileAuthority:
         agent_id: str,
         revision: int,
         content_hash: str,
+        submitted_request: ChatStreamRequest | None = None,
+        query_agent_id: str | None = None,
     ) -> AgentProfileAdmission:
         """Reauthorize a conversation's immutable publication while its Agent is live."""
+
+        if submitted_request is not None:
+            self.reject_profile_selector_conflicts(
+                submitted_request,
+                active=True,
+                query_agent_id=query_agent_id,
+            )
 
         row = await repositories.get_bound_published_agent_profile(
             conn,
@@ -808,20 +844,33 @@ class AgentProfileAuthority:
             agent_conversation=admission.public_identity,
         )
 
+    @staticmethod
+    def reject_profile_selector_conflicts(
+        request: ChatStreamRequest,
+        *,
+        active: bool | None = None,
+        query_agent_id: str | None = None,
+    ) -> None:
+        """Reject every client-owned capability selector on a profile-bound submission."""
 
-def reject_profile_selector_conflicts(request: ChatStreamRequest, *, active: bool | None = None) -> None:
-    """Fail closed whenever a profile-bound submission carries client-owned execution overrides."""
+        if active is None:
+            active = request.selected_agent_profile is not None
+        if not active:
+            return
+        if query_agent_id is not None or request.profile_capability_selector_paths():
+            raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
 
-    if active is None:
-        active = request.selected_agent_profile is not None
-    if not active:
-        return
-    agent_options = request.agent_options if isinstance(request.agent_options, dict) else {}
-    client_model_selected = any(key in {"model", "model_id"} for key in agent_options)
-    if (
-        request.skill_id is not None
-        or request.selected_skill is not None
-        or request.selected_mcp_tool_ids is not None
-        or client_model_selected
-    ):
-        raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+
+def reject_profile_selector_conflicts(
+    request: ChatStreamRequest,
+    *,
+    active: bool | None = None,
+    query_agent_id: str | None = None,
+) -> None:
+    """Compatibility delegate for the authoritative profile selector policy."""
+
+    AgentProfileAuthority.reject_profile_selector_conflicts(
+        request,
+        active=active,
+        query_agent_id=query_agent_id,
+    )

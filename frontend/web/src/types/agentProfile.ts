@@ -26,7 +26,7 @@ export interface AgentProfileDraftRequest {
 export interface AgentProfileAdminProjection extends Omit<AgentProfileDraftRequest, "expected_draft_revision"> {
   agent_id: string;
   revision: number;
-  status: "draft" | "published" | "withdrawn";
+  status: "draft" | "published";
   content_hash: string;
 }
 
