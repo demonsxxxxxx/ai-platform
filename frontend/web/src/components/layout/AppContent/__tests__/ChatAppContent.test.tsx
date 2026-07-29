@@ -140,7 +140,7 @@ test("rejects authoritative Agent identity returned for a different Session", as
   }
 });
 
-test("renders only safe Agent identity and locks conflicting controls", () => {
+test("renders only safe Agent identity and locks MCP catalog controls", () => {
   const html = renderToStaticMarkup(
     React.createElement(AgentConversationIdentityBanner, { identity: safeIdentity }),
   );
@@ -158,4 +158,6 @@ test("renders only safe Agent identity and locks conflicting controls", () => {
   assert.equal(exposeGenericChatControl("bound", mcpControl), undefined);
   assert.equal(exposeGenericChatControl("blocked", mcpControl), undefined);
   assert.equal(exposeGenericChatControl("generic", mcpControl), mcpControl);
+  const retryMcpCatalog = () => "retry-mcp-catalog";
+  assert.equal(exposeGenericChatControl("bound", retryMcpCatalog), undefined);
 });
