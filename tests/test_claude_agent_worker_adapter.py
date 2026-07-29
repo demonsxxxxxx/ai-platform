@@ -2380,11 +2380,13 @@ def test_claude_sandbox_admission_passes_explicit_mcp_requirement(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("reuse_call_id", "expected_status", "expected_error"), [(False, "succeeded", None), (True, "failed", "required_tool_completion_evidence_mismatch")])
-async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned(monkeypatch, tmp_path, reuse_call_id, expected_status, expected_error):
-    current_settings = settings(tmp_path, sdk_enabled=True)
+@pytest.mark.parametrize(("skill_id", "mcp_count", "reuse_call_id", "expected_status", "expected_error"), [("general-chat", 2, False, "succeeded", None), ("general-chat", 2, True, "failed", "required_tool_completion_evidence_mismatch"), ("baoyu-translate", 1, True, "failed", "required_tool_completion_evidence_mismatch")])
+async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned(monkeypatch, tmp_path, skill_id, mcp_count, reuse_call_id, expected_status, expected_error):
+    current_settings, events = settings(tmp_path, sdk_enabled=True), []
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    events = []
+    if skill_id != "general-chat":
+        write_skill(tmp_path / "skills", name=skill_id)
+    pins = _registry_pins(tmp_path / "skills", skill_id=skill_id) if skill_id != "general-chat" else [_test_skill_manifest(skill_id)]
     other_subject = {**_mcp_subject(), "identity": "mcp__other-server__fetch", "mcp_server": "other-server", "mcp_tool": "fetch"}
 
     async def no_files(payload, workspace):
@@ -2403,26 +2405,25 @@ async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned
             "status": "completed",
             "message": "sandbox completed",
             "sdk_used": True,
+            "used_skills": [] if skill_id == "general-chat" else [skill_id], "used_skills_source": "" if skill_id == "general-chat" else "executor_hook",
             "capability_evidence": evidence,
         }
 
     requests = install_sandbox_runtime(monkeypatch, executor_response=completed_response)
     current_payload = payload(
-        agent_id="general-agent",
-        skill_id="general-chat",
+        agent_id="general-agent" if skill_id == "general-chat" else "translate",
+        skill_id=skill_id, skill_manifests=pins,
         input={
             "message": "search with the selected tool",
-            "mcp_tool_ids": ["tenant-search", "other-fetch"],
-            "_runtime_tool_policy_subjects": [_mcp_subject(), other_subject],
+            "mcp_tool_ids": ["tenant-search", "other-fetch"][:mcp_count],
+            "_runtime_tool_policy_subjects": [_mcp_subject(), other_subject][:mcp_count],
         },
     )
 
     result = await adapter.submit_run(current_payload, event_sink=event_sink)
 
-    assert result.status == expected_status
-    assert result.result.get("error_code") == expected_error
-    assert len(requests) == 1
-    assert requests[0].mcp_tool_ids == ["tenant-search", "other-fetch"]
+    assert (result.status, result.result.get("error_code")) == (expected_status, expected_error)
+    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-search", "other-fetch"][:mcp_count]
     mcp_events = [event for event in events if event["payload"].get("tool_category") == "mcp"]
     assert mcp_events == []
     encoded = json.dumps(mcp_events)

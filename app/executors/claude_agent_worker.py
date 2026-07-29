@@ -218,9 +218,8 @@ def _selected_capability_invocation_error(payload: RunPayload, evidence: object)
     )
     if not decision.allowed:
         return decision.reason
-    mcp_count = sum(item.capability_kind == "mcp" for item in declarations)
-    mcp_call_ids = {item["tool_call_id"] for item in evidence if item["capability_kind"] == "mcp"}
-    if len(mcp_call_ids) != mcp_count:
+    capability_call_ids = {item["tool_call_id"] for item in evidence}
+    if len(capability_call_ids) != len(declarations):
         return "required_tool_completion_evidence_mismatch"
     return None
 
