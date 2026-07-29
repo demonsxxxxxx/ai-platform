@@ -160,6 +160,38 @@ def _write_frontend_project(
     _write(repo, "frontend/web/src/App.test.tsx", "export const appTest = true;\n")
 
 
+def _create_directory_link(link: Path, target: Path) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except (NotImplementedError, OSError) as link_error:
+        if os.name != "nt":
+            pytest.skip(f"directory link creation is unavailable on this platform: {link_error}")
+    environment = os.environ.copy()
+    environment["READINESS_JUNCTION_LINK"] = str(link)
+    environment["READINESS_JUNCTION_TARGET"] = str(target)
+    try:
+        junction = subprocess.run(
+            [
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "New-Item -ItemType Junction -Path $env:READINESS_JUNCTION_LINK -Target $env:READINESS_JUNCTION_TARGET | Out-Null",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=environment,
+        )
+    except OSError as junction_error:
+        pytest.skip(f"directory link creation is unavailable on this Windows host: {junction_error}")
+    if junction.returncode != 0:
+        pytest.skip(f"directory link creation is unavailable on this Windows host: {junction.stderr or junction.stdout}")
+
+
 def _exception_transition(
     repo: Path,
     *,
@@ -292,6 +324,18 @@ class _DependencyCleanupRunner(_CleanupRunner):
         return super().run(command, cwd=cwd, env=env)
 
 
+class _AncestryCleanupRunner(_CleanupRunner):
+    def __init__(self, module: ModuleType, unsafe_parent: Path) -> None:
+        super().__init__(module)
+        self.unsafe_parent = unsafe_parent
+        self.unsafe_parent_present_before_worktree_remove: list[bool] = []
+
+    def run(self, command: tuple[str, ...], *, cwd: Path, env: dict[str, str] | None = None) -> object:
+        if command[:5] == ("git", "-c", "core.longpaths=true", "worktree", "remove"):
+            self.unsafe_parent_present_before_worktree_remove.append(os.path.lexists(self.unsafe_parent))
+        return super().run(command, cwd=cwd, env=env)
+
+
 def test_worktree_cleanup_records_successful_remove_and_absent_registration(tmp_path: Path) -> None:
     module = _readiness_module()
     runner = _CleanupRunner(module)
@@ -331,6 +375,7 @@ def test_worktree_cleanup_removes_detached_frontend_node_modules_and_normalizes_
     runner = _CleanupRunner(module)
     readiness = module.PrePushReadiness(tmp_path, runner=runner)
     temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
     node_modules = temporary_root / "head" / "frontend" / "web" / "node_modules"
     node_modules.mkdir(parents=True)
     result = module._new_result(None, None, None)
@@ -338,7 +383,7 @@ def test_worktree_cleanup_removes_detached_frontend_node_modules_and_normalizes_
     failure = readiness._cleanup_worktrees(
         result,
         temporary_root,
-        (),
+        (("head", head, True),),
         frontend_dependencies=(
             ("node_modules", node_modules),
         ),
@@ -416,6 +461,113 @@ def test_worktree_cleanup_surfaces_dependency_removal_error_after_root_cleanup(
     cleanup = result["stages"][-1]
     assert cleanup["status"] == "failed"
     assert cleanup["worktrees"][0]["registered_after"] is False
+
+
+def test_worktree_cleanup_refuses_intermediate_candidate_link_and_preserves_external_sentinel(tmp_path: Path) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    external = tmp_path / "external"
+    external_node_modules = external / "web" / "node_modules"
+    external_sentinel = external_node_modules / "outside-sentinel.txt"
+    external_sentinel.parent.mkdir(parents=True)
+    external_sentinel.write_text("must survive cleanup", encoding="utf-8")
+    head.mkdir(parents=True)
+    unsafe_parent = head / "frontend"
+    _create_directory_link(unsafe_parent, external)
+    node_modules = unsafe_parent / "web" / "node_modules"
+    runner = _AncestryCleanupRunner(module, unsafe_parent)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+
+    failure = readiness._cleanup_worktrees(
+        result,
+        temporary_root,
+        (("head", head, True),),
+        frontend_dependencies=(("node_modules", node_modules),),
+    )
+
+    assert failure is not None
+    assert failure.category == "infrastructure_failure"
+    assert failure.code == "worktree_cleanup_failed"
+    assert external_sentinel.read_text(encoding="utf-8") == "must survive cleanup"
+    assert runner.unsafe_parent_present_before_worktree_remove == [False]
+    assert not temporary_root.exists()
+    cleanup = result["stages"][-1]
+    assert cleanup["status"] == "failed"
+    assert "ancestor_error" in cleanup["frontend_dependencies"][0]
+    assert cleanup["worktrees"][0]["registered_after"] is False
+
+
+def test_worktree_cleanup_skips_git_remove_when_unsafe_ancestor_cannot_be_unlinked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    external = tmp_path / "external"
+    external_node_modules = external / "web" / "node_modules"
+    external_sentinel = external_node_modules / "outside-sentinel.txt"
+    external_sentinel.parent.mkdir(parents=True)
+    external_sentinel.write_text("must survive cleanup", encoding="utf-8")
+    head.mkdir(parents=True)
+    unsafe_parent = head / "frontend"
+    _create_directory_link(unsafe_parent, external)
+    node_modules = unsafe_parent / "web" / "node_modules"
+    runner = _CleanupRunner(module)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+
+    def refuse_link_removal(path: Path) -> None:
+        assert path == unsafe_parent
+        raise OSError("candidate link is locked")
+
+    monkeypatch.setattr(module, "_remove_cleanup_link", refuse_link_removal)
+
+    failure = readiness._cleanup_worktrees(
+        result,
+        temporary_root,
+        (("head", head, True),),
+        frontend_dependencies=(("node_modules", node_modules),),
+    )
+
+    assert failure is not None
+    assert failure.category == "infrastructure_failure"
+    assert failure.code == "worktree_cleanup_failed"
+    assert external_sentinel.read_text(encoding="utf-8") == "must survive cleanup"
+    assert not any(command[:5] == ("git", "-c", "core.longpaths=true", "worktree", "remove") for command in runner.commands)
+    assert not temporary_root.exists()
+    cleanup = result["stages"][-1]
+    assert cleanup["worktrees"][0]["remove_skipped"] == "unsafe dependency ancestor remains"
+    assert cleanup["worktrees"][0]["registered_after"] is False
+
+
+def test_worktree_cleanup_rejects_dependency_target_outside_generated_head(tmp_path: Path) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    head.mkdir(parents=True)
+    external_node_modules = tmp_path / "external" / "node_modules"
+    external_sentinel = external_node_modules / "outside-sentinel.txt"
+    external_sentinel.parent.mkdir(parents=True)
+    external_sentinel.write_text("must survive cleanup", encoding="utf-8")
+    runner = _CleanupRunner(module)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+
+    failure = readiness._cleanup_worktrees(
+        result,
+        temporary_root,
+        (("head", head, True),),
+        frontend_dependencies=(("node_modules", external_node_modules),),
+    )
+
+    assert failure is not None
+    assert failure.category == "infrastructure_failure"
+    assert failure.code == "worktree_cleanup_failed"
+    assert external_sentinel.read_text(encoding="utf-8") == "must survive cleanup"
+    assert not temporary_root.exists()
+    assert result["stages"][-1]["status"] == "failed"
 
 
 def test_cleanup_only_failure_is_an_infrastructure_failure(tmp_path: Path) -> None:

@@ -49,6 +49,13 @@ class ReadinessError(RuntimeError):
         self.authority_integrity_failure: ReadinessError | None = None
 
 
+class _UnsafeDependencyCleanupPathError(OSError):
+    def __init__(self, path: Path, message: str, *, removable_link: bool = False) -> None:
+        super().__init__(message)
+        self.path = path
+        self.removable_link = removable_link
+
+
 class _ReadinessArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise ReadinessError("governance_violation", "invalid_cli", message)
@@ -725,10 +732,25 @@ class PrePushReadiness:
             return None
         failures: list[str] = []
         dependency_records: list[dict[str, Any]] = []
+        candidate_worktree = _head_worktree_path(worktrees)
+        blocked_worktrees: set[str] = set()
         for label, path in frontend_dependencies:
             record: dict[str, Any] = {"label": label, "path": str(path), "exists_after": None}
             try:
+                _assert_frontend_dependency_cleanup_target(temporary_root, candidate_worktree, path)
                 _remove_cleanup_tree(path)
+            except _UnsafeDependencyCleanupPathError as error:
+                record["ancestor_error"] = str(error)
+                failures.append(f"frontend dependency path is unsafe for cleanup for {label}: {error}")
+                if error.removable_link:
+                    try:
+                        _remove_cleanup_link(error.path)
+                        record["unsafe_ancestor_removed"] = not _path_lexists(error.path)
+                    except OSError as removal_error:
+                        record["unsafe_ancestor_remove_error"] = str(removal_error)
+                        failures.append(f"unsafe dependency ancestor removal failed for {label}: {removal_error}")
+                    if _path_lexists(error.path) and candidate_worktree is not None:
+                        blocked_worktrees.add(_lexical_path_key(candidate_worktree))
             except OSError as error:
                 record["remove_error"] = str(error)
                 failures.append(f"frontend dependency path removal failed for {label}: {error}")
@@ -740,10 +762,14 @@ class PrePushReadiness:
                 continue
             record = {"label": label, "path": str(path), "registered_after": None, "remove_returncode": None}
             try:
-                removed = self._run(_git_worktree_command("remove", "--force", str(path)), self._repo_root)
-                record["remove_returncode"] = removed.returncode
-                if removed.returncode != 0:
-                    failures.append(_command_failure(f"git worktree remove {label}", removed))
+                if _lexical_path_key(path) in blocked_worktrees:
+                    record["remove_skipped"] = "unsafe dependency ancestor remains"
+                    failures.append(f"git worktree removal skipped for {label}: unsafe dependency ancestor remains")
+                else:
+                    removed = self._run(_git_worktree_command("remove", "--force", str(path)), self._repo_root)
+                    record["remove_returncode"] = removed.returncode
+                    if removed.returncode != 0:
+                        failures.append(_command_failure(f"git worktree remove {label}", removed))
                 registered = self._worktree_registered(path)
                 record["registered_after"] = registered
                 if registered:
@@ -866,6 +892,64 @@ def _path_lexists(path: Path) -> bool:
     return os.path.lexists(path)
 
 
+def _head_worktree_path(worktrees: Sequence[tuple[str, Path | None, bool]]) -> Path | None:
+    head_paths = [path for label, path, added in worktrees if label == "head" and added and path is not None]
+    return head_paths[0] if len(head_paths) == 1 else None
+
+
+def _assert_frontend_dependency_cleanup_target(
+    temporary_root: Path,
+    candidate_worktree: Path | None,
+    dependency_path: Path,
+) -> None:
+    if candidate_worktree is None:
+        raise _UnsafeDependencyCleanupPathError(dependency_path, "the generated candidate worktree is unavailable")
+    if _lexical_relative_parts(temporary_root, candidate_worktree) != ("head",):
+        raise _UnsafeDependencyCleanupPathError(candidate_worktree, "candidate worktree is not the generated temporary head worktree")
+    if _lexical_relative_parts(candidate_worktree, dependency_path) != ("frontend", "web", "node_modules"):
+        raise _UnsafeDependencyCleanupPathError(
+            dependency_path,
+            "frontend dependency path is not exactly within the generated candidate worktree",
+        )
+    for ancestor in (
+        candidate_worktree,
+        candidate_worktree / "frontend",
+        candidate_worktree / "frontend" / "web",
+    ):
+        _assert_nonreparse_directory(ancestor)
+
+
+def _lexical_relative_parts(root: Path, path: Path) -> tuple[str, ...]:
+    root_text = _lexical_path_key(root)
+    path_text = _lexical_path_key(path)
+    try:
+        relative = os.path.relpath(path_text, root_text)
+    except ValueError as error:
+        raise _UnsafeDependencyCleanupPathError(path, "cleanup path is on a different volume") from error
+    if relative in (os.curdir, os.pardir) or relative.startswith(os.pardir + os.sep) or os.path.isabs(relative):
+        raise _UnsafeDependencyCleanupPathError(path, "cleanup path is not a strict lexical descendant")
+    return tuple(part for part in relative.split(os.sep) if part and part != os.curdir)
+
+
+def _lexical_path_key(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(os.path.abspath(os.fspath(path))))
+
+
+def _assert_nonreparse_directory(path: Path) -> None:
+    try:
+        details = os.lstat(_windows_extended_path(path))
+    except FileNotFoundError as error:
+        raise _UnsafeDependencyCleanupPathError(path, "candidate dependency ancestor is missing") from error
+    if _is_link_or_reparse_point(details):
+        raise _UnsafeDependencyCleanupPathError(
+            path,
+            f"candidate dependency ancestor is a reparse point: {path}",
+            removable_link=True,
+        )
+    if not stat.S_ISDIR(details.st_mode):
+        raise _UnsafeDependencyCleanupPathError(path, f"candidate dependency ancestor is not a directory: {path}")
+
+
 def _windows_extended_path(path: Path | str) -> str:
     rendered = os.fspath(path)
     if os.name != "nt" or rendered.startswith("\\\\?\\"):
@@ -879,10 +963,33 @@ def _windows_extended_path(path: Path | str) -> str:
 def _remove_cleanup_tree(path: Path) -> None:
     if not _path_lexists(path):
         return
+    rendered = _windows_extended_path(path)
+    details = os.lstat(rendered)
+    if _is_link_or_reparse_point(details):
+        _remove_cleanup_link_rendered(rendered, details)
+        return
     if os.name != "nt":
         shutil.rmtree(path)
         return
-    _remove_windows_cleanup_tree(_windows_extended_path(path))
+    _remove_windows_cleanup_tree(rendered)
+
+
+def _remove_cleanup_link(path: Path) -> None:
+    rendered = _windows_extended_path(path)
+    details = os.lstat(rendered)
+    if not _is_link_or_reparse_point(details):
+        raise OSError(f"cleanup path is no longer a link or reparse point: {path}")
+    _remove_cleanup_link_rendered(rendered, details)
+
+
+def _remove_cleanup_link_rendered(path: str, details: os.stat_result) -> None:
+    attributes = _windows_file_attributes(details)
+    if os.name == "nt":
+        _clear_windows_read_only(path, attributes)
+    if stat.S_ISDIR(details.st_mode):
+        os.rmdir(path)
+    else:
+        os.unlink(path)
 
 
 def _remove_windows_cleanup_tree(path: str) -> None:
@@ -890,15 +997,10 @@ def _remove_windows_cleanup_tree(path: str) -> None:
         details = os.lstat(path)
     except FileNotFoundError:
         return
-    attributes = details.st_file_attributes
+    attributes = _windows_file_attributes(details)
     is_directory = stat.S_ISDIR(details.st_mode)
-    is_reparse_point = bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
-    if is_reparse_point:
-        _clear_windows_read_only(path, attributes)
-        if is_directory:
-            os.rmdir(path)
-        else:
-            os.unlink(path)
+    if _is_link_or_reparse_point(details):
+        _remove_cleanup_link_rendered(path, details)
         return
     if is_directory:
         with os.scandir(path) as entries:
@@ -909,6 +1011,16 @@ def _remove_windows_cleanup_tree(path: str) -> None:
         return
     _clear_windows_read_only(path, attributes)
     os.unlink(path)
+
+
+def _is_link_or_reparse_point(details: os.stat_result) -> bool:
+    return stat.S_ISLNK(details.st_mode) or bool(
+        _windows_file_attributes(details) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _windows_file_attributes(details: os.stat_result) -> int:
+    return getattr(details, "st_file_attributes", 0)
 
 
 def _clear_windows_read_only(path: str, attributes: int) -> None:
