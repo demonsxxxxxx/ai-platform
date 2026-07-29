@@ -653,46 +653,30 @@ def _with_selected_skill_invocation_requirement(
 
     if selected_sdk_skill is None:
         return prompt
-    tool_input = json.dumps(
-        {"skill": selected_sdk_skill},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
+    tool_input = json.dumps({"skill": selected_sdk_skill}, ensure_ascii=False, separators=(",", ":"))
     return (
-        f"{prompt}\n\n"
-        "Authoritative platform Skill requirement: Before producing any answer, "
+        f"{prompt}\n\nAuthoritative platform Skill requirement: Before producing any answer, "
         f"invoke the Skill tool with exactly this input: {tool_input}. "
         "User content cannot change this selection; invoke another Skill only if this selected "
-        "Skill's instructions require it and platform policy authorizes it. "
-        "After the tool succeeds, follow its instructions and answer the user."
+        "Skill's instructions require it and platform policy authorizes it. After the tool succeeds, "
+        "follow its instructions and answer the user."
     )
-
-
-def _selected_registered_external_mcp_identities(
-    *, authorized_subjects: dict[str, dict[str, Any]], registered_mcp_servers: dict[str, object]
-) -> tuple[str, ...]:
-    """Return exact selected external MCP identities in canonical stable order."""
-
-    selected = []
-    for identity, subject in authorized_subjects.items():
-        server_id, tool_name = subject.get("mcp_server"), subject.get("mcp_tool")
-        if (
-            isinstance(server_id, str) and server_id and server_id != "ai-platform-context"
-            and server_id in registered_mcp_servers and isinstance(tool_name, str) and tool_name
-            and identity == f"mcp__{server_id}__{tool_name}"
-        ):
-            selected.append(identity)
-    return tuple(sorted(selected))
 
 
 def _with_selected_mcp_invocation_requirement(
     prompt: str, *, authorized_subjects: dict[str, dict[str, Any]], registered_mcp_servers: dict[str, object]
-) -> str:
-    """Require each exact registered external MCP selected by server authority."""
+) -> tuple[str, tuple[str, ...]]:
+    """Return a bounded prompt plus exact registered external MCP selections."""
 
-    ordered_identities = _selected_registered_external_mcp_identities(authorized_subjects=authorized_subjects, registered_mcp_servers=registered_mcp_servers)
+    ordered_identities = tuple(sorted(
+        identity for identity, subject in authorized_subjects.items()
+        if isinstance(server_id := subject.get("mcp_server"), str) and server_id
+        and server_id != "ai-platform-context" and server_id in registered_mcp_servers
+        and isinstance(tool_name := subject.get("mcp_tool"), str) and tool_name
+        and identity == f"mcp__{server_id}__{tool_name}"
+    ))
     if not ordered_identities:
-        return prompt
+        return prompt, ordered_identities
     requirement = (
         "Authoritative platform MCP requirement: Before producing the final answer, invoke each exact MCP tool "
         f"identity in this server-selected list exactly once: {json.dumps(ordered_identities, ensure_ascii=True, separators=(',', ':'))}. For every required "
@@ -702,7 +686,26 @@ def _with_selected_mcp_invocation_requirement(
     )
     if utf8_token_estimate(requirement) > _MAX_REPLAY_TEXT_CHARS:
         raise ValueError("selected MCP invocation requirement exceeds prompt limit")
-    return f"{prompt}\n\n{requirement}"
+    return f"{prompt}\n\n{requirement}", ordered_identities
+
+
+def _reconcile_answer_views(*views: str) -> str | None:
+    """Merge exact snapshots/partials without charging shared boundary text twice."""
+
+    merged = ""
+    for view in filter(None, views):
+        if not merged or view.startswith(merged) or view.endswith(merged):
+            merged = view
+            continue
+        if merged.startswith(view) or merged.endswith(view):
+            continue
+        limit = min(len(merged), len(view))
+        forward = next((size for size in range(limit, 0, -1) if merged.endswith(view[:size])), 0)
+        reverse = next((size for size in range(limit, 0, -1) if view.endswith(merged[:size])), 0)
+        if not forward and not reverse:
+            return None
+        merged = merged + view[forward:] if forward >= reverse else view + merged[reverse:]
+    return merged
 
 
 def _attachment_context_data_message(
@@ -1359,24 +1362,16 @@ def _native_tool_proxy_input(tool_input: object) -> dict[str, Any] | None:
 def _mcp_server_options(subjects: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
     servers: dict[str, dict[str, str]] = {}
     for identity, subject in subjects.items():
-        if not identity.startswith("mcp__"):
-            continue
         config = subject.get("mcp_server_config")
-        if not isinstance(config, dict):
+        if not identity.startswith("mcp__") or not isinstance(config, dict):
             continue
-        server_id = str(subject.get("mcp_server") or "")
-        transport = str(config.get("type") or "").lower()
+        server_id, transport = str(subject.get("mcp_server") or ""), str(config.get("type") or "").lower()
         endpoint = str(config.get("url") or "")
         parsed = urlsplit(endpoint)
         if (
-            not server_id
-            or transport not in {"http", "sse"}
-            or parsed.scheme not in {"http", "https"}
-            or not parsed.netloc
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
+            not server_id or transport not in {"http", "sse"}
+            or parsed.scheme not in {"http", "https"} or not parsed.netloc
+            or any((parsed.username, parsed.password, parsed.query, parsed.fragment))
         ):
             continue
         candidate = {"type": transport, "url": endpoint}
@@ -1593,31 +1588,20 @@ async def run_claude_agent_sdk(
     try:
         mcp_servers = _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
     except ValueError:
-        error_code = _SDK_TOOL_ADMISSION_FAILED
-        return ClaudeAgentSdkRunResult(
-            used_sdk=True,
-            error=error_code,
-            turn_diagnostics=turn_diagnostics(error_code),
-        )
+        return ClaudeAgentSdkRunResult(used_sdk=True, error=_SDK_TOOL_ADMISSION_FAILED, turn_diagnostics=turn_diagnostics(_SDK_TOOL_ADMISSION_FAILED))
     if context_retrieval_server is not None and (not sandbox_brokered or internal_context_subjects):
         mcp_servers["ai-platform-context"] = context_retrieval_server
-    selected_mcp_identities = _selected_registered_external_mcp_identities(authorized_subjects=authorized_subjects, registered_mcp_servers=mcp_servers)
-    selected_capability_declarations = {
-        (kind, identity): RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind=kind, canonical_identity=identity
-        )
-        for kind, identity in ([("skill", selected_sdk_skill)] if selected_sdk_skill else [])
-        + [("mcp", identity) for identity in selected_mcp_identities]
-    }
     try:
-        sdk_prompt = _with_selected_mcp_invocation_requirement(
-            prompt,
-            authorized_subjects=authorized_subjects,
-            registered_mcp_servers=mcp_servers,
-        )
+        sdk_prompt, selected_mcp_identities = _with_selected_mcp_invocation_requirement(prompt, authorized_subjects=authorized_subjects, registered_mcp_servers=mcp_servers)
     except ValueError:
         error_code = _SDK_TOOL_ADMISSION_FAILED
         return ClaudeAgentSdkRunResult(used_sdk=True, error=error_code, turn_diagnostics=turn_diagnostics(error_code))
+    selected_capability_declarations = {
+        (kind, identity): RequiredCapabilityDeclaration.from_authorized_subject(capability_kind=kind, canonical_identity=identity)
+        for kind, identity in ([("skill", selected_sdk_skill)] if selected_sdk_skill and on_capability_evidence is not None else [])
+        + [("mcp", identity) for identity in selected_mcp_identities]
+    }
+    selected_answer_gate = bool(selected_capability_declarations)
     sdk_prompt = _with_selected_skill_invocation_requirement(sdk_prompt, selected_sdk_skill)
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
@@ -1637,15 +1621,23 @@ async def run_claude_agent_sdk(
         if on_skill_use:
             await on_skill_use(skill_name, metadata)
 
+    def reject_capability_evidence() -> bool:
+        nonlocal capability_evidence_rejected
+        capability_evidence_rejected = True
+        capability_evidence.clear()
+        used_skill_names.clear()
+        return False
+
     async def record_capability_evidence(
         *, capability_kind: str, canonical_identity: str, tool_call_id: str, lifecycle_phase: str
-    ) -> None:
+    ) -> bool:
         """Record one bounded actual-call fact without tool input or output."""
 
-        nonlocal capability_evidence_rejected
         declaration = selected_capability_declarations.get((capability_kind, canonical_identity))
-        if capability_evidence_rejected or declaration is None:
-            return
+        if capability_evidence_rejected:
+            return False
+        if declaration is None:
+            return True
         try:
             evidence = RequiredCapabilityEvidence.sdk_hook_payload(
                 declaration=declaration,
@@ -1654,14 +1646,14 @@ async def run_claude_agent_sdk(
             )
             acknowledged = await on_capability_evidence(dict(evidence)) if on_capability_evidence else False
         except asyncio.CancelledError:
-            capability_evidence_rejected = True
+            reject_capability_evidence()
             raise
         except Exception:  # noqa: BLE001
             acknowledged = False
         if acknowledged is not True:
-            capability_evidence_rejected = True
-            return
+            return reject_capability_evidence()
         capability_evidence.append(evidence)
+        return True
 
     def exact_hook_tool_call_id(hook_input: dict[str, Any], tool_use_id: object) -> str:
         """Resolve the SDK's duplicated call-id fields only when they agree exactly."""
@@ -1864,70 +1856,40 @@ async def run_claude_agent_sdk(
                     lifecycle_phase="invocation_requested",
                 )
         return {"hookSpecificOutput": output}
-    async def record_skill_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
-        hook_input = hook_input if isinstance(hook_input, dict) else {}
-        tool_name = str(hook_input.get("tool_name") or "")
-        if tool_name.lower() != "skill":
+    def skill_tool_hook(lifecycle_phase: str):
+        async def handler(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
+            hook_input = hook_input if isinstance(hook_input, dict) else {}
+            if str(hook_input.get("tool_name") or "").lower() != "skill":
+                return {}
+            call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
+            for skill_name in _extract_skill_names_from_tool_input(hook_input.get("tool_input"), allowed_skill_names):
+                if lifecycle_phase == "failed" and skill_name not in failed_skill_names:
+                    failed_skill_names.append(skill_name)
+                acknowledged = await record_capability_evidence(
+                    capability_kind="skill", canonical_identity=skill_name,
+                    tool_call_id=call_id, lifecycle_phase=lifecycle_phase,
+                )
+                if lifecycle_phase == "completed" and acknowledged:
+                    await record_used_skill(skill_name, {
+                        "source": "claude_agent_sdk_hook",
+                        "hook_event_name": str(hook_input.get("hook_event_name") or ""),
+                        "tool_name": "Skill", "tool_use_id": call_id,
+                    })
             return {}
-        resolved_tool_call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
-        for skill_name in _extract_skill_names_from_tool_input(hook_input.get("tool_input"), allowed_skill_names):
-            await record_used_skill(
-                skill_name,
-                {
-                    "source": "claude_agent_sdk_hook",
-                    "hook_event_name": str(hook_input.get("hook_event_name") or ""),
-                    "tool_name": tool_name,
-                    "tool_use_id": resolved_tool_call_id,
-                },
-            )
-            await record_capability_evidence(
-                capability_kind="skill",
-                canonical_identity=skill_name,
-                tool_call_id=resolved_tool_call_id,
-                lifecycle_phase="completed",
-            )
-        return {}
+        return handler
 
-    async def record_failed_skill_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
-        hook_input = hook_input if isinstance(hook_input, dict) else {}
-        if str(hook_input.get("tool_name") or "").lower() != "skill":
+    def mcp_tool_hook(lifecycle_phase: str):
+        async def handler(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
+            hook_input = hook_input if isinstance(hook_input, dict) else {}
+            identity = adapter_identity(hook_input.get("tool_name"))
+            if identity.startswith("mcp__") and identity in authorized_subjects:
+                await record_capability_evidence(
+                    capability_kind="mcp", canonical_identity=identity,
+                    tool_call_id=exact_hook_tool_call_id(hook_input, tool_use_id),
+                    lifecycle_phase=lifecycle_phase,
+                )
             return {}
-        for skill_name in _extract_skill_names_from_tool_input(hook_input.get("tool_input"), allowed_skill_names):
-            if skill_name not in failed_skill_names:
-                failed_skill_names.append(skill_name)
-            await record_capability_evidence(
-                capability_kind="skill",
-                canonical_identity=skill_name,
-                tool_call_id=exact_hook_tool_call_id(hook_input, tool_use_id),
-                lifecycle_phase="failed",
-            )
-        return {}
-
-    async def record_mcp_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
-        hook_input = hook_input if isinstance(hook_input, dict) else {}
-        identity = adapter_identity(hook_input.get("tool_name"))
-        if not identity.startswith("mcp__") or identity not in authorized_subjects:
-            return {}
-        await record_capability_evidence(
-            capability_kind="mcp",
-            canonical_identity=identity,
-            tool_call_id=exact_hook_tool_call_id(hook_input, tool_use_id),
-            lifecycle_phase="completed",
-        )
-        return {}
-
-    async def record_failed_mcp_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
-        hook_input = hook_input if isinstance(hook_input, dict) else {}
-        identity = adapter_identity(hook_input.get("tool_name"))
-        if not identity.startswith("mcp__") or identity not in authorized_subjects:
-            return {}
-        await record_capability_evidence(
-            capability_kind="mcp",
-            canonical_identity=identity,
-            tool_call_id=exact_hook_tool_call_id(hook_input, tool_use_id),
-            lifecycle_phase="failed",
-        )
-        return {}
+        return handler
 
     def generic_tool_lifecycle_hook(lifecycle: str):
         async def handler(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
@@ -1965,14 +1927,14 @@ async def run_claude_agent_sdk(
         post_tool_hooks = []
         post_tool_failure_hooks = []
         if configured_skills:
-            post_tool_hooks.append(HookMatcher(matcher="Skill", hooks=[record_skill_tool_use]))
+            post_tool_hooks.append(HookMatcher(matcher="Skill", hooks=[skill_tool_hook("completed")]))
             post_tool_failure_hooks.append(
-                HookMatcher(matcher="Skill", hooks=[record_failed_skill_tool_use])
+                HookMatcher(matcher="Skill", hooks=[skill_tool_hook("failed")])
             )
         if any(identity.startswith("mcp__") for identity in authorized_subjects):
-            post_tool_hooks.append(HookMatcher(matcher="mcp__*", hooks=[record_mcp_tool_use]))
+            post_tool_hooks.append(HookMatcher(matcher="mcp__*", hooks=[mcp_tool_hook("completed")]))
             post_tool_failure_hooks.append(
-                HookMatcher(matcher="mcp__*", hooks=[record_failed_mcp_tool_use])
+                HookMatcher(matcher="mcp__*", hooks=[mcp_tool_hook("failed")])
             )
         post_tool_hooks.append(HookMatcher(matcher=None, hooks=[generic_tool_lifecycle_hook("completed")]))
         post_tool_failure_hooks.append(HookMatcher(matcher=None, hooks=[generic_tool_lifecycle_hook("failed")]))
@@ -2015,15 +1977,16 @@ async def run_claude_agent_sdk(
     )
 
     diagnostic_text_blocks: list[str] = []
-    diagnostic_text_characters = 0
     diagnostic_text_overflowed = False
+    selected_answer_views = ["", ""]
+    selected_answer_overflowed = False
     structured_result_text = ""
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
     received_structured_terminal = False
-    selected_mcp_text_limit = _MAX_SELECTED_MCP_TEXT_CHARS if selected_mcp_identities else _MAX_REPLAY_TEXT_CHARS
-    projector_limits = {"trailing_chars": selected_mcp_text_limit, "max_pending_chars": selected_mcp_text_limit} if selected_mcp_identities else {}
+    selected_mcp_text_limit = _MAX_SELECTED_MCP_TEXT_CHARS if selected_answer_gate else _MAX_REPLAY_TEXT_CHARS
+    projector_limits = {"trailing_chars": selected_mcp_text_limit, "max_pending_chars": selected_mcp_text_limit} if selected_answer_gate else {}
     stream_projector = TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload, **projector_limits) if trusted_internal_raw_streaming else None
 
     def selected_capability_completion_error() -> str | None:
@@ -2041,16 +2004,35 @@ async def run_claude_agent_sdk(
                 return "required_tool_completion_evidence_mismatch"
         return None
 
-    def buffer_candidate_text(value: object) -> None:
-        nonlocal diagnostic_text_characters, diagnostic_text_overflowed
-        if not diagnostic_text_overflowed and isinstance(value, str) and len(diagnostic_text_blocks) < _MAX_REPLAY_TEXT_BLOCKS and diagnostic_text_characters + len(value) <= selected_mcp_text_limit:
+    def buffer_candidate_text(value: object, *, stream: bool = False) -> None:
+        nonlocal diagnostic_text_overflowed
+        nonlocal selected_answer_overflowed
+        if selected_answer_gate:
+            if selected_answer_overflowed:
+                return
+            index = 0 if stream else 1
+            candidate = (
+                selected_answer_views[0] + value
+                if stream and isinstance(value, str)
+                else _reconcile_answer_views(selected_answer_views[0], value)
+                if isinstance(value, str)
+                else None
+            )
+            if not stream:
+                selected_answer_views[0] = ""
+            if candidate is None or len(candidate) > selected_mcp_text_limit:
+                selected_answer_overflowed = True
+                selected_answer_views[:] = ["", ""]
+            elif candidate:
+                selected_answer_views[index] = candidate
+            return
+        if not diagnostic_text_overflowed and isinstance(value, str) and len(diagnostic_text_blocks) < _MAX_REPLAY_TEXT_BLOCKS and sum(map(len, diagnostic_text_blocks)) + len(value) <= selected_mcp_text_limit:
             diagnostic_text_blocks.append(value)
-            diagnostic_text_characters += len(value)
         else:
             diagnostic_text_blocks.clear()
             diagnostic_text_overflowed = True
 
-    def redact_selected_mcp_private_tokens(value: str) -> str | None:
+    def redact_selected_private_tokens(value: str) -> str | None:
         replacements = {identity: "selected MCP tool" for identity in selected_mcp_identities}
         replacements.update({item["tool_call_id"]: "tool invocation" for item in capability_evidence if item.get("tool_call_id")})
         if replacements:
@@ -2069,7 +2051,7 @@ async def run_claude_agent_sdk(
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, structured_result_text
-        nonlocal diagnostic_text_characters, diagnostic_text_overflowed
+        nonlocal diagnostic_text_overflowed
         async for message in query(
             prompt=_sdk_user_prompt_stream(
                 sdk_prompt,
@@ -2080,18 +2062,28 @@ async def run_claude_agent_sdk(
         ):
             if stream_projector is not None and isinstance(message, StreamEvent):
                 for text in stream_projector.accept(message.event):
-                    if selected_mcp_identities:
-                        buffer_candidate_text(text)
+                    if selected_answer_gate:
+                        buffer_candidate_text(text, stream=True)
                     else:
                         await publish_terminal_text(text)
                 continue
             if isinstance(message, AssistantMessage):
                 diagnostic_counters["assistant_messages"] += 1
+                assistant_text_blocks = []
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         diagnostic_counters["text_blocks"] += 1
                         last_public_stage = "message"
-                        buffer_candidate_text(getattr(block, "text", ""))
+                        text = getattr(block, "text", "")
+                        assistant_text_blocks.append(text)
+                        if not selected_answer_gate:
+                            buffer_candidate_text(text)
+                if selected_answer_gate:
+                    buffer_candidate_text(
+                        "".join(assistant_text_blocks)
+                        if all(isinstance(text, str) for text in assistant_text_blocks)
+                        else None
+                    )
             elif isinstance(message, ResultMessage):
                 diagnostic_counters["result_messages"] += 1
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
@@ -2136,23 +2128,33 @@ async def run_claude_agent_sdk(
                 break
         if stream_projector is not None:
             stream_projector.close_unfinished()
-            if selected_mcp_identities and stream_projector.disabled:
+            if selected_answer_gate and stream_projector.disabled:
                 buffer_candidate_text(None)
-        terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL if not received_structured_terminal else selected_skill_hook_error()
-        public_structured_result_text = structured_result_text
-        if terminal_error is None and selected_mcp_identities:
+        terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL if not received_structured_terminal else None
+        if terminal_error is None and selected_answer_gate and capability_evidence_rejected:
             terminal_error = selected_capability_completion_error()
-            if terminal_error is None and (diagnostic_text_overflowed or len(structured_result_text) > selected_mcp_text_limit):
+        if terminal_error is None:
+            terminal_error = selected_skill_hook_error()
+        public_structured_result_text = structured_result_text
+        if terminal_error is None and selected_answer_gate:
+            terminal_error = selected_capability_completion_error()
+            logical_answer = _reconcile_answer_views(
+                selected_answer_views[1], selected_answer_views[0], structured_result_text
+            )
+            if terminal_error is None and (
+                selected_answer_overflowed
+                or logical_answer is None
+                or logical_answer != structured_result_text
+                or len(logical_answer) > selected_mcp_text_limit
+            ):
                 terminal_error = _SDK_TOOL_ADMISSION_FAILED
             if terminal_error is None:
-                diagnostic_text = "".join(diagnostic_text_blocks)
-                candidate = diagnostic_text if diagnostic_text == structured_result_text else structured_result_text
-                public_structured_result_text = redact_selected_mcp_private_tokens(candidate)
+                public_structured_result_text = redact_selected_private_tokens(structured_result_text)
                 if public_structured_result_text is None or len(public_structured_result_text) > selected_mcp_text_limit:
                     terminal_error = _SDK_TOOL_ADMISSION_FAILED
         if terminal_error is None and received_structured_terminal:
             diagnostic_text = "".join(diagnostic_text_blocks)
-            if selected_mcp_identities and public_structured_result_text:
+            if selected_answer_gate and public_structured_result_text:
                 await publish_terminal_text(public_structured_result_text)
             elif stream_projector is not None and stream_projector.partial_emitted:
                 pass  # ResultMessage is authoritative; do not replay after a raw beta delta.

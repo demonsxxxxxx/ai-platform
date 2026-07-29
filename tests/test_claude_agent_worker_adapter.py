@@ -530,9 +530,7 @@ def _unbound_skill_evidence(skill_id, *phases):
         capability_kind="skill", canonical_identity=skill_id
     )
     return [
-        RequiredCapabilityEvidence.sdk_hook_payload(
-            declaration=declaration, tool_call_id="skill-call-1", lifecycle_phase=phase
-        )
+        RequiredCapabilityEvidence.sdk_hook_payload(declaration=declaration, tool_call_id="skill-call-1", lifecycle_phase=phase)
         for phase in phases
     ]
 
@@ -545,22 +543,16 @@ async def _run_worker_local_skill_evidence_case(monkeypatch, tmp_path, raw_evide
         for item in raw_evidence:
             acknowledgements.append(await callback(item))
         return ClaudeAgentSdkRunResult(
-            used_sdk=True,
-            message="review complete",
-            session_id="sdk-session",
-            received_structured_terminal=True,
-            used_skills=["qa-file-reviewer"],
+            used_sdk=True, message="review complete", session_id="sdk-session",
+            received_structured_terminal=True, used_skills=["qa-file-reviewer"],
             used_skills_source="executor_hook",
         )
 
     monkeypatch.setattr(claude_agent_worker, "get_settings", lambda: settings(tmp_path, sdk_enabled=True))
     monkeypatch.setattr(claude_agent_worker, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
     result = await ClaudeAgentWorkerAdapter()._try_run_sdk(
-        current_payload,
-        workspace=tmp_path / "workspaces" / "default" / "run_1",
-        file_names=[],
-        prompt="review this document",
-        staged_skill_names=["qa-file-reviewer"],
+        current_payload, workspace=tmp_path / "workspaces" / "default" / "run_1",
+        file_names=[], prompt="review this document", staged_skill_names=["qa-file-reviewer"],
     )
     return current_payload, result, acknowledgements
 
@@ -2402,31 +2394,11 @@ async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     def completed_response(request):
-        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind="mcp",
-            canonical_identity="mcp__tenant-server__search",
-        )
-        binding = {
-            "tenant_id": request.tenant_id,
-            "workspace_id": request.workspace_id,
-            "user_id": request.user_id,
-            "session_id": request.session_id,
-            "run_id": request.run_id,
-            "attempt_id": request.attempt_id,
-        }
         return {
             "status": "completed",
             "message": "sandbox completed",
             "sdk_used": True,
-            "capability_evidence": [
-                RequiredCapabilityEvidence.from_sdk_hook(
-                    declaration=declaration,
-                    binding=binding,
-                    tool_call_id="tool-call-1",
-                    lifecycle_phase=phase,
-                ).__dict__
-                for phase in ("invocation_requested", "completed")
-            ],
+            "capability_evidence": _selected_capability_evidence(request),
         }
 
     requests = install_sandbox_runtime(monkeypatch, executor_response=completed_response)
@@ -2450,6 +2422,39 @@ async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned
     encoded = json.dumps(mcp_events)
     assert "private.example" not in encoded
     assert "mcp__tenant-server__search" not in encoded
+
+
+@pytest.mark.parametrize(
+    ("mode", "field", "value", "expected_error"),
+    [
+        ("missing", "", None, "required_tool_completion_evidence_missing"),
+        ("replace", "tool_call_id", None, "required_tool_completion_evidence_mismatch"),
+        ("replace", "run_id", "stale-run", "required_tool_completion_evidence_mismatch"),
+        ("replace", "attempt_id", "stale-attempt", "required_tool_completion_evidence_mismatch"),
+        ("duplicate", "", None, "required_tool_completion_evidence_mismatch"),
+        ("replace", "tool_call_id", "conflicting-call", "required_tool_completion_evidence_mismatch"),
+    ],
+)
+def test_worker_external_mcp_rejects_stale_missing_or_conflicting_evidence(
+    mode, field, value, expected_error
+):
+    current_payload = payload(skill_id="general-chat", input={
+        "message": "search", "_runtime_tool_policy_subjects": [_mcp_subject()],
+    })
+    request = types.SimpleNamespace(
+        **{key: getattr(current_payload, key) for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"
+        )}, skill_ids=["general-chat"], tool_policy_subjects=[_mcp_subject()],
+    )
+    evidence = _selected_capability_evidence(request)
+    if mode == "missing":
+        evidence.clear()
+    elif mode == "duplicate":
+        evidence.append(dict(evidence[1]))
+    else:
+        evidence[1][field] = value
+
+    assert claude_agent_worker._selected_capability_invocation_error(current_payload, evidence) == expected_error
 
 
 @pytest.mark.asyncio
@@ -3944,8 +3949,7 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
 @pytest.mark.asyncio
 async def test_worker_local_selected_skill_binds_acknowledged_pre_and_post_evidence(monkeypatch, tmp_path):
     current_payload, result, acknowledgements = await _run_worker_local_skill_evidence_case(
-        monkeypatch,
-        tmp_path,
+        monkeypatch, tmp_path,
         _unbound_skill_evidence("qa-file-reviewer", "invocation_requested", "completed"),
     )
 
@@ -3955,15 +3959,9 @@ async def test_worker_local_selected_skill_binds_acknowledged_pre_and_post_evide
     assert [record.lifecycle_status for record in records] == ["invoking", "succeeded"]
     for record in records:
         fields = ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id")
-        assert tuple(getattr(record, field) for field in fields) == (
-            "default", "default", "user-a", "ses_1", "run_1", "qat-test-attempt"
-        )
-        assert (record.evidence_source, record.trust_basis) == (
-            "claude_agent_sdk_hook", "tool_call_bound_invocation"
-        )
-    assert claude_agent_worker._selected_capability_invocation_error(
-        current_payload, result.capability_evidence
-    ) is None
+        assert tuple(getattr(record, field) for field in fields) == ("default", "default", "user-a", "ses_1", "run_1", "qat-test-attempt")
+        assert (record.evidence_source, record.trust_basis) == ("claude_agent_sdk_hook", "tool_call_bound_invocation")
+    assert claude_agent_worker._selected_capability_invocation_error(current_payload, result.capability_evidence) is None
 
 
 @pytest.mark.asyncio
