@@ -15,7 +15,6 @@ from starlette.responses import PlainTextResponse
 from app import repositories
 from app.agent_profiles import (
     reauthorize_pinned_run_for_replay,
-    reject_profile_selector_conflicts,
     resolve_bound_profile_for_submission,
     resolve_profile_for_admission,
 )
@@ -1268,7 +1267,6 @@ async def chat_stream(
                 return _chat_stream_response_from_submission(existing_submission_row)
     execution_polarity = classify_execution_polarity(request.message)
     selected_agent_profile = request.selected_agent_profile
-    reject_profile_selector_conflicts(request, query_agent_id=query_agent_id)
     allowed = execution_polarity != "non_execution" or selected_agent_profile is not None
     explicit_skill_selection = request.selected_skill is not None
     skill_selector_allowed = allowed or explicit_skill_selection
@@ -1529,11 +1527,6 @@ async def chat_stream(
                 selected_agent_profile = SelectedAgentProfileRequest(
                     agent_id=session_profile_agent_id,
                     expected_revision=session_profile_revision,
-                )
-                reject_profile_selector_conflicts(
-                    request,
-                    active=True,
-                    query_agent_id=query_agent_id,
                 )
             elif request.session_id and selected_agent_profile is not None:
                 raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")

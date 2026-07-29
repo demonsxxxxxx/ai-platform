@@ -37,6 +37,21 @@ _PRESENCE_AWARE_PROFILE_FIELDS = (
     "allowed_roles",
     "allowed_user_ids",
 )
+_PROFILE_TRANSPORT_SELECTOR_PATHS = frozenset(
+    {
+        "$.agent_options",
+        "$.agent_options.model",
+        "$.agent_options.model_id",
+        "$.disabled_mcp_tools",
+        "$.disabled_skills",
+        "$.enabled_skills",
+        "$.selected_agent_profile",
+        "$.selected_mcp_tool_ids",
+    }
+)
+_PROFILE_TRANSPORT_AGENT_OPTION_KEYS = frozenset(
+    {"enable_thinking", "model", "model_id"}
+)
 
 
 @dataclass(frozen=True)
@@ -671,13 +686,6 @@ class AgentProfileAuthority:
     ) -> AgentProfileAdmission:
         """Lock and reauthorize exactly the current published revision for one submission."""
 
-        if submitted_request is not None:
-            self.reject_profile_selector_conflicts(
-                submitted_request,
-                active=True,
-                query_agent_id=query_agent_id,
-            )
-
         row = await repositories.get_current_published_agent_profile(
             conn,
             tenant_id=principal.tenant_id,
@@ -687,7 +695,16 @@ class AgentProfileAuthority:
         )
         if row is None:
             raise HTTPException(status_code=409, detail="agent_profile_not_available")
-        return await self._admission_from_row(conn, principal=principal, row=row)
+        admission = await self._admission_from_row(conn, principal=principal, row=row)
+        if submitted_request is not None:
+            self.reject_profile_selector_conflicts(
+                submitted_request,
+                active=True,
+                query_agent_id=query_agent_id,
+                admission=admission,
+                allow_default_query_agent=True,
+            )
+        return admission
 
     async def resolve_bound_for_submission(
         self,
@@ -702,13 +719,6 @@ class AgentProfileAuthority:
     ) -> AgentProfileAdmission:
         """Reauthorize a conversation's immutable publication while its Agent is live."""
 
-        if submitted_request is not None:
-            self.reject_profile_selector_conflicts(
-                submitted_request,
-                active=True,
-                query_agent_id=query_agent_id,
-            )
-
         row = await repositories.get_bound_published_agent_profile(
             conn,
             tenant_id=principal.tenant_id,
@@ -719,7 +729,15 @@ class AgentProfileAuthority:
         )
         if row is None:
             raise HTTPException(status_code=409, detail="agent_profile_not_available")
-        return await self._admission_from_row(conn, principal=principal, row=row)
+        admission = await self._admission_from_row(conn, principal=principal, row=row)
+        if submitted_request is not None:
+            self.reject_profile_selector_conflicts(
+                submitted_request,
+                active=True,
+                query_agent_id=query_agent_id,
+                admission=admission,
+            )
+        return admission
 
     async def _admission_from_row(
         self,
@@ -850,14 +868,59 @@ class AgentProfileAuthority:
         *,
         active: bool | None = None,
         query_agent_id: str | None = None,
+        admission: AgentProfileAdmission | None = None,
+        allow_default_query_agent: bool = False,
     ) -> None:
-        """Reject every client-owned capability selector on a profile-bound submission."""
+        """Accept only transport values that cannot alter a resolved profile admission."""
 
         if active is None:
             active = request.selected_agent_profile is not None
         if not active:
             return
-        if query_agent_id is not None or request.profile_capability_selector_paths():
+        selector_paths = set(request.profile_capability_selector_paths())
+        if admission is None:
+            if query_agent_id is not None or selector_paths:
+                raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+            return
+
+        allowed_query_agent_ids = {admission.agent_id}
+        if allow_default_query_agent:
+            allowed_query_agent_ids.add("general-agent")
+        if query_agent_id is not None and query_agent_id not in allowed_query_agent_ids:
+            raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+        if selector_paths - _PROFILE_TRANSPORT_SELECTOR_PATHS:
+            raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+
+        submitted_fields = request.model_fields_set
+        if "agent_options" in submitted_fields:
+            if not isinstance(request.agent_options, dict):
+                raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+            if set(request.agent_options) - _PROFILE_TRANSPORT_AGENT_OPTION_KEYS:
+                raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+            if request.agent_options.get("enable_thinking", "off") != "off":
+                raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+            submitted_model_id = request.agent_options.get("model_id")
+            if submitted_model_id is not None and submitted_model_id != admission.model["id"]:
+                raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+            submitted_model_value = request.agent_options.get("model")
+            if submitted_model_value is not None and submitted_model_value != admission.model["value"]:
+                raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+        if "disabled_skills" in submitted_fields and request.disabled_skills:
+            raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+        if "enabled_skills" in submitted_fields and request.enabled_skills:
+            raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+        if "disabled_mcp_tools" in submitted_fields and request.disabled_mcp_tools:
+            raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+        if "selected_agent_profile" in submitted_fields and (
+            request.selected_agent_profile is None
+            or request.selected_agent_profile.agent_id != admission.agent_id
+            or request.selected_agent_profile.expected_revision != admission.revision
+        ):
+            raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+        if "selected_mcp_tool_ids" in submitted_fields and (
+            request.selected_mcp_tool_ids is None
+            or tuple(request.selected_mcp_tool_ids) != admission.mcp_tool_ids
+        ):
             raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
 
 

@@ -4129,7 +4129,6 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
 
     from app.agent_apps import AgentProfileAdmission
     from app.models import AgentConversationIdentity
-    from app.models import SelectedAgentProfileRequest
 
     calls: list[str] = []
     persisted: dict[str, dict] = {}
@@ -4153,8 +4152,13 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
     async def late_ensure_user(*_args, **_kwargs):
         calls.append("late_user")
 
-    async def profile_admission(*_args, **_kwargs):
+    async def profile_admission(*_args, **kwargs):
         calls.append("profile_lock")
+        submitted_request = kwargs["submitted_request"]
+        assert kwargs["query_agent_id"] == "general-agent"
+        assert submitted_request.agent_options == {"enable_thinking": "off"}
+        assert submitted_request.disabled_skills == []
+        assert submitted_request.selected_mcp_tool_ids == []
         return AgentProfileAdmission(
             agent_id="agt_support",
             revision=7,
@@ -4256,14 +4260,21 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
     )
 
     response = await chat_stream(
-        ChatStreamRequest(
-            message="run the selected Agent",
-            selected_agent_profile=SelectedAgentProfileRequest(
-                agent_id="agt_support",
-                expected_revision=7,
-            ),
-            submission_id=submission_id,
+        ChatStreamRequest.model_validate(
+            {
+                "message": "run the selected Agent",
+                "agent_options": {"enable_thinking": "off"},
+                "disabled_skills": [],
+                "selected_mcp_tool_ids": [],
+                "selected_agent_profile": {
+                    "agent_id": "agt_support",
+                    "expected_revision": 7,
+                },
+                "submission_id": submission_id,
+                "user_timezone": "Asia/Shanghai",
+            }
         ),
+        agent_id="general-agent",
         principal=principal(),
     )
 
@@ -4378,8 +4389,14 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
     async def ensure_principal(*_args, **_kwargs):
         calls.append("principal")
 
-    async def bound_profile(*_args, **_kwargs):
+    async def bound_profile(*_args, **kwargs):
         calls.append("bound_profile")
+        submitted_request = kwargs["submitted_request"]
+        assert kwargs["query_agent_id"] == "agt_support"
+        assert submitted_request.session_id == "ses_profile_first"
+        assert submitted_request.agent_options == {"enable_thinking": "off"}
+        assert submitted_request.disabled_skills == []
+        assert submitted_request.selected_mcp_tool_ids == []
         return AgentProfileAdmission(
             agent_id="agt_support",
             revision=7,
@@ -4418,6 +4435,9 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         )
         raise HTTPException(status_code=418, detail="captured_profile_skill")
 
+    async def authorize_transport_mcp_defaults(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
     monkeypatch.setattr(
@@ -4432,6 +4452,10 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
     )
     monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
     monkeypatch.setattr(
+        "app.routes.chat.repositories.authorize_selected_chat_mcp_tools",
+        authorize_transport_mcp_defaults,
+    )
+    monkeypatch.setattr(
         "app.routes.chat.repositories.list_authorized_session_runs",
         forbidden_prior_run,
     )
@@ -4442,10 +4466,17 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
 
     with pytest.raises(HTTPException) as caught:
         await chat_stream(
-            ChatStreamRequest(
-                message="run the pinned specialist",
-                session_id="ses_profile_first",
+            ChatStreamRequest.model_validate(
+                {
+                    "message": "run the pinned specialist",
+                    "session_id": "ses_profile_first",
+                    "agent_options": {"enable_thinking": "off"},
+                    "disabled_skills": [],
+                    "selected_mcp_tool_ids": [],
+                    "user_timezone": "Asia/Shanghai",
+                }
             ),
+            agent_id="agt_support",
             principal=principal(),
         )
 
