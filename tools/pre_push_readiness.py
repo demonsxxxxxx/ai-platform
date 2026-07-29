@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -228,7 +229,7 @@ class PrePushReadiness:
             "--format",
             "json",
         )
-        governed = self._run(command, head_worktree)
+        governed = self._run(command, head_worktree, env=_governance_environment())
         payload = _json_payload(governed)
         ruff = payload.get("ruff") if isinstance(payload, dict) else None
         if governed.returncode != 0:
@@ -257,6 +258,12 @@ def _mirrored_test_path(path: PurePosixPath) -> str | None:
     if path.suffix != ".py" or not path.parts or path.parts[0] not in {"app", "scripts", "tools"}:
         return None
     return f"tests/test_{path.stem}.py"
+
+
+def _governance_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["PYTHONSAFEPATH"] = "1"
+    return environment
 
 
 def _stage(

@@ -142,6 +142,20 @@ def test_governance_failure_keeps_rule_and_path(readiness_repo: tuple[Path, str]
     assert payload["failure"]["path"] == "app/billing_rules.py"
 
 
+def test_governance_ruff_ignores_a_head_root_shadow_module(readiness_repo: tuple[Path, str]) -> None:
+    repo, base = readiness_repo
+    _write(repo, "ruff.py", "raise RuntimeError('head ruff module was imported')\n")
+    _write(repo, "tests/test_ruff.py", "def test_ruff():\n    assert True\n")
+    head = _commit(repo, "shadow ruff module")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 0, result.stderr
+    governance_stage = next(stage for stage in payload["stages"] if stage["name"] == "governance")
+    assert governance_stage["ruff"]["status"] == "pass"
+
+
 def test_success_uses_the_exact_resolved_range_and_stable_taxonomy(
     readiness_repo: tuple[Path, str],
 ) -> None:
