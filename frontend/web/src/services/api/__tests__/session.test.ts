@@ -9,6 +9,7 @@ import {
   buildRunRetryUrl,
   buildRunResumeUrl,
   buildSessionListUrl,
+  buildAuthoritativeChatSessionUrl,
   buildSessionInputFilesUrl,
   buildSessionRunsUrl,
   buildChatSubmissionUrl,
@@ -25,6 +26,109 @@ test("builds the active session list URL with pagination", () => {
     buildSessionListUrl({ status: "active", limit: 20, skip: 40 }),
     "/api/sessions?status=active&limit=20&skip=40",
   );
+});
+
+test("builds the authoritative Agent Conversation recovery URL", () => {
+  assert.equal(
+    buildAuthoritativeChatSessionUrl("session/with space"),
+    "/api/ai/chat/sessions/session%2Fwith%20space",
+  );
+});
+
+test("preserves legacy session get while adding safe authoritative recovery", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.startsWith("/api/sessions/")) {
+      return new Response(
+        JSON.stringify({
+          id: "session-agent",
+          agent_id: "agt_support",
+          created_at: "2026-07-29T00:00:00Z",
+          updated_at: "2026-07-29T00:00:00Z",
+          is_active: true,
+          metadata: { agent_id: "agt_support" },
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        session_id: "session-agent",
+        workspace_id: "default",
+        agent_id: "agt_support",
+        title: "支持助手",
+        agent_conversation: {
+          agent_id: "agt_support",
+          revision: 7,
+          name: "支持助手",
+          description: "处理已授权的支持请求。",
+          avatar_ref: "builtin:assistant",
+          category: "support",
+          selected_skill: { skill_id: "private-skill" },
+          mcp_tool_ids: ["private-mcp"],
+          content_hash: "private-hash",
+        },
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+
+  try {
+    const legacy = await sessionApi.get("session-agent");
+    const authoritative = await sessionApi.getAuthoritative("session-agent");
+    assert.equal(legacy?.id, "session-agent");
+    assert.deepEqual(authoritative.agent_conversation, {
+      agent_id: "agt_support",
+      revision: 7,
+      name: "支持助手",
+      description: "处理已授权的支持请求。",
+      avatar_ref: "builtin:assistant",
+      category: "support",
+    });
+    assert.equal("selected_skill" in authoritative.agent_conversation!, false);
+    assert.equal("content_hash" in authoritative.agent_conversation!, false);
+    assert.deepEqual(calls, [
+      "/api/sessions/session-agent",
+      "/api/ai/chat/sessions/session-agent",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("authoritative recovery keeps ordinary sessions generic and rejects missing sessions", async () => {
+  const originalFetch = globalThis.fetch;
+  let status = 200;
+  globalThis.fetch = (async () =>
+    status === 200
+      ? new Response(
+          JSON.stringify({
+            session_id: "session-generic",
+            workspace_id: "default",
+            agent_id: "general-agent",
+            title: "普通会话",
+          }),
+          { status: 200 },
+        )
+      : new Response(JSON.stringify({ detail: "session_not_found" }), { status })) as typeof fetch;
+
+  try {
+    const generic = await sessionApi.getAuthoritative("session-generic");
+    assert.equal(generic.agent_conversation, null);
+    status = 404;
+    await assert.rejects(
+      sessionApi.getAuthoritative("session-missing"),
+      (error: unknown) =>
+        typeof error === "object" &&
+        error !== null &&
+        (error as { status?: unknown }).status === 404,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("builds the default session runs url", () => {

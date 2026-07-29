@@ -396,7 +396,7 @@ function App() {
               }
             />
             <Route
-              path={APP_ROUTE_PATHS.agentMarketChat}
+              path={APP_ROUTE_PATHS.agentMarketDetail}
               element={
                 <ProtectedRoute>
                   <AgentMarketRoute />

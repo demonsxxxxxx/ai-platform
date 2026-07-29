@@ -111,20 +111,53 @@ authority only after independent review of its fixed SHA and ordinary merge.
 Record the candidate's focused tests and independent fixed-SHA review instead;
 do not copy the candidate script into the bootstrap command.
 
+The authority creates its owned detached-worktree root under the configured
+temporary parent with the short `apr-` basename. It reserves a conservative
+Windows directory budget for the observed 163-character staged Skill and
+`.pins` suffix plus headroom; if the configured temporary parent cannot meet
+that budget, the gate removes only its empty owned root and reports an
+`infrastructure_failure` rather than relying on arbitrary long-path settings.
+
 The gate fails `stale_base` before local checks. It then runs compileall, diff
 check, bounded changed-scope responsibility checks, changed-file Ruff, and
 exact-ref governance. Conventional `app`/`tools`/`scripts` changes select their
 changed `tests/test_<stem>.py` mirror; changed test modules are selected only
 when present at `head`. A deleted test is never passed to pytest. A changed
-`frontend/web` TypeScript or TSX path runs the repository-native
-`corepack pnpm run ci:verify` responsibility command. A changed shared fixture
+`frontend/web` TypeScript or TSX path first verifies the candidate's exact
+Git-tree `package.json` and `pnpm-lock.yaml`, requires its pinned
+`packageManager` `pnpm@<version>`, and bootstraps only the detached candidate's
+`frontend/web/node_modules` with pinned Corepack `pnpm install
+--frozen-lockfile --prefer-offline`. The bootstrap uses the normal host
+content-addressed pnpm store and Corepack cache; it never links or reuses a
+mutable `node_modules` tree from another checkout, and does not create a
+throwaway store/cache for every gate. Missing metadata or package manager,
+provenance mismatch, or unavailable cache/network/bootstrap command is an
+actionable `infrastructure_failure`; the detached `node_modules` is removed
+with the temporary worktree on both success and failure. It then runs the
+repository-native `corepack pnpm run ci:verify` responsibility command. A changed shared fixture
 such as `tests/conftest.py` or a fixture/helper module requires an explicit
 bounded `--shared-test-suite tests/test_<name>.py`; the option is invalid when
 no named shared fixture changed. An otherwise unclassifiable affected path
 always fails closed with `external_check`. A shared suite cannot discharge an
 unowned production path; that path remains external until an explicit bounded
-responsibility mapping exists. Preserve the emitted category and identity in
-the PR record:
+responsibility mapping exists. The one explicit root-file mapping is an added
+or modified `.code-governance-exception.json`, which selects the existing
+`tests/test_code_governance.py` suite. Name-status copy detection uses
+`--find-copies=50% --find-copies-harder`, including unchanged source blobs, so
+the mapping accepts only literal `A` or `M` status. A `C*`, `R*`, `T*`, `U*`,
+or any other status remains `external_check`. A copy or rename touching the
+exception at either source or destination fails externally before
+documentation, test, or frontend routing. The suite must be an exact
+case-sensitive Git-tree blob at `head_ref`; a Windows filesystem case match is
+not sufficient. Its deletion follows the deleted-path policy: it is not passed
+to pytest and does not select that suite; exact governance still evaluates the
+candidate range with the exception absent. A `--shared-test-suite` must use a
+canonical relative POSIX `tests/test_*.py` path: absolute paths, backslashes,
+empty, dot, and dot-dot components are invalid. It must be an exact Git-tree
+blob and resolve within the detached worktree's `tests` directory before
+pytest. Every other unowned root configuration or JSON path remains
+`external_check`; `--shared-test-suite` cannot bypass it. Preserve the emitted
+category and identity in the PR record:
 
 - `stale_base`: merge the current base through the ordinary merge-up flow, then
   run the gate again before pushing.
