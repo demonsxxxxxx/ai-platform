@@ -324,7 +324,11 @@ create table if not exists agent_profile_revisions (
   tenant_id text not null references tenants(id),
   agent_id text not null,
   revision bigint not null check (revision > 0),
+  -- ``status`` is the pre-#701 rollback visibility mirror and deliberately
+  -- retains that binary's draft|published enum. Current code uses immutable
+  -- ``revision_status`` and never derives lifecycle from this field.
   status text not null check (status in ('draft', 'published')),
+  revision_status text not null check (revision_status in ('draft', 'published', 'withdrawn')),
   name text not null,
   description text not null default '',
   instructions text not null,
@@ -333,19 +337,66 @@ create table if not exists agent_profile_revisions (
   skill_version text not null,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
   content_hash text not null,
+  avatar_ref text not null
+    check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  category text not null
+    check (category in ('general', 'support', 'writing', 'research', 'operations')),
+  visibility text not null,
+  allowed_department_ids jsonb not null,
+  allowed_roles jsonb not null,
+  allowed_user_ids jsonb not null,
+  legacy_compatibility_write boolean not null default false,
   created_by text references users(id),
   created_at timestamptz not null default now(),
   published_by text references users(id),
   published_at timestamptz,
   published_from_revision bigint,
+  withdrawn_from_revision bigint,
+  constraint chk_agent_profile_revisions_visibility
+    check (visibility in ('tenant', 'restricted')),
+  constraint uq_agent_profile_revision_publication
+    unique (tenant_id, agent_id, revision, content_hash, revision_status),
   constraint fk_agent_profile_revisions_tenant_agent
     foreign key (tenant_id, agent_id) references agents(tenant_id, id),
   primary key (tenant_id, agent_id, revision)
 );
 
-create index if not exists idx_agent_profile_revisions_published
-  on agent_profile_revisions(tenant_id, agent_id, revision desc)
-  where status = 'published';
+-- The aggregate is the only current-lifecycle authority. Revisions remain
+-- append-only history, so a saved draft never accidentally replaces a live
+-- publication and withdrawal can block new admissions without erasing replay.
+create table if not exists agent_profiles (
+  tenant_id text not null references tenants(id),
+  agent_id text not null,
+  lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn')),
+  latest_revision bigint not null check (latest_revision > 0),
+  published_revision bigint,
+  published_hash text,
+  published_status text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fk_agent_profiles_tenant_agent
+    foreign key (tenant_id, agent_id) references agents(tenant_id, id),
+  primary key (tenant_id, agent_id),
+  constraint chk_agent_profiles_publication
+    check (
+      (
+        lifecycle_status = 'published'
+        and published_revision is not null
+        and published_hash is not null
+        and published_status = 'published'
+      )
+      or (
+        lifecycle_status <> 'published'
+        and published_revision is null
+        and published_hash is null
+        and published_status is null
+      )
+    )
+);
+
+create index if not exists idx_agent_profiles_published
+  on agent_profiles(tenant_id, published_revision desc)
+  where lifecycle_status = 'published';
 
 create table if not exists sessions (
   id text primary key,
@@ -429,6 +480,613 @@ alter table sessions add column if not exists admitted_agent_profile_hash text;
 alter table runs add column if not exists admitted_agent_profile_revision bigint;
 alter table runs add column if not exists admitted_agent_profile_hash text;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
+alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
+alter table agent_profile_revisions add column if not exists revision_status text;
+alter table agent_profile_revisions add column if not exists avatar_ref text;
+alter table agent_profile_revisions add column if not exists category text;
+alter table agent_profile_revisions add column if not exists visibility text;
+alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
+alter table agent_profile_revisions add column if not exists allowed_roles jsonb;
+alter table agent_profile_revisions add column if not exists allowed_user_ids jsonb;
+alter table agent_profile_revisions add column if not exists legacy_compatibility_write boolean not null default false;
+alter table agent_profiles add column if not exists published_status text;
+
+alter table agent_profiles drop constraint if exists fk_agent_profiles_published_revision;
+alter table agent_profiles drop constraint if exists fk_agent_profiles_current_publication;
+alter table agent_profiles drop constraint if exists chk_agent_profiles_publication;
+alter table agent_profiles drop constraint if exists agent_profiles_lifecycle_status_check;
+alter table agent_profiles drop constraint if exists chk_agent_profiles_lifecycle_status;
+
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_revision_status_check;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_ref_check;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_category_check;
+alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_visibility;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_visibility_check;
+alter table agent_profile_revisions drop constraint if exists uq_agent_profile_revision_publication;
+
+-- A NULL canonical status identifies a row created before #701. Preserve its
+-- old tenant-visible behavior before repairing any explicit malformed value.
+update agent_profile_revisions
+set legacy_compatibility_write = true
+where revision_status is null and visibility is null;
+
+update agent_profile_revisions
+set revision_status = case
+  when status in ('draft', 'published', 'withdrawn') then status
+  else 'withdrawn'
+end
+where revision_status is null
+   or revision_status not in ('draft', 'published', 'withdrawn');
+
+update agent_profile_revisions
+set status = 'draft'
+where status is null or status not in ('draft', 'published');
+
+update agent_profile_revisions
+set visibility = 'tenant'
+where visibility is null;
+
+update agent_profile_revisions
+set visibility = 'restricted'
+where visibility is not null and visibility not in ('tenant', 'restricted');
+
+update agent_profile_revisions
+set avatar_ref = 'builtin:agent'
+where avatar_ref is null
+   or avatar_ref not in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research');
+update agent_profile_revisions
+set category = 'general'
+where category is null
+   or category not in ('general', 'support', 'writing', 'research', 'operations');
+update agent_profile_revisions
+set allowed_department_ids = '[]'::jsonb
+where allowed_department_ids is null or jsonb_typeof(allowed_department_ids) <> 'array';
+update agent_profile_revisions
+set allowed_roles = '[]'::jsonb
+where allowed_roles is null or jsonb_typeof(allowed_roles) <> 'array';
+update agent_profile_revisions
+set allowed_user_ids = '[]'::jsonb
+where allowed_user_ids is null or jsonb_typeof(allowed_user_ids) <> 'array';
+
+-- No metadata defaults: omission is how the compatibility trigger recognizes
+-- an old writer and inherits the existing ACL without broadening it.
+alter table agent_profile_revisions alter column avatar_ref drop default;
+alter table agent_profile_revisions alter column category drop default;
+alter table agent_profile_revisions alter column visibility drop default;
+alter table agent_profile_revisions alter column allowed_department_ids drop default;
+alter table agent_profile_revisions alter column allowed_roles drop default;
+alter table agent_profile_revisions alter column allowed_user_ids drop default;
+alter table agent_profile_revisions alter column revision_status set not null;
+alter table agent_profile_revisions alter column avatar_ref set not null;
+alter table agent_profile_revisions alter column category set not null;
+alter table agent_profile_revisions alter column visibility set not null;
+alter table agent_profile_revisions alter column allowed_department_ids set not null;
+alter table agent_profile_revisions alter column allowed_roles set not null;
+alter table agent_profile_revisions alter column allowed_user_ids set not null;
+
+alter table agent_profile_revisions add constraint agent_profile_revisions_status_check
+  check (status in ('draft', 'published'));
+alter table agent_profile_revisions add constraint agent_profile_revisions_revision_status_check
+  check (revision_status in ('draft', 'published', 'withdrawn'));
+alter table agent_profile_revisions add constraint agent_profile_revisions_avatar_ref_check
+  check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'));
+alter table agent_profile_revisions add constraint agent_profile_revisions_category_check
+  check (category in ('general', 'support', 'writing', 'research', 'operations'));
+alter table agent_profile_revisions add constraint chk_agent_profile_revisions_visibility
+  check (visibility in ('tenant', 'restricted'));
+alter table agent_profile_revisions add constraint uq_agent_profile_revision_publication
+  unique (tenant_id, agent_id, revision, content_hash, revision_status);
+
+-- Repair corrupt aggregate state before deterministic reconciliation. Invalid
+-- pointers withdraw fail closed; a later compatibility write cannot revive one.
+update agent_profiles profiles
+set published_status = 'published'
+where profiles.lifecycle_status = 'published'
+  and profiles.published_status is distinct from 'published'
+  and exists (
+    select 1
+    from agent_profile_revisions revisions
+    where revisions.tenant_id = profiles.tenant_id
+      and revisions.agent_id = profiles.agent_id
+      and revisions.revision = profiles.published_revision
+      and revisions.content_hash = profiles.published_hash
+      and revisions.revision_status = 'published'
+  );
+
+update agent_profiles profiles
+set lifecycle_status = 'withdrawn',
+    published_revision = null,
+    published_hash = null,
+    published_status = null,
+    updated_at = now()
+where profiles.lifecycle_status is null
+   or profiles.lifecycle_status not in ('draft', 'published', 'withdrawn')
+   or (
+     profiles.lifecycle_status = 'published'
+     and not exists (
+       select 1
+       from agent_profile_revisions revisions
+       where revisions.tenant_id = profiles.tenant_id
+         and revisions.agent_id = profiles.agent_id
+         and revisions.revision = profiles.published_revision
+         and revisions.content_hash = profiles.published_hash
+         and revisions.revision_status = 'published'
+     )
+   );
+
+update agent_profiles
+set published_revision = null,
+    published_hash = null,
+    published_status = null,
+    updated_at = now()
+where lifecycle_status <> 'published'
+  and (published_revision is not null or published_hash is not null or published_status is not null);
+
+-- Reconcile missing aggregates and later old-backend appends on every deploy.
+-- Withdrawn aggregates stay withdrawn. Existing current pointers move only to
+-- a later compatibility publication that inherited tenant visibility.
+with revision_facts as (
+  select
+    tenant_id,
+    agent_id,
+    max(revision) as latest_revision,
+    max(revision) filter (where revision_status = 'published') as latest_published_revision,
+    max(revision) filter (where revision_status = 'withdrawn') as latest_withdrawn_revision
+  from agent_profile_revisions
+  group by tenant_id, agent_id
+), reconciliation as (
+  select
+    facts.tenant_id,
+    facts.agent_id,
+    facts.latest_revision,
+    facts.latest_published_revision,
+    facts.latest_withdrawn_revision,
+    candidate.revision as published_revision,
+    candidate.content_hash as published_hash
+  from revision_facts facts
+  left join agent_profiles existing
+    on existing.tenant_id = facts.tenant_id and existing.agent_id = facts.agent_id
+  left join lateral (
+    select revision, content_hash
+    from agent_profile_revisions candidate_row
+    where candidate_row.tenant_id = facts.tenant_id
+      and candidate_row.agent_id = facts.agent_id
+      and candidate_row.revision_status = 'published'
+      and not exists (
+        select 1
+        from agent_profile_revisions withdrawal
+        where withdrawal.tenant_id = candidate_row.tenant_id
+          and withdrawal.agent_id = candidate_row.agent_id
+          and withdrawal.revision_status = 'withdrawn'
+          and withdrawal.revision > candidate_row.revision
+      )
+      and (
+        existing.agent_id is null
+        or (
+          existing.lifecycle_status <> 'withdrawn'
+          and candidate_row.legacy_compatibility_write
+          and candidate_row.revision > existing.latest_revision
+          and candidate_row.visibility = 'tenant'
+        )
+      )
+    order by candidate_row.revision desc
+    limit 1
+  ) candidate on true
+)
+insert into agent_profiles(
+  tenant_id, agent_id, lifecycle_status, latest_revision, published_revision,
+  published_hash, published_status
+)
+select
+  tenant_id,
+  agent_id,
+  case
+    when latest_withdrawn_revision is not null
+      and (
+        latest_published_revision is null
+        or latest_withdrawn_revision > latest_published_revision
+      ) then 'withdrawn'
+    when published_revision is not null then 'published'
+    else 'draft'
+  end,
+  latest_revision,
+  case
+    when latest_withdrawn_revision is not null
+      and (
+        latest_published_revision is null
+        or latest_withdrawn_revision > latest_published_revision
+      ) then null
+    else published_revision
+  end,
+  case
+    when latest_withdrawn_revision is not null
+      and (
+        latest_published_revision is null
+        or latest_withdrawn_revision > latest_published_revision
+      ) then null
+    else published_hash
+  end,
+  case
+    when published_revision is not null
+      and not (
+        latest_withdrawn_revision is not null
+        and (
+          latest_published_revision is null
+          or latest_withdrawn_revision > latest_published_revision
+        )
+      ) then 'published'
+    else null
+  end
+from reconciliation
+on conflict (tenant_id, agent_id) do update
+set latest_revision = greatest(agent_profiles.latest_revision, excluded.latest_revision),
+    lifecycle_status = case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then 'withdrawn'
+      when excluded.published_revision is not null then 'published'
+      else agent_profiles.lifecycle_status
+    end,
+    published_revision = case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then null
+      when excluded.published_revision is not null then excluded.published_revision
+      else agent_profiles.published_revision
+    end,
+    published_hash = case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then null
+      when excluded.published_revision is not null then excluded.published_hash
+      else agent_profiles.published_hash
+    end,
+    published_status = case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then null
+      when excluded.published_revision is not null then 'published'
+      else agent_profiles.published_status
+    end,
+    updated_at = now()
+where row(
+    agent_profiles.latest_revision,
+    agent_profiles.lifecycle_status,
+    agent_profiles.published_revision,
+    agent_profiles.published_hash,
+    agent_profiles.published_status
+  ) is distinct from row(
+    greatest(agent_profiles.latest_revision, excluded.latest_revision),
+    case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then 'withdrawn'
+      when excluded.published_revision is not null then 'published'
+      else agent_profiles.lifecycle_status
+    end,
+    case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then null
+      when excluded.published_revision is not null then excluded.published_revision
+      else agent_profiles.published_revision
+    end,
+    case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then null
+      when excluded.published_revision is not null then excluded.published_hash
+      else agent_profiles.published_hash
+    end,
+    case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then null
+      when excluded.published_revision is not null then 'published'
+      else agent_profiles.published_status
+    end
+  );
+
+-- Synchronize the old-reader mirror after every reconciliation. Exactly the
+-- current tenant-visible publication remains status='published'.
+with desired as (
+  select
+    revisions.tenant_id,
+    revisions.agent_id,
+    revisions.revision,
+    case
+      when revisions.revision_status = 'published'
+        and revisions.visibility = 'tenant'
+        and exists (
+          select 1
+          from agent_profiles profiles
+          where profiles.tenant_id = revisions.tenant_id
+            and profiles.agent_id = revisions.agent_id
+            and profiles.lifecycle_status = 'published'
+            and profiles.published_revision = revisions.revision
+            and profiles.published_hash = revisions.content_hash
+            and profiles.published_status = 'published'
+        ) then 'published'
+      else 'draft'
+    end as desired_status
+  from agent_profile_revisions revisions
+)
+update agent_profile_revisions revisions
+set status = desired.desired_status
+from desired
+where revisions.tenant_id = desired.tenant_id
+  and revisions.agent_id = desired.agent_id
+  and revisions.revision = desired.revision
+  and revisions.status is distinct from desired.desired_status;
+
+alter table agent_profiles add constraint chk_agent_profiles_lifecycle_status
+  check (lifecycle_status in ('draft', 'published', 'withdrawn'));
+alter table agent_profiles add constraint chk_agent_profiles_publication
+  check (
+    (
+      lifecycle_status = 'published'
+      and published_revision is not null
+      and published_hash is not null
+      and published_status = 'published'
+    )
+    or (
+      lifecycle_status <> 'published'
+      and published_revision is null
+      and published_hash is null
+      and published_status is null
+    )
+  );
+
+alter table agent_profiles add constraint fk_agent_profiles_current_publication
+  foreign key (tenant_id, agent_id, published_revision, published_hash, published_status)
+  references agent_profile_revisions(tenant_id, agent_id, revision, content_hash, revision_status);
+
+drop index if exists idx_agent_profile_revisions_published;
+create index idx_agent_profile_revisions_published
+  on agent_profile_revisions(tenant_id, agent_id, revision desc)
+  where revision_status = 'published';
+
+-- Supported rollback keeps this migrated schema in place while a pre-#701
+-- application binary runs. Removing these columns/triggers requires database
+-- restore authority; it is not an in-place application rollback. The BEFORE
+-- trigger recognizes the old INSERT signature, serializes with current
+-- lifecycle writers, inherits the existing ACL, and mints max(revision)+1
+-- instead of overwriting a colliding history row.
+create or replace function agent_profile_legacy_insert_compatibility()
+returns trigger
+language plpgsql
+as $$
+declare
+  source_row agent_profile_revisions%rowtype;
+  aggregate_lifecycle text;
+  next_revision bigint;
+  legacy_publication_allowed boolean := false;
+begin
+  if new.revision_status is not null then
+    return new;
+  end if;
+
+  perform pg_advisory_xact_lock(
+    hashtextextended('agent-profile:' || new.tenant_id || ':' || new.agent_id, 0)
+  );
+  new.revision_status := case
+    when new.status in ('draft', 'published', 'withdrawn') then new.status
+    else 'withdrawn'
+  end;
+  new.legacy_compatibility_write := true;
+
+  if exists (
+    select 1
+    from agent_profile_revisions existing
+    where existing.tenant_id = new.tenant_id
+      and existing.agent_id = new.agent_id
+      and existing.revision = new.revision
+  ) then
+    select coalesce(max(existing.revision), 0) + 1
+    into next_revision
+    from agent_profile_revisions existing
+    where existing.tenant_id = new.tenant_id and existing.agent_id = new.agent_id;
+    new.revision := next_revision;
+  end if;
+
+  select existing.*
+  into source_row
+  from agent_profile_revisions existing
+  where existing.tenant_id = new.tenant_id and existing.agent_id = new.agent_id
+  order by existing.revision desc
+  limit 1;
+
+  new.avatar_ref := coalesce(new.avatar_ref, source_row.avatar_ref, 'builtin:agent');
+  if new.avatar_ref not in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research') then
+    new.avatar_ref := 'builtin:agent';
+  end if;
+  new.category := coalesce(new.category, source_row.category, 'general');
+  if new.category not in ('general', 'support', 'writing', 'research', 'operations') then
+    new.category := 'general';
+  end if;
+  new.visibility := coalesce(new.visibility, source_row.visibility, 'tenant');
+  if new.visibility not in ('tenant', 'restricted') then
+    new.visibility := 'restricted';
+  end if;
+  new.allowed_department_ids := coalesce(
+    new.allowed_department_ids,
+    source_row.allowed_department_ids,
+    '[]'::jsonb
+  );
+  if jsonb_typeof(new.allowed_department_ids) <> 'array' then
+    new.allowed_department_ids := '[]'::jsonb;
+  end if;
+  new.allowed_roles := coalesce(new.allowed_roles, source_row.allowed_roles, '[]'::jsonb);
+  if jsonb_typeof(new.allowed_roles) <> 'array' then
+    new.allowed_roles := '[]'::jsonb;
+  end if;
+  new.allowed_user_ids := coalesce(new.allowed_user_ids, source_row.allowed_user_ids, '[]'::jsonb);
+  if jsonb_typeof(new.allowed_user_ids) <> 'array' then
+    new.allowed_user_ids := '[]'::jsonb;
+  end if;
+
+  select profiles.lifecycle_status
+  into aggregate_lifecycle
+  from agent_profiles profiles
+  where profiles.tenant_id = new.tenant_id and profiles.agent_id = new.agent_id;
+  if aggregate_lifecycle is null then
+    select case
+      when max(history.revision) filter (where history.revision_status = 'withdrawn') is not null
+        and (
+          max(history.revision) filter (where history.revision_status = 'published') is null
+          or max(history.revision) filter (where history.revision_status = 'withdrawn')
+            > max(history.revision) filter (where history.revision_status = 'published')
+        ) then 'withdrawn'
+      when max(history.revision) filter (where history.revision_status = 'published') is not null
+        then 'published'
+      else 'draft'
+    end
+    into aggregate_lifecycle
+    from agent_profile_revisions history
+    where history.tenant_id = new.tenant_id and history.agent_id = new.agent_id;
+  end if;
+  legacy_publication_allowed := (
+    new.revision_status = 'published'
+    and new.visibility = 'tenant'
+    and aggregate_lifecycle <> 'withdrawn'
+  );
+  if new.revision_status = 'published' and not legacy_publication_allowed then
+    new.revision_status := 'draft';
+  end if;
+  new.status := case
+    when legacy_publication_allowed then 'published'
+    else 'draft'
+  end;
+
+  if new.revision_status = 'published'
+     and new.published_from_revision is not null
+     and exists (
+       select 1
+       from agent_profile_revisions existing
+       where existing.tenant_id = new.tenant_id
+         and existing.agent_id = new.agent_id
+         and existing.revision_status = 'published'
+         and existing.published_from_revision = new.published_from_revision
+     ) then
+    new.published_from_revision := null;
+  end if;
+  return new;
+end $$;
+
+create or replace function agent_profile_legacy_insert_reconcile()
+returns trigger
+language plpgsql
+as $$
+declare
+  fallback_lifecycle text;
+  fallback_published_revision bigint;
+  fallback_published_hash text;
+begin
+  if not new.legacy_compatibility_write then
+    return null;
+  end if;
+
+  if new.revision_status = 'published' and new.status = 'published' then
+    insert into agent_profiles(
+      tenant_id, agent_id, lifecycle_status, latest_revision,
+      published_revision, published_hash, published_status
+    )
+    values (
+      new.tenant_id, new.agent_id, 'published', new.revision,
+      new.revision, new.content_hash, 'published'
+    )
+    on conflict (tenant_id, agent_id) do update
+    set lifecycle_status = 'published',
+        latest_revision = greatest(agent_profiles.latest_revision, excluded.latest_revision),
+        published_revision = excluded.published_revision,
+        published_hash = excluded.published_hash,
+        published_status = 'published',
+        updated_at = now()
+    where agent_profiles.lifecycle_status <> 'withdrawn';
+
+    if exists (
+      select 1
+      from agent_profiles profiles
+      where profiles.tenant_id = new.tenant_id
+        and profiles.agent_id = new.agent_id
+        and profiles.lifecycle_status = 'published'
+        and profiles.published_revision = new.revision
+        and profiles.published_hash = new.content_hash
+    ) then
+      update agent_profile_revisions revisions
+      set status = case when revisions.revision = new.revision then 'published' else 'draft' end
+      where revisions.tenant_id = new.tenant_id
+        and revisions.agent_id = new.agent_id
+        and revisions.revision_status = 'published';
+    else
+      update agent_profile_revisions
+      set status = 'draft'
+      where tenant_id = new.tenant_id and agent_id = new.agent_id and revision = new.revision;
+    end if;
+  else
+    select history.revision, history.content_hash
+    into fallback_published_revision, fallback_published_hash
+    from agent_profile_revisions history
+    where history.tenant_id = new.tenant_id
+      and history.agent_id = new.agent_id
+      and history.revision_status = 'published'
+      and not exists (
+        select 1
+        from agent_profile_revisions withdrawal
+        where withdrawal.tenant_id = history.tenant_id
+          and withdrawal.agent_id = history.agent_id
+          and withdrawal.revision_status = 'withdrawn'
+          and withdrawal.revision > history.revision
+      )
+    order by history.revision desc
+    limit 1;
+    if fallback_published_revision is not null then
+      fallback_lifecycle := 'published';
+    elsif exists (
+      select 1
+      from agent_profile_revisions history
+      where history.tenant_id = new.tenant_id
+        and history.agent_id = new.agent_id
+        and history.revision_status = 'withdrawn'
+    ) then
+      fallback_lifecycle := 'withdrawn';
+    else
+      fallback_lifecycle := 'draft';
+    end if;
+    insert into agent_profiles(
+      tenant_id, agent_id, lifecycle_status, latest_revision,
+      published_revision, published_hash, published_status
+    )
+    values (
+      new.tenant_id, new.agent_id, fallback_lifecycle, new.revision,
+      fallback_published_revision, fallback_published_hash,
+      case when fallback_published_revision is not null then 'published' else null end
+    )
+    on conflict (tenant_id, agent_id) do update
+    set lifecycle_status = case
+          when excluded.lifecycle_status = 'withdrawn' then 'withdrawn'
+          else agent_profiles.lifecycle_status
+        end,
+        latest_revision = greatest(agent_profiles.latest_revision, excluded.latest_revision),
+        published_revision = case
+          when excluded.lifecycle_status = 'withdrawn' then null
+          else agent_profiles.published_revision
+        end,
+        published_hash = case
+          when excluded.lifecycle_status = 'withdrawn' then null
+          else agent_profiles.published_hash
+        end,
+        published_status = case
+          when excluded.lifecycle_status = 'withdrawn' then null
+          else agent_profiles.published_status
+        end,
+        updated_at = now();
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions;
+create trigger trg_agent_profile_legacy_insert_compatibility
+before insert on agent_profile_revisions
+for each row execute function agent_profile_legacy_insert_compatibility();
+
+drop trigger if exists trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
+create trigger trg_agent_profile_legacy_insert_reconcile
+after insert on agent_profile_revisions
+for each row execute function agent_profile_legacy_insert_reconcile();
 
 -- Add composite tenant+agent authority and profile-pin constraints for existing
 -- installations after all referenced tables and columns are present.
@@ -458,9 +1116,10 @@ begin
   end if;
 end $$;
 
-create unique index if not exists idx_agent_profile_revisions_published_from_draft
+drop index if exists idx_agent_profile_revisions_published_from_draft;
+create unique index idx_agent_profile_revisions_published_from_draft
   on agent_profile_revisions(tenant_id, agent_id, published_from_revision)
-  where status = 'published' and published_from_revision is not null;
+  where revision_status = 'published' and published_from_revision is not null;
 -- Existing rows deliberately remain unordered (NULL generation): timestamps and
 -- UUIDs are not a valid historical run-creation authority.
 alter table sessions add column if not exists next_run_generation bigint not null default 0;

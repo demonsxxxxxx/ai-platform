@@ -1,7 +1,15 @@
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from app.control_plane_contracts import RUN_PAYLOAD_SCHEMA_VERSION
 from app.skills.release_policy import validate_release_decision_lock, validate_release_decision_payload
@@ -27,6 +35,17 @@ def _normalize_capability_roles(values: list[str], field_name: str) -> list[str]
     normalized: list[str] = []
     for value in values:
         candidate = assert_safe_id(value.strip().casefold(), field_name)
+        if candidate not in normalized:
+            normalized.append(candidate)
+    return normalized
+
+
+def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> list[str]:
+    """Normalize explicit profile-user grants without weakening principal identity rules."""
+
+    normalized: list[str] = []
+    for value in values:
+        candidate = assert_safe_principal_user_id(value.strip(), field_name)
         if candidate not in normalized:
             normalized.append(candidate)
     return normalized
@@ -141,7 +160,7 @@ class SelectedAgentProfileRequest(BaseModel):
 
 
 class AgentProfileDraftRequest(BaseModel):
-    """Admin definition plus the required optimistic draft-save precondition."""
+    """Admin definition whose field presence governs create-versus-update defaults."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -151,6 +170,12 @@ class AgentProfileDraftRequest(BaseModel):
     model_id: str
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    visibility: Literal["tenant", "restricted"] = "tenant"
+    allowed_department_ids: list[str] = Field(default_factory=list)
+    allowed_roles: list[str] = Field(default_factory=list)
+    allowed_user_ids: list[str] = Field(default_factory=list)
     expected_draft_revision: int = Field(ge=0)
 
     @field_validator("model_id")
@@ -169,6 +194,21 @@ class AgentProfileDraftRequest(BaseModel):
             normalized.append(tool_id)
         return normalized
 
+    @field_validator("allowed_department_ids")
+    @classmethod
+    def normalize_allowed_department_ids(cls, value: list[str], info):
+        return _normalize_capability_department_ids(value, info.field_name)
+
+    @field_validator("allowed_roles")
+    @classmethod
+    def normalize_allowed_roles(cls, value: list[str], info):
+        return _normalize_capability_roles(value, info.field_name)
+
+    @field_validator("allowed_user_ids")
+    @classmethod
+    def normalize_allowed_user_ids(cls, value: list[str], info):
+        return _normalize_agent_profile_user_ids(value, info.field_name)
+
 
 class AgentProfilePublishRequest(BaseModel):
     """Admin optimistic lock for publishing one saved draft revision."""
@@ -176,6 +216,28 @@ class AgentProfilePublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_revision: int = Field(ge=1)
+
+
+class AgentProfileUnpublishRequest(BaseModel):
+    """Admin optimistic lock for withdrawing the current published profile revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class AgentProfileDraftTestRequest(BaseModel):
+    """Validation-only preview of the effective unsaved Agent Profile definition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    definition: AgentProfileDraftRequest
+    agent_id: str | None = None
+
+    @field_validator("agent_id")
+    @classmethod
+    def validate_agent_id(cls, value: str | None):
+        return assert_safe_id(value, "agent_id") if value is not None else None
 
 
 class AgentProfilePublicProjection(BaseModel):
@@ -187,6 +249,8 @@ class AgentProfilePublicProjection(BaseModel):
     expected_revision: int
     name: str
     description: str = ""
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
 
 
 class AgentProfileCatalogResponse(BaseModel):
@@ -204,13 +268,19 @@ class AgentProfileAdminProjection(BaseModel):
 
     agent_id: str
     revision: int
-    status: Literal["draft", "published"]
+    status: Literal["draft", "published", "withdrawn"]
     name: str
     description: str = ""
     instructions: str
     model_id: str
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    visibility: Literal["tenant", "restricted"] = "tenant"
+    allowed_department_ids: list[str] = Field(default_factory=list)
+    allowed_roles: list[str] = Field(default_factory=list)
+    allowed_user_ids: list[str] = Field(default_factory=list)
     content_hash: str
     created_at: Any | None = None
     published_at: Any | None = None
@@ -231,6 +301,51 @@ class AgentProfileMutationResponse(BaseModel):
 
     agent_profile: AgentProfileAdminProjection
     audit_id: str
+
+
+class AgentProfileHistoryResponse(BaseModel):
+    """Admin-only immutable revision history for one Agent Profile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_profiles: list[AgentProfileAdminProjection] = Field(default_factory=list)
+
+
+class AgentProfileValidationResponse(BaseModel):
+    """Safe result of validation-only draft preflight."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    valid: Literal[True] = True
+    audit_id: str
+
+
+class CreateAgentConversationRequest(BaseModel):
+    """Atomic admission request for one exact currently published Agent Profile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = "default"
+    selected_agent_profile: SelectedAgentProfileRequest
+    title: str = ""
+
+    @field_validator("workspace_id")
+    @classmethod
+    def validate_workspace_id(cls, value: str):
+        return assert_safe_id(value, "workspace_id")
+
+
+class AgentConversationIdentity(BaseModel):
+    """Only safe immutable Agent identity retained in public conversation recovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    revision: int = Field(ge=1)
+    name: str
+    description: str = ""
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
 
 
 class CreateRunRequest(BaseModel):
@@ -876,6 +991,7 @@ class ChatSessionResponse(BaseModel):
     workspace_id: str
     agent_id: str
     title: str
+    agent_conversation: AgentConversationIdentity | None = None
     created_at: Any | None = None
     updated_at: Any | None = None
 
@@ -909,6 +1025,71 @@ class ChatMessagesResponse(BaseModel):
 class ChatStreamRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    _PROFILE_CAPABILITY_SELECTOR_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "agentid",
+            "agentids",
+            "agentoptions",
+            "agentprofile",
+            "agentprofilehash",
+            "agentprofileid",
+            "agentprofilerevision",
+            "admittedagentprofilehash",
+            "admittedagentprofilerevision",
+            "capabilityid",
+            "confirmedcapabilityid",
+            "contenthash",
+            "definitionhash",
+            "disabledmcptools",
+            "disabledskills",
+            "enabledmcptools",
+            "enabledskills",
+            "mcptool",
+            "mcptoolid",
+            "mcptoolids",
+            "mcptools",
+            "mcpserver",
+            "mcpserverid",
+            "mcpserverids",
+            "mcpservers",
+            "model",
+            "modelid",
+            "modelids",
+            "modelvalue",
+            "models",
+            "multiagentsteps",
+            "selectedmcptoolid",
+            "selectedmcptoolids",
+            "selectedmodel",
+            "selectedmodelid",
+            "selectedmodelids",
+            "selectedmodelvalue",
+            "selectedcapability",
+            "selectedcapabilityid",
+            "selectedskill",
+            "selectedskillid",
+            "selectedskillids",
+            "selectedtools",
+            "skill",
+            "skillid",
+            "skillids",
+            "skillversion",
+            "skills",
+            "executor",
+            "executortype",
+            "expectedrevision",
+            "instructions",
+            "prompt",
+            "revision",
+            "selectedagentprofile",
+            "toolids",
+            "tools",
+        }
+    )
+    _PROFILE_SELECTOR_NESTING_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"agentoptions", "input"}
+    )
+
     workspace_id: str = "default"
     session_id: str | None = None
     agent_id: str | None = None
@@ -928,6 +1109,101 @@ class ChatStreamRequest(BaseModel):
     user_timezone: str | None = None
     confirmed_capability_id: str | None = None
     submission_id: UUID | None = None
+    _submitted_profile_capability_selector_paths: tuple[str, ...] = PrivateAttr(
+        default_factory=tuple
+    )
+
+    @staticmethod
+    def _normalized_selector_key(value: object) -> str:
+        return "".join(character.casefold() for character in str(value) if character.isalnum())
+
+    @classmethod
+    def _collect_profile_capability_selector_paths(
+        cls,
+        value: object,
+        *,
+        prefix: str,
+        recurse_all: bool,
+    ) -> set[str]:
+        paths: set[str] = set()
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                paths.update(
+                    cls._collect_profile_capability_selector_paths(
+                        item,
+                        prefix=f"{prefix}[{index}]",
+                        recurse_all=recurse_all,
+                    )
+                )
+            return paths
+        if not isinstance(value, dict):
+            return paths
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            normalized_key = cls._normalized_selector_key(key)
+            path = f"{prefix}.{key}"
+            if normalized_key in cls._PROFILE_CAPABILITY_SELECTOR_KEYS:
+                paths.add(path)
+            if recurse_all or normalized_key in cls._PROFILE_SELECTOR_NESTING_KEYS:
+                paths.update(
+                    cls._collect_profile_capability_selector_paths(
+                        item,
+                        prefix=path,
+                        recurse_all=True,
+                    )
+                )
+        return paths
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def capture_profile_capability_selector_surface(cls, value: Any, handler):
+        """Retain ignored aliases needed to fail closed for profile-bound Chat."""
+
+        paths = (
+            cls._collect_profile_capability_selector_paths(
+                value,
+                prefix="$",
+                recurse_all=False,
+            )
+            if isinstance(value, dict)
+            else set()
+        )
+        request = handler(value)
+        request._submitted_profile_capability_selector_paths = tuple(sorted(paths))
+        return request
+
+    def profile_capability_selector_paths(self) -> tuple[str, ...]:
+        """Return the complete submitted model, Skill, Agent, and tool selector surface."""
+
+        paths = set(self._submitted_profile_capability_selector_paths)
+        dynamic = {
+            "agent_id": self.agent_id,
+            "skill_id": self.skill_id,
+            "selected_skill": self.selected_skill,
+            "selected_agent_profile": self.selected_agent_profile,
+            "disabled_skills": self.disabled_skills,
+            "enabled_skills": self.enabled_skills,
+            "disabled_mcp_tools": self.disabled_mcp_tools,
+            "selected_mcp_tool_ids": self.selected_mcp_tool_ids,
+            "confirmed_capability_id": self.confirmed_capability_id,
+            "agent_options": self.agent_options,
+            "input": self.input,
+        }
+        for field_name, field_value in dynamic.items():
+            if field_name not in self.model_fields_set:
+                continue
+            normalized_key = self._normalized_selector_key(field_name)
+            if normalized_key in self._PROFILE_CAPABILITY_SELECTOR_KEYS:
+                paths.add(f"$.{field_name}")
+            if normalized_key in self._PROFILE_SELECTOR_NESTING_KEYS:
+                paths.update(
+                    self._collect_profile_capability_selector_paths(
+                        field_value,
+                        prefix=f"$.{field_name}",
+                        recurse_all=True,
+                    )
+                )
+        return tuple(sorted(paths))
 
     @field_validator("workspace_id")
     @classmethod

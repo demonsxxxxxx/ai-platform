@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.models import AgentProfilePublicProjection
 
 
 def auth_settings():
@@ -110,6 +111,45 @@ def test_agent_apps_projection_returns_translation_and_review_for_admin(monkeypa
             "status": "active",
         },
     ]
+
+
+def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeypatch):
+    async def public_profile(_conn, *, principal, agent_id):
+        assert (principal.tenant_id, agent_id) == ("default", "agt_support")
+        return AgentProfilePublicProjection(
+            agent_id="agt_support",
+            expected_revision=7,
+            name="Support assistant",
+            description="Approved support help.",
+            avatar_ref="builtin:assistant",
+            category="support",
+        )
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_apps.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_apps._authority.get_public", public_profile)
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/ai/agent-profiles/agt_support",
+        headers={
+            "x-ai-user-id": "user-a",
+            "x-ai-user-name": "User A",
+            "x-ai-tenant-id": "default",
+            "x-ai-roles": "user",
+            "x-ai-gateway-secret": "test-secret",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "agent_id": "agt_support",
+        "expected_revision": 7,
+        "name": "Support assistant",
+        "description": "Approved support help.",
+        "avatar_ref": "builtin:assistant",
+        "category": "support",
+    }
 
 
 class FakeCursor:
