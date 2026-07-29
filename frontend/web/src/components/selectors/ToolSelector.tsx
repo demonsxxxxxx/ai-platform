@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from "react";
+/* eslint-disable react-refresh/only-export-components -- catalog notice mapping is tested with this selector */
+import { useContext, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -17,6 +18,11 @@ import {
 import { Checkbox } from "../common/Checkbox";
 import type { ToolState, ToolCategory, ToolParamInfo } from "../../types";
 import { useSwipeToClose } from "../../hooks/useSwipeToClose";
+import {
+  canSelectChatMcpTools,
+  ChatMcpCatalogContext,
+  type ChatMcpCatalogState,
+} from "../../hooks/useTools";
 
 interface ToolSelectorProps {
   tools: ToolState[];
@@ -45,6 +51,34 @@ const categoryIcons: Record<ToolCategory, typeof Bot> = {
   sandbox: Container,
 };
 
+export interface ChatMcpCatalogNotice {
+  titleKey: string;
+  detailKeys: string[];
+  retryable: boolean;
+}
+
+/** Map bounded catalog state to localized, public-safe selector copy. */
+export function getChatMcpCatalogNotice(
+  catalogState: ChatMcpCatalogState,
+): ChatMcpCatalogNotice | null {
+  switch (catalogState.status) {
+    case "loading":
+      return { titleKey: "tools.catalog.loading", detailKeys: [], retryable: false };
+    case "empty":
+      return { titleKey: "tools.catalog.empty", detailKeys: [], retryable: false };
+    case "degraded":
+      return {
+        titleKey: "tools.catalog.degraded",
+        detailKeys: [...new Set(catalogState.unavailable)].slice(0, 3),
+        retryable: false,
+      };
+    case "error":
+      return { titleKey: "tools.catalog.error", detailKeys: [], retryable: true };
+    case "ready":
+      return null;
+  }
+}
+
 export function ToolSelector({
   tools,
   onToggleTool,
@@ -58,6 +92,9 @@ export function ToolSelector({
 }: ToolSelectorProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { catalogState, retryTools } = useContext(ChatMcpCatalogContext);
+  const catalogNotice = getChatMcpCatalogNotice(catalogState);
+  const catalogAllowsSelection = canSelectChatMcpTools(catalogState.status);
   const [internalOpen, setInternalOpen] = useState(false);
   const isOpen = externalIsOpen ?? internalOpen;
   const setIsOpen = externalOnOpenChange ?? setInternalOpen;
@@ -156,7 +193,7 @@ export function ToolSelector({
   };
 
   const handleToolToggle = (tool: ToolState) => {
-    if (tool.system_disabled) return;
+    if (!catalogAllowsSelection || tool.system_disabled) return;
     onToggleTool(tool.name);
   };
 
@@ -205,15 +242,19 @@ export function ToolSelector({
       {/* Actions */}
       <div className="flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
         <button
+          type="button"
+          disabled={!catalogAllowsSelection}
           onClick={() => onToggleAll(true)}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors"
+          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t("tools.selectAll")}
         </button>
         <div className="w-px h-4 bg-[var(--theme-border)]" />
         <button
+          type="button"
+          disabled={!catalogAllowsSelection}
           onClick={() => onToggleAll(false)}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors"
+          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t("tools.deselectAll")}
         </button>
@@ -243,15 +284,32 @@ export function ToolSelector({
 
       {/* Categories */}
       <div className="flex-1 overflow-y-auto p-2.5 sm:p-3 space-y-1.5">
-        {totalCount === 0 && (
-          <div className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5 text-center">
+        {catalogNotice && (
+          <div
+            aria-live="polite"
+            className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5 text-center"
+            data-mcp-catalog-status={catalogState.status}
+          >
             <p className="text-sm font-medium text-[var(--theme-text)]">
-              No authorized MCP tools are currently available.
+              {t(catalogNotice.titleKey)}
             </p>
-            <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
-              Ask an administrator to provision and authorize a compatible MCP
-              tool.
-            </p>
+            {catalogNotice.detailKeys.map((detailKey) => (
+              <p
+                key={detailKey}
+                className="mt-1 text-xs text-[var(--theme-text-secondary)]"
+              >
+                {t(detailKey)}
+              </p>
+            ))}
+            {catalogNotice.retryable && retryTools ? (
+              <button
+                type="button"
+                onClick={retryTools}
+                className="mt-3 px-3 py-2 text-xs font-medium text-[var(--theme-primary)] hover:bg-[var(--theme-bg-sidebar)] rounded-lg transition-colors"
+              >
+                {t("tools.catalog.retry")}
+              </button>
+            ) : null}
           </div>
         )}
         {Object.entries(sortedGroupedTools).map(
@@ -297,6 +355,10 @@ export function ToolSelector({
                   <Checkbox
                     checked={allEnabled}
                     onChange={() => onToggleCategory(cat, !allEnabled)}
+                    disabled={
+                      !catalogAllowsSelection ||
+                      categoryTools.every((tool) => tool.system_disabled)
+                    }
                   />
                 </div>
 
@@ -381,7 +443,7 @@ export function ToolSelector({
                               <Checkbox
                                 checked={tool.enabled}
                                 onChange={() => handleToolToggle(tool)}
-                                disabled={tool.system_disabled}
+                                disabled={!catalogAllowsSelection || tool.system_disabled}
                               />
                             </div>
 
@@ -461,7 +523,7 @@ export function ToolSelector({
             );
           },
         )}
-        {filteredTools.length === 0 && (
+        {filteredTools.length === 0 && totalCount > 0 && (
           <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
             {t("tools.noMatchingTools", "No matching tools")}
           </div>

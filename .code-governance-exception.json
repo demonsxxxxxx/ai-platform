@@ -1,0 +1,12 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-08-15",
+  "owner": "ai-platform-controller",
+  "reason": "Issue #499 Stack B from base dd9b0633b97f76c6801274f6d29dad149d06eaf7 changes frontend/web/src/hooks/useTools.ts, frontend/web/src/components/layout/AppContent/ChatAppContent.tsx, frontend/web/src/components/selectors/ToolSelector.tsx, and frontend/web/src/i18n/locales/zh.json; mandatory immediate post-merge cleanup removes this temporary exception.",
+  "violations": [
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}
