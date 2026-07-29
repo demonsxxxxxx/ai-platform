@@ -116,8 +116,18 @@ check, bounded changed-scope responsibility checks, changed-file Ruff, and
 exact-ref governance. Conventional `app`/`tools`/`scripts` changes select their
 changed `tests/test_<stem>.py` mirror; changed test modules are selected only
 when present at `head`. A deleted test is never passed to pytest. A changed
-`frontend/web` TypeScript or TSX path runs the repository-native
-`corepack pnpm run ci:verify` responsibility command. A changed shared fixture
+`frontend/web` TypeScript or TSX path first verifies the candidate's exact
+Git-tree `package.json` and `pnpm-lock.yaml`, requires its pinned
+`packageManager` `pnpm@<version>`, and bootstraps only the detached candidate's
+`frontend/web/node_modules` with pinned Corepack `pnpm install
+--frozen-lockfile --prefer-offline`. The bootstrap uses the normal host
+content-addressed pnpm store and Corepack cache; it never links or reuses a
+mutable `node_modules` tree from another checkout, and does not create a
+throwaway store/cache for every gate. Missing metadata or package manager,
+provenance mismatch, or unavailable cache/network/bootstrap command is an
+actionable `infrastructure_failure`; the detached `node_modules` is removed
+with the temporary worktree on both success and failure. It then runs the
+repository-native `corepack pnpm run ci:verify` responsibility command. A changed shared fixture
 such as `tests/conftest.py` or a fixture/helper module requires an explicit
 bounded `--shared-test-suite tests/test_<name>.py`; the option is invalid when
 no named shared fixture changed. An otherwise unclassifiable affected path
