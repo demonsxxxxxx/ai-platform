@@ -111,6 +111,13 @@ authority only after independent review of its fixed SHA and ordinary merge.
 Record the candidate's focused tests and independent fixed-SHA review instead;
 do not copy the candidate script into the bootstrap command.
 
+The authority creates its owned detached-worktree root under the configured
+temporary parent with the short `apr-` basename. It reserves a conservative
+Windows directory budget for the observed 163-character staged Skill and
+`.pins` suffix plus headroom; if the configured temporary parent cannot meet
+that budget, the gate removes only its empty owned root and reports an
+`infrastructure_failure` rather than relying on arbitrary long-path settings.
+
 The gate fails `stale_base` before local checks. It then runs compileall, diff
 check, bounded changed-scope responsibility checks, changed-file Ruff, and
 exact-ref governance. Conventional `app`/`tools`/`scripts` changes select their

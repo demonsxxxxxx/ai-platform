@@ -370,6 +370,60 @@ def test_disposable_worktree_commands_enable_windows_long_path_handling(tmp_path
     ]
 
 
+def test_temporary_root_uses_short_owned_basename_with_windows_headroom(tmp_path: Path) -> None:
+    module = _readiness_module()
+    readiness = module.PrePushReadiness(tmp_path)
+    temporary_root = readiness._create_temporary_root()
+    try:
+        base, head = module._temporary_worktree_paths(temporary_root)
+
+        assert temporary_root.name.startswith(module.TEMPORARY_ROOT_PREFIX)
+        assert base.parent == temporary_root
+        assert head.parent == temporary_root
+        assert base.name == "base"
+        assert head.name == "head"
+        assert module._temporary_root_has_windows_headroom(temporary_root)
+        assert (
+            len(str(temporary_root))
+            + module.WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH
+            + module.WINDOWS_DIRECTORY_PATH_HEADROOM
+            <= module.WINDOWS_CONSERVATIVE_DIRECTORY_PATH_BUDGET
+        )
+    finally:
+        if os.path.lexists(temporary_root):
+            module._remove_cleanup_tree(temporary_root)
+
+
+def test_temporary_root_over_budget_fails_and_cleans_only_the_owned_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _readiness_module()
+    readiness = module.PrePushReadiness(tmp_path)
+    temporary_root = tmp_path / "apr-over-budget"
+    temporary_root.mkdir()
+    sentinel = tmp_path / "outside-owned-root.txt"
+    sentinel.write_text("must survive temporary-root cleanup", encoding="utf-8")
+    prefixes: list[str] = []
+
+    def create_over_budget_root(*, prefix: str) -> str:
+        prefixes.append(prefix)
+        return str(temporary_root)
+
+    monkeypatch.setattr(module.tempfile, "mkdtemp", create_over_budget_root)
+    try:
+        with pytest.raises(module.ReadinessError) as raised:
+            readiness._create_temporary_root()
+    finally:
+        if os.path.lexists(temporary_root):
+            module._remove_cleanup_tree(temporary_root)
+
+    assert prefixes == [module.TEMPORARY_ROOT_PREFIX]
+    assert raised.value.category == "infrastructure_failure"
+    assert raised.value.code == "temporary_directory_path_too_long"
+    assert not os.path.lexists(temporary_root)
+    assert sentinel.read_text(encoding="utf-8") == "must survive temporary-root cleanup"
+
+
 def test_worktree_cleanup_removes_detached_frontend_node_modules_and_normalizes_windows_separators(tmp_path: Path) -> None:
     module = _readiness_module()
     runner = _CleanupRunner(module)
@@ -1361,6 +1415,9 @@ def test_pr_workflow_requires_the_exact_ref_gate_before_push_and_after_merge_up(
     assert "either source or destination" in workflow
     assert "case-sensitive Git-tree blob" in workflow
     assert "canonical relative POSIX" in workflow
+    assert "short `apr-` basename" in workflow
+    assert "163-character staged Skill and\n`.pins` suffix plus headroom" in workflow
+    assert "arbitrary long-path settings" in workflow
     assert "resolve within the detached worktree's `tests` directory" in workflow
     assert "deletion follows the deleted-path" in normalized
     assert "every other unowned root configuration or json path remains" in " ".join(normalized.split())
