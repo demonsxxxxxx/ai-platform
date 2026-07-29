@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -723,6 +724,16 @@ class PrePushReadiness:
         if temporary_root is None:
             return None
         failures: list[str] = []
+        dependency_records: list[dict[str, Any]] = []
+        for label, path in frontend_dependencies:
+            record: dict[str, Any] = {"label": label, "path": str(path), "exists_after": None}
+            try:
+                _remove_cleanup_tree(path)
+            except OSError as error:
+                record["remove_error"] = str(error)
+                failures.append(f"frontend dependency path removal failed for {label}: {error}")
+            record["exists_before_worktree_remove"] = _path_lexists(path)
+            dependency_records.append(record)
         records: list[dict[str, Any]] = []
         for label, path, added in worktrees:
             if not added or path is None:
@@ -741,15 +752,14 @@ class PrePushReadiness:
                 failures.append(str(error))
             records.append(record)
         try:
-            shutil.rmtree(temporary_root)
+            _remove_cleanup_tree(temporary_root)
         except OSError as error:
             failures.append(f"temporary worktree directory removal failed: {error}")
-        dependency_records: list[dict[str, Any]] = []
-        for label, path in frontend_dependencies:
+        for record, (_, path) in zip(dependency_records, frontend_dependencies, strict=True):
             exists_after = _path_lexists(path)
-            dependency_records.append({"label": label, "path": str(path), "exists_after": exists_after})
+            record["exists_after"] = exists_after
             if exists_after:
-                failures.append(f"frontend dependency path remains after cleanup: {label}")
+                failures.append(f"frontend dependency path remains after cleanup: {record['label']}")
         stage: dict[str, Any] = {
             "frontend_dependencies": dependency_records,
             "name": "worktree_cleanup",
@@ -854,6 +864,56 @@ def _same_worktree_path(expected: Path, registered: str) -> bool:
 
 def _path_lexists(path: Path) -> bool:
     return os.path.lexists(path)
+
+
+def _windows_extended_path(path: Path | str) -> str:
+    rendered = os.fspath(path)
+    if os.name != "nt" or rendered.startswith("\\\\?\\"):
+        return rendered
+    absolute = os.path.abspath(rendered)
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute.lstrip("\\")
+    return "\\\\?\\" + absolute
+
+
+def _remove_cleanup_tree(path: Path) -> None:
+    if not _path_lexists(path):
+        return
+    if os.name != "nt":
+        shutil.rmtree(path)
+        return
+    _remove_windows_cleanup_tree(_windows_extended_path(path))
+
+
+def _remove_windows_cleanup_tree(path: str) -> None:
+    try:
+        details = os.lstat(path)
+    except FileNotFoundError:
+        return
+    attributes = details.st_file_attributes
+    is_directory = stat.S_ISDIR(details.st_mode)
+    is_reparse_point = bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    if is_reparse_point:
+        _clear_windows_read_only(path, attributes)
+        if is_directory:
+            os.rmdir(path)
+        else:
+            os.unlink(path)
+        return
+    if is_directory:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                _remove_windows_cleanup_tree(entry.path)
+        _clear_windows_read_only(path, attributes)
+        os.rmdir(path)
+        return
+    _clear_windows_read_only(path, attributes)
+    os.unlink(path)
+
+
+def _clear_windows_read_only(path: str, attributes: int) -> None:
+    if attributes & stat.FILE_ATTRIBUTE_READONLY:
+        os.chmod(path, stat.S_IWRITE)
 
 
 def _git_worktree_command(*arguments: str) -> tuple[str, ...]:

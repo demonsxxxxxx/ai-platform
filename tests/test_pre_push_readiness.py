@@ -280,6 +280,18 @@ class _CleanupRunner:
         return self.module._CommandResult(0, "", "")
 
 
+class _DependencyCleanupRunner(_CleanupRunner):
+    def __init__(self, module: ModuleType, dependencies: tuple[Path, ...], *, remove_returncode: int = 0) -> None:
+        super().__init__(module, remove_returncode=remove_returncode)
+        self.dependencies = dependencies
+        self.dependencies_present_before_worktree_remove: list[bool] = []
+
+    def run(self, command: tuple[str, ...], *, cwd: Path, env: dict[str, str] | None = None) -> object:
+        if command[:5] == ("git", "-c", "core.longpaths=true", "worktree", "remove"):
+            self.dependencies_present_before_worktree_remove.extend(os.path.lexists(path) for path in self.dependencies)
+        return super().run(command, cwd=cwd, env=env)
+
+
 def test_worktree_cleanup_records_successful_remove_and_absent_registration(tmp_path: Path) -> None:
     module = _readiness_module()
     runner = _CleanupRunner(module)
@@ -337,6 +349,73 @@ def test_worktree_cleanup_removes_detached_frontend_node_modules_and_normalizes_
     assert cleanup["status"] == "pass"
     assert all(resource["exists_after"] is False for resource in cleanup["frontend_dependencies"])
     assert module._same_worktree_path(node_modules, str(node_modules).replace("\\", "/"))
+
+
+def test_worktree_cleanup_removes_nested_long_dependency_tree_before_worktree_remove(tmp_path: Path) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    node_modules = head / "frontend" / "web" / "node_modules"
+    nested = node_modules / ".pnpm" / ("dependency-" + "a" * 100) / ("package-" + "b" * 100)
+    os.makedirs(module._windows_extended_path(nested), exist_ok=True)
+    sentinel = os.path.join(module._windows_extended_path(nested), "sandpack-client.js")
+    with open(sentinel, "w", encoding="utf-8") as handle:
+        handle.write("candidate-local dependency\n")
+    runner = _DependencyCleanupRunner(module, (node_modules,))
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+
+    failure = readiness._cleanup_worktrees(
+        result,
+        temporary_root,
+        (("head", head, True),),
+        frontend_dependencies=(("node_modules", node_modules),),
+    )
+
+    assert failure is None
+    assert runner.dependencies_present_before_worktree_remove == [False]
+    assert not os.path.lexists(node_modules)
+    assert not temporary_root.exists()
+    cleanup = result["stages"][-1]
+    assert cleanup["status"] == "pass"
+    assert cleanup["worktrees"][0]["registered_after"] is False
+
+
+def test_worktree_cleanup_surfaces_dependency_removal_error_after_root_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    node_modules = head / "frontend" / "web" / "node_modules"
+    node_modules.mkdir(parents=True)
+    runner = _CleanupRunner(module)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+    original_remove = module._remove_cleanup_tree
+
+    def fail_dependency_only(path: Path) -> None:
+        if path == node_modules:
+            raise OSError("locked candidate dependency tree")
+        original_remove(path)
+
+    monkeypatch.setattr(module, "_remove_cleanup_tree", fail_dependency_only)
+
+    failure = readiness._cleanup_worktrees(
+        result,
+        temporary_root,
+        (("head", head, True),),
+        frontend_dependencies=(("node_modules", node_modules),),
+    )
+
+    assert failure is not None
+    assert failure.category == "infrastructure_failure"
+    assert failure.code == "worktree_cleanup_failed"
+    assert "frontend dependency path removal failed" in str(failure)
+    assert not temporary_root.exists()
+    cleanup = result["stages"][-1]
+    assert cleanup["status"] == "failed"
+    assert cleanup["worktrees"][0]["registered_after"] is False
 
 
 def test_cleanup_only_failure_is_an_infrastructure_failure(tmp_path: Path) -> None:
