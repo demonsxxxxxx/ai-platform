@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import sys
+import tempfile
 import types
 import zipfile
 from contextlib import asynccontextmanager
@@ -414,15 +415,19 @@ def payload(**overrides):
     return RunPayload(**data)
 
 
-def settings(tmp_path, *, sdk_enabled=True, legacy_fallback=False):
+def _short_sandbox_workspace_root(tmp_path):
     short_id = hashlib.sha256(str(tmp_path).encode("utf-8")).hexdigest()[:8]
+    return Path(".pytest-tmp") / short_id
+
+
+def settings(tmp_path, *, sdk_enabled=True, legacy_fallback=False):
     return type(
         "S",
         (),
         {
             "claude_agent_sdk_enabled": sdk_enabled,
             "claude_agent_workspace_root": str(tmp_path / "workspaces"),
-            "sandbox_workspace_root": str(Path(".pytest-tmp") / f"s-{short_id}"),
+            "sandbox_workspace_root": str(_short_sandbox_workspace_root(tmp_path)),
             "sandbox_container_provider": "docker",
             "sandbox_callback_base_url": "http://platform.test",
             "claude_agent_model": "deepseek-v4-flash",
@@ -626,6 +631,32 @@ def sandbox_workspace_path(current_settings, *, run_id="run_1", attempt_id="qat-
         / attempt_id
         / "workspace"
     )
+
+
+def test_sandbox_workspace_root_materializes_longest_staged_skill_targets(tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    sandbox_root = _short_sandbox_workspace_root(tmp_path)
+    workspace = sandbox_workspace_path(current_settings)
+    targets = (
+        workspace / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md",
+        workspace / ".pins" / "qa-file-reviewer" / "SKILL.md",
+    )
+
+    assert Path(current_settings.sandbox_workspace_root) == sandbox_root
+    for target in targets:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("path budget probe", encoding="utf-8")
+        assert target.read_text(encoding="utf-8") == "path budget probe"
+    if sys.platform == "win32":
+        detached_checkout = (
+            Path(tempfile.gettempdir())
+            / f"ai-platform-pre-push-readiness-{'x' * 8}"
+            / "head"
+        )
+        assert max(
+            len(str(detached_checkout / target))
+            for target in targets
+        ) < 260
 
 
 def write_skill(root, name="qa-file-reviewer", description="Review Word documents."):
@@ -1684,7 +1715,6 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
 @pytest.mark.asyncio
 async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
-    current_settings.sandbox_workspace_root = str(Path(".pytest-tmp") / "sandbox-missing-skill-hook")
     write_skill(tmp_path / "skills")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
     pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
@@ -2178,7 +2208,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
             {
                 "claude_agent_sdk_enabled": True,
                 "claude_agent_workspace_root": str(tmp_path / "a"),
-                "sandbox_workspace_root": str(tmp_path / "s"),
+                "sandbox_workspace_root": str(_short_sandbox_workspace_root(tmp_path)),
                 "sandbox_container_provider": "docker",
                 "platform_skills_root": str(tmp_path / "k"),
                 "skill_staging_subdir": ".claude/skills",
@@ -2892,7 +2922,7 @@ async def test_actual_runtime_provider_mismatch_fails_before_workspace_preparati
             {
                 "claude_agent_sdk_enabled": True,
                 "sandbox_container_provider": "docker",
-                "sandbox_workspace_root": str(tmp_path),
+                "sandbox_workspace_root": str(_short_sandbox_workspace_root(tmp_path)),
             },
         )(),
     )
@@ -2993,7 +3023,7 @@ async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypa
         {
             "claude_agent_sdk_enabled": True,
             "claude_agent_workspace_root": str(tmp_path / "a"),
-            "sandbox_workspace_root": str(tmp_path / "s"),
+            "sandbox_workspace_root": str(_short_sandbox_workspace_root(tmp_path)),
             "sandbox_container_provider": "docker",
             "platform_skills_root": str(tmp_path / "k"),
             "skill_staging_subdir": ".claude/skills",
@@ -3101,7 +3131,7 @@ async def test_general_chat_heavy_sandbox_request_carries_context_retrieval_scop
         {
             "claude_agent_sdk_enabled": True,
             "claude_agent_workspace_root": str(tmp_path / "a"),
-            "sandbox_workspace_root": str(tmp_path / "s"),
+            "sandbox_workspace_root": str(_short_sandbox_workspace_root(tmp_path)),
             "sandbox_container_provider": "docker",
             "platform_skills_root": str(tmp_path / "k"),
             "skill_staging_subdir": ".claude/skills",
@@ -3180,7 +3210,7 @@ async def test_general_chat_heavy_sandbox_fails_when_runtime_reports_sdk_disable
         {
             "claude_agent_sdk_enabled": True,
             "claude_agent_workspace_root": str(tmp_path / "a"),
-            "sandbox_workspace_root": str(tmp_path / "s"),
+            "sandbox_workspace_root": str(_short_sandbox_workspace_root(tmp_path)),
             "sandbox_container_provider": "docker",
             "platform_skills_root": str(tmp_path / "k"),
             "skill_staging_subdir": ".claude/skills",
@@ -3703,7 +3733,6 @@ async def test_general_chat_with_files_stays_on_sdk_path(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_sandbox_required_general_chat_bridges_agent_event_to_keyword_worker_sink(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
-    current_settings.sandbox_workspace_root = str(tmp_path / "sandbox")
     received_events = []
 
     async def no_files(payload, workspace):
@@ -3904,7 +3933,6 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
             raise AssertionError("cancel must propagate before runtime result mapping")
 
     current_settings = settings(tmp_path, sdk_enabled=True)
-    current_settings.sandbox_workspace_root = str(tmp_path / "sandbox")
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.SandboxRuntime",
