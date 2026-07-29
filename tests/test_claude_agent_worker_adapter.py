@@ -193,7 +193,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         execution_policy="sandbox_brokered",
     )
 
-    assert result.error == "required_tool_completion_evidence_missing"
+    assert result.error is None
     assert result.used_skills == ["qa-file-reviewer"]
     assert result.used_skills_source == "executor_hook"
     assert captured["permission_mode"] == "dontAsk"
@@ -477,7 +477,8 @@ def _selected_capability_evidence(request):
     identities.extend(
         ("mcp", subject["identity"])
         for subject in request.tool_policy_subjects
-        if subject.get("mcp_server") and subject.get("identity") != "mcp__ai-platform-context"
+        if subject.get("mcp_server")
+        and not str(subject.get("identity") or "").startswith("mcp__ai-platform-context__")
     )
     evidence = []
     for index, (kind, identity) in enumerate(identities):
@@ -2313,7 +2314,7 @@ def test_single_run_claude_writing_tiers_require_real_sandbox(execution_tier, sk
     ) is True
 
 
-def test_external_mcp_selection_forces_real_sandbox_without_client_execution_tier():
+def test_external_mcp_availability_requires_real_sandbox_without_client_execution_tier():
     assert _ordinary_run_requires_sandbox(
         payload(
             agent_id="general-agent",
@@ -2341,7 +2342,7 @@ def test_external_mcp_selection_forces_real_sandbox_without_client_execution_tie
     ) is True
 
 
-def test_claude_sandbox_admission_passes_explicit_mcp_requirement(monkeypatch):
+def test_claude_sandbox_admission_passes_available_mcp_scope(monkeypatch):
     captured = {}
 
     def decide(**kwargs):
@@ -2380,14 +2381,14 @@ def test_claude_sandbox_admission_passes_explicit_mcp_requirement(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("skill_id", "mcp_count", "reuse_call_id", "expected_status", "expected_error"), [("general-chat", 2, False, "succeeded", None), ("general-chat", 2, True, "failed", "required_tool_completion_evidence_mismatch"), ("baoyu-translate", 1, True, "failed", "required_tool_completion_evidence_mismatch")])
-async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned(monkeypatch, tmp_path, skill_id, mcp_count, reuse_call_id, expected_status, expected_error):
+@pytest.mark.parametrize("invoked", [False, True])
+async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
+    monkeypatch,
+    tmp_path,
+    invoked,
+):
     current_settings, events = settings(tmp_path, sdk_enabled=True), []
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    if skill_id != "general-chat":
-        write_skill(tmp_path / "skills", name=skill_id)
-    pins = _registry_pins(tmp_path / "skills", skill_id=skill_id) if skill_id != "general-chat" else [_test_skill_manifest(skill_id)]
-    other_subject = {**_mcp_subject(), "identity": "mcp__other-server__fetch", "mcp_server": "other-server", "mcp_tool": "fetch"}
 
     async def no_files(payload, workspace):
         return []
@@ -2395,68 +2396,122 @@ async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned
     async def event_sink(**event):
         events.append(event)
 
-    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr(adapter, "_materialize_files", no_files)
     def completed_response(request):
-        evidence = _selected_capability_evidence(request)
-        if reuse_call_id:
-            evidence[2]["tool_call_id"] = evidence[3]["tool_call_id"] = "invocation-0"
         return {
             "status": "completed",
             "message": "sandbox completed",
             "sdk_used": True,
-            "used_skills": [] if skill_id == "general-chat" else [skill_id], "used_skills_source": "" if skill_id == "general-chat" else "executor_hook",
-            "capability_evidence": evidence,
+            "used_skills": [],
+            "used_skills_source": "",
+            "capability_evidence": _selected_capability_evidence(request) if invoked else [],
         }
 
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
     requests = install_sandbox_runtime(monkeypatch, executor_response=completed_response)
     current_payload = payload(
-        agent_id="general-agent" if skill_id == "general-chat" else "translate",
-        skill_id=skill_id, skill_manifests=pins,
+        agent_id="general-agent",
+        skill_id="general-chat",
         input={
-            "message": "search with the selected tool",
-            "mcp_tool_ids": ["tenant-search", "other-fetch"][:mcp_count],
-            "_runtime_tool_policy_subjects": [_mcp_subject(), other_subject][:mcp_count],
+            "message": "answer or search as needed",
+            "mcp_tool_ids": ["tenant-search"],
+            "_runtime_tool_policy_subjects": [_mcp_subject()],
         },
     )
 
     result = await adapter.submit_run(current_payload, event_sink=event_sink)
 
-    assert (result.status, result.result.get("error_code")) == (expected_status, expected_error)
-    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-search", "other-fetch"][:mcp_count]
-    mcp_events = [event for event in events if event["payload"].get("tool_category") == "mcp"]
-    assert mcp_events == []
-    encoded = json.dumps(mcp_events)
-    assert "private.example" not in encoded and "mcp__tenant-server__search" not in encoded
+    assert result.status == "succeeded"
+    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-search"]
+    assert [event for event in events if event["payload"].get("tool_category") == "mcp"] == []
 
 
 @pytest.mark.parametrize(
-    ("mode", "field", "value", "expected_error"),
+    ("case", "expected_error"),
     [
-        ("missing", "", None, "required_tool_completion_evidence_missing"),
-        ("replace", "tool_call_id", None, "required_tool_completion_evidence_mismatch"),
-        ("replace", "run_id", "stale-run", "required_tool_completion_evidence_mismatch"),
-        ("replace", "attempt_id", "stale-attempt", "required_tool_completion_evidence_mismatch"),
-        ("duplicate", "", None, "required_tool_completion_evidence_mismatch"),
-        ("replace", "tool_call_id", "conflicting-call", "required_tool_completion_evidence_mismatch"),
+        ("unused", None),
+        ("completed", None),
+        ("repeated_complete", None),
+        ("started", "required_tool_completion_evidence_mismatch"),
+        ("failed", "required_tool_completion_evidence_mismatch"),
+        ("stale", "required_tool_completion_evidence_mismatch"),
+        ("unauthorized", "required_tool_completion_evidence_mismatch"),
+        ("duplicate", "required_tool_completion_evidence_mismatch"),
+        ("cross_mcp_call_id", "required_tool_completion_evidence_mismatch"),
+        ("skill_missing", "required_tool_completion_evidence_missing"),
+        ("skill_completed", None),
+        ("skill_mcp_call_id", "required_tool_completion_evidence_mismatch"),
     ],
 )
-def test_worker_external_mcp_rejects_stale_missing_or_conflicting_evidence(mode, field, value, expected_error):
-    current_payload = payload(skill_id="general-chat", input={"message": "search", "_runtime_tool_policy_subjects": [_mcp_subject()]})
+def test_worker_capability_execution_plan_validates_required_and_observed_calls(case, expected_error):
+    second_subject = {
+        **_mcp_subject(),
+        "identity": "mcp__other-server__fetch",
+        "mcp_server": "other-server",
+        "mcp_tool": "fetch",
+    }
+    skill_id = "qa-review" if case.startswith("skill_") else "general-chat"
+    subjects = [_mcp_subject(), second_subject] if case == "cross_mcp_call_id" else [_mcp_subject()]
+    current_payload = payload(
+        skill_id=skill_id,
+        input={"message": "work", "_runtime_tool_policy_subjects": subjects},
+    )
     request = types.SimpleNamespace(
-        **{key: getattr(current_payload, key) for key in (
-            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"
-        )}, skill_ids=["general-chat"], tool_policy_subjects=[_mcp_subject()],
+        **{
+            key: getattr(current_payload, key)
+            for key in ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id")
+        },
+        skill_ids=[skill_id],
+        tool_policy_subjects=subjects,
     )
     evidence = _selected_capability_evidence(request)
-    if mode == "missing":
-        evidence.clear()
-    elif mode == "duplicate":
+    if case in {"unused", "skill_missing"}:
+        evidence = []
+    elif case == "started":
+        evidence = evidence[:1]
+    elif case == "failed":
+        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind="mcp", canonical_identity=_mcp_subject()["identity"]
+        )
+        evidence[1] = RequiredCapabilityEvidence.from_sdk_hook(
+            declaration=declaration,
+            binding={key: getattr(current_payload, key) for key in (
+                "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"
+            )},
+            tool_call_id=evidence[0]["tool_call_id"],
+            lifecycle_phase="failed",
+        ).__dict__
+    elif case == "stale":
+        evidence[1]["attempt_id"] = "stale-attempt"
+    elif case == "unauthorized":
+        evidence[0]["canonical_identity"] = "mcp__foreign__lookup"
+    elif case == "duplicate":
         evidence.append(dict(evidence[1]))
-    else:
-        evidence[1][field] = value
+    elif case == "cross_mcp_call_id":
+        evidence[2]["tool_call_id"] = evidence[3]["tool_call_id"] = evidence[0]["tool_call_id"]
+    elif case == "repeated_complete":
+        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind="mcp", canonical_identity=_mcp_subject()["identity"]
+        )
+        binding = {key: getattr(current_payload, key) for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"
+        )}
+        evidence.extend(
+            RequiredCapabilityEvidence.from_sdk_hook(
+                declaration=declaration,
+                binding=binding,
+                tool_call_id="invocation-repeat",
+                lifecycle_phase=phase,
+            ).__dict__
+            for phase in ("invocation_requested", "completed")
+        )
+    elif case == "skill_completed":
+        evidence = [item for item in evidence if item["capability_kind"] == "skill"]
+    elif case == "skill_mcp_call_id":
+        skill_call_id = evidence[0]["tool_call_id"]
+        evidence[2]["tool_call_id"] = evidence[3]["tool_call_id"] = skill_call_id
 
-    assert claude_agent_worker._selected_capability_invocation_error(current_payload, evidence) == expected_error
+    assert claude_agent_worker._capability_execution_error(current_payload, evidence) == expected_error
 
 
 @pytest.mark.asyncio
@@ -3963,7 +4018,7 @@ async def test_worker_local_selected_skill_binds_acknowledged_pre_and_post_evide
         fields = ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id")
         assert tuple(getattr(record, field) for field in fields) == ("default", "default", "user-a", "ses_1", "run_1", "qat-test-attempt")
         assert (record.evidence_source, record.trust_basis) == ("claude_agent_sdk_hook", "tool_call_bound_invocation")
-    assert claude_agent_worker._selected_capability_invocation_error(current_payload, result.capability_evidence) is None
+    assert claude_agent_worker._capability_execution_error(current_payload, result.capability_evidence) is None
 
 
 @pytest.mark.asyncio
@@ -3995,7 +4050,7 @@ async def test_worker_local_selected_skill_rejects_incomplete_or_invalid_evidenc
 
     assert tuple(item is True for item in acknowledgements) == expected_acknowledged
     assert tuple(item["lifecycle_phase"] for item in result.capability_evidence) == expected_phases
-    assert claude_agent_worker._selected_capability_invocation_error(
+    assert claude_agent_worker._capability_execution_error(
         current_payload, result.capability_evidence
     ) == expected_error
 
