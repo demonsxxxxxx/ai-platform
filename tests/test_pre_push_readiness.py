@@ -17,6 +17,7 @@ READINESS_TOOL = REPO_ROOT / "tools" / "pre_push_readiness.py"
 GOVERNANCE_TOOL = REPO_ROOT / "tools" / "code_governance.py"
 CODE_GOVERNANCE_TEST = REPO_ROOT / "tests" / "test_code_governance.py"
 ISSUE_WORKFLOW = REPO_ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
+EXCEPTION_PATH = ".code-governance-exception.json"
 
 
 def _run(
@@ -116,20 +117,52 @@ def _payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
-def _governance_exception(*, reason: str) -> str:
+def _governance_exception(*, reason: str, includes_frontend: bool = False) -> str:
+    violations: list[dict[str, str | None]] = [{"code": "functional_hot_file_growth", "path": "app/billing.py"}]
+    if includes_frontend:
+        violations.append({"code": "production_subsystem_count", "path": None})
     return json.dumps(
         {
             "schema_version": "ai-platform.code-governance-exception.v1",
             "expires_on": "2099-01-01",
             "owner": "platform-governance",
             "reason": reason,
-            "violations": [{"code": "functional_hot_file_growth", "path": "app/billing.py"}],
+            "violations": violations,
         }
     ) + "\n"
 
 
 def _python_assignments(count: int) -> str:
     return "".join(f"VALUE_{index} = {index}\n" for index in range(count))
+
+
+def _exception_transition(
+    repo: Path,
+    *,
+    operation: str,
+    source: str,
+    destination: str,
+) -> tuple[str, str]:
+    exception_at_head = operation == "copy" or destination == EXCEPTION_PATH
+    exception = _governance_exception(
+        reason=f"{operation} exception",
+        includes_frontend=exception_at_head
+        and (destination.startswith("frontend/web/") or (operation == "rename" and source.startswith("frontend/web/"))),
+    )
+    if exception_at_head:
+        _write(repo, "app/billing.py", _python_assignments(3_001))
+    _write(repo, source, exception)
+    base = _commit(repo, f"{operation} exception baseline")
+    if operation == "copy":
+        _write(repo, destination, exception)
+    else:
+        (repo / destination).parent.mkdir(parents=True, exist_ok=True)
+        _git(repo, "mv", source, destination)
+    if exception_at_head:
+        _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
+        _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
+    head = _commit(repo, f"{operation} exception transition")
+    return base, head
 
 
 def _fake_corepack_environment(tmp_path: Path) -> dict[str, str]:
@@ -469,6 +502,113 @@ def test_wrong_case_code_governance_suite_remains_external(tmp_path: Path) -> No
     assert payload["failure"]["path"] == ".code-governance-exception.json"
 
 
+@pytest.mark.parametrize(
+    ("operation", "source", "destination", "status"),
+    (
+        ("copy", EXCEPTION_PATH, "docs/copied-exception.md", "C100"),
+        ("copy", EXCEPTION_PATH, "tests/copied-exception.json", "C100"),
+        ("copy", EXCEPTION_PATH, "frontend/web/copied-exception.json", "C100"),
+        ("rename", EXCEPTION_PATH, "docs/renamed-exception.md", "R100"),
+        ("rename", EXCEPTION_PATH, "tests/renamed-exception.json", "R100"),
+        ("rename", EXCEPTION_PATH, "frontend/web/renamed-exception.json", "R100"),
+        ("copy", "docs/exception-source.md", EXCEPTION_PATH, "C100"),
+        ("copy", "tests/exception-source.json", EXCEPTION_PATH, "C100"),
+        ("copy", "frontend/web/exception-source.json", EXCEPTION_PATH, "C100"),
+        ("rename", "docs/exception-source.md", EXCEPTION_PATH, "R100"),
+        ("rename", "tests/exception-source.json", EXCEPTION_PATH, "R100"),
+        ("rename", "frontend/web/exception-source.json", EXCEPTION_PATH, "R100"),
+    ),
+)
+def test_non_add_modify_exception_transitions_remain_external(
+    readiness_repo: tuple[Path, str],
+    operation: str,
+    source: str,
+    destination: str,
+    status: str,
+) -> None:
+    repo, _authority = readiness_repo
+    base, head = _exception_transition(repo, operation=operation, source=source, destination=destination)
+    production_status = _git(
+        repo,
+        "diff",
+        "--name-status",
+        "--find-renames=50%",
+        "--find-copies=50%",
+        "--find-copies-harder",
+        base,
+        head,
+        "--",
+    )
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert f"{status}\t{source}\t{destination}" in production_status
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "external_check"
+    assert payload["failure"]["code"] == "responsibility_suite_required"
+    assert payload["failure"]["path"] == EXCEPTION_PATH
+    assert {stage["name"] for stage in payload["stages"]} == {"diff_check", "governance", "worktree_cleanup"}
+
+
+def test_shared_suite_traversal_never_executes_an_outside_file(
+    readiness_repo: tuple[Path, str],
+    tmp_path: Path,
+) -> None:
+    repo, _authority = readiness_repo
+    marker = tmp_path / "outside-suite-executed.txt"
+    _write(
+        repo,
+        "test_evil.py",
+        "from pathlib import Path\n\n\n"
+        "def test_evil():\n"
+        f"    Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n",
+    )
+    base = _commit(repo, "outside suite sentinel")
+    _write(repo, "tests/conftest.py", "VALUE = True\n")
+    head = _commit(repo, "shared fixture with traversal suite")
+
+    result = _check(repo, base, head, shared_test_suites=("tests/../test_evil.py",))
+    payload = _payload(result)
+
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "governance_violation"
+    assert payload["failure"]["code"] == "invalid_shared_test_suite"
+    assert payload["failure"]["path"] == "tests/../test_evil.py"
+    assert marker.exists() is False
+
+
+@pytest.mark.parametrize(
+    "suite",
+    (
+        "/tests/test_shared_fixture.py",
+        "tests\\test_shared_fixture.py",
+        "tests//test_shared_fixture.py",
+        "tests/./test_shared_fixture.py",
+        "tests/../test_shared_fixture.py",
+        "tests/../../outside/test_evil.py",
+        "tests/test_shared_fixture.py/",
+    ),
+)
+def test_shared_suite_requires_canonical_posix_spelling(
+    readiness_repo: tuple[Path, str],
+    suite: str,
+) -> None:
+    repo, _authority = readiness_repo
+    _write(repo, "tests/test_shared_fixture.py", "def test_shared_fixture():\n    assert True\n")
+    base = _commit(repo, "shared suite baseline")
+    _write(repo, "tests/conftest.py", "VALUE = True\n")
+    head = _commit(repo, "shared fixture with noncanonical suite")
+
+    result = _check(repo, base, head, shared_test_suites=(suite,))
+    payload = _payload(result)
+
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "governance_violation"
+    assert payload["failure"]["code"] == "invalid_shared_test_suite"
+    assert payload["failure"]["path"] == suite
+
+
 def test_deleted_test_file_is_not_sent_to_pytest(readiness_repo: tuple[Path, str]) -> None:
     repo, authority = readiness_repo
     _write(repo, "tests/test_deleted.py", "def test_deleted():\n    assert False\n")
@@ -715,7 +855,10 @@ def test_pr_workflow_requires_the_exact_ref_gate_before_push_and_after_merge_up(
     assert "--find-copies=50% --find-copies-harder" in workflow
     assert "literal `A` or `M` status" in workflow
     assert "A `C*`, `R*`, `T*`, `U*`" in workflow
+    assert "either source or destination" in workflow
     assert "case-sensitive Git-tree blob" in workflow
+    assert "canonical relative POSIX" in workflow
+    assert "resolve within the detached worktree's `tests` directory" in workflow
     assert "deletion follows the deleted-path" in normalized
     assert "every other unowned root configuration or json path remains" in " ".join(normalized.split())
     assert "before candidate compile, pytest," in normalized

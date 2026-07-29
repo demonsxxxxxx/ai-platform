@@ -76,6 +76,13 @@ class _ResponsibilityPlan:
     frontend: bool
 
 
+@dataclass(frozen=True)
+class _ChangedPath:
+    status: str
+    source_path: str | None
+    destination_path: str | None
+
+
 class PrePushReadiness:
     """Keep exact-ref validation, local checks, and failure taxonomy in one seam."""
 
@@ -335,8 +342,24 @@ class PrePushReadiness:
         shared_paths: list[str] = []
         unowned_paths: list[str] = []
         frontend = False
-        for status, path in _changed_paths(changed.stdout):
+        for changed_path in _changed_paths(changed.stdout):
+            status = changed_path.status
             if status.startswith("D"):
+                continue
+            if _touches_code_governance_exception(changed_path):
+                if (
+                    status in {"A", "M"}
+                    and changed_path.source_path is None
+                    and changed_path.destination_path == CODE_GOVERNANCE_EXCEPTION_PATH
+                    and self._git_tree_has_exact_file(head, CODE_GOVERNANCE_TEST_PATH)
+                ):
+                    selected.add(CODE_GOVERNANCE_TEST_PATH)
+                    continue
+                unowned_paths.append(CODE_GOVERNANCE_EXCEPTION_PATH)
+                continue
+            path = changed_path.destination_path or changed_path.source_path
+            if path is None:
+                unowned_paths.append("<unknown-change-path>")
                 continue
             pure_path = PurePosixPath(path)
             if _is_documentation_path(pure_path):
@@ -346,12 +369,6 @@ class PrePushReadiness:
                 continue
             if _is_frontend_path(pure_path):
                 frontend = True
-                continue
-            if status in {"A", "M"} and path == CODE_GOVERNANCE_EXCEPTION_PATH:
-                if self._git_tree_has_exact_file(head, CODE_GOVERNANCE_TEST_PATH):
-                    selected.add(CODE_GOVERNANCE_TEST_PATH)
-                    continue
-                unowned_paths.append(path)
                 continue
             if _is_test_module(pure_path) and (head_worktree / path).is_file():
                 selected.add(path)
@@ -384,8 +401,7 @@ class PrePushReadiness:
                 path=shared_paths[0],
             )
         for suite in shared_test_suites:
-            pure_suite = PurePosixPath(suite)
-            if not _is_test_module(pure_suite) or not (head_worktree / suite).is_file():
+            if not self._is_valid_shared_test_suite(head, head_worktree, suite):
                 raise ReadinessError(
                     "governance_violation",
                     "invalid_shared_test_suite",
@@ -408,6 +424,19 @@ class PrePushReadiness:
             return False
         object_type = self._run(("git", "cat-file", "-t", f"{head}:{path}"), self._repo_root)
         return object_type.returncode == 0 and object_type.stdout.strip() == "blob"
+
+    def _is_valid_shared_test_suite(self, head: str, head_worktree: Path, suite: str) -> bool:
+        if not _is_canonical_posix_test_path(suite):
+            return False
+        if not self._git_tree_has_exact_file(head, suite):
+            return False
+        try:
+            tests_root = (head_worktree / "tests").resolve(strict=True)
+            resolved_suite = (head_worktree / PurePosixPath(suite)).resolve(strict=True)
+            resolved_suite.relative_to(tests_root)
+        except (OSError, ValueError):
+            return False
+        return resolved_suite.is_file()
 
     def _run_responsibility_tests(
         self,
@@ -603,14 +632,35 @@ def _mirrored_test_path(path: PurePosixPath) -> str | None:
     return f"tests/test_{path.stem}.py"
 
 
-def _changed_paths(output: str) -> tuple[tuple[str, str], ...]:
-    changes: list[tuple[str, str]] = []
+def _changed_paths(output: str) -> tuple[_ChangedPath, ...]:
+    changes: list[_ChangedPath] = []
     for line in output.splitlines():
         fields = line.split("\t")
         if len(fields) < 2:
             continue
-        changes.append((fields[0], fields[-1]))
+        status = fields[0]
+        if status.startswith(("C", "R")) and len(fields) >= 3:
+            changes.append(_ChangedPath(status, fields[1], fields[2]))
+            continue
+        changes.append(_ChangedPath(status, None, fields[-1]))
     return tuple(changes)
+
+
+def _touches_code_governance_exception(change: _ChangedPath) -> bool:
+    return CODE_GOVERNANCE_EXCEPTION_PATH in {change.source_path, change.destination_path}
+
+
+def _is_canonical_posix_test_path(value: str) -> bool:
+    if not value or "\\" in value:
+        return False
+    pure_path = PurePosixPath(value)
+    return (
+        not pure_path.is_absolute()
+        and bool(pure_path.parts)
+        and all(part not in {"", ".", ".."} for part in pure_path.parts)
+        and pure_path.as_posix() == value
+        and _is_test_module(pure_path)
+    )
 
 
 def _registered_worktree_paths(output: str) -> tuple[str, ...]:
