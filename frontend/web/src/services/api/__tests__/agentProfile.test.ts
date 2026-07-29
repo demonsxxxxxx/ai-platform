@@ -66,6 +66,68 @@ test("loads only the safe public Agent Profile projection", async () => {
   }
 });
 
+test("published authorization reads bypass cache and preserve transport failures", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{
+    url: string;
+    cache?: RequestCache;
+    credentials?: RequestCredentials;
+  }> = [];
+  let responseKind: "catalog" | "detail" | "denied" | "aborted" = "catalog";
+  const abortError = new DOMException("aborted", "AbortError");
+  globalThis.fetch = (async (input, init) => {
+    calls.push({
+      url: String(input),
+      cache: init?.cache,
+      credentials: init?.credentials,
+    });
+    if (responseKind === "denied")
+      return new Response(JSON.stringify({ detail: "agent_profile_not_authorized" }), {
+        status: 403,
+      });
+    if (responseKind === "aborted") throw abortError;
+    const profile = {
+      agent_id: "agt_support",
+      expected_revision: 7,
+      name: "支持助手",
+      description: "处理已授权的支持请求。",
+      avatar_ref: "builtin:assistant",
+      category: "support",
+    };
+    return new Response(
+      JSON.stringify(responseKind === "catalog" ? { agent_profiles: [profile] } : profile),
+    );
+  }) as typeof fetch;
+
+  try {
+    await agentProfileApi.listPublished();
+    responseKind = "detail";
+    await agentProfileApi.getPublished("agt_support");
+    assert.deepEqual(calls, [
+      {
+        url: "/api/ai/agent-profiles",
+        cache: "no-store",
+        credentials: "include",
+      },
+      {
+        url: "/api/ai/agent-profiles/agt_support",
+        cache: "no-store",
+        credentials: "include",
+      },
+    ]);
+
+    responseKind = "denied";
+    await assert.rejects(
+      agentProfileApi.getPublished("agt_support"),
+      (error: unknown) => (error as { status?: unknown }).status === 403,
+    );
+    responseKind = "aborted";
+    await assert.rejects(agentProfileApi.listPublished(), (error: unknown) => error === abortError);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("creates a durable Agent Conversation with only the exact published selector", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; method?: string; body?: string | null }> = [];

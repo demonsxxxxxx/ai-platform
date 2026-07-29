@@ -48,12 +48,12 @@ function projectCatalogResponse(value: unknown): AgentProfileCatalogResponse {
 
 export const agentProfileApi = {
   async listPublished(query: AgentProfileCatalogQuery = {}): Promise<AgentProfileCatalogResponse> {
-    const response = await authFetch<unknown>(buildAgentProfileCatalogUrl(query));
+    const response = await authFetch<unknown>(buildAgentProfileCatalogUrl(query), { cache: "no-store" });
     return projectCatalogResponse(response);
   },
 
   async getPublished(agentId: string): Promise<AgentProfilePublicProjection> {
-    const response = await authFetch<unknown>(buildAgentProfileDetailUrl(agentId));
+    const response = await authFetch<unknown>(buildAgentProfileDetailUrl(agentId), { cache: "no-store" });
     return projectAgentProfilePublicProjection(response);
   },
 

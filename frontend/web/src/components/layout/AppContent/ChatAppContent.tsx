@@ -98,6 +98,8 @@ export async function recoverAgentConversationIdentity(
 ): Promise<AgentConversationIdentity | null> {
   const session = await sessionApi.getAuthoritative(sessionId);
   const identity = session.agent_conversation;
+  if (session.session_id !== sessionId)
+    throw new Error("agent_conversation_identity_mismatch");
   if (identity === null) return null;
   if (session.agent_id !== identity.agent_id)
     throw new Error("agent_conversation_identity_mismatch");

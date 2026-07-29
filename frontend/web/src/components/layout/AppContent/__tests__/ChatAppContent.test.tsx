@@ -108,6 +108,38 @@ test("fails closed on revision drift and authoritative 403/404 recovery", async 
   }
 });
 
+test("rejects authoritative Agent identity returned for a different Session", async () => {
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetPublished = agentProfileApi.getPublished;
+  let detailCalls = 0;
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: "session-other",
+    workspace_id: "default",
+    agent_id: safeIdentity.agent_id,
+    title: safeIdentity.name,
+    agent_conversation: sessionId === "session-requested-bound" ? safeIdentity : null,
+  });
+  agentProfileApi.getPublished = async () => {
+    detailCalls += 1;
+    throw new Error("must_not_reauthorize_mismatched_session");
+  };
+
+  try {
+    await assert.rejects(
+      recoverAgentConversationIdentity("session-requested-bound"),
+      /agent_conversation_identity_mismatch/,
+    );
+    await assert.rejects(
+      recoverAgentConversationIdentity("session-requested-generic"),
+      /agent_conversation_identity_mismatch/,
+    );
+    assert.equal(detailCalls, 0, "mismatched Session identity must fail before publication lookup");
+  } finally {
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    agentProfileApi.getPublished = originalGetPublished;
+  }
+});
+
 test("renders only safe Agent identity and locks conflicting controls", () => {
   const html = renderToStaticMarkup(
     React.createElement(AgentConversationIdentityBanner, { identity: safeIdentity }),
