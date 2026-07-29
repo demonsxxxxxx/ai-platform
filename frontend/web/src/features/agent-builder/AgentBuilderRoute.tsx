@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 
 import { useAuth } from "../../hooks/useAuth";
 import { useSkills } from "../../hooks/useSkills";
@@ -13,9 +12,8 @@ import {
 
 const BUILDER_CATALOG_LOAD_ERROR = "暂时无法加载授权目录，请稍后刷新后重试。";
 
-/** Activated route bridge: catalog refresh stays outside the draft submission authority. */
+/** Admin route bridge for current model, Skill, and MCP catalog projections. */
 export function AgentBuilderRoute() {
-  const navigate = useNavigate();
   const { user } = useAuth();
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -108,7 +106,6 @@ export function AgentBuilderRoute() {
     <AgentBuilderWorkbench
       catalog={catalog}
       canManageProfiles={user?.is_admin === true}
-      onHandoffReady={(path) => navigate(path, { replace: true })}
     />
   );
 }
