@@ -9,7 +9,6 @@ from openpyxl import Workbook
 
 from app.attachments.classification import (
     CLASSIFICATION_CLASSIFIED,
-    AttachmentByteIdentity,
     AttachmentBytesForClassification,
     classify_attachment_bytes,
 )
@@ -58,7 +57,7 @@ def _rewrite_archive(raw: bytes, mutate) -> bytes:
     return output.getvalue()
 
 
-def test_red_xlsx_identity_comes_from_bytes_not_declared_mime():
+def test_red_xlsx_classification_comes_from_bytes_not_declared_mime():
     raw = _xlsx_bytes()
 
     result = classify_attachment_bytes(
@@ -66,19 +65,18 @@ def test_red_xlsx_identity_comes_from_bytes_not_declared_mime():
     )
 
     assert result.state == CLASSIFICATION_CLASSIFIED
-    assert result.identity is not None
-    assert result.identity.media_type == XLSX_MIME
-    assert result.identity.verified_extension == ".xlsx"
-    assert result.identity.size_bytes == len(raw)
-    assert result.identity.sha256 == hashlib.sha256(raw).hexdigest()
-    assert "text/plain" not in repr(result.identity)
+    assert result.media_type == XLSX_MIME
+    assert result.verified_extension == ".xlsx"
+    assert result.classifier_version
+    assert "text/plain" not in repr(result)
+    assert not hasattr(result, "identity")
 
 
 def test_xlsx_bytes_require_a_compatible_untrusted_source_extension():
     result = classify_attachment_bytes(_input(_xlsx_bytes(), source_filename="report.bin"))
 
     assert result.rejection_code == "attachment_classification_extension_incompatible"
-    assert result.identity is None
+    assert result.media_type is None
 
 
 def test_non_xlsx_bytes_claiming_xlsx_name_and_mime_fail_closed():
@@ -91,7 +89,7 @@ def test_non_xlsx_bytes_claiming_xlsx_name_and_mime_fail_closed():
     )
 
     assert result.rejection_code == "attachment_classification_type_unsupported"
-    assert result.identity is None
+    assert result.media_type is None
 
 
 @pytest.mark.parametrize(
@@ -140,13 +138,10 @@ def test_macro_encrypted_and_ambiguous_ooxml_archives_fail_closed():
         assert result.rejection_code == "attachment_classification_xlsx_invalid"
 
 
-def test_identity_is_sealed_and_cannot_be_constructed_from_nominal_strings():
-    with pytest.raises(TypeError, match="classification result"):
-        AttachmentByteIdentity(
-            file_id="file-xlsx",
-            media_type=XLSX_MIME,
-            verified_extension=".xlsx",
-            size_bytes=1,
-            sha256="a" * 64,
-            classifier_version="forged",
-        )
+def test_classification_exposes_a_public_decision_not_a_nominal_trusted_identity():
+    result = classify_attachment_bytes(_input(_xlsx_bytes()))
+
+    assert result.state == CLASSIFICATION_CLASSIFIED
+    assert result.rejection_code is None
+    assert "file-xlsx" not in repr(result)
+    assert hashlib.sha256(_xlsx_bytes()).hexdigest() not in repr(result)
