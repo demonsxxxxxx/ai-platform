@@ -20,6 +20,8 @@ FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 MAX_RESPONSIBILITY_TESTS = 24
 AUTHORITY_TOOL_PATH = "tools/pre_push_readiness.py"
 AUTHORITY_GOVERNANCE_PATH = "tools/code_governance.py"
+CODE_GOVERNANCE_EXCEPTION_PATH = ".code-governance-exception.json"
+CODE_GOVERNANCE_TEST_PATH = "tests/test_code_governance.py"
 
 FAILURE_TAXONOMY = {
     "stale_base": "The supplied base is not an ancestor of head; merge the current base before push.",
@@ -72,6 +74,13 @@ class _CommandRunner:
 class _ResponsibilityPlan:
     tests: tuple[str, ...]
     frontend: bool
+
+
+@dataclass(frozen=True)
+class _ChangedPath:
+    status: str
+    source_path: str | None
+    destination_path: str | None
 
 
 class PrePushReadiness:
@@ -312,15 +321,45 @@ class PrePushReadiness:
         head_worktree: Path,
         shared_test_suites: Sequence[str],
     ) -> _ResponsibilityPlan:
-        changed = self._run(("git", "diff", "--name-status", "--find-renames=50%", base, head, "--"), self._repo_root)
+        # Include unchanged source blobs so copied exception files retain C* status.
+        changed = self._run(
+            (
+                "git",
+                "diff",
+                "--name-status",
+                "--find-renames=50%",
+                "--find-copies=50%",
+                "--find-copies-harder",
+                base,
+                head,
+                "--",
+            ),
+            self._repo_root,
+        )
         if changed.returncode != 0:
             raise ReadinessError("infrastructure_failure", "git_failed", _command_failure("git diff --name-status", changed))
         selected: set[str] = set()
         shared_paths: list[str] = []
         unowned_paths: list[str] = []
         frontend = False
-        for status, path in _changed_paths(changed.stdout):
+        for changed_path in _changed_paths(changed.stdout):
+            status = changed_path.status
             if status.startswith("D"):
+                continue
+            if _touches_code_governance_exception(changed_path):
+                if (
+                    status in {"A", "M"}
+                    and changed_path.source_path is None
+                    and changed_path.destination_path == CODE_GOVERNANCE_EXCEPTION_PATH
+                    and self._git_tree_has_exact_file(head, CODE_GOVERNANCE_TEST_PATH)
+                ):
+                    selected.add(CODE_GOVERNANCE_TEST_PATH)
+                    continue
+                unowned_paths.append(CODE_GOVERNANCE_EXCEPTION_PATH)
+                continue
+            path = changed_path.destination_path or changed_path.source_path
+            if path is None:
+                unowned_paths.append("<unknown-change-path>")
                 continue
             pure_path = PurePosixPath(path)
             if _is_documentation_path(pure_path):
@@ -362,8 +401,7 @@ class PrePushReadiness:
                 path=shared_paths[0],
             )
         for suite in shared_test_suites:
-            pure_suite = PurePosixPath(suite)
-            if not _is_test_module(pure_suite) or not (head_worktree / suite).is_file():
+            if not self._is_valid_shared_test_suite(head, head_worktree, suite):
                 raise ReadinessError(
                     "governance_violation",
                     "invalid_shared_test_suite",
@@ -379,6 +417,26 @@ class PrePushReadiness:
                 f"bounded responsibility suite selected {len(tests)} tests, limit is {MAX_RESPONSIBILITY_TESTS}",
             )
         return _ResponsibilityPlan(tests=tests, frontend=frontend)
+
+    def _git_tree_has_exact_file(self, head: str, path: str) -> bool:
+        membership = self._run(("git", "cat-file", "-e", f"{head}:{path}"), self._repo_root)
+        if membership.returncode != 0:
+            return False
+        object_type = self._run(("git", "cat-file", "-t", f"{head}:{path}"), self._repo_root)
+        return object_type.returncode == 0 and object_type.stdout.strip() == "blob"
+
+    def _is_valid_shared_test_suite(self, head: str, head_worktree: Path, suite: str) -> bool:
+        if not _is_canonical_posix_test_path(suite):
+            return False
+        if not self._git_tree_has_exact_file(head, suite):
+            return False
+        try:
+            tests_root = (head_worktree / "tests").resolve(strict=True)
+            resolved_suite = (head_worktree / PurePosixPath(suite)).resolve(strict=True)
+            resolved_suite.relative_to(tests_root)
+        except (OSError, ValueError):
+            return False
+        return resolved_suite.is_file()
 
     def _run_responsibility_tests(
         self,
@@ -574,14 +632,35 @@ def _mirrored_test_path(path: PurePosixPath) -> str | None:
     return f"tests/test_{path.stem}.py"
 
 
-def _changed_paths(output: str) -> tuple[tuple[str, str], ...]:
-    changes: list[tuple[str, str]] = []
+def _changed_paths(output: str) -> tuple[_ChangedPath, ...]:
+    changes: list[_ChangedPath] = []
     for line in output.splitlines():
         fields = line.split("\t")
         if len(fields) < 2:
             continue
-        changes.append((fields[0], fields[-1]))
+        status = fields[0]
+        if status.startswith(("C", "R")) and len(fields) >= 3:
+            changes.append(_ChangedPath(status, fields[1], fields[2]))
+            continue
+        changes.append(_ChangedPath(status, None, fields[-1]))
     return tuple(changes)
+
+
+def _touches_code_governance_exception(change: _ChangedPath) -> bool:
+    return CODE_GOVERNANCE_EXCEPTION_PATH in {change.source_path, change.destination_path}
+
+
+def _is_canonical_posix_test_path(value: str) -> bool:
+    if not value or "\\" in value:
+        return False
+    pure_path = PurePosixPath(value)
+    return (
+        not pure_path.is_absolute()
+        and bool(pure_path.parts)
+        and all(part not in {"", ".", ".."} for part in pure_path.parts)
+        and pure_path.as_posix() == value
+        and _is_test_module(pure_path)
+    )
 
 
 def _registered_worktree_paths(output: str) -> tuple[str, ...]:

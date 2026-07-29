@@ -123,8 +123,24 @@ bounded `--shared-test-suite tests/test_<name>.py`; the option is invalid when
 no named shared fixture changed. An otherwise unclassifiable affected path
 always fails closed with `external_check`. A shared suite cannot discharge an
 unowned production path; that path remains external until an explicit bounded
-responsibility mapping exists. Preserve the emitted category and identity in
-the PR record:
+responsibility mapping exists. The one explicit root-file mapping is an added
+or modified `.code-governance-exception.json`, which selects the existing
+`tests/test_code_governance.py` suite. Name-status copy detection uses
+`--find-copies=50% --find-copies-harder`, including unchanged source blobs, so
+the mapping accepts only literal `A` or `M` status. A `C*`, `R*`, `T*`, `U*`,
+or any other status remains `external_check`. A copy or rename touching the
+exception at either source or destination fails externally before
+documentation, test, or frontend routing. The suite must be an exact
+case-sensitive Git-tree blob at `head_ref`; a Windows filesystem case match is
+not sufficient. Its deletion follows the deleted-path policy: it is not passed
+to pytest and does not select that suite; exact governance still evaluates the
+candidate range with the exception absent. A `--shared-test-suite` must use a
+canonical relative POSIX `tests/test_*.py` path: absolute paths, backslashes,
+empty, dot, and dot-dot components are invalid. It must be an exact Git-tree
+blob and resolve within the detached worktree's `tests` directory before
+pytest. Every other unowned root configuration or JSON path remains
+`external_check`; `--shared-test-suite` cannot bypass it. Preserve the emitted
+category and identity in the PR record:
 
 - `stale_base`: merge the current base through the ordinary merge-up flow, then
   run the gate again before pushing.
