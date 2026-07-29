@@ -1,5 +1,6 @@
 export async function load(url, context, nextLoad) {
-  if (url.split("?")[0].endsWith(".svg")) {
+  const assetUrl = url.split("?")[0];
+  if (assetUrl.endsWith(".svg") || assetUrl.endsWith(".css")) {
     return {
       format: "module",
       source: "export default '';",

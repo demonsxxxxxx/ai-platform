@@ -92,7 +92,6 @@ import {
   SELECTED_SKILL_RECOVERABLE_CODES,
   type SelectedSkillRecoverableCode,
 } from "./useSelectedSkillTask";
-import { consumePendingAgentMarketSelection } from "../features/agent-market/agentMarketSelection";
 import {
   RunControlLifecycle,
   type RunControlAuthIdentity,
@@ -695,19 +694,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const sessionAgentIdRef = useRef(DEFAULT_CHAT_AGENT_ID);
   const currentRunIdRef = useRef<string | null>(null);
   const messagesRef = useRef<Message[]>([]);
-  const pendingAgentMarketSelectionRef =
-    useRef<SelectedAgentProfileRequest | null>(null);
-  const pendingAgentMarketSelectionInitializedRef = useRef(false);
-
-  useLayoutEffect(() => {
-    if (pendingAgentMarketSelectionInitializedRef.current) return;
-    pendingAgentMarketSelectionInitializedRef.current = true;
-    const pathname =
-      typeof window !== "undefined" ? window.location.pathname : "";
-    if (pathname !== "/chat" && !pathname.startsWith("/chat/")) return;
-    pendingAgentMarketSelectionRef.current = consumePendingAgentMarketSelection();
-  }, []);
-
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
@@ -1806,17 +1792,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const requestSessionGeneration = sessionGenerationRef.current;
       const requestSessionId = sessionIdRef.current;
       const requestAgentId = sessionAgentIdRef.current;
-      const pendingMarketSelection = !requestSessionId
-        ? pendingAgentMarketSelectionRef.current
-        : null;
-      const selectedAgentProfileForRequest =
-        selectedAgentProfile === undefined
-          ? pendingMarketSelection
-          : selectedAgentProfile;
-      // Agent Market selection is a one-shot admission input. Consume it at
-      // submission start so any rejection, transport failure, or superseding
-      // session cannot replay the locked profile into a later request.
-      pendingAgentMarketSelectionRef.current = null;
+      const selectedAgentProfileForRequest = selectedAgentProfile ?? null;
       streamVersionRef.current += 1;
       clearReconcileOwners();
       statusRetryCountRef.current = 0;
@@ -2319,7 +2295,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     clearReconcileOwners();
     setMessages([]);
     setConfirmationRecovery(null);
-    pendingAgentMarketSelectionRef.current = null;
     setSessionId(null);
     sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);

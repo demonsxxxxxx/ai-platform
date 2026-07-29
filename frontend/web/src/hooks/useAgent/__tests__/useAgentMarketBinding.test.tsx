@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { UseAgentReturn } from "../types.ts";
-import { ApiRequestError } from "../../../services/api/fetch.ts";
 
 type Listener = (event: { type: string; [key: string]: unknown }) => void;
 
@@ -293,9 +292,7 @@ async function loadHarness() {
   };
 }
 
-test("useAgent sends the market lock on the first successful Chat submission and does not reuse it", async () => {
-  const { setPendingAgentMarketSelection, consumePendingAgentMarketSelection } =
-    await import("../../../features/agent-market/agentMarketSelection.ts");
+test("useAgent forwards only an explicit Agent profile without inheriting it", async () => {
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const originalMarkRead = sessionApi.markRead;
@@ -304,7 +301,6 @@ test("useAgent sends the market lock on the first successful Chat submission and
     expected_revision: 4,
   } as const;
 
-  setPendingAgentMarketSelection(selectedAgentProfile);
   const harness = await loadHarness();
   const submissions: unknown[][] = [];
   sessionApi.markRead = async () => {};
@@ -321,7 +317,13 @@ test("useAgent sends the market lock on the first successful Chat submission and
   try {
     let firstOutcome: { status: string } | undefined;
     await harness.act(async () => {
-      firstOutcome = await harness.hook.sendMessage("market first");
+      firstOutcome = await harness.hook.sendMessage(
+        "explicit profile",
+        undefined,
+        undefined,
+        null,
+        selectedAgentProfile,
+      );
     });
     await settle(harness.act);
 
@@ -330,105 +332,50 @@ test("useAgent sends the market lock on the first successful Chat submission and
 
     let secondOutcome: { status: string } | undefined;
     await harness.act(async () => {
-      secondOutcome = await harness.hook.sendMessage("normal second");
+      secondOutcome = await harness.hook.sendMessage("generic later");
     });
     await settle(harness.act);
 
     assert.equal(secondOutcome?.status, "accepted");
     assert.equal(submissions.length, 2);
     assert.equal(submissions[1]?.[10], null);
-    assert.equal(consumePendingAgentMarketSelection(), null);
   } finally {
     await harness.cleanup();
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;
-    consumePendingAgentMarketSelection();
   }
 });
 
-test("useAgent sends the Agent Market lock once and clears it across rejection and failure paths", async () => {
-  const { setPendingAgentMarketSelection, consumePendingAgentMarketSelection } =
-    await import("../../../features/agent-market/agentMarketSelection.ts");
+test("generic Chat never inherits an Agent Market binding", async () => {
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const originalMarkRead = sessionApi.markRead;
-  const selectedAgentProfile = {
-    agent_id: "agt_support",
-    expected_revision: 4,
-  } as const;
-  const cases: Array<{
-    label: string;
-    error: Error;
-    allowsFreshRetry: boolean;
-  }> = [
-    ["stale revision", "agent_profile_revision_stale"],
-    ["unauthorized profile", "agent_profile_not_authorized"],
-    ["archived profile", "agent_profile_archived"],
-    ["draft profile", "agent_profile_draft"],
-  ].map(([label, code]) => ({
-    label,
-    error: new ApiRequestError(
-      `${label} rejected`,
-      409,
-      code,
-      "rejected_before_persist",
-    ),
-    allowsFreshRetry: true,
-  }));
-  cases.push({
-    label: "submission transport failure",
-    error: new Error("connection failed"),
-    allowsFreshRetry: false,
-  });
+  const harness = await loadHarness();
+  const submissions: unknown[][] = [];
+  sessionApi.markRead = async () => {};
+  sessionApi.submitChat = (async (...args) => {
+    submissions.push(args);
+    return {
+      session_id: undefined,
+      run_id: null,
+      status: "needs_confirmation",
+      suggestions: [],
+    };
+  }) as typeof sessionApi.submitChat;
 
   try {
-    for (const { label, error, allowsFreshRetry } of cases) {
-      setPendingAgentMarketSelection(selectedAgentProfile);
-      const harness = await loadHarness();
-      const submissions: unknown[][] = [];
-      sessionApi.markRead = async () => {};
-      sessionApi.submitChat = (async (...args) => {
-        submissions.push(args);
-        if (submissions.length === 1) throw error;
-        return {
-          session_id: undefined,
-          run_id: null,
-          status: "needs_confirmation",
-          suggestions: [],
-        };
-      }) as typeof sessionApi.submitChat;
+    await harness.act(async () => {
+      assert.equal((await harness.hook.sendMessage("generic first")).status, "accepted");
+      assert.equal((await harness.hook.sendMessage("generic later")).status, "accepted");
+    });
+    await settle(harness.act);
 
-      try {
-        let firstOutcome: { status: string } | undefined;
-        await harness.act(async () => {
-          firstOutcome = await harness.hook.sendMessage(`${label} first`);
-        });
-        await settle(harness.act);
-        assert.equal(firstOutcome?.status, "failed");
-        assert.deepEqual(submissions[0]?.[10], selectedAgentProfile);
-
-        let secondOutcome: { status: string } | undefined;
-        await harness.act(async () => {
-          secondOutcome = await harness.hook.sendMessage(`${label} second`);
-        });
-        await settle(harness.act);
-
-        if (allowsFreshRetry) {
-          assert.equal(secondOutcome?.status, "accepted");
-          assert.equal(submissions.length, 2);
-          assert.ok(submissions[1]?.[10] == null);
-        } else {
-          assert.equal(secondOutcome?.status, "failed");
-          assert.equal(submissions.length, 1);
-        }
-        assert.equal(consumePendingAgentMarketSelection(), null);
-      } finally {
-        await harness.cleanup();
-      }
-    }
+    assert.equal(submissions.length, 2);
+    assert.equal(submissions[0]?.[10], null);
+    assert.equal(submissions[1]?.[10], null);
   } finally {
+    await harness.cleanup();
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;
-    consumePendingAgentMarketSelection();
   }
 });
