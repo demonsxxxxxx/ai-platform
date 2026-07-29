@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -173,7 +172,7 @@ class PrePushReadiness:
 
     def _run_compileall(self, result: dict[str, Any], head_worktree: Path) -> None:
         command = (sys.executable, "-m", "compileall", "-q", "app", "tools", "scripts")
-        compiled = self._run(command, head_worktree, env=_safe_environment())
+        compiled = self._run(command, head_worktree)
         if compiled.returncode != 0:
             result["stages"].append(_stage("compileall", command, "failed", compiled))
             raise ReadinessError(
@@ -215,7 +214,7 @@ class PrePushReadiness:
         if not tests:
             result["stages"].append({"command": list(command), "name": "responsibility_tests", "status": "not_applicable", "tests": []})
             return
-        tested = self._run(command, head_worktree, env=_safe_environment())
+        tested = self._run(command, head_worktree)
         if tested.returncode != 0:
             result["stages"].append(_stage("responsibility_tests", command, "failed", tested, tests=tests))
             raise ReadinessError(
@@ -246,7 +245,7 @@ class PrePushReadiness:
             "--format",
             "json",
         )
-        governed = self._run(command, head_worktree, env=_safe_environment())
+        governed = self._run(command, head_worktree)
         payload = _json_payload(governed)
         ruff = payload.get("ruff") if isinstance(payload, dict) else None
         if governed.returncode != 0:
@@ -275,12 +274,6 @@ def _mirrored_test_path(path: PurePosixPath) -> str | None:
     if path.suffix != ".py" or not path.parts or path.parts[0] not in {"app", "tools"}:
         return None
     return f"tests/test_{path.stem}.py"
-
-
-def _safe_environment() -> dict[str, str]:
-    environment = os.environ.copy()
-    environment["PYTHONSAFEPATH"] = "1"
-    return environment
 
 
 def _stage(

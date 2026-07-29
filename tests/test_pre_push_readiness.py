@@ -48,6 +48,8 @@ def readiness_repo(tmp_path: Path) -> tuple[Path, str]:
     _git(repo, "config", "user.email", "readiness@example.test")
     _git(repo, "config", "user.name", "Readiness Test")
     _write(repo, "README.md", "fixture\n")
+    _write(repo, "app/__init__.py", "")
+    _write(repo, "app/billing.py", "RATE = 2\n")
     _write(repo, "tools/code_governance.py", GOVERNANCE_TOOL.read_text(encoding="utf-8"))
     base = _commit(repo, "base")
     return repo, base
@@ -113,7 +115,7 @@ def test_deterministic_product_failure_preserves_pytest_identity(
     _write(
         repo,
         "tests/test_deterministic_failure.py",
-        "def test_deterministic_failure():\n    assert False\n",
+        "from app import billing\n\n\ndef test_deterministic_failure():\n    assert billing.RATE == 3\n",
     )
     head = _commit(repo, "failing responsibility test")
 
