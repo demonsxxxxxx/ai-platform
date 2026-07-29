@@ -956,6 +956,168 @@ def test_unowned_production_change_remains_external_with_an_unrelated_suite(
     assert payload["failure"]["path"] == "unowned-policy.json"
 
 
+MCP_IRREGULAR_RESPONSIBILITY_SUITES = {
+    "app/mcp/__init__.py": ("tests/test_mcp_tool_catalog.py", "tests/test_mcp_repository.py"),
+    "app/mcp/catalog.py": ("tests/test_mcp_tool_catalog.py",),
+    "app/mcp/repository.py": ("tests/test_mcp_repository.py", "tests/test_mcp_repository_postgres.py"),
+    "app/schema.sql": ("tests/test_schema.py",),
+}
+
+
+def _write_irregular_responsibility_suites(repo: Path, suites: tuple[str, ...]) -> None:
+    for index, suite in enumerate(suites):
+        _write(repo, suite, f"def test_irregular_suite_{index}():\n    assert True\n")
+
+
+def _assert_responsibility_tests(result: subprocess.CompletedProcess[str], expected: list[str]) -> None:
+    payload = _payload(result)
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    responsibility_stage = next(stage for stage in payload["stages"] if stage["name"] == "responsibility_tests")
+    assert responsibility_stage["tests"] == expected
+
+
+@pytest.mark.parametrize(
+    ("production_path", "baseline", "content", "suites", "mirror"),
+    (
+        ("app/mcp/__init__.py", "MCP_READY = False\n", "MCP_READY = True\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/__init__.py"], "tests/test_init.py"),
+        ("app/mcp/catalog.py", "CATALOG_READY = False\n", "CATALOG_READY = True\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/catalog.py"], "tests/test_catalog.py"),
+        ("app/mcp/repository.py", "REPOSITORY_READY = False\n", "REPOSITORY_READY = True\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/repository.py"], "tests/test_repository.py"),
+        ("app/schema.sql", "CREATE TABLE readiness_mapping_old (id INTEGER);\n", "CREATE TABLE readiness_mapping_new (id INTEGER);\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/schema.sql"], "tests/test_schema.py"),
+    ),
+)
+def test_irregular_production_paths_run_their_exact_bounded_suites(
+    readiness_repo: tuple[Path, str],
+    production_path: str,
+    baseline: str,
+    content: str,
+    suites: tuple[str, ...],
+    mirror: str,
+) -> None:
+    repo, _authority = readiness_repo
+    _write_irregular_responsibility_suites(repo, suites)
+    _write(repo, production_path, baseline)
+    _write(repo, mirror, "def test_governance_mirror():\n    assert True\n")
+    base = _commit(repo, "irregular responsibility baseline")
+    _write(repo, production_path, content)
+    _write(repo, mirror, "def test_governance_mirror_changed():\n    assert True\n")
+    head = _commit(repo, "change irregular production path")
+
+    result = _check(repo, base, head)
+
+    _assert_responsibility_tests(result, sorted({*suites, mirror}))
+
+
+def test_irregular_mapping_deduplicates_changed_tests_and_conventional_mirrors(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = readiness_repo
+    _write_irregular_responsibility_suites(repo, MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/__init__.py"])
+    _write(repo, "tests/test_ordinary.py", "def test_ordinary():\n    assert True\n")
+    _write(repo, "tests/test_init.py", "def test_initializer():\n    assert True\n")
+    _write(repo, "app/mcp/__init__.py", "MCP_READY = False\n")
+    _write(repo, "app/mcp/ordinary.py", "ORDINARY_READY = False\n")
+    base = _commit(repo, "deduplication baseline")
+    _write(repo, "app/mcp/__init__.py", "MCP_READY = True\n")
+    _write(repo, "app/mcp/ordinary.py", "ORDINARY_READY = True\n")
+    _write(repo, "tests/test_ordinary.py", "def test_ordinary_changed():\n    assert True\n")
+    _write(repo, "tests/test_init.py", "def test_initializer_changed():\n    assert True\n")
+    _write(repo, "tests/test_mcp_tool_catalog.py", "def test_catalog_changed():\n    assert True\n")
+    head = _commit(repo, "mapped and conventional responsibilities")
+
+    result = _check(repo, base, head)
+
+    _assert_responsibility_tests(result, [
+        "tests/test_init.py",
+        "tests/test_mcp_repository.py",
+        "tests/test_mcp_tool_catalog.py",
+        "tests/test_ordinary.py",
+    ])
+
+
+@pytest.mark.parametrize(("operation", "status"), (("copy", "C100"), ("rename", "R100")))
+def test_copy_or_renamed_initializer_uses_its_exact_destination_mapping(
+    readiness_repo: tuple[Path, str], operation: str, status: str
+) -> None:
+    repo, _authority = readiness_repo
+    _write_irregular_responsibility_suites(repo, MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/__init__.py"])
+    _write(repo, "app/mcp/catalog.py", "COPIED_INITIALIZER = True\n")
+    base = _commit(repo, f"initializer {operation} source")
+    if operation == "copy":
+        _write(repo, "app/mcp/__init__.py", "COPIED_INITIALIZER = True\n")
+    else:
+        _git(repo, "mv", "app/mcp/catalog.py", "app/mcp/__init__.py")
+    _write(repo, "tests/test_init.py", "def test_initializer():\n    assert True\n")
+    head = _commit(repo, f"{operation} initializer destination")
+
+    production_status = _git(
+        repo,
+        "diff",
+        "--name-status",
+        "--find-renames=50%",
+        "--find-copies=50%",
+        "--find-copies-harder",
+        base,
+        head,
+        "--",
+    )
+    result = _check(repo, base, head)
+
+    assert f"{status}\tapp/mcp/catalog.py\tapp/mcp/__init__.py" in production_status
+    _assert_responsibility_tests(
+        result,
+        sorted({"tests/test_init.py", *MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/__init__.py"]}),
+    )
+
+
+@pytest.mark.parametrize("invalid_suite", ("missing", "wrong_case", "non_blob"))
+def test_irregular_mapping_requires_every_exact_head_blob(
+    readiness_repo: tuple[Path, str], invalid_suite: str
+) -> None:
+    repo, _authority = readiness_repo
+    _write(repo, "tests/test_mcp_repository.py", "def test_repository():\n    assert True\n")
+    if invalid_suite == "wrong_case":
+        _write(repo, "tests/Test_mcp_tool_catalog.py", "def test_catalog():\n    assert True\n")
+    elif invalid_suite == "non_blob":
+        _write(repo, "tests/test_mcp_tool_catalog.py/sentinel.txt", "tree, not a test blob\n")
+    _write(repo, "app/mcp/__init__.py", "MCP_READY = False\n")
+    base = _commit(repo, "invalid mapped suite baseline")
+    _write(repo, "app/mcp/__init__.py", "MCP_READY = True\n")
+    _write(repo, "tests/test_init.py", "def test_initializer():\n    assert True\n")
+    head = _commit(repo, "change initializer with invalid mapped suite")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "external_check"
+    assert payload["failure"]["code"] == "responsibility_suite_required"
+    assert payload["failure"]["path"] == "app/mcp/__init__.py"
+
+
+@pytest.mark.parametrize("production_path", ("app/mcp/unlisted.py", "app/mcp/catalog.json"))
+def test_unlisted_mcp_paths_remain_external_even_with_a_shared_suite(
+    readiness_repo: tuple[Path, str], production_path: str
+) -> None:
+    repo, _authority = readiness_repo
+    _write(repo, "tests/test_explicit_suite.py", "def test_explicit_suite():\n    assert True\n")
+    if production_path.endswith(".py"):
+        _write(repo, production_path, "VALUE = False\n")
+    else:
+        _write(repo, production_path, "{\"enabled\": false}\n")
+    base = _commit(repo, "unlisted mcp baseline")
+    _write(repo, production_path, "VALUE = True\n" if production_path.endswith(".py") else "{\"enabled\": true}\n")
+    _write(repo, "tests/test_mcp_unlisted.py", "def test_mcp_unlisted():\n    assert True\n")
+    head = _commit(repo, "unlisted mcp production path")
+
+    result = _check(repo, base, head, shared_test_suites=("tests/test_explicit_suite.py",))
+    payload = _payload(result)
+
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "external_check"
+    assert payload["failure"]["code"] == "responsibility_suite_required"
+    assert payload["failure"]["path"] == production_path
+
+
 @pytest.mark.parametrize("existing_exception", (False, True), ids=("added", "modified"))
 def test_changed_code_governance_exception_runs_its_exact_bounded_suite(
     readiness_repo: tuple[Path, str],
@@ -1407,6 +1569,10 @@ def test_pr_workflow_requires_the_exact_ref_gate_before_push_and_after_merge_up(
     assert "never links or reuses a\nmutable `node_modules` tree" in workflow
     assert "actionable `infrastructure_failure`" in workflow
     assert "--shared-test-suite" in workflow
+    normalized_workflow = " ".join(workflow.split())
+    assert "Conventional mirrors remain the default" in workflow
+    assert "exact bounded responsibility mapping" in normalized_workflow
+    assert "every mapped suite must exist as an exact case-sensitive blob at `head_ref`" in normalized_workflow
     assert "or modified `.code-governance-exception.json`" in workflow
     assert "`tests/test_code_governance.py` suite" in workflow
     assert "--find-copies=50% --find-copies-harder" in workflow
