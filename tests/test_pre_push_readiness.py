@@ -15,6 +15,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 READINESS_TOOL = REPO_ROOT / "tools" / "pre_push_readiness.py"
 GOVERNANCE_TOOL = REPO_ROOT / "tools" / "code_governance.py"
+CODE_GOVERNANCE_TEST = REPO_ROOT / "tests" / "test_code_governance.py"
 ISSUE_WORKFLOW = REPO_ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
 
 
@@ -63,6 +64,7 @@ def readiness_repo(tmp_path: Path) -> tuple[Path, str]:
     _write(repo, "app/billing.py", "RATE = 2\n")
     _write(repo, "tools/code_governance.py", GOVERNANCE_TOOL.read_text(encoding="utf-8"))
     _write(repo, "tools/pre_push_readiness.py", READINESS_TOOL.read_text(encoding="utf-8"))
+    _write(repo, "tests/test_code_governance.py", CODE_GOVERNANCE_TEST.read_text(encoding="utf-8"))
     base = _commit(repo, "base")
     _git(repo, "update-ref", "refs/remotes/origin/main", base)
     return repo, base
@@ -108,6 +110,22 @@ def _check(
 def _payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     assert result.stdout, result.stderr
     return json.loads(result.stdout)
+
+
+def _governance_exception(*, reason: str) -> str:
+    return json.dumps(
+        {
+            "schema_version": "ai-platform.code-governance-exception.v1",
+            "expires_on": "2099-01-01",
+            "owner": "platform-governance",
+            "reason": reason,
+            "violations": [{"code": "functional_hot_file_growth", "path": "app/billing.py"}],
+        }
+    ) + "\n"
+
+
+def _python_assignments(count: int) -> str:
+    return "".join(f"VALUE_{index} = {index}\n" for index in range(count))
 
 
 def _fake_corepack_environment(tmp_path: Path) -> dict[str, str]:
@@ -336,7 +354,7 @@ def test_unowned_production_change_remains_external_with_an_unrelated_suite(
     readiness_repo: tuple[Path, str],
 ) -> None:
     repo, base = readiness_repo
-    _write(repo, "config/policy.json", "{\"enabled\": true}\n")
+    _write(repo, "unowned-policy.json", "{\"enabled\": true}\n")
     _write(repo, "tests/test_explicit_suite.py", "def test_explicit_suite():\n    assert True\n")
     head = _commit(repo, "unowned path with unrelated suite")
 
@@ -346,7 +364,49 @@ def test_unowned_production_change_remains_external_with_an_unrelated_suite(
     assert result.returncode == 2
     assert payload["category"] == "external_check"
     assert payload["failure"]["code"] == "responsibility_suite_required"
-    assert payload["failure"]["path"] == "config/policy.json"
+    assert payload["failure"]["path"] == "unowned-policy.json"
+
+
+@pytest.mark.parametrize("existing_exception", (False, True), ids=("added", "modified"))
+def test_changed_code_governance_exception_runs_its_exact_bounded_suite(
+    readiness_repo: tuple[Path, str],
+    existing_exception: bool,
+) -> None:
+    repo, _authority = readiness_repo
+    _write(repo, "app/billing.py", _python_assignments(3_001))
+    if existing_exception:
+        _write(repo, ".code-governance-exception.json", _governance_exception(reason="initial exception"))
+    base = _commit(repo, "governance exception baseline")
+    _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
+    _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
+    _write(repo, ".code-governance-exception.json", _governance_exception(reason="updated exception"))
+    head = _commit(repo, "change governance exception")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    responsibility_stage = next(stage for stage in payload["stages"] if stage["name"] == "responsibility_tests")
+    assert responsibility_stage["status"] == "pass"
+    assert responsibility_stage["tests"] == ["tests/test_billing.py", "tests/test_code_governance.py"]
+
+
+def test_deleted_code_governance_exception_follows_the_deleted_path_policy(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = readiness_repo
+    _write(repo, ".code-governance-exception.json", _governance_exception(reason="initial exception"))
+    base = _commit(repo, "governance exception baseline")
+    (repo / ".code-governance-exception.json").unlink()
+    head = _commit(repo, "delete governance exception")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    responsibility_stage = next(stage for stage in payload["stages"] if stage["name"] == "responsibility_tests")
+    assert responsibility_stage["status"] == "not_applicable"
+    assert responsibility_stage["tests"] == []
 
 
 def test_deleted_test_file_is_not_sent_to_pytest(readiness_repo: tuple[Path, str]) -> None:
@@ -590,6 +650,10 @@ def test_pr_workflow_requires_the_exact_ref_gate_before_push_and_after_merge_up(
     assert "after every ordinary merge-up" in normalized
     assert "corepack pnpm run ci:verify" in workflow
     assert "--shared-test-suite" in workflow
+    assert "or modified `.code-governance-exception.json`" in workflow
+    assert "`tests/test_code_governance.py` suite" in workflow
+    assert "deletion follows the deleted-path" in normalized
+    assert "every other unowned root configuration or json path remains" in normalized
     assert "before candidate compile, pytest," in normalized
     assert "frontend, or candidate configuration executes" in normalized
     assert "immutable authority git object" in normalized

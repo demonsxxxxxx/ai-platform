@@ -20,6 +20,8 @@ FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 MAX_RESPONSIBILITY_TESTS = 24
 AUTHORITY_TOOL_PATH = "tools/pre_push_readiness.py"
 AUTHORITY_GOVERNANCE_PATH = "tools/code_governance.py"
+CODE_GOVERNANCE_EXCEPTION_PATH = ".code-governance-exception.json"
+CODE_GOVERNANCE_TEST_PATH = "tests/test_code_governance.py"
 
 FAILURE_TAXONOMY = {
     "stale_base": "The supplied base is not an ancestor of head; merge the current base before push.",
@@ -330,6 +332,12 @@ class PrePushReadiness:
                 continue
             if _is_frontend_path(pure_path):
                 frontend = True
+                continue
+            if status in {"A", "M"} and path == CODE_GOVERNANCE_EXCEPTION_PATH:
+                if (head_worktree / CODE_GOVERNANCE_TEST_PATH).is_file():
+                    selected.add(CODE_GOVERNANCE_TEST_PATH)
+                    continue
+                unowned_paths.append(path)
                 continue
             if _is_test_module(pure_path) and (head_worktree / path).is_file():
                 selected.add(path)

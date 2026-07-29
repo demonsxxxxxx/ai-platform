@@ -123,8 +123,14 @@ bounded `--shared-test-suite tests/test_<name>.py`; the option is invalid when
 no named shared fixture changed. An otherwise unclassifiable affected path
 always fails closed with `external_check`. A shared suite cannot discharge an
 unowned production path; that path remains external until an explicit bounded
-responsibility mapping exists. Preserve the emitted category and identity in
-the PR record:
+responsibility mapping exists. The one explicit root-file mapping is an added
+or modified `.code-governance-exception.json`, which selects the existing
+`tests/test_code_governance.py` suite. Its deletion follows the deleted-path
+policy: it is not passed to pytest and does not select that suite; exact
+governance still evaluates the candidate range with the exception absent.
+Every other unowned root configuration or JSON path remains `external_check`;
+`--shared-test-suite` cannot bypass it. Preserve the emitted category and
+identity in the PR record:
 
 - `stale_base`: merge the current base through the ordinary merge-up flow, then
   run the gate again before pushing.
