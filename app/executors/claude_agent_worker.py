@@ -5,7 +5,7 @@ import inspect
 import posixpath
 import shutil
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 from xml.etree import ElementTree
@@ -40,6 +40,7 @@ from app.executors.base import (
     RunPayload,
 )
 from app.executors.claude_agent_sdk_runner import (
+    ClaudeAgentSdkRunResult,
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
     build_skill_prompt,
@@ -58,6 +59,8 @@ from app.file_parser_contracts import (
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.required_tool_contract import (
     RequiredCapabilityDeclaration,
+    RequiredCapabilityEvidence,
+    RequiredToolContractError,
     selected_capability_completion_decision,
 )
 from app.runtime.event_bridge import agent_event_to_executor_event
@@ -153,6 +156,7 @@ def _external_mcp_subjects(payload: RunPayload) -> list[dict[str, str]]:
         if not isinstance(raw, dict):
             continue
         server_id = str(raw.get("mcp_server") or "")
+        tool_name = str(raw.get("mcp_tool") or "")
         identity = str(raw.get("identity") or "")
         authorized = all(
             raw.get(field) is True
@@ -170,7 +174,8 @@ def _external_mcp_subjects(payload: RunPayload) -> list[dict[str, str]]:
             not authorized
             or not server_id
             or server_id == "ai-platform-context"
-            or not identity.startswith("mcp__")
+            or not tool_name
+            or identity != f"mcp__{server_id}__{tool_name}"
         ):
             continue
         label = sanitize_public_text(raw.get("public_tool_label"))[:120]
@@ -2055,6 +2060,71 @@ class ClaudeAgentWorkerAdapter:
                     },
                 )
 
+        selected_skill_declaration = (
+            RequiredCapabilityDeclaration.from_authorized_subject(
+                capability_kind="skill",
+                canonical_identity=payload.skill_id,
+            )
+            if payload.skill_id != "general-chat"
+            and (staged_skill_names is None or payload.skill_id in staged_skill_names)
+            else None
+        )
+        bound_skill_evidence: list[dict[str, Any]] = []
+        skill_invocation_state = {"call_id": "", "phase": "", "rejected": False}
+
+        def reject_skill_evidence() -> bool:
+            skill_invocation_state["rejected"] = True
+            bound_skill_evidence.clear()
+            return False
+
+        async def on_capability_evidence(raw: dict[str, str]) -> bool:
+            """Bind exact worker-local selected-Skill hook facts before acknowledging."""
+
+            if selected_skill_declaration is None or skill_invocation_state["rejected"]:
+                return False
+            try:
+                tool_call_id = raw.get("tool_call_id")
+                lifecycle_phase = raw.get("lifecycle_phase")
+                if not isinstance(tool_call_id, str) or not isinstance(lifecycle_phase, str):
+                    return reject_skill_evidence()
+                expected = RequiredCapabilityEvidence.sdk_hook_payload(
+                    declaration=selected_skill_declaration,
+                    tool_call_id=tool_call_id,
+                    lifecycle_phase=lifecycle_phase,
+                )
+                if raw != expected:
+                    return reject_skill_evidence()
+                current_phase = skill_invocation_state["phase"]
+                current_call_id = skill_invocation_state["call_id"]
+                if lifecycle_phase == "invocation_requested":
+                    if current_phase:
+                        return reject_skill_evidence()
+                elif current_phase != "invocation_requested" or current_call_id != tool_call_id:
+                    return reject_skill_evidence()
+                evidence = RequiredCapabilityEvidence.from_sdk_hook(
+                    declaration=selected_skill_declaration,
+                    binding={
+                        "tenant_id": payload.tenant_id,
+                        "workspace_id": payload.workspace_id,
+                        "user_id": payload.user_id,
+                        "session_id": payload.session_id,
+                        "run_id": payload.run_id,
+                        "attempt_id": payload.attempt_id,
+                    },
+                    tool_call_id=tool_call_id,
+                    lifecycle_phase=lifecycle_phase,
+                )
+            except (AttributeError, RequiredToolContractError):
+                return reject_skill_evidence()
+            bound_skill_evidence.append(asdict(evidence))
+            skill_invocation_state["call_id"] = tool_call_id
+            skill_invocation_state["phase"] = (
+                "invocation_requested"
+                if lifecycle_phase == "invocation_requested"
+                else "terminal"
+            )
+            return True
+
         try:
             sdk_kwargs = {
                 "prompt": prompt,
@@ -2076,13 +2146,24 @@ class ClaudeAgentWorkerAdapter:
             if context_retrieval is not None and context_retrieval_identity is not None:
                 sdk_kwargs["context_retrieval"] = context_retrieval
                 sdk_kwargs["context_retrieval_identity"] = context_retrieval_identity
+            if selected_skill_declaration is not None:
+                sdk_kwargs["on_capability_evidence"] = on_capability_evidence
             await _emit_public_progress_event(
                 event_sink,
                 event_type="run_started",
                 stage="runtime",
                 message="SDK runtime dispatch is active",
             )
-            return await run_claude_agent_sdk(**sdk_kwargs)
+            sdk_result = await run_claude_agent_sdk(**sdk_kwargs)
+            if selected_skill_declaration is not None and isinstance(
+                sdk_result,
+                ClaudeAgentSdkRunResult,
+            ):
+                return replace(
+                    sdk_result,
+                    capability_evidence=list(bound_skill_evidence),
+                )
+            return sdk_result
         except ClaudeAgentSdkNotAvailable:
             return type("SdkUnavailable", (), {
                 "used_sdk": False,
@@ -2408,20 +2489,6 @@ def _sdk_used_skill_names(sdk_result: object, staged_skill_names: list[str]) -> 
             continue
         used.append(skill_name)
     return used
-
-
-def _selected_skill_invocation_error(
-    payload: RunPayload,
-    staged_skill_names: list[str],
-    used_skill_names: list[str],
-) -> str | None:
-    """Require hook-backed proof before a selected non-general Skill can succeed."""
-
-    if payload.skill_id == "general-chat" or payload.skill_id not in set(staged_skill_names):
-        return None
-    if payload.skill_id in used_skill_names:
-        return None
-    return "claude_agent_sdk_selected_skill_not_invoked"
 
 
 def _sdk_used_skills_source(sdk_result: object | None, used_skill_names: list[str]) -> str:
