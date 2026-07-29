@@ -1,18 +1,5 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-import {
-  ArrowLeft,
-  Bot,
-  MessageCircle,
-  RefreshCw,
-  Search,
-  ShieldCheck,
-} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { ArrowLeft, Bot, FileText, Headphones, MessageCircle, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
@@ -22,34 +9,45 @@ import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useAuth";
 import { authApi } from "../../services/api";
 import { agentProfileApi } from "../../services/api/agentProfile";
 import type { AgentProfilePublicProjection } from "../../types";
+import type { AgentProfileAvatarRef, AgentProfileCategory } from "../../types/agentProfile";
 import {
   buildAgentMarketDetailPath,
   filterPublishedMarketProfiles,
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
 
-type CatalogState =
-  | {
-      key: string;
-      phase: "loading";
-      profiles: readonly AgentProfilePublicProjection[];
-      error: null;
-    }
-  | {
-      key: string;
-      phase: "ready";
-      profiles: readonly AgentProfilePublicProjection[];
-      error: null;
-    }
-  | {
-      key: string;
-      phase: "error";
-      profiles: readonly AgentProfilePublicProjection[];
-      error: string;
-    };
+type LoadPhase = "loading" | "ready" | "error" | "unavailable";
+interface LoadState<T> {
+  key: string;
+  phase: LoadPhase;
+  value: T;
+  error: string | null;
+}
+type CatalogState = LoadState<readonly AgentProfilePublicProjection[]>;
+type DetailState = LoadState<AgentProfilePublicProjection | null>;
+
+function loadState<T>(
+  key: string,
+  value: T,
+  phase: LoadPhase = "loading",
+  error: string | null = null,
+): LoadState<T> {
+  return { key, phase, value, error };
+}
 
 const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的智能体，请稍后重新加载。";
 const CANONICAL_CHAT_PATH = APP_ROUTE_PATHS.chat.replace("/:sessionId?", "");
+const CATEGORY_LABELS: Record<AgentProfileCategory, string> = {
+  general: "通用助理", support: "支持服务", writing: "内容写作",
+  research: "研究分析", operations: "运营效率",
+};
+const MARKET_CATEGORIES: ReadonlyArray<{ value: AgentProfileCategory | "all"; label: string }> = [
+  { value: "all", label: "全部" },
+  ...Object.entries(CATEGORY_LABELS).map(([value, label]) => ({
+    value: value as AgentProfileCategory,
+    label,
+  })),
+];
 const FALLBACK_IDENTITY_STYLES = [
   "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300",
   "bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300",
@@ -57,12 +55,8 @@ const FALLBACK_IDENTITY_STYLES = [
   "bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300",
 ] as const;
 
-interface AgentMarketShellProps {
-  children: ReactNode;
-}
-
 /** Reuse the production shell and session sidebar for the ordinary-user market. */
-function AgentMarketShell({ children }: AgentMarketShellProps) {
+function AgentMarketShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -118,7 +112,14 @@ function getFallbackIdentityStyle(agentId: string): string {
   return FALLBACK_IDENTITY_STYLES[hash % FALLBACK_IDENTITY_STYLES.length];
 }
 
-function AgentFallbackIdentity({
+function AgentAvatarIcon({ avatarRef, size }: { avatarRef: AgentProfileAvatarRef; size: number }) {
+  if (avatarRef === "builtin:document") return <FileText size={size} aria-hidden="true" />;
+  if (avatarRef === "builtin:assistant") return <Headphones size={size} aria-hidden="true" />;
+  if (avatarRef === "builtin:research") return <Search size={size} aria-hidden="true" />;
+  return <Bot size={size} aria-hidden="true" />;
+}
+
+function AgentIdentityAvatar({
   profile,
   large = false,
 }: {
@@ -127,72 +128,110 @@ function AgentFallbackIdentity({
 }) {
   return (
     <span
-      aria-label="默认智能体标识"
+      aria-label={`${profile.name} 头像`}
+      data-agent-avatar-ref={profile.avatar_ref}
       className={`inline-flex shrink-0 items-center justify-center rounded-lg ${
         large ? "h-16 w-16" : "h-11 w-11"
       } ${getFallbackIdentityStyle(profile.agent_id)}`}
       role="img"
     >
-      <Bot size={large ? 30 : 22} aria-hidden="true" />
+      <AgentAvatarIcon avatarRef={profile.avatar_ref} size={large ? 30 : 22} />
     </span>
   );
 }
 
-function usePublishedAgentCatalog(catalogKey: string) {
-  const [requestRevision, setRequestRevision] = useState(0);
-  const [catalog, setCatalog] = useState<CatalogState>({
-    key: catalogKey,
-    phase: "loading",
-    profiles: [],
-    error: null,
-  });
+function usePublishedAgentCatalog(
+  catalogKey: string,
+  query: string | undefined,
+  category: AgentProfileCategory | undefined,
+  enabled: boolean,
+) {
+  const [retry, setRetry] = useState(0);
+  const [catalog, setCatalog] = useState<CatalogState>(() =>
+    loadState(catalogKey, []),
+  );
 
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
-    setCatalog({ key: catalogKey, phase: "loading", profiles: [], error: null });
+    setCatalog(loadState(catalogKey, []));
     void agentProfileApi
-      .listPublished()
+      .listPublished({ query, category })
       .then((response) => {
-        if (active) {
-          setCatalog({
-            key: catalogKey,
-            phase: "ready",
-            profiles: response.agent_profiles,
-            error: null,
-          });
-        }
+        if (active)
+          setCatalog(loadState(catalogKey, response.agent_profiles, "ready"));
       })
       .catch(() => {
-        if (active) {
-          setCatalog({
-            key: catalogKey,
-            phase: "error",
-            profiles: [],
-            error: MARKET_CATALOG_LOAD_ERROR,
-          });
-        }
+        if (active)
+          setCatalog(loadState(catalogKey, [], "error", MARKET_CATALOG_LOAD_ERROR));
       });
     return () => {
       active = false;
     };
-  }, [catalogKey, requestRevision]);
+  }, [catalogKey, enabled, category, query, retry]);
 
-  const refresh = useCallback(() => {
-    setRequestRevision((current) => current + 1);
-  }, []);
+  const refresh = useCallback(() => setRetry((current) => current + 1), []);
+  return {
+    catalog: catalog.key === catalogKey ? catalog : loadState(catalogKey, []),
+    refresh,
+  };
+}
 
-  if (catalog.key !== catalogKey) {
-    return {
-      catalog: {
-        key: catalogKey,
-        phase: "loading",
-        profiles: [],
-        error: null,
-      } as CatalogState,
-      refresh,
+function getErrorStatus(error: unknown): number | undefined {
+  return error !== null && typeof error === "object"
+    ? (error as { status?: number }).status
+    : undefined;
+}
+
+function usePublishedAgentDetail(
+  detailKey: string,
+  agentId: string | undefined,
+  revision: string | undefined,
+  enabled: boolean,
+) {
+  const [retry, setRetry] = useState(0);
+  const [detail, setDetail] = useState<DetailState>(() =>
+    loadState(detailKey, null),
+  );
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (!agentId || !revision) {
+      setDetail(loadState(detailKey, null, "unavailable"));
+      return;
+    }
+    let active = true;
+    setDetail(loadState(detailKey, null));
+    void agentProfileApi
+      .getPublished(agentId)
+      .then((profile) => {
+        if (!active) return;
+        const exact = selectPublishedMarketProfile([profile], agentId, revision);
+        setDetail(
+          exact
+            ? { key: detailKey, phase: "ready", value: exact, error: null }
+            : loadState(detailKey, null, "unavailable"),
+        );
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        const status = getErrorStatus(error);
+        setDetail(
+          status === 403 || status === 404
+            ? loadState(detailKey, null, "unavailable")
+            : loadState(detailKey, null, "error", MARKET_CATALOG_LOAD_ERROR),
+        );
+      });
+    return () => {
+      active = false;
     };
-  }
-  return { catalog, refresh };
+  }, [agentId, detailKey, enabled, retry, revision]);
+
+  const refresh = useCallback(() => setRetry((current) => current + 1), []);
+  return {
+    detail: detail.key === detailKey ? detail : loadState(detailKey, null),
+    refresh,
+  };
 }
 
 function CatalogError({ error, refresh }: { error: string; refresh: () => void }) {
@@ -224,9 +263,14 @@ function AgentMarketCard({
         onClick={() => onOpen(profile)}
         type="button"
       >
-        <AgentFallbackIdentity profile={profile} />
+        <AgentIdentityAvatar profile={profile} />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="text-base font-semibold text-[var(--theme-text)]">{profile.name}</span>
+          <span className="flex flex-wrap items-start justify-between gap-2">
+            <span className="text-base font-semibold text-[var(--theme-text)]">{profile.name}</span>
+            <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-0.5 text-xs text-[var(--theme-text-secondary)]">
+              {CATEGORY_LABELS[profile.category]}
+            </span>
+          </span>
           <span className="mt-2 line-clamp-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
             {profile.description || "该智能体已通过平台发布。"}
           </span>
@@ -243,16 +287,32 @@ function AgentMarketCard({
 function AgentMarketCatalog({
   catalog,
   refresh,
+  activeCategory,
 }: {
   catalog: CatalogState;
   refresh: () => void;
+  activeCategory: AgentProfileCategory | "all";
 }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const searchQuery = searchParams.get("q") ?? "";
   const visibleProfiles = useMemo(
-    () => filterPublishedMarketProfiles(catalog.profiles, searchQuery),
-    [catalog.profiles, searchQuery],
+    () =>
+      filterPublishedMarketProfiles(catalog.value, searchQuery).filter(
+        (profile) =>
+          activeCategory === "all" || profile.category === activeCategory,
+      ),
+    [activeCategory, catalog.value, searchQuery],
+  );
+
+  const handleCategory = useCallback(
+    (category: AgentProfileCategory | "all") => {
+      const next = new URLSearchParams(searchParams);
+      if (category === "all") next.delete("category");
+      else next.set("category", category);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
   );
 
   const handleSearch = useCallback(
@@ -316,25 +376,37 @@ function AgentMarketCatalog({
             </label>
             <div
               data-agent-market-filter
-              aria-label="智能体筛选"
-              className="inline-flex h-10 w-fit items-center gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm"
-              role="group"
+              aria-label="智能体分类"
+              className="flex max-w-full flex-wrap items-center gap-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-1 text-sm"
+              role="tablist"
             >
-              <span className="font-medium text-[var(--theme-text)]">全部已发布</span>
-              <span className="text-[var(--theme-text-secondary)]" aria-label={`${catalog.profiles.length} 个`}>
-                {catalog.profiles.length}
-              </span>
+              {MARKET_CATEGORIES.map((category) => (
+                <button
+                  aria-selected={activeCategory === category.value}
+                  className={`min-h-8 rounded-md px-2.5 text-xs transition-colors ${
+                    activeCategory === category.value
+                      ? "bg-[var(--theme-primary)] text-white"
+                      : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
+                  }`}
+                  key={category.value}
+                  onClick={() => handleCategory(category.value)}
+                  role="tab"
+                  type="button"
+                >
+                  {category.label}
+                </button>
+              ))}
             </div>
           </div>
         </div>
 
         {catalog.phase === "error" ? (
-          <CatalogError error={catalog.error} refresh={refresh} />
+          <CatalogError error={catalog.error ?? MARKET_CATALOG_LOAD_ERROR} refresh={refresh} />
         ) : catalog.phase === "loading" ? (
           <p aria-live="polite" className="py-8 text-sm text-[var(--theme-text-secondary)]">
             正在加载已发布的智能体…
           </p>
-        ) : catalog.profiles.length === 0 ? (
+        ) : catalog.value.length === 0 ? (
           <section className="border-t border-[var(--theme-border)] py-10 text-sm text-[var(--theme-text-secondary)]">
             当前没有已发布的智能体，请稍后再试。
           </section>
@@ -369,6 +441,45 @@ function AgentMarketCatalog({
 
 function AgentMarketDetail({ profile }: { profile: AgentProfilePublicProjection }) {
   const navigate = useNavigate();
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+
+  const handleStartChat = useCallback(async () => {
+    if (starting) return;
+    setStarting(true);
+    setStartError(null);
+    try {
+      const session = await agentProfileApi.createConversation({
+        agent_id: profile.agent_id,
+        expected_revision: profile.expected_revision,
+      });
+      const identity = session.agent_conversation;
+      if (
+        !identity ||
+        identity.agent_id !== profile.agent_id ||
+        identity.revision !== profile.expected_revision ||
+        !session.session_id
+      ) {
+        throw Object.assign(new Error("agent_conversation_identity_mismatch"), {
+          status: 409,
+        });
+      }
+      navigate(
+        `${CANONICAL_CHAT_PATH}/${encodeURIComponent(session.session_id)}`,
+      );
+    } catch (error) {
+      const status = getErrorStatus(error);
+      if (status === 403) {
+        setStartError("当前账号无权使用该智能体，请返回市场选择其他智能体。");
+      } else if (status === 404 || status === 409) {
+        setStartError("该智能体已不可用或发布版本已更新，请返回市场重新选择。");
+      } else {
+        setStartError("暂时无法创建智能体对话，请稍后重试。");
+      }
+    } finally {
+      setStarting(false);
+    }
+  }, [navigate, profile.agent_id, profile.expected_revision, starting]);
 
   return (
     <main
@@ -388,9 +499,11 @@ function AgentMarketDetail({ profile }: { profile: AgentProfilePublicProjection 
 
         <section className="mt-7 border-y border-[var(--theme-border)] py-8 sm:py-10">
           <div className="flex flex-col gap-6 sm:flex-row sm:items-start">
-            <AgentFallbackIdentity profile={profile} large />
+            <AgentIdentityAvatar profile={profile} large />
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-[var(--theme-primary)]">已发布智能体</p>
+              <p className="text-sm font-medium text-[var(--theme-primary)]">
+                {CATEGORY_LABELS[profile.category]} · 已发布智能体
+              </p>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{profile.name}</h1>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
                 {profile.description || "该智能体已通过平台发布。"}
@@ -402,17 +515,22 @@ function AgentMarketDetail({ profile }: { profile: AgentProfilePublicProjection 
         <div className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-center sm:justify-end">
           <span
             id="agent-market-conversation-status"
-            className="text-sm text-[var(--theme-text-secondary)]"
+            className={`text-sm ${
+              startError
+                ? "text-red-700 dark:text-red-300"
+                : "text-[var(--theme-text-secondary)]"
+            }`}
             role="status"
           >
-            对话服务暂不可用
+            {starting ? "正在创建智能体对话…" : startError}
           </span>
           <button
             data-agent-market-start-chat
             aria-describedby="agent-market-conversation-status"
-            aria-label={`与 ${profile.name} 开始对话（暂不可用）`}
-            className="btn-primary inline-flex min-h-10 shrink-0 cursor-not-allowed items-center justify-center gap-2 px-4 opacity-60"
-            disabled
+            aria-label={`与 ${profile.name} 开始对话`}
+            className="btn-primary inline-flex min-h-10 shrink-0 items-center justify-center gap-2 px-4 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={starting}
+            onClick={() => void handleStartChat()}
             type="button"
           >
             <MessageCircle size={17} aria-hidden="true" />
@@ -427,39 +545,61 @@ function AgentMarketDetail({ profile }: { profile: AgentProfilePublicProjection 
 /** Published Agent catalog and exact revision detail route. */
 export function AgentMarketRoute() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { agentId, revision } = useParams<{ agentId?: string; revision?: string }>();
   const isDetailRoute = agentId !== undefined || revision !== undefined;
-  const catalogKey = isDetailRoute ? `detail:${agentId ?? ""}:${revision ?? ""}` : "catalog";
-  const { catalog, refresh } = usePublishedAgentCatalog(catalogKey);
-  const selectedProfile =
-    isDetailRoute && catalog.phase === "ready"
-      ? selectPublishedMarketProfile(catalog.profiles, agentId, revision)
-      : null;
+  const searchQuery = searchParams.get("q")?.trim() || undefined;
+  const requestedCategory = searchParams.get("category");
+  const activeCategory = MARKET_CATEGORIES.some(
+    (category) => category.value === requestedCategory,
+  )
+    ? (requestedCategory as AgentProfileCategory | "all")
+    : "all";
+  const catalogCategory =
+    activeCategory === "all" ? undefined : activeCategory;
+  const catalogKey = `catalog:${searchQuery ?? ""}:${catalogCategory ?? "all"}`;
+  const { catalog, refresh: refreshCatalog } = usePublishedAgentCatalog(
+    catalogKey,
+    searchQuery,
+    catalogCategory,
+    !isDetailRoute,
+  );
+  const detailKey = `detail:${agentId ?? ""}:${revision ?? ""}`;
+  const { detail, refresh: refreshDetail } = usePublishedAgentDetail(
+    detailKey,
+    agentId,
+    revision,
+    isDetailRoute,
+  );
 
   useEffect(() => {
-    if (isDetailRoute && catalog.phase === "ready" && selectedProfile === null) {
+    if (isDetailRoute && detail.phase === "unavailable") {
       navigate(APP_ROUTE_PATHS.agentMarket, { replace: true });
     }
-  }, [catalog.phase, isDetailRoute, navigate, selectedProfile]);
+  }, [detail.phase, isDetailRoute, navigate]);
 
   if (!isDetailRoute) {
     return (
       <AgentMarketShell>
-        <AgentMarketCatalog catalog={catalog} refresh={refresh} />
+        <AgentMarketCatalog
+          activeCategory={activeCategory}
+          catalog={catalog}
+          refresh={refreshCatalog}
+        />
       </AgentMarketShell>
     );
   }
 
   return (
     <AgentMarketShell>
-      {catalog.phase === "error" ? (
+      {detail.phase === "error" ? (
         <main className="min-h-0 flex-1 overflow-y-auto px-4 py-10 text-[var(--theme-text)] sm:px-6">
           <div className="mx-auto max-w-2xl">
-            <CatalogError error={catalog.error} refresh={refresh} />
+            <CatalogError error={detail.error ?? MARKET_CATALOG_LOAD_ERROR} refresh={refreshDetail} />
           </div>
         </main>
-      ) : selectedProfile ? (
-        <AgentMarketDetail profile={selectedProfile} />
+      ) : detail.phase === "ready" && detail.value ? (
+        <AgentMarketDetail profile={detail.value} />
       ) : (
         <main
           aria-live="polite"

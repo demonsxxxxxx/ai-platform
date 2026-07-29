@@ -692,6 +692,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // Keep sessionId/runId in ref for closure access
   const sessionIdRef = useRef<string | null>(null);
   const sessionAgentIdRef = useRef(DEFAULT_CHAT_AGENT_ID);
+  const agentConversationBoundRef = useRef(false);
   const currentRunIdRef = useRef<string | null>(null);
   const messagesRef = useRef<Message[]>([]);
   useEffect(() => {
@@ -1320,6 +1321,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         mountedGenerationRef.current === mountedGeneration &&
         isCurrentHistoryLoad(historyLoadTokenRef, historyLoadToken);
       handoffActivePreAdmissionSubmission({ projectMessages: false });
+      agentConversationBoundRef.current = false;
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
       streamVersionRef.current += 1;
@@ -1359,12 +1361,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return null;
         }
 
-        const sessionData = await sessionApi.get(targetSessionId);
+        const [sessionData, authoritativeSession] = await Promise.all([
+          sessionApi.get(targetSessionId),
+          sessionApi.getAuthoritative(targetSessionId),
+        ]);
         if (!isCurrentHistoryLoadRequest()) {
           return null;
         }
 
         if (sessionData) {
+          agentConversationBoundRef.current =
+            authoritativeSession.agent_conversation !== null;
           sessionIdRef.current = targetSessionId;
           setSessionId(targetSessionId);
           const loadedAgentId = sessionData.agent_id || DEFAULT_CHAT_AGENT_ID;
@@ -1792,7 +1799,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const requestSessionGeneration = sessionGenerationRef.current;
       const requestSessionId = sessionIdRef.current;
       const requestAgentId = sessionAgentIdRef.current;
-      const selectedAgentProfileForRequest = selectedAgentProfile ?? null;
+      const isBoundAgentConversation =
+        requestSessionId !== null && agentConversationBoundRef.current;
+      const selectedAgentProfileForRequest = isBoundAgentConversation
+        ? null
+        : selectedAgentProfile ?? null;
       streamVersionRef.current += 1;
       clearReconcileOwners();
       statusRetryCountRef.current = 0;
@@ -1883,14 +1894,20 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
         // Keep the legacy Skill blacklist while MCP uses an explicit
         // canonical selection with omitted/clear/select tri-state semantics.
-        const disabledSkills = options?.getDisabledSkills?.() || [];
-        const selectedMcpToolIds = options?.getDisabledMcpTools?.();
+        const disabledSkills = isBoundAgentConversation
+          ? undefined
+          : options?.getDisabledSkills?.() || [];
+        const selectedMcpToolIds = isBoundAgentConversation
+          ? undefined
+          : options?.getDisabledMcpTools?.();
 
         // Merge session-level agent options (e.g. model) with ChatInput values
-        const fullAgentOptions = {
-          ...options?.getAgentOptions?.(),
-          ...agentOptions,
-        };
+        const fullAgentOptions = isBoundAgentConversation
+          ? undefined
+          : {
+              ...options?.getAgentOptions?.(),
+              ...agentOptions,
+            };
 
         // Option getters are application extension seams. A getter can
         // synchronously publish an auth-incarnation event, so validate the
@@ -1920,7 +1937,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           attachments,
           disabledSkills,
           undefined,
-          selectedSkill,
+          isBoundAgentConversation ? undefined : selectedSkill,
           submissionId,
           requestAgentId,
           selectedMcpToolIds,
@@ -2295,6 +2312,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     clearReconcileOwners();
     setMessages([]);
     setConfirmationRecovery(null);
+    agentConversationBoundRef.current = false;
     setSessionId(null);
     sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);

@@ -379,3 +379,113 @@ test("generic Chat never inherits an Agent Market binding", async () => {
     sessionApi.markRead = originalMarkRead;
   }
 });
+
+test("a recovered Agent Conversation strips client capability overrides on every submit", async () => {
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGet = sessionApi.get;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const harness = await loadHarness();
+  const submissions: unknown[][] = [];
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async (sessionId) => ({
+    id: sessionId,
+    agent_id: sessionId === "session-agent" ? "agt_support" : "general-agent",
+    created_at: "2026-07-29T00:00:00Z",
+    updated_at: "2026-07-29T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: sessionId,
+    workspace_id: "default",
+    agent_id: sessionId === "session-agent" ? "agt_support" : "general-agent",
+    title: sessionId === "session-agent" ? "支持助手" : "普通会话",
+    agent_conversation:
+      sessionId === "session-agent"
+        ? {
+            agent_id: "agt_support",
+            revision: 7,
+            name: "支持助手",
+            description: "处理已授权的支持请求。",
+            avatar_ref: "builtin:assistant",
+            category: "support",
+          }
+        : null,
+  });
+  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.submitChat = (async (...args) => {
+    submissions.push(args);
+    return {
+      session_id: undefined,
+      run_id: null,
+      status: "needs_confirmation",
+      suggestions: [],
+    };
+  }) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-agent");
+    });
+    await settle(harness.act);
+
+    await harness.act(async () => {
+      assert.equal(
+        (
+          await harness.hook.sendMessage(
+            "bound first",
+            { model_id: "client-model" },
+            undefined,
+            {
+              skill_id: "client-skill",
+              expected_version: "client-version",
+            },
+            { agent_id: "forged-agent", expected_revision: 99 },
+          )
+        ).status,
+        "accepted",
+      );
+      assert.equal((await harness.hook.sendMessage("bound later")).status, "accepted");
+    });
+    await settle(harness.act);
+
+    assert.equal(submissions.length, 2);
+    for (const submission of submissions) {
+      assert.equal(submission[1], "session-agent");
+      assert.equal(submission[2], undefined, "model/Prompt options must be omitted");
+      assert.equal(submission[4], undefined, "Skill selectors must be omitted");
+      assert.equal(submission[6], undefined, "selected Skill must be omitted");
+      assert.equal(submission[9], undefined, "MCP selectors must be omitted");
+      assert.equal(submission[10], null, "the server session pin is authoritative");
+    }
+
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-generic");
+    });
+    await settle(harness.act);
+    await harness.act(async () => {
+      assert.equal(
+        (await harness.hook.sendMessage("generic after Agent", { model_id: "generic-model" }))
+          .status,
+        "accepted",
+      );
+    });
+    await settle(harness.act);
+
+    assert.equal(submissions.length, 3);
+    assert.equal(submissions[2]?.[1], "session-generic");
+    assert.deepEqual(submissions[2]?.[2], { model_id: "generic-model" });
+    assert.deepEqual(submissions[2]?.[4], []);
+    assert.equal(submissions[2]?.[10], null);
+  } finally {
+    await harness.cleanup();
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.get = originalGet;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
+  }
+});

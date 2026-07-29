@@ -4,6 +4,8 @@ import test from "node:test";
 
 import React from "react";
 
+import type { AgentProfilePublicProjection } from "../../../types/agentProfile.ts";
+
 register(new URL("./frontendAssetLoader.mjs", import.meta.url), import.meta.url);
 await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -447,18 +449,22 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
   const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const shellHarness = await prepareShellHarness();
-  const profiles = [
+  const profiles: Array<AgentProfilePublicProjection & Record<string, unknown>> = [
     {
       agent_id: "agt_support",
       expected_revision: 4,
       name: "支持助手",
       description: "已发布的支持服务。",
+      avatar_ref: "builtin:assistant",
+      category: "support",
     },
     {
       agent_id: "agt_finance",
       expected_revision: 2,
       name: "财务助手",
       description: "核对报销材料。",
+      avatar_ref: "builtin:document",
+      category: "operations",
       instructions: "PRIVATE_PROMPT",
       model_id: "private-model",
       mcp_tool_ids: ["private-mcp"],
@@ -469,10 +475,43 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
     },
   ];
   const originalListPublished = agentProfileApi.listPublished;
+  const originalGetPublished = agentProfileApi.getPublished;
+  const originalCreateConversation = agentProfileApi.createConversation;
   let catalogCalls = 0;
-  agentProfileApi.listPublished = async () => {
+  let catalogRequest: unknown;
+  agentProfileApi.listPublished = async (request) => {
     catalogCalls += 1;
+    catalogRequest = request;
     return { agent_profiles: profiles };
+  };
+  let detailCalls = 0;
+  agentProfileApi.getPublished = async (agentId) => {
+    detailCalls += 1;
+    const profile = profiles.find((item) => item.agent_id === agentId);
+    if (!profile) throw Object.assign(new Error("missing"), { status: 404 });
+    return profile;
+  };
+  const conversationSelections: unknown[] = [];
+  let admissionStatus = 403;
+  agentProfileApi.createConversation = async (selection) => {
+    conversationSelections.push(selection);
+    if (admissionStatus === 403) {
+      throw Object.assign(new Error("denied"), { status: 403 });
+    }
+    return {
+      session_id: "session-finance",
+      workspace_id: "default",
+      agent_id: "agt_finance",
+      title: "财务助手",
+      agent_conversation: {
+        agent_id: "agt_finance",
+        revision: 2,
+        name: "财务助手",
+        description: "核对报销材料。",
+        avatar_ref: "builtin:document",
+        category: "operations",
+      },
+    };
   };
   let currentPath = "";
   function LocationProbe() {
@@ -487,7 +526,7 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market?q=财务"] },
+          { initialEntries: ["/agent-market?q=财务&category=operations"] },
           shellHarness.wrap(
             React.createElement(
               React.Fragment,
@@ -504,6 +543,10 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
                   path: "/agent-market/:agentId/:revision",
                   element: React.createElement(AgentMarketRoute),
                 }),
+                React.createElement(Route, {
+                  path: "/chat/:sessionId",
+                  element: React.createElement("div", { "data-canonical-chat": true }),
+                }),
               ),
             ),
           ),
@@ -517,6 +560,7 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
     assert.ok(container.querySelector("[data-agent-market-search]"));
     assert.ok(container.querySelector("[data-agent-market-filter]"));
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    assert.deepEqual(catalogRequest, { query: "财务", category: "operations" });
     assert.ok(container.querySelector("[data-workbench-header]"), "market must render in AppShell");
     assert.ok(
       container.querySelector("[data-librechat-desktop-sidebar]"),
@@ -528,6 +572,7 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
     assert.equal(search.value, "财务");
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
     assert.match(container.textContent, /财务助手/);
+    assert.match(container.textContent, /运营效率/);
     assert.doesNotMatch(container.textContent, /支持助手/);
 
     const card = container
@@ -552,13 +597,32 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
       .querySelectorAll("button")
       .find((button) => button.hasAttribute("data-agent-market-start-chat"));
     assert.ok(startChat, "detail must expose an explicit start-chat command");
-    assert.equal(startChat.hasAttribute("disabled"), true);
-    assert.match(container.textContent, /对话服务暂不可用/);
+    assert.equal(startChat.hasAttribute("disabled"), false);
+    await React.act(async () => {
+      startChat.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     assert.equal(currentPath, "/agent-market/agt_finance/2");
-    assert.equal(container.querySelector("[data-canonical-chat]"), null);
-    assert.ok(catalogCalls >= 2, "detail navigation must re-authorize the exact catalog entry");
+    assert.match(container.textContent, /当前账号无权使用该智能体/);
+    admissionStatus = 200;
+    await React.act(async () => {
+      startChat.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.deepEqual(conversationSelections, [
+      { agent_id: "agt_finance", expected_revision: 2 },
+      { agent_id: "agt_finance", expected_revision: 2 },
+    ]);
+    assert.equal(currentPath, "/chat/session-finance");
+    assert.ok(container.querySelector("[data-canonical-chat]"));
+    assert.equal(catalogCalls, 1);
+    assert.equal(detailCalls, 1, "detail navigation must re-authorize the current publication");
   } finally {
     agentProfileApi.listPublished = originalListPublished;
+    agentProfileApi.getPublished = originalGetPublished;
+    agentProfileApi.createConversation = originalCreateConversation;
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }
@@ -571,16 +635,14 @@ test("a shared detail URL restores the exact current published revision", async 
   const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const shellHarness = await prepareShellHarness();
-  const originalListPublished = agentProfileApi.listPublished;
-  agentProfileApi.listPublished = async () => ({
-    agent_profiles: [
-      {
-        agent_id: "agt_support",
-        expected_revision: 4,
-        name: "支持助手",
-        description: "当前发布版本。",
-      },
-    ],
+  const originalGetPublished = agentProfileApi.getPublished;
+  agentProfileApi.getPublished = async () => ({
+    agent_id: "agt_support",
+    expected_revision: 4,
+    name: "支持助手",
+    description: "当前发布版本。",
+    avatar_ref: "builtin:assistant",
+    category: "support",
   });
   let currentPath = "";
   function LocationProbe() {
@@ -625,7 +687,7 @@ test("a shared detail URL restores the exact current published revision", async 
     assert.ok(container.querySelector("[data-workbench-header]"));
     assert.ok(container.querySelector("[data-librechat-desktop-sidebar]"));
   } finally {
-    agentProfileApi.listPublished = originalListPublished;
+    agentProfileApi.getPublished = originalGetPublished;
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }
@@ -638,16 +700,14 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
   const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const shellHarness = await prepareShellHarness();
-  const originalListPublished = agentProfileApi.listPublished;
-  agentProfileApi.listPublished = async () => ({
-    agent_profiles: [
-      {
-        agent_id: "agt_support",
-        expected_revision: 5,
-        name: "支持助手",
-        description: "更新后的发布版本。",
-      },
-    ],
+  const originalGetPublished = agentProfileApi.getPublished;
+  agentProfileApi.getPublished = async () => ({
+    agent_id: "agt_support",
+    expected_revision: 5,
+    name: "支持助手",
+    description: "更新后的发布版本。",
+    avatar_ref: "builtin:assistant",
+    category: "support",
   });
   let currentPath = "";
   function LocationProbe() {
@@ -693,7 +753,7 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
     assert.equal(container.querySelector("[data-agent-market-detail]"), null);
     assert.equal(container.querySelector("[data-canonical-chat]"), null);
   } finally {
-    agentProfileApi.listPublished = originalListPublished;
+    agentProfileApi.getPublished = originalGetPublished;
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }

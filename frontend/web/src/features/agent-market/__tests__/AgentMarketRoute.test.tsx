@@ -9,7 +9,12 @@ test("market stays in the production shell and resolves durable detail URLs", ()
     "utf8",
   );
 
-  assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\)/);
+  assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\{\s*query,\s*category\s*\}\)/);
+  assert.match(source, /agentProfileApi\s*\.\s*getPublished\(agentId\)/);
+  assert.match(source, /agentProfileApi\s*\.\s*createConversation\(\{/);
+  assert.match(source, /agent_id:\s*profile\.agent_id/);
+  assert.match(source, /expected_revision:\s*profile\.expected_revision/);
+  assert.match(source, /CANONICAL_CHAT_PATH.*session\.session_id/s);
   assert.match(source, /AppShell/);
   assert.match(source, /SessionSidebar/);
   assert.match(source, /mobileSidebarOpen/);

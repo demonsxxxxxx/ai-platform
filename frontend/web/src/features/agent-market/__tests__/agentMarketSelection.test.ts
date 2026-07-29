@@ -12,6 +12,8 @@ const profile = {
   expected_revision: 4,
   name: "支持助手",
   description: "已发布的支持服务。",
+  avatar_ref: "builtin:assistant" as const,
+  category: "support" as const,
 };
 
 test("market accepts only the exact published profile revision from its route", () => {
@@ -35,6 +37,8 @@ test("market search uses only current safe public name and description fields", 
       expected_revision: 2,
       name: "财务助手",
       description: "核对报销材料",
+      avatar_ref: "builtin:document" as const,
+      category: "operations" as const,
     },
   ];
 
