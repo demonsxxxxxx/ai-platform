@@ -492,20 +492,21 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
     return profile;
   };
   const conversationSelections: unknown[] = [];
-  let admissionStatus = 403;
+  let admissionResult: "denied" | "agent-mismatch" | "revision-mismatch" | "accepted" =
+    "denied";
   agentProfileApi.createConversation = async (selection) => {
     conversationSelections.push(selection);
-    if (admissionStatus === 403) {
+    if (admissionResult === "denied") {
       throw Object.assign(new Error("denied"), { status: 403 });
     }
     return {
       session_id: "session-finance",
       workspace_id: "default",
-      agent_id: "agt_finance",
+      agent_id: admissionResult === "agent-mismatch" ? "agt_other" : "agt_finance",
       title: "财务助手",
       agent_conversation: {
         agent_id: "agt_finance",
-        revision: 2,
+        revision: admissionResult === "revision-mismatch" ? 3 : 2,
         name: "财务助手",
         description: "核对报销材料。",
         avatar_ref: "builtin:document",
@@ -558,7 +559,24 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
 
     assert.ok(container.querySelector("[data-agent-market]"));
     assert.ok(container.querySelector("[data-agent-market-search]"));
-    assert.ok(container.querySelector("[data-agent-market-filter]"));
+    const categoryGroup = container.querySelector("[data-agent-market-filter]");
+    assert.ok(categoryGroup);
+    assert.equal(categoryGroup.getAttribute("role"), "group");
+    assert.equal(categoryGroup.getAttribute("aria-label"), "智能体分类");
+    assert.equal(categoryGroup.querySelectorAll('[role="tab"]').length, 0);
+    const categoryButtons = categoryGroup.querySelectorAll("button");
+    assert.equal(
+      categoryButtons.find((button) => button.textContent === "运营效率")?.getAttribute(
+        "aria-pressed",
+      ),
+      "true",
+    );
+    assert.equal(
+      categoryButtons.find((button) => button.textContent === "全部")?.getAttribute(
+        "aria-pressed",
+      ),
+      "false",
+    );
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
     assert.deepEqual(catalogRequest, { query: "财务", category: "operations" });
     assert.ok(container.querySelector("[data-workbench-header]"), "market must render in AppShell");
@@ -605,13 +623,33 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
     });
     assert.equal(currentPath, "/agent-market/agt_finance/2");
     assert.match(container.textContent, /当前账号无权使用该智能体/);
-    admissionStatus = 200;
+    admissionResult = "agent-mismatch";
+    await React.act(async () => {
+      startChat.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market/agt_finance/2");
+    assert.match(container.textContent, /发布版本已更新/);
+
+    admissionResult = "revision-mismatch";
+    await React.act(async () => {
+      startChat.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market/agt_finance/2");
+    assert.match(container.textContent, /发布版本已更新/);
+
+    admissionResult = "accepted";
     await React.act(async () => {
       startChat.dispatchEvent({ type: "click", bubbles: true });
       await Promise.resolve();
       await Promise.resolve();
     });
     assert.deepEqual(conversationSelections, [
+      { agent_id: "agt_finance", expected_revision: 2 },
+      { agent_id: "agt_finance", expected_revision: 2 },
       { agent_id: "agt_finance", expected_revision: 2 },
       { agent_id: "agt_finance", expected_revision: 2 },
     ]);

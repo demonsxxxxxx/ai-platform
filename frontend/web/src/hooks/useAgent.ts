@@ -692,7 +692,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // Keep sessionId/runId in ref for closure access
   const sessionIdRef = useRef<string | null>(null);
   const sessionAgentIdRef = useRef(DEFAULT_CHAT_AGENT_ID);
-  const agentConversationBoundRef = useRef(false);
+  const sessionAgentAuthorityRef = useRef<{
+    sessionId: string; profile: SelectedAgentProfileRequest | null;
+  } | null>(null);
   const currentRunIdRef = useRef<string | null>(null);
   const messagesRef = useRef<Message[]>([]);
   useEffect(() => {
@@ -842,6 +844,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       // skip reconciliation, reconnect, and transcript projection.
       historyLoadTokenRef.current += 1;
       sessionGenerationRef.current += 1;
+      sessionAgentAuthorityRef.current = null;
       streamVersionRef.current += 1;
       clearReconcileOwners();
       clearReconnectTimeout(reconnectTimeoutRef);
@@ -1321,7 +1324,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         mountedGenerationRef.current === mountedGeneration &&
         isCurrentHistoryLoad(historyLoadTokenRef, historyLoadToken);
       handoffActivePreAdmissionSubmission({ projectMessages: false });
-      agentConversationBoundRef.current = false;
+      sessionAgentAuthorityRef.current = null;
+      sessionIdRef.current = targetSessionId;
+      setSessionId(targetSessionId);
+      sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
+      setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
       streamVersionRef.current += 1;
@@ -1370,11 +1377,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         }
 
         if (sessionData) {
-          agentConversationBoundRef.current =
-            authoritativeSession.agent_conversation !== null;
-          sessionIdRef.current = targetSessionId;
-          setSessionId(targetSessionId);
           const loadedAgentId = sessionData.agent_id || DEFAULT_CHAT_AGENT_ID;
+          const identity = authoritativeSession.agent_conversation;
+          const invalidAuthoritativeIdentity =
+            authoritativeSession.session_id !== targetSessionId ||
+            authoritativeSession.agent_id !== loadedAgentId ||
+            (identity !== null && identity.agent_id !== loadedAgentId);
+          if (invalidAuthoritativeIdentity)
+            throw new Error("agent_conversation_identity_mismatch");
+          const recoveredProfile = identity
+            ? { agent_id: identity.agent_id, expected_revision: identity.revision }
+            : null;
           sessionAgentIdRef.current = loadedAgentId;
           setSessionAgentId(loadedAgentId);
 
@@ -1652,10 +1665,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           // Return sessionConfig *before* any SSE reconnect so that the
           // caller can immediately restore model selection / agent / config.
 
+          sessionAgentAuthorityRef.current = { sessionId: targetSessionId, profile: recoveredProfile };
           return sessionConfig;
         }
       } catch {
         if (isCurrentHistoryLoadRequest()) {
+          sessionAgentAuthorityRef.current = null;
           console.error("[loadHistory] Failed to load session");
           setError(i18n.t("chat.requestFailed"));
         }
@@ -1789,6 +1804,23 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         );
         return { status: "failed" };
       }
+      const requestSessionId = sessionIdRef.current;
+      const requestAgentId = sessionAgentIdRef.current;
+      const sessionAuthority = sessionAgentAuthorityRef.current;
+      const invalidSessionAuthority =
+        requestSessionId !== null &&
+        (sessionAuthority?.sessionId !== requestSessionId ||
+          (sessionAuthority.profile !== null &&
+            sessionAuthority.profile.agent_id !== requestAgentId));
+      if (invalidSessionAuthority) {
+        setError(i18n.t("chat.requestFailed"));
+        return { status: "failed" };
+      }
+      const selectedAgentProfileForRequest = requestSessionId
+        ? sessionAuthority?.profile ?? null
+        : selectedAgentProfile ?? null;
+      const isBoundAgentConversation =
+        requestSessionId !== null && selectedAgentProfileForRequest !== null;
       // A new user submission replaces the parent run before it can mutate
       // optimistic transcript state or issue its POST. This fences a pending
       // retry/resume owner from starting while the next chat admission is open.
@@ -1797,13 +1829,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const submissionToken = ++submissionTokenRef.current;
       const mountedGeneration = mountedGenerationRef.current;
       const requestSessionGeneration = sessionGenerationRef.current;
-      const requestSessionId = sessionIdRef.current;
-      const requestAgentId = sessionAgentIdRef.current;
-      const isBoundAgentConversation =
-        requestSessionId !== null && agentConversationBoundRef.current;
-      const selectedAgentProfileForRequest = isBoundAgentConversation
-        ? null
-        : selectedAgentProfile ?? null;
       streamVersionRef.current += 1;
       clearReconcileOwners();
       statusRetryCountRef.current = 0;
@@ -2040,6 +2065,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         if (!requestSessionId && newSessionId) {
           sessionIdRef.current = newSessionId;
           setSessionId(newSessionId);
+          if (selectedAgentProfileForRequest === null)
+            sessionAgentAuthorityRef.current = { sessionId: newSessionId, profile: null };
           const now = new Date().toISOString();
 
           // 构建完整的对话配置
@@ -2312,7 +2339,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     clearReconcileOwners();
     setMessages([]);
     setConfirmationRecovery(null);
-    agentConversationBoundRef.current = false;
+    sessionAgentAuthorityRef.current = null;
     setSessionId(null);
     sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);

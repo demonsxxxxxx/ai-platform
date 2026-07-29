@@ -26,12 +26,7 @@ interface LoadState<T> {
 type CatalogState = LoadState<readonly AgentProfilePublicProjection[]>;
 type DetailState = LoadState<AgentProfilePublicProjection | null>;
 
-function loadState<T>(
-  key: string,
-  value: T,
-  phase: LoadPhase = "loading",
-  error: string | null = null,
-): LoadState<T> {
+function loadState<T>(key: string, value: T, phase: LoadPhase = "loading", error: string | null = null): LoadState<T> {
   return { key, phase, value, error };
 }
 
@@ -147,9 +142,7 @@ function usePublishedAgentCatalog(
   enabled: boolean,
 ) {
   const [retry, setRetry] = useState(0);
-  const [catalog, setCatalog] = useState<CatalogState>(() =>
-    loadState(catalogKey, []),
-  );
+  const [catalog, setCatalog] = useState<CatalogState>(() => loadState(catalogKey, []));
 
   useEffect(() => {
     if (!enabled) return;
@@ -165,16 +158,11 @@ function usePublishedAgentCatalog(
         if (active)
           setCatalog(loadState(catalogKey, [], "error", MARKET_CATALOG_LOAD_ERROR));
       });
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [catalogKey, enabled, category, query, retry]);
 
   const refresh = useCallback(() => setRetry((current) => current + 1), []);
-  return {
-    catalog: catalog.key === catalogKey ? catalog : loadState(catalogKey, []),
-    refresh,
-  };
+  return { catalog: catalog.key === catalogKey ? catalog : loadState(catalogKey, []), refresh };
 }
 
 function getErrorStatus(error: unknown): number | undefined {
@@ -190,9 +178,7 @@ function usePublishedAgentDetail(
   enabled: boolean,
 ) {
   const [retry, setRetry] = useState(0);
-  const [detail, setDetail] = useState<DetailState>(() =>
-    loadState(detailKey, null),
-  );
+  const [detail, setDetail] = useState<DetailState>(() => loadState(detailKey, null));
 
   useEffect(() => {
     if (!enabled) return;
@@ -222,16 +208,11 @@ function usePublishedAgentDetail(
             : loadState(detailKey, null, "error", MARKET_CATALOG_LOAD_ERROR),
         );
       });
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [agentId, detailKey, enabled, retry, revision]);
 
   const refresh = useCallback(() => setRetry((current) => current + 1), []);
-  return {
-    detail: detail.key === detailKey ? detail : loadState(detailKey, null),
-    refresh,
-  };
+  return { detail: detail.key === detailKey ? detail : loadState(detailKey, null), refresh };
 }
 
 function CatalogError({ error, refresh }: { error: string; refresh: () => void }) {
@@ -378,11 +359,11 @@ function AgentMarketCatalog({
               data-agent-market-filter
               aria-label="智能体分类"
               className="flex max-w-full flex-wrap items-center gap-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-1 text-sm"
-              role="tablist"
+              role="group"
             >
               {MARKET_CATEGORIES.map((category) => (
                 <button
-                  aria-selected={activeCategory === category.value}
+                  aria-pressed={activeCategory === category.value}
                   className={`min-h-8 rounded-md px-2.5 text-xs transition-colors ${
                     activeCategory === category.value
                       ? "bg-[var(--theme-primary)] text-white"
@@ -390,7 +371,6 @@ function AgentMarketCatalog({
                   }`}
                   key={category.value}
                   onClick={() => handleCategory(category.value)}
-                  role="tab"
                   type="button"
                 >
                   {category.label}
@@ -456,6 +436,7 @@ function AgentMarketDetail({ profile }: { profile: AgentProfilePublicProjection 
       const identity = session.agent_conversation;
       if (
         !identity ||
+        session.agent_id !== profile.agent_id ||
         identity.agent_id !== profile.agent_id ||
         identity.revision !== profile.expected_revision ||
         !session.session_id

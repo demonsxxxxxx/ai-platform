@@ -380,7 +380,7 @@ test("generic Chat never inherits an Agent Market binding", async () => {
   }
 });
 
-test("a recovered Agent Conversation strips client capability overrides on every submit", async () => {
+test("a recovered Agent Conversation owns every exact selector and fails closed", async () => {
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const originalMarkRead = sessionApi.markRead;
@@ -390,31 +390,42 @@ test("a recovered Agent Conversation strips client capability overrides on every
   const harness = await loadHarness();
   const submissions: unknown[][] = [];
   sessionApi.markRead = async () => {};
+  let authoritativeMode: "current" | "agent-mismatch" | "rejected" = "current";
   sessionApi.get = async (sessionId) => ({
     id: sessionId,
-    agent_id: sessionId === "session-agent" ? "agt_support" : "general-agent",
+    agent_id: sessionId.startsWith("session-agent") ? "agt_support" : "general-agent",
     created_at: "2026-07-29T00:00:00Z",
     updated_at: "2026-07-29T00:00:00Z",
     is_active: true,
     metadata: {},
   });
-  sessionApi.getAuthoritative = async (sessionId) => ({
-    session_id: sessionId,
-    workspace_id: "default",
-    agent_id: sessionId === "session-agent" ? "agt_support" : "general-agent",
-    title: sessionId === "session-agent" ? "支持助手" : "普通会话",
-    agent_conversation:
-      sessionId === "session-agent"
+  sessionApi.getAuthoritative = async (sessionId) => {
+    if (authoritativeMode === "rejected") {
+      throw Object.assign(new Error("stale"), { status: 409 });
+    }
+    const isAgentSession = sessionId.startsWith("session-agent");
+    return {
+      session_id: sessionId,
+      workspace_id: "default",
+      agent_id:
+        authoritativeMode === "agent-mismatch"
+          ? "agt_other"
+          : isAgentSession
+            ? "agt_support"
+            : "general-agent",
+      title: isAgentSession ? "支持助手" : "普通会话",
+      agent_conversation: isAgentSession
         ? {
             agent_id: "agt_support",
             revision: 7,
             name: "支持助手",
             description: "处理已授权的支持请求。",
             avatar_ref: "builtin:assistant",
-            category: "support",
+            category: "support" as const,
           }
         : null,
-  });
+    };
+  };
   sessionApi.getEvents = async () => ({ events: [] });
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);
@@ -459,7 +470,10 @@ test("a recovered Agent Conversation strips client capability overrides on every
       assert.equal(submission[4], undefined, "Skill selectors must be omitted");
       assert.equal(submission[6], undefined, "selected Skill must be omitted");
       assert.equal(submission[9], undefined, "MCP selectors must be omitted");
-      assert.equal(submission[10], null, "the server session pin is authoritative");
+      assert.deepEqual(submission[10], {
+        agent_id: "agt_support",
+        expected_revision: 7,
+      });
     }
 
     await harness.act(async () => {
@@ -468,8 +482,15 @@ test("a recovered Agent Conversation strips client capability overrides on every
     await settle(harness.act);
     await harness.act(async () => {
       assert.equal(
-        (await harness.hook.sendMessage("generic after Agent", { model_id: "generic-model" }))
-          .status,
+        (
+          await harness.hook.sendMessage(
+            "generic after Agent",
+            { model_id: "generic-model" },
+            undefined,
+            null,
+            { agent_id: "forged-agent", expected_revision: 99 },
+          )
+        ).status,
         "accepted",
       );
     });
@@ -480,6 +501,22 @@ test("a recovered Agent Conversation strips client capability overrides on every
     assert.deepEqual(submissions[2]?.[2], { model_id: "generic-model" });
     assert.deepEqual(submissions[2]?.[4], []);
     assert.equal(submissions[2]?.[10], null);
+
+    authoritativeMode = "agent-mismatch";
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-agent-mismatch");
+      assert.equal((await harness.hook.sendMessage("must not submit mismatch")).status, "failed");
+    });
+    await settle(harness.act);
+    assert.equal(submissions.length, 3);
+
+    authoritativeMode = "rejected";
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-agent-stale");
+      assert.equal((await harness.hook.sendMessage("must not submit stale")).status, "failed");
+    });
+    await settle(harness.act);
+    assert.equal(submissions.length, 3);
   } finally {
     await harness.cleanup();
     sessionApi.submitChat = originalSubmitChat;
