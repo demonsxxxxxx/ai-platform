@@ -23,7 +23,6 @@ from app.context_retrieval import (
 )
 from app.control_plane_contracts import (
     artifact_lineage_contract,
-    sanitize_public_text,
     standard_trace_id,
 )
 from app.db import transaction
@@ -40,6 +39,7 @@ from app.executors.base import (
     RunPayload,
 )
 from app.executors.claude_agent_sdk_runner import (
+    CapabilityExecutionPlan,
     ClaudeAgentSdkRunResult,
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
@@ -58,6 +58,7 @@ from app.file_parser_contracts import (
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.required_tool_contract import (
+    RequiredCapabilityDecision,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     RequiredToolContractError,
@@ -145,67 +146,64 @@ async def _emit_public_progress_event(
     )
 
 
-def _external_mcp_subjects(payload: RunPayload) -> list[dict[str, str]]:
-    """Return the public projection of worker-authorized external MCP subjects."""
+def _capability_completion_decision(
+    plan: CapabilityExecutionPlan, *, binding: dict[str, object], evidence: object
+) -> RequiredCapabilityDecision:
+    """Validate every observed invocation and each explicit requirement."""
 
-    raw_subjects = payload.input.get("_runtime_tool_policy_subjects")
-    if not isinstance(raw_subjects, list):
-        return []
-    subjects: list[dict[str, str]] = []
-    for raw in raw_subjects:
-        if not isinstance(raw, dict):
-            continue
-        server_id = str(raw.get("mcp_server") or "")
-        tool_name = str(raw.get("mcp_tool") or "")
-        identity = str(raw.get("identity") or "")
-        authorized = all(
-            raw.get(field) is True
-            for field in (
-                "registered",
-                "declared",
-                "active",
-                "distributed",
-                "identity_authorized",
-                "object_authorized",
-                "parameters_authorized",
+    mismatch = RequiredCapabilityDecision(False, "required_tool_completion_evidence_mismatch", "", "")
+    if not isinstance(evidence, list):
+        return mismatch
+    try:
+        records = [RequiredCapabilityEvidence.from_payload(item) for item in evidence]
+    except RequiredToolContractError:
+        return mismatch
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    call_owners: dict[str, tuple[str, str]] = {}
+    for record in records:
+        key = (record.capability_kind, record.canonical_identity)
+        call_id = record.tool_call_id
+        if key not in plan.available or not isinstance(call_id, str) or not call_id:
+            return mismatch
+        if call_owners.setdefault(call_id, key) != key:
+            return mismatch
+        groups.setdefault((*key, call_id), []).append(asdict(record))
+    for (capability_kind, canonical_identity, _call_id), invocation in groups.items():
+        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind=capability_kind,
+            canonical_identity=canonical_identity,
+        )
+        decision = selected_capability_completion_decision(
+            declarations=[declaration],
+            binding=binding,
+            evidence=invocation,
+        )
+        if not decision.allowed:
+            return decision
+    for declaration in plan.required:
+        match_count = sum(
+            key[:2] == (declaration.capability_kind, declaration.canonical_identity)
+            for key in groups
+        )
+        if not match_count:
+            return selected_capability_completion_decision(
+                declarations=[declaration], binding=binding, evidence=[]
             )
-        )
-        if (
-            not authorized
-            or not server_id
-            or server_id == "ai-platform-context"
-            or not tool_name
-            or identity != f"mcp__{server_id}__{tool_name}"
-        ):
-            continue
-        label = sanitize_public_text(raw.get("public_tool_label"))[:120]
-        subjects.append(
-            {
-                "identity": identity,
-                "label": label or "MCP tool",
-                "category": "mcp",
-            }
-        )
-    return subjects
+        if match_count != 1:
+            return mismatch
+    reason = "required_tool_completion_evidence_valid" if plan.required or groups else "required_capability_not_selected"
+    return RequiredCapabilityDecision(True, reason, "", "")
 
 
-def _selected_capability_invocation_error(payload: RunPayload, evidence: object) -> str | None:
-    """Delegate exact selected Skill/MCP sequence validation to the deep seam."""
+def _capability_execution_error(payload: RunPayload, evidence: object) -> str | None:
+    """Validate required Skill and only the MCP invocations that actually occurred."""
 
-    declarations = [
-        RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind="mcp",
-            canonical_identity=subject["identity"],
-        )
-        for subject in _external_mcp_subjects(payload)
-    ]
-    if payload.skill_id != "general-chat":
-        declarations.insert(0, RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind="skill", canonical_identity=payload.skill_id))
-    if not declarations:
-        return None
-    decision = selected_capability_completion_decision(
-        declarations=declarations,
+    plan = CapabilityExecutionPlan.from_tool_policy_subjects(
+        payload.input.get("_runtime_tool_policy_subjects"),
+        required_skill_identity=payload.skill_id if payload.skill_id != "general-chat" else None,
+    )
+    decision = _capability_completion_decision(
+        plan,
         binding={
             "tenant_id": payload.tenant_id,
             "workspace_id": payload.workspace_id,
@@ -216,12 +214,7 @@ def _selected_capability_invocation_error(payload: RunPayload, evidence: object)
         },
         evidence=evidence,
     )
-    if not decision.allowed:
-        return decision.reason
-    capability_call_ids = {item["tool_call_id"] for item in evidence}
-    if len(capability_call_ids) != len(declarations):
-        return "required_tool_completion_evidence_mismatch"
-    return None
+    return None if decision.allowed else decision.reason
 
 
 @dataclass(frozen=True)
@@ -284,7 +277,12 @@ def _execution_boundary_decision(payload: RunPayload) -> ExecutionBoundaryDecisi
         executor_type=CLAUDE_WORKER_EXECUTOR,
         execution_mode=str(payload.input.get("execution_mode") or ""),
         execution_tier=_execution_tier(payload),
-        mcp_requires_sandbox=bool(_external_mcp_subjects(payload)),
+        mcp_requires_sandbox=any(
+            kind == "mcp"
+            for kind, _identity in CapabilityExecutionPlan.from_tool_policy_subjects(
+                payload.input.get("_runtime_tool_policy_subjects")
+            ).available
+        ),
     )
 
 
@@ -1587,7 +1585,7 @@ class ClaudeAgentWorkerAdapter:
                 else []
             ),
         }
-        selected_capability_error = _selected_capability_invocation_error(
+        selected_capability_error = _capability_execution_error(
             payload,
             common_payload["capability_evidence"],
         )
@@ -1606,7 +1604,7 @@ class ClaudeAgentWorkerAdapter:
                 executor_version=self.executor_version,
                 capabilities={**self.capabilities, "platform_skills": True},
                 result={
-                    "message": "The selected capability did not complete its required Skill execution. Please retry.",
+                    "message": "Capability execution evidence was incomplete. Please retry.",
                     "error_code": selected_capability_error,
                     "sdk_used": bool(executor_response.get("sdk_used")),
                     "sdk_session_id": executor_response.get("sdk_session_id"),
@@ -1810,7 +1808,7 @@ class ClaudeAgentWorkerAdapter:
                 used_skill_names=used_skill_names,
                 pins=prepared.pinned_manifests,
             )
-            selected_skill_error = _selected_capability_invocation_error(
+            selected_skill_error = _capability_execution_error(
                 payload,
                 getattr(sdk_result, "capability_evidence", None),
             )
@@ -1829,7 +1827,7 @@ class ClaudeAgentWorkerAdapter:
                     executor_version=self.executor_version,
                     capabilities={**self.capabilities, "platform_skills": True},
                     result={
-                        "message": "The selected capability did not complete its required Skill execution. Please retry.",
+                        "message": "Capability execution evidence was incomplete. Please retry.",
                         "error_code": selected_skill_error,
                         "sdk_used": True,
                         "sdk_session_id": sdk_result.session_id,
