@@ -314,7 +314,21 @@ class PrePushReadiness:
         head_worktree: Path,
         shared_test_suites: Sequence[str],
     ) -> _ResponsibilityPlan:
-        changed = self._run(("git", "diff", "--name-status", "--find-renames=50%", base, head, "--"), self._repo_root)
+        # Include unchanged source blobs so copied exception files retain C* status.
+        changed = self._run(
+            (
+                "git",
+                "diff",
+                "--name-status",
+                "--find-renames=50%",
+                "--find-copies=50%",
+                "--find-copies-harder",
+                base,
+                head,
+                "--",
+            ),
+            self._repo_root,
+        )
         if changed.returncode != 0:
             raise ReadinessError("infrastructure_failure", "git_failed", _command_failure("git diff --name-status", changed))
         selected: set[str] = set()
@@ -334,7 +348,7 @@ class PrePushReadiness:
                 frontend = True
                 continue
             if status in {"A", "M"} and path == CODE_GOVERNANCE_EXCEPTION_PATH:
-                if (head_worktree / CODE_GOVERNANCE_TEST_PATH).is_file():
+                if self._git_tree_has_exact_file(head, CODE_GOVERNANCE_TEST_PATH):
                     selected.add(CODE_GOVERNANCE_TEST_PATH)
                     continue
                 unowned_paths.append(path)
@@ -387,6 +401,13 @@ class PrePushReadiness:
                 f"bounded responsibility suite selected {len(tests)} tests, limit is {MAX_RESPONSIBILITY_TESTS}",
             )
         return _ResponsibilityPlan(tests=tests, frontend=frontend)
+
+    def _git_tree_has_exact_file(self, head: str, path: str) -> bool:
+        membership = self._run(("git", "cat-file", "-e", f"{head}:{path}"), self._repo_root)
+        if membership.returncode != 0:
+            return False
+        object_type = self._run(("git", "cat-file", "-t", f"{head}:{path}"), self._repo_root)
+        return object_type.returncode == 0 and object_type.stdout.strip() == "blob"
 
     def _run_responsibility_tests(
         self,

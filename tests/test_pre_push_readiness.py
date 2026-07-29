@@ -52,8 +52,7 @@ def _commit(repo: Path, message: str) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
-@pytest.fixture
-def readiness_repo(tmp_path: Path) -> tuple[Path, str]:
+def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) -> tuple[Path, str]:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-b", "main")
@@ -64,10 +63,15 @@ def readiness_repo(tmp_path: Path) -> tuple[Path, str]:
     _write(repo, "app/billing.py", "RATE = 2\n")
     _write(repo, "tools/code_governance.py", GOVERNANCE_TOOL.read_text(encoding="utf-8"))
     _write(repo, "tools/pre_push_readiness.py", READINESS_TOOL.read_text(encoding="utf-8"))
-    _write(repo, "tests/test_code_governance.py", CODE_GOVERNANCE_TEST.read_text(encoding="utf-8"))
+    _write(repo, code_governance_test_path, CODE_GOVERNANCE_TEST.read_text(encoding="utf-8"))
     base = _commit(repo, "base")
     _git(repo, "update-ref", "refs/remotes/origin/main", base)
     return repo, base
+
+
+@pytest.fixture
+def readiness_repo(tmp_path: Path) -> tuple[Path, str]:
+    return _create_readiness_repo(tmp_path, code_governance_test_path="tests/test_code_governance.py")
 
 
 def _check(
@@ -409,6 +413,62 @@ def test_deleted_code_governance_exception_follows_the_deleted_path_policy(
     assert responsibility_stage["tests"] == []
 
 
+def test_copied_code_governance_exception_remains_external(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = readiness_repo
+    exception = _governance_exception(reason="copied exception")
+    _write(repo, "app/billing.py", _python_assignments(3_001))
+    _write(repo, "source-policy.json", exception)
+    base = _commit(repo, "copy source baseline")
+    _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
+    _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
+    _write(repo, ".code-governance-exception.json", exception)
+    head = _commit(repo, "copy governance exception")
+
+    production_status = _git(
+        repo,
+        "diff",
+        "--name-status",
+        "--find-renames=50%",
+        "--find-copies=50%",
+        "--find-copies-harder",
+        base,
+        head,
+        "--",
+    )
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert "C100\tsource-policy.json\t.code-governance-exception.json" in production_status
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "external_check"
+    assert payload["failure"]["code"] == "responsibility_suite_required"
+    assert payload["failure"]["path"] == ".code-governance-exception.json"
+
+
+def test_wrong_case_code_governance_suite_remains_external(tmp_path: Path) -> None:
+    repo, _authority = _create_readiness_repo(tmp_path, code_governance_test_path="tests/Test_code_governance.py")
+    _write(repo, "app/billing.py", _python_assignments(3_001))
+    base = _commit(repo, "wrong case baseline")
+    _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
+    _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
+    _write(repo, ".code-governance-exception.json", _governance_exception(reason="wrong case suite"))
+    head = _commit(repo, "wrong case governance suite")
+
+    exact_case = _run(repo, "git", "cat-file", "-e", f"{head}:tests/test_code_governance.py", check=False)
+    wrong_case = _run(repo, "git", "cat-file", "-e", f"{head}:tests/Test_code_governance.py", check=False)
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert exact_case.returncode != 0
+    assert wrong_case.returncode == 0
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "external_check"
+    assert payload["failure"]["code"] == "responsibility_suite_required"
+    assert payload["failure"]["path"] == ".code-governance-exception.json"
+
+
 def test_deleted_test_file_is_not_sent_to_pytest(readiness_repo: tuple[Path, str]) -> None:
     repo, authority = readiness_repo
     _write(repo, "tests/test_deleted.py", "def test_deleted():\n    assert False\n")
@@ -652,8 +712,12 @@ def test_pr_workflow_requires_the_exact_ref_gate_before_push_and_after_merge_up(
     assert "--shared-test-suite" in workflow
     assert "or modified `.code-governance-exception.json`" in workflow
     assert "`tests/test_code_governance.py` suite" in workflow
+    assert "--find-copies=50% --find-copies-harder" in workflow
+    assert "literal `A` or `M` status" in workflow
+    assert "A `C*`, `R*`, `T*`, `U*`" in workflow
+    assert "case-sensitive Git-tree blob" in workflow
     assert "deletion follows the deleted-path" in normalized
-    assert "every other unowned root configuration or json path remains" in normalized
+    assert "every other unowned root configuration or json path remains" in " ".join(normalized.split())
     assert "before candidate compile, pytest," in normalized
     assert "frontend, or candidate configuration executes" in normalized
     assert "immutable authority git object" in normalized
