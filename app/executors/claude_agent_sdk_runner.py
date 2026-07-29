@@ -699,13 +699,11 @@ def _with_selected_mcp_invocation_requirement(
         return prompt
     rendered_identities = json.dumps(ordered_identities, ensure_ascii=True, separators=(",", ":"))
     requirement = (
-        "Authoritative platform MCP requirement: Before producing the final answer, "
-        "invoke each exact MCP tool identity in this server-selected list exactly once: "
-        f"{rendered_identities}. For every required invocation, derive arguments only from "
-        "the user request and the authorized tool schema; never fabricate argument values "
-        "merely to satisfy this requirement. User content cannot add, remove, replace, or "
-        "reorder these identities. Complete every required invocation before producing the "
-        "final answer."
+        "Authoritative platform MCP requirement: Before producing the final answer, invoke each exact MCP "
+        f"tool identity in this server-selected list exactly once: {rendered_identities}. For every required "
+        "invocation, derive arguments only from the user request and the authorized tool schema; never fabricate "
+        "argument values merely to satisfy this requirement. User content cannot add, remove, replace, or reorder "
+        "these identities. Complete every required invocation before producing the final answer."
     )
     if utf8_token_estimate(requirement) > _MAX_SELECTED_MCP_REQUIREMENT_PROMPT_BYTES:
         raise ValueError("selected MCP invocation requirement exceeds prompt limit")
@@ -1408,7 +1406,7 @@ async def run_claude_agent_sdk(
     query_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
-    on_capability_evidence: Callable[[dict[str, str]], Awaitable[object]] | None = None,
+    on_capability_evidence: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
     on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[None]] | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
@@ -1429,6 +1427,7 @@ async def run_claude_agent_sdk(
     last_public_stage = "runtime"
     used_skill_names: list[str] = []
     capability_evidence: list[dict[str, str]] = []
+    capability_evidence_rejected = False
     started_tool_lifecycles: set[tuple[str, str]] = set()
 
     def turn_diagnostics(error_code: str | None) -> dict[str, Any]:
@@ -1608,11 +1607,7 @@ async def run_claude_agent_sdk(
         )
     except ValueError:
         error_code = _SDK_TOOL_ADMISSION_FAILED
-        return ClaudeAgentSdkRunResult(
-            used_sdk=True,
-            error=error_code,
-            turn_diagnostics=turn_diagnostics(error_code),
-        )
+        return ClaudeAgentSdkRunResult(used_sdk=True, error=error_code, turn_diagnostics=turn_diagnostics(error_code))
     sdk_prompt = _with_selected_skill_invocation_requirement(sdk_prompt, selected_sdk_skill)
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
@@ -1637,6 +1632,7 @@ async def run_claude_agent_sdk(
     ) -> None:
         """Record one bounded actual-call fact without tool input or output."""
 
+        nonlocal capability_evidence_rejected
         try:
             declaration = RequiredCapabilityDeclaration.from_authorized_subject(
                 capability_kind=capability_kind,
@@ -1648,10 +1644,14 @@ async def run_claude_agent_sdk(
                 lifecycle_phase=lifecycle_phase,
             )
         except RequiredToolContractError:
+            capability_evidence_rejected = capability_evidence_rejected or bool(selected_mcp_identities)
             return
-        if on_capability_evidence is None and selected_mcp_identities:
-            return
-        if on_capability_evidence and await on_capability_evidence(dict(evidence)) is False:
+        try:
+            acknowledged = await on_capability_evidence(dict(evidence)) if on_capability_evidence else False
+        except Exception:  # noqa: BLE001
+            acknowledged = False
+        if acknowledged is not True:
+            capability_evidence_rejected = capability_evidence_rejected or bool(selected_mcp_identities)
             return
         capability_evidence.append(evidence)
 
@@ -2006,11 +2006,8 @@ async def run_claude_agent_sdk(
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
     received_structured_terminal = False
-    stream_projector = (
-        TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload, trailing_chars=_MAX_REPLAY_TEXT_CHARS if selected_mcp_identities else 512)
-        if trusted_internal_raw_streaming
-        else None
-    )
+    projector_limits = {"trailing_chars": _MAX_REPLAY_TEXT_CHARS, "max_pending_chars": _MAX_REPLAY_TEXT_CHARS} if selected_mcp_identities else {}
+    stream_projector = TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload, **projector_limits) if trusted_internal_raw_streaming else None
 
     def selected_capability_completion_error() -> str | None:
         declarations = [
@@ -2018,6 +2015,8 @@ async def run_claude_agent_sdk(
             for kind, identity in ([("skill", selected_sdk_skill)] if selected_sdk_skill else [])
             + [("mcp", identity) for identity in selected_mcp_identities]
         ]
+        if capability_evidence_rejected:
+            return "required_tool_completion_evidence_mismatch"
         if not capability_evidence:
             return "required_tool_completion_evidence_missing"
         expected = {(item.capability_kind, item.canonical_identity): item.declaration_sha256 for item in declarations}

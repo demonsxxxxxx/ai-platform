@@ -248,7 +248,7 @@ def _stream_steps(text, *, index=0):
 
 
 async def _acknowledge_capability_evidence(_evidence):
-    return None
+    return True
 
 
 @pytest.mark.asyncio
@@ -725,8 +725,11 @@ async def test_sdk_incomplete_or_failed_selected_mcp_evidence_leaks_no_candidate
 @pytest.mark.parametrize(
     ("callback_outcome", "expected_error"),
     [
-        ("raise", "claude_agent_sdk_upstream_error"),
-        ("reject", "required_tool_completion_evidence_mismatch"),
+        ("raise", "required_tool_completion_evidence_mismatch"),
+        (False, "required_tool_completion_evidence_mismatch"),
+        (None, "required_tool_completion_evidence_mismatch"),
+        (1, "required_tool_completion_evidence_mismatch"),
+        ("malformed", "required_tool_completion_evidence_mismatch"),
     ],
 )
 async def test_sdk_rejected_capability_callback_fact_never_becomes_completion_evidence_or_text(
@@ -755,8 +758,8 @@ async def test_sdk_rejected_capability_callback_fact_never_becomes_completion_ev
         if evidence["lifecycle_phase"] == "completed":
             if callback_outcome == "raise":
                 raise RuntimeError("private callback rejection")
-            return False
-        return None
+            return callback_outcome
+        return True
 
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps))
     monkeypatch.setattr(
@@ -782,6 +785,167 @@ async def test_sdk_rejected_capability_callback_fact_never_becomes_completion_ev
     assert result.message == ""
     assert deltas == []
     assert "private callback rejection" not in str(result.turn_diagnostics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("late_hook", "late_call_id"),
+    [
+        ("PreToolUse", "mcp-call-1"),
+        ("PostToolUseFailure", "mcp-call-1"),
+        ("PostToolUse", "mcp-call-2"),
+    ],
+)
+async def test_sdk_rejected_late_fact_stays_sticky_after_valid_selected_mcp_pair(
+    monkeypatch,
+    tmp_path,
+    late_hook,
+    late_call_id,
+):
+    captured = {}
+    deltas = []
+    callback_phases = []
+    subject = _subject()
+    first = {
+        "tool_name": subject["identity"],
+        "tool_use_id": "mcp-call-1",
+        "tool_input": {"private": "safe-synthetic-value"},
+    }
+    late = {**first, "tool_use_id": late_call_id}
+    steps = [
+        *_stream_steps("sealed candidate"),
+        ("hook", ("PreToolUse", first, "mcp-call-1")),
+        ("hook", ("PostToolUse", first, "mcp-call-1")),
+        ("hook", (late_hook, late, late_call_id)),
+    ]
+
+    async def reject_late_fact(evidence):
+        callback_phases.append(evidence["lifecycle_phase"])
+        return len(callback_phases) < 3
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_text=deltas.append,
+        on_capability_evidence=reject_late_fact,
+    )
+
+    assert callback_phases[:2] == ["invocation_requested", "completed"]
+    assert [item["lifecycle_phase"] for item in result.capability_evidence] == callback_phases[:2]
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.message == ""
+    assert deltas == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_rejected_initial_fact_cannot_be_repaired_by_later_valid_pair(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    deltas = []
+    callback_phases = []
+    subject = _subject()
+    first = {
+        "tool_name": subject["identity"],
+        "tool_use_id": "mcp-call-1",
+        "tool_input": {"private": "safe-synthetic-value"},
+    }
+    later = {**first, "tool_use_id": "mcp-call-2"}
+    steps = [
+        *_stream_steps("sealed candidate"),
+        ("hook", ("PreToolUse", first, "mcp-call-1")),
+        ("hook", ("PreToolUse", later, "mcp-call-2")),
+        ("hook", ("PostToolUse", later, "mcp-call-2")),
+    ]
+
+    async def reject_initial_fact(evidence):
+        callback_phases.append(evidence["lifecycle_phase"])
+        return len(callback_phases) > 1
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_text=deltas.append,
+        on_capability_evidence=reject_initial_fact,
+    )
+
+    assert callback_phases == ["invocation_requested", "invocation_requested", "completed"]
+    assert {item["tool_call_id"] for item in result.capability_evidence} == {"mcp-call-2"}
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.message == ""
+    assert deltas == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_cross_capability_call_id_rejection_stays_sticky_after_fresh_valid_pairs(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    deltas = []
+    owners = {}
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "shared-call",
+        "tool_input": {"skill": "qa-review"},
+    }
+    mcp_shared = {
+        "tool_name": "mcp__tenant-server__search",
+        "tool_use_id": "shared-call",
+        "tool_input": {"private": "safe-synthetic-value"},
+    }
+    mcp_fresh = {**mcp_shared, "tool_use_id": "mcp-call-2"}
+    steps = [
+        *_stream_steps("sealed candidate"),
+        ("hook", ("PreToolUse", skill_input, "shared-call")),
+        ("hook", ("PostToolUse", skill_input, "shared-call")),
+        ("hook", ("PreToolUse", mcp_shared, "shared-call")),
+        ("hook", ("PreToolUse", mcp_fresh, "mcp-call-2")),
+        ("hook", ("PostToolUse", mcp_fresh, "mcp-call-2")),
+    ]
+
+    async def reject_cross_capability_reuse(evidence):
+        identity = (evidence["capability_kind"], evidence["canonical_identity"])
+        call_id = evidence["tool_call_id"]
+        if call_id in owners and owners[call_id] != identity:
+            return False
+        owners.setdefault(call_id, identity)
+        return True
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="review and search",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_subject(), _skill_subject()],
+        on_text=deltas.append,
+        on_capability_evidence=reject_cross_capability_reuse,
+    )
+
+    assert {(item["capability_kind"], item["tool_call_id"]) for item in result.capability_evidence} == {
+        ("skill", "shared-call"),
+        ("mcp", "mcp-call-2"),
+    }
+    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.message == ""
+    assert deltas == []
 
 
 @pytest.mark.asyncio
@@ -819,7 +983,7 @@ async def test_sdk_selected_mcp_hooks_without_acknowledgement_callback_never_qua
     )
 
     assert result.capability_evidence == []
-    assert result.error == "required_tool_completion_evidence_missing"
+    assert result.error == "required_tool_completion_evidence_mismatch"
     assert result.message == ""
     assert deltas == []
 
@@ -1015,6 +1179,63 @@ async def test_sdk_selected_mcp_candidate_buffer_overflow_fails_closed(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chunk_sizes", "expected_error"),
+    [
+        ([8_192], None),
+        ([4_096, 4_096], None),
+        ([8_193], "claude_agent_sdk_tool_admission_failed"),
+    ],
+)
+async def test_sdk_selected_mcp_stream_uses_one_8192_character_terminal_bound(
+    monkeypatch,
+    tmp_path,
+    chunk_sizes,
+    expected_error,
+):
+    captured = {}
+    deltas = []
+    observed_before_result = []
+    subject = _subject()
+    hook_input = {
+        "tool_name": subject["identity"],
+        "tool_use_id": "mcp-call-1",
+        "tool_input": {"private": "safe-synthetic-value"},
+    }
+    private_text = "".join(chr(ord("a") + index) * size for index, size in enumerate(chunk_sizes))
+    steps = [
+        step
+        for index, size in enumerate(chunk_sizes)
+        for step in _stream_steps(chr(ord("a") + index) * size, index=index)
+    ]
+    steps.extend(
+        [
+            ("probe", lambda: observed_before_result.extend(deltas)),
+            ("hook", ("PreToolUse", hook_input, "mcp-call-1")),
+            ("hook", ("PostToolUse", hook_input, "mcp-call-1")),
+        ]
+    )
+    result_text = private_text if expected_error is None else "safe terminal answer"
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps, result_text=result_text))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert observed_before_result == []
+    assert result.error == expected_error
+    assert result.message == (private_text if expected_error is None else "")
+    assert deltas == ([private_text] if expected_error is None else [])
+
+
+@pytest.mark.asyncio
 async def test_sdk_selected_mcp_completion_releases_one_terminal_answer(
     monkeypatch,
     tmp_path,
@@ -1115,6 +1336,7 @@ async def test_sdk_selected_mcp_identity_is_redacted_from_text_block_and_result(
 
     async def acknowledge(evidence):
         callback_call_ids.append(evidence["tool_call_id"])
+        return True
 
     result = await run_claude_agent_sdk(
         prompt="search",
@@ -1477,6 +1699,7 @@ async def test_sdk_selected_skill_without_external_mcp_preserves_trusted_streami
     assert result.error is None
     assert result.message == text
     assert result.used_skills == ["qa-review"]
+    assert result.capability_evidence == []
 
 
 @pytest.mark.asyncio
