@@ -523,19 +523,20 @@ async def create_agent_profile_revision(
     if expected_previous_revision is not None and current_revision != expected_previous_revision:
         raise RepositoryConflictError("agent_profile_revision_stale")
     revision = current_revision + 1
+    legacy_status = "published" if status == "published" and visibility == "tenant" else "draft"
     cursor = await conn.execute(
         """
         insert into agent_profile_revisions(
-          tenant_id, agent_id, revision, status, name, description, instructions,
+          tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
           model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
           avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
                 %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s,
                 case when %s::text is null then null else now() end, %s, %s)
-        returning tenant_id, agent_id, revision, status, name, description, instructions,
+        returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
                   model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
                   avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
                   allowed_user_ids,
@@ -545,6 +546,7 @@ async def create_agent_profile_revision(
             tenant_id,
             agent_id,
             revision,
+            legacy_status,
             status,
             name,
             description,
@@ -583,14 +585,14 @@ async def get_agent_profile_revision(
 ) -> dict[str, Any] | None:
     """Read one tenant-scoped immutable revision, optionally by lifecycle state."""
 
-    status_filter = "and agent_profile_revisions.status = %s" if status else ""
+    status_filter = "and agent_profile_revisions.revision_status = %s" if status else ""
     params: list[Any] = [tenant_id, agent_id, revision]
     if status:
         params.append(status)
     cursor = await conn.execute(
         f"""
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
-               agent_profile_revisions.revision, agent_profile_revisions.status,
+               agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
@@ -623,13 +625,13 @@ async def list_latest_agent_profile_revisions(
 ) -> list[dict[str, Any]]:
     """List only each profile's latest revision for the calling tenant."""
 
-    status_filter = "and agent_profile_revisions.status = %s" if status else ""
+    status_filter = "and agent_profile_revisions.revision_status = %s" if status else ""
     params: tuple[Any, ...] = (tenant_id, status) if status else (tenant_id,)
     cursor = await conn.execute(
         f"""
         select distinct on (agent_profile_revisions.agent_id)
                agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
-               agent_profile_revisions.revision, agent_profile_revisions.status,
+               agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
@@ -668,6 +670,7 @@ async def record_agent_profile_draft(
         on conflict (tenant_id, agent_id) do update
         set latest_revision = excluded.latest_revision,
             lifecycle_status = case
+              when agent_profiles.lifecycle_status = 'withdrawn' then 'withdrawn'
               when agent_profiles.published_revision is null then 'draft'
               else 'published'
             end,
@@ -700,6 +703,17 @@ async def record_agent_profile_publication(
     )
     if await cursor.fetchone() is None:
         raise RepositoryConflictError("agent_profile_aggregate_missing")
+    await conn.execute(
+        """
+        update agent_profile_revisions
+        set status = case
+          when revision = %s and visibility = 'tenant' then 'published'
+          else 'draft'
+        end
+        where tenant_id = %s and agent_id = %s and revision_status = 'published'
+        """,
+        (revision, tenant_id, agent_id),
+    )
 
 
 async def record_agent_profile_withdrawal(
@@ -724,6 +738,14 @@ async def record_agent_profile_withdrawal(
     )
     if await cursor.fetchone() is None:
         raise RepositoryConflictError("agent_profile_revision_stale")
+    await conn.execute(
+        """
+        update agent_profile_revisions
+        set status = 'draft'
+        where tenant_id = %s and agent_id = %s and revision_status = 'published'
+        """,
+        (tenant_id, agent_id),
+    )
 
 
 async def get_agent_profile_aggregate(
@@ -766,7 +788,7 @@ async def get_current_published_agent_profile(
     cursor = await conn.execute(
         f"""
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
-               agent_profile_revisions.revision, agent_profile_revisions.status,
+               agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
@@ -781,7 +803,7 @@ async def get_current_published_agent_profile(
          and agent_profile_revisions.agent_id = agent_profiles.agent_id
          and agent_profile_revisions.revision = agent_profiles.published_revision
          and agent_profile_revisions.content_hash = agent_profiles.published_hash
-         and agent_profile_revisions.status = agent_profiles.published_status
+         and agent_profile_revisions.revision_status = agent_profiles.published_status
         join agents on agents.id = agent_profiles.agent_id
           and agents.tenant_id = agent_profiles.tenant_id
         where agent_profiles.tenant_id = %s
@@ -813,7 +835,7 @@ async def get_bound_published_agent_profile(
     cursor = await conn.execute(
         f"""
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
-               agent_profile_revisions.revision, agent_profile_revisions.status,
+               agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
@@ -821,11 +843,21 @@ async def get_bound_published_agent_profile(
                agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
+               current_revision.visibility as current_visibility,
+               current_revision.allowed_department_ids as current_allowed_department_ids,
+               current_revision.allowed_roles as current_allowed_roles,
+               current_revision.allowed_user_ids as current_allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
         from agent_profiles
         join agent_profile_revisions
-          on agent_profile_revisions.tenant_id = agent_profiles.tenant_id
+         on agent_profile_revisions.tenant_id = agent_profiles.tenant_id
          and agent_profile_revisions.agent_id = agent_profiles.agent_id
+        join agent_profile_revisions current_revision
+          on current_revision.tenant_id = agent_profiles.tenant_id
+         and current_revision.agent_id = agent_profiles.agent_id
+         and current_revision.revision = agent_profiles.published_revision
+         and current_revision.content_hash = agent_profiles.published_hash
+         and current_revision.revision_status = agent_profiles.published_status
         join agents on agents.id = agent_profiles.agent_id
           and agents.tenant_id = agent_profiles.tenant_id
         where agent_profiles.tenant_id = %s
@@ -834,7 +866,7 @@ async def get_bound_published_agent_profile(
           and agent_profiles.published_status = 'published'
           and agent_profile_revisions.revision = %s
           and agent_profile_revisions.content_hash = %s
-          and agent_profile_revisions.status = 'published'
+          and agent_profile_revisions.revision_status = 'published'
           and agents.agent_type = 'profile'
           and agents.status = 'active'
         {"for update of agent_profiles" if for_update else ""}
@@ -867,7 +899,7 @@ async def list_current_published_agent_profiles(
     cursor = await conn.execute(
         f"""
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
-               agent_profile_revisions.revision, agent_profile_revisions.status,
+               agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
@@ -882,7 +914,7 @@ async def list_current_published_agent_profiles(
          and agent_profile_revisions.agent_id = agent_profiles.agent_id
          and agent_profile_revisions.revision = agent_profiles.published_revision
          and agent_profile_revisions.content_hash = agent_profiles.published_hash
-         and agent_profile_revisions.status = agent_profiles.published_status
+         and agent_profile_revisions.revision_status = agent_profiles.published_status
         join agents on agents.id = agent_profiles.agent_id
           and agents.tenant_id = agent_profiles.tenant_id
         where agent_profiles.tenant_id = %s
@@ -909,7 +941,7 @@ async def list_agent_profile_revision_history(
 
     cursor = await conn.execute(
         """
-        select tenant_id, agent_id, revision, status, name, description, instructions,
+        select tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
                model_id, skill_id, skill_version, mcp_tool_ids, content_hash, avatar_ref,
                category, visibility, allowed_department_ids, allowed_roles, allowed_user_ids,
                created_at, published_at

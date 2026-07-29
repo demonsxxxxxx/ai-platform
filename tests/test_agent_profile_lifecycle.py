@@ -151,7 +151,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         lock_profile,
         raising=False,
     )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_user", ensure_user)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_agent_profile_identity", ensure_identity)
     monkeypatch.setattr("app.agent_apps.authority.repositories.create_agent_profile_revision", append_revision)
     monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_draft", record_draft)
@@ -175,6 +175,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         definition=definition,
         agent_id="agt_support",
     )
+    assert order.index("user") < order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("aggregate_update")
 
@@ -186,8 +187,274 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         expected_revision=7,
     )
     assert order.index("advisory_lock") < order.index("revision_read")
+    assert order.index("user") < order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("aggregate_update")
+
+
+@pytest.mark.asyncio
+async def test_profile_authority_provisions_and_tenant_validates_admin_fk_identity(monkeypatch):
+    from app import repositories
+    from app.agent_apps import AgentProfileAuthority
+
+    calls: list[dict[str, object]] = []
+
+    async def provision(*_args, **kwargs):
+        calls.append(kwargs)
+        return {"id": kwargs["user_id"], "tenant_id": kwargs["tenant_id"]}
+
+    monkeypatch.setattr(repositories, "ensure_submission_principal", provision)
+    await AgentProfileAuthority()._ensure_principal_user(  # noqa: SLF001 - focused authority contract
+        object(),
+        principal=_principal(roles=["admin"]),
+    )
+    assert calls == [
+        {
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "display_name": "User A",
+        }
+    ]
+
+    async def wrong_tenant(*_args, **_kwargs):
+        raise repositories.RepositoryAuthorizationError("principal_user_scope_mismatch")
+
+    monkeypatch.setattr(repositories, "ensure_submission_principal", wrong_tenant)
+    with pytest.raises(HTTPException) as caught:
+        await AgentProfileAuthority()._ensure_principal_user(  # noqa: SLF001 - focused authority contract
+            object(),
+            principal=_principal(roles=["admin"]),
+        )
+    assert (caught.value.status_code, caught.value.detail) == (403, "principal_not_authorized")
+
+
+@pytest.mark.asyncio
+async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit_empty(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+
+    captured: list[dict[str, object]] = []
+    prior = _profile_row(status="draft", revision=7)
+    prior.update(
+        {
+            "avatar_ref": "builtin:research",
+            "category": "research",
+            "visibility": "restricted",
+            "allowed_department_ids": ["research"],
+            "allowed_roles": ["analyst"],
+            "allowed_user_ids": ["user-special"],
+        }
+    )
+    rows = {7: prior}
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def read_prior(*_args, **kwargs):
+        row = rows.get(int(kwargs["revision"]))
+        if row is not None and kwargs.get("status") not in {None, row["status"]}:
+            return None
+        return row
+
+    async def append_revision(*_args, **kwargs):
+        captured.append(kwargs)
+        revision = int(kwargs["expected_previous_revision"]) + 1
+        row = _profile_row(
+            status=str(kwargs["status"]),
+            revision=revision,
+            content_hash=str(kwargs["content_hash"]),
+        )
+        row.update(
+            {
+                field: kwargs[field]
+                for field in (
+                    "name",
+                    "description",
+                    "instructions",
+                    "model_id",
+                    "skill_id",
+                    "skill_version",
+                    "mcp_tool_ids",
+                    "avatar_ref",
+                    "category",
+                    "visibility",
+                    "allowed_department_ids",
+                    "allowed_roles",
+                    "allowed_user_ids",
+                )
+            }
+        )
+        rows[revision] = row
+        return row
+
+    async def audit(*_args, **_kwargs):
+        return "aud_profile"
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_agent_profile_identity", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", read_prior)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.create_agent_profile_revision", append_revision)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_draft", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_publication", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    authority = AgentProfileAuthority()
+
+    async def validate(*_args, **_kwargs):
+        return (
+            {"skill_id": "general-chat", "skill_version": "version-a"},
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    omitted = AgentProfileDraftRequest(
+        name="Updated support assistant",
+        instructions="updated private instruction",
+        model_id="model-a",
+        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        expected_draft_revision=7,
+    )
+    assert not {
+        "avatar_ref",
+        "category",
+        "visibility",
+        "allowed_department_ids",
+        "allowed_roles",
+        "allowed_user_ids",
+    }.intersection(omitted.model_fields_set)
+
+    await authority.save_draft(
+        object(),
+        principal=_principal(roles=["admin"]),
+        definition=omitted,
+        agent_id="agt_support",
+    )
+
+    assert captured[-1]["avatar_ref"] == "builtin:research"
+    assert captured[-1]["category"] == "research"
+    assert captured[-1]["visibility"] == "restricted"
+    assert captured[-1]["allowed_department_ids"] == ["research"]
+    assert captured[-1]["allowed_roles"] == ["analyst"]
+    assert captured[-1]["allowed_user_ids"] == ["user-special"]
+
+    await authority.publish_draft(
+        object(),
+        principal=_principal(roles=["admin"]),
+        agent_id="agt_support",
+        expected_revision=8,
+    )
+    assert captured[-1]["status"] == "published"
+    assert captured[-1]["visibility"] == "restricted"
+    assert captured[-1]["allowed_department_ids"] == ["research"]
+    assert captured[-1]["allowed_roles"] == ["analyst"]
+    assert captured[-1]["allowed_user_ids"] == ["user-special"]
+
+    explicit_empty = omitted.model_copy(
+        update={
+            "expected_draft_revision": 9,
+            "visibility": "restricted",
+            "allowed_department_ids": [],
+            "allowed_roles": [],
+            "allowed_user_ids": [],
+        }
+    )
+    explicit_empty.model_fields_set.update(
+        {"visibility", "allowed_department_ids", "allowed_roles", "allowed_user_ids"}
+    )
+    await authority.save_draft(
+        object(),
+        principal=_principal(roles=["admin"]),
+        definition=explicit_empty,
+        agent_id="agt_support",
+    )
+
+    assert captured[-1]["visibility"] == "restricted"
+    assert captured[-1]["allowed_department_ids"] == []
+    assert captured[-1]["allowed_roles"] == []
+    assert captured[-1]["allowed_user_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_draft_preview_uses_presence_aware_effective_existing_definition(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+
+    prior = _profile_row(status="draft", revision=7)
+    prior.update(
+        {
+            "avatar_ref": "builtin:research",
+            "category": "research",
+            "visibility": "restricted",
+            "allowed_department_ids": ["research"],
+            "allowed_roles": ["analyst"],
+            "allowed_user_ids": ["user-special"],
+        }
+    )
+    validated: list[AgentProfileDraftRequest] = []
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def read_prior(*_args, **kwargs):
+        assert kwargs["revision"] == 7
+        return prior
+
+    async def validate(*_args, **kwargs):
+        validated.append(kwargs["definition"])
+        return (
+            {"skill_id": "general-chat", "skill_version": "version-a"},
+            {"id": "model-a", "value": "model-a"},
+        )
+
+    async def audit(*_args, **_kwargs):
+        return "aud_preview"
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", read_prior)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    omitted = AgentProfileDraftRequest(
+        name="Updated support assistant",
+        instructions="updated private instruction",
+        model_id="model-a",
+        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        expected_draft_revision=7,
+    )
+
+    await authority.validate_draft(
+        object(),
+        principal=_principal(roles=["admin"]),
+        definition=omitted,
+        agent_id="agt_support",
+    )
+    assert validated[-1].visibility == "restricted"
+    assert validated[-1].allowed_department_ids == ["research"]
+    assert validated[-1].allowed_roles == ["analyst"]
+    assert validated[-1].allowed_user_ids == ["user-special"]
+
+    explicit_empty = AgentProfileDraftRequest(
+        name="Updated support assistant",
+        instructions="updated private instruction",
+        model_id="model-a",
+        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        visibility="restricted",
+        allowed_department_ids=[],
+        allowed_roles=[],
+        allowed_user_ids=[],
+        expected_draft_revision=7,
+    )
+    await authority.validate_draft(
+        object(),
+        principal=_principal(roles=["admin"]),
+        definition=explicit_empty,
+        agent_id="agt_support",
+    )
+    assert validated[-1].visibility == "restricted"
+    assert validated[-1].allowed_department_ids == []
+    assert validated[-1].allowed_roles == []
+    assert validated[-1].allowed_user_ids == []
 
 
 @pytest.mark.asyncio
@@ -211,6 +478,43 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
     with pytest.raises(HTTPException) as caught:
         await authority.get_public(object(), principal=_principal(department_id="finance"), agent_id="agt_support")
     assert (caught.value.status_code, caught.value.detail) == (404, "agent_profile_not_found")
+
+
+@pytest.mark.asyncio
+async def test_bound_profile_uses_current_acl_while_executing_the_pinned_revision(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+
+    pinned = _profile_row(revision=7)
+    pinned.update(
+        {
+            "visibility": "tenant",
+            "current_visibility": "restricted",
+            "current_allowed_department_ids": ["support"],
+            "current_allowed_roles": [],
+            "current_allowed_user_ids": [],
+        }
+    )
+
+    async def get_bound(*_args, **_kwargs):
+        return pinned
+
+    async def forbidden_validation(*_args, **_kwargs):
+        raise AssertionError("current ACL denial must happen before capability validation")
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_bound_published_agent_profile", get_bound)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", forbidden_validation)
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.resolve_bound_for_submission(
+            object(),
+            principal=_principal(department_id="finance"),
+            agent_id="agt_support",
+            revision=7,
+            content_hash="a" * 64,
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (403, "agent_profile_not_authorized")
 
 
 @pytest.mark.asyncio
@@ -243,7 +547,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", remember_workspace)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_user", remember_user)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", remember_user)
     monkeypatch.setattr("app.agent_apps.authority.repositories.create_session", create_session)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
     authority = AgentProfileAuthority()
@@ -346,7 +650,7 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
         raising=False,
     )
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
     monkeypatch.setattr("app.agent_apps.authority.repositories.create_session", create_session)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
     authority = AgentProfileAuthority()
@@ -521,6 +825,23 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
     }
     assert len(bound_calls) == 1
 
+    with pytest.raises(HTTPException) as selector_error:
+        await chat_stream(
+            ChatStreamRequest(
+                message="try to override the pinned Skill",
+                session_id="session-profile",
+                submission_id="e76e042e-744b-4612-9c8a-a7700f35904c",
+                selected_skill={"skill_id": "other-skill", "expected_version": "version-b"},
+            ),
+            principal=_principal(),
+        )
+    assert selector_error.value.status_code == 400
+    assert selector_error.value.detail == {
+        "code": "agent_profile_selector_conflict",
+        "submission_disposition": "rejected_before_persist",
+    }
+    assert len(bound_calls) == 1
+
 
 @pytest.mark.asyncio
 async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admission(monkeypatch):
@@ -531,6 +852,9 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
 
     async def lock_profile(*_args, **_kwargs):
         order.append("advisory_lock")
+
+    async def ensure_user(*_args, **_kwargs):
+        order.append("user")
 
     async def aggregate(*_args, **kwargs):
         order.append("aggregate_lock")
@@ -557,6 +881,7 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
         lock_profile,
         raising=False,
     )
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", aggregate)
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", get_revision)
     monkeypatch.setattr("app.agent_apps.authority.repositories.create_agent_profile_revision", append_revision)
@@ -571,7 +896,7 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
     )
 
     assert observed["aggregate_lock"] is True
-    assert order[:2] == ["advisory_lock", "aggregate_lock"]
+    assert order[:3] == ["user", "advisory_lock", "aggregate_lock"]
     assert observed["append"]["status"] == "withdrawn"
     assert observed["append"]["expected_previous_revision"] == 8
     assert observed["append"]["withdrawn_from_revision"] == 7

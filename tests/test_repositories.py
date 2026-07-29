@@ -311,11 +311,25 @@ class SingleRowConnection:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("status", "published_by", "published_from_revision", "expected_published_at"),
-    [("draft", None, None, None), ("published", "publisher-a", 7, "database-timestamp")],
+    (
+        "status",
+        "published_by",
+        "published_from_revision",
+        "expected_published_at",
+        "expected_legacy_status",
+    ),
+    [
+        ("draft", None, None, None, "draft"),
+        ("published", "publisher-a", 7, "database-timestamp", "published"),
+        ("withdrawn", None, None, None, "draft"),
+    ],
 )
 async def test_create_agent_profile_revision_preserves_typed_publication_bindings(
-    status, published_by, published_from_revision, expected_published_at
+    status,
+    published_by,
+    published_from_revision,
+    expected_published_at,
+    expected_legacy_status,
 ):
     class Connection:
         def __init__(self):
@@ -328,7 +342,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                 return SingleRowCursor({"current_revision": 7})
             if "insert into agent_profile_revisions" in normalized:
                 return SingleRowCursor(
-                    {"published_at": None if params[20] is None else "database-timestamp"}
+                    {"published_at": None if params[21] is None else "database-timestamp"}
                 )
             return SingleRowCursor(None)
 
@@ -356,25 +370,26 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
     assert insert_sql == " ".join(
         """
         insert into agent_profile_revisions(
-          tenant_id, agent_id, revision, status, name, description, instructions,
+          tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
           model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
           avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
                 %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s,
                 case when %s::text is null then null else now() end, %s, %s)
-        returning tenant_id, agent_id, revision, status, name, description, instructions,
+        returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
                   model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
                   avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
                   allowed_user_ids,
                   created_at, published_at
         """.split()
     )
-    assert len(params) == insert_sql.count("%s") == 23
+    assert len(params) == insert_sql.count("%s") == 24
     assert params == (
-        "tenant-a", "agt_support", 8, status, "Support assistant", "Approved support helper.",
+        "tenant-a", "agt_support", 8, expected_legacy_status, status,
+        "Support assistant", "Approved support helper.",
         "Private instruction", "model-a", "general-chat", "version-a", '["mcp-a", "mcp-b"]',
         "a" * 64, "builtin:agent", "general", "tenant", "[]", "[]", "[]",
         "creator-a", published_by, published_by, published_from_revision, None,

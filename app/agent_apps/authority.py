@@ -29,6 +29,14 @@ from app.settings import get_settings
 _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
 _VISIBILITIES = {"tenant", "restricted"}
+_PRESENCE_AWARE_PROFILE_FIELDS = (
+    "avatar_ref",
+    "category",
+    "visibility",
+    "allowed_department_ids",
+    "allowed_roles",
+    "allowed_user_ids",
+)
 
 
 @dataclass(frozen=True)
@@ -161,6 +169,36 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
     )
 
 
+def _merge_omitted_profile_fields(
+    definition: AgentProfileDraftRequest,
+    *,
+    prior_row: dict[str, Any],
+) -> AgentProfileDraftRequest:
+    """Preserve legacy-client metadata omissions while honoring explicit empty ACLs."""
+
+    prior = _draft_from_row(prior_row)
+    updates = {
+        field: getattr(prior, field)
+        for field in _PRESENCE_AWARE_PROFILE_FIELDS
+        if field not in definition.model_fields_set
+    }
+    return definition.model_copy(update=updates) if updates else definition
+
+
+def _current_acl_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Project current publication ACL aliases over an immutable execution revision."""
+
+    if "current_visibility" not in row:
+        return row
+    return {
+        **row,
+        "visibility": row.get("current_visibility"),
+        "allowed_department_ids": row.get("current_allowed_department_ids"),
+        "allowed_roles": row.get("current_allowed_roles"),
+        "allowed_user_ids": row.get("current_allowed_user_ids"),
+    }
+
+
 def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
     return AgentProfileAdminProjection(
         agent_id=str(row["agent_id"]),
@@ -193,6 +231,19 @@ class AgentProfileAuthority:
     def _require_admin(self, principal: AuthPrincipal) -> None:
         if not is_ai_admin(principal):
             raise HTTPException(status_code=403, detail="not_ai_admin")
+
+    async def _ensure_principal_user(self, conn, *, principal: AuthPrincipal) -> None:
+        """Provision an unseen principal and reject a conflicting tenant identity."""
+
+        try:
+            await repositories.ensure_submission_principal(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                display_name=principal.display_name or principal.user_id,
+            )
+        except repositories.RepositoryAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail="principal_not_authorized") from exc
 
     async def _validate_definition(
         self,
@@ -253,17 +304,22 @@ class AgentProfileAuthority:
         if agent_id is not None and definition.expected_draft_revision < 1:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
         resolved_agent_id = agent_id or repositories.new_id("agt")
+        await self._ensure_principal_user(conn, principal=principal)
         await repositories.acquire_agent_profile_lifecycle_lock(
             conn,
             tenant_id=principal.tenant_id,
             agent_id=resolved_agent_id,
         )
-        await repositories.ensure_user(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            display_name=principal.display_name or principal.user_id,
-        )
+        if agent_id is not None:
+            prior_row = await repositories.get_agent_profile_revision(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=resolved_agent_id,
+                revision=definition.expected_draft_revision,
+            )
+            if prior_row is None:
+                raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
+            definition = _merge_omitted_profile_fields(definition, prior_row=prior_row)
         await repositories.ensure_agent_profile_identity(
             conn,
             tenant_id=principal.tenant_id,
@@ -322,6 +378,7 @@ class AgentProfileAuthority:
         """Publish a revalidated immutable copy and move the aggregate publication pointer."""
 
         self._require_admin(principal)
+        await self._ensure_principal_user(conn, principal=principal)
         await repositories.acquire_agent_profile_lifecycle_lock(
             conn,
             tenant_id=principal.tenant_id,
@@ -392,6 +449,7 @@ class AgentProfileAuthority:
         """Withdraw the current publication while preserving immutable version history."""
 
         self._require_admin(principal)
+        await self._ensure_principal_user(conn, principal=principal)
         await repositories.acquire_agent_profile_lifecycle_lock(
             conn,
             tenant_id=principal.tenant_id,
@@ -471,7 +529,20 @@ class AgentProfileAuthority:
         """Validate unsaved or saved drafts without creating a revision or execution run."""
 
         self._require_admin(principal)
+        await self._ensure_principal_user(conn, principal=principal)
         validation_agent_id = agent_id
+        if validation_agent_id is not None:
+            if definition.expected_draft_revision < 1:
+                raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
+            prior_row = await repositories.get_agent_profile_revision(
+                conn,
+                tenant_id=principal.tenant_id,
+                agent_id=validation_agent_id,
+                revision=definition.expected_draft_revision,
+            )
+            if prior_row is None:
+                raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
+            definition = _merge_omitted_profile_fields(definition, prior_row=prior_row)
         if validation_agent_id is None:
             validation_agent_id = await repositories.get_tenant_profile_validation_agent(
                 conn,
@@ -623,7 +694,14 @@ class AgentProfileAuthority:
     ) -> AgentProfileAdmission:
         """Reauthorize current capabilities and build private/public admission views."""
 
-        skill, model = await self._authorize_public_row(conn, principal=principal, row=row)
+        if not profile_acl_allows(_current_acl_row(row), principal=principal):
+            raise HTTPException(status_code=403, detail="agent_profile_not_authorized")
+        skill, model = await self._validate_definition(
+            conn,
+            principal=principal,
+            agent_id=str(row["agent_id"]),
+            definition=_draft_from_row(row),
+        )
         agent_id = str(row["agent_id"])
         revision = int(row["revision"])
         content_hash = str(row["content_hash"])
@@ -643,6 +721,51 @@ class AgentProfileAuthority:
             public_identity=conversation_identity_projection(row),
         )
 
+    async def reauthorize_pinned_run_for_replay(
+        self,
+        conn,
+        *,
+        principal: AuthPrincipal,
+        run_id: str,
+    ) -> None:
+        """Reauthorize one persisted profile run before copy, retry, or resume side effects."""
+
+        run = await repositories.get_authorized_run(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+        )
+        if run is None:
+            raise repositories.RepositoryNotFoundError("run_not_found")
+        input_json = run.get("input_json") if isinstance(run.get("input_json"), dict) else {}
+        snapshot = repositories.copied_run_execution_snapshot(input_json)
+        revision, content_hash = repositories.admitted_agent_profile_pins_for_copy(run, snapshot)
+        if revision is None:
+            return
+        admission = await self.resolve_bound_for_submission(
+            conn,
+            principal=principal,
+            agent_id=str(run.get("agent_id") or ""),
+            revision=revision,
+            content_hash=str(content_hash or ""),
+        )
+        profile_snapshot = snapshot.get("agent_profile")
+        execution_input = snapshot.get("input") if isinstance(snapshot.get("input"), dict) else {}
+        if (
+            profile_snapshot != admission.private_execution_input
+            or str(run.get("skill_id") or "") != str(admission.skill.get("skill_id") or "")
+            or str(snapshot.get("skill_version") or "")
+            != str(admission.skill.get("skill_version") or "")
+            or str(snapshot.get("executor_type") or "")
+            != str(admission.skill.get("executor_type") or "")
+            or str(snapshot.get("model_id") or "") != str(admission.model.get("id") or "")
+            or str(snapshot.get("model_value") or "") != str(admission.model.get("value") or "")
+            or tuple(repositories.extract_run_mcp_tool_ids(execution_input))
+            != admission.mcp_tool_ids
+        ):
+            raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid")
+
     async def create_conversation(
         self,
         conn,
@@ -654,14 +777,9 @@ class AgentProfileAuthority:
     ) -> ChatSessionResponse:
         """Atomically bind a new conversation to one current published profile revision/hash."""
 
-        admission = await self.resolve_for_admission(conn, principal=principal, selection=selection)
         await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
-        await repositories.ensure_user(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            display_name=principal.display_name or principal.user_id,
-        )
+        await self._ensure_principal_user(conn, principal=principal)
+        admission = await self.resolve_for_admission(conn, principal=principal, selection=selection)
         session_id = await repositories.create_session(
             conn,
             tenant_id=principal.tenant_id,

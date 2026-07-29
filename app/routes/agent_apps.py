@@ -108,6 +108,11 @@ async def create_agent_conversation(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_not_available") from exc
+    except repositories.RepositoryNotFoundError as exc:
+        detail = "workspace_not_found" if str(exc) == "workspace_not_found" else "agent_profile_not_available"
+        raise HTTPException(status_code=404, detail=detail) from exc
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="agent_profile_not_authorized") from exc
 
 
 @router.get("/admin/agent-profiles", response_model=AgentProfileAdminListResponse)

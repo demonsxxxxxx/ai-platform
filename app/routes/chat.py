@@ -1268,6 +1268,13 @@ async def chat_stream(
     admitted_agent_profile = None
     try:
         async with transaction() as conn:
+            # Global submission order: user advisory -> session row -> Agent
+            # profile aggregate. Every path takes this once before admission.
+            await repositories.acquire_user_active_run_admission_lock(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+            )
             if submission_id is not None:
                 await repositories.ensure_submission_principal(
                     conn,
@@ -1278,7 +1285,6 @@ async def chat_stream(
             continuation_session = None
             continuation_prior_runs: list[dict[str, Any]] = []
             continuation_latest_input_json: dict[str, Any] | None = None
-            admission_lock_acquired = False
             preserve_continuation_skill = bool(
                 request.session_id
                 and request.selected_skill is None
@@ -1323,15 +1329,8 @@ async def chat_stream(
                 )
             )
             if requires_locked_continuation:
-                # Preserve the repository-wide lock order while binding the
-                # inherited selection and later run generation to one locked
-                # continuation fact.
-                await repositories.acquire_user_active_run_admission_lock(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                )
-                admission_lock_acquired = True
+                # Bind inherited selection and later generation to the session
+                # row only after the transaction-wide user lock above.
                 locked_continuation_session = await repositories.get_authorized_session(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -1491,14 +1490,7 @@ async def chat_stream(
                         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
                     return _chat_stream_response_from_submission(claimed_submission)
 
-            if not admission_lock_acquired:
-                await repositories.acquire_user_active_run_admission_lock(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                )
-
-            if preserve_continuation_skill:
+            if preserve_continuation_skill and admitted_agent_profile is None:
                 continuation_prior_runs = await repositories.list_authorized_session_runs(
                     conn,
                     tenant_id=principal.tenant_id,

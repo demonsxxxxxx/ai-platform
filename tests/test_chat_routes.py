@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import json
@@ -695,9 +696,9 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
     async def claim_submission(*_args, **kwargs):
         calls.append("claim")
         assert calls == [
+            "admission_lock",
             "provision",
             ("session", False),
-            "admission_lock",
             ("session", True),
             "latest_input",
             "claim",
@@ -744,9 +745,9 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
 
     assert response.session_id == "session-owned"
     assert calls == [
+        "admission_lock",
         "provision",
         ("session", False),
-        "admission_lock",
         ("session", True),
         "latest_input",
         "claim",
@@ -845,9 +846,9 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
 
     assert response.run_id == "run-owned"
     assert calls[:6] == [
+        "admission_lock",
         "provision",
         ("session", False),
-        "admission_lock",
         ("session", True),
         "latest_input",
         ("authorize", ["locked-search"]),
@@ -4022,6 +4023,212 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         ("session_lock", "tenant-a", "workspace-owned", "user-a", "ses_locked"),
         ("prior_runs", "tenant-a", "user-a", "ses_locked", "workspace-owned", 1),
         ("authorize", "tenant-a", "general-agent", "audit-finding-rca"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_new_profile_submit_takes_user_lock_before_profile_admission(monkeypatch):
+    """Mock call order only; PostgreSQL lock-manager behavior remains opt-in coverage."""
+
+    from app.models import SelectedAgentProfileRequest
+
+    calls: list[str] = []
+
+    async def admission_lock(*_args, **_kwargs):
+        calls.append("user_lock")
+
+    async def profile_admission(*_args, **_kwargs):
+        calls.append("profile_lock")
+        raise HTTPException(status_code=409, detail="agent_profile_not_available")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        admission_lock,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.chat.resolve_profile_for_admission", profile_admission)
+
+    with pytest.raises(HTTPException) as caught:
+        await chat_stream(
+            ChatStreamRequest(
+                message="run the selected Agent",
+                selected_agent_profile=SelectedAgentProfileRequest(
+                    agent_id="agt_support",
+                    expected_revision=7,
+                ),
+            ),
+            principal=principal(),
+        )
+
+    assert caught.value.detail == "agent_profile_not_available"
+    assert calls == ["user_lock", "profile_lock"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_profile_submits_serialize_on_user_lock_before_profile_admission(monkeypatch):
+    """Mock transaction ordering only; PostgreSQL lock contention remains opt-in coverage."""
+
+    from app.models import SelectedAgentProfileRequest
+
+    user_lock = asyncio.Lock()
+    holders: set[int] = set()
+    first_profile_entered = asyncio.Event()
+    release_first_profile = asyncio.Event()
+    second_lock_attempted = asyncio.Event()
+    profile_entries = 0
+    active_profile_admissions = 0
+    max_active_profile_admissions = 0
+
+    @asynccontextmanager
+    async def serialized_transaction():
+        conn = object()
+        try:
+            yield conn
+        finally:
+            if id(conn) in holders:
+                holders.remove(id(conn))
+                user_lock.release()
+
+    async def admission_lock(conn, *_args, **_kwargs):
+        if user_lock.locked():
+            second_lock_attempted.set()
+        await user_lock.acquire()
+        holders.add(id(conn))
+
+    async def profile_admission(*_args, **_kwargs):
+        nonlocal profile_entries, active_profile_admissions, max_active_profile_admissions
+        profile_entries += 1
+        active_profile_admissions += 1
+        max_active_profile_admissions = max(max_active_profile_admissions, active_profile_admissions)
+        try:
+            if profile_entries == 1:
+                first_profile_entered.set()
+                await release_first_profile.wait()
+            raise HTTPException(status_code=409, detail="agent_profile_not_available")
+        finally:
+            active_profile_admissions -= 1
+
+    monkeypatch.setattr("app.routes.chat.transaction", serialized_transaction)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        admission_lock,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.chat.resolve_profile_for_admission", profile_admission)
+    request = ChatStreamRequest(
+        message="run the selected Agent",
+        selected_agent_profile=SelectedAgentProfileRequest(
+            agent_id="agt_support",
+            expected_revision=7,
+        ),
+    )
+
+    first = asyncio.create_task(chat_stream(request, principal=principal()))
+    await asyncio.wait_for(first_profile_entered.wait(), timeout=1)
+    second = asyncio.create_task(chat_stream(request, principal=principal()))
+    await asyncio.wait_for(second_lock_attempted.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert profile_entries == 1
+    release_first_profile.set()
+    outcomes = await asyncio.gather(first, second, return_exceptions=True)
+
+    assert all(isinstance(outcome, HTTPException) for outcome in outcomes)
+    assert profile_entries == 2
+    assert max_active_profile_admissions == 1
+
+
+@pytest.mark.asyncio
+async def test_first_selector_free_profile_submit_keeps_the_persisted_non_general_skill(monkeypatch):
+    from app.agent_apps import AgentProfileAdmission
+    from app.models import AgentConversationIdentity
+
+    calls: list[object] = []
+    pinned_session = {
+        "id": "ses_profile_first",
+        "workspace_id": "workspace-owned",
+        "agent_id": "agt_support",
+        "admitted_agent_profile_revision": 7,
+        "admitted_agent_profile_hash": "a" * 64,
+    }
+
+    async def owned_session(*_args, **_kwargs):
+        return pinned_session
+
+    async def admission_lock(*_args, **_kwargs):
+        calls.append("user_lock")
+
+    async def bound_profile(*_args, **_kwargs):
+        calls.append("bound_profile")
+        return AgentProfileAdmission(
+            agent_id="agt_support",
+            revision=7,
+            content_hash="a" * 64,
+            skill={
+                "skill_id": "profile-specialist",
+                "skill_version": "version-profile",
+                "executor_type": "claude-agent-worker",
+            },
+            model={"id": "model-a", "value": "provider-model-a"},
+            mcp_tool_ids=(),
+            private_execution_input={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "private",
+            },
+            public_identity=AgentConversationIdentity(
+                agent_id="agt_support",
+                revision=7,
+                name="Support assistant",
+            ),
+        )
+
+    async def forbidden_prior_run(*_args, **_kwargs):
+        raise AssertionError("a persisted Agent profile, not a prior run, owns the first Skill")
+
+    async def authorize_selected(*_args, **kwargs):
+        calls.append(
+            (
+                "authorize",
+                kwargs["agent_id"],
+                kwargs["skill_id"],
+                kwargs["expected_version"],
+            )
+        )
+        raise HTTPException(status_code=418, detail="captured_profile_skill")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        admission_lock,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.list_authorized_session_runs",
+        forbidden_prior_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.authorize_selected_run_capabilities",
+        authorize_selected,
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        await chat_stream(
+            ChatStreamRequest(
+                message="run the pinned specialist",
+                session_id="ses_profile_first",
+            ),
+            principal=principal(),
+        )
+
+    assert caught.value.detail == "captured_profile_skill"
+    assert calls == [
+        "user_lock",
+        "bound_profile",
+        ("authorize", "agt_support", "profile-specialist", "version-profile"),
     ]
 
 

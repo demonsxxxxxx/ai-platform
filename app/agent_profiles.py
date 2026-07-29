@@ -19,6 +19,7 @@ __all__ = [
     "list_public_profiles",
     "profile_public_projection",
     "publish_draft",
+    "reauthorize_pinned_run_for_replay",
     "reject_profile_selector_conflicts",
     "resolve_bound_profile_for_submission",
     "resolve_profile_for_admission",
@@ -88,4 +89,14 @@ async def resolve_bound_profile_for_submission(
         agent_id=agent_id,
         revision=revision,
         content_hash=content_hash,
+    )
+
+
+async def reauthorize_pinned_run_for_replay(conn, *, principal, run_id) -> None:
+    """Reauthorize a persisted run through the sole Agent Profile authority."""
+
+    await _authority.reauthorize_pinned_run_for_replay(
+        conn,
+        principal=principal,
+        run_id=run_id,
     )

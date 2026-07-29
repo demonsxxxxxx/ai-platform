@@ -19,7 +19,7 @@ from app.models import (
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
 )
-from app.repositories import RepositoryConflictError
+from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.main import create_app
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
@@ -303,6 +303,44 @@ def test_agent_profile_mutation_routes_map_repository_conflicts_to_one_safe_stal
     ]
 
 
+@pytest.mark.parametrize(
+    ("error", "expected_status", "expected_detail"),
+    [
+        (RepositoryNotFoundError("workspace_not_found"), 404, "workspace_not_found"),
+        (RepositoryConflictError("raw database conflict"), 409, "agent_profile_not_available"),
+    ],
+)
+def test_agent_conversation_creation_maps_repository_failures_to_safe_4xx(
+    monkeypatch,
+    error,
+    expected_status,
+    expected_detail,
+):
+    async def fail(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_apps.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_apps._authority.create_conversation", fail)
+
+    response = TestClient(create_app(), raise_server_exceptions=False).post(
+        "/api/ai/agent-conversations",
+        headers=ordinary_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "selected_agent_profile": {
+                "agent_id": "agt_support",
+                "expected_revision": 4,
+            },
+        },
+    )
+
+    assert (response.status_code, response.json()["detail"]) == (
+        expected_status,
+        expected_detail,
+    )
+
+
 async def test_agent_profile_repository_list_is_tenant_scoped():
     from app.repositories import list_latest_agent_profile_revisions
 
@@ -363,7 +401,7 @@ def test_agent_profile_schema_is_idempotent_and_legacy_rows_can_remain_unpinned(
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
     assert "create table if not exists agent_profile_revisions" in schema
-    assert "create index if not exists idx_agent_profile_revisions_published" in schema
+    assert "create index idx_agent_profile_revisions_published" in schema
     for statement in (
         "alter table sessions add column if not exists admitted_agent_profile_revision bigint;",
         "alter table sessions add column if not exists admitted_agent_profile_hash text;",
@@ -383,14 +421,22 @@ def test_agent_profile_schema_is_idempotent_and_legacy_rows_can_remain_unpinned(
     assert "lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn'))" in schema
     assert "published_revision bigint" in schema
     assert "published_status text" in schema
+    assert "revision_status text" in schema
+    assert "status text not null check (status in ('draft', 'published'))" in schema
+    assert "agent_profile_legacy_insert_compatibility" in schema
+    assert "agent_profile_legacy_insert_reconcile" in schema
     assert "uq_agent_profile_revision_publication" in schema
     assert "fk_agent_profiles_current_publication" in schema
     assert "published_revision, published_hash, published_status" in schema
-    assert "revision, content_hash, status" in schema
+    assert "revision, content_hash, revision_status" in schema
+    assert "on conflict (tenant_id, agent_id) do nothing;" not in schema
+    legacy_visibility_repair = "set visibility = 'tenant'"
     visibility_repair = "set visibility = 'restricted'"
     visibility_check = "constraint chk_agent_profile_revisions_visibility"
+    assert legacy_visibility_repair in schema
     assert visibility_repair in schema
     assert visibility_check in schema
+    assert schema.index(legacy_visibility_repair) < schema.index(visibility_repair)
     assert schema.index(visibility_repair) < schema.rindex(visibility_check)
     assert "withdrawn_from_revision bigint" in schema
 
@@ -427,7 +473,8 @@ async def test_bound_profile_repository_uses_the_session_revision_and_hash_but_r
     assert "agent_profiles.lifecycle_status = 'published'" in sql
     assert "agent_profile_revisions.revision = %s" in sql
     assert "agent_profile_revisions.content_hash = %s" in sql
-    assert "agent_profile_revisions.status = 'published'" in sql
+    assert "agent_profile_revisions.revision_status = 'published'" in sql
+    assert "current_revision.visibility as current_visibility" in sql
     assert "agent_profiles.published_revision = %s" not in sql
     assert "for update of agent_profiles" in sql
     assert params == ("tenant-a", "agt_support", 4, "a" * 64)
@@ -487,6 +534,100 @@ def test_profile_copy_snapshot_preserves_private_prompt_model_and_exact_pins():
     forged_run = {**source_run, "agent_id": "agt_other_tenant"}
     with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
         admitted_agent_profile_pins_for_copy(forged_run, source_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_generic_runs_unchanged(monkeypatch):
+    from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
+    from app.models import AgentConversationIdentity
+
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="tenant-a",
+        roles=["user"],
+    )
+    source = {
+        "id": "run-profile",
+        "agent_id": "agt_support",
+        "skill_id": "profile-skill",
+        "admitted_agent_profile_revision": 4,
+        "admitted_agent_profile_hash": "a" * 64,
+        "input_json": {
+            "input": {"message": "retry", "mcp_tool_ids": ["profile-tool"]},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "version-a",
+            "release_decision": {"selected_version": "version-a"},
+            "skill_manifests": [{"skill_id": "profile-skill", "content_hash": "version-a"}],
+            "model_id": "model-a",
+            "model_value": "provider-model-a",
+            "agent_profile": {
+                "agent_id": "agt_support",
+                "revision": 4,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instruction",
+            },
+        },
+    }
+    rows = {"run-profile": source, "run-generic": {**source, "id": "run-generic"}}
+    rows["run-generic"].update(
+        {
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "admitted_agent_profile_revision": None,
+            "admitted_agent_profile_hash": None,
+            "input_json": {"input": {"message": "generic"}},
+        }
+    )
+    bound_calls: list[dict[str, object]] = []
+
+    async def get_run(*_args, **kwargs):
+        return rows.get(kwargs["run_id"])
+
+    async def resolve_bound(*_args, **kwargs):
+        bound_calls.append(kwargs)
+        return AgentProfileAdmission(
+            agent_id="agt_support",
+            revision=4,
+            content_hash="a" * 64,
+            skill={
+                "skill_id": "profile-skill",
+                "skill_version": "version-a",
+                "executor_type": "claude-agent-worker",
+            },
+            model={"id": "model-a", "value": "provider-model-a"},
+            mcp_tool_ids=("profile-tool",),
+            private_execution_input={
+                "agent_id": "agt_support",
+                "revision": 4,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instruction",
+            },
+            public_identity=AgentConversationIdentity(
+                agent_id="agt_support",
+                revision=4,
+                name="Support assistant",
+            ),
+        )
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
+
+    await authority.reauthorize_pinned_run_for_replay(
+        object(),
+        principal=principal,
+        run_id="run-profile",
+    )
+    await authority.reauthorize_pinned_run_for_replay(
+        object(),
+        principal=principal,
+        run_id="run-generic",
+    )
+
+    assert [(call["agent_id"], call["revision"], call["content_hash"]) for call in bound_calls] == [
+        ("agt_support", 4, "a" * 64)
+    ]
 
 
 def test_agent_profile_instructions_are_not_placed_in_the_user_prompt():

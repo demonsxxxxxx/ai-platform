@@ -152,7 +152,7 @@ class SelectedAgentProfileRequest(BaseModel):
 
 
 class AgentProfileDraftRequest(BaseModel):
-    """Admin definition plus the required optimistic draft-save precondition."""
+    """Admin definition whose field presence governs create-versus-update defaults."""
 
     model_config = ConfigDict(extra="forbid")
 
