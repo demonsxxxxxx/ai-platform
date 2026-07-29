@@ -27,6 +27,10 @@ FRONTEND_ROOT_PATH = "frontend/web"
 FRONTEND_PACKAGE_PATH = f"{FRONTEND_ROOT_PATH}/package.json"
 FRONTEND_LOCKFILE_PATH = f"{FRONTEND_ROOT_PATH}/pnpm-lock.yaml"
 PINNED_PNPM_PACKAGE_MANAGER = re.compile(r"pnpm@(?P<version>[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z.-]+)?)\Z")
+TEMPORARY_ROOT_PREFIX = "apr-"
+WINDOWS_CONSERVATIVE_DIRECTORY_PATH_BUDGET = 240
+WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH = 163
+WINDOWS_DIRECTORY_PATH_HEADROOM = 16
 
 FAILURE_TAXONOMY = {
     "stale_base": "The supplied base is not an ancestor of head; merge the current base before push.",
@@ -138,8 +142,7 @@ class PrePushReadiness:
             self._assert_ancestor(base, head)
 
             temporary_root = self._create_temporary_root()
-            base_worktree = temporary_root / "base"
-            head_worktree = temporary_root / "head"
+            base_worktree, head_worktree = _temporary_worktree_paths(temporary_root)
             self._add_worktree(base_worktree, base)
             base_added = True
             self._add_worktree(head_worktree, head)
@@ -309,9 +312,24 @@ class PrePushReadiness:
 
     def _create_temporary_root(self) -> Path:
         try:
-            return Path(tempfile.mkdtemp(prefix="ai-platform-pre-push-readiness-"))
+            temporary_root = Path(tempfile.mkdtemp(prefix=TEMPORARY_ROOT_PREFIX))
         except OSError as error:
             raise ReadinessError("infrastructure_failure", "temporary_directory_failed", str(error)) from error
+        if _temporary_root_has_windows_headroom(temporary_root):
+            return temporary_root
+        try:
+            _remove_cleanup_tree(temporary_root)
+        except OSError as error:
+            raise ReadinessError(
+                "infrastructure_failure",
+                "temporary_directory_path_too_long",
+                f"temporary root {temporary_root} exceeds the safe Windows path budget and could not be removed: {error}",
+            ) from error
+        raise ReadinessError(
+            "infrastructure_failure",
+            "temporary_directory_path_too_long",
+            f"temporary root {temporary_root} exceeds the safe Windows path budget; configure a shorter temporary directory parent",
+        )
 
     def _add_worktree(self, path: Path, commit: str) -> None:
         created = self._run(_git_worktree_command("add", "--detach", str(path), commit), self._repo_root)
@@ -890,6 +908,19 @@ def _same_worktree_path(expected: Path, registered: str) -> bool:
 
 def _path_lexists(path: Path) -> bool:
     return os.path.lexists(path)
+
+
+def _temporary_worktree_paths(temporary_root: Path) -> tuple[Path, Path]:
+    return temporary_root / "base", temporary_root / "head"
+
+
+def _temporary_root_has_windows_headroom(temporary_root: Path) -> bool:
+    return (
+        len(os.fspath(temporary_root))
+        + WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH
+        + WINDOWS_DIRECTORY_PATH_HEADROOM
+        <= WINDOWS_CONSERVATIVE_DIRECTORY_PATH_BUDGET
+    )
 
 
 def _head_worktree_path(worktrees: Sequence[tuple[str, Path | None, bool]]) -> Path | None:
