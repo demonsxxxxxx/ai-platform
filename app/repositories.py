@@ -463,6 +463,20 @@ async def ensure_agent_profile_identity(
     )
 
 
+async def acquire_agent_profile_lifecycle_lock(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+) -> None:
+    """Serialize every lifecycle writer before it reads or mutates profile state."""
+
+    await conn.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"agent-profile:{tenant_id}:{agent_id}",),
+    )
+
+
 async def create_agent_profile_revision(
     conn: AsyncConnection,
     *,
@@ -481,12 +495,20 @@ async def create_agent_profile_revision(
     published_by: str | None = None,
     expected_previous_revision: int | None = None,
     published_from_revision: int | None = None,
+    avatar_ref: str = "builtin:agent",
+    category: str = "general",
+    visibility: str = "tenant",
+    allowed_department_ids: list[str] | None = None,
+    allowed_roles: list[str] | None = None,
+    allowed_user_ids: list[str] | None = None,
+    withdrawn_from_revision: int | None = None,
 ) -> dict[str, Any]:
     """Append one revision under an optimistic fence and transaction advisory lock."""
 
-    await conn.execute(
-        "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
-        (f"agent-profile:{tenant_id}:{agent_id}",),
+    await acquire_agent_profile_lifecycle_lock(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
     )
     cursor = await conn.execute(
         """
@@ -501,23 +523,30 @@ async def create_agent_profile_revision(
     if expected_previous_revision is not None and current_revision != expected_previous_revision:
         raise RepositoryConflictError("agent_profile_revision_stale")
     revision = current_revision + 1
+    legacy_status = "published" if status == "published" and visibility == "tenant" else "draft"
     cursor = await conn.execute(
         """
         insert into agent_profile_revisions(
-          tenant_id, agent_id, revision, status, name, description, instructions,
-          model_id, skill_id, skill_version, mcp_tool_ids, content_hash, created_by,
-          published_by, published_at, published_from_revision
+          tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
+          model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
+          avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
+          allowed_user_ids, created_by, published_by, published_at,
+          published_from_revision, withdrawn_from_revision
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
-                %s, case when %s is null then null else now() end, %s)
-        returning tenant_id, agent_id, revision, status, name, description, instructions,
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
+                %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s,
+                case when %s::text is null then null else now() end, %s, %s)
+        returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
                   model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
+                  avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
+                  allowed_user_ids,
                   created_at, published_at
         """,
         (
             tenant_id,
             agent_id,
             revision,
+            legacy_status,
             status,
             name,
             description,
@@ -527,10 +556,17 @@ async def create_agent_profile_revision(
             skill_version,
             dumps_json(mcp_tool_ids),
             content_hash,
+            avatar_ref,
+            category,
+            visibility,
+            dumps_json(allowed_department_ids or []),
+            dumps_json(allowed_roles or []),
+            dumps_json(allowed_user_ids or []),
             created_by,
             published_by,
             published_by,
             published_from_revision,
+            withdrawn_from_revision,
         ),
     )
     saved = await cursor.fetchone()
@@ -549,18 +585,21 @@ async def get_agent_profile_revision(
 ) -> dict[str, Any] | None:
     """Read one tenant-scoped immutable revision, optionally by lifecycle state."""
 
-    status_filter = "and agent_profile_revisions.status = %s" if status else ""
+    status_filter = "and agent_profile_revisions.revision_status = %s" if status else ""
     params: list[Any] = [tenant_id, agent_id, revision]
     if status:
         params.append(status)
     cursor = await conn.execute(
         f"""
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
-               agent_profile_revisions.revision, agent_profile_revisions.status,
+               agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
+               agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
+               agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
         from agent_profile_revisions
         join agents on agents.id = agent_profile_revisions.agent_id
@@ -586,17 +625,20 @@ async def list_latest_agent_profile_revisions(
 ) -> list[dict[str, Any]]:
     """List only each profile's latest revision for the calling tenant."""
 
-    status_filter = "and agent_profile_revisions.status = %s" if status else ""
+    status_filter = "and agent_profile_revisions.revision_status = %s" if status else ""
     params: tuple[Any, ...] = (tenant_id, status) if status else (tenant_id,)
     cursor = await conn.execute(
         f"""
         select distinct on (agent_profile_revisions.agent_id)
                agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
-               agent_profile_revisions.revision, agent_profile_revisions.status,
+               agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
+               agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
+               agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
         from agent_profile_revisions
         join agents on agents.id = agent_profile_revisions.agent_id
@@ -610,6 +652,327 @@ async def list_latest_agent_profile_revisions(
         params,
     )
     return [dict(row) for row in await cursor.fetchall()]
+
+
+async def record_agent_profile_draft(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    revision: int,
+) -> None:
+    """Advance aggregate draft history without replacing an already live publication."""
+
+    await conn.execute(
+        """
+        insert into agent_profiles(tenant_id, agent_id, lifecycle_status, latest_revision)
+        values (%s, %s, 'draft', %s)
+        on conflict (tenant_id, agent_id) do update
+        set latest_revision = excluded.latest_revision,
+            lifecycle_status = case
+              when agent_profiles.lifecycle_status = 'withdrawn' then 'withdrawn'
+              when agent_profiles.published_revision is null then 'draft'
+              else 'published'
+            end,
+            updated_at = now()
+        """,
+        (tenant_id, agent_id, revision),
+    )
+
+
+async def record_agent_profile_publication(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    revision: int,
+    content_hash: str,
+) -> None:
+    """Move the sole current-publication pointer after a locked immutable append."""
+
+    cursor = await conn.execute(
+        """
+        update agent_profiles
+        set lifecycle_status = 'published', latest_revision = %s,
+            published_revision = %s, published_hash = %s,
+            published_status = 'published', updated_at = now()
+        where tenant_id = %s and agent_id = %s
+        returning agent_id
+        """,
+        (revision, revision, content_hash, tenant_id, agent_id),
+    )
+    if await cursor.fetchone() is None:
+        raise RepositoryConflictError("agent_profile_aggregate_missing")
+    await conn.execute(
+        """
+        update agent_profile_revisions
+        set status = case
+          when revision = %s and visibility = 'tenant' then 'published'
+          else 'draft'
+        end
+        where tenant_id = %s and agent_id = %s and revision_status = 'published'
+        """,
+        (revision, tenant_id, agent_id),
+    )
+
+
+async def record_agent_profile_withdrawal(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    revision: int,
+) -> None:
+    """Remove admission authority while retaining all historical revision rows."""
+
+    cursor = await conn.execute(
+        """
+        update agent_profiles
+        set lifecycle_status = 'withdrawn', latest_revision = %s,
+            published_revision = null, published_hash = null,
+            published_status = null, updated_at = now()
+        where tenant_id = %s and agent_id = %s and lifecycle_status = 'published'
+        returning agent_id
+        """,
+        (revision, tenant_id, agent_id),
+    )
+    if await cursor.fetchone() is None:
+        raise RepositoryConflictError("agent_profile_revision_stale")
+    await conn.execute(
+        """
+        update agent_profile_revisions
+        set status = 'draft'
+        where tenant_id = %s and agent_id = %s and revision_status = 'published'
+        """,
+        (tenant_id, agent_id),
+    )
+
+
+async def get_agent_profile_aggregate(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    for_update: bool = False,
+) -> dict[str, Any] | None:
+    """Load one authoritative profile aggregate in its tenant scope."""
+
+    cursor = await conn.execute(
+        f"""
+        select tenant_id, agent_id, lifecycle_status, latest_revision, published_revision,
+               published_hash, published_status, created_at, updated_at
+        from agent_profiles
+        where tenant_id = %s and agent_id = %s
+        {"for update" if for_update else ""}
+        """,
+        (tenant_id, agent_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def get_current_published_agent_profile(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    expected_revision: int | None = None,
+    for_update: bool = False,
+) -> dict[str, Any] | None:
+    """Read the one aggregate-selected publication, never a superseded historical row."""
+
+    expected_filter = "and agent_profiles.published_revision = %s" if expected_revision is not None else ""
+    params: list[Any] = [tenant_id, agent_id]
+    if expected_revision is not None:
+        params.append(expected_revision)
+    cursor = await conn.execute(
+        f"""
+        select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
+               agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
+               agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.instructions, agent_profile_revisions.model_id,
+               agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
+               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
+               agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
+               agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
+               agent_profile_revisions.created_at, agent_profile_revisions.published_at
+        from agent_profiles
+        join agent_profile_revisions
+          on agent_profile_revisions.tenant_id = agent_profiles.tenant_id
+         and agent_profile_revisions.agent_id = agent_profiles.agent_id
+         and agent_profile_revisions.revision = agent_profiles.published_revision
+         and agent_profile_revisions.content_hash = agent_profiles.published_hash
+         and agent_profile_revisions.revision_status = agent_profiles.published_status
+        join agents on agents.id = agent_profiles.agent_id
+          and agents.tenant_id = agent_profiles.tenant_id
+        where agent_profiles.tenant_id = %s
+          and agent_profiles.agent_id = %s
+          and agent_profiles.lifecycle_status = 'published'
+          and agent_profiles.published_status = 'published'
+          and agents.agent_type = 'profile'
+          and agents.status = 'active'
+          {expected_filter}
+        {"for update of agent_profiles" if for_update else ""}
+        """,
+        tuple(params),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def get_bound_published_agent_profile(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    revision: int,
+    content_hash: str,
+    for_update: bool = False,
+) -> dict[str, Any] | None:
+    """Load a session-pinned publication while requiring the Agent to remain live."""
+
+    cursor = await conn.execute(
+        f"""
+        select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
+               agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
+               agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.instructions, agent_profile_revisions.model_id,
+               agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
+               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
+               agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
+               agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
+               current_revision.visibility as current_visibility,
+               current_revision.allowed_department_ids as current_allowed_department_ids,
+               current_revision.allowed_roles as current_allowed_roles,
+               current_revision.allowed_user_ids as current_allowed_user_ids,
+               agent_profile_revisions.created_at, agent_profile_revisions.published_at
+        from agent_profiles
+        join agent_profile_revisions
+         on agent_profile_revisions.tenant_id = agent_profiles.tenant_id
+         and agent_profile_revisions.agent_id = agent_profiles.agent_id
+        join agent_profile_revisions current_revision
+          on current_revision.tenant_id = agent_profiles.tenant_id
+         and current_revision.agent_id = agent_profiles.agent_id
+         and current_revision.revision = agent_profiles.published_revision
+         and current_revision.content_hash = agent_profiles.published_hash
+         and current_revision.revision_status = agent_profiles.published_status
+        join agents on agents.id = agent_profiles.agent_id
+          and agents.tenant_id = agent_profiles.tenant_id
+        where agent_profiles.tenant_id = %s
+          and agent_profiles.agent_id = %s
+          and agent_profiles.lifecycle_status = 'published'
+          and agent_profiles.published_status = 'published'
+          and agent_profile_revisions.revision = %s
+          and agent_profile_revisions.content_hash = %s
+          and agent_profile_revisions.revision_status = 'published'
+          and agents.agent_type = 'profile'
+          and agents.status = 'active'
+        {"for update of agent_profiles" if for_update else ""}
+        """,
+        (tenant_id, agent_id, revision, content_hash),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def list_current_published_agent_profiles(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    query: str | None = None,
+    category: str | None = None,
+) -> list[dict[str, Any]]:
+    """List aggregate-selected published profiles with bounded server-side search/filtering."""
+
+    query_filter = ""
+    category_filter = ""
+    params: list[Any] = [tenant_id]
+    if query:
+        query_filter = "and (agent_profile_revisions.name ilike %s or agent_profile_revisions.description ilike %s)"
+        pattern = f"%{query.strip()}%"
+        params.extend([pattern, pattern])
+    if category:
+        category_filter = "and agent_profile_revisions.category = %s"
+        params.append(category)
+    cursor = await conn.execute(
+        f"""
+        select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
+               agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
+               agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.instructions, agent_profile_revisions.model_id,
+               agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
+               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
+               agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
+               agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
+               agent_profile_revisions.created_at, agent_profile_revisions.published_at
+        from agent_profiles
+        join agent_profile_revisions
+          on agent_profile_revisions.tenant_id = agent_profiles.tenant_id
+         and agent_profile_revisions.agent_id = agent_profiles.agent_id
+         and agent_profile_revisions.revision = agent_profiles.published_revision
+         and agent_profile_revisions.content_hash = agent_profiles.published_hash
+         and agent_profile_revisions.revision_status = agent_profiles.published_status
+        join agents on agents.id = agent_profiles.agent_id
+          and agents.tenant_id = agent_profiles.tenant_id
+        where agent_profiles.tenant_id = %s
+          and agent_profiles.lifecycle_status = 'published'
+          and agent_profiles.published_status = 'published'
+          and agents.agent_type = 'profile'
+          and agents.status = 'active'
+          {query_filter}
+          {category_filter}
+        order by agent_profile_revisions.name asc, agent_profile_revisions.agent_id asc
+        """,
+        tuple(params),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def list_agent_profile_revision_history(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+) -> list[dict[str, Any]]:
+    """Return all immutable revisions for a tenant-scoped profile identity."""
+
+    cursor = await conn.execute(
+        """
+        select tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
+               model_id, skill_id, skill_version, mcp_tool_ids, content_hash, avatar_ref,
+               category, visibility, allowed_department_ids, allowed_roles, allowed_user_ids,
+               created_at, published_at
+        from agent_profile_revisions
+        where tenant_id = %s and agent_id = %s
+        order by revision desc
+        """,
+        (tenant_id, agent_id),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def get_tenant_profile_validation_agent(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+) -> str | None:
+    """Find a same-tenant active agent for capability-only unsaved draft validation."""
+
+    cursor = await conn.execute(
+        """
+        select id
+        from agents
+        where tenant_id = %s and status = 'active'
+        order by case when id = 'general-agent' then 0 else 1 end, id asc
+        limit 1
+        """,
+        (tenant_id,),
+    )
+    row = await cursor.fetchone()
+    return str(row["id"]) if row is not None else None
 
 
 async def list_scoped_context_messages(
@@ -11906,15 +12269,61 @@ async def list_authorized_sessions(
 ) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
-        select id, workspace_id, agent_id, title, created_at, updated_at
+        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title,
+               sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
+               sessions.created_at, sessions.updated_at,
+               profile.name as agent_profile_name,
+               profile.description as agent_profile_description,
+               profile.avatar_ref as agent_profile_avatar_ref,
+               profile.category as agent_profile_category
         from sessions
-        where tenant_id = %s and user_id = %s and status = 'active'
-        order by updated_at desc, created_at desc
+        left join agent_profile_revisions profile
+          on profile.tenant_id = sessions.tenant_id
+         and profile.agent_id = sessions.agent_id
+         and profile.revision = sessions.admitted_agent_profile_revision
+         and profile.content_hash = sessions.admitted_agent_profile_hash
+        where sessions.tenant_id = %s and sessions.user_id = %s and sessions.status = 'active'
+        order by sessions.updated_at desc, sessions.created_at desc
         limit 100
         """,
         (tenant_id, user_id),
     )
     return list(await cursor.fetchall())
+
+
+async def get_authorized_session_projection(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Load one owned Session with only the safe immutable Agent Conversation identity."""
+
+    cursor = await conn.execute(
+        """
+        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title,
+               sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
+               sessions.created_at, sessions.updated_at,
+               profile.name as agent_profile_name,
+               profile.description as agent_profile_description,
+               profile.avatar_ref as agent_profile_avatar_ref,
+               profile.category as agent_profile_category
+        from sessions
+        left join agent_profile_revisions profile
+          on profile.tenant_id = sessions.tenant_id
+         and profile.agent_id = sessions.agent_id
+         and profile.revision = sessions.admitted_agent_profile_revision
+         and profile.content_hash = sessions.admitted_agent_profile_hash
+        where sessions.tenant_id = %s
+          and sessions.user_id = %s
+          and sessions.id = %s
+          and sessions.status = 'active'
+        """,
+        (tenant_id, user_id, session_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
 
 
 async def get_authorized_lambchat_session(

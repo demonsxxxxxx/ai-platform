@@ -17,6 +17,7 @@ import app.worker as worker_module
 from app.executors import claude_agent_worker
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
 from app.executors.claude_agent_sdk_runner import (
+    ClaudeAgentSdkRunResult,
     build_sdk_env,
     build_skill_prompt,
     run_claude_agent_sdk,
@@ -192,7 +193,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         execution_policy="sandbox_brokered",
     )
 
-    assert result.error is None
+    assert result.error == "required_tool_completion_evidence_missing"
     assert result.used_skills == ["qa-file-reviewer"]
     assert result.used_skills_source == "executor_hook"
     assert captured["permission_mode"] == "dontAsk"
@@ -522,6 +523,38 @@ def _payload_skill_evidence(current_payload):
         ).__dict__
         for phase in ("invocation_requested", "completed")
     ]
+
+
+def _unbound_skill_evidence(skill_id, *phases):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill", canonical_identity=skill_id
+    )
+    return [
+        RequiredCapabilityEvidence.sdk_hook_payload(declaration=declaration, tool_call_id="skill-call-1", lifecycle_phase=phase)
+        for phase in phases
+    ]
+
+
+async def _run_worker_local_skill_evidence_case(monkeypatch, tmp_path, raw_evidence):
+    current_payload = payload(skill_id="qa-file-reviewer", file_ids=[])
+    acknowledgements = []
+    async def fake_run_claude_agent_sdk(**kwargs):
+        callback = kwargs["on_capability_evidence"]
+        for item in raw_evidence:
+            acknowledgements.append(await callback(item))
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True, message="review complete", session_id="sdk-session",
+            received_structured_terminal=True, used_skills=["qa-file-reviewer"],
+            used_skills_source="executor_hook",
+        )
+
+    monkeypatch.setattr(claude_agent_worker, "get_settings", lambda: settings(tmp_path, sdk_enabled=True))
+    monkeypatch.setattr(claude_agent_worker, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    result = await ClaudeAgentWorkerAdapter()._try_run_sdk(
+        current_payload, workspace=tmp_path / "workspaces" / "default" / "run_1",
+        file_names=[], prompt="review this document", staged_skill_names=["qa-file-reviewer"],
+    )
+    return current_payload, result, acknowledgements
 
 
 def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="completed", provider="docker"):
@@ -2291,7 +2324,7 @@ def test_external_mcp_selection_forces_real_sandbox_without_client_execution_tie
                 "_runtime_tool_policy_subjects": [
                     {
                         "identity": "mcp__tenant-server__search",
-                        "mcp_server": "tenant-server",
+                        "mcp_server": "tenant-server", "mcp_tool": "search",
                         "public_tool_label": "Tenant Search",
                         "public_tool_category": "mcp",
                         "registered": True,
@@ -2324,7 +2357,7 @@ def test_claude_sandbox_admission_passes_explicit_mcp_requirement(monkeypatch):
             "_runtime_tool_policy_subjects": [
                 {
                     "identity": "mcp__tenant-server__search",
-                    "mcp_server": "tenant-server",
+                    "mcp_server": "tenant-server", "mcp_tool": "search",
                     "registered": True,
                     "declared": True,
                     "active": True,
@@ -2347,10 +2380,14 @@ def test_claude_sandbox_admission_passes_explicit_mcp_requirement(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned(monkeypatch, tmp_path):
-    current_settings = settings(tmp_path, sdk_enabled=True)
+@pytest.mark.parametrize(("skill_id", "mcp_count", "reuse_call_id", "expected_status", "expected_error"), [("general-chat", 2, False, "succeeded", None), ("general-chat", 2, True, "failed", "required_tool_completion_evidence_mismatch"), ("baoyu-translate", 1, True, "failed", "required_tool_completion_evidence_mismatch")])
+async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned(monkeypatch, tmp_path, skill_id, mcp_count, reuse_call_id, expected_status, expected_error):
+    current_settings, events = settings(tmp_path, sdk_enabled=True), []
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    events = []
+    if skill_id != "general-chat":
+        write_skill(tmp_path / "skills", name=skill_id)
+    pins = _registry_pins(tmp_path / "skills", skill_id=skill_id) if skill_id != "general-chat" else [_test_skill_manifest(skill_id)]
+    other_subject = {**_mcp_subject(), "identity": "mcp__other-server__fetch", "mcp_server": "other-server", "mcp_tool": "fetch"}
 
     async def no_files(payload, workspace):
         return []
@@ -2361,54 +2398,65 @@ async def test_external_mcp_sandbox_activity_is_public_safe_and_terminal_aligned
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     def completed_response(request):
-        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind="mcp",
-            canonical_identity="mcp__tenant-server__search",
-        )
-        binding = {
-            "tenant_id": request.tenant_id,
-            "workspace_id": request.workspace_id,
-            "user_id": request.user_id,
-            "session_id": request.session_id,
-            "run_id": request.run_id,
-            "attempt_id": request.attempt_id,
-        }
+        evidence = _selected_capability_evidence(request)
+        if reuse_call_id:
+            evidence[2]["tool_call_id"] = evidence[3]["tool_call_id"] = "invocation-0"
         return {
             "status": "completed",
             "message": "sandbox completed",
             "sdk_used": True,
-            "capability_evidence": [
-                RequiredCapabilityEvidence.from_sdk_hook(
-                    declaration=declaration,
-                    binding=binding,
-                    tool_call_id="tool-call-1",
-                    lifecycle_phase=phase,
-                ).__dict__
-                for phase in ("invocation_requested", "completed")
-            ],
+            "used_skills": [] if skill_id == "general-chat" else [skill_id], "used_skills_source": "" if skill_id == "general-chat" else "executor_hook",
+            "capability_evidence": evidence,
         }
 
     requests = install_sandbox_runtime(monkeypatch, executor_response=completed_response)
     current_payload = payload(
-        agent_id="general-agent",
-        skill_id="general-chat",
+        agent_id="general-agent" if skill_id == "general-chat" else "translate",
+        skill_id=skill_id, skill_manifests=pins,
         input={
             "message": "search with the selected tool",
-            "mcp_tool_ids": ["tenant-search"],
-            "_runtime_tool_policy_subjects": [_mcp_subject()],
+            "mcp_tool_ids": ["tenant-search", "other-fetch"][:mcp_count],
+            "_runtime_tool_policy_subjects": [_mcp_subject(), other_subject][:mcp_count],
         },
     )
 
     result = await adapter.submit_run(current_payload, event_sink=event_sink)
 
-    assert result.status == "succeeded"
-    assert len(requests) == 1
-    assert requests[0].mcp_tool_ids == ["tenant-search"]
+    assert (result.status, result.result.get("error_code")) == (expected_status, expected_error)
+    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-search", "other-fetch"][:mcp_count]
     mcp_events = [event for event in events if event["payload"].get("tool_category") == "mcp"]
     assert mcp_events == []
     encoded = json.dumps(mcp_events)
-    assert "private.example" not in encoded
-    assert "mcp__tenant-server__search" not in encoded
+    assert "private.example" not in encoded and "mcp__tenant-server__search" not in encoded
+
+
+@pytest.mark.parametrize(
+    ("mode", "field", "value", "expected_error"),
+    [
+        ("missing", "", None, "required_tool_completion_evidence_missing"),
+        ("replace", "tool_call_id", None, "required_tool_completion_evidence_mismatch"),
+        ("replace", "run_id", "stale-run", "required_tool_completion_evidence_mismatch"),
+        ("replace", "attempt_id", "stale-attempt", "required_tool_completion_evidence_mismatch"),
+        ("duplicate", "", None, "required_tool_completion_evidence_mismatch"),
+        ("replace", "tool_call_id", "conflicting-call", "required_tool_completion_evidence_mismatch"),
+    ],
+)
+def test_worker_external_mcp_rejects_stale_missing_or_conflicting_evidence(mode, field, value, expected_error):
+    current_payload = payload(skill_id="general-chat", input={"message": "search", "_runtime_tool_policy_subjects": [_mcp_subject()]})
+    request = types.SimpleNamespace(
+        **{key: getattr(current_payload, key) for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"
+        )}, skill_ids=["general-chat"], tool_policy_subjects=[_mcp_subject()],
+    )
+    evidence = _selected_capability_evidence(request)
+    if mode == "missing":
+        evidence.clear()
+    elif mode == "duplicate":
+        evidence.append(dict(evidence[1]))
+    else:
+        evidence[1][field] = value
+
+    assert claude_agent_worker._selected_capability_invocation_error(current_payload, evidence) == expected_error
 
 
 @pytest.mark.asyncio
@@ -2448,7 +2496,7 @@ async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatc
             "_runtime_tool_policy_subjects": [
                 {
                     "identity": "mcp__tenant-server__search",
-                    "mcp_server": "tenant-server",
+                    "mcp_server": "tenant-server", "mcp_tool": "search",
                     "public_tool_label": "Tenant Search",
                     "public_tool_category": "mcp",
                     "registered": True,
@@ -3901,6 +3949,58 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
 
 
 @pytest.mark.asyncio
+async def test_worker_local_selected_skill_binds_acknowledged_pre_and_post_evidence(monkeypatch, tmp_path):
+    current_payload, result, acknowledgements = await _run_worker_local_skill_evidence_case(
+        monkeypatch, tmp_path,
+        _unbound_skill_evidence("qa-file-reviewer", "invocation_requested", "completed"),
+    )
+
+    assert tuple(item is True for item in acknowledgements) == (True, True)
+    records = [RequiredCapabilityEvidence.from_payload(item) for item in result.capability_evidence]
+    assert [record.lifecycle_phase for record in records] == ["invocation_requested", "completed"]
+    assert [record.lifecycle_status for record in records] == ["invoking", "succeeded"]
+    for record in records:
+        fields = ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id")
+        assert tuple(getattr(record, field) for field in fields) == ("default", "default", "user-a", "ses_1", "run_1", "qat-test-attempt")
+        assert (record.evidence_source, record.trust_basis) == ("claude_agent_sdk_hook", "tool_call_bound_invocation")
+    assert claude_agent_worker._selected_capability_invocation_error(current_payload, result.capability_evidence) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "expected_acknowledged", "expected_phases", "expected_error"),
+    [
+        ("missing_post", (True,), ("invocation_requested",), "required_tool_completion_evidence_mismatch"),
+        ("wrong_identity", (False,), (), "required_tool_completion_evidence_missing"),
+        ("malformed", (True, False), (), "required_tool_completion_evidence_missing"),
+        ("failed", (True, True), ("invocation_requested", "failed"), "required_tool_completion_evidence_mismatch"),
+    ],
+)
+async def test_worker_local_selected_skill_rejects_incomplete_or_invalid_evidence(
+    monkeypatch, tmp_path, case, expected_acknowledged, expected_phases, expected_error
+):
+    selected_pre = _unbound_skill_evidence("qa-file-reviewer", "invocation_requested")
+    cases = {
+        "missing_post": selected_pre,
+        "wrong_identity": _unbound_skill_evidence("minimax-docx", "invocation_requested"),
+        "malformed": selected_pre
+        + [{**_unbound_skill_evidence("qa-file-reviewer", "completed")[0], "extra": "invalid"}],
+        "failed": _unbound_skill_evidence("qa-file-reviewer", "invocation_requested", "failed"),
+    }
+    current_payload, result, acknowledgements = await _run_worker_local_skill_evidence_case(
+        monkeypatch,
+        tmp_path,
+        cases[case],
+    )
+
+    assert tuple(item is True for item in acknowledgements) == expected_acknowledged
+    assert tuple(item["lifecycle_phase"] for item in result.capability_evidence) == expected_phases
+    assert claude_agent_worker._selected_capability_invocation_error(
+        current_payload, result.capability_evidence
+    ) == expected_error
+
+
+@pytest.mark.asyncio
 async def test_direct_general_chat_sdk_path_removes_file_tools_but_keeps_artifact_tools(
     monkeypatch,
     tmp_path,
@@ -5294,24 +5394,20 @@ async def test_sdk_runner_records_skill_use_from_sdk_hook(monkeypatch, tmp_path)
             "tool-0",
             {},
         )
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "qa-file-reviewer"},
-                "tool_use_id": "tool-1",
-            },
+        selected_skill_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "qa-file-reviewer"},
+            "tool_use_id": "tool-1",
+        }
+        await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+            selected_skill_input,
             "tool-1",
             {},
         )
         await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "qa-file-reviewer"},
-                "tool_use_id": "tool-2",
-            },
-            "tool-2",
+            {**selected_skill_input, "hook_event_name": "PostToolUse"},
+            "tool-1",
             {},
         )
         yield AssistantMessage([TextBlock("ok")])
@@ -5319,6 +5415,9 @@ async def test_sdk_runner_records_skill_use_from_sdk_hook(monkeypatch, tmp_path)
 
     async def on_skill_use(skill_name, metadata):
         reported.append((skill_name, metadata["tool_use_id"], metadata["source"]))
+
+    async def acknowledge_capability_evidence(_evidence):
+        return True
 
     current_settings = type(
         "S",
@@ -5352,6 +5451,7 @@ async def test_sdk_runner_records_skill_use_from_sdk_hook(monkeypatch, tmp_path)
         skill_id="qa-file-reviewer",
         skills=["qa-file-reviewer", "minimax-docx"],
         on_skill_use=on_skill_use,
+        on_capability_evidence=acknowledge_capability_evidence,
     )
 
     assert captured["hooks"]["PostToolUse"][0].matcher == "Skill"
