@@ -72,7 +72,8 @@ python tools/pre_push_readiness.py check --base-ref $base --head-ref $head --for
 ```
 
 The command requires full 40-hex commits, fails `stale_base` before local
-checks, and runs the bounded responsibility tests, compileall, diff check,
+checks, and runs bounded changed-scope responsibility tests (changed tests and
+conventional `app`/`tools`/`scripts` test mirrors), compileall, diff check,
 changed-file Ruff, and trusted-base exact-ref governance. Preserve the emitted
 category and identity in the PR record:
 

@@ -26,23 +26,6 @@ FAILURE_TAXONOMY = {
     "external_check": "A remote provider check needs fresh external evidence; do not rerun without positive infrastructure evidence.",
 }
 
-# This is the current bounded backend responsibility suite. Changed and mirrored
-# tests are added below so a newly changed responsibility is not skipped.
-BASELINE_RESPONSIBILITY_TESTS = (
-    "tests/test_sandbox_container_provider.py",
-    "tests/test_sandbox_runtime.py",
-    "tests/test_sandbox_runtime_cleanup.py",
-    "tests/test_sandbox_runtime_211_script.py",
-    "tests/test_b2_sandbox_readiness.py",
-    "tests/test_repositories.py",
-    "tests/test_backend_ci_workflow.py",
-    "tests/test_governance_readiness.py",
-    "tests/test_release_authority.py",
-    "tests/test_contract.py",
-    "tests/test_worker_main.py",
-)
-
-
 class ReadinessError(RuntimeError):
     """Describe one stable, user-actionable readiness failure."""
 
@@ -187,7 +170,7 @@ class PrePushReadiness:
         if changed.returncode != 0:
             raise ReadinessError("infrastructure_failure", "git_failed", _command_failure("git diff --name-only", changed))
         changed_paths = tuple(path for path in changed.stdout.splitlines() if path)
-        selected = {path for path in BASELINE_RESPONSIBILITY_TESTS if (head_worktree / path).is_file()}
+        selected: set[str] = set()
         for path in changed_paths:
             pure_path = PurePosixPath(path)
             if _is_test_module(pure_path):
@@ -271,7 +254,7 @@ def _is_test_module(path: PurePosixPath) -> bool:
 
 
 def _mirrored_test_path(path: PurePosixPath) -> str | None:
-    if path.suffix != ".py" or not path.parts or path.parts[0] not in {"app", "tools"}:
+    if path.suffix != ".py" or not path.parts or path.parts[0] not in {"app", "scripts", "tools"}:
         return None
     return f"tests/test_{path.stem}.py"
 

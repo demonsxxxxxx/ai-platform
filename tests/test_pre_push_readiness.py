@@ -172,6 +172,24 @@ def test_success_uses_the_exact_resolved_range_and_stable_taxonomy(
     }
 
 
+def test_docs_only_range_does_not_run_an_unrelated_existing_test(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, _initial = readiness_repo
+    _write(repo, "tests/test_repositories.py", "def test_unrelated_failure():\n    assert False\n")
+    base = _commit(repo, "unrelated legacy test")
+    _write(repo, "docs/readiness.md", "ready\n")
+    head = _commit(repo, "docs only")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 0, result.stderr
+    responsibility_stage = next(stage for stage in payload["stages"] if stage["name"] == "responsibility_tests")
+    assert responsibility_stage["status"] == "not_applicable"
+    assert responsibility_stage["tests"] == []
+
+
 def test_text_output_is_human_readable_and_uses_the_stable_category(
     readiness_repo: tuple[Path, str],
 ) -> None:
