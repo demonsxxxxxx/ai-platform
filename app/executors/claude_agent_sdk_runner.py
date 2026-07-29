@@ -21,6 +21,7 @@ from app.context_manifest import (
 from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.executors.claude_stream_projection import TrustedInternalClaudeStreamProjector
+from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.file_parser_contracts import ParsedAttachmentContext
 from app.public_context_keys import safe_public_context_pack_version
 from app.required_tool_contract import (
@@ -73,7 +74,6 @@ _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
 _MAX_REQUIRED_ANSWER_TEXT_CHARS = 4_096
-_MAX_PUBLICATION_OVERLAP_CHARS = 512
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
@@ -663,25 +663,6 @@ def _with_selected_skill_invocation_requirement(
         "Skill's instructions require it and platform policy authorizes it. After the tool succeeds, "
         "follow its instructions and answer the user."
     )
-
-
-def _reconcile_answer_views(*views: str) -> str | None:
-    """Merge exact snapshots/partials without charging shared boundary text twice."""
-
-    merged = ""
-    for view in filter(None, views):
-        if not merged or view.startswith(merged) or view.endswith(merged):
-            merged = view
-            continue
-        if merged.startswith(view) or merged.endswith(view):
-            continue
-        limit = min(len(merged), len(view))
-        forward = next((size for size in range(limit, 0, -1) if merged.endswith(view[:size])), 0)
-        reverse = next((size for size in range(limit, 0, -1) if view.endswith(merged[:size])), 0)
-        if not forward and not reverse:
-            return None
-        merged = merged + view[forward:] if forward >= reverse else view + merged[reverse:]
-    return merged
 
 
 def _attachment_context_data_message(
@@ -1642,6 +1623,28 @@ async def run_claude_agent_sdk(
         for declaration in capability_plan.required
     }
     required_answer_gate = bool(required_capability_declarations)
+    private_mcp_replacements = {
+        identity: "external tool"
+        for kind, identity in capability_plan.available
+        if kind == "mcp"
+    }
+    private_mcp_replacements.update(
+        {
+            str(config["url"]): "external tool endpoint"
+            for server_id, config in mcp_servers.items()
+            if server_id != "ai-platform-context"
+            and isinstance(config, dict)
+            and isinstance(config.get("url"), str)
+            and config["url"]
+        }
+    )
+    answer_stream_gate = PublicAnswerStreamGate(
+        private_replacements=private_mcp_replacements,
+        sanitizer=sanitize_public_text,
+        max_sealed_chars=_MAX_REQUIRED_ANSWER_TEXT_CHARS,
+    )
+    if required_answer_gate:
+        answer_stream_gate.seal()
     sdk_prompt = _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
@@ -1673,10 +1676,18 @@ async def run_claude_agent_sdk(
         nonlocal actual_mcp_invocation_observed
         if capability_evidence_rejected:
             return False
+        key = (capability_kind, canonical_identity)
         if capability_kind == "mcp":
             actual_mcp_invocation_observed = True
+            answer_stream_gate.seal(
+                {
+                    canonical_identity: "external tool",
+                    tool_call_id: "tool invocation",
+                }
+            )
+        elif key in capability_plan.available:
+            answer_stream_gate.seal({tool_call_id: "tool invocation"})
         try:
-            key = (capability_kind, canonical_identity)
             evidence = RequiredCapabilityEvidence.sdk_hook_payload(
                 declaration=RequiredCapabilityDeclaration.from_authorized_subject(
                     capability_kind=capability_kind, canonical_identity=canonical_identity
@@ -2025,9 +2036,6 @@ async def run_claude_agent_sdk(
         setting_sources=["project"],
     )
 
-    sealed_answer_views = ["", ""]
-    sealed_answer_overflowed = False
-    published_text_suffix = ""
     structured_result_text = ""
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
@@ -2068,83 +2076,12 @@ async def run_claude_agent_sdk(
             return "required_tool_completion_evidence_mismatch"
         return None
 
-    def buffer_candidate_text(value: object, *, stream: bool = False) -> None:
-        nonlocal sealed_answer_overflowed
-        if sealed_answer_overflowed:
-            return
-        index = 0 if stream else 1
-        candidate = (
-            sealed_answer_views[0] + value
-            if stream and isinstance(value, str)
-            else _reconcile_answer_views(sealed_answer_views[0], value)
-            if isinstance(value, str)
-            else None
-        )
-        if not stream:
-            sealed_answer_views[0] = ""
-        if candidate is None or len(candidate) > answer_text_limit:
-            sealed_answer_overflowed = True
-            sealed_answer_views[:] = ["", ""]
-        elif candidate:
-            sealed_answer_views[index] = candidate
-
-    def redact_capability_private_tokens(value: str, *, public_suffix: str = "") -> str | None:
-        """Exact-replace private execution tokens before any governed publication."""
-
-        replacements = {
-            item["tool_call_id"]: "tool invocation"
-            for item in capability_evidence
-            if item.get("tool_call_id")
-        }
-        if actual_mcp_invocation_observed:
-            replacements.update(
-                {identity: "external tool" for kind, identity in capability_plan.available if kind == "mcp"}
-            )
-            replacements.update(
-                {
-                    str(config["url"]): "external tool endpoint"
-                    for server_id, config in mcp_servers.items()
-                    if server_id != "ai-platform-context"
-                    and isinstance(config, dict)
-                    and isinstance(config.get("url"), str)
-                    and config["url"]
-                }
-            )
-        private_tokens = tuple(sorted(replacements, key=lambda token: (-len(token), token)))
-        if public_suffix:
-            if any(len(token) > _MAX_PUBLICATION_OVERLAP_CHARS + 1 for token in private_tokens):
-                return None
-            boundary = len(public_suffix)
-
-            def crossing_private_token_chars(candidate: str) -> int:
-                overlap = 0
-                combined = public_suffix + candidate
-                for token in private_tokens:
-                    start = combined.find(token, max(0, boundary - len(token) + 1))
-                    if 0 <= start < boundary:
-                        overlap = max(overlap, start + len(token) - boundary)
-                return overlap
-
-            overlap = crossing_private_token_chars(value)
-            if overlap:
-                value = "external tool" + value[overlap:]
-                if crossing_private_token_chars(value):
-                    return None
-        for token in private_tokens:
-            value = value.replace(token, replacements[token])
-        sanitized = sanitize_public_text(value)
-        if any(token in sanitized for token in private_tokens):
-            return None
-        return sanitized if sanitized or not value else None
-
     async def publish_terminal_text(value: str) -> None:
-        nonlocal published_text_suffix
         if on_text is None or not value:
             return
         callback_result = on_text(value)
         if isawaitable(callback_result):
             await callback_result
-        published_text_suffix = (published_text_suffix + value)[-_MAX_PUBLICATION_OVERLAP_CHARS:]
 
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
@@ -2159,10 +2096,8 @@ async def run_claude_agent_sdk(
         ):
             if stream_projector is not None and isinstance(message, StreamEvent):
                 for text in stream_projector.accept(message.event):
-                    if required_answer_gate or actual_mcp_invocation_observed:
-                        buffer_candidate_text(text, stream=True)
-                    else:
-                        await publish_terminal_text(text)
+                    for public_text in answer_stream_gate.accept(text):
+                        await publish_terminal_text(public_text)
                 continue
             if isinstance(message, AssistantMessage):
                 diagnostic_counters["assistant_messages"] += 1
@@ -2174,13 +2109,15 @@ async def run_claude_agent_sdk(
                         text = getattr(block, "text", "")
                         assistant_text_blocks.append(text)
                 if (required_answer_gate or actual_mcp_invocation_observed) and (
-                    required_answer_gate or stream_projector is None
+                    stream_projector is None or not stream_projector.partial_emitted
                 ):
-                    buffer_candidate_text(
+                    assistant_text = (
                         "".join(assistant_text_blocks)
                         if all(isinstance(text, str) for text in assistant_text_blocks)
                         else None
                     )
+                    for public_text in answer_stream_gate.accept(assistant_text):
+                        await publish_terminal_text(public_text)
             elif isinstance(message, ResultMessage):
                 diagnostic_counters["result_messages"] += 1
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
@@ -2192,6 +2129,7 @@ async def run_claude_agent_sdk(
                 result_session_id = message.session_id
                 usage = message.usage or message.model_usage or {}
                 if message.is_error:
+                    answer_stream_gate.finish(final_text="", release=False)
                     raw_error = (
                         "; ".join(message.errors or [])
                         or message.stop_reason
@@ -2225,8 +2163,8 @@ async def run_claude_agent_sdk(
                 break
         if stream_projector is not None:
             stream_projector.close_unfinished()
-            if (required_answer_gate or actual_mcp_invocation_observed) and stream_projector.disabled:
-                buffer_candidate_text(None)
+            if stream_projector.disabled:
+                answer_stream_gate.fail_closed()
         terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL if not received_structured_terminal else None
         if terminal_error is None and capability_evidence_rejected:
             terminal_error = "required_tool_completion_evidence_mismatch"
@@ -2234,55 +2172,21 @@ async def run_claude_agent_sdk(
             terminal_error = selected_skill_hook_error()
         if terminal_error is None:
             terminal_error = capability_completion_error()
-        public_structured_result_text = structured_result_text
-        sealed_public_text = ""
-        if terminal_error is None and required_answer_gate:
-            logical_answer = _reconcile_answer_views(
-                sealed_answer_views[1], sealed_answer_views[0], structured_result_text
-            )
-            if terminal_error is None and (
-                sealed_answer_overflowed
-                or logical_answer is None
-                or logical_answer != structured_result_text
-                or len(logical_answer) > answer_text_limit
-            ):
-                terminal_error = _SDK_TOOL_ADMISSION_FAILED
-            if terminal_error is None:
-                public_structured_result_text = redact_capability_private_tokens(structured_result_text)
-                if public_structured_result_text is None or len(public_structured_result_text) > answer_text_limit:
-                    terminal_error = _SDK_TOOL_ADMISSION_FAILED
-                else:
-                    sealed_public_text = public_structured_result_text
-        if terminal_error is None and actual_mcp_invocation_observed:
-            public_structured_result_text = redact_capability_private_tokens(structured_result_text)
-            sealed_candidate = _reconcile_answer_views(
-                sealed_answer_views[1], sealed_answer_views[0]
-            )
-            if (
-                sealed_answer_overflowed
-                or public_structured_result_text is None
-                or sealed_candidate is None
-                or len(public_structured_result_text) > _MAX_REQUIRED_ANSWER_TEXT_CHARS
-            ):
-                terminal_error = _SDK_TOOL_ADMISSION_FAILED
-            elif sealed_candidate:
-                sealed_public_text = redact_capability_private_tokens(
-                    sealed_candidate, public_suffix=published_text_suffix
-                ) or ""
-                if not sealed_public_text:
-                    terminal_error = _SDK_TOOL_ADMISSION_FAILED
-            elif stream_projector is None or not stream_projector.partial_emitted:
-                sealed_public_text = public_structured_result_text
-        if terminal_error is None and received_structured_terminal:
-            if (required_answer_gate or actual_mcp_invocation_observed) and sealed_public_text:
-                await publish_terminal_text(sealed_public_text)
-            elif stream_projector is not None and stream_projector.partial_emitted:
-                pass  # ResultMessage is authoritative; do not replay after a raw beta delta.
-            elif structured_result_text:
-                await publish_terminal_text(structured_result_text)
+        finished_answer = answer_stream_gate.finish(
+            final_text=structured_result_text,
+            release=terminal_error is None,
+        )
+        if terminal_error is None and answer_stream_gate.failed:
+            terminal_error = _SDK_TOOL_ADMISSION_FAILED
+        if terminal_error is None:
+            for public_text in finished_answer.chunks:
+                await publish_terminal_text(public_text)
+        public_structured_result_text = (
+            finished_answer.final_text if terminal_error is None else ""
+        )
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
-            message=public_structured_result_text if terminal_error is None else "",
+            message=public_structured_result_text,
             session_id=result_session_id,
             usage=usage,
             error=terminal_error,

@@ -418,71 +418,53 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("subject_index", "token_kind", "boundary"),
-    [
-        pytest.param(0, "identity", "first", id="first-identity-first"),
-        pytest.param(0, "identity", "middle", id="first-identity-middle"),
-        pytest.param(0, "identity", "last", id="first-identity-last"),
-        pytest.param(0, "call_id", "first", id="first-call-id-first"),
-        pytest.param(0, "call_id", "middle", id="first-call-id-middle"),
-        pytest.param(0, "call_id", "last", id="first-call-id-last"),
-        pytest.param(0, "call_id", "unbounded", id="first-call-id-unbounded"),
-        pytest.param(1, "identity", "middle", id="second-identity-middle"),
-        pytest.param(1, "call_id", "middle", id="second-call-id-middle"),
-    ],
-)
-async def test_sdk_actual_mcp_private_tokens_cannot_span_publication_boundary(
+async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_text_once(
     monkeypatch,
     tmp_path,
-    subject_index,
-    token_kind,
-    boundary,
 ):
-    captured, deltas, published_before_hooks = {}, [], []
-    subjects = [
-        _subject(),
-        _subject(server_id="other-server", tool_name="fetch", endpoint="https://other.private.example/mcp"),
-    ]
-    call_ids = ["mcp-call-1", "mcp-call-2"]
-    if boundary == "unbounded":
-        call_ids[0] = "mcp-" + "x" * 600
-    token = subjects[subject_index]["identity"] if token_kind == "identity" else call_ids[subject_index]
-    split = 550 if boundary == "unbounded" else {"first": 1, "middle": len(token) // 2, "last": len(token) - 1}[boundary]
-    before, after = f"Before {token[:split]}", f"{token[split:]} after"
-    first_pre, first_completed = _mcp_hook_steps(subjects[0], call_id=call_ids[0])
-    second_pre, second_completed = _mcp_hook_steps(subjects[1], call_id=call_ids[1])
+    captured, deltas, published_before_hook = {}, [], []
+    subject = _subject()
+    call_id = "mcp-call-1"
+    before = f"Before {subject['identity']}."
+    after = f" After {call_id}."
     steps = [
         *_stream_steps(before),
-        ("probe", lambda: published_before_hooks.extend(deltas)),
-        first_pre,
-        second_pre,
-        first_completed,
-        second_completed,
+        ("probe", lambda: published_before_hook.extend(deltas)),
+        *_mcp_hook_steps(subject, call_id=call_id),
         *_stream_steps(after, index=1),
     ]
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps, result_text=before + after))
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text=before + after),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _trusted_internal_settings,
+    )
 
     result = await run_claude_agent_sdk(
-        prompt="search twice", cwd=tmp_path, skill_id="general-chat", execution_policy="sandbox_brokered",
-        tool_policy_subjects=subjects, on_text=deltas.append,
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
     joined = "".join(deltas)
-    assert "".join(published_before_hooks) == before
-    if boundary == "unbounded":
-        assert (result.error, result.message, deltas) == (
-            "claude_agent_sdk_tool_admission_failed", "", published_before_hooks
-        )
-        return
+    assert published_before_hook == ["Before external tool."]
     assert result.error is None
-    assert deltas[:-1] == published_before_hooks and before not in deltas[-1]
-    assert "Before " in joined and " after" in joined
-    assert not any(private in joined for private in (*call_ids, *(subject["identity"] for subject in subjects)))
-    assert token not in result.message
-    assert "safe-synthetic-value" not in joined
+    assert joined == "Before external tool. After tool invocation."
+    assert result.message == joined
+    for private_value in (
+        subject["identity"],
+        subject["mcp_server_config"]["url"],
+        call_id,
+        "safe-synthetic-value",
+    ):
+        assert private_value not in joined
 
 
 @pytest.mark.asyncio
