@@ -2,11 +2,12 @@ from contextlib import asynccontextmanager
 import json
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import repositories as repository_module
+from app.auth import AuthPrincipal
 from app.main import create_app
-from app.models import QueueRunPayload
 from app.queue import QueueAdmissionMetadata
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError, ToolPermissionTerminalizationProgress
 
@@ -138,6 +139,9 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     async def authorize_persisted_run(*_args, **_kwargs):
         return None
 
+    async def reauthorize_pinned_run(*_args, **_kwargs):
+        return None
+
     async def record_sandbox_runtime_cleanup_outcome(*_args, **_kwargs):
         return None
 
@@ -178,6 +182,11 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     monkeypatch.setattr(
         "app.routes.runs._authorize_persisted_run_for_queue",
         authorize_persisted_run,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.reauthorize_pinned_run_for_replay",
+        reauthorize_pinned_run,
         raising=False,
     )
     monkeypatch.setattr(
@@ -325,6 +334,252 @@ def test_sse_heartbeat_event_shape():
 
     assert "event: heartbeat" in text
     assert '"status": "running"' in text
+
+
+def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(monkeypatch):
+    calls: list[object] = []
+    active_transactions: set[int] = set()
+    transaction_number = 0
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal transaction_number
+        transaction_number += 1
+        current = transaction_number
+        active_transactions.add(current)
+        calls.append(("transaction_enter", current))
+        try:
+            yield {"transaction": current}
+        finally:
+            calls.append(("transaction_exit", current))
+            active_transactions.remove(current)
+
+    async def admit(conn, *_args, **_kwargs):
+        assert conn["transaction"] == 1
+        assert active_transactions == {1}
+        calls.append("user_lock")
+
+    async def reauthorize(conn, **kwargs):
+        expected_transaction = 1 if kwargs["run_id"] == "run-source" else 2
+        assert conn["transaction"] == expected_transaction
+        assert active_transactions == {expected_transaction}
+        calls.append(("profile_authority", kwargs["run_id"], expected_transaction))
+
+    async def copy(*_args, **kwargs):
+        calls.append(("copy", kwargs["run_id"]))
+        return {
+            "session_id": "ses-copy",
+            "run_id": "run-copy",
+            "agent_id": "agt_profile",
+            "skill_id": "profile-skill",
+            "workspace_id": "default",
+        }
+
+    async def prepare(*_args, **kwargs):
+        calls.append(("prepare", kwargs["copied"]["run_id"]))
+        return {"run_id": "run-copy"}
+
+    async def enqueue(payload):
+        assert active_transactions == {2}
+        calls.append(("enqueue", payload["run_id"], 2))
+        return 1
+
+    async def queue_insight(*_args, **_kwargs):
+        return {"status": "ok"}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
+    monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", admit)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", copy)
+    monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
+
+    response = TestClient(create_app()).post("/api/ai/runs/run-source/copy", headers=headers())
+
+    assert response.status_code == 200
+    assert calls == [
+        ("transaction_enter", 1),
+        "user_lock",
+        ("profile_authority", "run-source", 1),
+        ("copy", "run-source"),
+        ("prepare", "run-copy"),
+        ("transaction_exit", 1),
+        ("transaction_enter", 2),
+        ("profile_authority", "run-copy", 2),
+        ("enqueue", "run-copy", 2),
+        ("transaction_exit", 2),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("check_existing", "existing_admission", "expected_operations"),
+    [
+        (False, None, ["profile_authority", "enqueue"]),
+        (True, QueueAdmissionMetadata(2, 1, "message-a", "readback"), ["profile_authority", "read"]),
+        (True, None, ["profile_authority", "read", "enqueue"]),
+    ],
+    ids=["new-admission", "existing-admission", "recovered-missing-admission"],
+)
+async def test_run_control_queue_admission_keeps_profile_lock_transaction_open(
+    monkeypatch,
+    check_existing,
+    existing_admission,
+    expected_operations,
+):
+    """Structural mirror: retry/resume queue work remains inside the profile-lock transaction."""
+
+    from app.routes.runs import _ensure_run_control_queue_admission
+
+    active = False
+    operations: list[str] = []
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal active
+        assert not active
+        active = True
+        try:
+            yield object()
+        finally:
+            active = False
+
+    async def reauthorize(*_args, **_kwargs):
+        assert active
+        operations.append("profile_authority")
+
+    async def read_admission(*_args, **_kwargs):
+        assert active
+        operations.append("read")
+        return existing_admission
+
+    async def enqueue(*_args, **_kwargs):
+        assert active
+        operations.append("enqueue")
+        return 3
+
+    monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+
+    result = await _ensure_run_control_queue_admission(
+        {"run_id": "run-child"},
+        check_existing=check_existing,
+        principal=principal,
+    )
+
+    assert operations == expected_operations
+    assert not active
+    if existing_admission is not None:
+        assert result is existing_admission
+    else:
+        assert result.queue_position == 3
+
+
+@pytest.mark.parametrize(
+    ("status_code", "detail"),
+    [
+        (409, "agent_profile_not_available"),
+        (403, "agent_profile_not_authorized"),
+        (400, "agent_profile_model_not_available"),
+    ],
+    ids=["unpublished", "acl-revoked", "model-revoked"],
+)
+def test_copy_run_profile_reauthorization_denials_have_no_child_side_effect(
+    monkeypatch,
+    status_code,
+    detail,
+):
+    calls: list[str] = []
+
+    async def admit(*_args, **_kwargs):
+        calls.append("user_lock")
+
+    async def deny(*_args, **_kwargs):
+        calls.append("profile_authority")
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    async def forbidden_copy(*_args, **_kwargs):
+        calls.append("copy")
+        raise AssertionError("denied profile must not create an executable child")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", admit)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", deny, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", forbidden_copy)
+
+    response = TestClient(create_app(), raise_server_exceptions=False).post(
+        "/api/ai/runs/run-source/copy",
+        headers=headers(),
+    )
+
+    assert (response.status_code, response.json()["detail"]) == (status_code, detail)
+    assert calls == ["user_lock", "profile_authority"]
+
+
+def test_copy_run_reauthorizes_committed_child_before_external_queue_admission(monkeypatch):
+    calls: list[object] = []
+
+    async def admit(*_args, **_kwargs):
+        calls.append("user_lock")
+
+    async def reauthorize(*_args, **kwargs):
+        calls.append(("profile_authority", kwargs["run_id"]))
+        if kwargs["run_id"] == "run-copy":
+            raise HTTPException(status_code=409, detail="agent_profile_not_available")
+
+    async def copy(*_args, **_kwargs):
+        calls.append("copy")
+        return {
+            "session_id": "ses-copy",
+            "run_id": "run-copy",
+            "agent_id": "agt_profile",
+            "skill_id": "profile-skill",
+            "workspace_id": "default",
+        }
+
+    async def prepare(*_args, **_kwargs):
+        calls.append("prepare")
+        return {"run_id": "run-copy"}
+
+    async def forbidden_enqueue(*_args, **_kwargs):
+        calls.append("enqueue")
+        raise AssertionError("newly revoked profile must fail before queue admission")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", admit)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", copy)
+    monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", forbidden_enqueue)
+
+    response = TestClient(create_app(), raise_server_exceptions=False).post(
+        "/api/ai/runs/run-source/copy",
+        headers=headers(),
+    )
+
+    assert (response.status_code, response.json()["detail"]) == (
+        409,
+        "agent_profile_not_available",
+    )
+    assert calls == [
+        "user_lock",
+        ("profile_authority", "run-source"),
+        "copy",
+        "prepare",
+        ("profile_authority", "run-copy"),
+    ]
 
 
 def test_copy_run_creates_new_queued_run(monkeypatch):
@@ -753,6 +1008,9 @@ def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creati
         calls.append(("admit", kwargs["tenant_id"], kwargs["user_id"], kwargs["limit"]))
         return 0
 
+    async def reauthorize(conn, **kwargs):
+        calls.append(("profile_authority", kwargs["run_id"]))
+
     async def retry(conn, **kwargs):
         calls.append(("retry", kwargs["run_id"]))
         return {
@@ -816,6 +1074,7 @@ def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creati
     monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
     monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
     monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", admit, raising=False)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
     monkeypatch.setattr(repository_module, "retry_run_as_new_task", retry, raising=False)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
     monkeypatch.setattr(repository_module, "record_run_control_operation", record, raising=False)
@@ -836,12 +1095,15 @@ def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creati
         ("operation_lock", "retry", RUN_CONTROL_OPERATION_ID),
         ("resolve", "retry", RUN_CONTROL_OPERATION_ID),
         ("admit", "default", "user-a", 3),
+        ("profile_authority", "run-parent"),
         ("retry", "run-parent"),
         ("prepare", "run-child-once"),
         ("record", "run-child-once"),
+        ("profile_authority", "run-child-once"),
         ("enqueue", "run-child-once"),
         ("operation_lock", "retry", RUN_CONTROL_OPERATION_ID),
         ("resolve", "retry", RUN_CONTROL_OPERATION_ID),
+        ("profile_authority", "run-child-once"),
         ("read_admission", "run-child-once"),
     ]
 
@@ -879,6 +1141,9 @@ def test_existing_retry_operation_recovers_missing_queue_admission_without_dupli
         calls.append(("read", payload["run_id"], payload["input"]["message"]))
         return None
 
+    async def reauthorize(conn, **kwargs):
+        calls.append(("profile_authority", kwargs["run_id"]))
+
     async def enqueue(payload):
         calls.append(("enqueue", payload["run_id"], payload["input"]["message"]))
         return 4
@@ -890,6 +1155,7 @@ def test_existing_retry_operation_recovers_missing_queue_admission_without_dupli
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
     monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
     monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", forbidden, raising=False)
     monkeypatch.setattr(repository_module, "retry_run_as_new_task", forbidden, raising=False)
     monkeypatch.setattr(repository_module, "record_run_control_operation", forbidden, raising=False)
@@ -906,6 +1172,7 @@ def test_existing_retry_operation_recovers_missing_queue_admission_without_dupli
     assert calls == [
         ("operation_lock", RUN_CONTROL_OPERATION_ID),
         ("resolve", RUN_CONTROL_OPERATION_ID),
+        ("profile_authority", "run-child-once"),
         ("read", "run-child-once", "same immutable input"),
         ("enqueue", "run-child-once", "same immutable input"),
     ]
@@ -1372,9 +1639,17 @@ def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
 
 
 def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
-    calls = {"resume": [], "enqueue": [], "context": [], "step": [], "execution_snapshot": []}
+    calls = {
+        "resume": [],
+        "enqueue": [],
+        "context": [],
+        "step": [],
+        "execution_snapshot": [],
+        "order": [],
+    }
 
     async def fake_resume_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls["order"].append("resume")
         calls["resume"].append((tenant_id, user_id, run_id))
         return {
             "session_id": "ses-old",
@@ -1451,8 +1726,12 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         return {"tenant_id": tenant_id, "reason": "workers_busy"}
 
     async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls["order"].append("user_lock")
         calls["active_limit"] = (tenant_id, user_id, limit)
         return 0
+
+    async def reauthorize(conn, **kwargs):
+        calls["order"].append(("profile_authority", kwargs["run_id"]))
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
@@ -1461,6 +1740,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         fake_enforce_user_active_run_admission,
         raising=False,
     )
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.resume_run_as_new_task", fake_resume_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr(
@@ -1491,6 +1771,12 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     }
     assert calls["resume"] == [("default", "user-a", "run-failed")]
     assert calls["active_limit"] == ("default", "user-a", 3)
+    assert calls["order"] == [
+        "user_lock",
+        ("profile_authority", "run-failed"),
+        "resume",
+        ("profile_authority", "run-resume-new"),
+    ]
     assert calls["context"][0]["source"] == "resume_run"
     assert calls["context"][0]["source_run_id"] == "run-failed"
     assert calls["enqueue"][0]["context_snapshot_id"] == "ctx_resume_route"

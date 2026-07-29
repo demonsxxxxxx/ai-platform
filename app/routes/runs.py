@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import UUID4
 
 from app import repositories
+from app.agent_profiles import reauthorize_pinned_run_for_replay
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles, require_principal
 from app.capabilities import get_capability
 from app.context_builder import record_initial_context_snapshot
@@ -1177,6 +1178,11 @@ async def copy_run(
     try:
         async with transaction() as conn:
             await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
+            await reauthorize_pinned_run_for_replay(
+                conn,
+                principal=principal,
+                run_id=run_id,
+            )
             copied = await repositories.copy_run_as_new_task(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -1205,7 +1211,26 @@ async def copy_run(
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     try:
-        queue_position = await enqueue_run(queue_payload)
+        async with transaction() as conn:
+            await reauthorize_pinned_run_for_replay(
+                conn,
+                principal=principal,
+                run_id=str(copied["run_id"]),
+            )
+            queue_position = await enqueue_run(queue_payload)
+    except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="copy_run")
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+    except SkillVersionMaterializationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RepositoryNotFoundError as exc:
+        _raise_if_capability_revoked(exc)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RepositoryConflictError as exc:
+        _raise_if_capability_revoked(exc)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
@@ -1244,37 +1269,44 @@ async def _ensure_run_control_queue_admission(
     queue_payload: dict[str, Any],
     *,
     check_existing: bool,
+    principal: AuthPrincipal,
 ) -> QueueAdmissionMetadata:
     """Recover or idempotently admit one immutable committed control child."""
 
-    if check_existing:
-        try:
-            existing = await read_queue_admission(queue_payload)
-        except QueueAdmissionRejected as exc:
-            raise HTTPException(status_code=503, detail="queue_admission_recovery_failed") from exc
-        except Exception:
-            existing = None
-        if existing is not None:
-            return existing
-
-    try:
-        queue_position = await enqueue_run(queue_payload)
-        return QueueAdmissionMetadata(
-            queue_position=queue_position,
-            queue_admission_ordinal=0,
-            message_id="",
-            source="idempotent_enqueue",
+    async with transaction() as conn:
+        await reauthorize_pinned_run_for_replay(
+            conn,
+            principal=principal,
+            run_id=str(queue_payload["run_id"]),
         )
-    except Exception as enqueue_error:
+        if check_existing:
+            try:
+                existing = await read_queue_admission(queue_payload)
+            except QueueAdmissionRejected as exc:
+                raise HTTPException(status_code=503, detail="queue_admission_recovery_failed") from exc
+            except Exception:
+                existing = None
+            if existing is not None:
+                return existing
+
         try:
-            recovered = await read_queue_admission(queue_payload)
-        except Exception:
-            recovered = None
-        if recovered is not None:
-            return recovered
-        # The DB mapping and immutable queued child remain authoritative. A
-        # same-operation replay can safely retry the deterministic Redis admit.
-        raise HTTPException(status_code=503, detail="queue_admission_unconfirmed") from enqueue_error
+            queue_position = await enqueue_run(queue_payload)
+            return QueueAdmissionMetadata(
+                queue_position=queue_position,
+                queue_admission_ordinal=0,
+                message_id="",
+                source="idempotent_enqueue",
+            )
+        except Exception as enqueue_error:
+            try:
+                recovered = await read_queue_admission(queue_payload)
+            except Exception:
+                recovered = None
+            if recovered is not None:
+                return recovered
+            # The DB mapping and immutable queued child remain authoritative. A
+            # same-operation replay can safely retry the deterministic Redis admit.
+            raise HTTPException(status_code=503, detail="queue_admission_unconfirmed") from enqueue_error
 
 
 async def _run_control_queue_admission_state(
@@ -1330,6 +1362,11 @@ async def _mutate_run_control_child(
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
                 )
+                await reauthorize_pinned_run_for_replay(
+                    conn,
+                    principal=principal,
+                    run_id=run_id,
+                )
                 mutation = (
                     repositories.retry_run_as_new_task
                     if action == "retry"
@@ -1376,10 +1413,23 @@ async def _mutate_run_control_child(
     if status == "queued":
         if queue_payload is None:
             queue_payload = _run_control_queue_payload(copied, principal=principal)
-        admission = await _ensure_run_control_queue_admission(
-            queue_payload,
-            check_existing=not created,
-        )
+        try:
+            admission = await _ensure_run_control_queue_admission(
+                queue_payload,
+                check_existing=not created,
+                principal=principal,
+            )
+        except repositories.RepositoryAuthorizationError as exc:
+            await _audit_capability_denial(principal, exc, source=f"{action}_run")
+            raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+        except SkillVersionMaterializationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RepositoryNotFoundError as exc:
+            _raise_if_capability_revoked(exc)
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RepositoryConflictError as exc:
+            _raise_if_capability_revoked(exc)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         queue_position = admission.queue_position
     return RunControlMutationResponse(
         source_run_id=run_id,

@@ -9,6 +9,7 @@ def test_schema_declares_platform_fact_tables():
         "workspaces",
         "users",
         "agents",
+        "agent_profiles",
         "skills",
         "tenant_workbench_skills",
         "tenant_capability_distributions",
@@ -28,6 +29,17 @@ def test_schema_declares_platform_fact_tables():
         "audit_logs",
     ]:
         assert f"create table if not exists {table}" in schema
+
+
+def test_schema_declares_agent_profile_aggregate_and_immutable_withdrawal_history():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn'))" in schema
+    assert "fk_agent_profiles_current_publication" in schema
+    assert "published_hash text" in schema
+    assert "published_status text" in schema
+    assert "unique (tenant_id, agent_id, revision, content_hash, revision_status)" in schema
+    assert "withdrawn_from_revision bigint" in schema
 
 
 def test_schema_declares_capability_distribution_authority_constraints():
