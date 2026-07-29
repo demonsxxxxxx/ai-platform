@@ -122,7 +122,11 @@ The gate fails `stale_base` before local checks. It then runs compileall, diff
 check, bounded changed-scope responsibility checks, changed-file Ruff, and
 exact-ref governance. Conventional `app`/`tools`/`scripts` changes select their
 changed `tests/test_<stem>.py` mirror; changed test modules are selected only
-when present at `head`. A deleted test is never passed to pytest. A changed
+when present at `head`. Conventional mirrors remain the default; explicitly
+irregular repository-owned production paths may use an exact bounded
+responsibility mapping, and every mapped suite must exist as an exact
+case-sensitive blob at `head_ref` before it is selected. A deleted test is
+never passed to pytest. A changed
 `frontend/web` TypeScript or TSX path first verifies the candidate's exact
 Git-tree `package.json` and `pnpm-lock.yaml`, requires its pinned
 `packageManager` `pnpm@<version>`, and bootstraps only the detached candidate's
