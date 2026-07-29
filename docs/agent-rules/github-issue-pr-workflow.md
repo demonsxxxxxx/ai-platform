@@ -61,21 +61,60 @@ review requirements, runtime requirement when relevant, and known blockers.
 ## Pre-Push Readiness
 
 Before the first push, and after every ordinary merge-up from the PR base, run
-the exact-ref readiness gate from the repository root. It is a bounded local
-gate; it does not run full-repository pytest.
+the exact-ref readiness gate from the candidate repository root. It is a
+bounded local gate; it does not run full-repository pytest.
+
+The gate script is authority code. Never execute
+`tools/pre_push_readiness.py` from the candidate checkout: a candidate can
+replace that file before the check starts. Fetch the accepted authority commit,
+check it out into a detached temporary worktree, and run that immutable copy
+with the candidate repository as the working directory. `-P` and
+`PYTHONSAFEPATH=1` keep candidate-root imports out of authority bootstrap.
 
 ```powershell
 git fetch origin main
-$base = git rev-parse origin/main
+$candidateRoot = git rev-parse --show-toplevel
+$authority = git rev-parse origin/main
+$base = $authority
 $head = git rev-parse HEAD
-python tools/pre_push_readiness.py check --base-ref $base --head-ref $head --format text
+$authorityRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-platform-readiness-authority-" + [guid]::NewGuid())
+git worktree add --detach $authorityRoot $authority
+$previousPythonSafePath = $env:PYTHONSAFEPATH
+try {
+    Set-Location $candidateRoot
+    $env:PYTHONSAFEPATH = "1"
+    python -P (Join-Path $authorityRoot "tools/pre_push_readiness.py") check --authority-ref $authority --base-ref $base --head-ref $head --format text
+}
+finally {
+    if ($null -eq $previousPythonSafePath) { Remove-Item Env:PYTHONSAFEPATH -ErrorAction SilentlyContinue } else { $env:PYTHONSAFEPATH = $previousPythonSafePath }
+    git worktree remove --force $authorityRoot
+}
 ```
 
-The command requires full 40-hex commits, fails `stale_base` before local
-checks, and runs bounded changed-scope responsibility tests (changed tests and
-conventional `app`/`tools`/`scripts` test mirrors), compileall, diff check,
-changed-file Ruff, and trusted-base exact-ref governance. Preserve the emitted
-category and identity in the PR record:
+`authority`, `base`, and `head` must each resolve to full 40-hex commits. The
+authority copy verifies that its own Git object matches `authority`, and that
+the authority is accepted by `origin/main`, before it resolves or executes any
+candidate-owned code, configuration, or import. The normal post-merge command
+always derives a fresh immutable authority SHA from accepted `origin/main`.
+
+This tool has a one-time bootstrap boundary: while the introducing change is
+only a candidate and accepted `origin/main` does not yet contain the tool, that
+candidate cannot run this normal gate or certify itself. It becomes an
+authority only after independent review of its fixed SHA and ordinary merge.
+Record the candidate's focused tests and independent fixed-SHA review instead;
+do not copy the candidate script into the bootstrap command.
+
+The gate fails `stale_base` before local checks. It then runs compileall, diff
+check, bounded changed-scope responsibility checks, changed-file Ruff, and
+exact-ref governance. Conventional `app`/`tools`/`scripts` changes select their
+changed `tests/test_<stem>.py` mirror; changed test modules are selected only
+when present at `head`. A deleted test is never passed to pytest. A changed
+`frontend/web` TypeScript or TSX path runs the repository-native
+`corepack pnpm run ci:verify` responsibility command. A changed shared fixture
+such as `tests/conftest.py`, fixture/helper module, or otherwise unclassifiable
+affected path fails closed with `external_check` until an explicit bounded
+`--shared-test-suite tests/test_<name>.py` is supplied or the separate external
+suite is recorded. Preserve the emitted category and identity in the PR record:
 
 - `stale_base`: merge the current base through the ordinary merge-up flow, then
   run the gate again before pushing.
@@ -84,9 +123,11 @@ category and identity in the PR record:
 - `governance_violation`: fix the named policy rule and path; do not treat it
   as a runner failure.
 - `infrastructure_failure`: repair the unavailable local command or worktree
-  condition and rerun the same candidate range.
-- `external_check`: record a GitHub or other provider check separately from
-  local readiness.
+  condition and rerun the same candidate range. Cleanup-only failure is this
+  category; if cleanup follows a product or governance failure, the primary
+  failure remains primary and cleanup is reported alongside it.
+- `external_check`: supply the bounded shared suite when applicable, or record
+  the required GitHub or other provider check separately from local readiness.
 
 Do not automatically rerun a failed GitHub check. A same-SHA rerun is allowed
 only after positive infrastructure evidence on the same SHA identifies an
