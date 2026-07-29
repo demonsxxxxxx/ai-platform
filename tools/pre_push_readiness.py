@@ -306,7 +306,7 @@ class PrePushReadiness:
             raise ReadinessError("infrastructure_failure", "temporary_directory_failed", str(error)) from error
 
     def _add_worktree(self, path: Path, commit: str) -> None:
-        created = self._run(("git", "worktree", "add", "--detach", str(path), commit), self._repo_root)
+        created = self._run(_git_worktree_command("add", "--detach", str(path), commit), self._repo_root)
         if created.returncode != 0:
             raise ReadinessError("infrastructure_failure", "worktree_add_failed", _command_failure("git worktree add", created))
 
@@ -729,7 +729,7 @@ class PrePushReadiness:
                 continue
             record = {"label": label, "path": str(path), "registered_after": None, "remove_returncode": None}
             try:
-                removed = self._run(("git", "worktree", "remove", "--force", str(path)), self._repo_root)
+                removed = self._run(_git_worktree_command("remove", "--force", str(path)), self._repo_root)
                 record["remove_returncode"] = removed.returncode
                 if removed.returncode != 0:
                     failures.append(_command_failure(f"git worktree remove {label}", removed))
@@ -854,6 +854,11 @@ def _same_worktree_path(expected: Path, registered: str) -> bool:
 
 def _path_lexists(path: Path) -> bool:
     return os.path.lexists(path)
+
+
+def _git_worktree_command(*arguments: str) -> tuple[str, ...]:
+    """Enable Windows long-path checkout handling for disposable worktrees only."""
+    return ("git", "-c", "core.longpaths=true", "worktree", *arguments)
 
 
 def _candidate_environment() -> dict[str, str]:

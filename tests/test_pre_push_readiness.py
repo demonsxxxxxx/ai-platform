@@ -275,7 +275,7 @@ class _CleanupRunner:
     def run(self, command: tuple[str, ...], *, cwd: Path, env: dict[str, str] | None = None) -> object:
         del cwd, env
         self.commands.append(command)
-        if command[:3] == ("git", "worktree", "remove"):
+        if command[:5] == ("git", "-c", "core.longpaths=true", "worktree", "remove"):
             return self.module._CommandResult(self.remove_returncode, "", "remove failed")
         return self.module._CommandResult(0, "", "")
 
@@ -300,6 +300,18 @@ def test_worktree_cleanup_records_successful_remove_and_absent_registration(tmp_
     assert all(record["remove_returncode"] == 0 for record in cleanup["worktrees"])
     assert all(record["registered_after"] is False for record in cleanup["worktrees"])
     assert temporary_root.exists() is False
+
+
+def test_disposable_worktree_commands_enable_windows_long_path_handling(tmp_path: Path) -> None:
+    module = _readiness_module()
+    runner = _CleanupRunner(module)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+
+    readiness._add_worktree(tmp_path / "head", "a" * 40)
+
+    assert runner.commands == [
+        ("git", "-c", "core.longpaths=true", "worktree", "add", "--detach", str(tmp_path / "head"), "a" * 40)
+    ]
 
 
 def test_worktree_cleanup_removes_detached_frontend_node_modules_and_normalizes_windows_separators(tmp_path: Path) -> None:
