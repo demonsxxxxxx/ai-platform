@@ -23,6 +23,12 @@ AUTHORITY_TOOL_PATH = "tools/pre_push_readiness.py"
 AUTHORITY_GOVERNANCE_PATH = "tools/code_governance.py"
 CODE_GOVERNANCE_EXCEPTION_PATH = ".code-governance-exception.json"
 CODE_GOVERNANCE_TEST_PATH = "tests/test_code_governance.py"
+IRREGULAR_RESPONSIBILITY_SUITES = {
+    "app/mcp/__init__.py": ("tests/test_mcp_tool_catalog.py", "tests/test_mcp_repository.py"),
+    "app/mcp/catalog.py": ("tests/test_mcp_tool_catalog.py",),
+    "app/mcp/repository.py": ("tests/test_mcp_repository.py", "tests/test_mcp_repository_postgres.py"),
+    "app/schema.sql": ("tests/test_schema.py",),
+}
 FRONTEND_ROOT_PATH = "frontend/web"
 FRONTEND_PACKAGE_PATH = f"{FRONTEND_ROOT_PATH}/package.json"
 FRONTEND_LOCKFILE_PATH = f"{FRONTEND_ROOT_PATH}/pnpm-lock.yaml"
@@ -392,6 +398,10 @@ class PrePushReadiness:
             status = changed_path.status
             if status.startswith("D"):
                 continue
+            path = changed_path.destination_path or changed_path.source_path
+            if path is None:
+                unowned_paths.append("<unknown-change-path>")
+                continue
             if _touches_code_governance_exception(changed_path):
                 if (
                     status in {"A", "M"}
@@ -403,9 +413,12 @@ class PrePushReadiness:
                     continue
                 unowned_paths.append(CODE_GOVERNANCE_EXCEPTION_PATH)
                 continue
-            path = changed_path.destination_path or changed_path.source_path
-            if path is None:
-                unowned_paths.append("<unknown-change-path>")
+            mapped_suites = IRREGULAR_RESPONSIBILITY_SUITES.get(path)
+            if mapped_suites is not None:
+                if all(self._is_valid_bounded_test_suite(head, head_worktree, suite) for suite in mapped_suites):
+                    selected.update(mapped_suites)
+                    continue
+                unowned_paths.append(path)
                 continue
             pure_path = PurePosixPath(path)
             if _is_documentation_path(pure_path):
@@ -447,7 +460,7 @@ class PrePushReadiness:
                 path=shared_paths[0],
             )
         for suite in shared_test_suites:
-            if not self._is_valid_shared_test_suite(head, head_worktree, suite):
+            if not self._is_valid_bounded_test_suite(head, head_worktree, suite):
                 raise ReadinessError(
                     "governance_violation",
                     "invalid_shared_test_suite",
@@ -471,7 +484,7 @@ class PrePushReadiness:
         object_type = self._run(("git", "cat-file", "-t", f"{head}:{path}"), self._repo_root)
         return object_type.returncode == 0 and object_type.stdout.strip() == "blob"
 
-    def _is_valid_shared_test_suite(self, head: str, head_worktree: Path, suite: str) -> bool:
+    def _is_valid_bounded_test_suite(self, head: str, head_worktree: Path, suite: str) -> bool:
         if not _is_canonical_posix_test_path(suite):
             return False
         if not self._git_tree_has_exact_file(head, suite):
