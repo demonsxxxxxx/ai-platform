@@ -5864,7 +5864,7 @@ async def test_list_admin_tool_policies_returns_missing_tenant_policy_as_disable
     assert "from mcp_tools" in sql
     assert "left join tool_policies" in sql
     assert "tool_policies.tenant_id = %s" in sql
-    assert params == ("tenant-a", True, 500)
+    assert params == ("tenant-a", "tenant-a", True, 500)
     assert "endpoint" not in rows[0]
     assert "auth_mode" not in rows[0]
     assert rows == [
@@ -5924,7 +5924,7 @@ async def test_list_admin_tool_policies_filters_hidden_when_disabled_excluded():
     assert "coalesce(mcp_tools.visible_to_user, false) = true" in sql
     assert "tool_policies.status = 'active'" in sql
     assert "tool_policies.visible_to_user = true" in sql
-    assert params == ("tenant-a", False, 50)
+    assert params == ("tenant-a", "tenant-a", False, 50)
 
 
 @pytest.mark.asyncio
@@ -5984,6 +5984,7 @@ async def test_upsert_admin_tool_policy_writes_tenant_policy_and_returns_effecti
         "controlled write",
         "tool-admin",
         "ragflow-knowledge-search",
+        "tenant-a",
     )
     assert row["source"] == "tenant"
     assert row["effective_status"] == "active"
@@ -6213,6 +6214,9 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
     assert "mcp_servers.tenant_id = %s" in sql
     assert "mcp_servers.name = mcp_tools.server_id" in sql
     assert "mcp_tools.id = %s" in sql
+    assert "mcp_tool_catalog_entries.tenant_id = %s" in sql
+    assert "mcp_tool_catalog_entries.catalog_generation = mcp_servers.catalog_generation" in sql
+    assert "mcp_servers.catalog_status = 'available'" in sql
     assert sql.count("%s") == len(params)
     assert params == ("tenant-a", "qa-search", "tenant-a")
     assert row is not None

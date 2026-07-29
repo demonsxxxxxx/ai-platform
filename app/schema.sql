@@ -120,6 +120,7 @@ create table if not exists mcp_servers (
   credential_fingerprint text not null default '',
   catalog_generation bigint not null default 0,
   catalog_sync_attempt bigint not null default 0,
+  catalog_sync_lease_expires_at timestamptz,
   catalog_revision bigint not null default 0,
   catalog_status text not null default 'legacy',
   catalog_unavailable_reason text not null default '',
@@ -147,6 +148,7 @@ create index if not exists idx_mcp_servers_tenant_status
 alter table mcp_servers
   add column if not exists catalog_generation bigint not null default 0,
   add column if not exists catalog_sync_attempt bigint not null default 0,
+  add column if not exists catalog_sync_lease_expires_at timestamptz,
   add column if not exists catalog_revision bigint not null default 0,
   add column if not exists catalog_status text not null default 'legacy',
   add column if not exists catalog_unavailable_reason text not null default '',

@@ -1,18 +1,19 @@
-from contextlib import asynccontextmanager
+import asyncio
+import ipaddress
 import json
 
 import httpx
 import pytest
 
-from app import mcp_tool_catalog
-from app.mcp_tool_catalog import (
+from app.mcp import catalog, repository as mcp_repository
+from app.mcp.catalog import (
     McpDiscoveredTool,
     McpToolCatalogSyncCommand,
     McpToolCatalogSynchronizer,
     McpToolDiscoveryError,
     StreamableHttpMcpToolDiscoveryAdapter,
 )
-from app.repositories import new_mcp_catalog_tool_id
+from app.mcp.repository import new_mcp_catalog_tool_id
 from app.validation import SAFE_ID_PATTERN
 
 
@@ -33,8 +34,6 @@ def _command(**overrides):
 def _tool(name: str, *, read_only: bool = True) -> McpDiscoveredTool:
     return McpDiscoveredTool(
         remote_name=name,
-        label=name.title(),
-        description=f"Read {name}.",
         schema_hash=f"hash-{name}",
         read_only=read_only,
     )
@@ -109,12 +108,18 @@ async def test_streamable_http_discovery_consumes_every_cursor_page(monkeypatch)
     def client_factory(**kwargs):
         return real_client(transport=httpx.MockTransport(handler), **kwargs)
 
-    monkeypatch.setattr(mcp_tool_catalog.httpx, "AsyncClient", client_factory)
+    async def public_dns(hostname, port):
+        return (ipaddress.ip_address("8.8.8.8"),)
+
+    monkeypatch.setattr(catalog.httpx, "AsyncClient", client_factory)
+    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", public_dns)
 
     tools = await StreamableHttpMcpToolDiscoveryAdapter().discover("https://mcp.example/tools")
 
     assert [tool.remote_name for tool in tools] == ["search_docs", "get_doc"]
     assert all(tool.read_only for tool in tools)
+    assert not hasattr(tools[0], "label")
+    assert not hasattr(tools[0], "description")
     assert seen_methods == ["initialize", "notifications/initialized", "tools/list", "tools/list"]
 
 
@@ -130,69 +135,72 @@ async def test_streamable_http_discovery_rejects_cursor_loop_before_publication(
 
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
-        mcp_tool_catalog.httpx,
+        catalog.httpx,
         "AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.setattr(
+        catalog,
+        "_resolve_discovery_addresses",
+        lambda hostname, port: _resolved("8.8.8.8"),
     )
 
     with pytest.raises(McpToolDiscoveryError, match="protocol_error"):
         await StreamableHttpMcpToolDiscoveryAdapter().discover("https://mcp.example/tools")
 
 
-def _install_synchronizer_fakes(monkeypatch, *, discovery, publish_result=None):
-    class FakeConnection:
-        pass
+async def _resolved(*addresses):
+    return tuple(ipaddress.ip_address(address) for address in addresses)
 
-    @asynccontextmanager
-    async def fake_transaction():
-        yield FakeConnection()
 
+def _install_synchronizer_fakes(*, discovery, publish_result=None):
     outcomes: list[dict[str, object]] = []
     publications: list[dict[str, object]] = []
     attempts: list[dict[str, object]] = []
 
-    async def fake_begin(conn, **kwargs):
-        attempts.append(dict(kwargs))
-        return {
-            "started": True,
-            "catalog_status": "syncing",
-            "catalog_unavailable_reason": "refresh_required",
-            "catalog_revision": 4,
-            "catalog_discovered_count": 0,
-            "catalog_selectable_count": 0,
-            "catalog_sync_attempt": 2,
-        }
+    class FakeStore:
+        async def begin(self, command):
+            attempts.append(
+                {
+                    "tenant_id": command.tenant_id,
+                    "server_name": command.server_name,
+                    "observed_generation": command.observed_generation,
+                    "actor_id": command.actor_id,
+                }
+            )
+            return {
+                "started": True,
+                "catalog_status": "syncing",
+                "catalog_unavailable_reason": "refresh_required",
+                "catalog_revision": 4,
+                "catalog_discovered_count": 0,
+                "catalog_selectable_count": 0,
+                "catalog_sync_attempt": 2,
+            }
 
-    async def fake_outcome(conn, **kwargs):
-        outcomes.append(dict(kwargs))
-        return {
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": kwargs["reason"],
-            "catalog_revision": 4,
-            "catalog_discovered_count": 0,
-            "catalog_selectable_count": 0,
-        }
+        async def record_outcome(self, command, *, observed_attempt, reason):
+            outcomes.append({"observed_attempt": observed_attempt, "reason": reason})
+            return {
+                "catalog_status": "unavailable",
+                "catalog_unavailable_reason": reason,
+                "catalog_revision": 4,
+                "catalog_discovered_count": 0,
+                "catalog_selectable_count": 0,
+            }
 
-    async def fake_publish(conn, **kwargs):
-        publications.append(dict(kwargs))
-        return publish_result or {
-            "catalog_status": "available",
-            "catalog_unavailable_reason": "",
-            "catalog_revision": 8,
-            "catalog_discovered_count": len(kwargs["tools"]),
-            "catalog_selectable_count": sum(tool.read_only for tool in kwargs["tools"]),
-            "published": True,
-        }
+        async def publish(self, command, *, observed_attempt, tools):
+            publications.append({"observed_attempt": observed_attempt, "tools": tools})
+            return publish_result or {
+                "catalog_status": "available",
+                "catalog_unavailable_reason": "",
+                "catalog_revision": 8,
+                "catalog_discovered_count": len(tools),
+                "catalog_selectable_count": sum(tool.read_only for tool in tools),
+                "published": True,
+            }
 
-    async def fake_ensure_user(conn, **kwargs):
-        return {"id": kwargs["user_id"]}
-
-    monkeypatch.setattr(mcp_tool_catalog, "transaction", fake_transaction)
-    monkeypatch.setattr(mcp_tool_catalog.repositories, "begin_mcp_catalog_sync", fake_begin)
-    monkeypatch.setattr(mcp_tool_catalog.repositories, "record_mcp_catalog_sync_outcome", fake_outcome)
-    monkeypatch.setattr(mcp_tool_catalog.repositories, "publish_mcp_tool_catalog", fake_publish)
-    monkeypatch.setattr(mcp_tool_catalog.repositories, "ensure_user", fake_ensure_user)
-    return McpToolCatalogSynchronizer(discovery=discovery), outcomes, publications, attempts
+    store = FakeStore()
+    return McpToolCatalogSynchronizer(discovery=discovery, store=store), outcomes, publications, attempts, store
 
 
 @pytest.mark.asyncio
@@ -202,7 +210,7 @@ async def test_synchronizer_publishes_only_the_complete_multi_tool_manifest(monk
             assert endpoint == "https://mcp.example/tools"
             return (_tool("search_docs"), _tool("get_doc"), _tool("write_doc", read_only=False))
 
-    synchronizer, outcomes, publications, attempts = _install_synchronizer_fakes(monkeypatch, discovery=CompleteDiscovery())
+    synchronizer, outcomes, publications, attempts, _ = _install_synchronizer_fakes(discovery=CompleteDiscovery())
 
     result = await synchronizer.synchronize(_command())
 
@@ -220,8 +228,7 @@ async def test_synchronizer_publishes_a_truthful_zero_tool_result(monkeypatch):
         async def discover(self, endpoint):
             return ()
 
-    synchronizer, outcomes, publications, _ = _install_synchronizer_fakes(
-        monkeypatch,
+    synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(
         discovery=EmptyDiscovery(),
         publish_result={
             "catalog_status": "no_tools",
@@ -247,7 +254,7 @@ async def test_transport_failure_never_attempts_partial_publication(monkeypatch)
         async def discover(self, endpoint):
             raise McpToolDiscoveryError("transport_failure")
 
-    synchronizer, outcomes, publications, _ = _install_synchronizer_fakes(monkeypatch, discovery=FailingDiscovery())
+    synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(discovery=FailingDiscovery())
 
     result = await synchronizer.synchronize(_command())
 
@@ -264,8 +271,7 @@ async def test_stale_generation_result_cannot_report_publication(monkeypatch):
         async def discover(self, endpoint):
             return (_tool("search_docs"),)
 
-    synchronizer, _, publications, _ = _install_synchronizer_fakes(
-        monkeypatch,
+    synchronizer, _, publications, _, _ = _install_synchronizer_fakes(
         discovery=CompleteDiscovery(),
         publish_result={
             "catalog_status": "unavailable",
@@ -290,9 +296,9 @@ async def test_concurrent_sync_claim_fails_closed_before_remote_discovery(monkey
         async def discover(self, endpoint):
             raise AssertionError("an already claimed generation must not rediscover")
 
-    synchronizer, outcomes, publications, _ = _install_synchronizer_fakes(monkeypatch, discovery=UnexpectedDiscovery())
+    synchronizer, outcomes, publications, _, store = _install_synchronizer_fakes(discovery=UnexpectedDiscovery())
 
-    async def already_claimed(conn, **kwargs):
+    async def already_claimed(command):
         return {
             "started": False,
             "catalog_status": "unavailable",
@@ -302,7 +308,7 @@ async def test_concurrent_sync_claim_fails_closed_before_remote_discovery(monkey
             "catalog_selectable_count": 2,
         }
 
-    monkeypatch.setattr(mcp_tool_catalog.repositories, "begin_mcp_catalog_sync", already_claimed)
+    monkeypatch.setattr(store, "begin", already_claimed)
 
     result = await synchronizer.synchronize(_command())
 
@@ -318,7 +324,7 @@ async def test_credentialed_or_invalid_requests_stay_unavailable_without_discove
         async def discover(self, endpoint):
             raise AssertionError("discovery must not run")
 
-    synchronizer, outcomes, publications, _ = _install_synchronizer_fakes(monkeypatch, discovery=UnexpectedDiscovery())
+    synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(discovery=UnexpectedDiscovery())
 
     credentialed = await synchronizer.synchronize(_command(credentialed=True))
     invalid = await synchronizer.synchronize(_command(endpoint="https://mcp.example/tools?token=secret"))
@@ -328,3 +334,164 @@ async def test_credentialed_or_invalid_requests_stay_unavailable_without_discove
     assert publications == []
     assert [row["reason"] for row in outcomes] == ["credentials_not_supported", "invalid_endpoint"]
     assert "mcp.example" not in str(invalid.public_payload())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "allowed"),
+    [
+        ("https://8.8.8.8/tools", True),
+        ("http://8.8.8.8/tools", False),
+        ("http://10.56.0.211/tools", True),
+        ("https://10.56.0.211/tools", True),
+        ("http://127.0.0.1/tools", False),
+        ("http://169.254.169.254/latest/meta-data", False),
+        ("https://[::1]/tools", False),
+        ("https://[fe80::1]/tools", False),
+        ("https://255.255.255.255/tools", False),
+    ],
+)
+async def test_discovery_target_policy_accepts_only_public_https_or_private_rfc1918(endpoint, allowed):
+    if allowed:
+        assert await catalog._validated_discovery_endpoint(endpoint) == endpoint
+    else:
+        with pytest.raises(McpToolDiscoveryError, match="invalid_endpoint"):
+            await catalog._validated_discovery_endpoint(endpoint)
+
+
+@pytest.mark.asyncio
+async def test_discovery_target_policy_rejects_localhost_and_mixed_dns_answers(monkeypatch):
+    async def local_answer(hostname, port):
+        return await _resolved("127.0.0.1")
+
+    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", local_answer)
+    with pytest.raises(McpToolDiscoveryError, match="invalid_endpoint"):
+        await catalog._validated_discovery_endpoint("https://localhost/tools")
+
+    async def mixed_answer(hostname, port):
+        return await _resolved("10.56.0.211", "8.8.8.8")
+
+    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", mixed_answer)
+    with pytest.raises(McpToolDiscoveryError, match="invalid_endpoint"):
+        await catalog._validated_discovery_endpoint("http://mcp.corp.example/tools")
+
+
+@pytest.mark.asyncio
+async def test_discovery_does_not_follow_redirects_after_target_validation(monkeypatch):
+    seen_urls: list[str] = []
+
+    async def public_dns(hostname, port):
+        return await _resolved("8.8.8.8")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        return httpx.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", public_dns)
+    monkeypatch.setattr(
+        catalog.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    with pytest.raises(McpToolDiscoveryError, match="protocol_error"):
+        await StreamableHttpMcpToolDiscoveryAdapter().discover("https://mcp.example/tools")
+    assert seen_urls == ["https://mcp.example/tools"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_discovery_records_retryable_outcome_before_lease_expiry():
+    class CancelledDiscovery:
+        async def discover(self, endpoint):
+            raise asyncio.CancelledError()
+
+    synchronizer, outcomes, publications, _, _ = _install_synchronizer_fakes(discovery=CancelledDiscovery())
+
+    with pytest.raises(asyncio.CancelledError):
+        await synchronizer.synchronize(_command())
+
+    assert outcomes == [{"observed_attempt": 2, "reason": "discovery_aborted"}]
+    assert publications == []
+
+
+@pytest.mark.asyncio
+async def test_expired_sync_takeover_claims_new_attempt_and_fences_old_attempt(monkeypatch):
+    class Cursor:
+        def __init__(self, row):
+            self._row = row
+
+        async def fetchone(self):
+            return self._row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((sql, params))
+            if "for update" in sql:
+                return Cursor(
+                    {
+                        "tenant_id": "tenant-a",
+                        "name": "knowledge",
+                        "status": "active",
+                        "catalog_generation": 7,
+                        "catalog_sync_attempt": 2,
+                        "catalog_status": "syncing",
+                        "catalog_unavailable_reason": "refresh_required",
+                        "catalog_revision": 3,
+                        "catalog_discovered_count": 1,
+                        "catalog_selectable_count": 1,
+                    }
+                )
+            return Cursor(
+                {
+                    "catalog_generation": 7,
+                    "catalog_sync_attempt": 3,
+                    "catalog_status": "syncing",
+                    "catalog_unavailable_reason": "refresh_required",
+                    "catalog_revision": 3,
+                    "catalog_discovered_count": 1,
+                    "catalog_selectable_count": 1,
+                }
+            )
+
+    conn = Connection()
+    started = await mcp_repository.begin_mcp_catalog_sync(
+        conn,
+        tenant_id="tenant-a",
+        server_name="knowledge",
+        observed_generation=7,
+        actor_id="admin-a",
+    )
+
+    assert started["started"] is True
+    assert started["catalog_sync_attempt"] == 3
+    assert "catalog_sync_lease_expires_at <= now()" in conn.calls[1][0]
+
+    async def current_server(conn, **kwargs):
+        return {
+            "status": "active",
+            "catalog_generation": 7,
+            "catalog_sync_attempt": 3,
+            "catalog_status": "syncing",
+            "catalog_revision": 3,
+            "catalog_discovered_count": 1,
+            "catalog_selectable_count": 1,
+        }
+
+    monkeypatch.setattr(mcp_repository, "_locked_server", current_server)
+    stale = await mcp_repository.publish_mcp_tool_catalog(
+        object(),
+        tenant_id="tenant-a",
+        server_name="knowledge",
+        observed_generation=7,
+        observed_attempt=2,
+        endpoint="https://mcp.example/tools",
+        tools=(),
+        actor_id="admin-a",
+    )
+
+    assert stale["catalog_unavailable_reason"] == "stale_generation"
+    assert stale["published"] is False

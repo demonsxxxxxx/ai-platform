@@ -16,9 +16,16 @@ from app.capability_distribution import (
     capability_distribution_audit_payload,
     resolve_capability_access,
 )
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
+from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
-from app.mcp_tool_catalog import McpToolCatalogSyncCommand, McpToolCatalogSynchronizer
+from app.mcp import repository as mcp_repository
+from app.mcp.catalog import (
+    MCP_PUBLIC_TOOL_DESCRIPTION,
+    MCP_PUBLIC_TOOL_LABEL,
+    MCP_PUBLIC_UNAVAILABLE_LABEL,
+    McpToolCatalogSyncCommand,
+    McpToolCatalogSynchronizer,
+)
 from app.tool_policy import evaluate_tool_policy
 from app.validation import assert_safe_id
 
@@ -549,7 +556,7 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
     """Project only current-principal generic MCP tools usable by Chat runtime."""
 
     async with transaction() as conn:
-        rows = await repositories.list_authorized_chat_mcp_tools(
+        rows = await mcp_repository.list_authorized_chat_mcp_tools(
             conn,
             tenant_id=principal.tenant_id,
             principal_department_id=principal.department_id,
@@ -558,7 +565,7 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
             permissions=principal.permissions,
         )
         selectable_server_names = {str(row.get("server_id") or "") for row in rows}
-        unavailable = await repositories.list_chat_mcp_catalog_unavailable(
+        unavailable = await mcp_repository.list_chat_mcp_catalog_unavailable(
             conn,
             tenant_id=principal.tenant_id,
             principal_department_id=principal.department_id,
@@ -573,12 +580,18 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
         items.append(
             {
                 "tool_id": tool_id,
-                "label": (sanitize_public_text(row.get("name")) or tool_id)[:120],
-                "description": sanitize_public_text(row.get("description"))[:500],
+                "label": MCP_PUBLIC_TOOL_LABEL,
+                "description": MCP_PUBLIC_TOOL_DESCRIPTION,
                 "category": "mcp",
             }
         )
-    return items, unavailable
+    return items, [
+        {
+            "label": MCP_PUBLIC_UNAVAILABLE_LABEL,
+            "reason": str(row.get("reason") or "unavailable"),
+        }
+        for row in unavailable
+    ]
 
 
 async def _write_server(
@@ -657,7 +670,7 @@ async def _write_server(
                 updated_by=principal.user_id,
             )
             if not request.enabled:
-                await repositories.mark_mcp_catalog_lifecycle_unavailable(
+                await mcp_repository.mark_mcp_catalog_lifecycle_unavailable(
                     conn,
                     tenant_id=principal.tenant_id,
                     server_name=name,
@@ -878,7 +891,7 @@ async def delete_mcp_server(
                 capability_id=safe_name,
                 archived_by=principal.user_id,
             )
-            await repositories.mark_mcp_catalog_lifecycle_unavailable(
+            await mcp_repository.mark_mcp_catalog_lifecycle_unavailable(
                 conn,
                 tenant_id=principal.tenant_id,
                 server_name=safe_name,
@@ -933,7 +946,7 @@ async def toggle_mcp_server(
                 updated_by=principal.user_id,
             )
             if row.get("status") != "active":
-                await repositories.mark_mcp_catalog_lifecycle_unavailable(
+                await mcp_repository.mark_mcp_catalog_lifecycle_unavailable(
                     conn,
                     tenant_id=principal.tenant_id,
                     server_name=safe_name,
@@ -973,7 +986,7 @@ async def synchronize_mcp_server_catalog(
     raw_url = str(request.url)  # type: ignore[attr-defined]
     fingerprint = hashlib.sha256(raw_url.encode("utf-8")).hexdigest()
     async with transaction() as conn:
-        row = await repositories.get_mcp_server_catalog_sync_snapshot(
+        row = await mcp_repository.get_mcp_server_catalog_sync_snapshot(
             conn,
             tenant_id=principal.tenant_id,
             name=safe_name,
@@ -1144,7 +1157,7 @@ async def delete_admin_mcp_server(
                 capability_id=safe_name,
                 archived_by=principal.user_id,
             )
-            await repositories.mark_mcp_catalog_lifecycle_unavailable(
+            await mcp_repository.mark_mcp_catalog_lifecycle_unavailable(
                 conn,
                 tenant_id=principal.tenant_id,
                 server_name=safe_name,

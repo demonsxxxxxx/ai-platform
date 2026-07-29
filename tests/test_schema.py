@@ -111,6 +111,7 @@ def test_schema_declares_generation_fenced_tenant_mcp_catalogs():
 
     assert "catalog_generation bigint not null default 0" in schema
     assert "catalog_sync_attempt bigint not null default 0" in schema
+    assert "catalog_sync_lease_expires_at timestamptz" in schema
     assert "catalog_status text not null default 'legacy'" in schema
     assert "create table if not exists mcp_tool_catalog_entries" in schema
     assert "unique (tenant_id, server_name, remote_tool_name)" in schema

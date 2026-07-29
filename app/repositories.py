@@ -6,7 +6,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
 
 from psycopg import AsyncConnection
 
@@ -81,12 +80,6 @@ CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT = 128
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
-
-
-def new_mcp_catalog_tool_id() -> str:
-    """Create a stable opaque selector that is valid for the existing Chat ID contract."""
-
-    return f"mcpt-{uuid.uuid4().hex}"
 
 
 def memory_policy_id(*, tenant_id: str, workspace_id: str, user_id: str, agent_id: str | None) -> str:
@@ -2025,145 +2018,6 @@ async def delete_user_skill_file(
     return dict(row)
 
 
-async def list_workbench_mcp_tools(conn: AsyncConnection, *, tenant_id: str, include_disabled: bool = True) -> list[dict[str, Any]]:
-    cursor = await conn.execute(
-        """
-        select
-          mcp_tools.id as tool_id,
-          mcp_tools.server_id,
-          mcp_tools.name,
-          mcp_tools.description,
-          mcp_tools.transport_type,
-          mcp_tools.endpoint,
-          mcp_tools.auth_mode,
-          mcp_tools.allowed_tools,
-          mcp_tools.status as registry_status,
-          tool_policies.status as policy_status,
-          mcp_tools.write_capable as registry_write_capable,
-          tool_policies.write_capable as policy_write_capable,
-          mcp_tools.risk_level as registry_risk_level,
-          tool_policies.risk_level as policy_risk_level,
-          mcp_tools.visible_to_user as registry_visible_to_user,
-          tool_policies.visible_to_user as policy_visible_to_user
-        from mcp_tools
-        left join tool_policies
-          on tool_policies.tenant_id = %s
-         and tool_policies.tool_id = mcp_tools.id
-        where mcp_tools.visible_to_user = true
-          and tool_policies.visible_to_user = true
-          and (%s or (mcp_tools.status = 'active' and tool_policies.status = 'active'))
-        order by case mcp_tools.id
-          when 'ragflow-knowledge-search' then 1
-          else 99
-        end, mcp_tools.id asc
-        """,
-        (tenant_id, include_disabled),
-    )
-    return [
-        {
-            **policy,
-            "allowed_for_user": bool(policy["visible_to_user"]),
-        }
-        for policy in (_tool_policy_projection(dict(row), tenant_id=tenant_id) for row in await cursor.fetchall())
-    ]
-
-
-async def get_mcp_tool_registry_entry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    tool_id: str,
-) -> dict[str, Any] | None:
-    """Fetch one tool only when its parent MCP server belongs to the tenant."""
-
-    cursor = await conn.execute(
-        """
-        select
-          mcp_tools.id as tool_id,
-          mcp_tools.server_id,
-          mcp_tools.name,
-          mcp_tools.description,
-          mcp_tools.transport_type,
-          mcp_tools.endpoint,
-          mcp_tools.auth_mode,
-          mcp_tools.allowed_tools,
-          mcp_tools.status as registry_status,
-          mcp_servers.status as server_status,
-          mcp_servers.catalog_status as server_catalog_status,
-          mcp_tool_catalog_entries.status as catalog_status,
-          mcp_tools.write_capable as registry_write_capable,
-          mcp_tools.risk_level as registry_risk_level,
-          mcp_tools.visible_to_user as registry_visible_to_user,
-          tool_policies.status as policy_status,
-          tool_policies.write_capable as policy_write_capable,
-          tool_policies.risk_level as policy_risk_level,
-          tool_policies.visible_to_user as policy_visible_to_user
-        from mcp_tools
-        join mcp_servers
-          on mcp_servers.tenant_id = %s
-         and mcp_servers.name = mcp_tools.server_id
-         and mcp_servers.status <> 'deleted'
-        left join mcp_tool_catalog_entries
-          on mcp_tool_catalog_entries.tool_id = mcp_tools.id
-        left join tool_policies
-          on tool_policies.tenant_id = mcp_servers.tenant_id
-         and tool_policies.tool_id = mcp_tools.id
-        where mcp_tools.id = %s
-          and (
-            mcp_tool_catalog_entries.tool_id is null
-            or mcp_tool_catalog_entries.tenant_id = %s
-          )
-        """,
-        (tenant_id, tool_id, tenant_id),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        return None
-    record = dict(row)
-    entry = _tool_policy_projection(record, tenant_id=tenant_id)
-    entry["server_status"] = str(record.get("server_status") or "disabled")
-    entry["server_catalog_status"] = str(record.get("server_catalog_status") or "legacy")
-    entry["catalog_status"] = str(record.get("catalog_status") or "legacy")
-    entry["transport_type"] = str(record.get("transport_type") or "")
-    entry["endpoint"] = str(record.get("endpoint") or "")
-    entry["auth_mode"] = str(record.get("auth_mode") or "")
-    allowed_tools = record.get("allowed_tools")
-    entry["allowed_tools"] = (
-        [item for item in allowed_tools if isinstance(item, str) and SAFE_ID_PATTERN.fullmatch(item)]
-        if isinstance(allowed_tools, list)
-        else []
-    )
-    return entry
-
-
-def mcp_runtime_metadata_usable(tool: dict[str, Any]) -> bool:
-    """Return whether a generic MCP registry row can be sandbox-registered."""
-
-    server_id = str(tool.get("server_id") or "")
-    tool_id = str(tool.get("tool_id") or "")
-    allowed_tools = tool.get("allowed_tools")
-    endpoint = str(tool.get("endpoint") or "")
-    parsed = urlsplit(endpoint)
-    return bool(
-        SAFE_ID_PATTERN.fullmatch(server_id)
-        and SAFE_ID_PATTERN.fullmatch(tool_id)
-        and isinstance(allowed_tools, list)
-        and len(allowed_tools) == 1
-        and isinstance(allowed_tools[0], str)
-        and SAFE_ID_PATTERN.fullmatch(allowed_tools[0])
-        and parsed.scheme in {"http", "https"}
-        and parsed.netloc
-        and not parsed.username
-        and not parsed.password
-        and not parsed.query
-        and not parsed.fragment
-        and str(tool.get("transport_type") or "").lower() in {"http", "streamable_http", "sse"}
-        and str(tool.get("auth_mode") or "").lower() == "none"
-        and str(tool.get("catalog_status") or "legacy") in {"legacy", "active"}
-        and str(tool.get("server_catalog_status") or "legacy") in {"legacy", "available"}
-    )
-
-
 async def list_chat_mcp_tool_catalog_entries(
     conn: AsyncConnection,
     *,
@@ -2212,6 +2066,7 @@ async def list_chat_mcp_tool_catalog_entries(
             or (
               mcp_tool_catalog_entries.tenant_id = %s
               and mcp_tool_catalog_entries.status = 'active'
+              and mcp_tool_catalog_entries.catalog_generation = mcp_servers.catalog_generation
               and mcp_servers.catalog_status = 'available'
             )
           )
@@ -2327,100 +2182,6 @@ async def _authorize_chat_mcp_tool_entry(
             decision=decision,
         )
     return tool
-
-
-async def authorize_selected_chat_mcp_tools(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    tool_ids: list[str],
-    principal_department_id: str,
-    principal_roles: list[str] | None,
-    is_admin: bool,
-    permissions: list[str] | None,
-) -> list[dict[str, Any]]:
-    """Authorize a complete canonical Chat MCP selection or fail closed."""
-
-    if len(tool_ids) != len(set(tool_ids)):
-        duplicate_id = next(
-            (tool_id for index, tool_id in enumerate(tool_ids) if tool_id in tool_ids[:index]),
-            "mcp_tool",
-        )
-        duplicate_context = _chat_mcp_access_context(
-            tenant_id=tenant_id,
-            principal_department_id=principal_department_id,
-            principal_roles=principal_roles,
-            is_admin=is_admin,
-            permissions=permissions,
-        )
-        raise _capability_not_authorized(
-            context=duplicate_context,
-            capability_kind="mcp_tool",
-            capability_id=duplicate_id,
-        )
-    context = _chat_mcp_access_context(
-        tenant_id=tenant_id,
-        principal_department_id=principal_department_id,
-        principal_roles=principal_roles,
-        is_admin=is_admin,
-        permissions=permissions,
-    )
-    authorized: list[dict[str, Any]] = []
-    for tool_id in tool_ids:
-        tool = await get_mcp_tool_registry_entry(
-            conn,
-            tenant_id=tenant_id,
-            tool_id=tool_id,
-        )
-        if tool is None or str(tool.get("tool_id") or "").strip() != tool_id:
-            raise _capability_not_authorized(
-                context=context,
-                capability_kind="mcp_tool",
-                capability_id=tool_id,
-            )
-        authorized.append(
-            await _authorize_chat_mcp_tool_entry(
-                conn,
-                context=context,
-                tenant_id=tenant_id,
-                tool=tool,
-            )
-        )
-    return authorized
-
-
-async def list_authorized_chat_mcp_tools(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    principal_department_id: str,
-    principal_roles: list[str] | None,
-    is_admin: bool,
-    permissions: list[str] | None,
-) -> list[dict[str, Any]]:
-    """Return current-principal Chat MCP entries, omitting every unusable row."""
-
-    context = _chat_mcp_access_context(
-        tenant_id=tenant_id,
-        principal_department_id=principal_department_id,
-        principal_roles=principal_roles,
-        is_admin=is_admin,
-        permissions=permissions,
-    )
-    authorized: list[dict[str, Any]] = []
-    for tool in await list_chat_mcp_tool_catalog_entries(conn, tenant_id=tenant_id):
-        try:
-            authorized.append(
-                await _authorize_chat_mcp_tool_entry(
-                    conn,
-                    context=context,
-                    tenant_id=tenant_id,
-                    tool=tool,
-                )
-            )
-        except RepositoryAuthorizationError:
-            continue
-    return authorized
 
 
 def _json_dict_projection(value: Any) -> dict[str, Any]:
@@ -3037,6 +2798,7 @@ async def toggle_capability_distribution_row(
             end,
             catalog_discovered_count = 0,
             catalog_selectable_count = 0,
+            catalog_sync_lease_expires_at = null,
             updated_at = now()
         where tenant_id = %s and capability_kind = %s and capability_id = %s
         returning id, tenant_id, capability_kind, capability_id, status, visible_to_user,
@@ -3732,30 +3494,6 @@ async def list_mcp_server_registry_names(
     return [str(row.get("name") or "") for row in await cursor.fetchall() if row.get("name")]
 
 
-async def get_mcp_server_catalog_sync_snapshot(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    name: str,
-) -> dict[str, Any] | None:
-    """Load the private lifecycle generation and fingerprint needed to fence one explicit refresh."""
-
-    cursor = await conn.execute(
-        """
-        select name, transport, status, credential_fingerprint, credential_metadata_json,
-          catalog_generation, catalog_revision, catalog_status, catalog_unavailable_reason,
-          catalog_sync_attempt,
-          catalog_discovered_count, catalog_selectable_count
-        from mcp_servers
-        where tenant_id = %s
-          and name = %s
-        """,
-        (tenant_id, name),
-    )
-    row = await cursor.fetchone()
-    return dict(row) if row is not None else None
-
-
 async def upsert_mcp_server_registry(
     conn: AsyncConnection,
     *,
@@ -3811,6 +3549,7 @@ async def upsert_mcp_server_registry(
               catalog_unavailable_reason = case when excluded.status = 'active' then 'refresh_required' else 'disabled' end,
               catalog_discovered_count = 0,
               catalog_selectable_count = 0,
+              catalog_sync_lease_expires_at = null,
               updated_by = excluded.updated_by,
               updated_at = now()
           where mcp_servers.is_system = excluded.is_system
@@ -3899,6 +3638,7 @@ async def toggle_mcp_server_registry(
             end,
             catalog_discovered_count = 0,
             catalog_selectable_count = 0,
+            catalog_sync_lease_expires_at = null,
             updated_at = now()
         where tenant_id = %s
           and name = %s
@@ -3952,6 +3692,7 @@ async def delete_mcp_server_registry(
             catalog_unavailable_reason = 'deleted',
             catalog_discovered_count = 0,
             catalog_selectable_count = 0,
+            catalog_sync_lease_expires_at = null,
             updated_at = now()
         where tenant_id = %s
           and name = %s
@@ -4018,524 +3759,6 @@ async def record_mcp_server_credential(
     )
 
 
-def _mcp_catalog_state_projection(row: dict[str, Any], *, published: bool = False) -> dict[str, Any]:
-    return {
-        "catalog_status": str(row.get("catalog_status") or "unavailable"),
-        "catalog_unavailable_reason": str(row.get("catalog_unavailable_reason") or ""),
-        "catalog_revision": int(row.get("catalog_revision") or 0),
-        "catalog_discovered_count": int(row.get("catalog_discovered_count") or 0),
-        "catalog_selectable_count": int(row.get("catalog_selectable_count") or 0),
-        "published": published,
-    }
-
-
-async def _locked_mcp_catalog_server(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    server_name: str,
-) -> dict[str, Any] | None:
-    cursor = await conn.execute(
-        """
-        select
-          tenant_id,
-          name,
-          status,
-          catalog_generation,
-          catalog_sync_attempt,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count
-        from mcp_servers
-        where tenant_id = %s
-          and name = %s
-        for update
-        """,
-        (tenant_id, server_name),
-    )
-    row = await cursor.fetchone()
-    return dict(row) if row is not None else None
-
-
-async def begin_mcp_catalog_sync(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    server_name: str,
-    observed_generation: int,
-    actor_id: str,
-) -> dict[str, Any]:
-    """Claim one generation-bound discovery attempt before any remote request is issued."""
-
-    server = await _locked_mcp_catalog_server(conn, tenant_id=tenant_id, server_name=server_name)
-    if server is None:
-        return {
-            "started": False,
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "deleted",
-            "catalog_revision": 0,
-            "catalog_discovered_count": 0,
-            "catalog_selectable_count": 0,
-        }
-    if int(server.get("catalog_generation") or 0) != observed_generation:
-        return {
-            "started": False,
-            **_mcp_catalog_state_projection(server),
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "stale_generation",
-        }
-    if str(server.get("status") or "") != "active":
-        return {
-            "started": False,
-            **_mcp_catalog_state_projection(server),
-            "catalog_status": "disabled" if server.get("status") == "disabled" else "unavailable",
-            "catalog_unavailable_reason": "disabled" if server.get("status") == "disabled" else "deleted",
-        }
-    if str(server.get("catalog_status") or "") == "syncing":
-        return {
-            "started": False,
-            **_mcp_catalog_state_projection(server),
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "sync_in_progress",
-        }
-    cursor = await conn.execute(
-        """
-        update mcp_servers
-        set catalog_sync_attempt = catalog_sync_attempt + 1,
-            catalog_status = 'syncing',
-            catalog_unavailable_reason = 'refresh_required',
-            updated_by = %s,
-            updated_at = now()
-        where tenant_id = %s
-          and name = %s
-          and catalog_generation = %s
-          and catalog_status <> 'syncing'
-        returning catalog_generation, catalog_sync_attempt, catalog_revision, catalog_status,
-          catalog_unavailable_reason, catalog_discovered_count, catalog_selectable_count
-        """,
-        (actor_id, tenant_id, server_name, observed_generation),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        return {
-            "started": False,
-            **_mcp_catalog_state_projection(server),
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "stale_generation",
-        }
-    return {"started": True, **_mcp_catalog_state_projection(dict(row)), "catalog_sync_attempt": int(row["catalog_sync_attempt"])}
-
-
-async def record_mcp_catalog_sync_outcome(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    server_name: str,
-    observed_generation: int,
-    observed_attempt: int,
-    status: str,
-    reason: str,
-    actor_id: str,
-) -> dict[str, Any]:
-    """Persist one safe sync outcome only while the lifecycle generation still matches."""
-
-    server = await _locked_mcp_catalog_server(conn, tenant_id=tenant_id, server_name=server_name)
-    if server is None:
-        return {
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "deleted",
-            "catalog_revision": 0,
-            "catalog_discovered_count": 0,
-            "catalog_selectable_count": 0,
-        }
-    if (
-        int(server.get("catalog_generation") or 0) != observed_generation
-        or int(server.get("catalog_sync_attempt") or 0) != observed_attempt
-        or str(server.get("catalog_status") or "") != "syncing"
-    ):
-        return {
-            **_mcp_catalog_state_projection(server),
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "stale_generation",
-        }
-    if str(server.get("status") or "") != "active":
-        return {
-            **_mcp_catalog_state_projection(server),
-            "catalog_status": "disabled" if server.get("status") == "disabled" else "unavailable",
-            "catalog_unavailable_reason": "disabled" if server.get("status") == "disabled" else "deleted",
-        }
-    cursor = await conn.execute(
-        """
-        update mcp_servers
-        set catalog_status = %s,
-            catalog_unavailable_reason = %s,
-            catalog_discovered_count = 0,
-            catalog_selectable_count = 0,
-            catalog_last_synced_at = now(),
-            updated_by = %s,
-            updated_at = now()
-        where tenant_id = %s
-          and name = %s
-          and catalog_generation = %s
-          and catalog_sync_attempt = %s
-          and catalog_status = 'syncing'
-        returning catalog_status, catalog_unavailable_reason, catalog_revision,
-          catalog_discovered_count, catalog_selectable_count
-        """,
-        (status, reason, actor_id, tenant_id, server_name, observed_generation, observed_attempt),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        return {
-            **_mcp_catalog_state_projection(server),
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "stale_generation",
-        }
-    await append_audit_log(
-        conn,
-        tenant_id=tenant_id,
-        user_id=actor_id,
-        action="mcp.catalog.sync_unavailable",
-        target_type="mcp_server",
-        target_id=server_name,
-        trace_id=standard_trace_id(server_name),
-        payload_json={"reason": reason, "generation": observed_generation},
-    )
-    return _mcp_catalog_state_projection(dict(row))
-
-
-async def publish_mcp_tool_catalog(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    server_name: str,
-    observed_generation: int,
-    observed_attempt: int,
-    endpoint: str,
-    tools: list[Any] | tuple[Any, ...],
-    actor_id: str,
-) -> dict[str, Any]:
-    """Atomically publish one complete, generation-fenced discovered MCP manifest."""
-
-    server = await _locked_mcp_catalog_server(conn, tenant_id=tenant_id, server_name=server_name)
-    if server is None:
-        return {
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "deleted",
-            "catalog_revision": 0,
-            "catalog_discovered_count": 0,
-            "catalog_selectable_count": 0,
-            "published": False,
-        }
-    if (
-        int(server.get("catalog_generation") or 0) != observed_generation
-        or int(server.get("catalog_sync_attempt") or 0) != observed_attempt
-        or str(server.get("catalog_status") or "") != "syncing"
-    ):
-        return {
-            **_mcp_catalog_state_projection(server),
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "stale_generation",
-            "published": False,
-        }
-    if str(server.get("status") or "") != "active":
-        return {
-            **_mcp_catalog_state_projection(server),
-            "catalog_status": "disabled" if server.get("status") == "disabled" else "unavailable",
-            "catalog_unavailable_reason": "disabled" if server.get("status") == "disabled" else "deleted",
-            "published": False,
-        }
-
-    existing_cursor = await conn.execute(
-        """
-        select
-          mcp_tool_catalog_entries.tool_id,
-          mcp_tool_catalog_entries.remote_tool_name,
-          mcp_tool_catalog_entries.schema_hash,
-          mcp_tool_catalog_entries.status as catalog_entry_status,
-          mcp_tools.name,
-          mcp_tools.description,
-          mcp_tools.write_capable
-        from mcp_tool_catalog_entries
-        join mcp_tools on mcp_tools.id = mcp_tool_catalog_entries.tool_id
-        where mcp_tool_catalog_entries.tenant_id = %s
-          and mcp_tool_catalog_entries.server_name = %s
-        for update
-        """,
-        (tenant_id, server_name),
-    )
-    existing = {str(row["remote_tool_name"]): dict(row) for row in await existing_cursor.fetchall()}
-    desired_names = {str(tool.remote_name) for tool in tools}
-    desired_manifest = {
-        str(tool.remote_name): (
-            str(tool.schema_hash),
-            str(tool.label),
-            str(tool.description),
-            "active" if bool(tool.read_only) else "disabled",
-        )
-        for tool in tools
-    }
-    existing_manifest = {
-        remote_name: (
-            str(row.get("schema_hash") or ""),
-            str(row.get("name") or ""),
-            str(row.get("description") or ""),
-            str(row.get("catalog_entry_status") or "disabled"),
-        )
-        for remote_name, row in existing.items()
-    }
-    manifest_changed = desired_manifest != existing_manifest
-
-    for tool in tools:
-        remote_name = str(tool.remote_name)
-        tool_id = str(existing.get(remote_name, {}).get("tool_id") or new_mcp_catalog_tool_id())
-        catalog_status = "active" if bool(tool.read_only) else "disabled"
-        await conn.execute(
-            """
-            insert into mcp_tools(
-              id, server_id, name, description, transport_type, endpoint, auth_mode,
-              allowed_tools, status, write_capable, risk_level, visible_to_user
-            )
-            values (%s, %s, %s, %s, 'streamable_http', %s, 'none', %s::jsonb, %s, false, 'low', true)
-            on conflict (id) do update
-            set server_id = excluded.server_id,
-                name = excluded.name,
-                description = excluded.description,
-                transport_type = excluded.transport_type,
-                endpoint = excluded.endpoint,
-                auth_mode = excluded.auth_mode,
-                allowed_tools = excluded.allowed_tools,
-                status = excluded.status,
-                write_capable = excluded.write_capable,
-                risk_level = excluded.risk_level,
-                visible_to_user = excluded.visible_to_user
-            """,
-            (
-                tool_id,
-                server_name,
-                str(tool.label),
-                str(tool.description),
-                endpoint,
-                dumps_json([remote_name]),
-                "active" if catalog_status == "active" else "disabled",
-            ),
-        )
-        await conn.execute(
-            """
-            insert into mcp_tool_catalog_entries(
-              tool_id, tenant_id, server_name, remote_tool_name, catalog_generation,
-              schema_hash, status, updated_at
-            )
-            values (%s, %s, %s, %s, %s, %s, %s, now())
-            on conflict (tenant_id, server_name, remote_tool_name) do update
-            set tool_id = excluded.tool_id,
-                catalog_generation = excluded.catalog_generation,
-                schema_hash = excluded.schema_hash,
-                status = excluded.status,
-                updated_at = now()
-            """,
-            (tool_id, tenant_id, server_name, remote_name, observed_generation, str(tool.schema_hash), catalog_status),
-        )
-        if catalog_status == "active":
-            await conn.execute(
-                """
-                insert into tool_policies(
-                  tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason, updated_by
-                )
-                values (%s, %s, 'active', false, 'low', true, 'mcp_catalog_read_only', %s)
-                on conflict (tenant_id, tool_id) do nothing
-                """,
-                (tenant_id, tool_id, actor_id),
-            )
-        else:
-            await conn.execute(
-                """
-                insert into tool_policies(
-                  tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason, updated_by
-                )
-                values (%s, %s, 'disabled', false, 'low', true, 'mcp_tool_not_read_only', %s)
-                on conflict (tenant_id, tool_id) do update
-                set status = 'disabled', reason = 'mcp_tool_not_read_only', updated_by = excluded.updated_by, updated_at = now()
-                """,
-                (tenant_id, tool_id, actor_id),
-            )
-
-    removed_tool_ids = [
-        str(row["tool_id"])
-        for remote_name, row in existing.items()
-        if remote_name not in desired_names
-    ]
-    if removed_tool_ids:
-        await conn.execute(
-            """
-            update mcp_tool_catalog_entries
-            set status = 'stale', updated_at = now()
-            where tenant_id = %s
-              and server_name = %s
-              and tool_id = any(%s)
-            """,
-            (tenant_id, server_name, removed_tool_ids),
-        )
-        await conn.execute(
-            "update mcp_tools set status = 'disabled' where id = any(%s)",
-            (removed_tool_ids,),
-        )
-
-    discovered_count = len(tools)
-    selectable_count = sum(1 for tool in tools if bool(tool.read_only))
-    catalog_status = "no_tools" if not tools else "available" if selectable_count else "unavailable"
-    reason = "no_tools" if not tools else "" if selectable_count else "no_selectable_tools"
-    revision = int(server.get("catalog_revision") or 0)
-    if manifest_changed or revision == 0:
-        revision += 1
-    cursor = await conn.execute(
-        """
-        update mcp_servers
-        set catalog_revision = %s,
-            catalog_status = %s,
-            catalog_unavailable_reason = %s,
-            catalog_discovered_count = %s,
-            catalog_selectable_count = %s,
-            catalog_last_synced_at = now(),
-            updated_by = %s,
-            updated_at = now()
-        where tenant_id = %s
-          and name = %s
-          and catalog_generation = %s
-          and catalog_sync_attempt = %s
-          and catalog_status = 'syncing'
-        returning catalog_status, catalog_unavailable_reason, catalog_revision,
-          catalog_discovered_count, catalog_selectable_count
-        """,
-        (
-            revision,
-            catalog_status,
-            reason,
-            discovered_count,
-            selectable_count,
-            actor_id,
-            tenant_id,
-            server_name,
-            observed_generation,
-            observed_attempt,
-        ),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        return {
-            **_mcp_catalog_state_projection(server),
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "stale_generation",
-            "published": False,
-        }
-    await append_audit_log(
-        conn,
-        tenant_id=tenant_id,
-        user_id=actor_id,
-        action="mcp.catalog.published",
-        target_type="mcp_server",
-        target_id=server_name,
-        trace_id=standard_trace_id(server_name),
-        payload_json={
-            "generation": observed_generation,
-            "catalog_revision": revision,
-            "discovered_count": discovered_count,
-            "selectable_count": selectable_count,
-            "status": catalog_status,
-        },
-    )
-    return {**_mcp_catalog_state_projection(dict(row), published=manifest_changed), "published": manifest_changed}
-
-
-async def mark_mcp_catalog_lifecycle_unavailable(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    server_name: str,
-    reason: str,
-) -> None:
-    """Make all catalog-backed identities fail closed after a lifecycle disable or delete."""
-
-    status = "deleted" if reason == "deleted" else "disabled"
-    cursor = await conn.execute(
-        """
-        update mcp_tool_catalog_entries
-        set status = %s, updated_at = now()
-        where tenant_id = %s
-          and server_name = %s
-        returning tool_id
-        """,
-        (status, tenant_id, server_name),
-    )
-    tool_ids = [str(row["tool_id"]) for row in await cursor.fetchall()]
-    if tool_ids:
-        await conn.execute("update mcp_tools set status = 'disabled' where id = any(%s)", (tool_ids,))
-
-
-async def list_chat_mcp_catalog_unavailable(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    principal_department_id: str,
-    principal_roles: list[str] | None,
-    is_admin: bool,
-    permissions: list[str] | None,
-    selectable_server_names: set[str] | None = None,
-) -> list[dict[str, str]]:
-    """Return only visible server-level catalog states that have no selectable projection."""
-
-    cursor = await conn.execute(
-        """
-        select name, status, catalog_status, catalog_unavailable_reason, catalog_selectable_count
-        from mcp_servers
-        where tenant_id = %s
-          and status <> 'deleted'
-          and catalog_status <> 'legacy'
-        order by name asc
-        """,
-        (tenant_id,),
-    )
-    context = _chat_mcp_access_context(
-        tenant_id=tenant_id,
-        principal_department_id=principal_department_id,
-        principal_roles=principal_roles,
-        is_admin=is_admin,
-        permissions=permissions,
-    )
-    unavailable: list[dict[str, str]] = []
-    for raw in await cursor.fetchall():
-        row = dict(raw)
-        server_name = str(row.get("name") or "")
-        distribution = await get_capability_distribution_row(
-            conn,
-            tenant_id=tenant_id,
-            capability_kind="mcp_server",
-            capability_id=server_name,
-        )
-        decision = resolve_capability_access(
-            context,
-            CapabilityDistributionSubject(
-                capability_kind="mcp_server",
-                capability_id=server_name,
-                lifecycle_status=str(row.get("status") or "disabled"),
-                distribution=distribution,
-            ),
-            intent="discover",
-        )
-        if not decision.visible:
-            continue
-        catalog_status = str(row.get("catalog_status") or "")
-        if catalog_status == "available" and server_name in (selectable_server_names or set()):
-            continue
-        reason = str(row.get("catalog_unavailable_reason") or catalog_status or "unavailable")
-        if catalog_status == "available" and int(row.get("catalog_selectable_count") or 0) > 0:
-            reason = "policy_blocked"
-        unavailable.append({"label": server_name[:120], "reason": reason})
-    return unavailable
-
-
 async def list_admin_tool_policies(
     conn: AsyncConnection,
     *,
@@ -4568,21 +3791,41 @@ async def list_admin_tool_policies(
           on tool_policies.tenant_id = %s
          and tool_policies.tool_id = mcp_tools.id
         where (
-          %s
-          or (
-            mcp_tools.status = 'active'
-            and tool_policies.status = 'active'
-            and coalesce(mcp_tools.visible_to_user, false) = true
-            and tool_policies.visible_to_user = true
+          not exists (
+            select 1
+            from mcp_tool_catalog_entries catalog_any
+            where catalog_any.tool_id = mcp_tools.id
+          )
+          or exists (
+            select 1
+            from mcp_tool_catalog_entries catalog_entry
+            join mcp_servers catalog_server
+              on catalog_server.tenant_id = catalog_entry.tenant_id
+             and catalog_server.name = catalog_entry.server_name
+            where catalog_entry.tool_id = mcp_tools.id
+              and catalog_entry.tenant_id = %s
+              and catalog_entry.status = 'active'
+              and catalog_entry.catalog_generation = catalog_server.catalog_generation
+              and catalog_server.status = 'active'
+              and catalog_server.catalog_status = 'available'
           )
         )
+          and (
+            %s
+            or (
+              mcp_tools.status = 'active'
+              and tool_policies.status = 'active'
+              and coalesce(mcp_tools.visible_to_user, false) = true
+              and tool_policies.visible_to_user = true
+            )
+          )
         order by case mcp_tools.id
           when 'ragflow-knowledge-search' then 1
           else 99
         end, mcp_tools.id asc
         limit %s
         """,
-        (tenant_id, include_disabled, limit),
+        (tenant_id, tenant_id, include_disabled, limit),
     )
     return [_tool_policy_projection(dict(row), tenant_id=tenant_id) for row in await cursor.fetchall()]
 
@@ -4676,6 +3919,26 @@ async def upsert_admin_tool_policy(
           select %s, mcp_tools.id, %s, %s, %s, %s, %s, %s, now()
           from mcp_tools
           where mcp_tools.id = %s
+            and (
+              not exists (
+                select 1
+                from mcp_tool_catalog_entries catalog_any
+                where catalog_any.tool_id = mcp_tools.id
+              )
+              or exists (
+                select 1
+                from mcp_tool_catalog_entries catalog_entry
+                join mcp_servers catalog_server
+                  on catalog_server.tenant_id = catalog_entry.tenant_id
+                 and catalog_server.name = catalog_entry.server_name
+                where catalog_entry.tool_id = mcp_tools.id
+                  and catalog_entry.tenant_id = %s
+                  and catalog_entry.status = 'active'
+                  and catalog_entry.catalog_generation = catalog_server.catalog_generation
+                  and catalog_server.status = 'active'
+                  and catalog_server.catalog_status = 'available'
+              )
+            )
           on conflict (tenant_id, tool_id) do update
           set status = excluded.status,
               write_capable = excluded.write_capable,
@@ -4714,6 +3977,7 @@ async def upsert_admin_tool_policy(
             reason,
             updated_by,
             tool_id,
+            tenant_id,
         ),
     )
     row = await cursor.fetchone()
@@ -13301,3 +12565,15 @@ def _terminalization_progress_for_requested_status(
         needs_reconcile=progress.needs_reconcile,
         terminalized_count=progress.terminalized_count,
     )
+
+
+# MCP catalog persistence and Chat-selection ownership live in app.mcp.repository.
+# Keep these established names for Chat, Agent Apps, and worker call sites outside
+# the re-chartered path set.
+from app.mcp import repository as _mcp_repository  # noqa: E402
+
+authorize_selected_chat_mcp_tools = _mcp_repository.authorize_selected_chat_mcp_tools
+get_mcp_tool_registry_entry = _mcp_repository.get_mcp_tool_registry_entry
+list_authorized_chat_mcp_tools = _mcp_repository.list_authorized_chat_mcp_tools
+list_workbench_mcp_tools = _mcp_repository.list_workbench_mcp_tools
+mcp_runtime_metadata_usable = _mcp_repository.mcp_runtime_metadata_usable

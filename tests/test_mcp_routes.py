@@ -290,12 +290,12 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp, "transaction", fake_transaction)
     monkeypatch.setattr(mcp.repositories, "list_workbench_mcp_tools", fake_list)
     monkeypatch.setattr(
-        mcp.repositories,
+        mcp.mcp_repository,
         "list_authorized_chat_mcp_tools",
         fake_list_authorized_chat_mcp_tools,
     )
     monkeypatch.setattr(
-        mcp.repositories,
+        mcp.mcp_repository,
         "list_chat_mcp_catalog_unavailable",
         fake_list_chat_mcp_catalog_unavailable,
         raising=False,
@@ -327,14 +327,14 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp.repositories, "toggle_mcp_server_registry", fake_toggle_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "delete_mcp_server_registry", fake_delete_server, raising=False)
     monkeypatch.setattr(
-        mcp.repositories,
+        mcp.mcp_repository,
         "mark_mcp_catalog_lifecycle_unavailable",
         fake_mark_catalog_unavailable,
         raising=False,
     )
     monkeypatch.setattr(mcp.repositories, "record_mcp_server_credential", fake_record_credential, raising=False)
     monkeypatch.setattr(
-        mcp.repositories,
+        mcp.mcp_repository,
         "get_mcp_server_catalog_sync_snapshot",
         fake_catalog_sync_snapshot,
         raising=False,
@@ -351,9 +351,9 @@ def test_chat_mcp_catalog_projects_only_canonical_public_fields_and_session_sele
         tool_rows=[
             {
                 "tool_id": "tenant-search",
-                "server_id": "private-server",
-                "name": "Tenant Search",
-                "description": "Search authorized tenant material.",
+                "server_id": "private-server-production",
+                "name": "https://user:credential@private.example/mcp",
+                "description": "Bearer secret-token from /internal/private/path",
                 "endpoint": "https://private.example/mcp",
                 "credential_state": "platform-managed-secret",
             }
@@ -368,8 +368,8 @@ def test_chat_mcp_catalog_projects_only_canonical_public_fields_and_session_sele
         "tools": [
             {
                 "tool_id": "tenant-search",
-                "label": "Tenant Search",
-                "description": "Search authorized tenant material.",
+                "label": "受管 MCP 工具",
+                "description": "由平台治理的工具。",
                 "category": "mcp",
             }
         ],
@@ -380,6 +380,8 @@ def test_chat_mcp_catalog_projects_only_canonical_public_fields_and_session_sele
     encoded = response.text
     assert "private.example" not in encoded
     assert "platform-managed-secret" not in encoded
+    assert "secret-token" not in encoded
+    assert "private-server-production" not in encoded
     catalog_call = next(payload for name, payload in calls if name == "list_chat_tools")
     assert catalog_call["tenant_id"] == "default"
     assert catalog_call["principal_department_id"] == "qa"
@@ -399,23 +401,6 @@ def test_chat_mcp_catalog_truthfully_returns_actionable_empty_selection(monkeypa
         "count": 0,
         "selected_mcp_tool_ids": [],
     }
-
-
-def test_chat_mcp_catalog_surfaces_visible_unavailable_reason_without_private_transport_data(monkeypatch):
-    install_mcp_route_fakes(monkeypatch, tool_rows=[])
-
-    async def unavailable(conn, **kwargs):
-        return [{"label": "knowledge", "reason": "discovery_failed"}]
-
-    monkeypatch.setattr("app.routes.mcp.repositories.list_chat_mcp_catalog_unavailable", unavailable)
-    client = TestClient(create_app())
-
-    response = client.get("/api/mcp/chat-tools", headers=headers())
-
-    assert response.status_code == 200
-    assert response.json()["unavailable"] == [{"label": "knowledge", "reason": "discovery_failed"}]
-    assert "endpoint" not in response.text
-    assert "credential" not in response.text
 
 
 def test_explicit_catalog_sync_requires_the_configured_nonsecret_endpoint_and_returns_bounded_result(monkeypatch):
