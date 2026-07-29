@@ -9,6 +9,10 @@ import type {
   SelectedAgentProfileRequest,
   SelectedSkillRequest,
 } from "../../types";
+import {
+  projectAgentConversationSession,
+  type AgentConversationSessionProjection,
+} from "../../types/agentProfile";
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
 
@@ -340,6 +344,11 @@ export function buildSessionListUrl(params?: {
   return `${API_BASE}/api/sessions${query ? `?${query}` : ""}`;
 }
 
+/** Build the canonical safe Session projection URL used for Agent recovery. */
+export function buildAuthoritativeChatSessionUrl(sessionId: string): string {
+  return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}`;
+}
+
 export const sessionApi = {
   /**
    * List all sessions with pagination
@@ -369,6 +378,15 @@ export const sessionApi = {
       }
       throw error;
     }
+  },
+
+  /** Recover server-owned Agent identity without changing the compatibility API. */
+  async getAuthoritative(sessionId: string): Promise<AgentConversationSessionProjection> {
+    const response = await authFetch<unknown>(
+      buildAuthoritativeChatSessionUrl(sessionId),
+      { cache: "no-store" },
+    );
+    return projectAgentConversationSession(response);
   },
 
   /**

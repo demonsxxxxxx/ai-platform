@@ -1,0 +1,12 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-08-15",
+  "owner": "ai-platform-controller",
+  "reason": "Issue #696 Agent Marketplace -> durable Agent Conversation -> canonical Chat implementation e56cd7c50ee2c8520400f9067b9d10f727ec840f, fixed-review repairs 088cfa0dc3bce9e59a3751969faee1365db77647 and 0520a45f0cbda0bdfc90ce8620027ee73e07efc3, and fixed candidate 43eb4053865fdd274b2cf59d470a296036e3adbe were integrated with current main 2e395b543d5064fb19222291c548329eae3c3188 by merge 73a642f52d69420a2fa2ab5f96765f2127f1f945; the exact #696 range based at that current-main commit spans six existing frontend subsystems, and this exception must be deleted in an immediate post-merge cleanup PR before #499 integration can merge.",
+  "violations": [
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}
