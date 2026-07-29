@@ -73,6 +73,7 @@ _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
 _MAX_REQUIRED_ANSWER_TEXT_CHARS = 4_096
+_MAX_PUBLICATION_OVERLAP_CHARS = 512
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
@@ -2026,6 +2027,7 @@ async def run_claude_agent_sdk(
 
     sealed_answer_views = ["", ""]
     sealed_answer_overflowed = False
+    published_text_suffix = ""
     structured_result_text = ""
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
@@ -2086,7 +2088,7 @@ async def run_claude_agent_sdk(
         elif candidate:
             sealed_answer_views[index] = candidate
 
-    def redact_capability_private_tokens(value: str) -> str | None:
+    def redact_capability_private_tokens(value: str, *, public_suffix: str = "") -> str | None:
         """Exact-replace private execution tokens before any governed publication."""
 
         replacements = {
@@ -2109,6 +2111,25 @@ async def run_claude_agent_sdk(
                 }
             )
         private_tokens = tuple(sorted(replacements, key=lambda token: (-len(token), token)))
+        if public_suffix:
+            if any(len(token) > _MAX_PUBLICATION_OVERLAP_CHARS + 1 for token in private_tokens):
+                return None
+            boundary = len(public_suffix)
+
+            def crossing_private_token_chars(candidate: str) -> int:
+                overlap = 0
+                combined = public_suffix + candidate
+                for token in private_tokens:
+                    start = combined.find(token, max(0, boundary - len(token) + 1))
+                    if 0 <= start < boundary:
+                        overlap = max(overlap, start + len(token) - boundary)
+                return overlap
+
+            overlap = crossing_private_token_chars(value)
+            if overlap:
+                value = "external tool" + value[overlap:]
+                if crossing_private_token_chars(value):
+                    return None
         for token in private_tokens:
             value = value.replace(token, replacements[token])
         sanitized = sanitize_public_text(value)
@@ -2117,11 +2138,13 @@ async def run_claude_agent_sdk(
         return sanitized if sanitized or not value else None
 
     async def publish_terminal_text(value: str) -> None:
+        nonlocal published_text_suffix
         if on_text is None or not value:
             return
         callback_result = on_text(value)
         if isawaitable(callback_result):
             await callback_result
+        published_text_suffix = (published_text_suffix + value)[-_MAX_PUBLICATION_OVERLAP_CHARS:]
 
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
@@ -2243,7 +2266,9 @@ async def run_claude_agent_sdk(
             ):
                 terminal_error = _SDK_TOOL_ADMISSION_FAILED
             elif sealed_candidate:
-                sealed_public_text = redact_capability_private_tokens(sealed_candidate) or ""
+                sealed_public_text = redact_capability_private_tokens(
+                    sealed_candidate, public_suffix=published_text_suffix
+                ) or ""
                 if not sealed_public_text:
                     terminal_error = _SDK_TOOL_ADMISSION_FAILED
             elif stream_projector is None or not stream_projector.partial_emitted:
