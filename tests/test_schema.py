@@ -15,6 +15,7 @@ def test_schema_declares_platform_fact_tables():
         "tenant_capability_distributions",
         "tenant_capability_distribution_backfills",
         "mcp_tools",
+        "mcp_tool_catalog_entries",
         "tool_policies",
         "sessions",
         "messages",
@@ -103,6 +104,18 @@ def test_schema_enables_read_only_ragflow_mcp_tool_poc():
     assert "'disabled',\n    false,\n    'low'" not in mcp_tool_seed
     assert "insert into tool_policies" in mcp_tool_seed
     assert "('default', 'ragflow-knowledge-search', 'active', false, 'low', true" in mcp_tool_seed
+
+
+def test_schema_declares_generation_fenced_tenant_mcp_catalogs():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "catalog_generation bigint not null default 0" in schema
+    assert "catalog_sync_attempt bigint not null default 0" in schema
+    assert "catalog_status text not null default 'legacy'" in schema
+    assert "create table if not exists mcp_tool_catalog_entries" in schema
+    assert "unique (tenant_id, server_name, remote_tool_name)" in schema
+    assert "foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name)" in schema
+    assert "check (status in ('active', 'disabled', 'stale', 'deleted'))" in schema
 
 
 def test_schema_seeds_internal_skill_dependencies_without_workbench_entry():

@@ -6074,6 +6074,13 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
             "department_ids": ["qa"],
             "credential_state": "configured",
             "credential_metadata": {"header_names": ["Authorization"]},
+            "catalog_generation": 0,
+            "catalog_revision": 0,
+            "catalog_status": "legacy",
+            "catalog_unavailable_reason": "",
+            "catalog_discovered_count": 0,
+            "catalog_selectable_count": 0,
+            "catalog_last_synced_at": None,
             "created_at": "2026-06-23T00:00:00Z",
             "updated_at": "2026-06-23T00:00:00Z",
         }
@@ -6207,7 +6214,7 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
     assert "mcp_servers.name = mcp_tools.server_id" in sql
     assert "mcp_tools.id = %s" in sql
     assert sql.count("%s") == len(params)
-    assert params == ("tenant-a", "qa-search")
+    assert params == ("tenant-a", "qa-search", "tenant-a")
     assert row is not None
     assert {
         key: row[key]

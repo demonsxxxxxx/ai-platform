@@ -1239,7 +1239,7 @@ async def test_registry_entry_returns_tenant_scoped_external_mcp_runtime_metadat
 
     class Connection:
         async def execute(self, query, params):
-            assert params == ("tenant-a", "corp-search")
+            assert params == ("tenant-a", "corp-search", "tenant-a")
             assert "mcp_tools.endpoint" in query
             assert "mcp_tools.auth_mode" in query
             assert "mcp_tools.allowed_tools" in query

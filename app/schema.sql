@@ -118,17 +118,58 @@ create table if not exists mcp_servers (
   credential_state text not null default 'not_configured',
   credential_metadata_json jsonb not null default '{}'::jsonb,
   credential_fingerprint text not null default '',
+  catalog_generation bigint not null default 0,
+  catalog_sync_attempt bigint not null default 0,
+  catalog_revision bigint not null default 0,
+  catalog_status text not null default 'legacy',
+  catalog_unavailable_reason text not null default '',
+  catalog_discovered_count integer not null default 0,
+  catalog_selectable_count integer not null default 0,
+  catalog_last_synced_at timestamptz,
   updated_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique(tenant_id, name),
   check (transport in ('sse', 'streamable_http', 'sandbox')),
   check (status in ('active', 'disabled', 'deleted')),
-  check (credential_state in ('not_configured', 'configured', 'platform_managed'))
+  check (credential_state in ('not_configured', 'configured', 'platform_managed')),
+  check (catalog_generation >= 0),
+  check (catalog_sync_attempt >= 0),
+  check (catalog_revision >= 0),
+  check (catalog_status in ('legacy', 'refresh_required', 'syncing', 'available', 'no_tools', 'unavailable', 'disabled', 'deleted')),
+  check (catalog_discovered_count >= 0),
+  check (catalog_selectable_count >= 0)
 );
 
 create index if not exists idx_mcp_servers_tenant_status
   on mcp_servers(tenant_id, status, name);
+
+alter table mcp_servers
+  add column if not exists catalog_generation bigint not null default 0,
+  add column if not exists catalog_sync_attempt bigint not null default 0,
+  add column if not exists catalog_revision bigint not null default 0,
+  add column if not exists catalog_status text not null default 'legacy',
+  add column if not exists catalog_unavailable_reason text not null default '',
+  add column if not exists catalog_discovered_count integer not null default 0,
+  add column if not exists catalog_selectable_count integer not null default 0,
+  add column if not exists catalog_last_synced_at timestamptz;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'mcp_servers_catalog_status_valid'
+      and conrelid = 'mcp_servers'::regclass
+  ) then
+    alter table mcp_servers
+      add constraint mcp_servers_catalog_status_valid
+      check (catalog_status in ('legacy', 'refresh_required', 'syncing', 'available', 'no_tools', 'unavailable', 'disabled', 'deleted')) not valid;
+  end if;
+end
+$$;
+
+alter table mcp_servers
+  validate constraint mcp_servers_catalog_status_valid;
 
 create or replace function ai_platform_text_array_all_nonblank(input_values text[])
 returns boolean
@@ -293,6 +334,25 @@ create table if not exists tool_policies (
 );
 
 create index if not exists idx_tool_policies_tool on tool_policies(tool_id, tenant_id);
+
+create table if not exists mcp_tool_catalog_entries (
+  tool_id text primary key references mcp_tools(id),
+  tenant_id text not null references tenants(id),
+  server_name text not null,
+  remote_tool_name text not null,
+  catalog_generation bigint not null,
+  schema_hash text not null,
+  status text not null default 'disabled',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (tenant_id, server_name, remote_tool_name),
+  foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name),
+  check (catalog_generation >= 0),
+  check (status in ('active', 'disabled', 'stale', 'deleted'))
+);
+
+create index if not exists idx_mcp_tool_catalog_entries_server
+  on mcp_tool_catalog_entries(tenant_id, server_name, status, remote_tool_name);
 
 create table if not exists agents (
   id text primary key,

@@ -18,12 +18,14 @@ from app.capability_distribution import (
 )
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 from app.db import transaction
+from app.mcp_tool_catalog import McpToolCatalogSyncCommand, McpToolCatalogSynchronizer
 from app.tool_policy import evaluate_tool_policy
 from app.validation import assert_safe_id
 
 router = APIRouter()
 
 MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
+MCP_TOOL_CATALOG_SYNCHRONIZER = McpToolCatalogSynchronizer()
 
 
 class McpRoleQuota(BaseModel):
@@ -99,6 +101,60 @@ class McpServerToggleRequest(BaseModel):
         if self.active is not None:
             return self.active
         return self.is_active
+
+
+class McpCatalogSyncRequest(BaseModel):
+    """One explicit, credential-free admin discovery request for an existing MCP server."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+
+
+def _catalog_sync_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": str(row.get("catalog_status") or "refresh_required"),
+        "reason": str(row.get("catalog_unavailable_reason") or "") or None,
+        "catalog_revision": int(row.get("catalog_revision") or 0),
+        "discovered_count": int(row.get("catalog_discovered_count") or 0),
+        "selectable_count": int(row.get("catalog_selectable_count") or 0),
+        "published": False,
+    }
+
+
+def _catalog_change_event(catalog_sync: dict[str, Any]) -> dict[str, Any]:
+    """Return the bounded refresh signal consumed by the later Chat selector owner."""
+
+    return {
+        "type": "mcp-tools-changed",
+        "catalog_revision": int(catalog_sync.get("catalog_revision") or 0),
+        "status": str(catalog_sync.get("status") or "refresh_required"),
+    }
+
+
+def _request_uses_credentials(request: McpServerLifecycleRequest) -> bool:
+    return bool(request.headers or request.env_keys or request.command)
+
+
+async def _synchronize_catalog(
+    *,
+    principal: AuthPrincipal,
+    row: dict[str, Any],
+    endpoint: str | None,
+    credentialed: bool,
+) -> dict[str, Any]:
+    result = await MCP_TOOL_CATALOG_SYNCHRONIZER.synchronize(
+        McpToolCatalogSyncCommand(
+            tenant_id=principal.tenant_id,
+            server_name=str(row.get("name") or ""),
+            observed_generation=int(row.get("catalog_generation") or 0),
+            transport=str(row.get("transport") or "streamable_http"),
+            endpoint=endpoint,
+            credentialed=credentialed,
+            actor_id=principal.user_id,
+        )
+    )
+    return result.public_payload()
 
 
 def _require_admin(principal: AuthPrincipal) -> None:
@@ -202,7 +258,7 @@ def _server_response(
 ) -> dict[str, Any]:
     distribution_status = str((distribution or {}).get("status") or "disabled")
     enabled = distribution_status == "active"
-    return {
+    response = {
         "name": str(row.get("name") or ""),
         "transport": str(row.get("transport") or "streamable_http"),
         "status": distribution_status,
@@ -219,6 +275,9 @@ def _server_response(
         "updated_at": row.get("updated_at"),
         "contract_version": MCP_LIFECYCLE_CONTRACT_VERSION,
     }
+    if can_edit:
+        response["catalog"] = _catalog_sync_payload(row)
+    return response
 
 
 def _ordinary_server_response(
@@ -486,7 +545,7 @@ async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, 
     ]
 
 
-async def _chat_tool_catalog(principal: AuthPrincipal) -> list[dict[str, Any]]:
+async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Project only current-principal generic MCP tools usable by Chat runtime."""
 
     async with transaction() as conn:
@@ -497,6 +556,16 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> list[dict[str, Any]]:
             principal_roles=principal.roles,
             is_admin=is_ai_admin(principal),
             permissions=principal.permissions,
+        )
+        selectable_server_names = {str(row.get("server_id") or "") for row in rows}
+        unavailable = await repositories.list_chat_mcp_catalog_unavailable(
+            conn,
+            tenant_id=principal.tenant_id,
+            principal_department_id=principal.department_id,
+            principal_roles=principal.roles,
+            is_admin=is_ai_admin(principal),
+            permissions=principal.permissions,
+            selectable_server_names=selectable_server_names,
         )
     items: list[dict[str, Any]] = []
     for row in rows:
@@ -509,7 +578,7 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> list[dict[str, Any]]:
                 "category": "mcp",
             }
         )
-    return items
+    return items, unavailable
 
 
 async def _write_server(
@@ -587,6 +656,13 @@ async def _write_server(
                 metadata=metadata,
                 updated_by=principal.user_id,
             )
+            if not request.enabled:
+                await repositories.mark_mcp_catalog_lifecycle_unavailable(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    server_name=name,
+                    reason="disabled",
+                )
             await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -612,7 +688,19 @@ async def _write_server(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except repositories.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return _server_response(row, distribution=distribution, can_edit=True)
+    server = _server_response(row, distribution=distribution, can_edit=True)
+    if request.enabled:
+        server["catalog_sync"] = await _synchronize_catalog(
+            principal=principal,
+            row=row,
+            endpoint=request.url,
+            credentialed=_request_uses_credentials(request),
+        )
+    else:
+        server["catalog_sync"] = _catalog_sync_payload(row)
+    server["catalog"] = dict(server["catalog_sync"])
+    server["catalog_event"] = _catalog_change_event(server["catalog_sync"])
+    return server
 
 
 @router.get("/mcp/")
@@ -645,8 +733,8 @@ async def list_chat_mcp_tools(
 ) -> dict[str, Any]:
     """Return the complete authorized canonical MCP selection catalog for Chat."""
 
-    tools = await _chat_tool_catalog(principal)
-    response: dict[str, Any] = {"tools": tools, "count": len(tools)}
+    tools, unavailable = await _chat_tool_catalog(principal)
+    response: dict[str, Any] = {"tools": tools, "unavailable": unavailable, "count": len(tools)}
     if session_id is not None:
         try:
             canonical_session_id = assert_safe_id(session_id, "session_id")
@@ -790,6 +878,12 @@ async def delete_mcp_server(
                 capability_id=safe_name,
                 archived_by=principal.user_id,
             )
+            await repositories.mark_mcp_catalog_lifecycle_unavailable(
+                conn,
+                tenant_id=principal.tenant_id,
+                server_name=safe_name,
+                reason="deleted",
+            )
             await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -804,7 +898,10 @@ async def delete_mcp_server(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except repositories.RepositoryConflictError as exc:
         raise _distribution_status_mutation_http_exception(exc) from exc
-    return _server_response(row, distribution=distribution, can_edit=True)
+    server = _server_response(row, distribution=distribution, can_edit=True)
+    server["catalog_sync"] = _catalog_sync_payload(row)
+    server["catalog_event"] = _catalog_change_event(server["catalog_sync"])
+    return server
 
 
 @router.patch("/mcp/{name}/toggle")
@@ -835,6 +932,13 @@ async def toggle_mcp_server(
                 status="active" if row.get("status") == "active" else "disabled",
                 updated_by=principal.user_id,
             )
+            if row.get("status") != "active":
+                await repositories.mark_mcp_catalog_lifecycle_unavailable(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    server_name=safe_name,
+                    reason="disabled",
+                )
             await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -850,7 +954,58 @@ async def toggle_mcp_server(
     except repositories.RepositoryConflictError as exc:
         raise _distribution_status_mutation_http_exception(exc) from exc
     server = _server_response(row, distribution=distribution, can_edit=True)
+    server["catalog_sync"] = _catalog_sync_payload(row)
+    server["catalog_event"] = _catalog_change_event(server["catalog_sync"])
     return {"server": server, "message": "mcp_server_toggled"}
+
+
+@router.post("/mcp/{name}/catalog/sync")
+async def synchronize_mcp_server_catalog(
+    name: str,
+    principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
+) -> dict[str, Any]:
+    """Run one explicit, generation-fenced discovery without retaining the request endpoint in public state."""
+
+    _require_admin(principal)
+    safe_name = _safe_name(name)
+    request = _request_model(McpCatalogSyncRequest, payload)
+    raw_url = str(request.url)  # type: ignore[attr-defined]
+    fingerprint = hashlib.sha256(raw_url.encode("utf-8")).hexdigest()
+    async with transaction() as conn:
+        row = await repositories.get_mcp_server_catalog_sync_snapshot(
+            conn,
+            tenant_id=principal.tenant_id,
+            name=safe_name,
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="mcp_server_not_found")
+    if str(row.get("credential_fingerprint") or "") != fingerprint:
+        raise HTTPException(status_code=409, detail="mcp_catalog_endpoint_mismatch")
+    if str(row.get("status") or "") != "active":
+        catalog_sync = _catalog_sync_payload(row)
+        return {
+            "server_name": safe_name,
+            "catalog_sync": catalog_sync,
+            "catalog_event": _catalog_change_event(catalog_sync),
+        }
+    credential_metadata = row.get("credential_metadata_json")
+    credentialed = isinstance(credential_metadata, dict) and bool(
+        credential_metadata.get("header_names")
+        or credential_metadata.get("env_keys")
+        or credential_metadata.get("command_configured")
+    )
+    catalog_sync = await _synchronize_catalog(
+        principal=principal,
+        row=row,
+        endpoint=raw_url,
+        credentialed=credentialed,
+    )
+    return {
+        "server_name": safe_name,
+        "catalog_sync": catalog_sync,
+        "catalog_event": _catalog_change_event(catalog_sync),
+    }
 
 
 @router.get("/mcp/{name}/tools")
@@ -989,6 +1144,12 @@ async def delete_admin_mcp_server(
                 capability_id=safe_name,
                 archived_by=principal.user_id,
             )
+            await repositories.mark_mcp_catalog_lifecycle_unavailable(
+                conn,
+                tenant_id=principal.tenant_id,
+                server_name=safe_name,
+                reason="deleted",
+            )
             await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -1003,7 +1164,10 @@ async def delete_admin_mcp_server(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except repositories.RepositoryConflictError as exc:
         raise _distribution_status_mutation_http_exception(exc) from exc
-    return _server_response(row, distribution=distribution, can_edit=True)
+    server = _server_response(row, distribution=distribution, can_edit=True)
+    server["catalog_sync"] = _catalog_sync_payload(row)
+    server["catalog_event"] = _catalog_change_event(server["catalog_sync"])
+    return server
 
 
 @router.post("/admin/mcp/{name}/promote")

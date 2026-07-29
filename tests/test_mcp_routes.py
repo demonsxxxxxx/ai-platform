@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import hashlib
 
 from fastapi.testclient import TestClient
 import pytest
@@ -101,6 +102,10 @@ def install_mcp_route_fakes(
     async def fake_list_authorized_chat_mcp_tools(conn, **kwargs):
         calls.append(("list_chat_tools", dict(kwargs)))
         return [dict(row) for row in registry_tools]
+
+    async def fake_list_chat_mcp_catalog_unavailable(conn, **kwargs):
+        calls.append(("list_chat_unavailable", dict(kwargs)))
+        return []
 
     async def fake_get_authorized_session(conn, **kwargs):
         calls.append(("get_authorized_session", dict(kwargs)))
@@ -233,6 +238,26 @@ def install_mcp_route_fakes(
         servers[kwargs["name"]] = server
         return dict(server)
 
+    async def fake_mark_catalog_unavailable(conn, **kwargs):
+        calls.append(("mark_catalog_unavailable", dict(kwargs)))
+
+    class FakeCatalogSynchronizer:
+        async def synchronize(self, command):
+            calls.append(("catalog_sync", {"server_name": command.server_name, "generation": command.observed_generation}))
+
+            class Result:
+                def public_payload(self):
+                    return {
+                        "status": "unavailable",
+                        "reason": "invalid_endpoint",
+                        "catalog_revision": 0,
+                        "discovered_count": 0,
+                        "selectable_count": 0,
+                        "published": False,
+                    }
+
+            return Result()
+
     async def fake_record_credential(conn, **kwargs):
         calls.append(("record_credential", dict(kwargs)))
         if kwargs["server_name"] in servers:
@@ -241,6 +266,17 @@ def install_mcp_route_fakes(
             server["credential_metadata"] = kwargs["metadata"]
             servers[kwargs["server_name"]] = server
         return {"id": "mcpcred-test", **kwargs}
+
+    async def fake_catalog_sync_snapshot(conn, *, tenant_id, name):
+        server = servers.get(name)
+        if server is None:
+            return None
+        return {
+            **server,
+            "credential_fingerprint": hashlib.sha256("https://mcp.example/tools".encode("utf-8")).hexdigest(),
+            "credential_metadata_json": {},
+            "catalog_generation": 1,
+        }
 
     async def fake_ensure_user(conn, **kwargs):
         calls.append(("ensure_user", dict(kwargs)))
@@ -257,6 +293,12 @@ def install_mcp_route_fakes(
         mcp.repositories,
         "list_authorized_chat_mcp_tools",
         fake_list_authorized_chat_mcp_tools,
+    )
+    monkeypatch.setattr(
+        mcp.repositories,
+        "list_chat_mcp_catalog_unavailable",
+        fake_list_chat_mcp_catalog_unavailable,
+        raising=False,
     )
     monkeypatch.setattr(
         mcp.repositories,
@@ -284,9 +326,22 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp.repositories, "archive_capability_distribution_row", fake_archive_distribution, raising=False)
     monkeypatch.setattr(mcp.repositories, "toggle_mcp_server_registry", fake_toggle_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "delete_mcp_server_registry", fake_delete_server, raising=False)
+    monkeypatch.setattr(
+        mcp.repositories,
+        "mark_mcp_catalog_lifecycle_unavailable",
+        fake_mark_catalog_unavailable,
+        raising=False,
+    )
     monkeypatch.setattr(mcp.repositories, "record_mcp_server_credential", fake_record_credential, raising=False)
+    monkeypatch.setattr(
+        mcp.repositories,
+        "get_mcp_server_catalog_sync_snapshot",
+        fake_catalog_sync_snapshot,
+        raising=False,
+    )
     monkeypatch.setattr(mcp.repositories, "ensure_user", fake_ensure_user)
     monkeypatch.setattr(mcp.repositories, "append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr(mcp, "MCP_TOOL_CATALOG_SYNCHRONIZER", FakeCatalogSynchronizer())
     return calls
 
 
@@ -318,6 +373,7 @@ def test_chat_mcp_catalog_projects_only_canonical_public_fields_and_session_sele
                 "category": "mcp",
             }
         ],
+        "unavailable": [],
         "count": 1,
         "selected_mcp_tool_ids": ["tenant-search"],
     }
@@ -339,9 +395,58 @@ def test_chat_mcp_catalog_truthfully_returns_actionable_empty_selection(monkeypa
     assert response.status_code == 200
     assert response.json() == {
         "tools": [],
+        "unavailable": [],
         "count": 0,
         "selected_mcp_tool_ids": [],
     }
+
+
+def test_chat_mcp_catalog_surfaces_visible_unavailable_reason_without_private_transport_data(monkeypatch):
+    install_mcp_route_fakes(monkeypatch, tool_rows=[])
+
+    async def unavailable(conn, **kwargs):
+        return [{"label": "knowledge", "reason": "discovery_failed"}]
+
+    monkeypatch.setattr("app.routes.mcp.repositories.list_chat_mcp_catalog_unavailable", unavailable)
+    client = TestClient(create_app())
+
+    response = client.get("/api/mcp/chat-tools", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["unavailable"] == [{"label": "knowledge", "reason": "discovery_failed"}]
+    assert "endpoint" not in response.text
+    assert "credential" not in response.text
+
+
+def test_explicit_catalog_sync_requires_the_configured_nonsecret_endpoint_and_returns_bounded_result(monkeypatch):
+    calls = install_mcp_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/mcp/ragflow/catalog/sync",
+        json={"url": "https://mcp.example/tools"},
+        headers=headers(roles="admin"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "server_name": "ragflow",
+        "catalog_sync": {
+            "status": "unavailable",
+            "reason": "invalid_endpoint",
+            "catalog_revision": 0,
+            "discovered_count": 0,
+            "selectable_count": 0,
+            "published": False,
+        },
+        "catalog_event": {
+            "type": "mcp-tools-changed",
+            "catalog_revision": 0,
+            "status": "unavailable",
+        },
+    }
+    assert "mcp.example" not in response.text
+    assert any(name == "catalog_sync" for name, _ in calls)
 
 
 def test_mcp_read_contract_bounds_ordinary_catalog_and_keeps_tool_discovery(monkeypatch):
