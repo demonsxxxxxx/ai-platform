@@ -94,6 +94,18 @@ class _PrivateExecutionFact(NamedTuple):
 
 
 ExecutorEventEmitter = Callable[[AgentEvent | _PrivateExecutionFact], Awaitable[bool]]
+
+
+class _SealableExecutorEventEmitter(NamedTuple):
+    """Pair runner event emission with synchronous capability-failure sealing."""
+
+    emit_event: ExecutorEventEmitter
+    seal_capability_failure: Callable[[], None]
+
+    async def __call__(self, event: AgentEvent | _PrivateExecutionFact) -> bool:
+        return await self.emit_event(event)
+
+
 ExecutorRunner = Callable[
     [ExecutorTaskRequest, Path, ExecutorEventEmitter],
     Awaitable[dict[str, Any]] | dict[str, Any],
@@ -1252,6 +1264,14 @@ async def _default_executor_runner(
         capability_evidence_error["code"] = capability_evidence_error["code"] or error_code
         return False
 
+    def poison_capability_evidence() -> None:
+        # No await: one event-loop turn invalidates a suspended lock owner before it can commit.
+        reject_capability_evidence("capability_callback_not_acknowledged")
+        bound_capability_evidence.clear()
+        invocation_states.clear()
+        if isinstance(emit_event, _SealableExecutorEventEmitter):
+            emit_event.seal_capability_failure()
+
     async def bind_capability_evidence(raw: dict[str, str]) -> bool:
         """Bind SDK-hook facts to this request and emit only a safe public event."""
 
@@ -1301,14 +1321,11 @@ async def _default_executor_runner(
                     timeline_label=label,
                 )
             )
-        except asyncio.CancelledError:
-            invocation_states[invocation_key] = "rejected"
-            bound_capability_evidence.clear()
-            reject_capability_evidence("capability_callback_not_acknowledged")
-            raise
         except Exception:
             invocation_states[invocation_key] = "rejected"
             return reject_capability_evidence("capability_callback_not_acknowledged")
+        if capability_evidence_error["code"]:
+            return False
         if acknowledged is not True:
             invocation_states[invocation_key] = "rejected"
             return reject_capability_evidence("capability_callback_not_acknowledged")
@@ -1319,8 +1336,12 @@ async def _default_executor_runner(
         return True
 
     async def on_capability_evidence(raw: dict[str, str]) -> bool:
-        async with capability_evidence_lock:
-            return await bind_capability_evidence(raw)
+        try:
+            async with capability_evidence_lock:
+                return await bind_capability_evidence(raw)
+        except asyncio.CancelledError:
+            poison_capability_evidence()
+            raise
 
     try:
         sdk_kwargs = {
@@ -1596,6 +1617,11 @@ def create_executor_app(
                     seal_runner_events_after_capability_failure()
                 raise
 
+        runner_event_emitter = _SealableExecutorEventEmitter(
+            emit_event=emit_runner_event,
+            seal_capability_failure=seal_runner_events_after_capability_failure,
+        )
+
         await dispatch_callback_event(running_event)
         runner_result: dict[str, Any] = {}
         if invalid_max_seconds:
@@ -1614,7 +1640,11 @@ def create_executor_app(
             else:
                 try:
                     deadline_started_at = time.monotonic()
-                    raw_runner_result = resolved_executor_runner(request, resolved_workspace_root, emit_runner_event)
+                    raw_runner_result = resolved_executor_runner(
+                        request,
+                        resolved_workspace_root,
+                        runner_event_emitter,
+                    )
                     if inspect.isawaitable(raw_runner_result):
                         if max_seconds is not None:
                             raw_runner_result, timed_out = await _await_with_deadline(

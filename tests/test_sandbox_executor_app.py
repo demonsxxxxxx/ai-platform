@@ -677,9 +677,11 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
     assert capability_attempts == 1
 
 
+@pytest.mark.parametrize("cancel_target", ["lock_owner", "lock_waiter"])
 def test_executor_capability_callback_cancellation_poison_seals_run(
     tmp_path,
     monkeypatch,
+    cancel_target,
 ):
     cancellation_propagated = []
     later_capability_results = []
@@ -688,6 +690,7 @@ def test_executor_capability_callback_cancellation_poison_seals_run(
     possibly_persisted_events = []
     terminal_callbacks = []
     completion_callback_started = asyncio.Event()
+    release_completion_callback = asyncio.Event()
     capability_attempts = 0
 
     class StubSettings:
@@ -696,7 +699,7 @@ def test_executor_capability_callback_cancellation_poison_seals_run(
     async def fake_run_claude_agent_sdk(**kwargs):
         record = kwargs["on_capability_evidence"]
         completion = None
-        queued_retry = None
+        queued_fact_task = None
         try:
             assert await record(
                 sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", "invocation_requested")
@@ -705,28 +708,38 @@ def test_executor_capability_callback_cancellation_poison_seals_run(
                 record(sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", "completed"))
             )
             await asyncio.wait_for(completion_callback_started.wait(), timeout=2.0)
-            retry_started = asyncio.Event()
+            queued_fact_started = asyncio.Event()
 
-            async def retry_same_fact():
-                retry_started.set()
-                return await record(
-                    sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", "completed")
-                )
+            async def submit_queued_fact():
+                queued_fact_started.set()
+                return await record(queued_evidence)
 
-            queued_retry = asyncio.create_task(retry_same_fact())
-            await asyncio.wait_for(retry_started.wait(), timeout=2.0)
-            completion.cancel()
+            queued_evidence = sdk_mcp_evidence(
+                "mcp__tenant-server__search",
+                "tool-call-2" if cancel_target == "lock_waiter" else "tool-call-1",
+                "invocation_requested" if cancel_target == "lock_waiter" else "completed",
+            )
+            queued_fact_task = asyncio.create_task(submit_queued_fact())
+            await asyncio.wait_for(queued_fact_started.wait(), timeout=2.0)
+            cancelled_task = queued_fact_task if cancel_target == "lock_waiter" else completion
+            cancelled_task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(completion, timeout=2.0)
-            cancellation_propagated.append(True)
+                await asyncio.wait_for(cancelled_task, timeout=2.0)
+            cancellation_propagated.append(cancel_target)
+            assert release_completion_callback.is_set() is False
+            release_completion_callback.set()
 
             later_capability_results.extend(
                 [
-                    await asyncio.wait_for(queued_retry, timeout=2.0),
+                    await asyncio.wait_for(
+                        completion if cancel_target == "lock_waiter" else queued_fact_task,
+                        timeout=2.0,
+                    ),
+                    await asyncio.wait_for(record(queued_evidence), timeout=2.0),
                     await asyncio.wait_for(
                         record(
                             sdk_mcp_evidence(
-                                "mcp__tenant-server__search", "tool-call-2", "invocation_requested"
+                                "mcp__tenant-server__search", "tool-call-3", "invocation_requested"
                             )
                         ),
                         timeout=2.0,
@@ -742,7 +755,7 @@ def test_executor_capability_callback_cancellation_poison_seals_run(
             )
             return sdk_result("must not qualify")
         finally:
-            pending = [task for task in (completion, queued_retry) if task is not None and not task.done()]
+            pending = [task for task in (completion, queued_fact_task) if task is not None and not task.done()]
             for task in pending:
                 task.cancel()
             if pending:
@@ -770,7 +783,8 @@ def test_executor_capability_callback_cancellation_poison_seals_run(
             if capability_attempts == 2:
                 possibly_persisted_events.extend(events)
                 completion_callback_started.set()
-                await asyncio.Future()
+                await asyncio.wait_for(release_completion_callback.wait(), timeout=2.0)
+                return callback_ack(payload)
         terminal_callbacks.append(payload)
         return callback_ack(payload)
 
@@ -780,8 +794,8 @@ def test_executor_capability_callback_cancellation_poison_seals_run(
 
     body = client.post("/v1/tasks/execute", json=selected_mcp_task_payload(), headers=auth_headers()).json()
 
-    assert cancellation_propagated == [True]
-    assert later_capability_results == [False, False]
+    assert cancellation_propagated == [cancel_target]
+    assert later_capability_results == [False, False, False]
     assert post_cancel_emit_results == [False, False]
     assert [event["type"] for event in acknowledged_events] == [
         "capability_invoking",
