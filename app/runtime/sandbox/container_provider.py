@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterable
 import hashlib
 import hmac
 import inspect
@@ -5376,7 +5377,9 @@ class OpenSandboxContainerProvider:
     ) -> tuple[int, str]:
         total = 0
         digest = hashlib.sha256()
-        stream = filesystem.read_bytes_stream(remote_path, chunk_size=64 * 1024)
+        stream = await _maybe_await(filesystem.read_bytes_stream(remote_path, chunk_size=64 * 1024))
+        if not isinstance(stream, AsyncIterable):
+            raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
         async for chunk in stream:
             if not isinstance(chunk, bytes):
                 raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
