@@ -81,7 +81,6 @@ class PrePushReadiness:
         self._repo_root = repo_root.resolve()
         self._runner = runner or _CommandRunner()
         self._authority_root: Path | None = None
-        self._sealed_governance_path: Path | None = None
 
     def check(
         self,
@@ -458,19 +457,17 @@ class PrePushReadiness:
             raise ReadinessError(
                 "governance_violation",
                 "authority_provenance_mismatch",
-                "the authority governance Git object is unavailable",
-                path=AUTHORITY_GOVERNANCE_PATH,
+                "the authority governance Git object is unavailable", path=AUTHORITY_GOVERNANCE_PATH,
             )
         snapshot = temporary_root / "authority-governance.py"
         try:
             snapshot.write_text(source.stdout, encoding="utf-8", newline="\n")
         except OSError as error:
             raise ReadinessError("infrastructure_failure", "authority_snapshot_failed", str(error)) from error
-        self._sealed_governance_path = snapshot
         return snapshot
 
     def _assert_post_candidate_authority_integrity(self, result: dict[str, Any], authority: str) -> None:
-        if self._authority_root is None or self._sealed_governance_path is None:
+        if self._authority_root is None:
             raise ReadinessError("governance_violation", "authority_source_untrusted", "authority source is unavailable")
         try:
             self._assert_authority_path_matches_ref(
