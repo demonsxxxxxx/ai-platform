@@ -16,14 +16,16 @@ test("sendMessage returns a narrow outcome and forwards one selected Skill", () 
   assert.match(source, /status:\s*"recoverable_error"/);
 });
 
-test("canonical Chat consumes a one-shot Agent Market selection through useAgent", () => {
+test("canonical Chat does not resolve an Agent Market binding from hidden state", () => {
   const source = readFileSync(resolve(__dirname, "../../useAgent.ts"), "utf8");
 
-  assert.match(source, /consumePendingAgentMarketSelection/);
-  assert.match(source, /pathname !== "\/chat"/);
   assert.match(source, /selectedAgentProfileForRequest/);
   assert.match(source, /sessionApi\.submitChat\([\s\S]*selectedAgentProfileForRequest/);
-  assert.match(source, /pendingAgentMarketSelectionRef\.current = null/);
+  assert.match(source, /selectedAgentProfile \?\? null/);
+  assert.doesNotMatch(
+    source,
+    /consumePendingAgentMarketSelection|pendingAgentMarketSelection|getSelectedAgentProfile/,
+  );
 });
 
 test("recoverable admission errors remove optimistic messages and remain explicit", () => {

@@ -7,7 +7,7 @@ export const APP_ROUTE_PATHS = {
   chat: "/chat/:sessionId?",
   agentBuilder: "/agent-builder",
   agentMarket: "/agent-market",
-  agentMarketChat: "/agent-market/:agentId/:revision",
+  agentMarketDetail: "/agent-market/:agentId/:revision",
   apps: "/apps",
   skills: "/skills",
   marketplace: "/marketplace",
