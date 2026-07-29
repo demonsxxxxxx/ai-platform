@@ -583,6 +583,7 @@ alter table agent_profile_revisions add constraint uq_agent_profile_revision_pub
 update agent_profiles profiles
 set published_status = 'published'
 where profiles.lifecycle_status = 'published'
+  and profiles.published_status is distinct from 'published'
   and exists (
     select 1
     from agent_profile_revisions revisions
@@ -744,26 +745,72 @@ set latest_revision = greatest(agent_profiles.latest_revision, excluded.latest_r
       when excluded.published_revision is not null then 'published'
       else agent_profiles.published_status
     end,
-    updated_at = now();
+    updated_at = now()
+where row(
+    agent_profiles.latest_revision,
+    agent_profiles.lifecycle_status,
+    agent_profiles.published_revision,
+    agent_profiles.published_hash,
+    agent_profiles.published_status
+  ) is distinct from row(
+    greatest(agent_profiles.latest_revision, excluded.latest_revision),
+    case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then 'withdrawn'
+      when excluded.published_revision is not null then 'published'
+      else agent_profiles.lifecycle_status
+    end,
+    case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then null
+      when excluded.published_revision is not null then excluded.published_revision
+      else agent_profiles.published_revision
+    end,
+    case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then null
+      when excluded.published_revision is not null then excluded.published_hash
+      else agent_profiles.published_hash
+    end,
+    case
+      when agent_profiles.lifecycle_status = 'withdrawn'
+        or excluded.lifecycle_status = 'withdrawn' then null
+      when excluded.published_revision is not null then 'published'
+      else agent_profiles.published_status
+    end
+  );
 
 -- Synchronize the old-reader mirror after every reconciliation. Exactly the
 -- current tenant-visible publication remains status='published'.
+with desired as (
+  select
+    revisions.tenant_id,
+    revisions.agent_id,
+    revisions.revision,
+    case
+      when revisions.revision_status = 'published'
+        and revisions.visibility = 'tenant'
+        and exists (
+          select 1
+          from agent_profiles profiles
+          where profiles.tenant_id = revisions.tenant_id
+            and profiles.agent_id = revisions.agent_id
+            and profiles.lifecycle_status = 'published'
+            and profiles.published_revision = revisions.revision
+            and profiles.published_hash = revisions.content_hash
+            and profiles.published_status = 'published'
+        ) then 'published'
+      else 'draft'
+    end as desired_status
+  from agent_profile_revisions revisions
+)
 update agent_profile_revisions revisions
-set status = case
-  when revisions.revision_status = 'published'
-    and revisions.visibility = 'tenant'
-    and exists (
-      select 1
-      from agent_profiles profiles
-      where profiles.tenant_id = revisions.tenant_id
-        and profiles.agent_id = revisions.agent_id
-        and profiles.lifecycle_status = 'published'
-        and profiles.published_revision = revisions.revision
-        and profiles.published_hash = revisions.content_hash
-        and profiles.published_status = 'published'
-    ) then 'published'
-  else 'draft'
-end;
+set status = desired.desired_status
+from desired
+where revisions.tenant_id = desired.tenant_id
+  and revisions.agent_id = desired.agent_id
+  and revisions.revision = desired.revision
+  and revisions.status is distinct from desired.desired_status;
 
 alter table agent_profiles add constraint chk_agent_profiles_lifecycle_status
   check (lifecycle_status in ('draft', 'published', 'withdrawn'));

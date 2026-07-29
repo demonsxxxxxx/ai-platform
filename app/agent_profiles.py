@@ -1,8 +1,5 @@
 """Compatibility seam for callers migrated to :mod:`app.agent_apps`."""
 
-from fastapi import HTTPException
-
-from app import repositories
 from app.agent_apps.authority import (
     AgentProfileAdmission,
     AgentProfileAuthority,
@@ -59,17 +56,6 @@ async def list_public_profiles(conn, *, principal, query=None, category=None):
 async def resolve_profile_for_admission(conn, *, principal, selection) -> AgentProfileAdmission:
     """Resolve a current publication through the authoritative module."""
 
-    # Keep the historical stale-selector response for callers still importing
-    # this seam; the aggregate resolver below remains the only admission source.
-    legacy_row = await repositories.get_agent_profile_revision(
-        conn,
-        tenant_id=principal.tenant_id,
-        agent_id=selection.agent_id,
-        revision=selection.expected_revision,
-        status="published",
-    )
-    if legacy_row is None:
-        raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
     return await _authority.resolve_for_admission(conn, principal=principal, selection=selection)
 
 

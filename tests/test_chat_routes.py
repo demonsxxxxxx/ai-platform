@@ -1718,6 +1718,9 @@ def default_active_run_count(monkeypatch):
     async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
         return 0
 
+    async def fake_ensure_submission_principal(conn, *, tenant_id, user_id, display_name):
+        return None
+
     async def fake_get_queue_insight(tenant_id, **_kwargs):
         return {
             "tenant_id": tenant_id,
@@ -1740,6 +1743,11 @@ def default_active_run_count(monkeypatch):
     monkeypatch.setattr(
         "app.routes.chat.repositories.enforce_user_active_run_admission_under_lock",
         fake_enforce_user_active_run_admission_under_lock,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.ensure_submission_principal",
+        fake_ensure_submission_principal,
         raising=False,
     )
     monkeypatch.setattr("app.routes.chat.get_queue_insight", fake_get_queue_insight, raising=False)
@@ -4028,18 +4036,80 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
 
 @pytest.mark.asyncio
 async def test_new_profile_submit_takes_user_lock_before_profile_admission(monkeypatch):
-    """Mock call order only; PostgreSQL lock-manager behavior remains opt-in coverage."""
+    """Route/persistence mirror only; PostgreSQL lock-manager behavior is opt-in coverage."""
 
+    from app.agent_apps import AgentProfileAdmission
+    from app.models import AgentConversationIdentity
     from app.models import SelectedAgentProfileRequest
 
     calls: list[str] = []
+    persisted: dict[str, dict] = {}
 
     async def admission_lock(*_args, **_kwargs):
         calls.append("user_lock")
 
+    async def ensure_principal(*_args, **_kwargs):
+        calls.append("principal")
+
+    async def late_ensure_user(*_args, **_kwargs):
+        calls.append("late_user")
+
     async def profile_admission(*_args, **_kwargs):
         calls.append("profile_lock")
-        raise HTTPException(status_code=409, detail="agent_profile_not_available")
+        return AgentProfileAdmission(
+            agent_id="agt_support",
+            revision=7,
+            content_hash="a" * 64,
+            skill={
+                "skill_id": "profile-specialist",
+                "skill_version": "version-profile",
+                "executor_type": "claude-agent-worker",
+                "input_modes": [],
+            },
+            model={"id": "model-a", "value": "provider-model-a"},
+            mcp_tool_ids=(),
+            private_execution_input={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instructions",
+            },
+            public_identity=AgentConversationIdentity(
+                agent_id="agt_support",
+                revision=7,
+                name="Support assistant",
+            ),
+        )
+
+    async def authorize_profile_skill(*_args, **_kwargs):
+        return {
+            "skill_id": "profile-specialist",
+            "skill_version": "version-profile",
+            "executor_type": "claude-agent-worker",
+            "input_modes": [],
+        }
+
+    async def governed_manifest(*_args, **_kwargs):
+        return [snapshot_manifest("profile-specialist")]
+
+    async def create_session(*_args, **kwargs):
+        calls.append("create_session")
+        persisted["session"] = kwargs
+        return kwargs["session_id"]
+
+    async def create_run(*_args, **kwargs):
+        calls.append("create_run")
+        persisted["run"] = kwargs
+        return "run-profile-lock-order"
+
+    async def append_message(*_args, **_kwargs):
+        return "msg-profile-lock-order"
+
+    async def enqueue(*_args, **_kwargs):
+        return 1
+
+    async def noop(*_args, **_kwargs):
+        return None
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(
@@ -4047,22 +4117,56 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
         admission_lock,
         raising=False,
     )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.ensure_submission_principal",
+        ensure_principal,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", late_ensure_user)
     monkeypatch.setattr("app.routes.chat.resolve_profile_for_admission", profile_admission)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.authorize_selected_run_capabilities",
+        authorize_profile_skill,
+    )
+    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace_belongs_to_tenant", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.authorize_files_for_run", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", create_session)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", create_run)
+    monkeypatch.setattr("app.routes.chat.repositories.insert_run_skill_snapshots_at_creation", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", append_message)
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.new_id",
+        lambda kind: "ses-profile-lock-order" if kind == "ses" else "run-profile-lock-order",
+    )
 
-    with pytest.raises(HTTPException) as caught:
-        await chat_stream(
-            ChatStreamRequest(
-                message="run the selected Agent",
-                selected_agent_profile=SelectedAgentProfileRequest(
-                    agent_id="agt_support",
-                    expected_revision=7,
-                ),
+    response = await chat_stream(
+        ChatStreamRequest(
+            message="run the selected Agent",
+            selected_agent_profile=SelectedAgentProfileRequest(
+                agent_id="agt_support",
+                expected_revision=7,
             ),
-            principal=principal(),
-        )
+        ),
+        principal=principal(),
+    )
 
-    assert caught.value.detail == "agent_profile_not_available"
-    assert calls == ["user_lock", "profile_lock"]
+    assert response.session_id == "ses-profile-lock-order"
+    assert response.run_id == "run-profile-lock-order"
+    assert calls == ["user_lock", "principal", "profile_lock", "create_session", "create_run"]
+    assert persisted["session"]["admitted_agent_profile_revision"] == 7
+    assert persisted["session"]["admitted_agent_profile_hash"] == "a" * 64
+    assert persisted["run"]["admitted_agent_profile_revision"] == 7
+    assert persisted["run"]["admitted_agent_profile_hash"] == "a" * 64
+    assert persisted["run"]["input_json"]["agent_profile"] == {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "private profile instructions",
+    }
 
 
 @pytest.mark.asyncio
@@ -4158,6 +4262,9 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
     async def admission_lock(*_args, **_kwargs):
         calls.append("user_lock")
 
+    async def ensure_principal(*_args, **_kwargs):
+        calls.append("principal")
+
     async def bound_profile(*_args, **_kwargs):
         calls.append("bound_profile")
         return AgentProfileAdmission(
@@ -4205,6 +4312,11 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         admission_lock,
         raising=False,
     )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.ensure_submission_principal",
+        ensure_principal,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
     monkeypatch.setattr(
         "app.routes.chat.repositories.list_authorized_session_runs",
@@ -4227,6 +4339,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
     assert caught.value.detail == "captured_profile_skill"
     assert calls == [
         "user_lock",
+        "principal",
         "bound_profile",
         ("authorize", "agt_support", "profile-specialist", "version-profile"),
     ]

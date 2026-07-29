@@ -365,40 +365,44 @@ async def test_agent_profile_repository_list_is_tenant_scoped():
     assert params == ("tenant-a", "published")
 
 
-async def test_agent_profile_cross_tenant_selection_is_rejected_as_stale(monkeypatch):
+async def test_agent_profile_compatibility_admission_delegates_to_authority(monkeypatch):
     observed: dict[str, object] = {}
+    sentinel = object()
 
-    async def missing_profile(_conn, **kwargs):
-        observed.update(kwargs)
-        return None
+    async def resolve_from_authority(conn, *, principal, selection):
+        observed.update({"conn": conn, "principal": principal, "selection": selection})
+        return sentinel
 
-    monkeypatch.setattr("app.agent_profiles.repositories.get_agent_profile_revision", missing_profile)
+    monkeypatch.setattr(
+        "app.agent_profiles._authority.resolve_for_admission",
+        resolve_from_authority,
+    )
     principal = AuthPrincipal(
         user_id="user-a",
         display_name="User A",
         tenant_id="tenant-a",
         roles=["user"],
     )
+    conn = object()
+    selection = SelectedAgentProfileRequest(agent_id="agt_other_tenant", expected_revision=4)
 
-    with pytest.raises(HTTPException) as caught:
-        await resolve_profile_for_admission(
-            object(),
-            principal=principal,
-            selection=SelectedAgentProfileRequest(agent_id="agt_other_tenant", expected_revision=4),
-        )
+    result = await resolve_profile_for_admission(
+        conn,
+        principal=principal,
+        selection=selection,
+    )
 
-    assert caught.value.status_code == 409
-    assert caught.value.detail == "agent_profile_revision_stale"
+    assert result is sentinel
     assert observed == {
-        "tenant_id": "tenant-a",
-        "agent_id": "agt_other_tenant",
-        "revision": 4,
-        "status": "published",
+        "conn": conn,
+        "principal": principal,
+        "selection": selection,
     }
 
 
 def test_agent_profile_schema_is_idempotent_and_legacy_rows_can_remain_unpinned():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
+    normalized_schema = " ".join(schema.split())
 
     assert "create table if not exists agent_profile_revisions" in schema
     assert "create index idx_agent_profile_revisions_published" in schema
@@ -439,6 +443,10 @@ def test_agent_profile_schema_is_idempotent_and_legacy_rows_can_remain_unpinned(
     assert schema.index(legacy_visibility_repair) < schema.index(visibility_repair)
     assert schema.index(visibility_repair) < schema.rindex(visibility_check)
     assert "withdrawn_from_revision bigint" in schema
+    assert "profiles.published_status is distinct from 'published'" in normalized_schema
+    assert "where row( agent_profiles.latest_revision" in normalized_schema
+    assert "is distinct from row( greatest(agent_profiles.latest_revision" in normalized_schema
+    assert "and revisions.status is distinct from desired.desired_status" in normalized_schema
 
 
 async def test_bound_profile_repository_uses_the_session_revision_and_hash_but_requires_live_agent():

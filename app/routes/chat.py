@@ -1275,13 +1275,12 @@ async def chat_stream(
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
             )
-            if submission_id is not None:
-                await repositories.ensure_submission_principal(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    display_name=principal.display_name,
-                )
+            await repositories.ensure_submission_principal(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                display_name=principal.display_name,
+            )
             continuation_session = None
             continuation_prior_runs: list[dict[str, Any]] = []
             continuation_latest_input_json: dict[str, Any] | None = None
@@ -1767,12 +1766,6 @@ async def chat_stream(
                 session_id=session_id,
                 run_id=run_id,
                 file_ids=resolved_file_ids,
-            )
-            await repositories.ensure_user(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                display_name=principal.display_name,
             )
             session_create_kwargs = {
                 "tenant_id": principal.tenant_id,

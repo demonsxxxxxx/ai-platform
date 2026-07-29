@@ -1,4 +1,6 @@
 import asyncio
+from contextlib import asynccontextmanager
+import json
 import os
 from pathlib import Path
 import uuid
@@ -138,6 +140,43 @@ def _postgres_dsn() -> str:
 
 async def _set_search_path(conn: psycopg.AsyncConnection, schema_name: str) -> None:
     await conn.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+
+
+async def _agent_profile_storage_projection(
+    conn: psycopg.AsyncConnection,
+    *,
+    tenant_id: str,
+) -> tuple[list[dict], list[dict]]:
+    """Snapshot aggregate timestamps and the full immutable revision projection."""
+
+    profiles_cursor = await conn.execute(
+        """
+        select tenant_id, agent_id, lifecycle_status, latest_revision,
+               published_revision, published_hash, published_status,
+               created_at, updated_at, xmin::text as storage_version
+        from agent_profiles
+        where tenant_id = %s
+        order by agent_id
+        """,
+        (tenant_id,),
+    )
+    profiles = await profiles_cursor.fetchall()
+    revisions_cursor = await conn.execute(
+        """
+        select tenant_id, agent_id, revision, status, revision_status,
+               name, description, instructions, model_id, skill_id,
+               skill_version, mcp_tool_ids, content_hash, avatar_ref,
+               category, visibility, allowed_department_ids, allowed_roles,
+               allowed_user_ids, legacy_compatibility_write, created_by,
+               created_at, published_by, published_at, published_from_revision,
+               withdrawn_from_revision, xmin::text as storage_version
+        from agent_profile_revisions
+        where tenant_id = %s
+        order by agent_id, revision
+        """,
+        (tenant_id,),
+    )
+    return profiles, await revisions_cursor.fetchall()
 
 
 @pytest.mark.asyncio
@@ -477,6 +516,263 @@ async def test_postgres_schema_repairs_fail_closed_and_enforces_current_publicat
             await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         finally:
             await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch):
+    """Prove real aggregate-row contention while the queue adapter is paused."""
+
+    from app.agent_apps.authority import AgentProfileAuthority
+    from app.auth import AuthPrincipal
+    from app.routes.runs import _ensure_run_control_queue_admission
+
+    dsn = _postgres_dsn()
+    schema_name = f"agent_profile_queue_lock_{uuid.uuid4().hex}"
+    admission_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    lifecycle_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    observer_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    release_queue = asyncio.Event()
+    queue_entered = asyncio.Event()
+    admission_task = None
+    withdrawal_task = None
+    try:
+        await admission_conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        for conn in (admission_conn, lifecycle_conn, observer_conn):
+            await _set_search_path(conn, schema_name)
+        await admission_conn.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await admission_conn.execute(
+            "insert into tenants(id, name) values (%s, %s)",
+            ("tenant-profile", "Profile tenant"),
+        )
+        await admission_conn.execute(
+            "insert into workspaces(id, tenant_id, name) values (%s, %s, %s)",
+            ("workspace-profile", "tenant-profile", "Profile workspace"),
+        )
+        await admission_conn.execute(
+            """
+            insert into users(id, tenant_id, display_name)
+            values (%s, %s, %s), (%s, %s, %s)
+            """,
+            (
+                "user-profile",
+                "tenant-profile",
+                "Profile user",
+                "admin-profile",
+                "tenant-profile",
+                "Profile admin",
+            ),
+        )
+        await admission_conn.execute(
+            "insert into skills(id, name, version, executor_type) values (%s, %s, %s, %s)",
+            ("profile-skill", "Profile skill", "version-a", "claude-agent-worker"),
+        )
+        await admission_conn.execute(
+            """
+            insert into agents(id, tenant_id, name, agent_type, default_skill_id)
+            values (%s, %s, %s, 'profile', %s)
+            """,
+            ("agt_profile", "tenant-profile", "Profile agent", "profile-skill"),
+        )
+        await admission_conn.execute(
+            """
+            insert into agent_profile_revisions(
+              tenant_id, agent_id, revision, status, revision_status,
+              name, description, instructions, model_id, skill_id,
+              skill_version, mcp_tool_ids, content_hash, avatar_ref,
+              category, visibility, allowed_department_ids, allowed_roles,
+              allowed_user_ids, legacy_compatibility_write, created_by,
+              published_by, published_at, published_from_revision
+            ) values (
+              %s, %s, 1, 'published', 'published',
+              %s, %s, %s, %s, %s,
+              %s, '[]'::jsonb, %s, 'builtin:agent',
+              'general', 'tenant', '[]'::jsonb, '[]'::jsonb,
+              '[]'::jsonb, false, %s, %s, now(), 1
+            )
+            """,
+            (
+                "tenant-profile",
+                "agt_profile",
+                "Profile agent",
+                "Published profile",
+                "private profile instructions",
+                "model-a",
+                "profile-skill",
+                "version-a",
+                "a" * 64,
+                "admin-profile",
+                "admin-profile",
+            ),
+        )
+        await admission_conn.execute(
+            """
+            insert into agent_profiles(
+              tenant_id, agent_id, lifecycle_status, latest_revision,
+              published_revision, published_hash, published_status
+            ) values (%s, %s, 'published', 1, 1, %s, 'published')
+            """,
+            ("tenant-profile", "agt_profile", "a" * 64),
+        )
+        await admission_conn.execute(
+            """
+            insert into sessions(
+              id, tenant_id, workspace_id, user_id, agent_id, title,
+              admitted_agent_profile_revision, admitted_agent_profile_hash
+            ) values (%s, %s, %s, %s, %s, %s, 1, %s)
+            """,
+            (
+                "ses-profile",
+                "tenant-profile",
+                "workspace-profile",
+                "user-profile",
+                "agt_profile",
+                "Profile session",
+                "a" * 64,
+            ),
+        )
+        execution_snapshot = {
+            "input": {"message": "queued profile run", "mcp_tool_ids": []},
+            "file_ids": [],
+            "executor_type": "claude-agent-worker",
+            "skill_version": "version-a",
+            "release_decision": {},
+            "skill_manifests": [],
+            "model_id": "model-a",
+            "model_value": "provider-model-a",
+            "agent_profile": {
+                "agent_id": "agt_profile",
+                "revision": 1,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instructions",
+            },
+        }
+        await admission_conn.execute(
+            """
+            insert into runs(
+              id, tenant_id, workspace_id, session_id, user_id, agent_id,
+              skill_id, status, input_json, admitted_agent_profile_revision,
+              admitted_agent_profile_hash
+            ) values (%s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, 1, %s)
+            """,
+            (
+                "run-profile",
+                "tenant-profile",
+                "workspace-profile",
+                "ses-profile",
+                "user-profile",
+                "agt_profile",
+                "profile-skill",
+                json.dumps(execution_snapshot),
+                "a" * 64,
+            ),
+        )
+
+        async def validate_definition(_self, _conn, *, principal, agent_id, definition):
+            assert principal.tenant_id == "tenant-profile"
+            assert agent_id == "agt_profile"
+            assert definition.selected_skill.skill_id == "profile-skill"
+            return (
+                {
+                    "skill_id": "profile-skill",
+                    "skill_version": "version-a",
+                    "executor_type": "claude-agent-worker",
+                },
+                {"id": "model-a", "value": "provider-model-a"},
+            )
+
+        @asynccontextmanager
+        async def admission_transaction():
+            async with admission_conn.transaction():
+                yield admission_conn
+
+        async def paused_enqueue(payload):
+            assert payload["run_id"] == "run-profile"
+            queue_entered.set()
+            await release_queue.wait()
+            return 1
+
+        monkeypatch.setattr(AgentProfileAuthority, "_validate_definition", validate_definition)
+        monkeypatch.setattr("app.routes.runs.transaction", admission_transaction)
+        monkeypatch.setattr("app.routes.runs.enqueue_run", paused_enqueue)
+
+        admission_pid_cursor = await admission_conn.execute("select pg_backend_pid() as pid")
+        admission_pid = (await admission_pid_cursor.fetchone())["pid"]
+        lifecycle_pid_cursor = await lifecycle_conn.execute("select pg_backend_pid() as pid")
+        lifecycle_pid = (await lifecycle_pid_cursor.fetchone())["pid"]
+
+        user = AuthPrincipal(
+            user_id="user-profile",
+            display_name="Profile user",
+            tenant_id="tenant-profile",
+            roles=["user"],
+        )
+        admin = AuthPrincipal(
+            user_id="admin-profile",
+            display_name="Profile admin",
+            tenant_id="tenant-profile",
+            roles=["admin"],
+        )
+        admission_task = asyncio.create_task(
+            _ensure_run_control_queue_admission(
+                {"run_id": "run-profile"},
+                check_existing=False,
+                principal=user,
+            )
+        )
+        await asyncio.wait_for(queue_entered.wait(), timeout=2)
+
+        async def withdraw_profile():
+            async with lifecycle_conn.transaction():
+                return await AgentProfileAuthority().unpublish(
+                    lifecycle_conn,
+                    principal=admin,
+                    agent_id="agt_profile",
+                    expected_revision=1,
+                )
+
+        withdrawal_task = asyncio.create_task(withdraw_profile())
+
+        async def wait_for_row_block() -> None:
+            while True:
+                cursor = await observer_conn.execute(
+                    "select pg_blocking_pids(%s) as blockers",
+                    (lifecycle_pid,),
+                )
+                blockers = (await cursor.fetchone())["blockers"]
+                if admission_pid in blockers:
+                    return
+                await asyncio.sleep(0.02)
+
+        await asyncio.wait_for(wait_for_row_block(), timeout=2)
+        assert not withdrawal_task.done()
+        release_queue.set()
+        admission = await asyncio.wait_for(admission_task, timeout=2)
+        withdrawn, _audit_id = await asyncio.wait_for(withdrawal_task, timeout=2)
+        assert admission.source == "idempotent_enqueue"
+        assert withdrawn.status == "withdrawn"
+        aggregate_cursor = await observer_conn.execute(
+            """
+            select lifecycle_status, published_revision
+            from agent_profiles
+            where tenant_id = %s and agent_id = %s
+            """,
+            ("tenant-profile", "agt_profile"),
+        )
+        assert await aggregate_cursor.fetchone() == {
+            "lifecycle_status": "withdrawn",
+            "published_revision": None,
+        }
+    finally:
+        release_queue.set()
+        pending = [task for task in (admission_task, withdrawal_task) if task is not None and not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        try:
+            await observer_conn.close()
+            await lifecycle_conn.close()
+            await admission_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        finally:
+            await admission_conn.close()
 
 
 @pytest.mark.asyncio
@@ -842,38 +1138,24 @@ async def test_postgres_pre_701_upgrade_and_old_binary_rollback_redeploy_converg
             "published_revision": None,
         }
 
-        before_redeploy = await conn.execute(
-            """
-            select tenant_id, agent_id, lifecycle_status, latest_revision,
-                   published_revision, published_hash, published_status
-            from agent_profiles
-            where tenant_id = 'tenant-legacy'
-            order by agent_id
-            """
+        before_profiles, before_revisions = await _agent_profile_storage_projection(
+            conn,
+            tenant_id="tenant-legacy",
         )
-        before_profiles = await before_redeploy.fetchall()
-        before_revision_count = await conn.execute(
-            "select count(*) as count from agent_profile_revisions where tenant_id = 'tenant-legacy'"
-        )
-        revision_count = (await before_revision_count.fetchone())["count"]
 
         await conn.execute(schema_sql)
-        await conn.execute(schema_sql)
+        first_profiles, first_revisions = await _agent_profile_storage_projection(
+            conn,
+            tenant_id="tenant-legacy",
+        )
+        assert (first_profiles, first_revisions) == (before_profiles, before_revisions)
 
-        after_redeploy = await conn.execute(
-            """
-            select tenant_id, agent_id, lifecycle_status, latest_revision,
-                   published_revision, published_hash, published_status
-            from agent_profiles
-            where tenant_id = 'tenant-legacy'
-            order by agent_id
-            """
+        await conn.execute(schema_sql)
+        second_profiles, second_revisions = await _agent_profile_storage_projection(
+            conn,
+            tenant_id="tenant-legacy",
         )
-        assert await after_redeploy.fetchall() == before_profiles
-        after_revision_count = await conn.execute(
-            "select count(*) as count from agent_profile_revisions where tenant_id = 'tenant-legacy'"
-        )
-        assert (await after_revision_count.fetchone())["count"] == revision_count
+        assert (second_profiles, second_revisions) == (before_profiles, before_revisions)
         profile_state = {row["agent_id"]: row for row in before_profiles}
         assert profile_state["agt_legacy"]["published_revision"] == 3
         assert profile_state["agt_legacy"]["latest_revision"] == 4

@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import repositories as repository_module
+from app.auth import AuthPrincipal
 from app.main import create_app
 from app.queue import QueueAdmissionMetadata
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError, ToolPermissionTerminalizationProgress
@@ -337,12 +338,32 @@ def test_sse_heartbeat_event_shape():
 
 def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(monkeypatch):
     calls: list[object] = []
+    active_transactions: set[int] = set()
+    transaction_number = 0
 
-    async def admit(*_args, **_kwargs):
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal transaction_number
+        transaction_number += 1
+        current = transaction_number
+        active_transactions.add(current)
+        calls.append(("transaction_enter", current))
+        try:
+            yield {"transaction": current}
+        finally:
+            calls.append(("transaction_exit", current))
+            active_transactions.remove(current)
+
+    async def admit(conn, *_args, **_kwargs):
+        assert conn["transaction"] == 1
+        assert active_transactions == {1}
         calls.append("user_lock")
 
-    async def reauthorize(*_args, **kwargs):
-        calls.append(("profile_authority", kwargs["run_id"]))
+    async def reauthorize(conn, **kwargs):
+        expected_transaction = 1 if kwargs["run_id"] == "run-source" else 2
+        assert conn["transaction"] == expected_transaction
+        assert active_transactions == {expected_transaction}
+        calls.append(("profile_authority", kwargs["run_id"], expected_transaction))
 
     async def copy(*_args, **kwargs):
         calls.append(("copy", kwargs["run_id"]))
@@ -359,14 +380,15 @@ def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(mon
         return {"run_id": "run-copy"}
 
     async def enqueue(payload):
-        calls.append(("enqueue", payload["run_id"]))
+        assert active_transactions == {2}
+        calls.append(("enqueue", payload["run_id"], 2))
         return 1
 
     async def queue_insight(*_args, **_kwargs):
         return {"status": "ok"}
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", admit)
     monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", copy)
@@ -378,13 +400,89 @@ def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(mon
 
     assert response.status_code == 200
     assert calls == [
+        ("transaction_enter", 1),
         "user_lock",
-        ("profile_authority", "run-source"),
+        ("profile_authority", "run-source", 1),
         ("copy", "run-source"),
         ("prepare", "run-copy"),
-        ("profile_authority", "run-copy"),
-        ("enqueue", "run-copy"),
+        ("transaction_exit", 1),
+        ("transaction_enter", 2),
+        ("profile_authority", "run-copy", 2),
+        ("enqueue", "run-copy", 2),
+        ("transaction_exit", 2),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("check_existing", "existing_admission", "expected_operations"),
+    [
+        (False, None, ["profile_authority", "enqueue"]),
+        (True, QueueAdmissionMetadata(2, 1, "message-a", "readback"), ["profile_authority", "read"]),
+        (True, None, ["profile_authority", "read", "enqueue"]),
+    ],
+    ids=["new-admission", "existing-admission", "recovered-missing-admission"],
+)
+async def test_run_control_queue_admission_keeps_profile_lock_transaction_open(
+    monkeypatch,
+    check_existing,
+    existing_admission,
+    expected_operations,
+):
+    """Structural mirror: retry/resume queue work remains inside the profile-lock transaction."""
+
+    from app.routes.runs import _ensure_run_control_queue_admission
+
+    active = False
+    operations: list[str] = []
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal active
+        assert not active
+        active = True
+        try:
+            yield object()
+        finally:
+            active = False
+
+    async def reauthorize(*_args, **_kwargs):
+        assert active
+        operations.append("profile_authority")
+
+    async def read_admission(*_args, **_kwargs):
+        assert active
+        operations.append("read")
+        return existing_admission
+
+    async def enqueue(*_args, **_kwargs):
+        assert active
+        operations.append("enqueue")
+        return 3
+
+    monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+
+    result = await _ensure_run_control_queue_admission(
+        {"run_id": "run-child"},
+        check_existing=check_existing,
+        principal=principal,
+    )
+
+    assert operations == expected_operations
+    assert not active
+    if existing_admission is not None:
+        assert result is existing_admission
+    else:
+        assert result.queue_position == 3
 
 
 @pytest.mark.parametrize(
