@@ -19,6 +19,54 @@ from app.validation import SAFE_ID_PATTERN
 
 
 MCP_CATALOG_SYNC_LEASE_SECONDS = 120
+TRUSTED_BUILTIN_MCP_TOOL_ID = "ragflow-knowledge-search"
+TRUSTED_BUILTIN_MCP_SERVER_ID = "ragflow"
+TRUSTED_BUILTIN_MCP_REMOTE_NAME = "ragflow_search"
+
+
+def mcp_tool_tenant_authority_sql() -> str:
+    """Return the fixed tenant authority predicate for builtin or current catalog tools."""
+
+    return f"""
+      (
+        (
+          mcp_tools.id = '{TRUSTED_BUILTIN_MCP_TOOL_ID}'
+          and mcp_tools.server_id = '{TRUSTED_BUILTIN_MCP_SERVER_ID}'
+          and mcp_tools.transport_type = 'http'
+          and mcp_tools.endpoint = ''
+          and mcp_tools.auth_mode = 'platform-managed'
+          and mcp_tools.allowed_tools = '[\"{TRUSTED_BUILTIN_MCP_REMOTE_NAME}\"]'::jsonb
+          and mcp_tools.write_capable = false
+        )
+        or exists (
+          select 1
+          from mcp_tool_catalog_entries catalog_entry
+          join mcp_servers catalog_server
+            on catalog_server.tenant_id = catalog_entry.tenant_id
+           and catalog_server.name = catalog_entry.server_name
+          where catalog_entry.tool_id = mcp_tools.id
+            and catalog_entry.tenant_id = %s
+            and catalog_entry.status = 'active'
+            and catalog_entry.catalog_generation = catalog_server.catalog_generation
+            and catalog_server.status = 'active'
+            and catalog_server.catalog_status = 'available'
+        )
+      )
+    """
+
+
+def is_trusted_builtin_mcp_tool(tool: dict[str, Any]) -> bool:
+    """Recognize only the code-owned RAGFlow registry provenance, never a legacy fallback."""
+
+    return (
+        str(tool.get("tool_id") or tool.get("id") or "") == TRUSTED_BUILTIN_MCP_TOOL_ID
+        and str(tool.get("server_id") or "") == TRUSTED_BUILTIN_MCP_SERVER_ID
+        and str(tool.get("transport_type") or "") == "http"
+        and str(tool.get("endpoint") or "") == ""
+        and str(tool.get("auth_mode") or "") == "platform-managed"
+        and tool.get("allowed_tools") == [TRUSTED_BUILTIN_MCP_REMOTE_NAME]
+        and bool(tool.get("write_capable")) is False
+    )
 
 
 def _repositories():
@@ -37,6 +85,9 @@ def new_mcp_catalog_tool_id() -> str:
 
 def mcp_runtime_metadata_usable(tool: dict[str, Any]) -> bool:
     """Return whether one catalog or builtin row can be sandbox-registered."""
+
+    if is_trusted_builtin_mcp_tool(tool):
+        return True
 
     server_id = str(tool.get("server_id") or "")
     tool_id = str(tool.get("tool_id") or "")
@@ -87,25 +138,7 @@ async def list_workbench_mcp_tools(
          and tool_policies.tool_id = mcp_tools.id
         where mcp_tools.visible_to_user = true
           and tool_policies.visible_to_user = true
-          and (
-            not exists (
-              select 1 from mcp_tool_catalog_entries catalog_any
-              where catalog_any.tool_id = mcp_tools.id
-            )
-            or exists (
-              select 1
-              from mcp_tool_catalog_entries catalog_entry
-              join mcp_servers catalog_server
-                on catalog_server.tenant_id = catalog_entry.tenant_id
-               and catalog_server.name = catalog_entry.server_name
-              where catalog_entry.tool_id = mcp_tools.id
-                and catalog_entry.tenant_id = %s
-                and catalog_entry.status = 'active'
-                and catalog_entry.catalog_generation = catalog_server.catalog_generation
-                and catalog_server.status = 'active'
-                and catalog_server.catalog_status = 'available'
-            )
-          )
+          and """ + mcp_tool_tenant_authority_sql() + """
           and (%s or (mcp_tools.status = 'active' and tool_policies.status = 'active'))
         order by case mcp_tools.id when 'ragflow-knowledge-search' then 1 else 99 end, mcp_tools.id asc
         """,
@@ -151,15 +184,7 @@ async def get_mcp_tool_registry_entry(
           on tool_policies.tenant_id = mcp_servers.tenant_id
          and tool_policies.tool_id = mcp_tools.id
         where mcp_tools.id = %s
-          and (
-            mcp_tool_catalog_entries.tool_id is null
-            or (
-              mcp_tool_catalog_entries.tenant_id = %s
-              and mcp_tool_catalog_entries.status = 'active'
-              and mcp_tool_catalog_entries.catalog_generation = mcp_servers.catalog_generation
-              and mcp_servers.catalog_status = 'available'
-            )
-          )
+          and """ + mcp_tool_tenant_authority_sql() + """
         """,
         (tenant_id, tool_id, tenant_id),
     )
@@ -228,7 +253,8 @@ async def _locked_server(
         """
         select tenant_id, name, status, catalog_generation, catalog_sync_attempt,
           catalog_sync_lease_expires_at, catalog_revision, catalog_status,
-          catalog_unavailable_reason, catalog_discovered_count, catalog_selectable_count
+          catalog_unavailable_reason, catalog_discovered_count, catalog_selectable_count,
+          catalog_sync_lease_expires_at > clock_timestamp() as catalog_sync_lease_active
         from mcp_servers
         where tenant_id = %s
           and name = %s
@@ -280,7 +306,7 @@ async def begin_mcp_catalog_sync(
         set catalog_sync_attempt = catalog_sync_attempt + 1,
             catalog_status = 'syncing',
             catalog_unavailable_reason = 'refresh_required',
-            catalog_sync_lease_expires_at = now() + (%s * interval '1 second'),
+            catalog_sync_lease_expires_at = clock_timestamp() + (%s * interval '1 second'),
             updated_by = %s,
             updated_at = now()
         where tenant_id = %s
@@ -289,7 +315,7 @@ async def begin_mcp_catalog_sync(
           and (
             catalog_status <> 'syncing'
             or catalog_sync_lease_expires_at is null
-            or catalog_sync_lease_expires_at <= now()
+            or catalog_sync_lease_expires_at <= clock_timestamp()
           )
         returning catalog_generation, catalog_sync_attempt, catalog_revision, catalog_status,
           catalog_unavailable_reason, catalog_discovered_count, catalog_selectable_count
@@ -336,6 +362,7 @@ async def record_mcp_catalog_sync_outcome(
         int(server.get("catalog_generation") or 0) != observed_generation
         or int(server.get("catalog_sync_attempt") or 0) != observed_attempt
         or str(server.get("catalog_status") or "") != "syncing"
+        or server.get("catalog_sync_lease_active") is not True
     ):
         return {
             **_catalog_state_projection(server),
@@ -364,6 +391,7 @@ async def record_mcp_catalog_sync_outcome(
           and catalog_generation = %s
           and catalog_sync_attempt = %s
           and catalog_status = 'syncing'
+          and catalog_sync_lease_expires_at > clock_timestamp()
         returning catalog_status, catalog_unavailable_reason, catalog_revision,
           catalog_discovered_count, catalog_selectable_count
         """,
@@ -387,6 +415,12 @@ async def record_mcp_catalog_sync_outcome(
         payload_json={"reason": reason, "generation": observed_generation},
     )
     return _catalog_state_projection(dict(row))
+
+
+class _McpCatalogPublicationFenceLost(RuntimeError):
+    def __init__(self, catalog_state: dict[str, Any]) -> None:
+        super().__init__("mcp_catalog_publication_fence_lost")
+        self.catalog_state = catalog_state
 
 
 async def publish_mcp_tool_catalog(
@@ -416,6 +450,7 @@ async def publish_mcp_tool_catalog(
         int(server.get("catalog_generation") or 0) != observed_generation
         or int(server.get("catalog_sync_attempt") or 0) != observed_attempt
         or str(server.get("catalog_status") or "") != "syncing"
+        or server.get("catalog_sync_lease_active") is not True
     ):
         return {
             **_catalog_state_projection(server),
@@ -565,6 +600,7 @@ async def publish_mcp_tool_catalog(
           and catalog_generation = %s
           and catalog_sync_attempt = %s
           and catalog_status = 'syncing'
+          and catalog_sync_lease_expires_at > clock_timestamp()
         returning catalog_status, catalog_unavailable_reason, catalog_revision,
           catalog_discovered_count, catalog_selectable_count
         """,
@@ -583,12 +619,7 @@ async def publish_mcp_tool_catalog(
     )
     row = await cursor.fetchone()
     if row is None:
-        return {
-            **_catalog_state_projection(server),
-            "catalog_status": "unavailable",
-            "catalog_unavailable_reason": "stale_generation",
-            "published": False,
-        }
+        raise _McpCatalogPublicationFenceLost(_catalog_state_projection(server))
     await _repositories().append_audit_log(
         conn,
         tenant_id=tenant_id,
@@ -768,23 +799,31 @@ class PostgresMcpCatalogStore:
     ) -> dict[str, Any]:
         """Publish a complete manifest in one transaction tied to the claimed lease."""
 
-        async with transaction() as conn:
-            await _repositories().ensure_user(
-                conn,
-                tenant_id=command.tenant_id,
-                user_id=command.actor_id,
-                display_name=command.actor_id,
-            )
-            return await publish_mcp_tool_catalog(
-                conn,
-                tenant_id=command.tenant_id,
-                server_name=command.server_name,
-                observed_generation=command.observed_generation,
-                observed_attempt=observed_attempt,
-                endpoint=command.endpoint or "",
-                tools=tools,
-                actor_id=command.actor_id,
-            )
+        try:
+            async with transaction() as conn:
+                await _repositories().ensure_user(
+                    conn,
+                    tenant_id=command.tenant_id,
+                    user_id=command.actor_id,
+                    display_name=command.actor_id,
+                )
+                return await publish_mcp_tool_catalog(
+                    conn,
+                    tenant_id=command.tenant_id,
+                    server_name=command.server_name,
+                    observed_generation=command.observed_generation,
+                    observed_attempt=observed_attempt,
+                    endpoint=command.endpoint or "",
+                    tools=tools,
+                    actor_id=command.actor_id,
+                )
+        except _McpCatalogPublicationFenceLost as exc:
+            return {
+                **exc.catalog_state,
+                "catalog_status": "unavailable",
+                "catalog_unavailable_reason": "stale_generation",
+                "published": False,
+            }
 
 
 async def authorize_selected_chat_mcp_tools(

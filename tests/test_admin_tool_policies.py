@@ -99,6 +99,39 @@ async def test_admin_catalog_policy_mutation_refuses_foreign_opaque_tool_id():
 
 
 @pytest.mark.asyncio
+async def test_admin_catalog_policy_mutation_refuses_unknown_legacy_tool_id():
+    class Cursor:
+        async def fetchone(self):
+            return None
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+
+        async def execute(self, sql, params):
+            self.sql = sql
+            return Cursor()
+
+    conn = Connection()
+    with pytest.raises(RepositoryNotFoundError, match="mcp_tool_not_found"):
+        await repositories.upsert_admin_tool_policy(
+            conn,
+            tenant_id="tenant-a",
+            tool_id="legacy-untrusted",
+            status="active",
+            risk_level="low",
+            write_capable=False,
+            visible_to_user=True,
+            reason="unknown rows are not repository-native builtins",
+            updated_by="tool-admin",
+        )
+
+    assert "ragflow-knowledge-search" in conn.sql
+    assert "catalog_entry.tenant_id = %s" in conn.sql
+    assert "catalog_any" not in conn.sql
+
+
+@pytest.mark.asyncio
 async def test_admin_catalog_policy_list_excludes_foreign_or_stale_catalog_rows():
     class Cursor:
         async def fetchall(self):
@@ -123,7 +156,8 @@ async def test_admin_catalog_policy_list_excludes_foreign_or_stale_catalog_rows(
     )
 
     assert rows == []
-    assert "not exists" in conn.sql
+    assert "ragflow-knowledge-search" in conn.sql
+    assert "catalog_any" not in conn.sql
     assert "catalog_entry.tenant_id = %s" in conn.sql
     assert "catalog_entry.status = 'active'" in conn.sql
     assert conn.params == ("tenant-a", "tenant-a", True, 25)

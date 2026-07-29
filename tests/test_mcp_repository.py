@@ -58,7 +58,7 @@ async def test_expired_sync_takeover_claims_new_attempt_and_fences_old_attempt(m
 
     assert started["started"] is True
     assert started["catalog_sync_attempt"] == 3
-    assert "catalog_sync_lease_expires_at <= now()" in conn.calls[1][0]
+    assert "catalog_sync_lease_expires_at <= clock_timestamp()" in conn.calls[1][0]
 
     async def current_server(conn, **kwargs):
         return {
@@ -66,6 +66,7 @@ async def test_expired_sync_takeover_claims_new_attempt_and_fences_old_attempt(m
             "catalog_generation": 7,
             "catalog_sync_attempt": 3,
             "catalog_status": "syncing",
+            "catalog_sync_lease_active": True,
             "catalog_revision": 3,
             "catalog_discovered_count": 1,
             "catalog_selectable_count": 1,
@@ -85,3 +86,99 @@ async def test_expired_sync_takeover_claims_new_attempt_and_fences_old_attempt(m
 
     assert stale["catalog_unavailable_reason"] == "stale_generation"
     assert stale["published"] is False
+
+
+@pytest.mark.asyncio
+async def test_expired_sync_lease_rejects_outcome_and_publication_before_mutation(monkeypatch):
+    class Connection:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("an expired lease must not mutate catalog rows")
+
+    async def expired_server(conn, **kwargs):
+        return {
+            "status": "active",
+            "catalog_generation": 7,
+            "catalog_sync_attempt": 3,
+            "catalog_status": "syncing",
+            "catalog_sync_lease_active": False,
+            "catalog_revision": 3,
+            "catalog_discovered_count": 1,
+            "catalog_selectable_count": 1,
+        }
+
+    monkeypatch.setattr(mcp_repository, "_locked_server", expired_server)
+
+    outcome = await mcp_repository.record_mcp_catalog_sync_outcome(
+        Connection(),
+        tenant_id="tenant-a",
+        server_name="knowledge",
+        observed_generation=7,
+        observed_attempt=3,
+        reason="transport_failure",
+        actor_id="admin-a",
+    )
+    publication = await mcp_repository.publish_mcp_tool_catalog(
+        Connection(),
+        tenant_id="tenant-a",
+        server_name="knowledge",
+        observed_generation=7,
+        observed_attempt=3,
+        endpoint="https://mcp.example/tools",
+        tools=(),
+        actor_id="admin-a",
+    )
+
+    assert outcome["catalog_unavailable_reason"] == "stale_generation"
+    assert publication["catalog_unavailable_reason"] == "stale_generation"
+    assert publication["published"] is False
+
+
+def test_only_the_code_owned_ragflow_builtin_has_legacy_catalog_authority():
+    builtin = {
+        "tool_id": "ragflow-knowledge-search",
+        "server_id": "ragflow",
+        "transport_type": "http",
+        "endpoint": "",
+        "auth_mode": "platform-managed",
+        "allowed_tools": ["ragflow_search"],
+        "write_capable": False,
+    }
+
+    assert mcp_repository.is_trusted_builtin_mcp_tool(builtin) is True
+    assert mcp_repository.mcp_runtime_metadata_usable(builtin) is True
+    assert mcp_repository.is_trusted_builtin_mcp_tool({**builtin, "server_id": "forged-ragflow"}) is False
+    authority_sql = mcp_repository.mcp_tool_tenant_authority_sql()
+    assert "ragflow-knowledge-search" in authority_sql
+    assert "catalog_entry.tenant_id = %s" in authority_sql
+    assert "catalog_any" not in authority_sql
+
+
+@pytest.mark.asyncio
+async def test_workbench_and_registry_reads_share_the_fail_closed_catalog_authority_predicate():
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+        async def fetchone(self):
+            return None
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((sql, params))
+            return Cursor()
+
+    conn = Connection()
+    assert await mcp_repository.list_workbench_mcp_tools(conn, tenant_id="tenant-a") == []
+    assert await mcp_repository.get_mcp_tool_registry_entry(
+        conn,
+        tenant_id="tenant-a",
+        tool_id="legacy-untrusted",
+    ) is None
+
+    for sql, _params in conn.calls:
+        assert "ragflow-knowledge-search" in sql
+        assert "catalog_entry.tenant_id = %s" in sql
+        assert "catalog_any" not in sql

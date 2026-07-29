@@ -5750,7 +5750,7 @@ async def test_ensure_mcp_tool_active_applies_tenant_tool_policy_fail_closed():
     sql, params = conn.calls[0]
     assert "left join tool_policies" in sql
     assert "tool_policies.tenant_id = %s" in sql
-    assert params == ("tenant-a", "ragflow-knowledge-search")
+    assert params == ("tenant-a", "ragflow-knowledge-search", "tenant-a")
 
 
 @pytest.mark.asyncio
@@ -6214,9 +6214,10 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
     assert "mcp_servers.tenant_id = %s" in sql
     assert "mcp_servers.name = mcp_tools.server_id" in sql
     assert "mcp_tools.id = %s" in sql
-    assert "mcp_tool_catalog_entries.tenant_id = %s" in sql
-    assert "mcp_tool_catalog_entries.catalog_generation = mcp_servers.catalog_generation" in sql
-    assert "mcp_servers.catalog_status = 'available'" in sql
+    assert "catalog_entry.tenant_id = %s" in sql
+    assert "catalog_entry.catalog_generation = catalog_server.catalog_generation" in sql
+    assert "catalog_server.catalog_status = 'available'" in sql
+    assert "catalog_any" not in sql
     assert sql.count("%s") == len(params)
     assert params == ("tenant-a", "qa-search", "tenant-a")
     assert row is not None
@@ -6248,6 +6249,31 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
         "effective_status": "active",
         "source": "tenant",
     }
+
+
+@pytest.mark.asyncio
+async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tenant_catalog():
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = ()
+
+        async def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+            return Cursor()
+
+    conn = Connection()
+    assert await repositories.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
+
+    assert "ragflow-knowledge-search" in conn.sql
+    assert "catalog_entry.tenant_id = %s" in conn.sql
+    assert "catalog_any" not in conn.sql
+    assert conn.params == ("tenant-a", "tenant-a")
 
 
 @pytest.mark.asyncio

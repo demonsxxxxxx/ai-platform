@@ -385,8 +385,9 @@ async def ensure_mcp_tool_active(conn: AsyncConnection, *, tenant_id: str, tool_
           on tool_policies.tenant_id = %s
          and tool_policies.tool_id = mcp_tools.id
         where mcp_tools.id = %s
+          and """ + _mcp_repository.mcp_tool_tenant_authority_sql() + """
         """,
-        (tenant_id, tool_id),
+        (tenant_id, tool_id, tenant_id),
     )
     row = await cursor.fetchone()
     if row is None:
@@ -2061,15 +2062,7 @@ async def list_chat_mcp_tool_catalog_entries(
          and tool_policies.visible_to_user = true
         where mcp_tools.status = 'active'
           and mcp_tools.visible_to_user = true
-          and (
-            mcp_tool_catalog_entries.tool_id is null
-            or (
-              mcp_tool_catalog_entries.tenant_id = %s
-              and mcp_tool_catalog_entries.status = 'active'
-              and mcp_tool_catalog_entries.catalog_generation = mcp_servers.catalog_generation
-              and mcp_servers.catalog_status = 'available'
-            )
-          )
+          and """ + _mcp_repository.mcp_tool_tenant_authority_sql() + """
         order by mcp_tools.id asc
         """,
         (tenant_id, tenant_id),
@@ -3790,26 +3783,7 @@ async def list_admin_tool_policies(
         left join tool_policies
           on tool_policies.tenant_id = %s
          and tool_policies.tool_id = mcp_tools.id
-        where (
-          not exists (
-            select 1
-            from mcp_tool_catalog_entries catalog_any
-            where catalog_any.tool_id = mcp_tools.id
-          )
-          or exists (
-            select 1
-            from mcp_tool_catalog_entries catalog_entry
-            join mcp_servers catalog_server
-              on catalog_server.tenant_id = catalog_entry.tenant_id
-             and catalog_server.name = catalog_entry.server_name
-            where catalog_entry.tool_id = mcp_tools.id
-              and catalog_entry.tenant_id = %s
-              and catalog_entry.status = 'active'
-              and catalog_entry.catalog_generation = catalog_server.catalog_generation
-              and catalog_server.status = 'active'
-              and catalog_server.catalog_status = 'available'
-          )
-        )
+        where """ + _mcp_repository.mcp_tool_tenant_authority_sql() + """
           and (
             %s
             or (
@@ -3919,26 +3893,7 @@ async def upsert_admin_tool_policy(
           select %s, mcp_tools.id, %s, %s, %s, %s, %s, %s, now()
           from mcp_tools
           where mcp_tools.id = %s
-            and (
-              not exists (
-                select 1
-                from mcp_tool_catalog_entries catalog_any
-                where catalog_any.tool_id = mcp_tools.id
-              )
-              or exists (
-                select 1
-                from mcp_tool_catalog_entries catalog_entry
-                join mcp_servers catalog_server
-                  on catalog_server.tenant_id = catalog_entry.tenant_id
-                 and catalog_server.name = catalog_entry.server_name
-                where catalog_entry.tool_id = mcp_tools.id
-                  and catalog_entry.tenant_id = %s
-                  and catalog_entry.status = 'active'
-                  and catalog_entry.catalog_generation = catalog_server.catalog_generation
-                  and catalog_server.status = 'active'
-                  and catalog_server.catalog_status = 'available'
-              )
-            )
+            and """ + _mcp_repository.mcp_tool_tenant_authority_sql() + """
           on conflict (tenant_id, tool_id) do update
           set status = excluded.status,
               write_capable = excluded.write_capable,

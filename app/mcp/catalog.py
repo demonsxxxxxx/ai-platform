@@ -151,7 +151,9 @@ def _address_is_permitted(address: ipaddress.IPv4Address | ipaddress.IPv6Address
         or isinstance(address, ipaddress.IPv4Address) and int(address) == 0xFFFFFFFF
     ):
         return False
-    return scheme == "https" or _is_rfc1918(address)
+    # The intranet exception is deliberately narrower than ``is_private``:
+    # ULA, CGNAT, and other non-public ranges are not discovery targets.
+    return _is_rfc1918(address) or (scheme == "https" and address.is_global)
 
 
 async def _resolve_discovery_addresses(hostname: str, port: int) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
@@ -191,6 +193,11 @@ async def _validated_discovery_endpoint(endpoint: str | None) -> str:
         parsed.port or (443 if parsed.scheme == "https" else 80),
     )
     if not all(_address_is_permitted(address, scheme=parsed.scheme) for address in addresses):
+        raise McpToolDiscoveryError("invalid_endpoint")
+    if not (
+        all(_is_rfc1918(address) for address in addresses)
+        or (parsed.scheme == "https" and all(address.is_global for address in addresses))
+    ):
         raise McpToolDiscoveryError("invalid_endpoint")
     return endpoint or ""
 
