@@ -1,7 +1,7 @@
 import hashlib
 import logging
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.exception_handlers import (
@@ -473,8 +473,9 @@ async def _admit_chat_submission(
         )
         profile_bound = profile_revision is not None
         if profile_bound:
-            # This authority call locks the exact aggregate publication row;
-            # queue admission remains inside this same transaction and lock.
+            # Run creation committed before this fresh authority transaction.
+            # Keep its run/profile locks through Redis admission so workers can
+            # see the run but lifecycle writers cannot overtake admission.
             await reauthorize_pinned_run_for_replay(
                 conn,
                 principal=principal,
@@ -485,16 +486,24 @@ async def _admit_chat_submission(
                 check_existing=True,
             )
             if queue_admission is None:
-                definitive_failure = isinstance(profile_enqueue_error, QueueAdmissionRejected)
-                await _persist_chat_queue_failure(
-                    conn,
-                    principal=principal,
-                    run_id=run_id,
-                    trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
-                    submission_id=submission_id,
-                    definitive=definitive_failure,
-                )
-                if definitive_failure:
+                if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
+                    profile_enqueue_error
+                ):
+                    await repositories.mark_run_enqueue_failed(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        run_id=run_id,
+                        trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
+                    )
+                    await repositories.finalize_chat_submission(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        submission_id=submission_id,
+                        state="enqueue_failed",
+                        rejection_code="queue_enqueue_failed",
+                    )
                     submission["state"] = "enqueue_failed"
                     submission["rejection_code"] = "queue_enqueue_failed"
                 profile_resolution = _chat_submission_resolution(submission)
@@ -521,7 +530,9 @@ async def _admit_chat_submission(
                 profile_resolution = _chat_submission_resolution(submission)
 
     if profile_bound:
-        if isinstance(profile_enqueue_error, QueueAdmissionRejected):
+        if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
+            profile_enqueue_error
+        ):
             raise HTTPException(status_code=503, detail="queue_enqueue_failed") from profile_enqueue_error
         if profile_resolution is None:
             raise HTTPException(status_code=409, detail="chat_submission_not_admitted")
@@ -547,7 +558,7 @@ async def _admit_chat_submission(
             # terminal result) with a local enqueue conclusion.
             if str(current_submission.get("state")) != "accepted_pending_enqueue":
                 return _chat_submission_resolution(current_submission)
-            if not isinstance(exc, QueueAdmissionRejected):
+            if not _is_definitive_chat_queue_rejection(exc):
                 # The outcome remains unknown.  The durable submission is
                 # recoverable through retry-admission and immutable Redis
                 # idempotency, without this request posting again.
@@ -772,6 +783,12 @@ async def _attempt_chat_queue_admission(
         return None, exc
 
 
+def _is_definitive_chat_queue_rejection(error: Exception) -> bool:
+    """Return true only for a locally invalid immutable queue payload."""
+
+    return isinstance(error, QueueAdmissionRejected) and str(error) == "queue_payload_invalid"
+
+
 async def _persist_chat_queue_success(
     conn,
     *,
@@ -781,7 +798,7 @@ async def _persist_chat_queue_success(
     outcome: ChatStreamResponse,
     submission_id: str | None,
 ) -> None:
-    """Record one queue admission in the transaction that owns its authority fence."""
+    """Record one queue admission after the durable run is committed."""
 
     queue_position = int(queue_admission.queue_position)
     queue_ordinal = int(queue_admission.queue_admission_ordinal)
@@ -812,38 +829,6 @@ async def _persist_chat_queue_success(
             queue_admission_ordinal=queue_ordinal or None,
             queue_message_id=queue_admission.message_id,
         )
-
-
-async def _persist_chat_queue_failure(
-    conn,
-    *,
-    principal: AuthPrincipal,
-    run_id: str,
-    trace_id: str,
-    submission_id: str | None,
-    definitive: bool,
-) -> None:
-    """Persist only failures that cannot hide an accepted idempotent queue write."""
-
-    if submission_id is not None and not definitive:
-        return
-    await repositories.mark_run_enqueue_failed(
-        conn,
-        tenant_id=principal.tenant_id,
-        user_id=principal.user_id,
-        run_id=run_id,
-        trace_id=trace_id,
-    )
-    if submission_id is not None:
-        await repositories.finalize_chat_submission(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            submission_id=submission_id,
-            state="enqueue_failed",
-            rejection_code="queue_enqueue_failed",
-        )
-
 
 def _strip_server_owned_control_metadata(input_payload: object, *, redact_public: bool = False) -> dict[str, Any]:
     return repositories.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
@@ -1406,9 +1391,6 @@ async def chat_stream(
     effective_workspace_id = request.workspace_id
     inherited_mcp_selection = False
     admitted_agent_profile = None
-    profile_queue_admission: QueueAdmissionMetadata | None = None
-    profile_enqueue_error: Exception | None = None
-    profile_queue_response: ChatStreamResponse | None = None
     try:
         async with transaction() as conn:
             # Global submission order: user advisory -> session row -> Agent
@@ -1587,23 +1569,24 @@ async def chat_stream(
                     permissions=principal.permissions,
                 )
 
+            fingerprint_request = request.model_dump(
+                mode="json",
+                exclude={"submission_id"},
+            )
+            if request.selected_mcp_tool_ids is None and allowed and "mcp_tool_ids" in run_input:
+                fingerprint_request["selected_mcp_tool_ids"] = list(
+                    run_input.get("mcp_tool_ids") or []
+                )
+            resolved_request_fingerprint = repositories.chat_submission_fingerprint(
+                {
+                    "request": fingerprint_request,
+                    "query_agent_id": query_agent_id,
+                },
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+            )
             if submission_id is not None:
-                fingerprint_request = request.model_dump(
-                    mode="json",
-                    exclude={"submission_id"},
-                )
-                if request.selected_mcp_tool_ids is None and allowed and "mcp_tool_ids" in run_input:
-                    fingerprint_request["selected_mcp_tool_ids"] = list(
-                        run_input.get("mcp_tool_ids") or []
-                    )
-                request_fingerprint = repositories.chat_submission_fingerprint(
-                    {
-                        "request": fingerprint_request,
-                        "query_agent_id": query_agent_id,
-                    },
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                )
+                request_fingerprint = resolved_request_fingerprint
 
             if submission_id is not None and request_fingerprint is not None:
                 claimed_submission, created_submission = await repositories.claim_chat_submission(
@@ -1913,6 +1896,25 @@ async def chat_stream(
                 run_id=run_id,
                 file_ids=resolved_file_ids,
             )
+            if admitted_agent_profile is not None and submission_id is None:
+                # Canonical clients claim their own key before routing. A
+                # legacy unkeyed Agent request gets the same durable recovery
+                # only after every capability and resource check has passed,
+                # immediately before the first session/run write.
+                submission_id = str(uuid4())
+                request_fingerprint = resolved_request_fingerprint
+                claimed_submission, created_submission = await repositories.claim_chat_submission(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    submission_id=submission_id,
+                    workspace_id=effective_workspace_id,
+                    request_fingerprint_sha256=request_fingerprint,
+                )
+                if not created_submission:
+                    if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
+                        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+                    return _chat_stream_response_from_submission(claimed_submission)
             session_create_kwargs = {
                 "tenant_id": principal.tenant_id,
                 "workspace_id": effective_workspace_id,
@@ -2093,47 +2095,6 @@ async def chat_stream(
                     "context_snapshot": context_ref,
                 }
             )
-            if admitted_agent_profile is not None:
-                profile_queue_admission, profile_enqueue_error = await _attempt_chat_queue_admission(
-                    queue_payload,
-                    check_existing=False,
-                )
-                if profile_queue_admission is None:
-                    definitive_failure = isinstance(profile_enqueue_error, QueueAdmissionRejected)
-                    await _persist_chat_queue_failure(
-                        conn,
-                        principal=principal,
-                        run_id=run_id,
-                        trace_id=standard_trace_id(run_id),
-                        submission_id=submission_id,
-                        definitive=definitive_failure,
-                    )
-                else:
-                    queue_position = int(profile_queue_admission.queue_position)
-                    profile_queue_response = (
-                        pending_submission_response.model_copy(
-                            update={
-                                "status": "queued",
-                                "queue_position": queue_position or None,
-                            }
-                        )
-                        if pending_submission_response is not None
-                        else ChatStreamResponse(
-                            session_id=session_id,
-                            run_id=run_id,
-                            status="queued",
-                            queue_position=queue_position,
-                            intent_decision=_intent_response(decision_payload, principal),
-                        )
-                    )
-                    await _persist_chat_queue_success(
-                        conn,
-                        principal=principal,
-                        run_id=run_id,
-                        queue_admission=profile_queue_admission,
-                        outcome=profile_queue_response,
-                        submission_id=submission_id,
-                    )
     except HTTPException as exc:
         code = _submission_code(exc.detail)
         if 400 <= exc.status_code < 500:
@@ -2211,29 +2172,6 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
-    if admitted_agent_profile is not None:
-        if profile_queue_admission is not None and profile_queue_response is not None:
-            if submission_id is not None:
-                return profile_queue_response
-            return profile_queue_response.model_copy(
-                update={
-                    "queue_insight": await get_queue_insight(
-                        principal.tenant_id,
-                        user_id=principal.user_id,
-                    )
-                }
-            )
-        if submission_id is not None and not isinstance(
-            profile_enqueue_error,
-            QueueAdmissionRejected,
-        ):
-            return pending_submission_response or ChatStreamResponse(
-                session_id=session_id,
-                run_id=run_id,
-                status="accepted_pending_enqueue",
-                submission_id=submission_id,
-            )
-        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from profile_enqueue_error
     if submission_id is not None:
         try:
             admitted = await _admit_chat_submission(principal=principal, submission_id=submission_id)

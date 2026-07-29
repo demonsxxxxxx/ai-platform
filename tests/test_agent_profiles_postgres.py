@@ -896,7 +896,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
     ids=["unkeyed", "keyed"],
 )
 @pytest.mark.asyncio
-async def test_postgres_chat_persistence_and_profile_lock_reach_queue_admission(
+async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispatch(
     monkeypatch,
     submission_id,
 ):
@@ -1002,11 +1002,20 @@ async def test_postgres_chat_persistence_and_profile_lock_reach_queue_admission(
         )
         await asyncio.wait_for(queue_entered.wait(), timeout=2)
 
-        uncommitted_cursor = await observer_conn.execute(
+        committed_cursor = await observer_conn.execute(
             "select count(*) as count from runs where tenant_id = %s",
             ("tenant-profile-chat",),
         )
-        assert (await uncommitted_cursor.fetchone())["count"] == 0
+        assert (await committed_cursor.fetchone())["count"] == 1
+        pending_cursor = await observer_conn.execute(
+            """
+            select state
+            from chat_submissions
+            where tenant_id = %s and run_id is not null
+            """,
+            ("tenant-profile-chat",),
+        )
+        assert await pending_cursor.fetchone() == {"state": "accepted_pending_enqueue"}
 
         async def withdraw_profile():
             async with lifecycle_conn.transaction():
@@ -1019,7 +1028,7 @@ async def test_postgres_chat_persistence_and_profile_lock_reach_queue_admission(
 
         withdrawal_task = asyncio.create_task(withdraw_profile())
 
-        async def wait_for_row_block() -> None:
+        async def wait_for_profile_lock() -> None:
             while True:
                 cursor = await observer_conn.execute(
                     "select pg_blocking_pids(%s) as blockers",
@@ -1029,13 +1038,14 @@ async def test_postgres_chat_persistence_and_profile_lock_reach_queue_admission(
                     return
                 await asyncio.sleep(0.02)
 
-        await asyncio.wait_for(wait_for_row_block(), timeout=2)
+        await asyncio.wait_for(wait_for_profile_lock(), timeout=2)
         assert not withdrawal_task.done()
         release_queue.set()
         response = await asyncio.wait_for(admission_task, timeout=3)
         withdrawn, _audit_id = await asyncio.wait_for(withdrawal_task, timeout=3)
 
         assert response.status == "queued"
+        assert response.submission_id is not None
         assert withdrawn.status == "withdrawn"
         persisted_cursor = await observer_conn.execute(
             """
@@ -1057,11 +1067,13 @@ async def test_postgres_chat_persistence_and_profile_lock_reach_queue_admission(
             "session_hash": "a" * 64,
         }
         submission_cursor = await observer_conn.execute(
-            "select state from chat_submissions where tenant_id = %s and submission_id = %s",
-            ("tenant-profile-chat", submission_id or "missing"),
+            "select submission_id::text, state from chat_submissions where tenant_id = %s and run_id = %s",
+            ("tenant-profile-chat", response.run_id),
         )
-        submission_row = await submission_cursor.fetchone()
-        assert submission_row == ({"state": "queued"} if submission_id is not None else None)
+        assert await submission_cursor.fetchone() == {
+            "submission_id": response.submission_id,
+            "state": "queued",
+        }
     finally:
         release_queue.set()
         pending = [task for task in (admission_task, withdrawal_task) if task is not None and not task.done()]
@@ -1076,8 +1088,8 @@ async def test_postgres_chat_persistence_and_profile_lock_reach_queue_admission(
 
 
 @pytest.mark.asyncio
-async def test_postgres_profile_queue_payload_is_not_executable_after_producer_rollback(monkeypatch):
-    """A queue write preceding a failed DB commit cannot pass the worker's run gate."""
+async def test_postgres_profile_queue_dispatch_is_not_emitted_after_producer_rollback(monkeypatch):
+    """A failed producer commit cannot emit a worker-visible queue payload."""
 
     from app.auth import AuthPrincipal
     from app.models import ChatStreamRequest, SelectedAgentProfileRequest
@@ -1086,17 +1098,12 @@ async def test_postgres_profile_queue_payload_is_not_executable_after_producer_r
     dsn = _postgres_dsn()
     schema_name = f"agent_profile_chat_rollback_{uuid.uuid4().hex}"
     producer_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
-    worker_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
     observer_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
     manifest = _profile_chat_manifest("profile-chat-skill")
     enqueued_payloads: list[dict[str, object]] = []
-    queue_entered = asyncio.Event()
-    release_queue = asyncio.Event()
-    producer_task = None
-    worker_task = None
     try:
         await producer_conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
-        for conn in (producer_conn, worker_conn, observer_conn):
+        for conn in (producer_conn, observer_conn):
             await _set_search_path(conn, schema_name)
         await producer_conn.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
         await _seed_profile_chat_storage(
@@ -1124,8 +1131,6 @@ async def test_postgres_profile_queue_payload_is_not_executable_after_producer_r
 
         async def capture_enqueue(payload):
             enqueued_payloads.append(payload)
-            queue_entered.set()
-            await release_queue.wait()
             return 1
 
         monkeypatch.setattr("app.routes.chat.transaction", rolled_back_transaction)
@@ -1137,12 +1142,8 @@ async def test_postgres_profile_queue_payload_is_not_executable_after_producer_r
         monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
         monkeypatch.setattr("app.routes.chat.enqueue_run", capture_enqueue)
 
-        producer_pid_cursor = await producer_conn.execute("select pg_backend_pid() as pid")
-        producer_pid = (await producer_pid_cursor.fetchone())["pid"]
-        worker_pid_cursor = await worker_conn.execute("select pg_backend_pid() as pid")
-        worker_pid = (await worker_pid_cursor.fetchone())["pid"]
-        producer_task = asyncio.create_task(
-            chat_stream(
+        with pytest.raises(RuntimeError, match="forced producer commit failure"):
+            await chat_stream(
                 ChatStreamRequest(
                     workspace_id="workspace-profile-chat",
                     message="enqueue before forced rollback",
@@ -1158,34 +1159,7 @@ async def test_postgres_profile_queue_payload_is_not_executable_after_producer_r
                     roles=["user"],
                 ),
             )
-        )
-        await asyncio.wait_for(queue_entered.wait(), timeout=2)
-        assert len(enqueued_payloads) == 1
-        payload = enqueued_payloads[0]
-        worker_task = asyncio.create_task(
-            repositories.mark_run_running(
-                worker_conn,
-                tenant_id="tenant-profile-chat",
-                run_id=str(payload["run_id"]),
-            )
-        )
-
-        async def wait_for_worker_block() -> None:
-            while True:
-                cursor = await observer_conn.execute(
-                    "select pg_blocking_pids(%s) as blockers",
-                    (worker_pid,),
-                )
-                if producer_pid in (await cursor.fetchone())["blockers"]:
-                    return
-                await asyncio.sleep(0.02)
-
-        await asyncio.wait_for(wait_for_worker_block(), timeout=2)
-        assert not worker_task.done()
-        release_queue.set()
-        with pytest.raises(RuntimeError, match="forced producer commit failure"):
-            await asyncio.wait_for(producer_task, timeout=3)
-        assert await asyncio.wait_for(worker_task, timeout=3) is None
+        assert enqueued_payloads == []
 
         persisted_cursor = await observer_conn.execute(
             "select count(*) as run_count from runs where tenant_id = %s",
@@ -1193,13 +1167,8 @@ async def test_postgres_profile_queue_payload_is_not_executable_after_producer_r
         )
         assert (await persisted_cursor.fetchone())["run_count"] == 0
     finally:
-        release_queue.set()
-        pending = [task for task in (producer_task, worker_task) if task is not None and not task.done()]
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
         try:
             await observer_conn.close()
-            await worker_conn.close()
             await producer_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         finally:
             await producer_conn.close()

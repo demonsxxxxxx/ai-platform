@@ -1237,7 +1237,7 @@ def _durable_run_row(*, status: str = "queued") -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_profile_retry_admission_holds_authority_transaction_through_enqueue(monkeypatch):
+async def test_profile_retry_admission_uses_fresh_authority_transaction_for_committed_run(monkeypatch):
     submission = _pending_submission_row()
     run = _durable_run_row()
     run.update(
@@ -1321,6 +1321,127 @@ async def test_profile_retry_admission_holds_authority_transaction_through_enque
 
 
 @pytest.mark.asyncio
+async def test_profile_postcommit_lost_ack_is_recoverable_and_duplicate_retry_does_not_reenqueue(
+    monkeypatch,
+):
+    submission = _pending_submission_row()
+    run = _durable_run_row()
+    run.update(
+        {
+            "agent_id": "agt_support",
+            "skill_id": "profile-specialist",
+            "admitted_agent_profile_revision": 7,
+            "admitted_agent_profile_hash": "a" * 64,
+            "input_json": {
+                "input": {"message": "retry profile run", "mcp_tool_ids": []},
+                "executor_type": "claude-agent-worker",
+                "skill_version": "version-profile",
+                "skill_manifests": [],
+                "model_id": "model-a",
+                "model_value": "provider-model-a",
+                "agent_profile": {
+                    "agent_id": "agt_support",
+                    "revision": 7,
+                    "content_hash": "a" * 64,
+                    "instructions": "private",
+                },
+            },
+        }
+    )
+    transaction_depth = 0
+    committed_transactions = 0
+    enqueue_calls = 0
+    queue_admission: QueueAdmissionMetadata | None = None
+    readback_available = False
+    enqueued_payloads: list[dict[str, object]] = []
+    read_payloads: list[dict[str, object]] = []
+    queued_events = 0
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal committed_transactions, transaction_depth
+        transaction_depth += 1
+        try:
+            yield object()
+        except BaseException:
+            raise
+        else:
+            committed_transactions += 1
+        finally:
+            transaction_depth -= 1
+
+    async def get_submission(*_args, **_kwargs):
+        return submission
+
+    async def get_run(*_args, **_kwargs):
+        return run
+
+    async def reauthorize(*_args, **_kwargs):
+        assert transaction_depth == 1
+
+    async def read_admission(payload):
+        read_payloads.append(dict(payload))
+        return queue_admission if readback_available else None
+
+    async def enqueue(payload):
+        nonlocal enqueue_calls, queue_admission
+        assert transaction_depth == 1
+        enqueue_calls += 1
+        enqueued_payloads.append(dict(payload))
+        queue_admission = QueueAdmissionMetadata(1, 11, "stable-profile-message")
+        raise RuntimeError("redis acknowledgement unavailable")
+
+    async def append_event(*_args, **_kwargs):
+        nonlocal queued_events
+        queued_events += 1
+
+    async def finalize(*_args, **kwargs):
+        submission["state"] = kwargs["state"]
+        if kwargs.get("outcome_json") is not None:
+            submission["outcome_json"] = kwargs["outcome_json"]
+
+    async def forbidden_failure_transition(*_args, **_kwargs):
+        raise AssertionError("an ambiguous post-commit publish must remain recoverable")
+
+    monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission)
+    monkeypatch.setattr(repository_module, "get_authorized_run", get_run)
+    monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
+    monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
+    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr(repository_module, "append_event", append_event)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize)
+    monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", forbidden_failure_transition)
+
+    first = await _admit_chat_submission(
+        principal=principal(),
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    assert first.state == "accepted_pending_enqueue"
+    assert enqueue_calls == 1
+    assert committed_transactions == 1
+
+    readback_available = True
+    recovered = await _admit_chat_submission(
+        principal=principal(),
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    duplicate = await _admit_chat_submission(
+        principal=principal(),
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+
+    assert recovered.state == "queued"
+    assert duplicate.state == "queued"
+    assert enqueue_calls == 1
+    assert queued_events == 1
+    assert enqueued_payloads
+    assert read_payloads
+    assert all(payload == enqueued_payloads[0] for payload in read_payloads)
+
+
+@pytest.mark.asyncio
 async def test_retry_admission_marks_committed_submission_enqueue_failed_only_for_definitive_rejection(monkeypatch):
     submission = _pending_submission_row()
     finalized: list[dict[str, object]] = []
@@ -1375,7 +1496,18 @@ async def test_retry_admission_marks_committed_submission_enqueue_failed_only_fo
 
 
 @pytest.mark.asyncio
-async def test_retry_admission_keeps_unknown_enqueue_outcome_recoverable_without_failure_transition(monkeypatch):
+@pytest.mark.parametrize(
+    "enqueue_error",
+    [
+        RuntimeError("redis connection dropped after write"),
+        QueueAdmissionRejected("run_reconciliation_in_progress"),
+    ],
+    ids=["ambiguous-redis-write", "transient-reconciliation-fence"],
+)
+async def test_retry_admission_keeps_unknown_enqueue_outcome_recoverable_without_failure_transition(
+    monkeypatch,
+    enqueue_error,
+):
     submission = _pending_submission_row()
     enqueue_calls: list[dict[str, object]] = []
 
@@ -1387,7 +1519,7 @@ async def test_retry_admission_keeps_unknown_enqueue_outcome_recoverable_without
 
     async def enqueue(payload):
         enqueue_calls.append(payload)
-        raise RuntimeError("redis connection dropped after write")
+        raise enqueue_error
 
     async def no_exact_admission(_payload):
         return None
@@ -4120,12 +4252,49 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "submission_id",
-    [None, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"],
-    ids=["unkeyed", "keyed"],
+    (
+        "submission_id",
+        "force_creation_rollback",
+        "restored_continuation",
+        "enqueue_failure_mode",
+        "deny_file_authorization",
+    ),
+    [
+        (None, False, False, None, False),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", False, False, None, False),
+        (None, True, False, None, False),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", True, False, None, False),
+        (None, False, False, "before_publish", False),
+        ("8f2cf18b-e414-4ddd-b99e-c21c32d4f086", False, True, None, False),
+        (
+            "9c356f6d-360b-41d0-a97e-3ab16d70a874",
+            False,
+            True,
+            "after_publish_unknown",
+            False,
+        ),
+        (None, False, False, None, True),
+    ],
+    ids=[
+        "unkeyed",
+        "keyed",
+        "unkeyed-rollback",
+        "keyed-rollback",
+        "unkeyed-publish-failure",
+        "restored-continuation",
+        "restored-lost-ack",
+        "unkeyed-file-denied",
+    ],
 )
-async def test_new_profile_submit_takes_user_lock_before_profile_admission(monkeypatch, submission_id):
-    """Route/persistence mirror only; PostgreSQL lock-manager behavior is opt-in coverage."""
+async def test_new_profile_submit_commits_after_user_and_profile_admission_before_enqueue(
+    monkeypatch,
+    submission_id,
+    force_creation_rollback,
+    restored_continuation,
+    enqueue_failure_mode,
+    deny_file_authorization,
+):
+    """Route/persistence mirror only; PostgreSQL commit visibility is opt-in coverage."""
 
     from app.agent_apps import AgentProfileAdmission
     from app.models import AgentConversationIdentity
@@ -4133,13 +4302,33 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
     calls: list[str] = []
     persisted: dict[str, dict] = {}
     transaction_depth = 0
+    committed_transactions = 0
+    committed_submission: dict[str, object] | None = None
+    committed_run: dict[str, object] | None = None
+    queue_admission: QueueAdmissionMetadata | None = None
+    queue_readback_available = enqueue_failure_mode != "after_publish_unknown"
+    enqueue_payloads: list[dict[str, object]] = []
+
+    class TransactionState:
+        def __init__(self) -> None:
+            self.submission = dict(committed_submission) if committed_submission is not None else None
+            self.run = dict(committed_run) if committed_run is not None else None
 
     @asynccontextmanager
     async def tracked_transaction():
-        nonlocal transaction_depth
+        nonlocal committed_run, committed_submission, committed_transactions, transaction_depth
+        state = TransactionState()
         transaction_depth += 1
         try:
-            yield object()
+            yield state
+        except BaseException:
+            raise
+        else:
+            if force_creation_rollback and state.run is not None and committed_run is None:
+                raise RuntimeError("forced Agent run commit failure")
+            committed_submission = state.submission
+            committed_run = state.run
+            committed_transactions += 1
         finally:
             transaction_depth -= 1
 
@@ -4155,7 +4344,12 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
     async def profile_admission(*_args, **kwargs):
         calls.append("profile_lock")
         submitted_request = kwargs["submitted_request"]
-        assert kwargs["query_agent_id"] == "general-agent"
+        assert kwargs["query_agent_id"] == (
+            "agt_support" if restored_continuation else "general-agent"
+        )
+        assert submitted_request.session_id == (
+            "ses-profile-lock-order" if restored_continuation else None
+        )
         assert submitted_request.agent_options == {"enable_thinking": "off"}
         assert submitted_request.disabled_skills == []
         assert submitted_request.selected_mcp_tool_ids == []
@@ -4184,7 +4378,17 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
             ),
         )
 
+    async def owned_session(*_args, **_kwargs):
+        return {
+            "id": "ses-profile-lock-order",
+            "workspace_id": "default",
+            "agent_id": "agt_support",
+            "admitted_agent_profile_revision": 7,
+            "admitted_agent_profile_hash": "a" * 64,
+        }
+
     async def authorize_profile_skill(*_args, **_kwargs):
+        calls.append("skill_auth")
         return {
             "skill_id": "profile-specialist",
             "skill_version": "version-profile",
@@ -4195,32 +4399,102 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
     async def governed_manifest(*_args, **_kwargs):
         return [snapshot_manifest("profile-specialist")]
 
+    async def authorize_workspace(*_args, **_kwargs):
+        calls.append("workspace_auth")
+
+    async def authorize_files(*_args, **_kwargs):
+        calls.append("file_auth")
+        if deny_file_authorization:
+            raise HTTPException(status_code=403, detail="file_not_authorized")
+
     async def create_session(*_args, **kwargs):
         calls.append("create_session")
         persisted["session"] = kwargs
         return kwargs["session_id"]
 
-    async def create_run(*_args, **kwargs):
+    async def create_run(conn, **kwargs):
         calls.append("create_run")
         persisted["run"] = kwargs
+        conn.run = {
+            "id": "run-profile-lock-order",
+            "status": "queued",
+            "workspace_id": kwargs["workspace_id"],
+            "session_id": kwargs["session_id"],
+            "agent_id": kwargs["agent_id"],
+            "skill_id": kwargs["skill_id"],
+            "trace_id": "trace-profile-lock-order",
+            "admitted_agent_profile_revision": kwargs["admitted_agent_profile_revision"],
+            "admitted_agent_profile_hash": kwargs["admitted_agent_profile_hash"],
+            "input_json": kwargs["input_json"],
+        }
         return "run-profile-lock-order"
 
     async def append_message(*_args, **_kwargs):
         return "msg-profile-lock-order"
 
-    async def claim_submission(*_args, **kwargs):
-        return (
+    async def claim_submission(conn, **kwargs):
+        calls.append("claim")
+        conn.submission = {
+            "submission_id": kwargs["submission_id"],
+            "request_fingerprint_sha256": kwargs["request_fingerprint_sha256"],
+            "state": "resolving",
+            "outcome_json": {},
+        }
+        return conn.submission, True
+
+    async def get_submission(conn, **_kwargs):
+        return conn.submission
+
+    async def get_run(conn, **_kwargs):
+        return conn.run
+
+    async def finalize_submission(conn, **kwargs):
+        assert conn.submission is not None
+        conn.submission.update(
             {
-                "request_fingerprint_sha256": kwargs["request_fingerprint_sha256"],
-                "state": "resolving",
-            },
-            True,
+                key: value
+                for key, value in kwargs.items()
+                if key
+                in {
+                    "state",
+                    "workspace_id",
+                    "session_id",
+                    "run_id",
+                    "outcome_json",
+                    "rejection_code",
+                    "queue_position",
+                    "queue_admission_ordinal",
+                    "queue_message_id",
+                }
+                and value is not None
+            }
         )
 
-    async def enqueue(*_args, **_kwargs):
-        assert transaction_depth == 1, "profile queue admission must occur before the authoritative transaction exits"
+    async def reauthorize(*_args, **_kwargs):
+        assert transaction_depth == 1
+        assert committed_run is not None
+        assert committed_submission is not None
+        calls.append("profile_reauth")
+
+    async def enqueue(payload):
+        nonlocal queue_admission
+        assert transaction_depth == 1, "Redis dispatch must use a fresh transaction over committed Agent state"
+        assert committed_transactions >= 1
+        assert committed_run is not None
+        assert committed_submission is not None
+        assert committed_submission["state"] == "accepted_pending_enqueue"
         calls.append("enqueue")
+        enqueue_payloads.append(dict(payload))
+        if len(enqueue_payloads) == 1 and enqueue_failure_mode == "before_publish":
+            raise RuntimeError("queue publication failed")
+        queue_admission = QueueAdmissionMetadata(1, 7, "profile-message")
+        if len(enqueue_payloads) == 1 and enqueue_failure_mode == "after_publish_unknown":
+            raise RuntimeError("queue acknowledgement unavailable")
         return 1
+
+    async def existing_queue_admission(payload):
+        assert not enqueue_payloads or dict(payload) == enqueue_payloads[0]
+        return queue_admission if queue_readback_available else None
 
     async def noop(*_args, **_kwargs):
         return None
@@ -4238,49 +4512,113 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
     )
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", late_ensure_user)
     monkeypatch.setattr("app.routes.chat.resolve_profile_for_admission", profile_admission)
+    monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", profile_admission)
+    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
     monkeypatch.setattr(
         "app.routes.chat.repositories.authorize_selected_run_capabilities",
         authorize_profile_skill,
     )
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace_belongs_to_tenant", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_files_for_run", noop)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.ensure_workspace_belongs_to_tenant",
+        authorize_workspace,
+    )
+    monkeypatch.setattr("app.routes.chat.repositories.authorize_files_for_run", authorize_files)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", create_run)
     monkeypatch.setattr("app.routes.chat.repositories.insert_run_skill_snapshots_at_creation", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", append_message)
     monkeypatch.setattr("app.routes.chat.repositories.claim_chat_submission", claim_submission)
-    monkeypatch.setattr("app.routes.chat.repositories.finalize_chat_submission", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.get_chat_submission", get_submission)
+    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_run", get_run)
+    monkeypatch.setattr("app.routes.chat.repositories.finalize_chat_submission", finalize_submission)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr("app.routes.chat.read_queue_admission", existing_queue_admission)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
     monkeypatch.setattr(
         "app.routes.chat.repositories.new_id",
         lambda kind: "ses-profile-lock-order" if kind == "ses" else "run-profile-lock-order",
     )
 
+    request_payload = {
+        "message": "run the selected Agent",
+        "agent_options": {"enable_thinking": "off"},
+        "disabled_skills": [],
+        "selected_mcp_tool_ids": [],
+        "submission_id": submission_id,
+        "user_timezone": "Asia/Shanghai",
+    }
+    if restored_continuation:
+        request_payload["session_id"] = "ses-profile-lock-order"
+    else:
+        request_payload["selected_agent_profile"] = {
+            "agent_id": "agt_support",
+            "expected_revision": 7,
+        }
+    chat_request = ChatStreamRequest.model_validate(request_payload)
+    query_agent_id = "agt_support" if restored_continuation else "general-agent"
+    if deny_file_authorization:
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_stream(
+                chat_request,
+                agent_id=query_agent_id,
+                principal=principal(),
+            )
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail == "file_not_authorized"
+        assert calls == [
+            "user_lock",
+            "principal",
+            "profile_lock",
+            "skill_auth",
+            "workspace_auth",
+            "file_auth",
+        ]
+        assert committed_run is None
+        assert committed_submission is None
+        return
+    if force_creation_rollback:
+        with pytest.raises(RuntimeError, match="forced Agent run commit failure"):
+            await chat_stream(
+                chat_request,
+                agent_id=query_agent_id,
+                principal=principal(),
+            )
+        assert committed_run is None
+        assert committed_submission is None
+        assert "enqueue" not in calls
+        return
+
     response = await chat_stream(
-        ChatStreamRequest.model_validate(
-            {
-                "message": "run the selected Agent",
-                "agent_options": {"enable_thinking": "off"},
-                "disabled_skills": [],
-                "selected_mcp_tool_ids": [],
-                "selected_agent_profile": {
-                    "agent_id": "agt_support",
-                    "expected_revision": 7,
-                },
-                "submission_id": submission_id,
-                "user_timezone": "Asia/Shanghai",
-            }
-        ),
-        agent_id="general-agent",
+        chat_request,
+        agent_id=query_agent_id,
         principal=principal(),
     )
 
     assert response.session_id == "ses-profile-lock-order"
     assert response.run_id == "run-profile-lock-order"
-    assert calls == ["user_lock", "principal", "profile_lock", "create_session", "create_run", "enqueue"]
+    assert response.submission_id is not None
+    if submission_id is not None:
+        assert response.submission_id == submission_id
+    initial_calls = list(calls)
+    expected_calls = [
+        "user_lock",
+        "principal",
+        "profile_lock",
+    ]
+    if submission_id is not None:
+        expected_calls.extend(["claim", "skill_auth", "workspace_auth", "file_auth"])
+    else:
+        expected_calls.extend(["skill_auth", "workspace_auth", "file_auth", "claim"])
+    expected_calls.extend([
+        "create_session",
+        "create_run",
+        "profile_reauth",
+        "enqueue",
+    ])
+    assert initial_calls == expected_calls
     assert persisted["session"]["admitted_agent_profile_revision"] == 7
     assert persisted["session"]["admitted_agent_profile_hash"] == "a" * 64
     assert persisted["run"]["admitted_agent_profile_revision"] == 7
@@ -4291,6 +4629,32 @@ async def test_new_profile_submit_takes_user_lock_before_profile_admission(monke
         "content_hash": "a" * 64,
         "instructions": "private profile instructions",
     }
+    if enqueue_failure_mode is None:
+        assert response.status == "queued"
+        assert len(enqueue_payloads) == 1
+        return
+
+    assert response.status == "accepted_pending_enqueue"
+    assert committed_submission is not None
+    assert committed_submission["state"] == "accepted_pending_enqueue"
+    generated_or_client_submission_id = response.submission_id
+    queue_readback_available = True
+    recovered = await _admit_chat_submission(
+        principal=principal(),
+        submission_id=generated_or_client_submission_id,
+    )
+    duplicate = await _admit_chat_submission(
+        principal=principal(),
+        submission_id=generated_or_client_submission_id,
+    )
+
+    assert recovered.state == "queued"
+    assert duplicate.state == "queued"
+    if enqueue_failure_mode == "before_publish":
+        assert len(enqueue_payloads) == 2
+        assert enqueue_payloads[0] == enqueue_payloads[1]
+    else:
+        assert len(enqueue_payloads) == 1
 
 
 @pytest.mark.asyncio
@@ -4435,6 +4799,9 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         )
         raise HTTPException(status_code=418, detail="captured_profile_skill")
 
+    async def forbidden_submission_claim(*_args, **_kwargs):
+        raise AssertionError("a denied unkeyed Agent request must not mint a recovery key")
+
     async def authorize_transport_mcp_defaults(*_args, **_kwargs):
         return None
 
@@ -4462,6 +4829,10 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
     monkeypatch.setattr(
         "app.routes.chat.repositories.authorize_selected_run_capabilities",
         authorize_selected,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.claim_chat_submission",
+        forbidden_submission_claim,
     )
 
     with pytest.raises(HTTPException) as caught:
