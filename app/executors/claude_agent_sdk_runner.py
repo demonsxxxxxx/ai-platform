@@ -72,8 +72,6 @@ _SDK_SELECTED_SKILL_NOT_AUTHORIZED = "claude_agent_sdk_selected_skill_not_author
 _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
-_MAX_REPLAY_TEXT_BLOCKS = 32
-_MAX_REPLAY_TEXT_CHARS = 8_192
 _MAX_REQUIRED_ANSWER_TEXT_CHARS = 4_096
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
@@ -1167,29 +1165,6 @@ class CapabilityExecutionPlan:
             available.add(("skill", required_skill_identity))
         return cls(available=frozenset(available), required=required)
 
-    def sdk_hook_payload(
-        self,
-        *,
-        capability_kind: str,
-        canonical_identity: str,
-        tool_call_id: str,
-        lifecycle_phase: str,
-    ) -> dict[str, str] | None:
-        """Return evidence for an actual available call, never for availability alone."""
-
-        key = (capability_kind, canonical_identity)
-        if key not in self.available:
-            return None
-        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind=capability_kind,
-            canonical_identity=canonical_identity,
-        )
-        return RequiredCapabilityEvidence.sdk_hook_payload(
-            declaration=declaration,
-            tool_call_id=tool_call_id,
-            lifecycle_phase=lifecycle_phase,
-        )
-
 def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, Any]]:
     """Build exact broker subjects for explicitly selected scoped context tools."""
 
@@ -1482,6 +1457,7 @@ async def run_claude_agent_sdk(
     used_skill_names: list[str] = []
     capability_evidence: list[dict[str, str]] = []
     capability_evidence_rejected = False
+    actual_mcp_invocation_observed = False
     started_tool_lifecycles: set[tuple[str, str]] = set()
 
     def turn_diagnostics(error_code: str | None) -> dict[str, Any]:
@@ -1693,15 +1669,20 @@ async def run_claude_agent_sdk(
                                          lifecycle_phase: str, skill_metadata: dict[str, Any] | None = None) -> bool:
         """Record one bounded actual-call fact without tool input or output."""
 
+        nonlocal actual_mcp_invocation_observed
         if capability_evidence_rejected:
             return False
+        if capability_kind == "mcp":
+            actual_mcp_invocation_observed = True
         try:
-            evidence = capability_plan.sdk_hook_payload(
-                capability_kind=capability_kind,
-                canonical_identity=canonical_identity,
+            key = (capability_kind, canonical_identity)
+            evidence = RequiredCapabilityEvidence.sdk_hook_payload(
+                declaration=RequiredCapabilityDeclaration.from_authorized_subject(
+                    capability_kind=capability_kind, canonical_identity=canonical_identity
+                ),
                 tool_call_id=tool_call_id,
                 lifecycle_phase=lifecycle_phase,
-            )
+            ) if key in capability_plan.available else None
             if evidence is not None:
                 acknowledged = await on_capability_evidence(dict(evidence)) if on_capability_evidence else False
             elif capability_kind == "mcp":
@@ -2043,77 +2024,97 @@ async def run_claude_agent_sdk(
         setting_sources=["project"],
     )
 
-    diagnostic_text_blocks: list[str] = []
-    diagnostic_text_overflowed = False
-    required_answer_views = ["", ""]
-    required_answer_overflowed = False
+    sealed_answer_views = ["", ""]
+    sealed_answer_overflowed = False
     structured_result_text = ""
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
     received_structured_terminal = False
-    answer_text_limit = _MAX_REQUIRED_ANSWER_TEXT_CHARS if required_answer_gate else _MAX_REPLAY_TEXT_CHARS
+    answer_text_limit = _MAX_REQUIRED_ANSWER_TEXT_CHARS
     projector_limits = {"trailing_chars": answer_text_limit, "max_pending_chars": answer_text_limit} if required_answer_gate else {}
     stream_projector = TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload, **projector_limits) if trusted_internal_raw_streaming else None
 
-    def required_capability_completion_error() -> str | None:
+    def capability_completion_error() -> str | None:
+        """Validate every observed call and every explicit requirement together."""
+
         if capability_evidence_rejected:
             return "required_tool_completion_evidence_mismatch"
-        if not required_capability_declarations:
-            return None
-        required_evidence = [
-            item
-            for item in capability_evidence
-            if (item.get("capability_kind"), item.get("canonical_identity"))
-            in required_capability_declarations
-        ]
-        if not required_evidence:
-            return "required_tool_completion_evidence_missing"
-        expected = {identity: item.declaration_sha256 for identity, item in required_capability_declarations.items()}
-        observed = {(item.get("capability_kind"), item.get("canonical_identity")) for item in required_evidence}
-        if observed != set(expected) or len({item.get("tool_call_id") for item in required_evidence}) != len(expected):
-            return "required_tool_completion_evidence_mismatch"
-        for identity, declaration_sha256 in expected.items():
-            matching = [item for item in required_evidence if (item.get("capability_kind"), item.get("canonical_identity")) == identity]
-            if len(matching) != 2 or [item.get("lifecycle_phase") for item in matching] != ["invocation_requested", "completed"] or [item.get("lifecycle_status") for item in matching] != ["invoking", "succeeded"] or not matching[0].get("tool_call_id") or matching[0].get("tool_call_id") != matching[1].get("tool_call_id") or any(item.get("declaration_sha256") != declaration_sha256 for item in matching):
+        groups: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+        call_owners: dict[str, tuple[str, str]] = {}
+        for item in capability_evidence:
+            key = (item.get("capability_kind"), item.get("canonical_identity"))
+            call_id = item.get("tool_call_id")
+            if key not in capability_plan.available or not call_id:
                 return "required_tool_completion_evidence_mismatch"
+            if call_owners.setdefault(call_id, key) != key:
+                return "required_tool_completion_evidence_mismatch"
+            groups.setdefault((*key, call_id), []).append(item)
+        for (kind, identity, _call_id), matching in groups.items():
+            declaration_sha256 = RequiredCapabilityDeclaration.from_authorized_subject(
+                capability_kind=kind, canonical_identity=identity
+            ).declaration_sha256
+            if len(matching) != 2 or [item.get("lifecycle_phase") for item in matching] != ["invocation_requested", "completed"] or [item.get("lifecycle_status") for item in matching] != ["invoking", "succeeded"] or matching[0].get("tool_call_id") != matching[1].get("tool_call_id") or any(item.get("declaration_sha256") != declaration_sha256 for item in matching):
+                return "required_tool_completion_evidence_mismatch"
+        for key in required_capability_declarations:
+            matches = sum(group[:2] == key for group in groups)
+            if not matches:
+                return "required_tool_completion_evidence_missing"
+            if matches != 1:
+                return "required_tool_completion_evidence_mismatch"
+        if actual_mcp_invocation_observed and not any(group[0] == "mcp" for group in groups):
+            return "required_tool_completion_evidence_mismatch"
         return None
 
     def buffer_candidate_text(value: object, *, stream: bool = False) -> None:
-        nonlocal diagnostic_text_overflowed
-        nonlocal required_answer_overflowed
-        if required_answer_gate:
-            if required_answer_overflowed:
-                return
-            index = 0 if stream else 1
-            candidate = (
-                required_answer_views[0] + value
-                if stream and isinstance(value, str)
-                else _reconcile_answer_views(required_answer_views[0], value)
-                if isinstance(value, str)
-                else None
-            )
-            if not stream:
-                required_answer_views[0] = ""
-            if candidate is None or len(candidate) > answer_text_limit:
-                required_answer_overflowed = True
-                required_answer_views[:] = ["", ""]
-            elif candidate:
-                required_answer_views[index] = candidate
+        nonlocal sealed_answer_overflowed
+        if sealed_answer_overflowed:
             return
-        if not diagnostic_text_overflowed and isinstance(value, str) and len(diagnostic_text_blocks) < _MAX_REPLAY_TEXT_BLOCKS and sum(map(len, diagnostic_text_blocks)) + len(value) <= answer_text_limit:
-            diagnostic_text_blocks.append(value)
-        else:
-            diagnostic_text_blocks.clear()
-            diagnostic_text_overflowed = True
+        index = 0 if stream else 1
+        candidate = (
+            sealed_answer_views[0] + value
+            if stream and isinstance(value, str)
+            else _reconcile_answer_views(sealed_answer_views[0], value)
+            if isinstance(value, str)
+            else None
+        )
+        if not stream:
+            sealed_answer_views[0] = ""
+        if candidate is None or len(candidate) > answer_text_limit:
+            sealed_answer_overflowed = True
+            sealed_answer_views[:] = ["", ""]
+        elif candidate:
+            sealed_answer_views[index] = candidate
 
-    def redact_required_private_tokens(value: str) -> str | None:
-        replacements = {item["tool_call_id"]: "tool invocation" for item in capability_evidence if item.get("tool_call_id")}
-        if replacements:
-            pattern = re.compile("|".join(re.escape(item) for item in sorted(replacements, key=lambda item: (-len(item), item))))
-            value = pattern.sub(lambda match: replacements[match.group(0)], value)
-        value = sanitize_public_text(value)
-        return None if any(item in value for item in replacements) else value
+    def redact_capability_private_tokens(value: str) -> str | None:
+        """Exact-replace private execution tokens before any governed publication."""
+
+        replacements = {
+            item["tool_call_id"]: "tool invocation"
+            for item in capability_evidence
+            if item.get("tool_call_id")
+        }
+        if actual_mcp_invocation_observed:
+            replacements.update(
+                {identity: "external tool" for kind, identity in capability_plan.available if kind == "mcp"}
+            )
+            replacements.update(
+                {
+                    str(config["url"]): "external tool endpoint"
+                    for server_id, config in mcp_servers.items()
+                    if server_id != "ai-platform-context"
+                    and isinstance(config, dict)
+                    and isinstance(config.get("url"), str)
+                    and config["url"]
+                }
+            )
+        private_tokens = tuple(sorted(replacements, key=lambda token: (-len(token), token)))
+        for token in private_tokens:
+            value = value.replace(token, replacements[token])
+        sanitized = sanitize_public_text(value)
+        if any(token in sanitized for token in private_tokens):
+            return None
+        return sanitized if sanitized or not value else None
 
     async def publish_terminal_text(value: str) -> None:
         if on_text is None or not value:
@@ -2125,7 +2126,6 @@ async def run_claude_agent_sdk(
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, structured_result_text
-        nonlocal diagnostic_text_overflowed
         async for message in query(
             prompt=_sdk_user_prompt_stream(
                 sdk_prompt,
@@ -2136,7 +2136,7 @@ async def run_claude_agent_sdk(
         ):
             if stream_projector is not None and isinstance(message, StreamEvent):
                 for text in stream_projector.accept(message.event):
-                    if required_answer_gate:
+                    if required_answer_gate or actual_mcp_invocation_observed:
                         buffer_candidate_text(text, stream=True)
                     else:
                         await publish_terminal_text(text)
@@ -2150,9 +2150,9 @@ async def run_claude_agent_sdk(
                         last_public_stage = "message"
                         text = getattr(block, "text", "")
                         assistant_text_blocks.append(text)
-                        if not required_answer_gate:
-                            buffer_candidate_text(text)
-                if required_answer_gate:
+                if (required_answer_gate or actual_mcp_invocation_observed) and (
+                    required_answer_gate or stream_projector is None
+                ):
                     buffer_candidate_text(
                         "".join(assistant_text_blocks)
                         if all(isinstance(text, str) for text in assistant_text_blocks)
@@ -2202,39 +2202,57 @@ async def run_claude_agent_sdk(
                 break
         if stream_projector is not None:
             stream_projector.close_unfinished()
-            if required_answer_gate and stream_projector.disabled:
+            if (required_answer_gate or actual_mcp_invocation_observed) and stream_projector.disabled:
                 buffer_candidate_text(None)
         terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL if not received_structured_terminal else None
         if terminal_error is None and capability_evidence_rejected:
             terminal_error = "required_tool_completion_evidence_mismatch"
         if terminal_error is None:
             terminal_error = selected_skill_hook_error()
+        if terminal_error is None:
+            terminal_error = capability_completion_error()
         public_structured_result_text = structured_result_text
+        sealed_public_text = ""
         if terminal_error is None and required_answer_gate:
-            terminal_error = required_capability_completion_error()
             logical_answer = _reconcile_answer_views(
-                required_answer_views[1], required_answer_views[0], structured_result_text
+                sealed_answer_views[1], sealed_answer_views[0], structured_result_text
             )
             if terminal_error is None and (
-                required_answer_overflowed
+                sealed_answer_overflowed
                 or logical_answer is None
                 or logical_answer != structured_result_text
                 or len(logical_answer) > answer_text_limit
             ):
                 terminal_error = _SDK_TOOL_ADMISSION_FAILED
             if terminal_error is None:
-                public_structured_result_text = redact_required_private_tokens(structured_result_text)
+                public_structured_result_text = redact_capability_private_tokens(structured_result_text)
                 if public_structured_result_text is None or len(public_structured_result_text) > answer_text_limit:
                     terminal_error = _SDK_TOOL_ADMISSION_FAILED
+                else:
+                    sealed_public_text = public_structured_result_text
+        if terminal_error is None and actual_mcp_invocation_observed:
+            public_structured_result_text = redact_capability_private_tokens(structured_result_text)
+            sealed_candidate = _reconcile_answer_views(
+                sealed_answer_views[1], sealed_answer_views[0]
+            )
+            if (
+                sealed_answer_overflowed
+                or public_structured_result_text is None
+                or sealed_candidate is None
+                or len(public_structured_result_text) > _MAX_REQUIRED_ANSWER_TEXT_CHARS
+            ):
+                terminal_error = _SDK_TOOL_ADMISSION_FAILED
+            elif sealed_candidate:
+                sealed_public_text = redact_capability_private_tokens(sealed_candidate) or ""
+                if not sealed_public_text:
+                    terminal_error = _SDK_TOOL_ADMISSION_FAILED
+            elif stream_projector is None or not stream_projector.partial_emitted:
+                sealed_public_text = public_structured_result_text
         if terminal_error is None and received_structured_terminal:
-            diagnostic_text = "".join(diagnostic_text_blocks)
-            if required_answer_gate and public_structured_result_text:
-                await publish_terminal_text(public_structured_result_text)
+            if (required_answer_gate or actual_mcp_invocation_observed) and sealed_public_text:
+                await publish_terminal_text(sealed_public_text)
             elif stream_projector is not None and stream_projector.partial_emitted:
                 pass  # ResultMessage is authoritative; do not replay after a raw beta delta.
-            elif not diagnostic_text_overflowed and diagnostic_text and diagnostic_text == structured_result_text:
-                for block in diagnostic_text_blocks:
-                    await publish_terminal_text(block)
             elif structured_result_text:
                 await publish_terminal_text(structured_result_text)
         return ClaudeAgentSdkRunResult(
