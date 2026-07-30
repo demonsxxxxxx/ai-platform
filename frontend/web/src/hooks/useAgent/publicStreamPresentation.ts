@@ -122,7 +122,7 @@ export class PublicStreamPresentation {
     if (update.phase === "started" || update.phase === "terminal") {
       this.pendingProgressByStep.delete(update.stepId);
       this.rescheduleProgressTimer();
-      update.commit();
+      this.commitExecutionImmediately(owner, update.commit);
       return true;
     }
 
@@ -133,7 +133,7 @@ export class PublicStreamPresentation {
       now - lastCommittedAt >= EXECUTION_PROGRESS_MIN_INTERVAL_MS
     ) {
       this.lastProgressCommitAt.set(update.stepId, now);
-      update.commit();
+      this.commitExecutionImmediately(owner, update.commit);
       return true;
     }
 
@@ -173,6 +173,19 @@ export class PublicStreamPresentation {
     const pending = this.pendingText;
     this.pendingText = null;
     pending.commit(pending.content);
+  }
+
+  /** Preserve receive order when an execution update cannot wait for rAF. */
+  private commitExecutionImmediately(
+    owner: PublicStreamPresentationOwner,
+    commit: () => void,
+  ): void {
+    if (this.animationFrame !== null) {
+      this.clock.cancelAnimationFrame(this.animationFrame);
+      this.animationFrame = null;
+    }
+    this.flushText(owner);
+    commit();
   }
 
   private rescheduleProgressTimer(): void {
@@ -225,7 +238,7 @@ function updateExecutionStep(
   step: ExecutionTimelinePart,
 ): ExecutionTimelinePart[] {
   const existing = steps.find((candidate) => candidate.step_id === step.step_id);
-  if (existing && step.sequence < existing.sequence) return steps;
+  if (existing && step.sequence <= existing.sequence) return steps;
   if (!existing) return [...steps, step];
   return steps.map((candidate) =>
     candidate.step_id === step.step_id ? step : candidate,
@@ -255,7 +268,7 @@ export function upsertPublicExecutionStep(
     (part): part is ExecutionTimelinePart =>
       part.type === "execution_step" && part.step_id === step.step_id,
   );
-  if (existing && step.sequence < existing.sequence) return parts;
+  if (existing && step.sequence <= existing.sequence) return parts;
   if (!existing) return [...parts, step];
   return parts.map((part) =>
     part.type === "execution_step" && part.step_id === step.step_id ? step : part,

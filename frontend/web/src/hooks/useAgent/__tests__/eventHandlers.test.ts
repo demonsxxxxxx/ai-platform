@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
 import type { Message } from "../../../types";
 import { handleStreamEvent } from "../eventHandlers.ts";
 import type { EventHandlerContext } from "../eventHandlers.ts";
-import type { StreamEvent } from "../types.ts";
-import { prepareMessagesForRunningRun } from "../historyLoader.ts";
+import type { HistoryEvent, StreamEvent } from "../types.ts";
+import {
+  prepareMessagesForRunningRun,
+  reconstructMessagesFromEvents,
+} from "../historyLoader.ts";
 import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
 
 function createContext(
@@ -544,6 +548,144 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
     { type: "text", content: "AB!" },
   ]);
   assert.equal(ctx.setMessagesCalls(), 2);
+});
+
+test("commits a public delta before a later execution state and keeps history semantically coherent", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-ordered",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-ordered";
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-ordered",
+    sequence: 7,
+  };
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-ordered",
+    streamVersion: 0,
+  };
+  let pendingFrame: FrameRequestCallback | null = null;
+  const presentation = new PublicStreamPresentation({
+    now: () => 0,
+    requestAnimationFrame: (callback) => {
+      pendingFrame = callback;
+      return 1;
+    },
+    cancelAnimationFrame: () => {
+      pendingFrame = null;
+    },
+    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeout: () => undefined,
+  });
+  presentation.activate({
+    sessionId: binding.sessionId,
+    runId: binding.runId,
+    assistantMessageId: "assistant-ordered",
+    streamVersion: binding.streamVersion,
+  });
+  ctx.publicStreamPresentation = presentation;
+  const snapshots: Array<{ content: string; partTypes: string[] }> = [];
+  const commit = ctx.setMessages;
+  ctx.setMessages = (updater) => {
+    commit(updater);
+    const assistant = ctx.messages()[0];
+    snapshots.push({
+      content: assistant?.content || "",
+      partTypes: (assistant?.parts || []).map((part) => part.type),
+    });
+  };
+  const delta = {
+    event: "message:chunk",
+    data: JSON.stringify({
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      run_id: "run-ordered",
+      event_id: "evt-delta-8",
+      sequence: 8,
+      content: "B",
+    }),
+  } as StreamEvent;
+  const started = {
+    event: "execution_step",
+    data: JSON.stringify({
+      schema_version: "ai-platform.public-execution-event.v1",
+      event_id: "evt-step-9",
+      run_id: "run-ordered",
+      sequence: 9,
+      step_id: "step-1",
+      kind: "processing",
+      stage: "private-stage",
+      status: "running",
+      title: "private title",
+      summary: "private summary",
+      progress: { current: 0, total: 1 },
+      safe_file_name: null,
+      artifact_public_id: null,
+      created_at: "2026-07-31T01:00:00.000Z",
+    }),
+  } as StreamEvent;
+
+  assert.equal(
+    handleStreamEvent(delta, "assistant-ordered", "evt-delta-8", undefined, ctx, binding),
+    true,
+  );
+  assert.equal(
+    handleStreamEvent(started, "assistant-ordered", "evt-step-9", undefined, ctx, binding),
+    true,
+  );
+  assert.deepEqual(snapshots, [
+    { content: "B", partTypes: ["text"] },
+    { content: "B", partTypes: ["text", "execution_step"] },
+  ]);
+  assert.equal(pendingFrame, null);
+
+  const history = reconstructMessagesFromEvents(
+    [
+      {
+        id: "evt-delta-8",
+        event_type: "message:chunk",
+        run_id: "run-ordered",
+        sequence: 8,
+        timestamp: "2026-07-31T01:00:00.000Z",
+        data: JSON.parse(delta.data),
+      },
+      {
+        id: "evt-step-9",
+        event_type: "execution_step",
+        run_id: "run-ordered",
+        sequence: 9,
+        timestamp: "2026-07-31T01:00:01.000Z",
+        data: JSON.parse(started.data),
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  )[0];
+  const liveStep = ctx.messages()[0]?.parts?.find(
+    (part) => part.type === "execution_step",
+  );
+  const historyProcess = getVisibleMessageParts(history?.parts || []).find(
+    (part) => part.type === "execution_process",
+  );
+  assert.equal(ctx.messages()[0]?.content, "B");
+  assert.equal(history?.content, "B");
+  assert.equal(liveStep?.type, "execution_step");
+  assert.equal(historyProcess?.type, "execution_process");
+  if (liveStep?.type !== "execution_step" || historyProcess?.type !== "execution_process") {
+    throw new Error("expected public execution steps");
+  }
+  assert.deepEqual(historyProcess.steps, [liveStep]);
 });
 
 test("creates a new streaming assistant for a running run after the latest user message", () => {

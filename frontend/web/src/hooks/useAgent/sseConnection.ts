@@ -565,6 +565,12 @@ export async function connectToSSE(
       if (!isCurrentStream()) {
         return;
       }
+      ctx.publicStreamPresentation?.flush({
+        sessionId: targetSessionId,
+        runId: targetRunId,
+        assistantMessageId: messageId,
+        streamVersion,
+      });
       // Release this owner's reference before aborting its controller so an
       // abort callback cannot observe itself as the current replacement.
       abortControllerRef.current = null;

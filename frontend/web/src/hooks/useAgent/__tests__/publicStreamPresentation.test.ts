@@ -88,6 +88,27 @@ test("coalesces rapid public deltas in receive order and flushes before terminal
   assert.deepEqual(commits, ["first second", "final-buffer"]);
 });
 
+test("commits an accepted answer delta before a later immediate execution update", () => {
+  const clock = new FakePresentationClock();
+  const presentation = new PublicStreamPresentation(clock);
+  const commits: string[] = [];
+  presentation.activate(owner);
+
+  presentation.enqueueAssistantDelta(owner, "answer", (content) => {
+    commits.push(`delta:${content}`);
+  });
+  presentation.enqueueExecutionUpdate(owner, {
+    stepId: "step-1",
+    sequence: 2,
+    phase: "started",
+    commit: () => commits.push("execution:started"),
+  });
+
+  assert.deepEqual(commits, ["delta:answer", "execution:started"]);
+  clock.flushAnimationFrame();
+  assert.deepEqual(commits, ["delta:answer", "execution:started"]);
+});
+
 test("discards a stale owner buffer before it can contaminate the replacement shell", () => {
   const clock = new FakePresentationClock();
   const presentation = new PublicStreamPresentation(clock);

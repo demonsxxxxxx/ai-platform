@@ -161,6 +161,52 @@ test("history preserves the same safe terminal process structure as live present
   );
 });
 
+test("history does not regress a completed execution step from a different equal-sequence event", () => {
+  const event = (
+    id: string,
+    event_type: "execution_step_completed" | "execution_progress",
+    status: "completed" | "running",
+  ) => ({
+    id,
+    event_type,
+    run_id: "run-equal-sequence",
+    sequence: 7,
+    timestamp: id === "evt-completed" ? "2026-07-31T01:00:00.000Z" : "2026-07-31T01:00:01.000Z",
+    data: {
+      schema_version: "ai-platform.public-execution-event.v1",
+      event_id: id,
+      run_id: "run-equal-sequence",
+      sequence: 7,
+      step_id: "step-1",
+      kind: "processing",
+      stage: "private-stage",
+      status,
+      title: "private title",
+      summary: "private summary",
+      progress: status === "completed" ? { current: 1, total: 1 } : { current: 0, total: 1 },
+      safe_file_name: null,
+      artifact_public_id: null,
+      created_at: "2026-07-31T01:00:00.000Z",
+    },
+  });
+  const messages = reconstructMessagesFromEvents(
+    [
+      event("evt-completed", "execution_step_completed", "completed"),
+      event("evt-stale-progress", "execution_progress", "running"),
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const process = getVisibleMessageParts(messages[0]?.parts || []).find(
+    (candidate) => candidate.type === "execution_process",
+  );
+  assert.equal(process?.type, "execution_process");
+  if (process?.type !== "execution_process") throw new Error("expected execution process");
+  assert.equal(process.steps[0]?.status, "completed");
+  assert.deepEqual(process.steps[0]?.progress, { current: 1, total: 1 });
+});
+
 test("reconstructMessagesFromEvents keeps overlapping runs in independent backend-ordered assistant segments", () => {
   const messages = reconstructMessagesFromEvents(
     [
