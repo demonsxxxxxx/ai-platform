@@ -18,9 +18,9 @@ of expanding an unrelated product PR.
 
 - The linked issue and PR are normally the plan, change description, and durable
   status record. Do not create a spec/plan/status trio by default.
-- Create a separate design only when a security, authorization, tenant,
-  persistence, concurrency, public-contract, release, deployment, or
-  infrastructure decision needs durable explanation.
+- Create a separate design for security, auth or authorization, tenant isolation,
+  release, deployment, runtime, persistence, concurrency, public contracts, or
+  infrastructure decisions that need durable explanation.
 - Record blockers and evidence on the issue or PR. Historical evidence cannot
   prove current readiness.
 
