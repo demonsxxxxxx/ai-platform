@@ -32,6 +32,7 @@ class PublicAnswerStreamGate:
         self._logical_overflowed = False
         self._accepted_text = False
         self._published_text = False
+        self._public_answer_text = ""
         self._sealed = False
         self._released_after_verified_capability = False
         self._published_before_capability_release = False
@@ -172,7 +173,12 @@ class PublicAnswerStreamGate:
         chunks = self._emit(emitted)
         self._pending = ""
         self._finished = True
-        return PublicAnswerFinish(chunks, safe_final)
+        public_final_text = (
+            self._public_answer_text
+            if self._released_after_verified_capability
+            else safe_final
+        )
+        return PublicAnswerFinish(chunks, public_final_text)
 
     def _add_replacements(self, replacements: Mapping[str, str]) -> None:
         try:
@@ -277,6 +283,7 @@ class PublicAnswerStreamGate:
         if not text:
             return ()
         self._published_text = True
+        self._public_answer_text += text
         suffix_chars = self._max_private_token_chars - 1
         self._published_suffix = (self._published_suffix + text)[-suffix_chars:]
         return (text,)

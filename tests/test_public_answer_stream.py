@@ -133,7 +133,10 @@ def test_verified_capability_release_discards_pre_evidence_text_and_streams_late
     gate.release_after_verified_capability()
     first = gate.accept("Safe final ")
     second = gate.accept("answer.")
-    finished = gate.finish(final_text="Safe final answer.", release=True)
+    finished = gate.finish(
+        final_text=f"{pre_evidence} Safe final answer.",
+        release=True,
+    )
 
     public_text = "".join((*first, *second, *finished.chunks))
     assert public_text == "Safe final answer."

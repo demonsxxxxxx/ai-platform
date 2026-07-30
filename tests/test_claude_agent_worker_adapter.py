@@ -563,6 +563,69 @@ async def _run_worker_local_skill_evidence_case(monkeypatch, tmp_path, raw_evide
     return current_payload, result, acknowledgements
 
 
+@pytest.mark.asyncio
+async def test_worker_local_sdk_adapter_forwards_only_public_capability_answer(
+    monkeypatch,
+    tmp_path,
+):
+    current_payload = payload(skill_id="qa-file-reviewer", file_ids=[])
+    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
+    public_chunks = ["Verified final answer ", "streams safely."]
+    public_answer = "".join(public_chunks)
+    events = []
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        callback = kwargs["on_capability_evidence"]
+        for evidence in _unbound_skill_evidence(
+            "qa-file-reviewer",
+            "invocation_requested",
+            "completed",
+        ):
+            assert await callback(evidence) is True
+        for chunk in public_chunks:
+            await kwargs["on_text"](chunk)
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True,
+            message=public_answer,
+            session_id="sdk-session",
+            received_structured_terminal=True,
+            used_skills=["qa-file-reviewer"],
+            used_skills_source="executor_hook",
+        )
+
+    async def event_sink(**event):
+        events.append(event)
+
+    monkeypatch.setattr(
+        claude_agent_worker,
+        "get_settings",
+        lambda: settings(tmp_path, sdk_enabled=True),
+    )
+    monkeypatch.setattr(
+        claude_agent_worker,
+        "run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+    result = await ClaudeAgentWorkerAdapter()._try_run_sdk(
+        current_payload,
+        event_sink=event_sink,
+        workspace=tmp_path / "workspaces" / "default" / "run_1",
+        file_names=[],
+        prompt="review this document",
+        staged_skill_names=["qa-file-reviewer"],
+    )
+
+    assert result.message == public_answer
+    assert [event["payload"]["delta"] for event in events if event["event_type"] == "assistant_delta"] == public_chunks
+    assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
+        "invocation_requested",
+        "completed",
+    ]
+    assert sealed_pre_capability_text not in json.dumps(
+        {"message": result.message, "events": events},
+    )
+
+
 def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="completed", provider="docker"):
     requests = []
 

@@ -470,6 +470,59 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
 
 
 @pytest.mark.asyncio
+async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch, tmp_path):
+    captured = {}
+    deltas = []
+    observed_before_result = []
+    subject = _subject()
+    sealed_pre_capability_text = "raw MCP response and /private/path are sealed."
+    verified_answer = "Verified MCP final answer streams safely."
+    pre_hook, completed_hook = _mcp_hook_steps(subject, call_id="mcp-call-1")
+    steps = [
+        pre_hook,
+        *_stream_steps(sealed_pre_capability_text),
+        completed_hook,
+        *_stream_steps(verified_answer, index=1),
+        ("probe", lambda: observed_before_result.extend(deltas)),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text=f"{sealed_pre_capability_text} {verified_answer}",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _trusted_internal_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert observed_before_result == ["Verified MCP final answer streams ", "safely."]
+    assert deltas == observed_before_result
+    assert "".join(deltas) == verified_answer
+    assert result.error is None
+    assert result.message == verified_answer
+    assert sealed_pre_capability_text not in result.message
+    assert sealed_pre_capability_text not in "".join(deltas)
+    assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
+        "invocation_requested",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(monkeypatch, tmp_path):
     captured, deltas = {}, []
     skill_name = "qa-review"
@@ -558,6 +611,66 @@ async def test_sdk_selected_skill_streams_after_completed_evidence_before_termin
     assert result.error is None
     assert result.message == text
     assert result.used_skills == ["qa-review"]
+    assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
+        "invocation_requested",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sdk_selected_skill_discards_sealed_pre_capability_terminal_text(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    deltas = []
+    observed_before_result = []
+    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
+    verified_answer = "Verified Skill final answer streams safely."
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "skill-call-1",
+        "tool_input": {"skill": "qa-review"},
+    }
+    steps = [
+        ("hook", ("PreToolUse", skill_input, "skill-call-1")),
+        *_stream_steps(sealed_pre_capability_text),
+        ("hook", ("PostToolUse", skill_input, "skill-call-1")),
+        *_stream_steps(verified_answer, index=1),
+        ("probe", lambda: observed_before_result.extend(deltas)),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text=f"{sealed_pre_capability_text} {verified_answer}",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _trusted_internal_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="review",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject()],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert observed_before_result == ["Verified Skill final answer streams ", "safely."]
+    assert deltas == observed_before_result
+    assert "".join(deltas) == verified_answer
+    assert result.error is None
+    assert result.message == verified_answer
+    assert sealed_pre_capability_text not in result.message
+    assert sealed_pre_capability_text not in "".join(deltas)
     assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
         "invocation_requested",
         "completed",

@@ -963,6 +963,7 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
     message,
     expected_answer,
 ):
+    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
     run = {
         "id": "run_a",
         "session_id": "ses_a",
@@ -985,6 +986,25 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
 
     async def fake_list_run_events(conn, *, tenant_id, run_id):
         return [
+            {
+                "id": "evt-sealed",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 0,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "severity": "info",
+                "visible_to_user": True,
+                "error_code": None,
+                "payload_json": {
+                    "delta": sealed_pre_capability_text,
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+                "created_at": "2026-07-19T00:00:00Z",
+            },
             {
                 "id": "evt-delta",
                 "trace_id": "trace_run_a",
@@ -1065,7 +1085,11 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
     assert public_identifier in stream_final["content"]
     assert private_identifier not in stream_response.text
     assert private_identifier not in history_response.text
+    assert sealed_pre_capability_text not in stream_response.text
+    assert sealed_pre_capability_text not in history_response.text
     assert stream_response.text.count(expected_answer) == 1
+    assert "evt-sealed" not in stream_response.text
+    assert "evt-sealed" not in history_response.text
     assert "evt-delta" not in stream_response.text
     assert "evt-delta" not in history_response.text
     assert "旧的部分输出" not in stream_response.text
