@@ -229,6 +229,65 @@ async def test_catalog_publication_activates_unknown_tools_as_high_risk_through_
     assert "where tool_policies.reason = any(%s)" in policy_sql
 
 
+@pytest.mark.asyncio
+async def test_annotation_unknown_catalog_tool_uses_existing_chat_distribution_authorization(monkeypatch):
+    compatible_tool = {
+        "tool_id": "mcpt-compatible",
+        "server_id": "compatible-server",
+        "transport_type": "streamable_http",
+        "endpoint": "https://mcp.example/tools",
+        "auth_mode": "none",
+        "allowed_tools": ["unknown_tool"],
+        "catalog_status": "active",
+        "server_catalog_status": "available",
+        "effective_status": "active",
+        "server_status": "active",
+        "visible_to_user": True,
+        "write_capable": True,
+        "risk_level": "high",
+    }
+
+    async def list_catalog_entries(conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+        return [compatible_tool]
+
+    async def active_distribution(conn, **kwargs):
+        return {
+            "capability_kind": "mcp_server",
+            "capability_id": kwargs["capability_id"],
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["user"],
+            "metadata_json": {},
+        }
+
+    repositories = mcp_repository._repositories()
+    monkeypatch.setattr(repositories, "list_chat_mcp_tool_catalog_entries", list_catalog_entries)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", active_distribution)
+
+    authorized = await mcp_repository.list_authorized_chat_mcp_tools(
+        object(),
+        tenant_id="tenant-a",
+        principal_department_id="qa",
+        principal_roles=["user"],
+        is_admin=False,
+        permissions=[],
+    )
+    unauthorized = await mcp_repository.list_authorized_chat_mcp_tools(
+        object(),
+        tenant_id="tenant-a",
+        principal_department_id="rd",
+        principal_roles=["user"],
+        is_admin=False,
+        permissions=[],
+    )
+
+    assert [tool["tool_id"] for tool in authorized] == ["mcpt-compatible"]
+    assert unauthorized == []
+
+
 def test_only_the_code_owned_ragflow_builtin_has_legacy_catalog_authority():
     builtin = {
         "tool_id": "ragflow-knowledge-search",
