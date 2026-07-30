@@ -7,6 +7,9 @@ import pytest
 
 from app.mcp import catalog
 from app.mcp.catalog import (
+    MCP_TOOL_ANNOTATION_READ_ONLY,
+    MCP_TOOL_ANNOTATION_UNKNOWN,
+    MCP_TOOL_ANNOTATION_WRITE_CAPABLE,
     McpDiscoveredTool,
     McpToolCatalogSyncCommand,
     McpToolCatalogSynchronizer,
@@ -46,6 +49,34 @@ def test_catalog_identity_is_opaque_and_accepted_by_the_existing_chat_selector_c
     assert SAFE_ID_PATTERN.fullmatch(first)
     assert SAFE_ID_PATTERN.fullmatch(second)
     assert first != second
+
+
+@pytest.mark.parametrize(
+    ("annotations", "expected_state", "expected_write_capable", "expected_risk_level"),
+    [
+        (None, MCP_TOOL_ANNOTATION_UNKNOWN, True, "high"),
+        ({}, MCP_TOOL_ANNOTATION_UNKNOWN, True, "high"),
+        ({"readOnlyHint": True}, MCP_TOOL_ANNOTATION_READ_ONLY, False, "low"),
+        ({"readOnlyHint": False}, MCP_TOOL_ANNOTATION_WRITE_CAPABLE, True, "high"),
+        ({"destructiveHint": True}, MCP_TOOL_ANNOTATION_WRITE_CAPABLE, True, "high"),
+    ],
+)
+def test_canonical_tool_keeps_optional_annotation_state_without_claiming_unknown_is_read_only(
+    annotations,
+    expected_state,
+    expected_write_capable,
+    expected_risk_level,
+):
+    raw = {"name": "compatible_tool", "inputSchema": {"type": "object"}}
+    if annotations is not None:
+        raw["annotations"] = annotations
+
+    tool = catalog._canonical_tool(raw)
+
+    assert tool.annotation_state == expected_state
+    assert tool.read_only is (expected_state == MCP_TOOL_ANNOTATION_READ_ONLY)
+    assert tool.write_capable is expected_write_capable
+    assert tool.risk_level == expected_risk_level
 
 
 @pytest.mark.asyncio
@@ -195,7 +226,7 @@ def _install_synchronizer_fakes(*, discovery, publish_result=None):
                 "catalog_unavailable_reason": "",
                 "catalog_revision": 8,
                 "catalog_discovered_count": len(tools),
-                "catalog_selectable_count": sum(tool.read_only for tool in tools),
+                "catalog_selectable_count": len(tools),
                 "published": True,
             }
 
@@ -215,7 +246,7 @@ async def test_synchronizer_publishes_only_the_complete_multi_tool_manifest(monk
     result = await synchronizer.synchronize(_command())
 
     assert result.status == "available"
-    assert result.selectable_count == 2
+    assert result.selectable_count == 3
     assert outcomes == []
     assert attempts == [{"tenant_id": "tenant-a", "server_name": "knowledge", "observed_generation": 7, "actor_id": "admin-a"}]
     assert [tool.remote_name for tool in publications[0]["tools"]] == ["search_docs", "get_doc", "write_doc"]

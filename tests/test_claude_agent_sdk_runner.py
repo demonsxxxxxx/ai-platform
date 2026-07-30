@@ -404,9 +404,8 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
     assert sealed_probe == []
     if outcome in {"success", "multiple_completed"}:
         assert result.error is None
-        assert len(deltas) == 1 and result.message == deltas[0]
+        assert (deltas, result.message) == ([], "")
         if outcome == "success":
-            assert "Safe answer via" in deltas[0]
             assert result.capability_evidence == acknowledged
             assert [item["lifecycle_phase"] for item in acknowledged] == ["invocation_requested", "completed"]
             assert not {"tool_input", "tool_response", "arguments", "error"} & set().union(*(item.keys() for item in acknowledged))
@@ -422,7 +421,7 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
     monkeypatch,
     tmp_path,
 ):
-    captured, deltas, published_before_hook = {}, [], []
+    captured, deltas, published_before_hook, published_after_hook = {}, [], [], []
     subject = _subject()
     call_id = "mcp-call-1"
     before = f"Before {subject['identity']}."
@@ -432,6 +431,7 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
         ("probe", lambda: published_before_hook.extend(deltas)),
         *_mcp_hook_steps(subject, call_id=call_id),
         *_stream_steps(after, index=1),
+        ("probe", lambda: published_after_hook.extend(deltas)),
     ]
     monkeypatch.setitem(
         sys.modules,
@@ -454,10 +454,11 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
     )
 
     joined = "".join(deltas)
-    assert published_before_hook == ["Before external tool."]
+    assert "".join(published_before_hook) == "Before external tool."
+    assert published_after_hook[len(published_before_hook):] == [" After ", "tool invocation."]
     assert result.error is None
     assert joined == "Before external tool. After tool invocation."
-    assert result.message == joined
+    assert result.message == " After tool invocation."
     for private_value in (
         subject["identity"],
         subject["mcp_server_config"]["url"],
@@ -465,6 +466,59 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
         "safe-synthetic-value",
     ):
         assert private_value not in joined
+
+
+@pytest.mark.asyncio
+async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch, tmp_path):
+    captured = {}
+    deltas = []
+    observed_before_result = []
+    subject = _subject()
+    sealed_pre_capability_text = "raw MCP response and /private/path are sealed."
+    verified_answer = "Verified MCP final answer streams safely."
+    pre_hook, completed_hook = _mcp_hook_steps(subject, call_id="mcp-call-1")
+    steps = [
+        pre_hook,
+        *_stream_steps(sealed_pre_capability_text),
+        completed_hook,
+        *_stream_steps(verified_answer, index=1),
+        ("probe", lambda: observed_before_result.extend(deltas)),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text=f"{sealed_pre_capability_text} {verified_answer}",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _trusted_internal_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert observed_before_result == ["Verified MCP final answer streams ", "safely."]
+    assert deltas == observed_before_result
+    assert "".join(deltas) == verified_answer
+    assert result.error is None
+    assert result.message == verified_answer
+    assert sealed_pre_capability_text not in result.message
+    assert sealed_pre_capability_text not in "".join(deltas)
+    assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
+        "invocation_requested",
+        "completed",
+    ]
 
 
 @pytest.mark.asyncio
@@ -501,7 +555,7 @@ async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(mon
         "skill",
         "skill",
     ]
-    assert deltas == ["done"]
+    assert (deltas, result.message) == ([], "")
     assert "Authoritative platform Skill requirement" in sdk_prompt
     assert "Authoritative platform MCP requirement" not in sdk_prompt
     assert _subject()["identity"] not in sdk_prompt
@@ -509,14 +563,14 @@ async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(mon
 
 
 @pytest.mark.asyncio
-async def test_sdk_selected_skill_without_external_mcp_releases_once_after_terminal(
+async def test_sdk_selected_skill_streams_after_completed_evidence_before_terminal(
     monkeypatch,
     tmp_path,
 ):
     captured = {}
     deltas = []
     observed_before_result = []
-    text = "Skill answer."
+    text = "Skill answer streams safely."
     skill_input = {
         "tool_name": "Skill",
         "tool_use_id": "skill-call-1",
@@ -550,11 +604,125 @@ async def test_sdk_selected_skill_without_external_mcp_releases_once_after_termi
     )
 
     assert "Authoritative platform MCP requirement:" not in _captured_sdk_prompt(captured)
-    assert observed_before_result == []
-    assert deltas == [text]
+    assert observed_before_result == ["Skill answer streams ", "safely."]
+    assert deltas == observed_before_result
+    assert "".join(deltas) == text
     assert result.error is None
     assert result.message == text
     assert result.used_skills == ["qa-review"]
+    assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
+        "invocation_requested",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sdk_selected_skill_omits_cumulative_terminal_text_without_post_capability_delta(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    deltas = []
+    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "skill-call-1",
+        "tool_input": {"skill": "qa-review"},
+    }
+    steps = [
+        ("hook", ("PreToolUse", skill_input, "skill-call-1")),
+        *_stream_steps(sealed_pre_capability_text),
+        ("hook", ("PostToolUse", skill_input, "skill-call-1")),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text=f"{sealed_pre_capability_text} cumulative terminal answer",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _trusted_internal_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="review",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject()],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert deltas == []
+    assert result.error is None
+    assert result.message == ""
+    assert sealed_pre_capability_text not in result.message
+    assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
+        "invocation_requested",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sdk_selected_skill_discards_sealed_pre_capability_terminal_text(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    deltas = []
+    observed_before_result = []
+    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
+    verified_answer = "Verified Skill final answer streams safely."
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "skill-call-1",
+        "tool_input": {"skill": "qa-review"},
+    }
+    steps = [
+        ("hook", ("PreToolUse", skill_input, "skill-call-1")),
+        *_stream_steps(sealed_pre_capability_text),
+        ("hook", ("PostToolUse", skill_input, "skill-call-1")),
+        *_stream_steps(verified_answer, index=1),
+        ("probe", lambda: observed_before_result.extend(deltas)),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text=f"{sealed_pre_capability_text} {verified_answer}",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _trusted_internal_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="review",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject()],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert observed_before_result == ["Verified Skill final answer streams ", "safely."]
+    assert deltas == observed_before_result
+    assert "".join(deltas) == verified_answer
+    assert result.error is None
+    assert result.message == verified_answer
+    assert sealed_pre_capability_text not in result.message
+    assert sealed_pre_capability_text not in "".join(deltas)
     assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
         "invocation_requested",
         "completed",
@@ -920,7 +1088,7 @@ def _trusted_internal_settings():
 
 
 @pytest.mark.asyncio
-async def test_trusted_internal_streams_safe_raw_text_delta_before_result_without_terminal_replay(
+async def test_trusted_internal_streams_two_safe_raw_text_deltas_before_result_without_terminal_replay(
     monkeypatch, tmp_path
 ):
     captured = {}
@@ -935,7 +1103,12 @@ async def test_trusted_internal_streams_safe_raw_text_delta_before_result_withou
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
-        _streaming_sdk(captured, events, on_before_result=lambda: result_gate.extend(deltas)),
+        _streaming_sdk(
+            captured,
+            events,
+            on_before_result=lambda: result_gate.extend(deltas),
+            result_text=streamed_text,
+        ),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
 
@@ -948,10 +1121,10 @@ async def test_trusted_internal_streams_safe_raw_text_delta_before_result_withou
     )
 
     assert captured["include_partial_messages"] is True
-    assert result_gate == [streamed_text]
-    assert deltas == [streamed_text]
-    assert "terminal final" not in deltas
-    assert result.message == "terminal final"
+    assert result_gate == ["Short safe public ", "answer."]
+    assert deltas == result_gate
+    assert "".join(deltas) == streamed_text
+    assert result.message == streamed_text
 
 
 @pytest.mark.asyncio
@@ -975,7 +1148,7 @@ async def test_trusted_internal_stream_duplicate_stop_never_replays_terminal_res
         on_text=deltas.append,
     )
 
-    assert deltas == ["short answer"]
+    assert deltas == ["short ", "answer"]
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,12 @@ MCP_CATALOG_SYNC_LEASE_SECONDS = 120
 TRUSTED_BUILTIN_MCP_TOOL_ID = "ragflow-knowledge-search"
 TRUSTED_BUILTIN_MCP_SERVER_ID = "ragflow"
 TRUSTED_BUILTIN_MCP_REMOTE_NAME = "ragflow_search"
+MCP_CATALOG_MANAGED_POLICY_REASONS = [
+    "mcp_catalog_read_only",
+    "mcp_catalog_write_capable",
+    "mcp_catalog_annotation_unknown",
+    "mcp_tool_not_read_only",
+]
 
 
 def mcp_tool_tenant_authority_sql() -> str:
@@ -81,6 +87,13 @@ def new_mcp_catalog_tool_id() -> str:
     """Create a stable opaque selector valid for the existing Chat ID contract."""
 
     return f"mcpt-{uuid.uuid4().hex}"
+
+
+def _catalog_manifest_policy_reason(existing_reason: Any, desired_reason: str) -> str | None:
+    """Compare policy provenance only while the catalog still owns that policy row."""
+
+    reason = str(existing_reason or "")
+    return desired_reason if not reason or reason in MCP_CATALOG_MANAGED_POLICY_REASONS else None
 
 
 def mcp_runtime_metadata_usable(tool: dict[str, Any]) -> bool:
@@ -469,9 +482,13 @@ async def publish_mcp_tool_catalog(
     existing_cursor = await conn.execute(
         """
         select entries.tool_id, entries.remote_tool_name, entries.schema_hash,
-          entries.status as catalog_entry_status, mcp_tools.write_capable
+          entries.status as catalog_entry_status, mcp_tools.write_capable,
+          mcp_tools.risk_level, tool_policies.reason as policy_reason
         from mcp_tool_catalog_entries entries
         join mcp_tools on mcp_tools.id = entries.tool_id
+        left join tool_policies
+          on tool_policies.tenant_id = entries.tenant_id
+         and tool_policies.tool_id = entries.tool_id
         where entries.tenant_id = %s
           and entries.server_name = %s
         for update
@@ -479,28 +496,48 @@ async def publish_mcp_tool_catalog(
         (tenant_id, server_name),
     )
     existing = {str(row["remote_tool_name"]): dict(row) for row in await existing_cursor.fetchall()}
+    active_existing = {
+        remote_name: row
+        for remote_name, row in existing.items()
+        if str(row.get("catalog_entry_status") or "") == "active"
+    }
     desired_names = {str(tool.remote_name) for tool in tools}
     desired_manifest = {
-        str(tool.remote_name): (str(tool.schema_hash), "active" if bool(tool.read_only) else "disabled")
+        str(tool.remote_name): (
+            str(tool.schema_hash),
+            "active",
+            bool(tool.write_capable),
+            str(tool.risk_level),
+            _catalog_manifest_policy_reason(
+                existing.get(str(tool.remote_name), {}).get("policy_reason"),
+                str(tool.catalog_policy_reason),
+            ),
+        )
         for tool in tools
     }
     existing_manifest = {
-        remote_name: (str(row.get("schema_hash") or ""), str(row.get("catalog_entry_status") or "disabled"))
-        for remote_name, row in existing.items()
+        remote_name: (
+            str(row.get("schema_hash") or ""),
+            str(row.get("catalog_entry_status") or "disabled"),
+            bool(row.get("write_capable")),
+            str(row.get("risk_level") or "low"),
+            _catalog_manifest_policy_reason(row.get("policy_reason"), str(row.get("policy_reason") or "")),
+        )
+        for remote_name, row in active_existing.items()
     }
     manifest_changed = desired_manifest != existing_manifest
 
     for tool in tools:
         remote_name = str(tool.remote_name)
         tool_id = str(existing.get(remote_name, {}).get("tool_id") or new_mcp_catalog_tool_id())
-        catalog_status = "active" if bool(tool.read_only) else "disabled"
+        catalog_status = "active"
         await conn.execute(
             """
             insert into mcp_tools(
               id, server_id, name, description, transport_type, endpoint, auth_mode,
               allowed_tools, status, write_capable, risk_level, visible_to_user
             )
-            values (%s, %s, %s, %s, 'streamable_http', %s, 'none', %s::jsonb, %s, false, 'low', true)
+            values (%s, %s, %s, %s, 'streamable_http', %s, 'none', %s::jsonb, %s, %s, %s, true)
             on conflict (id) do update
             set server_id = excluded.server_id,
                 name = excluded.name,
@@ -522,6 +559,8 @@ async def publish_mcp_tool_catalog(
                 endpoint,
                 _repositories().dumps_json([remote_name]),
                 catalog_status,
+                tool.write_capable,
+                tool.risk_level,
             ),
         )
         await conn.execute(
@@ -540,31 +579,38 @@ async def publish_mcp_tool_catalog(
             """,
             (tool_id, tenant_id, server_name, remote_name, observed_generation, str(tool.schema_hash), catalog_status),
         )
-        if catalog_status == "active":
-            await conn.execute(
-                """
-                insert into tool_policies(
-                  tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason, updated_by
-                )
-                values (%s, %s, 'active', false, 'low', true, 'mcp_catalog_read_only', %s)
-                on conflict (tenant_id, tool_id) do nothing
-                """,
-                (tenant_id, tool_id, actor_id),
+        await conn.execute(
+            """
+            insert into tool_policies(
+              tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason, updated_by
             )
-        else:
-            await conn.execute(
-                """
-                insert into tool_policies(
-                  tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason, updated_by
-                )
-                values (%s, %s, 'disabled', false, 'low', true, 'mcp_tool_not_read_only', %s)
-                on conflict (tenant_id, tool_id) do update
-                set status = 'disabled', reason = 'mcp_tool_not_read_only', updated_by = excluded.updated_by, updated_at = now()
-                """,
-                (tenant_id, tool_id, actor_id),
-            )
+            values (%s, %s, 'active', %s, %s, true, %s, %s)
+            on conflict (tenant_id, tool_id) do update
+            set status = excluded.status,
+                write_capable = excluded.write_capable,
+                risk_level = excluded.risk_level,
+                visible_to_user = excluded.visible_to_user,
+                reason = excluded.reason,
+                updated_by = excluded.updated_by,
+                updated_at = now()
+            where tool_policies.reason = any(%s)
+            """,
+            (
+                tenant_id,
+                tool_id,
+                tool.write_capable,
+                tool.risk_level,
+                tool.catalog_policy_reason,
+                actor_id,
+                MCP_CATALOG_MANAGED_POLICY_REASONS,
+            ),
+        )
 
-    removed_tool_ids = [str(row["tool_id"]) for remote_name, row in existing.items() if remote_name not in desired_names]
+    removed_tool_ids = [
+        str(row["tool_id"])
+        for remote_name, row in active_existing.items()
+        if remote_name not in desired_names
+    ]
     if removed_tool_ids:
         await conn.execute(
             """
@@ -579,7 +625,7 @@ async def publish_mcp_tool_catalog(
         await conn.execute("update mcp_tools set status = 'disabled' where id = any(%s)", (removed_tool_ids,))
 
     discovered_count = len(tools)
-    selectable_count = sum(1 for tool in tools if bool(tool.read_only))
+    selectable_count = len(tools)
     catalog_status = "no_tools" if not tools else "available" if selectable_count else "unavailable"
     reason = "no_tools" if not tools else "" if selectable_count else "no_selectable_tools"
     revision = int(server.get("catalog_revision") or 0) + (1 if manifest_changed or not server.get("catalog_revision") else 0)

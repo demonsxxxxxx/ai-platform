@@ -19,6 +19,16 @@ MCP_PROTOCOL_VERSION = "2025-03-26"
 MCP_PUBLIC_TOOL_LABEL = "受管 MCP 工具"
 MCP_PUBLIC_TOOL_DESCRIPTION = "由平台治理的工具。"
 MCP_PUBLIC_UNAVAILABLE_LABEL = "已配置 MCP 服务"
+MCP_TOOL_ANNOTATION_READ_ONLY = "read_only"
+MCP_TOOL_ANNOTATION_WRITE_CAPABLE = "write_capable"
+MCP_TOOL_ANNOTATION_UNKNOWN = "unknown"
+MCP_TOOL_ANNOTATION_STATES = frozenset(
+    {
+        MCP_TOOL_ANNOTATION_READ_ONLY,
+        MCP_TOOL_ANNOTATION_WRITE_CAPABLE,
+        MCP_TOOL_ANNOTATION_UNKNOWN,
+    }
+)
 
 
 class McpToolDiscoveryError(ValueError):
@@ -36,6 +46,34 @@ class McpDiscoveredTool:
     remote_name: str
     schema_hash: str
     read_only: bool
+    annotation_state: str | None = None
+
+    def __post_init__(self) -> None:
+        state = self.annotation_state or (
+            MCP_TOOL_ANNOTATION_READ_ONLY if self.read_only else MCP_TOOL_ANNOTATION_WRITE_CAPABLE
+        )
+        if state not in MCP_TOOL_ANNOTATION_STATES:
+            raise ValueError("mcp_tool_annotation_state_invalid")
+        object.__setattr__(self, "annotation_state", state)
+        object.__setattr__(self, "read_only", state == MCP_TOOL_ANNOTATION_READ_ONLY)
+
+    @property
+    def write_capable(self) -> bool:
+        """Treat an absent advisory annotation conservatively without claiming a read-only contract."""
+
+        return self.annotation_state != MCP_TOOL_ANNOTATION_READ_ONLY
+
+    @property
+    def risk_level(self) -> str:
+        return "low" if self.read_only else "high"
+
+    @property
+    def catalog_policy_reason(self) -> str:
+        if self.annotation_state == MCP_TOOL_ANNOTATION_READ_ONLY:
+            return "mcp_catalog_read_only"
+        if self.annotation_state == MCP_TOOL_ANNOTATION_WRITE_CAPABLE:
+            return "mcp_catalog_write_capable"
+        return "mcp_catalog_annotation_unknown"
 
 
 @dataclass(frozen=True)
@@ -202,6 +240,18 @@ async def _validated_discovery_endpoint(endpoint: str | None) -> str:
     return endpoint or ""
 
 
+def _annotation_state(annotations: Any) -> str:
+    """Classify optional advisory annotations without converting absence into a read-only assertion."""
+
+    if not isinstance(annotations, dict):
+        return MCP_TOOL_ANNOTATION_UNKNOWN
+    if annotations.get("readOnlyHint") is False or annotations.get("destructiveHint") is True:
+        return MCP_TOOL_ANNOTATION_WRITE_CAPABLE
+    if annotations.get("readOnlyHint") is True:
+        return MCP_TOOL_ANNOTATION_READ_ONLY
+    return MCP_TOOL_ANNOTATION_UNKNOWN
+
+
 def _canonical_tool(raw: Any) -> McpDiscoveredTool:
     if not isinstance(raw, dict):
         raise McpToolDiscoveryError("protocol_error")
@@ -212,11 +262,12 @@ def _canonical_tool(raw: Any) -> McpDiscoveredTool:
     if input_schema is not None and not isinstance(input_schema, dict):
         raise McpToolDiscoveryError("protocol_error")
     schema_json = json.dumps(input_schema or {}, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    annotations = raw.get("annotations")
+    annotation_state = _annotation_state(raw.get("annotations"))
     return McpDiscoveredTool(
         remote_name=remote_name,
         schema_hash=hashlib.sha256(schema_json.encode("utf-8")).hexdigest(),
-        read_only=isinstance(annotations, dict) and annotations.get("readOnlyHint") is True,
+        read_only=annotation_state == MCP_TOOL_ANNOTATION_READ_ONLY,
+        annotation_state=annotation_state,
     )
 
 

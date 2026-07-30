@@ -124,6 +124,42 @@ def test_sealed_text_is_released_once_or_discarded(release):
     assert gate.finish(final_text="repeat", release=True).chunks == ()
 
 
+def test_verified_capability_release_discards_pre_evidence_text_and_streams_later_answer():
+    gate = _gate()
+    pre_evidence = "raw tool output must remain private"
+
+    gate.seal({CALL_ID: "tool invocation"})
+    assert gate.accept(pre_evidence) == ()
+    gate.release_after_verified_capability()
+    first = gate.accept("Safe final ")
+    second = gate.accept("answer.")
+    finished = gate.finish(
+        final_text=f"{pre_evidence} Safe final answer.",
+        release=True,
+    )
+
+    public_text = "".join((*first, *second, *finished.chunks))
+    assert public_text == "Safe final answer."
+    assert pre_evidence not in public_text
+    assert finished.final_text == "Safe final answer."
+
+
+def test_verified_capability_release_never_falls_back_to_cumulative_terminal_text():
+    gate = _gate()
+    pre_evidence = "raw tool output must remain private"
+
+    gate.seal({CALL_ID: "tool invocation"})
+    assert gate.accept(pre_evidence) == ()
+    gate.release_after_verified_capability()
+    finished = gate.finish(
+        final_text=f"{pre_evidence} cumulative terminal answer",
+        release=True,
+    )
+
+    assert finished.chunks == ()
+    assert finished.final_text == ""
+
+
 def test_over_bound_initial_or_dynamic_private_token_fails_closed():
     initial = PublicAnswerStreamGate(
         private_replacements={"x" * 65: "external tool"},
