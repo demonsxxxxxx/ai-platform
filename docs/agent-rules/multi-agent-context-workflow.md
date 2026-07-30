@@ -1,53 +1,46 @@
 # Multi-Agent Context Workflow
 
 This file governs assistant task lifetimes, ownership, authority, and context
-handoff in this repository. It does not define the product's deferred platform
-multi-run route or prove B3 SDK subagent capacity.
+handoff in this repository. It does not define product multi-run behavior or
+prove SDK subagent capacity.
 
 ## Operating Principle
 
 - The main agent owns the user goal, invariants, decisions, integration, final
   verification, and user-facing conclusion.
 - Delegate only when isolation, parallelism, continuity, or independent evidence
-  is worth more than the dispatch and review cost. Capacity is not a target.
-- Keep one owner for every shared file and every deployment mutation. Do not use
-  delegation to split tightly coupled design judgment.
-- Prefer compact evidence over raw transcripts. A result is usable only after the
-  main agent checks the decisive evidence.
+  is worth more than dispatch and review cost. Capacity is not a target.
+- Keep one writer for every shared file set and one owner for every deployment
+  mutation. Do not split tightly coupled design judgment across owners.
+- Prefer compact evidence over raw transcripts. The main agent accepts a result
+  only after checking its decisive evidence.
 
-## Task Lifetimes And Ownership
+## Task Lifetimes
 
 ### Disposable probes
 
-A disposable probe is a one-shot, read-only context-isolation task. It may
-inspect any bounded material whose breadth, noise, or independence makes direct
-reading inefficient, then return a compact evidence packet. The subject is not
-limited to a fixed task list.
+A disposable probe is a one-shot, read-only context-isolation task for a bounded
+question. It may gather, compare, summarize, or independently observe, but it
+does not own implementation, workflow continuation, or the final decision.
 
-- Give it a self-contained question, search boundary, expected evidence, and
-  stop condition. Prefer a fresh context when the tool supports one.
-- It may gather, compare, summarize, or independently observe; it does not own
-  implementation, workflow continuation, or the final decision.
+- Give it the question, search boundary, expected evidence, and stop condition.
 - It must not read or receive a real `.env`, secret, credential, or unredacted
   sensitive runtime payload. Use authorized redacted evidence instead.
-- It receives no write lease, credential, GitHub or remote mutation authority,
-  deployment authority, destructive-operation authority, or decisive high-risk
-  review gate.
-- Do not turn or re-charter a disposable probe into a writer. If it discovers
-  durable work, it returns the subject and evidence, then stops.
+- It receives no write lease, remote mutation authority, deployment authority,
+  destructive-operation authority, or decisive high-risk review gate.
+- Do not turn or re-charter a disposable probe into a writer. Return discovered
+  durable work to a persistent owner.
 
 ### Persistent tasks
 
-Use a persistent, project-bound Codex task for implementation, complex or
-multi-generation testing/review, browser acceptance, automation, release,
-deployment, or other work that needs durable ownership. Repository work uses an
-independent clean worktree.
+Use a persistent, project-bound Codex task for implementation, multi-round
+testing or review, browser acceptance, release, deployment, or other work that
+needs durable ownership. Repository work uses an independent clean worktree.
 
-Every persistent-task dispatch records the goal and role, controller epoch,
-task generation, project binding, worktree, branch, base/head SHA, clean state,
-writable and forbidden paths, permissions, lease, next event, evidence ceiling,
-and terminal condition. A goal or role change requires a new task; a same-goal
-change of base or authority requires an explicit re-charter.
+Dispatch records the goal and role, project/worktree/branch, exact base and head,
+writable and forbidden paths, permission and lease scope, evidence ceiling, and
+terminal condition. A goal or role change requires a new task; changed source or
+authority requires explicit re-charter.
 
 ## Authority Boundary
 
@@ -55,80 +48,45 @@ change of base or authority requires an explicit re-charter.
   another task or disposable probe the same authority.
 - A task may mutate only subjects explicitly covered by its dispatch and proven
   permission posture. Shared filesystem access alone is not permission.
-- Implementation and operational ownership stay in persistent tasks when their
-  permission posture is confirmed. The controller consumes compact results and
-  performs only decisive checks needed for approval.
+- Exactly one persistent writer holds a given write scope. Transfer ownership
+  only after the prior writer releases it and identifies the exact safe SHA.
 - Direct controller mutation is break-glass only: the normal persistent-task
   path is unavailable and the user explicitly authorizes the exact mutation.
-  The ordinary source, lease, rollback, evidence, and parity invariants still
-  apply; broad standing authorization is insufficient.
-
-## Model And Review Routing
-
-- The default reasoning ceiling for the controller and newly created, resumed,
-  or re-chartered tasks is `xhigh`. `max` requires explicit user authorization
-  for the exact task and a recorded reason; `ultra` is not routine. A stricter
-  current user instruction wins.
-- Use an available economical read-only role for disposable probes when it is
-  sufficient. Do not hard-code a probe to a particular model name or dispatch
-  probes merely to consume capacity.
-- Set model and reasoning fields deliberately when the interface exposes them.
-  Otherwise use the available configuration and do not claim an unconfirmed
-  model-specific or reasoning-specific gate.
-- Preserve reviewer independence for high-risk work. A disposable probe is not
-  the sole final reviewer for auth, tenant isolation, concurrency, sandboxing,
-  public contracts, or deployment.
+  Explicit task authority is required; broad standing authorization is
+  insufficient.
+- Preserve reviewer independence for auth, tenant isolation, concurrency,
+  sandboxing, public contracts, and deployment. A disposable probe is not the
+  sole final reviewer for these subjects.
 
 ## Release Lifecycle
 
-- Before creating a release owner or mutation lease, a read-only gate must record
-  `RELEASE_READINESS_PASS` for the exact release subject using
-  `docs/operations/211-release-operations-runbook.md`.
-- A missing, stale, or blocked readiness item records
-  `RELEASE_READINESS_BLOCKED`; do not create the release owner, grant a mutation
-  lease, or count a release generation.
-- After readiness passes, create exactly one project-bound persistent release
-  task and one mutation lease. The controller does not run or continuously
-  monitor the release; it consumes the terminal packet and may perform one final
-  parity check.
-
-## Goal-Level Repair Budget
-
-- Before the first implementation or release fix, record one stable `goal_id`, a
-  finite goal-specific `repair_budget_total`, `repair_generation_used`, and
-  `repair_budget_remaining`. This workflow has no permanent numeric default.
-- The budget belongs to the product or release goal. A new Issue, PR, branch,
-  task, controller epoch, or reviewer does not reset it.
-- A repair generation starts when a persistent writer is authorized to change
-  code or durable runtime state after a blocking result. Re-review and related
-  follow-up records remain in that generation until its fixed-SHA result.
-- A read-only readiness failure does not consume a generation, but it closes the
-  release gate until the blocker is resolved.
-- When exhausted, record `GOAL_REPAIR_BUDGET_EXHAUSTED`, revoke write and release
-  leases, and return a decision packet with the minimum blocker, simplification
-  choices, risks, and one bounded verification plan. Only an explicit user
-  decision may increase or reset the budget.
+- Read-only release readiness must pass for the exact release subject under
+  `docs/operations/211-release-operations-runbook.md` before granting mutation
+  authority. Missing, stale, or blocked evidence keeps the release blocked.
+- After readiness passes, use exactly one project-bound persistent release task
+  and one mutation lease. Do not run a second release attempt or mutate the host
+  outside that lease.
+- The release owner returns a terminal evidence packet. The controller may
+  perform a final parity check but does not become a second release owner.
 
 ## Context And Result Intake
 
-- Target the main context at 120k tokens or less. For long or output-heavy work,
-  maintain one compact checkpoint containing the stable goal, latest decisions,
-  active owners and leases, current source/runtime subjects, accepted evidence,
-  unresolved risks, and next gates.
-- Discard repeated output, failed-path detail, stale plans, disproven hypotheses,
-  and raw transcripts after their evidence is compressed.
-- A task result should state its conclusion, exact evidence, inspected or changed
-  subjects, verification observed, unresolved risks, and recommended next gate.
+- For long or output-heavy work, maintain one compact checkpoint containing the
+  stable goal, current decisions, owners and leases, exact source/runtime
+  subjects, accepted evidence, unresolved risks, and next gate.
+- Discard repeated output, stale plans, disproven hypotheses, and raw transcripts
+  after compressing their decisive evidence.
+- A result states its conclusion, exact inspected or changed subjects,
+  verification observed, unresolved risks, and recommended next gate.
 - Record review evidence and status claims according to
-  `docs/agent-rules/github-issue-pr-workflow.md`; chat-only or raw task output is
-  not durable PR or issue evidence.
+  `docs/agent-rules/github-issue-pr-workflow.md`; chat-only output is not durable
+  PR or issue evidence.
 
 ## Recovery And Reporting
 
 - If a turn fails with `No tool output found`, treat it as an orphan-call protocol
-  error unless a recorded request demonstrably lacks its output. End that turn,
-  restore from the current checkpoint in a new turn, and do not guess a result or
-  replay the entire tool sequence.
-- The main agent reports the final conclusion. State which delegated work was
-  actually used, and never claim an unobserved model, review, test, deployment,
-  or runtime result.
+  error unless a recorded request demonstrably lacks its output. Restore from the
+  current checkpoint in a new turn; do not guess a result or replay the entire
+  tool sequence.
+- The main agent reports the final conclusion. Never claim an unobserved review,
+  test, deployment, or runtime result.
