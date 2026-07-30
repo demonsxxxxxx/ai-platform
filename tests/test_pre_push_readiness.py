@@ -1007,6 +1007,57 @@ def test_irregular_production_paths_run_their_exact_bounded_suites(
     _assert_responsibility_tests(result, sorted({*suites, mirror}))
 
 
+def test_compose_path_runs_the_runtime_launch_contract_suite(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = readiness_repo
+    production_path = "deploy/ai-platform/docker-compose.yml"
+    _write_irregular_responsibility_suites(repo, ("tests/test_runtime_launch_script.py",))
+    _write(repo, production_path, "services: {}\n")
+    _write(repo, "tests/test_compose_contract.py", "def test_compose_contract():\n    assert True\n")
+    base = _commit(repo, "compose responsibility baseline")
+    _write(repo, production_path, "services:\n  api: {}\n")
+    _write(repo, "tests/test_compose_contract.py", "def test_compose_contract_changed():\n    assert True\n")
+    head = _commit(repo, "compose responsibility change")
+
+    result = _check(repo, base, head)
+
+    _assert_responsibility_tests(
+        result,
+        ["tests/test_compose_contract.py", "tests/test_runtime_launch_script.py"],
+    )
+
+
+@pytest.mark.parametrize(
+    "production_path",
+    (
+        "deploy/ai-platform/docker-compose.unlisted.yml",
+        "deploy/ai-platform/docker-compose.yaml",
+        "deploy/ai-platform/profile-docker-compose.yml",
+        "deploy/ai-platform/docker-compose.profile.yml",
+        "deploy/ai-platform/profiles/docker-compose.yml",
+        "deploy/ai-platform-archive/docker-compose.yml",
+    ),
+)
+def test_unlisted_compose_variants_remain_external_with_the_contract_suite(
+    readiness_repo: tuple[Path, str], production_path: str
+) -> None:
+    repo, _authority = readiness_repo
+    _write(repo, "tests/test_runtime_launch_script.py", "def test_compose_contract():\n    assert True\n")
+    _write(repo, production_path, "services: {}\n")
+    base = _commit(repo, "unlisted deploy baseline")
+    _write(repo, production_path, "services:\n  worker: {}\n")
+    head = _commit(repo, "unlisted deploy change")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 2
+    assert payload["category"] == "external_check"
+    assert payload["failure"]["code"] == "responsibility_suite_required"
+    assert payload["failure"]["path"] == production_path
+
+
 def test_irregular_mapping_deduplicates_changed_tests_and_conventional_mirrors(
     readiness_repo: tuple[Path, str],
 ) -> None:

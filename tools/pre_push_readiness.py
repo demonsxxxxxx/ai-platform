@@ -28,6 +28,7 @@ IRREGULAR_RESPONSIBILITY_SUITES = {
     "app/mcp/catalog.py": ("tests/test_mcp_tool_catalog.py",),
     "app/mcp/repository.py": ("tests/test_mcp_repository.py", "tests/test_mcp_repository_postgres.py"),
     "app/schema.sql": ("tests/test_schema.py",),
+    "deploy/ai-platform/docker-compose.yml": ("tests/test_runtime_launch_script.py",),
 }
 FRONTEND_ROOT_PATH = "frontend/web"
 FRONTEND_PACKAGE_PATH = f"{FRONTEND_ROOT_PATH}/package.json"
