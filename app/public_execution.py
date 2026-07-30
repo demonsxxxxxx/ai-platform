@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION = "ai-platform.public-execution-event.v1"
 PUBLIC_EXECUTION_KINDS = frozenset({"analysis", "capability", "file_read", "processing", "generation", "verification", "artifact", "collaboration"})
@@ -89,6 +90,27 @@ def _safe_optional_file_name(value: object) -> str | None:
     return None if file_name in {None, ".", ".."} else file_name
 
 
+def _normalize_public_execution_created_at(value: object) -> str | None:
+    """Return a public timestamp or fail closed when it lacks timezone authority."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+            return value if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+        except (OverflowError, ValueError, TypeError):
+            return None
+    if not isinstance(value, datetime):
+        return None
+    try:
+        if value.tzinfo is None or value.utcoffset() is None:
+            return None
+        return value.astimezone(timezone.utc).isoformat(timespec="microseconds").removesuffix("+00:00") + "Z"
+    except (OverflowError, ValueError, TypeError):
+        return None
+
+
 def _safe_progress(value: object) -> dict[str, int] | None:
     if not isinstance(value, dict) or set(value) != {"current", "total"}:
         return None
@@ -146,7 +168,8 @@ def public_execution_event_from_row(run_id: object, row: Mapping[str, object]) -
     event_type = row.get("event_type")
     payload = validate_public_execution_step_payload(row.get("payload_json"), expected_kind=event_type)
     event_id, public_run_id = _safe_opaque_id(row.get("id")), _safe_opaque_id(run_id)
-    sequence, created_at = row.get("sequence"), row.get("created_at")
+    sequence, raw_created_at = row.get("sequence"), row.get("created_at")
+    created_at = _normalize_public_execution_created_at(raw_created_at)
     if (
         event_type not in PUBLIC_EXECUTION_EVENT_TYPES
         or payload is None
@@ -154,7 +177,7 @@ def public_execution_event_from_row(run_id: object, row: Mapping[str, object]) -
         or public_run_id is None
         or type(sequence) is not int
         or sequence < 0
-        or created_at is not None and not isinstance(created_at, str)
+        or raw_created_at is not None and created_at is None
     ):
         return None
     return {

@@ -1,5 +1,6 @@
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.models import ChatStreamRequest
+from app.public_execution import PUBLIC_EXECUTION_EVENT_FIELDS
 from app.repositories import append_message as real_append_message
 from app.repositories import (
     list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs,
@@ -2150,6 +2152,17 @@ def test_lambchat_strict_delta_contract_is_shared_by_live_sse_and_exact_reload(m
         "extra-key private payload must stay hidden",
         "wrong-source private payload must stay hidden",
         "hidden delta private payload must stay hidden",
+        "private command /var/lib/private must not be projected",
+        "private stdout must not be projected",
+        "private path /var/lib/private must not be projected",
+    )
+    public_execution_created_at = datetime(
+        2026,
+        7,
+        30,
+        8,
+        0,
+        tzinfo=timezone(timedelta(hours=8)),
     )
     run = {
         "id": "run_a",
@@ -2252,6 +2265,60 @@ def test_lambchat_strict_delta_contract_is_shared_by_live_sse_and_exact_reload(m
                     "severity": "info",
                 },
             },
+            {
+                **base,
+                "id": "evt-step",
+                "sequence": 6,
+                "event_type": "execution_step",
+                "stage": "execution",
+                "message": "private command /var/lib/private must not be projected",
+                "created_at": public_execution_created_at,
+                "payload_json": {
+                    "step_id": "pex_report_1",
+                    "kind": "processing",
+                    "stage": "execution",
+                    "status": "running",
+                    "title": "Prepare report",
+                    "summary": "Running controlled processing",
+                    "progress": {"current": 0, "total": 2},
+                },
+            },
+            {
+                **base,
+                "id": "evt-progress",
+                "sequence": 7,
+                "event_type": "execution_progress",
+                "stage": "execution",
+                "message": "private stdout must not be projected",
+                "created_at": public_execution_created_at + timedelta(seconds=30),
+                "payload_json": {
+                    "step_id": "pex_report_1",
+                    "kind": "processing",
+                    "stage": "execution",
+                    "status": "running",
+                    "title": "Prepare report",
+                    "summary": "Running controlled processing",
+                    "progress": {"current": 1, "total": 2},
+                },
+            },
+            {
+                **base,
+                "id": "evt-completed",
+                "sequence": 8,
+                "event_type": "execution_step_completed",
+                "stage": "execution",
+                "message": "private path /var/lib/private must not be projected",
+                "created_at": public_execution_created_at + timedelta(minutes=1),
+                "payload_json": {
+                    "step_id": "pex_report_1",
+                    "kind": "processing",
+                    "stage": "execution",
+                    "status": "completed",
+                    "title": "Prepare report",
+                    "summary": "Running controlled processing",
+                    "progress": {"current": 2, "total": 2},
+                },
+            },
         ]
 
     async def empty_artifacts(conn, *, tenant_id, run_id):
@@ -2309,6 +2376,30 @@ def test_lambchat_strict_delta_contract_is_shared_by_live_sse_and_exact_reload(m
             "run_id": "run_a",
             "content": "保留的公开进度",
         }
+    ]
+    stream_execution_events = [
+        payload
+        for payload in stream_payloads
+        if payload.get("schema_version") == "ai-platform.public-execution-event.v1"
+    ]
+    reload_execution_events = [
+        event["payload"]
+        for event in reload_response.json()["events"]
+        if event["event_type"] in {
+            "execution_step",
+            "execution_progress",
+            "execution_step_completed",
+        }
+    ]
+    assert stream_execution_events == reload_execution_events
+    assert [set(event) for event in stream_execution_events] == [PUBLIC_EXECUTION_EVENT_FIELDS] * 3
+    assert [
+        (event["event_id"], event["sequence"], event["step_id"], event["status"], event["created_at"])
+        for event in stream_execution_events
+    ] == [
+        ("evt-step", 6, "pex_report_1", "running", "2026-07-30T00:00:00.000000Z"),
+        ("evt-progress", 7, "pex_report_1", "running", "2026-07-30T00:00:30.000000Z"),
+        ("evt-completed", 8, "pex_report_1", "completed", "2026-07-30T00:01:00.000000Z"),
     ]
     for rendered in (stream_response.text, reload_response.text):
         assert all(term not in rendered for term in unsafe_terms)
