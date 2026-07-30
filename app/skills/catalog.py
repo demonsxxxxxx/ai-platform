@@ -20,6 +20,10 @@ from app.skills.dependencies import (
     INTERNAL_DEPENDENCY_SKILL_IDS,
     SkillDependencyPolicyError,
 )
+from app.skills.deliverables import (
+    SkillDeliverableContractError,
+    deliverable_contract_from_manifest,
+)
 from app.skills.lifecycle import is_user_runnable_status, normalize_skill_version_status
 from app.skills.pinning import (
     MAX_SKILL_SNAPSHOT_FILE_BYTES,
@@ -457,6 +461,12 @@ def _validated_manifest(value: object) -> dict[str, Any]:
         digest.update(content)
     if digest.hexdigest() != version:
         raise AuthorizedSkillCatalogError("authorized_skill_materialization_invalid")
+    try:
+        deliverable_contract = deliverable_contract_from_manifest(manifest)
+    except SkillDeliverableContractError as exc:
+        raise AuthorizedSkillCatalogError("authorized_skill_materialization_invalid") from exc
+    if deliverable_contract is not None:
+        manifest["deliverable_contract"] = deliverable_contract
     return manifest
 
 

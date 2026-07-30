@@ -13,7 +13,6 @@ from pydantic import ValidationError
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
-from app.capabilities import required_artifact_types_for_skill
 from app.capability_distribution import (
     CapabilityAccessContext,
     CapabilityAccessDecision,
@@ -64,6 +63,10 @@ from app.skills.catalog import (
     resolve_authorized_skill_catalog,
 )
 from app.skills.execution_profiles import canonical_skill_execution_profile
+from app.skills.deliverable_runtime import (
+    enforce_pinned_deliverable_result as _enforce_pinned_deliverable_contract,
+    persisted_required_artifact_types,
+)
 from app.tool_permission_lifecycle import (
     drain_run_tool_permission_terminalization,
     reconcile_terminalized_permission_run,
@@ -1013,12 +1016,8 @@ def _attach_payload_snapshot_governance(
         if payload_hash:
             manifest["content_hash"] = payload_hash
         for field in (
-            "source",
-            "files",
-            "dependency_ids",
-            "mcp_tool_ids",
-            "builtin_tool_identities",
-            "execution_profile",
+            "source", "files", "dependency_ids",
+            "mcp_tool_ids", "builtin_tool_identities", "execution_profile", "deliverable_contract",
         ):
             payload_value = payload_manifest.get(field)
             if isinstance(payload_value, (dict, list)):
@@ -2653,6 +2652,11 @@ async def process_run_payload(
                     "error_code": required_completion.reason,
                 },
             )
+        result = _enforce_pinned_deliverable_contract(
+            result,
+            payload=payload,
+            attempt_id=attempt_id,
+        )
     except WorkerRunCancelled:
         reconciled_parent = None
         async with transaction() as conn:
@@ -2807,14 +2811,10 @@ async def process_run_payload(
                     run_id=payload.run_id,
                 )
             )
-            # The selected platform Skill owns this contract.  Preserve an
-            # adapter's additional declared requirements, but never let an
-            # executor omit the capability requirement on resume or retry.
-            required_artifact_types = set(required_artifact_types_for_skill(payload.skill_id)) | {
-                str(value)
-                for value in result.executor_payload.get("required_artifact_types", [])
-                if isinstance(value, str) and value
-            }
+            required_artifact_types = persisted_required_artifact_types(
+                payload,
+                result.executor_payload,
+            )
             produced_artifact_types = {artifact.artifact_type for artifact in result.artifacts}
             missing_required_artifact_types = required_artifact_types - produced_artifact_types
             missing_required_artifact = result.status == "succeeded" and bool(missing_required_artifact_types)

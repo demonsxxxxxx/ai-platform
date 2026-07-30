@@ -18,6 +18,11 @@ from app.skills.release_readiness import (
     _VULNERABILITY_EVIDENCE_NAMES,
 )
 from app.skills.registry import parse_skill_markdown_front_matter
+from app.skills.deliverables import (
+    SkillDeliverableContractError,
+    parse_skill_deliverable_contract,
+    validate_skill_deliverable_contract,
+)
 from app.validation import assert_safe_id
 
 MAX_SKILL_PACKAGE_FILE_BYTES = MAX_SKILL_SNAPSHOT_FILE_BYTES
@@ -36,6 +41,7 @@ class ParsedSkillPackage:
     content_hash: str
     files: list[dict[str, Any]]
     size_bytes: int
+    deliverable_contract: dict[str, object] | None
 
 
 def _safe_zip_member_path(name: str) -> str:
@@ -162,6 +168,7 @@ def build_skill_package_contract(
         "file_count": len(parsed.files),
         "size_bytes": parsed.size_bytes,
         "evidence_files": _evidence_files(parsed),
+        "deliverable_contract": parsed.deliverable_contract,
     }
 
 
@@ -190,6 +197,13 @@ def validate_skill_package_contract(
         values = evidence_files.get(key)
         if not isinstance(values, list) or any(not isinstance(item, str) or not item for item in values):
             raise ValueError("skill_package_contract_evidence_files_invalid")
+    if "deliverable_contract" in contract and contract["deliverable_contract"] is not None:
+        try:
+            contract["deliverable_contract"] = validate_skill_deliverable_contract(
+                contract["deliverable_contract"]
+            )
+        except SkillDeliverableContractError as exc:
+            raise ValueError(str(exc)) from exc
     return contract
 
 
@@ -198,6 +212,7 @@ def validate_skill_package_snapshot(
     *,
     skill_id: str,
     content_hash: str,
+    deliverable_contract: object = None,
 ) -> dict[str, int]:
     """Validate immutable uploaded file bytes without requiring platform metadata."""
 
@@ -245,6 +260,12 @@ def validate_skill_package_snapshot(
         raise ValueError("skill_package_invalid_utf8") from exc
     if metadata.get("name") != skill_id or not metadata.get("description"):
         raise ValueError("skill_package_manifest_mismatch")
+    try:
+        parsed_deliverable_contract = parse_skill_deliverable_contract(metadata)
+    except SkillDeliverableContractError as exc:
+        raise ValueError(str(exc)) from exc
+    if parsed_deliverable_contract != deliverable_contract:
+        raise ValueError("skill_package_deliverable_contract_mismatch")
     return {"file_count": len(sorted_files), "size_bytes": total_bytes}
 
 
@@ -274,6 +295,7 @@ def build_uploaded_skill_admin_trust_review(skill_version: dict[str, Any]) -> di
             source.get("files"),
             skill_id=skill_id,
             content_hash=content_hash,
+            deliverable_contract=contract.get("deliverable_contract"),
         )
         if (
             str(source.get("storage_key") or "") != str(contract.get("storage_key") or "")
@@ -384,6 +406,10 @@ def parse_skill_package_zip(content: bytes, *, expected_skill_id: str | None = N
     description = metadata.get("description") or ""
     if not description:
         raise ValueError("skill_package_description_required")
+    try:
+        deliverable_contract = parse_skill_deliverable_contract(metadata)
+    except SkillDeliverableContractError as exc:
+        raise ValueError(str(exc)) from exc
 
     sorted_files = sorted(files, key=lambda item: item[0])
     return ParsedSkillPackage(
@@ -399,4 +425,5 @@ def parse_skill_package_zip(content: bytes, *, expected_skill_id: str | None = N
             for relative_path, data in sorted_files
         ],
         size_bytes=total_bytes,
+        deliverable_contract=deliverable_contract,
     )

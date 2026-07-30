@@ -6,9 +6,14 @@ from pathlib import Path
 from typing import Any
 
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
+from app.skills.deliverables import (
+    SkillDeliverableContractError,
+    parse_skill_deliverable_contract,
+    validate_skill_deliverable_contract,
+)
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.skills.lifecycle import is_admin_materializable_status
-from app.skills.registry import BuiltinSkill, iter_skill_files
+from app.skills.registry import BuiltinSkill, iter_skill_files, parse_skill_markdown_front_matter
 
 MAX_SKILL_SNAPSHOT_FILE_BYTES = 8 * 1024 * 1024
 MAX_SKILL_SNAPSHOT_TOTAL_BYTES = 16 * 1024 * 1024
@@ -122,7 +127,7 @@ def build_skill_snapshot_governance(
     source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
     files = _safe_file_summaries(manifest.get("files"))
     dependency_ids = _string_list(manifest.get("dependency_ids"))
-    return {
+    result = {
         "schema_version": SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION,
         "snapshot_source": "platform_release_lock",
         "release_lock": _release_lock_summary(release_decision),
@@ -138,6 +143,82 @@ def build_skill_snapshot_governance(
         },
         "does_not_close_b4_or_211": True,
     }
+    raw_contract = manifest.get("deliverable_contract")
+    if raw_contract is not None:
+        try:
+            result["deliverable_contract"] = validate_skill_deliverable_contract(raw_contract)
+        except SkillDeliverableContractError as exc:
+            raise SkillVersionMaterializationError("skill_version_not_materializable") from exc
+    return result
+
+
+def _deliverable_contract_from_files(files: object) -> dict[str, object] | None:
+    """Read a declaration only from immutable ``SKILL.md`` snapshot bytes."""
+
+    if not isinstance(files, list):
+        raise SkillVersionMaterializationError("skill_version_not_materializable")
+    encoded_skill_md = next(
+        (
+            item.get("content_base64")
+            for item in files
+            if isinstance(item, dict) and item.get("relative_path") == "SKILL.md"
+        ),
+        None,
+    )
+    if not isinstance(encoded_skill_md, str):
+        raise SkillVersionMaterializationError("skill_version_not_materializable")
+    try:
+        metadata = parse_skill_markdown_front_matter(
+            base64.b64decode(encoded_skill_md.encode("ascii"), validate=True).decode("utf-8")
+        )
+        return parse_skill_deliverable_contract(metadata)
+    except (UnicodeDecodeError, ValueError, SkillDeliverableContractError) as exc:
+        raise SkillVersionMaterializationError("skill_version_not_materializable") from exc
+
+
+def _deliverable_contract_from_version(
+    skill_version: dict[str, Any],
+    *,
+    source: dict[str, Any],
+    files: object,
+) -> dict[str, object] | None:
+    """Bind upload declarations to immutable package evidence before pinning."""
+
+    raw_package_contract = source.get("package_contract")
+    if raw_package_contract is None:
+        return _deliverable_contract_from_files(files)
+    if not isinstance(raw_package_contract, dict):
+        raise SkillVersionMaterializationError("skill_version_not_materializable")
+    file_contract = _deliverable_contract_from_files(files)
+    if "deliverable_contract" not in raw_package_contract:
+        if file_contract is not None:
+            raise SkillVersionMaterializationError("skill_version_not_materializable")
+        return None
+    if (
+        raw_package_contract.get("schema_version") != "ai-platform.skill-package-contract.v1"
+        or str(raw_package_contract.get("skill_id") or "")
+        != str(skill_version.get("skill_id") or "")
+        or str(raw_package_contract.get("version") or "")
+        != str(skill_version.get("content_hash") or "")
+        or str(raw_package_contract.get("content_hash") or "")
+        != str(skill_version.get("content_hash") or "")
+        or not str(raw_package_contract.get("package_sha256") or "")
+        or not str(raw_package_contract.get("storage_key") or "")
+        or not str(raw_package_contract.get("uploaded_by") or "")
+    ):
+        raise SkillVersionMaterializationError("skill_version_not_materializable")
+    raw_contract = raw_package_contract.get("deliverable_contract")
+    if raw_contract is None:
+        if file_contract is not None:
+            raise SkillVersionMaterializationError("skill_version_not_materializable")
+        return None
+    try:
+        validated = validate_skill_deliverable_contract(raw_contract)
+    except SkillDeliverableContractError as exc:
+        raise SkillVersionMaterializationError("skill_version_not_materializable") from exc
+    if file_contract != validated:
+        raise SkillVersionMaterializationError("skill_version_not_materializable")
+    return validated
 
 
 def attach_skill_snapshot_governance(
@@ -179,23 +260,25 @@ def build_skill_manifest_pins(
             source_kind=str(skill.source.get("kind") or "") if isinstance(skill.source, dict) else "",
             lifecycle_status="released",
         )
-        manifests.append(
-            {
-                "skill_id": skill.name,
-                "description": skill.description,
-                "version": skill.version,
-                "content_hash": skill.version,
-                "source": skill.source,
-                "files": _snapshot_files(skill.path),
-                "dependency_ids": skill_dependency_ids(skill.name, selected_set),
-                "lifecycle_status": "released",
-                "execution_profile": execution_profile,
-                "builtin_tool_identities": execution_profile["builtin_tool_identities"],
-                "allowed": True,
-                "staged": False,
-                "used": False,
-            }
-        )
+        manifest = {
+            "skill_id": skill.name,
+            "description": skill.description,
+            "version": skill.version,
+            "content_hash": skill.version,
+            "source": skill.source,
+            "files": _snapshot_files(skill.path),
+            "dependency_ids": skill_dependency_ids(skill.name, selected_set),
+            "lifecycle_status": "released",
+            "execution_profile": execution_profile,
+            "builtin_tool_identities": execution_profile["builtin_tool_identities"],
+            "allowed": True,
+            "staged": False,
+            "used": False,
+        }
+        deliverable_contract = _deliverable_contract_from_files(manifest["files"])
+        if deliverable_contract is not None:
+            manifest["deliverable_contract"] = deliverable_contract
+        manifests.append(manifest)
     return manifests
 
 
@@ -228,7 +311,7 @@ def _build_skill_version_manifest_pin(
         source_kind=str(manifest_source.get("kind") or ""),
         lifecycle_status=lifecycle_status,
     )
-    return {
+    manifest = {
         "skill_id": str(skill_version.get("skill_id") or ""),
         "description": str(skill_version.get("description") or ""),
         "version": version,
@@ -243,6 +326,14 @@ def _build_skill_version_manifest_pin(
         "staged": False,
         "used": False,
     }
+    deliverable_contract = _deliverable_contract_from_version(
+        skill_version,
+        source=source,
+        files=files,
+    )
+    if deliverable_contract is not None:
+        manifest["deliverable_contract"] = deliverable_contract
+    return manifest
 
 
 def build_uploaded_skill_manifest_pin(skill_version: dict[str, Any]) -> dict[str, Any]:

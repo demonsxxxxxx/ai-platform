@@ -20,11 +20,11 @@ from app.skills.pinning import (
 from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry
 
 
-def write_skill(root, name, description):
+def write_skill(root, name, description, deliverable_fields=""):
     skill_dir = root / name
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n",
+        f"---\nname: {name}\ndescription: {description}\n{deliverable_fields}---\n\n# {name}\n",
         encoding="utf-8",
     )
     return skill_dir
@@ -55,6 +55,74 @@ def test_build_skill_manifest_pins_includes_primary_dependencies_and_file_snapsh
     assert pins[0]["used"] is False
     assert pins[0]["builtin_tool_identities"] == ["Bash", "Write"]
     assert pins[1]["builtin_tool_identities"] == ["Bash", "Write"]
+
+
+def test_build_skill_manifest_pins_binds_deliverable_contract_to_builtin_version(tmp_path):
+    write_skill(
+        tmp_path,
+        "audit-finding-rca",
+        "Create an audited workbook.",
+        deliverable_fields=(
+            "deliverable-public-types: xlsx\n"
+            "deliverable-required-types: xlsx\n"
+            "deliverable-process-evidence: not_required\n"
+        ),
+    )
+    skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
+
+    pins = build_skill_manifest_pins(
+        skill_id="audit-finding-rca",
+        input_payload={},
+        builtin_skills=skills,
+    )
+
+    assert pins[0]["deliverable_contract"]["required_terminal_types"] == ["xlsx"]
+    assert pins[0]["deliverable_contract"]["requires_process_evidence"] is False
+
+
+def test_uploaded_skill_pin_rejects_deliverable_contract_loss_from_package_snapshot():
+    skill_md = (
+        "---\n"
+        "name: audit-finding-rca\n"
+        "description: Create an audited workbook.\n"
+        "deliverable-public-types: xlsx\n"
+        "deliverable-required-types: xlsx\n"
+        "deliverable-process-evidence: required\n"
+        "---\n"
+    ).encode("utf-8")
+    files = [
+        {
+            "relative_path": "SKILL.md",
+            "content_base64": base64.b64encode(skill_md).decode("ascii"),
+            "size_bytes": len(skill_md),
+        }
+    ]
+
+    with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
+        build_uploaded_skill_manifest_pin(
+            {
+                "skill_id": "audit-finding-rca",
+                "version": "hash-audit",
+                "content_hash": "hash-audit",
+                "description": "Create an audited workbook.",
+                "source": {
+                    "kind": "uploaded",
+                    "storage_key": "package.zip",
+                    "files": files,
+                    "package_contract": {
+                        "schema_version": "ai-platform.skill-package-contract.v1",
+                        "skill_id": "audit-finding-rca",
+                        "version": "hash-audit",
+                        "content_hash": "hash-audit",
+                        "package_sha256": "a" * 64,
+                        "storage_key": "package.zip",
+                        "uploaded_by": "admin-a",
+                    },
+                },
+                "dependency_ids": [],
+                "status": "reviewed",
+            }
+        )
 
 
 def test_builtin_tool_identity_snapshot_comes_from_server_skill_declaration_not_input(tmp_path):

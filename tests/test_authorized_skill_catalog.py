@@ -26,13 +26,13 @@ from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAu
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.skills import catalog
 from app.skills.catalog import (
-    AVAILABLE,
     AuthorizedSkillCatalogBinding,
     AuthorizedSkillCatalogError,
     load_runtime_authorized_skill_catalog,
     resolve_authorized_skill_catalog,
 )
 from app.skills.pinning import build_skill_version_manifest_pin
+from app.skills.deliverables import parse_skill_deliverable_contract
 from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
 from app.worker import (
     _builtin_capability_subjects,
@@ -123,6 +123,20 @@ def _manifest_from_row(row: dict[str, Any]) -> dict[str, Any]:
             "status": row["version_status"],
         }
     )
+
+
+def test_catalog_rejects_uploaded_deliverable_contract_not_bound_to_package_snapshot():
+    manifest = _manifest_from_row(_skill_row("audit-finding-rca"))
+    manifest["deliverable_contract"] = parse_skill_deliverable_contract(
+        {
+            "deliverable-public-types": "xlsx",
+            "deliverable-required-types": "xlsx",
+            "deliverable-process-evidence": "required",
+        }
+    )
+
+    with pytest.raises(AuthorizedSkillCatalogError, match="authorized_skill_materialization_invalid"):
+        catalog._validated_manifest(manifest)
 
 
 def _binding(*, user_id: str = "user-a", selected_skill_id: str = "general-chat") -> AuthorizedSkillCatalogBinding:

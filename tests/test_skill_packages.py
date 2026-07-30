@@ -21,8 +21,12 @@ def package_zip(files: dict[str, str | bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def skill_md(name: str = "qa-file-reviewer", description: str = "Review Word documents.") -> str:
-    return f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n"
+def skill_md(
+    name: str = "qa-file-reviewer",
+    description: str = "Review Word documents.",
+    deliverable_fields: str = "",
+) -> str:
+    return f"---\nname: {name}\ndescription: {description}\n{deliverable_fields}---\n\n# {name}\n"
 
 
 def test_parse_skill_package_zip_requires_skill_md_and_matching_name():
@@ -56,6 +60,63 @@ def test_parse_skill_package_zip_can_infer_skill_name():
     assert parsed.skill_id == "qa-file-reviewer"
     assert parsed.description == "Review Word documents."
     assert [item["relative_path"] for item in parsed.files] == ["SKILL.md", "references/guide.md"]
+
+
+def test_parse_skill_package_binds_server_owned_xlsx_deliverable_contract():
+    parsed = parse_skill_package_zip(
+        package_zip(
+            {
+                "SKILL.md": skill_md(
+                    name="audit-finding-rca",
+                    description="Create an audited workbook.",
+                    deliverable_fields=(
+                        "deliverable-public-types: xlsx\n"
+                        "deliverable-required-types: xlsx\n"
+                        "deliverable-process-evidence: required\n"
+                    ),
+                )
+            }
+        ),
+        expected_skill_id="audit-finding-rca",
+    )
+
+    contract = build_skill_package_contract(
+        parsed,
+        package_sha256="package-sha",
+        storage_key="skills/audit-finding-rca/versions/version/package.zip",
+        uploaded_by="admin-a",
+    )
+
+    assert contract["deliverable_contract"] == {
+        "schema_version": "ai-platform.skill-deliverable-contract.v1",
+        "allowed_public_deliverables": [
+            {
+                "deliverable_type": "xlsx",
+                "artifact_type": "xlsx",
+                "label": "Excel 文件",
+                "extension": ".xlsx",
+                "content_type": (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ),
+                "max_size_bytes": 64 * 1024 * 1024,
+            }
+        ],
+        "required_terminal_types": ["xlsx"],
+        "requires_process_evidence": True,
+    }
+
+
+def test_parse_skill_package_rejects_incomplete_deliverable_contract():
+    content = package_zip(
+        {
+            "SKILL.md": skill_md(
+                deliverable_fields="deliverable-public-types: xlsx\n",
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="skill_deliverable_contract_incomplete"):
+        parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
 
 
 def test_parse_skill_package_zip_accepts_one_wrapped_skill_directory():

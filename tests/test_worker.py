@@ -28,6 +28,7 @@ from app.repositories import (
 from app.required_tool_contract import declaration_from_input
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
+from app.skills.deliverable_runtime import enforce_pinned_deliverable_result
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.worker import (
     WorkerOutcome,
@@ -59,6 +60,10 @@ def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
     ) == ("executor_failure", "ordinary executor failure")
     assert private_token not in str(worker_module._executor_exception_failure(native_error))
     assert private_path not in str(worker_module._executor_exception_failure(native_error))
+
+
+def test_worker_binds_delivery_runtime_enforcer_at_the_persistence_seam():
+    assert worker_module._enforce_pinned_deliverable_contract is enforce_pinned_deliverable_result
 
 
 @pytest.mark.asyncio
