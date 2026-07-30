@@ -28,6 +28,8 @@ FUNCTIONAL_HOT_FILE_LINES = 3000
 FUNCTIONAL_HOT_FILE_NET_GROWTH_LIMIT = 0
 TEST_HOT_FILE_LINES = 2500
 TEST_HOT_FILE_NET_GROWTH_LIMIT = 100
+TEST_ADDED_LOC_REVIEW_THRESHOLD = 300
+TEST_TO_PRODUCTION_ADDED_LOC_REVIEW_RATIO = 2.0
 
 FUNCTIONAL_SUFFIXES = frozenset({
     ".c", ".cc", ".cpp", ".css", ".go", ".html", ".java", ".js", ".jsx",
@@ -94,7 +96,15 @@ class _ChangedFile:
 
     @property
     def is_test(self) -> bool:
-        return _is_test_path(self.path)
+        return self.old_is_test or self.new_is_test
+
+    @property
+    def old_is_test(self) -> bool:
+        return self.old_path is not None and _is_test_path(self.old_path)
+
+    @property
+    def new_is_test(self) -> bool:
+        return self.new_path is not None and _is_test_path(self.new_path)
 
     @property
     def old_is_production(self) -> bool:
@@ -117,6 +127,16 @@ class _ChangedFile:
     @property
     def production_added_lines(self) -> int:
         return self.additions if self.old_is_production else (self.new_lines if self.new_is_production else 0)
+
+    @property
+    def test_net_loc(self) -> int:
+        if self.old_is_test == self.new_is_test:
+            return self.net_loc if self.old_is_test else 0
+        return self.new_lines if self.new_is_test else -self.old_lines
+
+    @property
+    def test_added_lines(self) -> int:
+        return self.additions if self.old_is_test else (self.new_lines if self.new_is_test else 0)
 
     @property
     def is_functional(self) -> bool:
@@ -366,6 +386,11 @@ class CodeGovernanceEvaluator:
         test_files = [item for item in changes if item.is_test]
         subsystems = sorted({_production_subsystem(item.production_path) for item in behavior_files})
         net_loc = sum(item.production_net_loc for item in behavior_files)
+        production_added_loc = sum(item.production_added_lines for item in behavior_files)
+        test_added_loc = sum(item.test_added_lines for item in changes)
+        test_to_production_ratio = (
+            round(test_added_loc / production_added_loc, 4) if production_added_loc > 0 else None
+        )
         violations: list[Violation] = []
 
         if len(behavior_files) > PRODUCTION_FILE_LIMIT:
@@ -428,28 +453,19 @@ class CodeGovernanceEvaluator:
                     )
                 )
 
-        changed_test_paths = sorted(item.path for item in test_files if item.new_path is not None)
-        for item in behavior_files:
-            if item.new_path is None or not item.is_functional or item.production_added_lines <= 0:
-                continue
-            mirrors = [path for path in changed_test_paths if _test_mirrors_production(path, item.path)]
-            if not mirrors:
-                violations.append(
-                    Violation(
-                        "test_responsibility_mirror",
-                        "behavior-changing functional production code must have a changed test with the same responsibility stem",
-                        path=item.path,
-                        details={"changed_test_paths": changed_test_paths, "responsibility": _responsibility_stem(item.path)},
-                    )
-                )
-
         metrics = {
             "behavior_production_files": len(behavior_files),
             "changed_files": len(changes),
             "changed_test_files": len(test_files),
             "move_only_production_files": len(move_only_files),
+            "production_added_loc": production_added_loc,
             "production_net_loc": net_loc,
             "production_subsystems": subsystems,
+            "test_added_loc": test_added_loc,
+            "test_net_loc": sum(item.test_net_loc for item in changes),
+            "test_to_production_added_loc_ratio": test_to_production_ratio,
+            "test_loc_review_explanation_recommended": test_added_loc > TEST_ADDED_LOC_REVIEW_THRESHOLD
+            or (test_to_production_ratio is not None and test_to_production_ratio > TEST_TO_PRODUCTION_ADDED_LOC_REVIEW_RATIO),
         }
         return violations, metrics
 
@@ -624,22 +640,6 @@ def _production_subsystem(path: str) -> str:
     return f"root/{pure.stem or pure.name}"
 
 
-def _responsibility_stem(path: str) -> str:
-    stem = PurePosixPath(path).stem.lower()
-    stem = stem.removeprefix("test_")
-    for suffix in ("_test", ".test", ".spec"):
-        stem = stem.removesuffix(suffix)
-    return re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
-
-
-def _test_mirrors_production(test_path: str, production_path: str) -> bool:
-    production = _responsibility_stem(production_path)
-    test = _responsibility_stem(test_path)
-    if not production or not test:
-        return False
-    return production == test or (len(production) >= 4 and production in test) or (len(test) >= 4 and test in production)
-
-
 def _evaluation_mode(changes: Sequence[_ChangedFile]) -> str:
     behavior = any(item.is_behavior_change for item in changes)
     move_only = any(item.is_move_only for item in changes)
@@ -667,7 +667,11 @@ def _policy_as_dict() -> dict[str, Any]:
         "production_subsystem_count_max_exclusive": PRODUCTION_SUBSYSTEM_LIMIT,
         "test_hot_file_lines_exclusive": TEST_HOT_FILE_LINES,
         "test_hot_file_net_growth_max": TEST_HOT_FILE_NET_GROWTH_LIMIT,
-        "test_responsibility_mirror": "required_for_behavior-changing_functional_additions",
+        "test_loc_review": {
+            "enforcement": "soft",
+            "ratio_exclusive": TEST_TO_PRODUCTION_ADDED_LOC_REVIEW_RATIO,
+            "test_added_loc_exclusive": TEST_ADDED_LOC_REVIEW_THRESHOLD,
+        },
     }
 
 

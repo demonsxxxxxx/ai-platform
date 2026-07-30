@@ -91,8 +91,16 @@ Stable invariants:
 - Authority provenance is verified before candidate-owned code or configuration
   executes. The governance decision is sealed first, and authority integrity is
   checked again after candidate checks.
-- Checks stay bounded to the changed risk. Unowned affected paths fail closed as
-  `external_check`; an explicit bounded suite cannot discharge unrelated paths.
+- Checks stay bounded to the changed risk. Changed backend test modules are
+  regression evidence regardless of filename stem; when the effective suite is
+  unchanged, declare it with repeatable `--regression-test-suite` paths. A
+  backend behavior change with neither form of evidence fails as `external_check`.
+- The finite Skill, MCP, schema, and release safety-suite map is frozen and
+  remains additive. Frontend coverage continues through `ci:verify`, and changed
+  shared fixtures still require an explicit bounded regression suite.
+- Governance reports production/test added LOC and their ratio as review evidence,
+  not a violation. Explain reuse or duplication when test additions exceed 300
+  lines or twice the production additions.
 - The introducing candidate cannot certify its own new readiness tool. The tool
   becomes authority only after independent fixed-SHA review and ordinary merge.
 
