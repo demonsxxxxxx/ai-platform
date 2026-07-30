@@ -45,6 +45,7 @@ export type MessagePart =
   | ToolPermissionPart
   | ArtifactPart
   | ExecutionTimelinePart
+  | ExecutionProcessPart
   | TodoPart
   | SummaryPart;
 
@@ -113,23 +114,21 @@ export interface ExecutionTimelineProgress {
   total: number;
 }
 
-/** Strict public execution timeline v1 record, never a raw tool payload. */
+/** Minimal allowlisted public execution state, never the raw wire envelope. */
 export interface ExecutionTimelinePart {
   type: "execution_step";
-  schema_version: "ai-platform.public-execution-event.v1";
-  event_id: string;
   sequence: number;
-  run_id: string;
   step_id: string;
   kind: ExecutionTimelineKind;
-  stage: string;
   status: ExecutionTimelineStatus;
-  title: string;
-  summary: string;
   progress: ExecutionTimelineProgress;
   safe_file_name: string | null;
-  artifact_public_id: string | null;
-  created_at: string | null;
+}
+
+/** Terminal-only grouping of allowlisted public execution steps. */
+export interface ExecutionProcessPart {
+  type: "execution_process";
+  steps: ExecutionTimelinePart[];
 }
 
 export type ToolPermissionDecision = "allow_once" | "allow_for_run" | "deny";

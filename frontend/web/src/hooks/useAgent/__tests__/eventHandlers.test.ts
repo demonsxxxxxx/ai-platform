@@ -5,6 +5,7 @@ import { handleStreamEvent } from "../eventHandlers.ts";
 import type { EventHandlerContext } from "../eventHandlers.ts";
 import type { StreamEvent } from "../types.ts";
 import { prepareMessagesForRunningRun } from "../historyLoader.ts";
+import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
 
 function createContext(
   messages: Message[],
@@ -457,6 +458,26 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
     runId: "run-active",
     streamVersion: 0,
   };
+  let frame: FrameRequestCallback | null = null;
+  const presentation = new PublicStreamPresentation({
+    now: () => 0,
+    requestAnimationFrame: (callback) => {
+      frame = callback;
+      return 1;
+    },
+    cancelAnimationFrame: () => {
+      frame = null;
+    },
+    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeout: () => undefined,
+  });
+  ctx.publicStreamPresentation = presentation;
+  presentation.activate({
+    sessionId: binding.sessionId,
+    runId: binding.runId,
+    assistantMessageId: "assistant-1",
+    streamVersion: binding.streamVersion,
+  });
 
   const acceptedDelta = handleStreamEvent(
     {
@@ -494,6 +515,9 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
     ctx,
     binding,
   );
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 8);
+  assert.equal(ctx.messages()[0]?.content, "A");
+  assert.notEqual(frame, null);
   const acceptedFinal = handleStreamEvent(
     {
       event: "message:chunk",
@@ -519,6 +543,7 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
   assert.deepEqual(ctx.messages()[0]?.parts, [
     { type: "text", content: "AB!" },
   ]);
+  assert.equal(ctx.setMessagesCalls(), 2);
 });
 
 test("creates a new streaming assistant for a running run after the latest user message", () => {

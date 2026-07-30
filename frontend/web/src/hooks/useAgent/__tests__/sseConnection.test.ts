@@ -15,8 +15,94 @@ import {
   type SSEConnectionContext,
   type SSEFetchEventSource,
 } from "../sseConnection.ts";
+import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
+import type { Message } from "../../../types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+test("flushes accepted public text before reconnect status can replay-deduplicate it", async () => {
+  let messages: Message[] = [
+    {
+      id: "assistant-flush",
+      role: "assistant" as const,
+      content: "A",
+      timestamp: new Date(),
+      isStreaming: true,
+      parts: [{ type: "text" as const, content: "A" }],
+    },
+  ];
+  const presentation = new PublicStreamPresentation({
+    now: () => 0,
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => undefined,
+    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeout: () => undefined,
+  });
+  const owner = {
+    sessionId: "session-flush",
+    runId: "run-flush",
+    assistantMessageId: "assistant-flush",
+    streamVersion: 4,
+  };
+  presentation.activate(owner);
+  presentation.enqueueAssistantDelta(owner, "B", (content) => {
+    messages = messages.map((message) =>
+      message.id === owner.assistantMessageId
+        ? {
+            ...message,
+            content: message.content + content,
+            parts: [{ type: "text" as const, content: message.content + content }],
+          }
+        : message,
+    );
+  });
+  let contentObservedByStatus = "";
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: owner.assistantMessageId },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: { current: messages },
+    sessionIdRef: { current: owner.sessionId },
+    currentRunIdRef: { current: owner.runId },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: owner.sessionId, runId: owner.runId, sequence: 8 },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: owner.streamVersion },
+    isReconnectFromHistoryRef: { current: false },
+    publicStreamPresentation: presentation,
+    setSessionId: () => undefined,
+    setMessages: (updater) => {
+      messages = typeof updater === "function" ? updater(messages) : updater;
+      context.messagesRef.current = messages;
+    },
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: () => true,
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+
+  await reconnectSSE(context, {
+    getStatus: async () => {
+      contentObservedByStatus = messages[0]?.content || "";
+      return {
+        session_id: owner.sessionId,
+        run_id: owner.runId,
+        status: "completed",
+      };
+    },
+  });
+
+  assert.equal(contentObservedByStatus, "AB");
+  assert.equal(messages[0]?.content, "AB");
+});
 
 function createTokenRefreshContext() {
   const connectionStates: string[] = [];

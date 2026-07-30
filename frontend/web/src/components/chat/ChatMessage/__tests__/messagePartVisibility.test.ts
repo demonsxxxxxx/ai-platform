@@ -4,7 +4,7 @@ import test from "node:test";
 import type { MessagePart } from "../../../../types";
 import { getVisibleMessageParts } from "../messagePartVisibility.ts";
 
-test("shows allowlisted public progress but hides raw internal status cards", () => {
+test("hides routine intent, context, queue, and run-start transcript cards", () => {
   const parts: MessagePart[] = [
     {
       type: "run_status",
@@ -32,8 +32,8 @@ test("shows allowlisted public progress but hides raw internal status cards", ()
     },
     {
       type: "run_status",
-      event_id: "evt-worker",
-      event_type: "worker_started",
+      event_id: "evt-run-started",
+      event_type: "run_started",
       stage: "worker",
       message: "Run started",
       severity: "info",
@@ -54,7 +54,7 @@ test("shows allowlisted public progress but hides raw internal status cards", ()
 
   assert.deepEqual(
     getVisibleMessageParts(parts).map((part) => part.type),
-    ["run_status", "run_status", "run_status", "text"],
+    ["text"],
   );
 });
 
