@@ -996,6 +996,51 @@ def test_skill_catalog_mapping_runs_authorized_suite_without_conventional_fallba
 
 
 @pytest.mark.parametrize(
+    ("production_path", "authorized_suite", "conventional_fallback"),
+    (
+        (
+            "app/skills/deliverable_runtime.py",
+            "tests/test_skill_deliverable_runtime.py",
+            "tests/test_deliverable_runtime.py",
+        ),
+        (
+            "app/skills/deliverables.py",
+            "tests/test_skill_deliverables.py",
+            "tests/test_deliverables.py",
+        ),
+        (
+            "app/skills/packages.py",
+            "tests/test_skill_packages.py",
+            "tests/test_packages.py",
+        ),
+        (
+            "app/skills/pinning.py",
+            "tests/test_skill_pinning.py",
+            "tests/test_pinning.py",
+        ),
+    ),
+)
+def test_skill_delivery_mapping_runs_exact_suite_without_conventional_fallback(
+    readiness_repo: tuple[Path, str],
+    production_path: str,
+    authorized_suite: str,
+    conventional_fallback: str,
+) -> None:
+    repo, _authority = readiness_repo
+    _write(repo, production_path, "SKILL_READY = False\n")
+    _write(repo, authorized_suite, "def test_skill_baseline():\n    assert True\n")
+    base = _commit(repo, "skill delivery responsibility baseline")
+    _write(repo, production_path, "SKILL_READY = True\n")
+    _write(repo, authorized_suite, "def test_skill_changed():\n    assert True\n")
+    head = _commit(repo, "change skill delivery path")
+
+    result = _check(repo, base, head)
+
+    assert not (repo / conventional_fallback).exists()
+    _assert_responsibility_tests(result, [authorized_suite])
+
+
+@pytest.mark.parametrize(
     ("production_path", "baseline", "content", "suites", "mirror"),
     (
         ("app/mcp/__init__.py", "MCP_READY = False\n", "MCP_READY = True\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/__init__.py"], "tests/test_init.py"),
