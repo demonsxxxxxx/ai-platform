@@ -1139,17 +1139,21 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
         def __init__(self, message: str):
             self.message = message
 
+    async def acknowledge_capability_evidence(evidence: dict[str, Any]) -> bool:
+        captured.setdefault("capability_evidence", []).append(evidence)
+        return True
+
     async def query(prompt, options):
         captured["prompt_messages"] = [item async for item in prompt]
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "skill-c"},
-                "tool_use_id": "tool-use-c",
-            }
-        )
+        tool_input = {
+            "tool_name": "Skill",
+            "tool_input": {"skill": "skill-c"},
+            "tool_use_id": "tool-use-c",
+        }
+        pre_hook = options.kwargs["hooks"]["PreToolUse"][0].hooks[0]
+        post_hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
+        await pre_hook({"hook_event_name": "PreToolUse", **tool_input}, "tool-use-c")
+        await post_hook({"hook_event_name": "PostToolUse", **tool_input}, "tool-use-c")
         yield ResultMessage()
 
     fake_sdk = types.SimpleNamespace(
@@ -1176,6 +1180,7 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
         skills=skill_ids,
         tool_policy_subjects=[_skill_policy_subject(skill_ids)],
         execution_policy="sandbox_brokered",
+        on_capability_evidence=acknowledge_capability_evidence,
     )
 
     assert captured["skills"] == skill_ids
@@ -1184,6 +1189,13 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
     assert result.error is None
     assert result.used_skills == ["skill-c"]
     assert result.used_skills_source == "executor_hook"
+    assert [
+        (item["canonical_identity"], item["tool_call_id"], item["lifecycle_phase"])
+        for item in captured["capability_evidence"]
+    ] == [
+        ("skill-c", "tool-use-c", "invocation_requested"),
+        ("skill-c", "tool-use-c", "completed"),
+    ]
     assert 'exactly this input: {"skill":"skill-c"}' in (
         captured["prompt_messages"][0]["message"]["content"]
     )
@@ -1225,6 +1237,10 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
         def __init__(self, message: str):
             self.message = message
 
+    async def acknowledge_capability_evidence(evidence: dict[str, Any]) -> bool:
+        captured.setdefault("capability_evidence", []).append(evidence)
+        return True
+
     async def query(prompt, options):
         messages = [item async for item in prompt]
         captured["prompt"] = messages[0]["message"]["content"]
@@ -1236,18 +1252,22 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
             "Skill",
             {"skill": "minimax-docx"},
         )
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        for skill_id in (
-            "ctd-32s73-stability-template-fill",
-            "reference-fact-extraction",
+        pre_hook = options.kwargs["hooks"]["PreToolUse"][0].hooks[0]
+        post_hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
+        for skill_id, tool_use_id in (
+            ("ctd-32s73-stability-template-fill", "tool-use-primary"),
+            ("reference-fact-extraction", "tool-use-dependency"),
         ):
-            await hook(
-                {
-                    "hook_event_name": "PostToolUse",
-                    "tool_name": "Skill",
-                    "tool_input": {"skill": skill_id},
-                }
+            tool_input = {
+                "tool_name": "Skill",
+                "tool_input": {"skill": skill_id},
+                "tool_use_id": tool_use_id,
+            }
+            pre_result = await pre_hook({"hook_event_name": "PreToolUse", **tool_input}, tool_use_id)
+            captured.setdefault("pre_decisions", []).append(
+                pre_result["hookSpecificOutput"]["permissionDecision"]
             )
+            await post_hook({"hook_event_name": "PostToolUse", **tool_input}, tool_use_id)
         yield ResultMessage()
 
     fake_sdk = types.SimpleNamespace(
@@ -1284,6 +1304,7 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
                 "availability": "available",
             }
         },
+        on_capability_evidence=acknowledge_capability_evidence,
     )
 
     assert 'exactly this input: {"skill":"ctd-32s73-stability-template-fill"}' in captured[
@@ -1297,8 +1318,16 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
     assert isinstance(captured["required_permission"], PermissionResultAllow)
     assert isinstance(captured["unrelated_permission"], PermissionResultDeny)
     assert captured["unrelated_permission"].message == "tool_parameters_not_authorized"
+    assert captured["pre_decisions"] == ["allow", "allow"]
     assert result.error is None
     assert result.used_skills == skill_ids
     assert result.used_skills_source == "executor_hook"
+    assert [
+        (item["canonical_identity"], item["tool_call_id"], item["lifecycle_phase"])
+        for item in captured["capability_evidence"]
+    ] == [
+        ("ctd-32s73-stability-template-fill", "tool-use-primary", "invocation_requested"),
+        ("ctd-32s73-stability-template-fill", "tool-use-primary", "completed"),
+    ]
     assert "reference-fact-extraction" not in str(result.turn_diagnostics)
     assert "minimax-docx" not in str(result.turn_diagnostics)
