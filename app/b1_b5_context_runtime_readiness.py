@@ -444,20 +444,21 @@ async def _session_continuity_probe() -> dict[str, Any]:
 
 
 def _session_continuity_design_probe(repo_root: Path) -> dict[str, Any]:
-    path = repo_root / "docs" / "superpowers" / "specs" / "2026-07-18-issue-487-context-v1.md"
+    relative_path = "docs/operations/b1-b5-context-runtime-follow-up.md"
+    path = repo_root / relative_path
     if not path.exists():
-        return {"recorded": False, "path": "docs/superpowers/specs/2026-07-18-issue-487-context-v1.md"}
+        return {"recorded": False, "path": relative_path}
     text = path.read_text(encoding="utf-8").lower()
     required_terms = (
-        "database-backed",
-        "context pack",
-        "distinct sdk session id",
-        "in-process transcript",
-        "worker no longer maintains",
+        "durable db record",
+        "sdk session id",
+        "fork isolation",
+        "inmemorysessioncontinuitystore",
+        "worker process memory",
     )
     return {
         "recorded": all(term in text for term in required_terms),
-        "path": "docs/superpowers/specs/2026-07-18-issue-487-context-v1.md",
+        "path": relative_path,
         "required_terms_present": {
             term: term in text for term in required_terms
         },
