@@ -83,6 +83,7 @@ import {
 } from "./useAgent/sseConnection";
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
 import {
+  safeDiagnosticCode,
   translateBackendError,
   translateChatAdmissionError,
 } from "../utils/backendErrors";
@@ -118,6 +119,32 @@ function isProvenPrePersistenceChatRejection(error: unknown): boolean {
     error.status < 500 &&
     error.submissionDisposition === "rejected_before_persist"
   );
+}
+
+type HistoryLoadFailurePhase =
+  | "session_projection"
+  | "identity_validation"
+  | "event_history"
+  | "feedback";
+
+/** Emit only fixed phase plus bounded status/code for history diagnostics. */
+function logHistoryLoadFailure(
+  phase: HistoryLoadFailurePhase,
+  error: unknown,
+  message = "[loadHistory] failed",
+): void {
+  const status =
+    error instanceof ApiRequestError &&
+    Number.isInteger(error.status) &&
+    error.status >= 100 &&
+    error.status <= 599
+      ? error.status
+      : null;
+  console.error(message, {
+    phase,
+    status,
+    code: safeDiagnosticCode(error) ?? null,
+  });
 }
 
 function formatChatSubmissionError(error: unknown): string {
@@ -1362,6 +1389,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       // Clear approvals before loading new session
       options?.onClearApprovals?.();
 
+      let historyFailurePhase: HistoryLoadFailurePhase = "session_projection";
       try {
         await markReadPromise;
         if (!isCurrentHistoryLoadRequest()) {
@@ -1383,13 +1411,24 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             authoritativeSession.session_id !== targetSessionId ||
             authoritativeSession.agent_id !== loadedAgentId ||
             (identity !== null && identity.agent_id !== loadedAgentId);
-          if (invalidAuthoritativeIdentity)
-            throw new Error("agent_conversation_identity_mismatch");
+          historyFailurePhase = "identity_validation";
+          if (invalidAuthoritativeIdentity) {
+            throw Object.assign(new Error("agent_conversation_identity_mismatch"), {
+              code: "agent_conversation_identity_mismatch",
+            });
+          }
           const recoveredProfile = identity
             ? { agent_id: identity.agent_id, expected_revision: identity.revision }
             : null;
           sessionAgentIdRef.current = loadedAgentId;
           setSessionAgentId(loadedAgentId);
+          // The authoritative projection is the only source for this binding.
+          // Later transcript enrichment may fail independently and must not
+          // erase a confirmed generic or Agent Conversation authority.
+          sessionAgentAuthorityRef.current = {
+            sessionId: targetSessionId,
+            profile: recoveredProfile,
+          };
 
           // 从 metadata 提取配置信息
           const sessionConfig = {
@@ -1410,6 +1449,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               undefined,
           };
 
+          historyFailurePhase = "event_history";
           // Event history determines the exact latest run before its status is
           // queried. Session metadata can be absent or stale in production.
           const eventsPromise = sessionApi.getEvents(
@@ -1419,8 +1459,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           const feedbackPromise = canReadFeedback
             ? feedbackApi
                 .list(0, 100, undefined, undefined, targetSessionId)
-                .catch(() => {
-                  console.warn("[loadHistory] Failed to load feedback");
+                .catch((error) => {
+                  logHistoryLoadFailure(
+                    "feedback",
+                    error,
+                    "[loadHistory] feedback failed",
+                  );
                   return null;
                 })
             : Promise.resolve(null);
@@ -1665,13 +1709,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           // Return sessionConfig *before* any SSE reconnect so that the
           // caller can immediately restore model selection / agent / config.
 
-          sessionAgentAuthorityRef.current = { sessionId: targetSessionId, profile: recoveredProfile };
           return sessionConfig;
         }
-      } catch {
+      } catch (error) {
         if (isCurrentHistoryLoadRequest()) {
-          sessionAgentAuthorityRef.current = null;
-          console.error("[loadHistory] Failed to load session");
+          const preservesConfirmedAuthority =
+            historyFailurePhase === "event_history" &&
+            sessionAgentAuthorityRef.current?.sessionId === targetSessionId;
+          if (!preservesConfirmedAuthority) {
+            sessionAgentAuthorityRef.current = null;
+          }
+          logHistoryLoadFailure(historyFailurePhase, error);
           setError(i18n.t("chat.requestFailed"));
         }
       } finally {
