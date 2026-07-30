@@ -25,6 +25,10 @@ CODE_GOVERNANCE_EXCEPTION_PATH = ".code-governance-exception.json"
 CODE_GOVERNANCE_TEST_PATH = "tests/test_code_governance.py"
 IRREGULAR_RESPONSIBILITY_SUITES = {
     "app/skills/catalog.py": ("tests/test_authorized_skill_catalog.py",),
+    "app/skills/deliverable_runtime.py": ("tests/test_skill_deliverable_runtime.py",),
+    "app/skills/deliverables.py": ("tests/test_skill_deliverables.py",),
+    "app/skills/packages.py": ("tests/test_skill_packages.py",),
+    "app/skills/pinning.py": ("tests/test_skill_pinning.py",),
     "app/mcp/__init__.py": ("tests/test_mcp_tool_catalog.py", "tests/test_mcp_repository.py"),
     "app/mcp/catalog.py": ("tests/test_mcp_tool_catalog.py",),
     "app/mcp/repository.py": ("tests/test_mcp_repository.py", "tests/test_mcp_repository_postgres.py"),
