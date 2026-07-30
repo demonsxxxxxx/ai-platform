@@ -976,6 +976,25 @@ def _assert_responsibility_tests(result: subprocess.CompletedProcess[str], expec
     assert responsibility_stage["tests"] == expected
 
 
+def test_skill_catalog_mapping_runs_authorized_suite_without_conventional_fallback(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = readiness_repo
+    production_path = "app/skills/catalog.py"
+    authorized_suite = "tests/test_authorized_skill_catalog.py"
+    _write(repo, production_path, "CATALOG_READY = False\n")
+    _write(repo, authorized_suite, "def test_catalog_baseline():\n    assert True\n")
+    base = _commit(repo, "skill catalog responsibility baseline")
+    _write(repo, production_path, "CATALOG_READY = True\n")
+    _write(repo, authorized_suite, "def test_catalog_changed():\n    assert True\n")
+    head = _commit(repo, "change skill catalog")
+
+    result = _check(repo, base, head)
+
+    assert not (repo / "tests/test_catalog.py").exists()
+    _assert_responsibility_tests(result, [authorized_suite])
+
+
 @pytest.mark.parametrize(
     ("production_path", "baseline", "content", "suites", "mirror"),
     (
