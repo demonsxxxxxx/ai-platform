@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Bot, FileText, Headphones, MessageCircle, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -171,6 +171,34 @@ function getErrorStatus(error: unknown): number | undefined {
     : undefined;
 }
 
+function conversationAdmissionError(error: unknown): string {
+  const status = getErrorStatus(error);
+  if (status === 403) {
+    return "当前账号无权使用该智能体，请返回市场选择其他智能体。";
+  }
+  if (status === 404 || status === 409) {
+    return "该智能体已不可用或发布版本已更新，请返回市场重新选择。";
+  }
+  return "暂时无法创建智能体对话，请稍后重试。";
+}
+
+function hasExactConversationIdentity(
+  profile: AgentProfilePublicProjection,
+  session: Awaited<ReturnType<typeof agentProfileApi.createConversation>>,
+): boolean {
+  const identity = session.agent_conversation;
+  const hasText = (value: unknown): value is string =>
+    typeof value === "string" && value.trim().length > 0;
+  return Boolean(
+    hasText(session.session_id) &&
+      hasText(session.workspace_id) &&
+      identity &&
+      session.agent_id === profile.agent_id &&
+      identity.agent_id === profile.agent_id &&
+      identity.revision === profile.expected_revision,
+  );
+}
+
 function usePublishedAgentDetail(
   detailKey: string,
   agentId: string | undefined,
@@ -231,10 +259,14 @@ function CatalogError({ error, refresh }: { error: string; refresh: () => void }
 
 function AgentMarketCard({
   profile,
+  admissionError,
+  creating,
   onOpenWorkspace,
   onOpenDetail,
 }: {
   profile: AgentProfilePublicProjection;
+  admissionError: string | null;
+  creating: boolean;
   onOpenWorkspace: (profile: AgentProfilePublicProjection) => void;
   onOpenDetail: (profile: AgentProfilePublicProjection) => void;
 }) {
@@ -247,6 +279,7 @@ function AgentMarketCard({
         data-agent-market-open-workspace
         aria-label={`进入 ${profile.name} 专属工作区`}
         className="group flex w-full flex-1 gap-4 p-5 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-primary)]"
+        disabled={creating}
         onClick={() => onOpenWorkspace(profile)}
         type="button"
       >
@@ -267,6 +300,17 @@ function AgentMarketCard({
           </span>
         </span>
       </button>
+      {(creating || admissionError) && (
+        <span
+          aria-live="polite"
+          className={`px-5 pb-3 text-sm ${
+            admissionError ? "text-red-700 dark:text-red-300" : "text-[var(--theme-text-secondary)]"
+          }`}
+          role="status"
+        >
+          {creating ? "正在创建智能体对话…" : admissionError}
+        </span>
+      )}
       <div className="flex justify-end border-t border-[var(--theme-border)] px-5 py-3">
         <button
           data-agent-market-open-detail
@@ -294,6 +338,16 @@ function AgentMarketCatalog({
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const searchQuery = searchParams.get("q") ?? "";
+  const selectionKey = `${searchQuery}\u0000${activeCategory}`;
+  const selectionKeyRef = useRef(selectionKey);
+  const admissionTokenRef = useRef(0);
+  const admissionInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
+  const [creating, setCreating] = useState(false);
+  const [admissionError, setAdmissionError] = useState<{
+    profileKey: string;
+    message: string;
+  } | null>(null);
   const visibleProfiles = useMemo(
     () =>
       filterPublishedMarketProfiles(catalog.value, searchQuery).filter(
@@ -303,25 +357,87 @@ function AgentMarketCatalog({
     [activeCategory, catalog.value, searchQuery],
   );
 
+  const invalidateWorkspaceAdmission = useCallback(() => {
+    admissionTokenRef.current += 1;
+    setAdmissionError(null);
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      admissionTokenRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (selectionKeyRef.current === selectionKey) return;
+    selectionKeyRef.current = selectionKey;
+    invalidateWorkspaceAdmission();
+  }, [invalidateWorkspaceAdmission, selectionKey]);
+
+  const handleOpenWorkspace = useCallback(
+    async (profile: AgentProfilePublicProjection) => {
+      if (admissionInFlightRef.current) return;
+
+      admissionInFlightRef.current = true;
+      const token = ++admissionTokenRef.current;
+      const profileKey = `${profile.agent_id}:${profile.expected_revision}`;
+      let navigated = false;
+      setCreating(true);
+      setAdmissionError(null);
+      try {
+        const session = await agentProfileApi.createConversation({
+          agent_id: profile.agent_id,
+          expected_revision: profile.expected_revision,
+        });
+        if (token !== admissionTokenRef.current) return;
+        if (!hasExactConversationIdentity(profile, session)) {
+          throw Object.assign(new Error("agent_conversation_identity_mismatch"), {
+            status: 409,
+          });
+        }
+        navigated = true;
+        navigate(buildAgentMarketWorkspacePath(profile, session.session_id));
+      } catch (error) {
+        if (token !== admissionTokenRef.current) return;
+        setAdmissionError({ profileKey, message: conversationAdmissionError(error) });
+      } finally {
+        admissionInFlightRef.current = false;
+        if (mountedRef.current && !navigated) {
+          setCreating(false);
+        }
+      }
+    },
+    [navigate],
+  );
+
   const handleCategory = useCallback(
     (category: AgentProfileCategory | "all") => {
+      invalidateWorkspaceAdmission();
       const next = new URLSearchParams(searchParams);
       if (category === "all") next.delete("category");
       else next.set("category", category);
       setSearchParams(next, { replace: true });
     },
-    [searchParams, setSearchParams],
+    [invalidateWorkspaceAdmission, searchParams, setSearchParams],
   );
 
   const handleSearch = useCallback(
     (query: string) => {
+      invalidateWorkspaceAdmission();
       const next = new URLSearchParams(searchParams);
       if (query) next.set("q", query);
       else next.delete("q");
       setSearchParams(next, { replace: true });
     },
-    [searchParams, setSearchParams],
+    [invalidateWorkspaceAdmission, searchParams, setSearchParams],
   );
+
+  const handleRefresh = useCallback(() => {
+    invalidateWorkspaceAdmission();
+    refresh();
+  }, [invalidateWorkspaceAdmission, refresh]);
 
   return (
     <main data-agent-market className="min-h-0 flex-1 overflow-y-auto text-[var(--theme-text)]">
@@ -341,7 +457,7 @@ function AgentMarketCatalog({
             aria-label="刷新智能体目录"
             className="btn-secondary inline-flex items-center gap-2"
             disabled={catalog.phase === "loading"}
-            onClick={refresh}
+            onClick={handleRefresh}
             type="button"
           >
             <RefreshCw
@@ -398,7 +514,7 @@ function AgentMarketCatalog({
         </div>
 
         {catalog.phase === "error" ? (
-          <CatalogError error={catalog.error ?? MARKET_CATALOG_LOAD_ERROR} refresh={refresh} />
+          <CatalogError error={catalog.error ?? MARKET_CATALOG_LOAD_ERROR} refresh={handleRefresh} />
         ) : catalog.phase === "loading" ? (
           <p aria-live="polite" className="py-8 text-sm text-[var(--theme-text-secondary)]">
             正在加载已发布的智能体…
@@ -425,12 +541,20 @@ function AgentMarketCatalog({
                 <AgentMarketCard
                   key={`${profile.agent_id}:${profile.expected_revision}`}
                   profile={profile}
-                  onOpenWorkspace={(selectedProfile) =>
-                    navigate(buildAgentMarketWorkspacePath(selectedProfile))
+                  admissionError={
+                    admissionError?.profileKey ===
+                    `${profile.agent_id}:${profile.expected_revision}`
+                      ? admissionError.message
+                      : null
                   }
-                  onOpenDetail={(selectedProfile) =>
-                    navigate(buildAgentMarketDetailPath(selectedProfile))
-                  }
+                  creating={creating}
+                  onOpenWorkspace={(selectedProfile) => {
+                    void handleOpenWorkspace(selectedProfile);
+                  }}
+                  onOpenDetail={(selectedProfile) => {
+                    invalidateWorkspaceAdmission();
+                    navigate(buildAgentMarketDetailPath(selectedProfile));
+                  }}
                 />
               ))}
             </section>
@@ -455,14 +579,7 @@ function AgentMarketDetail({ profile }: { profile: AgentProfilePublicProjection 
         agent_id: profile.agent_id,
         expected_revision: profile.expected_revision,
       });
-      const identity = session.agent_conversation;
-      if (
-        !identity ||
-        session.agent_id !== profile.agent_id ||
-        identity.agent_id !== profile.agent_id ||
-        identity.revision !== profile.expected_revision ||
-        !session.session_id
-      ) {
+      if (!hasExactConversationIdentity(profile, session)) {
         throw Object.assign(new Error("agent_conversation_identity_mismatch"), {
           status: 409,
         });
@@ -471,14 +588,7 @@ function AgentMarketDetail({ profile }: { profile: AgentProfilePublicProjection 
         buildAgentMarketWorkspacePath(profile, session.session_id),
       );
     } catch (error) {
-      const status = getErrorStatus(error);
-      if (status === 403) {
-        setStartError("当前账号无权使用该智能体，请返回市场选择其他智能体。");
-      } else if (status === 404 || status === 409) {
-        setStartError("该智能体已不可用或发布版本已更新，请返回市场重新选择。");
-      } else {
-        setStartError("暂时无法创建智能体对话，请稍后重试。");
-      }
+      setStartError(conversationAdmissionError(error));
     } finally {
       setStarting(false);
     }

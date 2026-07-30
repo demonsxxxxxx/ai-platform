@@ -479,7 +479,7 @@ async function prepareShellHarness() {
   };
 }
 
-test("rendered Marketplace opens the versioned workspace directly while keeping detail secondary", async () => {
+test("rendered Marketplace admits a card before opening its pinned workspace while keeping detail secondary", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation, useNavigate } = await import("react-router-dom");
@@ -530,7 +530,7 @@ test("rendered Marketplace opens the versioned workspace directly while keeping 
   };
   const conversationSelections: unknown[] = [];
   let admissionResult: "denied" | "agent-mismatch" | "revision-mismatch" | "accepted" =
-    "denied";
+    "accepted";
   agentProfileApi.createConversation = async (selection) => {
     conversationSelections.push(selection);
     if (admissionResult === "denied") {
@@ -650,9 +650,11 @@ test("rendered Marketplace opens the versioned workspace directly while keeping 
       await Promise.resolve();
     });
 
-    assert.equal(currentPath, "/agent-market/agt_finance/2/chat");
+    assert.equal(currentPath, "/agent-market/agt_finance/2/chat/session-finance");
     assert.ok(container.querySelector("[data-agent-workspace]"));
-    assert.deepEqual(conversationSelections, [], "opening a card must not pre-create a conversation");
+    assert.deepEqual(conversationSelections, [
+      { agent_id: "agt_finance", expected_revision: 2 },
+    ]);
     assert.equal(detailCalls, 0, "opening a card must not detour through the detail authorization request");
 
     const returnToMarket = container.querySelector("[data-agent-workspace]");
@@ -686,6 +688,7 @@ test("rendered Marketplace opens the versioned workspace directly while keeping 
       .find((button) => button.hasAttribute("data-agent-market-start-chat"));
     assert.ok(startChat, "detail must expose an explicit start-chat command");
     assert.equal(startChat.hasAttribute("disabled"), false);
+    admissionResult = "denied";
     await React.act(async () => {
       startChat.dispatchEvent({ type: "click", bubbles: true });
       await Promise.resolve();
@@ -722,6 +725,7 @@ test("rendered Marketplace opens the versioned workspace directly while keeping 
       { agent_id: "agt_finance", expected_revision: 2 },
       { agent_id: "agt_finance", expected_revision: 2 },
       { agent_id: "agt_finance", expected_revision: 2 },
+      { agent_id: "agt_finance", expected_revision: 2 },
     ]);
     assert.equal(
       currentPath,
@@ -730,6 +734,257 @@ test("rendered Marketplace opens the versioned workspace directly while keeping 
     assert.ok(container.querySelector("[data-agent-workspace]"));
     assert.equal(catalogCalls, 2);
     assert.equal(detailCalls, 1, "detail navigation must re-authorize the current publication");
+  } finally {
+    agentProfileApi.listPublished = originalListPublished;
+    agentProfileApi.getPublished = originalGetPublished;
+    agentProfileApi.createConversation = originalCreateConversation;
+    shellHarness.restore();
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("Marketplace card admission fails closed for denied or invalid server identity", async () => {
+  const dom = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
+  const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const shellHarness = await prepareShellHarness();
+  const profile: AgentProfilePublicProjection = {
+    agent_id: "agt_card",
+    expected_revision: 3,
+    name: "合规助手",
+    description: "检查公开流程。",
+    avatar_ref: "builtin:assistant",
+    category: "support",
+  };
+  const originalListPublished = agentProfileApi.listPublished;
+  const originalCreateConversation = agentProfileApi.createConversation;
+  const selections: unknown[] = [];
+  let admission: "denied" | "stale" | "mismatch" = "denied";
+  agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
+  agentProfileApi.createConversation = async (selection) => {
+    selections.push(selection);
+    if (admission === "denied") {
+      throw Object.assign(new Error("denied"), { status: 403 });
+    }
+    if (admission === "stale") {
+      throw Object.assign(new Error("stale"), { status: 409 });
+    }
+    return {
+      session_id: "session-card",
+      workspace_id: "default",
+      agent_id: "agt_other",
+      title: profile.name,
+      agent_conversation: {
+        agent_id: profile.agent_id,
+        revision: profile.expected_revision,
+        name: profile.name,
+        description: profile.description,
+        avatar_ref: profile.avatar_ref,
+        category: profile.category,
+      },
+    };
+  };
+  let currentPath = "";
+  function LocationProbe() {
+    currentPath = useLocation().pathname;
+    return null;
+  }
+  const container = dom.document.createElement("div");
+  const root = ReactDOM.createRoot(container as never);
+  const clickCard = async () => {
+    const primaryAction = container
+      .querySelectorAll("button")
+      .find((button) => button.hasAttribute("data-agent-market-open-workspace"));
+    assert.ok(primaryAction);
+    await React.act(async () => {
+      primaryAction.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  };
+
+  try {
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: ["/agent-market"] },
+          shellHarness.wrap(
+            React.createElement(
+              React.Fragment,
+              null,
+              React.createElement(LocationProbe),
+              React.createElement(
+                Routes,
+                null,
+                React.createElement(Route, {
+                  path: "/agent-market",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+                React.createElement(Route, {
+                  path: "/agent-market/:agentId/:revision",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+                React.createElement(Route, {
+                  path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+                  element: React.createElement("div", { "data-agent-workspace": true }),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await clickCard();
+    assert.equal(currentPath, "/agent-market");
+    assert.match(container.textContent, /当前账号无权使用该智能体/);
+
+    admission = "stale";
+    await clickCard();
+    assert.equal(currentPath, "/agent-market");
+    assert.match(container.textContent, /发布版本已更新/);
+
+    admission = "mismatch";
+    await clickCard();
+    assert.equal(currentPath, "/agent-market");
+    assert.match(container.textContent, /发布版本已更新/);
+    assert.deepEqual(selections, [
+      { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+      { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+      { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+    ]);
+    assert.equal(container.querySelector("[data-agent-workspace]"), null);
+  } finally {
+    agentProfileApi.listPublished = originalListPublished;
+    agentProfileApi.createConversation = originalCreateConversation;
+    shellHarness.restore();
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("Marketplace card admission is single-flight and ignores a late response after its catalog unmounts", async () => {
+  const dom = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
+  const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const shellHarness = await prepareShellHarness();
+  const profile: AgentProfilePublicProjection = {
+    agent_id: "agt_card",
+    expected_revision: 3,
+    name: "合规助手",
+    description: "检查公开流程。",
+    avatar_ref: "builtin:assistant",
+    category: "support",
+  };
+  const originalListPublished = agentProfileApi.listPublished;
+  const originalGetPublished = agentProfileApi.getPublished;
+  const originalCreateConversation = agentProfileApi.createConversation;
+  const selections: unknown[] = [];
+  let resolveAdmission: ((value: Awaited<ReturnType<typeof agentProfileApi.createConversation>>) => void) | null = null;
+  agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
+  agentProfileApi.getPublished = async () => profile;
+  agentProfileApi.createConversation = async (selection) => {
+    selections.push(selection);
+    return new Promise((resolve) => {
+      resolveAdmission = resolve;
+    });
+  };
+  let currentPath = "";
+  function LocationProbe() {
+    currentPath = useLocation().pathname;
+    return null;
+  }
+  const container = dom.document.createElement("div");
+  const root = ReactDOM.createRoot(container as never);
+
+  try {
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: ["/agent-market"] },
+          shellHarness.wrap(
+            React.createElement(
+              React.Fragment,
+              null,
+              React.createElement(LocationProbe),
+              React.createElement(
+                Routes,
+                null,
+                React.createElement(Route, {
+                  path: "/agent-market",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+                React.createElement(Route, {
+                  path: "/agent-market/:agentId/:revision",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+                React.createElement(Route, {
+                  path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+                  element: React.createElement("div", { "data-agent-workspace": true }),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const primaryAction = container
+      .querySelectorAll("button")
+      .find((button) => button.hasAttribute("data-agent-market-open-workspace"));
+    assert.ok(primaryAction);
+    await React.act(async () => {
+      primaryAction.dispatchEvent({ type: "click", bubbles: true });
+      primaryAction.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.deepEqual(selections, [
+      { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+    ]);
+    assert.equal(primaryAction.hasAttribute("disabled"), true);
+    assert.ok(resolveAdmission);
+
+    const detailAction = container
+      .querySelectorAll("button")
+      .find((button) => button.hasAttribute("data-agent-market-open-detail"));
+    assert.ok(detailAction);
+    await React.act(async () => {
+      detailAction.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market/agt_card/3");
+    assert.ok(container.querySelector("[data-agent-market-detail]"));
+
+    await React.act(async () => {
+      resolveAdmission?.({
+        session_id: "session-card",
+        workspace_id: "default",
+        agent_id: profile.agent_id,
+        title: profile.name,
+        agent_conversation: {
+          agent_id: profile.agent_id,
+          revision: profile.expected_revision,
+          name: profile.name,
+          description: profile.description,
+          avatar_ref: profile.avatar_ref,
+          category: profile.category,
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market/agt_card/3");
+    assert.equal(container.querySelector("[data-agent-workspace]"), null);
   } finally {
     agentProfileApi.listPublished = originalListPublished;
     agentProfileApi.getPublished = originalGetPublished;

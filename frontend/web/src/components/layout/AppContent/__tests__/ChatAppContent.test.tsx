@@ -17,6 +17,7 @@ const {
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
   getChatToolAccess,
+  isExactAgentWorkspaceBinding,
   recoverAgentConversationIdentity,
 } = await import("../ChatAppContent.tsx");
 const { agentProfileApi } = await import("../../../../services/api/agentProfile.ts");
@@ -159,6 +160,42 @@ test("generic Chat tools remain available while Agent loading and bound workspac
       { enabled: false, sessionId: null },
     );
   }
+});
+
+test("an Agent workspace becomes send-ready only after its exact bound Session is recovered", () => {
+  const boundState = {
+    phase: "bound" as const,
+    targetSessionId: "session-agent",
+    identity: safeIdentity,
+  };
+
+  assert.equal(
+    isExactAgentWorkspaceBinding({
+      agentWorkspace: safeWorkspace,
+      state: { phase: "generic", targetSessionId: null, identity: null },
+      sessionId: null,
+    }),
+    false,
+    "a bare revision-bound workspace must keep the composer disabled",
+  );
+  assert.equal(
+    isExactAgentWorkspaceBinding({
+      agentWorkspace: safeWorkspace,
+      state: boundState,
+      sessionId: "session-other",
+    }),
+    false,
+    "a recovered Session may not authorize a different workspace route",
+  );
+  assert.equal(
+    isExactAgentWorkspaceBinding({
+      agentWorkspace: safeWorkspace,
+      state: boundState,
+      sessionId: "session-agent",
+    }),
+    true,
+    "the exact admitted Agent Session enables the canonical composer path",
+  );
 });
 
 test("renders only safe Agent identity and locks MCP catalog controls", () => {
