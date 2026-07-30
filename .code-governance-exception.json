@@ -1,0 +1,10 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "owner": "ai-platform-controller",
+  "reason": "Issue #739 requires one coherent immutable Skill deliverable contract across app/skills, sandbox executor admission, and the app/worker.py persistence boundary; the reviewed candidate is 921 net production LOC across exactly three production subsystems, while hot-file growth, Ruff, responsibility mirrors, tests, and file-count limits remain enforced. The controller will remove this exception in an immediate post-merge cleanup PR before deployment.",
+  "expires_on": "2026-08-01",
+  "violations": [
+    {"code": "production_net_loc", "path": null},
+    {"code": "production_subsystem_count", "path": null}
+  ]
+}
