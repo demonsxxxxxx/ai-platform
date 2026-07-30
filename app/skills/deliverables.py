@@ -9,11 +9,19 @@ requirements from model output or a request prompt.
 from __future__ import annotations
 
 import stat
-import zipfile
 from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
-from xml.etree import ElementTree
+
+from app.file_parser_contracts import (
+    AttachmentParserRequirement,
+    AttachmentPreprocessingError,
+    MAX_XLSX_FILE_BYTES,
+    XLSX_CONTENT_TYPE,
+    XLSX_PARSER_ID,
+    XLSX_PARSER_VERSION,
+    parse_xlsx_preview_attachment,
+)
 
 from app.required_tool_contract import (
     CONTROLLED_RUNNER_EVIDENCE_SOURCE,
@@ -33,25 +41,6 @@ _FRONT_MATTER_FIELDS = (
     DELIVERABLE_PROCESS_EVIDENCE_FIELD,
 )
 _MAX_DELIVERABLE_NAME_LENGTH = 128
-_MAX_XLSX_ARCHIVE_ENTRIES = 512
-_MAX_XLSX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
-_MAX_XLSX_COMPRESSION_RATIO = 100
-_SUPPORTED_ZIP_COMPRESSION = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
-_OPC_CONTENT_TYPES_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/content-types"
-_OPC_RELATIONSHIPS_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
-_OPC_OFFICE_DOCUMENT_RELATIONSHIP = (
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
-)
-_SPREADSHEETML_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-_OFFICE_DOCUMENT_RELATIONSHIPS_NAMESPACE = (
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-)
-_SPREADSHEET_WORKSHEET_RELATIONSHIP = (
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
-)
-_XLSX_WORKBOOK_CONTENT_TYPE = (
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
-)
 
 # Future public file types are added here with the same strict shape.  Skill
 # packages can only select a server-owned type identifier, never a MIME type,
@@ -62,7 +51,7 @@ _DELIVERABLE_SPECS: dict[str, dict[str, object]] = {
         "label": "Excel 文件",
         "extension": ".xlsx",
         "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "max_size_bytes": 64 * 1024 * 1024,
+        "max_size_bytes": MAX_XLSX_FILE_BYTES,
     },
 }
 
@@ -171,11 +160,7 @@ def deliverable_contract_from_manifest(manifest: Mapping[str, object]) -> dict[s
     package_contract = source.get("package_contract") if isinstance(source, dict) else None
     manifest_value = manifest.get("deliverable_contract")
     if isinstance(package_contract, dict):
-        if "deliverable_contract" not in package_contract:
-            if manifest_value is not None:
-                raise SkillDeliverableContractError("skill_deliverable_contract_pin_mismatch")
-            return None
-        package_value = package_contract["deliverable_contract"]
+        package_value = package_contract.get("deliverable_contract")
         if package_value is None:
             if manifest_value is not None:
                 raise SkillDeliverableContractError("skill_deliverable_contract_pin_mismatch")
@@ -246,18 +231,18 @@ def process_evidence_is_valid(
     raw_evidence = executor_payload.get("capability_evidence")
     if not isinstance(raw_evidence, list):
         return False
-    matching: dict[str, list[RequiredCapabilityEvidence]] = {}
     required_binding = {
         key: str(binding.get(key) or "")
         for key in ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id")
     }
     if any(not value for value in required_binding.values()):
         return False
-    for raw_record in raw_evidence:
-        try:
-            record = RequiredCapabilityEvidence.from_payload(raw_record)
-        except RequiredToolContractError:
-            return False
+    try:
+        records = [RequiredCapabilityEvidence.from_payload(raw_record) for raw_record in raw_evidence]
+    except RequiredToolContractError:
+        return False
+    matching: dict[str, list[RequiredCapabilityEvidence]] = {}
+    for record in records:
         record_values = asdict(record)
         if any(record_values[key] != value for key, value in required_binding.items()):
             continue
@@ -273,8 +258,7 @@ def process_evidence_is_valid(
     if len(matching) != 1:
         return False
     records = next(iter(matching.values()))
-    phases = [(item.lifecycle_phase, item.lifecycle_status) for item in records]
-    return phases == [
+    return [(record.lifecycle_phase, record.lifecycle_status) for record in records] == [
         ("invocation_requested", "invoking"),
         ("completed", "succeeded"),
     ]
@@ -321,106 +305,37 @@ def _is_controlled_delivery_output(value: object) -> bool:
 
 
 def verified_xlsx_delivery(path: Path, *, spec: Mapping[str, object]) -> bool:
-    """Return whether one controlled-delivery XLSX is bounded and structurally openable."""
+    """Verify a bounded, nonempty XLSX through the platform parser contract."""
 
     try:
+        max_size = int(spec["max_size_bytes"])
+        extension = str(spec["extension"])
+        content_type = str(spec["content_type"])
         if (
-            path.name != path.name.strip()
-            or not _safe_delivery_name(path.name, extension=str(spec["extension"]))
+            max_size != MAX_XLSX_FILE_BYTES
+            or content_type != XLSX_CONTENT_TYPE
+            or path.name != path.name.strip()
+            or not _safe_delivery_name(path.name, extension=extension)
             or path.is_symlink()
             or not stat.S_ISREG(path.stat().st_mode)
-            or not 0 < path.stat().st_size <= int(spec["max_size_bytes"])
+            or not 0 < path.stat().st_size <= max_size
         ):
             return False
-        with path.open("rb") as handle:
-            if handle.read(4) != b"PK\x03\x04":
-                return False
-        with zipfile.ZipFile(path) as archive:
-            entries = archive.infolist()
-            if not _xlsx_archive_entries_are_bounded(entries):
-                return False
-            content_types = archive.read("[Content_Types].xml")
-            relationships = archive.read("_rels/.rels")
-            workbook = archive.read("xl/workbook.xml")
-            workbook_relationships = archive.read("xl/_rels/workbook.xml.rels")
-            archive_names = {entry.filename.replace("\\", "/") for entry in entries}
-    except (KeyError, OSError, ValueError, zipfile.BadZipFile):
-        return False
-    try:
-        content_types_root = ElementTree.fromstring(content_types)
-        relationships_root = ElementTree.fromstring(relationships)
-        workbook_root = ElementTree.fromstring(workbook)
-        workbook_relationships_root = ElementTree.fromstring(workbook_relationships)
-    except ElementTree.ParseError:
-        return False
-    if (
-        content_types_root.tag != f"{{{_OPC_CONTENT_TYPES_NAMESPACE}}}Types"
-        or relationships_root.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationships"
-        or workbook_root.tag != f"{{{_SPREADSHEETML_NAMESPACE}}}workbook"
-        or workbook_relationships_root.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationships"
-    ):
-        return False
-    has_workbook_override = any(
-        item.tag == f"{{{_OPC_CONTENT_TYPES_NAMESPACE}}}Override"
-        and item.attrib.get("PartName") == "/xl/workbook.xml"
-        and item.attrib.get("ContentType") == _XLSX_WORKBOOK_CONTENT_TYPE
-        for item in content_types_root
-    )
-    office_targets = [
-        item
-        for item in relationships_root
-        if item.tag == f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationship"
-        and item.attrib.get("Type") == _OPC_OFFICE_DOCUMENT_RELATIONSHIP
-    ]
-    has_workbook_relationship = (
-        len(office_targets) == 1
-        and str(office_targets[0].attrib.get("TargetMode") or "").lower() != "external"
-        and _root_relationship_target(str(office_targets[0].attrib.get("Target") or ""))
-        == "xl/workbook.xml"
-    )
-    sheets = next(
-        (item for item in workbook_root if item.tag == f"{{{_SPREADSHEETML_NAMESPACE}}}sheets"),
-        None,
-    )
-    if not has_workbook_override or not has_workbook_relationship or sheets is None:
-        return False
-    worksheet_path = _workbook_reachable_worksheet_path(
-        sheets,
-        workbook_relationships_root,
-        archive_names,
-    )
-    if worksheet_path is None:
-        return False
-    try:
-        with zipfile.ZipFile(path) as archive:
-            worksheet = ElementTree.fromstring(archive.read(worksheet_path))
-    except (KeyError, OSError, ValueError, zipfile.BadZipFile, ElementTree.ParseError):
-        return False
-    return worksheet.tag == f"{{{_SPREADSHEETML_NAMESPACE}}}worksheet"
-
-
-def _workbook_reachable_worksheet_path(
-    sheets: ElementTree.Element,
-    relationships: ElementTree.Element,
-    archive_names: set[str],
-) -> str | None:
-    worksheet_targets = {
-        str(item.attrib.get("Id") or ""): _workbook_relationship_target(
-            str(item.attrib.get("Target") or "")
+        parsed = parse_xlsx_preview_attachment(
+            path=path,
+            requirement=AttachmentParserRequirement(
+                file_id="skill-deliverable",
+                file_name=path.name,
+                extension=extension,
+                content_type=content_type,
+                parser_id=XLSX_PARSER_ID,
+                parser_version=XLSX_PARSER_VERSION,
+                max_bytes=max_size,
+            ),
         )
-        for item in relationships
-        if item.tag == f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationship"
-        and item.attrib.get("Type") == _SPREADSHEET_WORKSHEET_RELATIONSHIP
-        and str(item.attrib.get("TargetMode") or "").lower() != "external"
-    }
-    for sheet in sheets:
-        if sheet.tag != f"{{{_SPREADSHEETML_NAMESPACE}}}sheet":
-            continue
-        relationship_id = sheet.attrib.get(f"{{{_OFFICE_DOCUMENT_RELATIONSHIPS_NAMESPACE}}}id")
-        target = worksheet_targets.get(str(relationship_id or ""))
-        if target and target in archive_names:
-            return target
-    return None
+    except (AttachmentPreprocessingError, OSError, ValueError):
+        return False
+    return parsed.evidence.sheet_count > 0
 
 
 def _safe_delivery_name(name: str, *, extension: str) -> bool:
@@ -435,49 +350,3 @@ def _safe_delivery_name(name: str, *, extension: str) -> bool:
         return False
     stem = name[: -len(extension)]
     return bool(stem and not stem.endswith(".") and not stem.endswith(" "))
-
-
-def _xlsx_archive_entries_are_bounded(entries: list[zipfile.ZipInfo]) -> bool:
-    if not entries or len(entries) > _MAX_XLSX_ARCHIVE_ENTRIES:
-        return False
-    total_uncompressed = 0
-    seen_names: set[str] = set()
-    for entry in entries:
-        name = entry.filename.replace("\\", "/")
-        normalized = name.casefold()
-        if (
-            not name
-            or name.startswith("/")
-            or any(part in {"", ".", ".."} for part in name.split("/"))
-            or normalized in seen_names
-            or entry.flag_bits & 0x1
-            or entry.compress_type not in _SUPPORTED_ZIP_COMPRESSION
-            or entry.file_size < 0
-            or entry.compress_size < 0
-        ):
-            return False
-        if entry.is_dir():
-            continue
-        if entry.compress_size == 0 and entry.file_size > 0:
-            return False
-        if entry.compress_size and entry.file_size > entry.compress_size * _MAX_XLSX_COMPRESSION_RATIO:
-            return False
-        total_uncompressed += entry.file_size
-        if total_uncompressed > _MAX_XLSX_UNCOMPRESSED_BYTES:
-            return False
-        seen_names.add(normalized)
-    return True
-
-
-def _root_relationship_target(value: str) -> str:
-    normalized = value.replace("\\", "/").lstrip("/")
-    if not normalized or any(part in {"", ".", ".."} for part in normalized.split("/")):
-        return ""
-    return normalized
-
-
-def _workbook_relationship_target(value: str) -> str:
-    normalized = value.replace("\\", "/").lstrip("/")
-    if not normalized or any(part in {"", ".", ".."} for part in normalized.split("/")):
-        return ""
-    return f"xl/{normalized}"

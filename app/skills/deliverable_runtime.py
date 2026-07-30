@@ -61,6 +61,24 @@ class DeliveryRuntimeOutcome:
     upgrade_packet: dict[str, object] | None = None
 
 
+_DELIVERY_ERRORS = {
+    "skill_deliverable_contract_invalid": "The selected Skill delivery contract is unavailable.",
+    "skill_deliverable_contract_upgrade_required": "The selected Skill package must be upgraded before file delivery.",
+    "skill_deliverable_process_evidence_missing": "The required file-delivery execution evidence is unavailable.",
+    "required_artifact_missing": "The file-required Skill did not produce every required artifact type.",
+}
+
+
+def _outcome(code: str, *, contract=None, **kwargs) -> DeliveryRuntimeOutcome:
+    return DeliveryRuntimeOutcome(
+        artifacts=(),
+        contract=contract,
+        error_code=code,
+        error_message=_DELIVERY_ERRORS[code],
+        **kwargs,
+    )
+
+
 def stage_adapter_delivery(
     *,
     payload: object,
@@ -79,31 +97,18 @@ def stage_adapter_delivery(
             manifests=pinned_manifests,
         )
     except SkillDeliverableContractError:
-        return DeliveryRuntimeOutcome(
-            artifacts=(),
-            contract=None,
-            error_code="skill_deliverable_contract_invalid",
-            error_message="The selected Skill delivery contract is unavailable.",
-        )
+        return _outcome("skill_deliverable_contract_invalid")
     if _uncontracted_delivery_requires_upgrade(payload, contract, workspace, artifact_dirs):
         manifest = pinned_manifests.get(str(getattr(payload, "skill_id", "") or "")) or {}
-        return DeliveryRuntimeOutcome(
-            artifacts=(),
-            contract=None,
-            error_code="skill_deliverable_contract_upgrade_required",
-            error_message="The selected Skill package must be upgraded before file delivery.",
+        return _outcome(
+            "skill_deliverable_contract_upgrade_required",
             upgrade_packet=deliverable_contract_upgrade_packet(
                 skill_id=getattr(payload, "skill_id", ""),
                 version=manifest.get("content_hash") or manifest.get("version"),
             ),
         )
     if contract is not None and not _process_evidence_is_valid(payload, contract, executor_payload):
-        return DeliveryRuntimeOutcome(
-            artifacts=(),
-            contract=contract,
-            error_code="skill_deliverable_process_evidence_missing",
-            error_message="The required file-delivery execution evidence is unavailable.",
-        )
+        return _outcome("skill_deliverable_process_evidence_missing", contract=contract)
     artifacts = collect_workspace_artifacts(
         payload=payload,
         workspace=workspace,
@@ -114,13 +119,7 @@ def stage_adapter_delivery(
     )
     missing_types = _missing_terminal_types(contract, artifacts)
     if missing_types:
-        return DeliveryRuntimeOutcome(
-            artifacts=(),
-            contract=contract,
-            error_code="required_artifact_missing",
-            error_message="The file-required Skill did not produce every required artifact type.",
-            missing_types=missing_types,
-        )
+        return _outcome("required_artifact_missing", contract=contract, missing_types=missing_types)
     return DeliveryRuntimeOutcome(artifacts=tuple(artifacts), contract=contract)
 
 
@@ -140,18 +139,10 @@ def enforce_pinned_deliverable_result(
             manifests=_payload_manifests(payload),
         )
     except SkillDeliverableContractError:
-        return _failed_result(
-            result,
-            "skill_deliverable_contract_invalid",
-            "The selected Skill delivery contract is unavailable.",
-        )
+        return _failed_result(result, "skill_deliverable_contract_invalid", _DELIVERY_ERRORS["skill_deliverable_contract_invalid"])
     legacy_required_types = required_artifact_types_for_skill(str(getattr(payload, "skill_id", "") or ""))
     if result.artifacts and contract is None and not legacy_required_types:
-        failed = _failed_result(
-            result,
-            "skill_deliverable_contract_upgrade_required",
-            "The selected Skill package must be upgraded before file delivery.",
-        )
+        failed = _failed_result(result, "skill_deliverable_contract_upgrade_required", _DELIVERY_ERRORS["skill_deliverable_contract_upgrade_required"])
         return replace(
             failed,
             executor_payload={
@@ -165,20 +156,12 @@ def enforce_pinned_deliverable_result(
     if contract is None:
         return result
     if not _process_evidence_is_valid(payload, contract, result.executor_payload, attempt_id=attempt_id):
-        return _failed_result(
-            result,
-            "skill_deliverable_process_evidence_missing",
-            "The required file-delivery execution evidence is unavailable.",
-        )
+        return _failed_result(result, "skill_deliverable_process_evidence_missing", _DELIVERY_ERRORS["skill_deliverable_process_evidence_missing"])
     artifacts = [
         artifact for artifact in result.artifacts if public_artifact_matches_contract(contract, artifact)
     ]
     if _missing_terminal_types(contract, artifacts):
-        return _failed_result(
-            result,
-            "required_artifact_missing",
-            "The file-required Skill did not produce every required artifact type.",
-        )
+        return _failed_result(result, "required_artifact_missing", _DELIVERY_ERRORS["required_artifact_missing"])
     return replace(
         result,
         artifacts=artifacts,

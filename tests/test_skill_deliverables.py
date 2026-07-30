@@ -2,8 +2,10 @@ import io
 import zipfile
 
 import pytest
+from openpyxl import Workbook
 
 from app.executors.base import ArtifactManifest
+from app.file_parser_contracts import MAX_XLSX_FILE_BYTES
 from app.skills.deliverables import (
     SkillDeliverableContractError,
     deliverable_contract_from_manifest,
@@ -15,39 +17,10 @@ from app.skills.deliverables import (
 
 def usable_xlsx_bytes() -> bytes:
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(
-            "[Content_Types].xml",
-            b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-            b'<Override PartName="/xl/workbook.xml" '
-            b'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-            b"</Types>",
-        )
-        archive.writestr(
-            "_rels/.rels",
-            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            b'<Relationship Id="rId1" '
-            b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-            b'Target="xl/workbook.xml"/></Relationships>',
-        )
-        archive.writestr(
-            "xl/workbook.xml",
-            b'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
-            b'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-            b'<sheets><sheet name="Result" sheetId="1" r:id="rId1"/></sheets></workbook>',
-        )
-        archive.writestr(
-            "xl/_rels/workbook.xml.rels",
-            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            b'<Relationship Id="rId1" '
-            b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
-            b'Target="worksheets/sheet1.xml"/></Relationships>',
-        )
-        archive.writestr(
-            "xl/worksheets/sheet1.xml",
-            b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-            b'<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>',
-        )
+    workbook = Workbook()
+    workbook.active.title = "Result"
+    workbook.active["A1"] = 1
+    workbook.save(buffer)
     return buffer.getvalue()
 
 
@@ -73,7 +46,7 @@ def test_manifest_front_matter_binds_only_server_owned_xlsx_spec():
                 "label": "Excel 文件",
                 "extension": ".xlsx",
                 "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "max_size_bytes": 64 * 1024 * 1024,
+                "max_size_bytes": MAX_XLSX_FILE_BYTES,
             }
         ],
         "required_terminal_types": ["xlsx"],

@@ -5,6 +5,7 @@ import zipfile
 
 import pytest
 
+from app.file_parser_contracts import MAX_XLSX_FILE_BYTES
 from app.skills import packages as skill_packages
 from app.skills.packages import (
     build_skill_package_contract,
@@ -98,7 +99,7 @@ def test_parse_skill_package_binds_server_owned_xlsx_deliverable_contract():
                 "content_type": (
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 ),
-                "max_size_bytes": 64 * 1024 * 1024,
+                "max_size_bytes": MAX_XLSX_FILE_BYTES,
             }
         ],
         "required_terminal_types": ["xlsx"],
