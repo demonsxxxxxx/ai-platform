@@ -1,6 +1,14 @@
+import json
+
 import pytest
 
 from app.mcp import repository as mcp_repository
+from app.mcp.catalog import (
+    MCP_TOOL_ANNOTATION_READ_ONLY,
+    MCP_TOOL_ANNOTATION_UNKNOWN,
+    MCP_TOOL_ANNOTATION_WRITE_CAPABLE,
+    McpDiscoveredTool,
+)
 
 
 @pytest.mark.asyncio
@@ -131,6 +139,94 @@ async def test_expired_sync_lease_rejects_outcome_and_publication_before_mutatio
     assert outcome["catalog_unavailable_reason"] == "stale_generation"
     assert publication["catalog_unavailable_reason"] == "stale_generation"
     assert publication["published"] is False
+
+
+@pytest.mark.asyncio
+async def test_catalog_publication_activates_unknown_tools_as_high_risk_through_catalog_managed_policy_rows(monkeypatch):
+    class Cursor:
+        def __init__(self, *, row=None, rows=()):
+            self._row = row
+            self._rows = rows
+
+        async def fetchone(self):
+            return self._row
+
+        async def fetchall(self):
+            return self._rows
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((sql, params))
+            if "select entries.tool_id" in sql:
+                return Cursor(rows=[])
+            if "update mcp_servers" in sql:
+                return Cursor(
+                    row={
+                        "catalog_status": "available",
+                        "catalog_unavailable_reason": "",
+                        "catalog_revision": 5,
+                        "catalog_discovered_count": 3,
+                        "catalog_selectable_count": 3,
+                    }
+                )
+            return Cursor()
+
+    async def active_server(conn, **kwargs):
+        return {
+            "status": "active",
+            "catalog_generation": 7,
+            "catalog_sync_attempt": 3,
+            "catalog_status": "syncing",
+            "catalog_sync_lease_active": True,
+            "catalog_revision": 4,
+            "catalog_discovered_count": 0,
+            "catalog_selectable_count": 0,
+        }
+
+    async def append_audit_log(*args, **kwargs):
+        return "audit-catalog"
+
+    monkeypatch.setattr(mcp_repository, "_locked_server", active_server)
+    monkeypatch.setattr(mcp_repository._repositories(), "append_audit_log", append_audit_log)
+    conn = Connection()
+
+    result = await mcp_repository.publish_mcp_tool_catalog(
+        conn,
+        tenant_id="tenant-a",
+        server_name="compatible-server",
+        observed_generation=7,
+        observed_attempt=3,
+        endpoint="https://mcp.example/tools",
+        tools=(
+            McpDiscoveredTool("read_tool", "schema-read", True, MCP_TOOL_ANNOTATION_READ_ONLY),
+            McpDiscoveredTool("write_tool", "schema-write", False, MCP_TOOL_ANNOTATION_WRITE_CAPABLE),
+            McpDiscoveredTool("unknown_tool", "schema-unknown", False, MCP_TOOL_ANNOTATION_UNKNOWN),
+        ),
+        actor_id="admin-a",
+    )
+
+    registry_writes = [params for sql, params in conn.calls if "insert into mcp_tools" in sql]
+    registry_by_remote_name = {json.loads(params[5])[0]: params[6:9] for params in registry_writes}
+    policy_writes = [params for sql, params in conn.calls if "insert into tool_policies" in sql]
+    policy_by_reason = {params[4]: ("active", params[2], params[3]) for params in policy_writes}
+
+    assert result["catalog_status"] == "available"
+    assert result["catalog_selectable_count"] == 3
+    assert registry_by_remote_name == {
+        "read_tool": ("active", False, "low"),
+        "write_tool": ("active", True, "high"),
+        "unknown_tool": ("active", True, "high"),
+    }
+    assert policy_by_reason == {
+        "mcp_catalog_read_only": ("active", False, "low"),
+        "mcp_catalog_write_capable": ("active", True, "high"),
+        "mcp_catalog_annotation_unknown": ("active", True, "high"),
+    }
+    policy_sql = next(sql for sql, _params in conn.calls if "insert into tool_policies" in sql)
+    assert "where tool_policies.reason = any(%s)" in policy_sql
 
 
 def test_only_the_code_owned_ragflow_builtin_has_legacy_catalog_authority():
