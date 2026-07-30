@@ -231,17 +231,23 @@ function CatalogError({ error, refresh }: { error: string; refresh: () => void }
 
 function AgentMarketCard({
   profile,
-  onOpen,
+  onOpenWorkspace,
+  onOpenDetail,
 }: {
   profile: AgentProfilePublicProjection;
-  onOpen: (profile: AgentProfilePublicProjection) => void;
+  onOpenWorkspace: (profile: AgentProfilePublicProjection) => void;
+  onOpenDetail: (profile: AgentProfilePublicProjection) => void;
 }) {
   return (
-    <article data-agent-market-card className="min-w-0">
+    <article
+      data-agent-market-card
+      className="flex min-h-40 min-w-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] transition-colors hover:border-[var(--theme-primary)]"
+    >
       <button
-        aria-label={`查看 ${profile.name} 详情`}
-        className="group flex h-full min-h-40 w-full gap-4 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5 text-left transition-colors hover:border-[var(--theme-primary)] hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] focus-visible:ring-offset-2"
-        onClick={() => onOpen(profile)}
+        data-agent-market-open-workspace
+        aria-label={`进入 ${profile.name} 专属工作区`}
+        className="group flex w-full flex-1 gap-4 p-5 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-primary)]"
+        onClick={() => onOpenWorkspace(profile)}
         type="button"
       >
         <AgentIdentityAvatar profile={profile} />
@@ -256,11 +262,22 @@ function AgentMarketCard({
             {profile.description || "该智能体已通过平台发布。"}
           </span>
           <span className="mt-auto inline-flex items-center gap-1.5 pt-4 text-sm font-medium text-[var(--theme-primary)]">
-            查看详情
+            进入专属对话
             <span aria-hidden="true">→</span>
           </span>
         </span>
       </button>
+      <div className="flex justify-end border-t border-[var(--theme-border)] px-5 py-3">
+        <button
+          data-agent-market-open-detail
+          aria-label={`查看 ${profile.name} 详情`}
+          className="text-sm font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] focus-visible:ring-offset-2"
+          onClick={() => onOpenDetail(profile)}
+          type="button"
+        >
+          查看详情
+        </button>
+      </div>
     </article>
   );
 }
@@ -408,7 +425,12 @@ function AgentMarketCatalog({
                 <AgentMarketCard
                   key={`${profile.agent_id}:${profile.expected_revision}`}
                   profile={profile}
-                  onOpen={(selectedProfile) => navigate(buildAgentMarketDetailPath(selectedProfile))}
+                  onOpenWorkspace={(selectedProfile) =>
+                    navigate(buildAgentMarketWorkspacePath(selectedProfile))
+                  }
+                  onOpenDetail={(selectedProfile) =>
+                    navigate(buildAgentMarketDetailPath(selectedProfile))
+                  }
                 />
               ))}
             </section>
