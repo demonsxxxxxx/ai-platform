@@ -2032,7 +2032,7 @@ def test_lambchat_sse_rebuilds_permission_cards_for_every_principal(
     assert "/var/lib/private" not in response.text
 
 
-def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monkeypatch):
+def test_lambchat_active_history_replays_versioned_deltas_once_in_sequence(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         return {"id": session_id}
 
@@ -2050,7 +2050,7 @@ def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monk
     async def fake_list_run_events(conn, *, tenant_id, run_id):
         return [
             {
-                "id": "evt-delta",
+                "id": "evt-delta-7",
                 "trace_id": "trace_run_a",
                 "schema_version": "ai-platform.event-envelope.v1",
                 "sequence": 7,
@@ -2060,7 +2060,25 @@ def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monk
                 "severity": "info",
                 "visible_to_user": True,
                 "payload_json": {
-                    "delta": "partial",
+                    "delta": "partial ",
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+                "created_at": None,
+            },
+            {
+                "id": "evt-delta-8",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 8,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "severity": "info",
+                "visible_to_user": True,
+                "payload_json": {
+                    "delta": "answer",
                     "source": "worker_answer_delta_v1",
                     "visible_to_user": True,
                     "severity": "info",
@@ -2096,17 +2114,10 @@ def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monk
 
     assert response.status_code == 200
     events = response.json()["events"]
-    assert len(events) == 1
-    assert events[0]["event_type"] == "message:chunk"
-    assert events[0]["sequence"] == 7
-    assert events[0]["payload"] == {
-        "projection_version": "ai-platform.chat-public-projection.v1",
-        "projection_kind": "assistant_delta",
-        "event_id": "evt-delta",
-        "sequence": 7,
-        "run_id": "run_a",
-        "content": "partial",
-    }
+    assert [event["event_type"] for event in events] == ["message:chunk", "message:chunk"]
+    assert [event["sequence"] for event in events] == [7, 8]
+    assert [event["payload"]["event_id"] for event in events] == ["evt-delta-7", "evt-delta-8"]
+    assert "".join(event["payload"]["content"] for event in events) == "partial answer"
 
 
 def test_lambchat_strict_delta_contract_is_shared_by_live_sse_and_exact_reload(monkeypatch):

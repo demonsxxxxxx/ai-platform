@@ -422,7 +422,7 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
     monkeypatch,
     tmp_path,
 ):
-    captured, deltas, published_before_hook = {}, [], []
+    captured, deltas, published_before_hook, published_after_hook = {}, [], [], []
     subject = _subject()
     call_id = "mcp-call-1"
     before = f"Before {subject['identity']}."
@@ -432,6 +432,7 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
         ("probe", lambda: published_before_hook.extend(deltas)),
         *_mcp_hook_steps(subject, call_id=call_id),
         *_stream_steps(after, index=1),
+        ("probe", lambda: published_after_hook.extend(deltas)),
     ]
     monkeypatch.setitem(
         sys.modules,
@@ -454,7 +455,8 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
     )
 
     joined = "".join(deltas)
-    assert published_before_hook == ["Before external tool."]
+    assert "".join(published_before_hook) == "Before external tool."
+    assert published_after_hook[len(published_before_hook):] == [" After ", "tool invocation."]
     assert result.error is None
     assert joined == "Before external tool. After tool invocation."
     assert result.message == joined
@@ -509,14 +511,14 @@ async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(mon
 
 
 @pytest.mark.asyncio
-async def test_sdk_selected_skill_without_external_mcp_releases_once_after_terminal(
+async def test_sdk_selected_skill_streams_after_completed_evidence_before_terminal(
     monkeypatch,
     tmp_path,
 ):
     captured = {}
     deltas = []
     observed_before_result = []
-    text = "Skill answer."
+    text = "Skill answer streams safely."
     skill_input = {
         "tool_name": "Skill",
         "tool_use_id": "skill-call-1",
@@ -550,8 +552,9 @@ async def test_sdk_selected_skill_without_external_mcp_releases_once_after_termi
     )
 
     assert "Authoritative platform MCP requirement:" not in _captured_sdk_prompt(captured)
-    assert observed_before_result == []
-    assert deltas == [text]
+    assert observed_before_result == ["Skill answer streams ", "safely."]
+    assert deltas == observed_before_result
+    assert "".join(deltas) == text
     assert result.error is None
     assert result.message == text
     assert result.used_skills == ["qa-review"]
@@ -920,7 +923,7 @@ def _trusted_internal_settings():
 
 
 @pytest.mark.asyncio
-async def test_trusted_internal_streams_safe_raw_text_delta_before_result_without_terminal_replay(
+async def test_trusted_internal_streams_two_safe_raw_text_deltas_before_result_without_terminal_replay(
     monkeypatch, tmp_path
 ):
     captured = {}
@@ -935,7 +938,12 @@ async def test_trusted_internal_streams_safe_raw_text_delta_before_result_withou
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
-        _streaming_sdk(captured, events, on_before_result=lambda: result_gate.extend(deltas)),
+        _streaming_sdk(
+            captured,
+            events,
+            on_before_result=lambda: result_gate.extend(deltas),
+            result_text=streamed_text,
+        ),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
 
@@ -948,10 +956,10 @@ async def test_trusted_internal_streams_safe_raw_text_delta_before_result_withou
     )
 
     assert captured["include_partial_messages"] is True
-    assert result_gate == [streamed_text]
-    assert deltas == [streamed_text]
-    assert "terminal final" not in deltas
-    assert result.message == "terminal final"
+    assert result_gate == ["Short safe public ", "answer."]
+    assert deltas == result_gate
+    assert "".join(deltas) == streamed_text
+    assert result.message == streamed_text
 
 
 @pytest.mark.asyncio
@@ -975,7 +983,7 @@ async def test_trusted_internal_stream_duplicate_stop_never_replays_terminal_res
         on_text=deltas.append,
     )
 
-    assert deltas == ["short answer"]
+    assert deltas == ["short ", "answer"]
 
 
 @pytest.mark.asyncio
