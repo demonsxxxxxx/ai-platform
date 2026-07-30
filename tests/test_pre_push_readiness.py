@@ -83,6 +83,7 @@ def _check(
     *,
     output_format: str = "json",
     authority_ref: str | None = None,
+    regression_test_suites: tuple[str, ...] = (),
     shared_test_suites: tuple[str, ...] = (),
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -105,6 +106,8 @@ def _check(
             "--format",
             output_format,
         ]
+        for suite in regression_test_suites:
+            arguments.extend(("--regression-test-suite", suite))
         for suite in shared_test_suites:
             arguments.extend(("--shared-test-suite", suite))
         return _run(authority_worktree, *arguments, check=False, env=env)
@@ -917,7 +920,7 @@ def test_shared_test_fixture_runs_the_explicit_bounded_suite(readiness_repo: tup
     _write(repo, "tests/test_shared_fixture.py", "def test_shared_fixture():\n    assert True\n")
     head = _commit(repo, "shared fixture with suite")
 
-    result = _check(repo, base, head, shared_test_suites=("tests/test_shared_fixture.py",))
+    result = _check(repo, base, head, regression_test_suites=("tests/test_shared_fixture.py",))
     payload = _payload(result)
 
     assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
@@ -939,21 +942,47 @@ def test_shared_suite_requires_a_changed_shared_fixture(readiness_repo: tuple[Pa
     assert payload["failure"]["code"] == "unexpected_shared_test_suite"
 
 
-def test_unowned_production_change_remains_external_with_an_unrelated_suite(
+def test_cross_layer_behavior_change_runs_a_changed_test_without_stem_matching(
     readiness_repo: tuple[Path, str],
 ) -> None:
     repo, base = readiness_repo
-    _write(repo, "unowned-policy.json", "{\"enabled\": true}\n")
-    _write(repo, "tests/test_explicit_suite.py", "def test_explicit_suite():\n    assert True\n")
-    head = _commit(repo, "unowned path with unrelated suite")
+    _write(repo, "app/billing.py", "RATE = 3\n")
+    _write(repo, "tests/test_cross_layer_regression.py", "def test_behavior():\n    assert True\n")
+    head = _commit(repo, "cross-layer regression")
 
-    result = _check(repo, base, head, shared_test_suites=("tests/test_explicit_suite.py",))
+    result = _check(repo, base, head)
     payload = _payload(result)
 
-    assert result.returncode == 2
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    responsibility_stage = next(stage for stage in payload["stages"] if stage["name"] == "responsibility_tests")
+    assert responsibility_stage["tests"] == ["tests/test_cross_layer_regression.py"]
+
+
+@pytest.mark.parametrize(
+    ("source", "destination", "production_path"),
+    (
+        ("docs/moved.py", "app/moved.py", "app/moved.py"),
+        ("app/moved.py", "docs/moved.py", "app/moved.py"),
+    ),
+)
+def test_cross_boundary_r100_rename_requires_regression_evidence(
+    readiness_repo: tuple[Path, str], source: str, destination: str, production_path: str
+) -> None:
+    repo, _authority = readiness_repo
+    _write(repo, source, "MOVED = True\n")
+    base = _commit(repo, "rename source")
+    (repo / destination).parent.mkdir(parents=True, exist_ok=True)
+    _git(repo, "mv", source, destination)
+    head = _commit(repo, "cross-boundary rename")
+
+    assert _git(repo, "diff", "--name-status", "--find-renames=50%", base, head, "--").startswith("R100")
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
     assert payload["category"] == "external_check"
-    assert payload["failure"]["code"] == "responsibility_suite_required"
-    assert payload["failure"]["path"] == "unowned-policy.json"
+    assert payload["failure"]["code"] == "regression_test_suite_required"
+    assert payload["failure"]["path"] == production_path
 
 
 MCP_IRREGULAR_RESPONSIBILITY_SUITES = {
@@ -976,55 +1005,32 @@ def _assert_responsibility_tests(result: subprocess.CompletedProcess[str], expec
     assert responsibility_stage["tests"] == expected
 
 
-def test_skill_catalog_mapping_runs_authorized_suite_without_conventional_fallback(
-    readiness_repo: tuple[Path, str],
-) -> None:
-    repo, _authority = readiness_repo
-    production_path = "app/skills/catalog.py"
-    authorized_suite = "tests/test_authorized_skill_catalog.py"
-    _write(repo, production_path, "CATALOG_READY = False\n")
-    _write(repo, authorized_suite, "def test_catalog_baseline():\n    assert True\n")
-    base = _commit(repo, "skill catalog responsibility baseline")
-    _write(repo, production_path, "CATALOG_READY = True\n")
-    _write(repo, authorized_suite, "def test_catalog_changed():\n    assert True\n")
-    head = _commit(repo, "change skill catalog")
-
-    result = _check(repo, base, head)
-
-    assert not (repo / "tests/test_catalog.py").exists()
-    _assert_responsibility_tests(result, [authorized_suite])
-
-
 @pytest.mark.parametrize(
-    ("production_path", "authorized_suite", "conventional_fallback"),
+    ("production_path", "authorized_suite"),
     (
+        ("app/skills/catalog.py", "tests/test_authorized_skill_catalog.py"),
         (
             "app/skills/deliverable_runtime.py",
             "tests/test_skill_deliverable_runtime.py",
-            "tests/test_deliverable_runtime.py",
         ),
         (
             "app/skills/deliverables.py",
             "tests/test_skill_deliverables.py",
-            "tests/test_deliverables.py",
         ),
         (
             "app/skills/packages.py",
             "tests/test_skill_packages.py",
-            "tests/test_packages.py",
         ),
         (
             "app/skills/pinning.py",
             "tests/test_skill_pinning.py",
-            "tests/test_pinning.py",
         ),
     ),
 )
-def test_skill_delivery_mapping_runs_exact_suite_without_conventional_fallback(
+def test_frozen_skill_mapping_runs_its_exact_safety_suite(
     readiness_repo: tuple[Path, str],
     production_path: str,
     authorized_suite: str,
-    conventional_fallback: str,
 ) -> None:
     repo, _authority = readiness_repo
     _write(repo, production_path, "SKILL_READY = False\n")
@@ -1035,7 +1041,6 @@ def test_skill_delivery_mapping_runs_exact_suite_without_conventional_fallback(
 
     result = _check(repo, base, head)
 
-    assert not (repo / conventional_fallback).exists()
     _assert_responsibility_tests(result, [authorized_suite])
 
 
@@ -1070,6 +1075,25 @@ def test_irregular_production_paths_run_their_exact_bounded_suites(
     _assert_responsibility_tests(result, sorted({*suites, mirror}))
 
 
+def test_frozen_mcp_mapping_applies_to_the_source_of_an_r100_rename(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = readiness_repo
+    source = "app/mcp/catalog.py"
+    destination = "app/mcp/renamed_catalog.py"
+    suites = MCP_IRREGULAR_RESPONSIBILITY_SUITES[source]
+    _write_irregular_responsibility_suites(repo, suites)
+    _write(repo, source, "CATALOG_READY = True\n")
+    base = _commit(repo, "mapped rename source")
+    _git(repo, "mv", source, destination)
+    head = _commit(repo, "rename mapped mcp path")
+
+    assert _git(repo, "diff", "--name-status", "--find-renames=50%", base, head, "--").startswith("R100")
+    result = _check(repo, base, head)
+
+    _assert_responsibility_tests(result, list(suites))
+
+
 def test_compose_path_runs_the_runtime_launch_contract_suite(
     readiness_repo: tuple[Path, str],
 ) -> None:
@@ -1095,10 +1119,6 @@ def test_compose_path_runs_the_runtime_launch_contract_suite(
     "production_path",
     (
         "deploy/ai-platform/docker-compose.unlisted.yml",
-        "deploy/ai-platform/docker-compose.yaml",
-        "deploy/ai-platform/profile-docker-compose.yml",
-        "deploy/ai-platform/docker-compose.profile.yml",
-        "deploy/ai-platform/profiles/docker-compose.yml",
         "deploy/ai-platform-archive/docker-compose.yml",
     ),
 )
@@ -1117,70 +1137,8 @@ def test_unlisted_compose_variants_remain_external_with_the_contract_suite(
 
     assert result.returncode == 2
     assert payload["category"] == "external_check"
-    assert payload["failure"]["code"] == "responsibility_suite_required"
+    assert payload["failure"]["code"] == "regression_test_suite_required"
     assert payload["failure"]["path"] == production_path
-
-
-def test_irregular_mapping_deduplicates_changed_tests_and_conventional_mirrors(
-    readiness_repo: tuple[Path, str],
-) -> None:
-    repo, _authority = readiness_repo
-    _write_irregular_responsibility_suites(repo, MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/__init__.py"])
-    _write(repo, "tests/test_ordinary.py", "def test_ordinary():\n    assert True\n")
-    _write(repo, "tests/test_init.py", "def test_initializer():\n    assert True\n")
-    _write(repo, "app/mcp/__init__.py", "MCP_READY = False\n")
-    _write(repo, "app/mcp/ordinary.py", "ORDINARY_READY = False\n")
-    base = _commit(repo, "deduplication baseline")
-    _write(repo, "app/mcp/__init__.py", "MCP_READY = True\n")
-    _write(repo, "app/mcp/ordinary.py", "ORDINARY_READY = True\n")
-    _write(repo, "tests/test_ordinary.py", "def test_ordinary_changed():\n    assert True\n")
-    _write(repo, "tests/test_init.py", "def test_initializer_changed():\n    assert True\n")
-    _write(repo, "tests/test_mcp_tool_catalog.py", "def test_catalog_changed():\n    assert True\n")
-    head = _commit(repo, "mapped and conventional responsibilities")
-
-    result = _check(repo, base, head)
-
-    _assert_responsibility_tests(result, [
-        "tests/test_init.py",
-        "tests/test_mcp_repository.py",
-        "tests/test_mcp_tool_catalog.py",
-        "tests/test_ordinary.py",
-    ])
-
-
-@pytest.mark.parametrize(("operation", "status"), (("copy", "C100"), ("rename", "R100")))
-def test_copy_or_renamed_initializer_uses_its_exact_destination_mapping(
-    readiness_repo: tuple[Path, str], operation: str, status: str
-) -> None:
-    repo, _authority = readiness_repo
-    _write_irregular_responsibility_suites(repo, MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/__init__.py"])
-    _write(repo, "app/mcp/catalog.py", "COPIED_INITIALIZER = True\n")
-    base = _commit(repo, f"initializer {operation} source")
-    if operation == "copy":
-        _write(repo, "app/mcp/__init__.py", "COPIED_INITIALIZER = True\n")
-    else:
-        _git(repo, "mv", "app/mcp/catalog.py", "app/mcp/__init__.py")
-    _write(repo, "tests/test_init.py", "def test_initializer():\n    assert True\n")
-    head = _commit(repo, f"{operation} initializer destination")
-
-    production_status = _git(
-        repo,
-        "diff",
-        "--name-status",
-        "--find-renames=50%",
-        "--find-copies=50%",
-        "--find-copies-harder",
-        base,
-        head,
-        "--",
-    )
-    result = _check(repo, base, head)
-
-    assert f"{status}\tapp/mcp/catalog.py\tapp/mcp/__init__.py" in production_status
-    _assert_responsibility_tests(
-        result,
-        sorted({"tests/test_init.py", *MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/__init__.py"]}),
-    )
 
 
 @pytest.mark.parametrize("invalid_suite", ("missing", "wrong_case", "non_blob"))
@@ -1209,7 +1167,7 @@ def test_irregular_mapping_requires_every_exact_head_blob(
 
 
 @pytest.mark.parametrize("production_path", ("app/mcp/unlisted.py", "app/mcp/catalog.json"))
-def test_unlisted_mcp_paths_remain_external_even_with_a_shared_suite(
+def test_unlisted_mcp_path_runs_an_explicit_unchanged_regression_suite(
     readiness_repo: tuple[Path, str], production_path: str
 ) -> None:
     repo, _authority = readiness_repo
@@ -1220,16 +1178,11 @@ def test_unlisted_mcp_paths_remain_external_even_with_a_shared_suite(
         _write(repo, production_path, "{\"enabled\": false}\n")
     base = _commit(repo, "unlisted mcp baseline")
     _write(repo, production_path, "VALUE = True\n" if production_path.endswith(".py") else "{\"enabled\": true}\n")
-    _write(repo, "tests/test_mcp_unlisted.py", "def test_mcp_unlisted():\n    assert True\n")
     head = _commit(repo, "unlisted mcp production path")
 
-    result = _check(repo, base, head, shared_test_suites=("tests/test_explicit_suite.py",))
-    payload = _payload(result)
+    result = _check(repo, base, head, regression_test_suites=("tests/test_explicit_suite.py",))
 
-    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
-    assert payload["category"] == "external_check"
-    assert payload["failure"]["code"] == "responsibility_suite_required"
-    assert payload["failure"]["path"] == production_path
+    _assert_responsibility_tests(result, ["tests/test_explicit_suite.py"])
 
 
 @pytest.mark.parametrize("existing_exception", (False, True), ids=("added", "modified"))
@@ -1379,7 +1332,7 @@ def test_non_add_modify_exception_transitions_remain_external(
     assert {stage["name"] for stage in payload["stages"]} == {"diff_check", "governance", "worktree_cleanup"}
 
 
-def test_shared_suite_traversal_never_executes_an_outside_file(
+def test_regression_suite_traversal_never_executes_an_outside_file(
     readiness_repo: tuple[Path, str],
     tmp_path: Path,
 ) -> None:
@@ -1393,15 +1346,15 @@ def test_shared_suite_traversal_never_executes_an_outside_file(
         f"    Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n",
     )
     base = _commit(repo, "outside suite sentinel")
-    _write(repo, "tests/conftest.py", "VALUE = True\n")
-    head = _commit(repo, "shared fixture with traversal suite")
+    _write(repo, "app/billing.py", "RATE = 3\n")
+    head = _commit(repo, "behavior change with traversal suite")
 
-    result = _check(repo, base, head, shared_test_suites=("tests/../test_evil.py",))
+    result = _check(repo, base, head, regression_test_suites=("tests/../test_evil.py",))
     payload = _payload(result)
 
     assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
     assert payload["category"] == "governance_violation"
-    assert payload["failure"]["code"] == "invalid_shared_test_suite"
+    assert payload["failure"]["code"] == "invalid_regression_test_suite"
     assert payload["failure"]["path"] == "tests/../test_evil.py"
     assert marker.exists() is False
 
@@ -1418,22 +1371,22 @@ def test_shared_suite_traversal_never_executes_an_outside_file(
         "tests/test_shared_fixture.py/",
     ),
 )
-def test_shared_suite_requires_canonical_posix_spelling(
+def test_regression_suite_requires_canonical_posix_spelling(
     readiness_repo: tuple[Path, str],
     suite: str,
 ) -> None:
     repo, _authority = readiness_repo
     _write(repo, "tests/test_shared_fixture.py", "def test_shared_fixture():\n    assert True\n")
-    base = _commit(repo, "shared suite baseline")
-    _write(repo, "tests/conftest.py", "VALUE = True\n")
-    head = _commit(repo, "shared fixture with noncanonical suite")
+    base = _commit(repo, "regression suite baseline")
+    _write(repo, "app/billing.py", "RATE = 3\n")
+    head = _commit(repo, "behavior change with noncanonical suite")
 
-    result = _check(repo, base, head, shared_test_suites=(suite,))
+    result = _check(repo, base, head, regression_test_suites=(suite,))
     payload = _payload(result)
 
     assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
     assert payload["category"] == "governance_violation"
-    assert payload["failure"]["code"] == "invalid_shared_test_suite"
+    assert payload["failure"]["code"] == "invalid_regression_test_suite"
     assert payload["failure"]["path"] == suite
 
 
@@ -1464,7 +1417,7 @@ def test_unclassifiable_production_change_requires_external_suite(readiness_repo
 
     assert result.returncode == 2
     assert payload["category"] == "external_check"
-    assert payload["failure"]["code"] == "responsibility_suite_required"
+    assert payload["failure"]["code"] == "regression_test_suite_required"
     assert payload["failure"]["path"] == "config/policy.json"
 
 
@@ -1679,7 +1632,7 @@ def test_pr_workflow_keeps_immutable_authority_and_failure_contract() -> None:
     assert "full 40-hex commits" in workflow
     assert "immutable authority git object" in compact.lower()
     assert "governance decision is sealed first" in compact.lower()
-    assert "unowned affected paths fail closed" in compact.lower()
+    assert "regression evidence regardless of filename stem" in compact.lower()
     for category in (
         "stale_base",
         "product_test_failure",
