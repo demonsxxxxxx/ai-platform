@@ -100,6 +100,21 @@ test("does not trigger a second url-change load while the initial url sync is st
   );
 });
 
+test("waits for the Agent workspace binding before loading a URL Session", () => {
+  assert.equal(
+    shouldLoadSessionFromUrlChange({
+      activeTab: "chat",
+      sessionId: null,
+      urlSessionId: "session-agent-a",
+      isLoading: false,
+      isNewSession: false,
+      isInternalNavigation: false,
+      historyLoadEnabled: false,
+    }),
+    false,
+  );
+});
+
 test("clears external navigation state after the initial url sync finishes on chat", () => {
   assert.deepEqual(
     getInitialUrlSyncCompletionAction({

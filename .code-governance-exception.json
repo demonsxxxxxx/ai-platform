@@ -1,7 +1,7 @@
 {
   "schema_version": "ai-platform.code-governance-exception.v1",
   "owner": "platform-frontend",
-  "reason": "One shared frontend owner requires the coherent Agent workspace/AppShell/Skill visibility/Files-route retirement migration across 34 production files.",
+  "reason": "One shared frontend owner requires the coherent Agent workspace/AppShell/Skill visibility/Files-route retirement migration across 45 production files.",
   "expires_on": "2026-08-06",
   "violations": [
     {
