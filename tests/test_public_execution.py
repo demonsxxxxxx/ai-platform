@@ -1,4 +1,8 @@
-from app.public_execution import PublicExecutionProjector
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from app.public_execution import PublicExecutionProjector, public_execution_event_from_row
 
 PUBLIC_STEP_PAYLOAD_FIELDS = {
     "step_id",
@@ -12,6 +16,67 @@ PUBLIC_STEP_PAYLOAD_FIELDS = {
     "artifact_public_id",
     "created_at",
 }
+
+
+def _persisted_step(*, created_at):
+    return {
+        "id": "evt-execution-1",
+        "sequence": 9,
+        "event_type": "execution_step",
+        "created_at": created_at,
+        "payload_json": {
+            "step_id": "pex_execution_1",
+            "kind": "processing",
+            "stage": "execution",
+            "status": "running",
+            "title": "Process request",
+            "summary": "Running controlled processing",
+            "progress": {"current": 0, "total": 1},
+        },
+    }
+
+
+def test_public_execution_row_normalizes_timezone_aware_repository_datetime():
+    event = public_execution_event_from_row(
+        "run-execution-1",
+        _persisted_step(
+            created_at=datetime(2026, 7, 30, 12, 34, 56, 120000, tzinfo=timezone(timedelta(hours=8)))
+        ),
+    )
+
+    assert event is not None
+    assert event["created_at"] == "2026-07-30T04:34:56.120000Z"
+    assert {"event_id", "sequence", "run_id", "step_id"} <= set(event)
+    assert set(event) == {"schema_version", "event_id", "sequence", "run_id", *PUBLIC_STEP_PAYLOAD_FIELDS}
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    [
+        "2026-07-30T04:34:56Z",
+        None,
+    ],
+)
+def test_public_execution_row_preserves_existing_valid_timestamp_values(created_at):
+    event = public_execution_event_from_row("run-execution-1", _persisted_step(created_at=created_at))
+
+    assert event is not None
+    assert event["created_at"] == created_at
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    [
+        datetime(2026, 7, 30, 4, 34, 56),
+        "2026-07-30T04:34:56",
+        "not-a-timestamp",
+        object(),
+    ],
+)
+def test_public_execution_row_rejects_naive_malformed_and_unsupported_timestamps(created_at):
+    assert public_execution_event_from_row(
+        "run-execution-1", _persisted_step(created_at=created_at)
+    ) is None
 
 
 def test_public_execution_projector_is_the_fail_closed_owner_of_strict_opaque_events():
