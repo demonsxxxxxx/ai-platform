@@ -291,6 +291,8 @@ PUBLIC_ARTIFACT_CONTENT_TYPES = frozenset(
         "text/plain",
     }
 )
+
+
 def _public_artifact_type(value: object) -> str:
     artifact_type = str(value or "").strip().lower()
     return artifact_type if artifact_type in PUBLIC_ARTIFACT_TYPES else "file"
