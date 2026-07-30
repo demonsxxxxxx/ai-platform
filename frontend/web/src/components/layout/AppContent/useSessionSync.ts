@@ -14,6 +14,7 @@ interface UseSessionSyncOptions {
   loadHistory: (sessionId: string) => Promise<SessionConfig | null>;
   clearMessages: () => void;
   onConfigRestored?: (config: SessionConfig) => void;
+  sessionRouteBasePath?: string;
 }
 
 interface UseSessionSyncReturn {
@@ -28,6 +29,7 @@ interface SessionRouteSyncActionInput {
   sessionId: string | null;
   urlSessionId: string | undefined;
   externalNavigate: boolean;
+  sessionRouteBasePath?: string;
 }
 
 interface SessionRouteSyncAction {
@@ -45,8 +47,11 @@ interface ShouldLoadSessionFromUrlChangeInput {
   initialUrlSyncPending?: boolean;
 }
 
-export function isChatPath(pathname: string): boolean {
-  return pathname === "/chat" || pathname.startsWith("/chat/");
+export function isChatPath(pathname: string, sessionRouteBasePath = "/chat"): boolean {
+  return (
+    pathname === sessionRouteBasePath ||
+    pathname.startsWith(`${sessionRouteBasePath}/`)
+  );
 }
 
 export function getSessionRouteSyncAction({
@@ -56,6 +61,7 @@ export function getSessionRouteSyncAction({
   sessionId,
   urlSessionId,
   externalNavigate,
+  sessionRouteBasePath = "/chat",
 }: SessionRouteSyncActionInput): SessionRouteSyncAction | null {
   const effectivePathname = browserPathname ?? pathname;
 
@@ -71,16 +77,16 @@ export function getSessionRouteSyncAction({
 
   // Guard against route transitions: if the current pathname is no longer a
   // chat route, never write a chat URL back into history from stale state.
-  if (!isChatPath(effectivePathname)) {
+  if (!isChatPath(effectivePathname, sessionRouteBasePath)) {
     return null;
   }
 
   if (sessionId && sessionId !== urlSessionId) {
-    return { type: "replace-url", path: `/chat/${sessionId}` };
+    return { type: "replace-url", path: `${sessionRouteBasePath}/${sessionId}` };
   }
 
   if (!sessionId && urlSessionId) {
-    return { type: "replace-url", path: "/chat" };
+    return { type: "replace-url", path: sessionRouteBasePath };
   }
 
   return null;
@@ -91,9 +97,14 @@ export function getInitialUrlSyncCompletionAction({
   pathname,
   browserPathname,
   externalNavigate,
+  sessionRouteBasePath = "/chat",
 }: Pick<
   SessionRouteSyncActionInput,
-  "activeTab" | "pathname" | "browserPathname" | "externalNavigate"
+  | "activeTab"
+  | "pathname"
+  | "browserPathname"
+  | "externalNavigate"
+  | "sessionRouteBasePath"
 >): SessionRouteSyncAction | null {
   const effectivePathname = browserPathname ?? pathname;
 
@@ -101,7 +112,7 @@ export function getInitialUrlSyncCompletionAction({
     return null;
   }
 
-  if (!isChatPath(effectivePathname)) {
+  if (!isChatPath(effectivePathname, sessionRouteBasePath)) {
     return null;
   }
 
@@ -146,6 +157,7 @@ export function useSessionSync({
   loadHistory,
   clearMessages,
   onConfigRestored,
+  sessionRouteBasePath = "/chat",
 }: UseSessionSyncOptions): UseSessionSyncReturn {
   const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>();
   const location = useLocation();
@@ -222,6 +234,7 @@ export function useSessionSync({
             externalNavigate: shouldResetExternalNavigateFlag(
               locationStateRef.current as ExternalNavigationState | null,
             ),
+            sessionRouteBasePath,
           });
           if (action?.type === "clear-external-state") {
             navigate(action.path, { replace: true, state: null });
@@ -299,6 +312,7 @@ export function useSessionSync({
       externalNavigate: shouldResetExternalNavigateFlag(
         locationStateRef.current as ExternalNavigationState | null,
       ),
+      sessionRouteBasePath,
     });
 
     if (!action) {
@@ -317,7 +331,14 @@ export function useSessionSync({
       navigate(action.path, { replace: true });
       scheduleSyncReset();
     }
-  }, [activeTab, sessionId, urlSessionId, navigate, scheduleSyncReset]);
+  }, [
+    activeTab,
+    sessionId,
+    urlSessionId,
+    navigate,
+    scheduleSyncReset,
+    sessionRouteBasePath,
+  ]);
 
   // Handle session selection from sidebar
   const handleSelectSession = useCallback(
@@ -344,17 +365,17 @@ export function useSessionSync({
 
         if (
           requestId !== selectSessionRequestIdRef.current ||
-          !isChatPath(latestPathname)
+          !isChatPath(latestPathname, sessionRouteBasePath)
         ) {
           return;
         }
 
-        navigate(`/chat/${selectedSessionId}`);
+        navigate(`${sessionRouteBasePath}/${selectedSessionId}`);
       } catch (err) {
         console.error("[handleSelectSession] Error:", err);
       }
     },
-    [navigate, loadHistory],
+    [navigate, loadHistory, sessionRouteBasePath],
   );
 
   // Handle new session - clear messages and navigate to /chat immediately.
@@ -368,8 +389,8 @@ export function useSessionSync({
     isNewSessionRef.current = true;
     isInternalNavRef.current = false;
     clearMessages();
-    navigate("/chat", { replace: true });
-  }, [clearMessages, navigate]);
+    navigate(sessionRouteBasePath, { replace: true });
+  }, [clearMessages, navigate, sessionRouteBasePath]);
 
   return {
     handleSelectSession,

@@ -10,6 +10,11 @@ test("SessionSidebar uses role-safe Agent entry navigation in both rail layouts"
   );
 
   assert.equal(
+    (source.match(/onOpenAgentMarket=\{\(\) => navigate\("\/agent-market"\)\}/g) ?? [])
+      .length,
+    2,
+  );
+  assert.equal(
     (source.match(/onOpenAgentBuilder=\{\(\) => navigateWorkbenchItem\("agentBuilder"\)\}/g) ?? [])
       .length,
     2,

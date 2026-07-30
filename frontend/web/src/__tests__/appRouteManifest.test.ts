@@ -10,10 +10,22 @@ test("appRouteManifest separates the admin Builder from the ordinary-user Agent 
     APP_ROUTE_PATHS.agentMarketDetail,
     "/agent-market/:agentId/:revision",
   );
+  assert.equal(
+    APP_ROUTE_PATHS.agentMarketWorkspace,
+    "/agent-market/:agentId/:revision/chat/:sessionId?",
+  );
   assert.equal(resolveAppRoute("/agent-builder"), "agentBuilder");
   assert.equal(resolveAppRoute("/agent-market"), "agentMarket");
   assert.equal(resolveAppRoute("/agent-market/agt_support/4"), "agentMarketDetail");
-  assert.equal(resolveAppRoute("/agent-market/agt_support/4/chat"), "notFound");
+  assert.equal(
+    resolveAppRoute("/agent-market/agt_support/4/chat"),
+    "agentMarketWorkspace",
+  );
+  assert.equal(
+    resolveAppRoute("/agent-market/agt_support/4/chat/session-1"),
+    "agentMarketWorkspace",
+  );
+  assert.equal("files" in APP_ROUTE_PATHS, false);
   assert.equal(resolveAppRoute("/chat"), "chat");
   assert.equal(resolveAppRoute("/agents"), "notFound");
 });

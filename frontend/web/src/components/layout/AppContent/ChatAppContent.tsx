@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- behavioral seams stay with the canonical Chat owner */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import toast from "react-hot-toast";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { Bot, FileText, Headphones, History, Search } from "lucide-react";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
@@ -56,6 +57,7 @@ import type {
   AgentConversationIdentity,
   AgentProfileAvatarRef,
   AgentProfileCategory,
+  AgentProfilePublicProjection,
 } from "../../../types/agentProfile";
 
 export type AgentConversationRecoveryPhase = "generic" | "loading" | "bound" | "blocked";
@@ -169,6 +171,9 @@ export interface ChatAppContentProps {
   setSidebarCollapsed: (collapsed: boolean) => void;
   mobileSidebarOpen: boolean;
   setMobileSidebarOpen: (open: boolean) => void;
+  agentWorkspace?: AgentProfilePublicProjection;
+  agentWorkspaceSessionIds?: ReadonlySet<string>;
+  onAgentWorkspaceSessionCreated?: (sessionId: string) => void;
 }
 
 export function ChatAppContent({
@@ -176,6 +181,9 @@ export function ChatAppContent({
   setSidebarCollapsed,
   mobileSidebarOpen,
   setMobileSidebarOpen,
+  agentWorkspace,
+  agentWorkspaceSessionIds,
+  onAgentWorkspaceSessionCreated,
 }: ChatAppContentProps) {
   const { t } = useTranslation();
   const location = useLocation();
@@ -184,7 +192,16 @@ export function ChatAppContent({
   const [agentConversationState, setAgentConversationState] = useState(() =>
     conversationState(routeSessionId ? "loading" : "generic", routeSessionId ?? null),
   );
+  const [agentWorkspaceCreating, setAgentWorkspaceCreating] = useState(false);
+  const [agentWorkspaceError, setAgentWorkspaceError] = useState<string | null>(null);
+  const agentWorkspaceRouteBasePath = agentWorkspace
+    ? `/agent-market/${encodeURIComponent(agentWorkspace.agent_id)}/${agentWorkspace.expected_revision}/chat`
+    : "/chat";
+  const agentWorkspaceDetailPath = agentWorkspace
+    ? `/agent-market/${encodeURIComponent(agentWorkspace.agent_id)}/${agentWorkspace.expected_revision}`
+    : "/agent-market";
   const agentConversationControlsLocked =
+    Boolean(agentWorkspace) ||
     areAgentConversationControlsLocked(agentConversationState.phase);
   const { enableSkills, settings, availableModels, defaultModel } =
     useSettingsContext();
@@ -314,6 +331,14 @@ export function ChatAppContent({
     void recoverAgentConversationIdentity(agentConversationTargetSessionId)
       .then((identity) => {
         if (!active) return;
+        if (
+          agentWorkspace &&
+          (!identity ||
+            identity.agent_id !== agentWorkspace.agent_id ||
+            identity.revision !== agentWorkspace.expected_revision)
+        ) {
+          throw new Error("agent_workspace_revision_mismatch");
+        }
         setAgentConversationState(
           conversationState(
             identity ? "bound" : "generic",
@@ -327,12 +352,17 @@ export function ChatAppContent({
         setAgentConversationState(
           conversationState("blocked", agentConversationTargetSessionId),
         );
-        navigate("/agent-market", { replace: true });
+        navigate(agentWorkspaceDetailPath, { replace: true });
       });
     return () => {
       active = false;
     };
-  }, [agentConversationTargetSessionId, navigate]);
+  }, [
+    agentConversationTargetSessionId,
+    agentWorkspace,
+    agentWorkspaceDetailPath,
+    navigate,
+  ]);
 
   const {
     tools,
@@ -602,7 +632,8 @@ export function ChatAppContent({
     hasPermission(Permission.CHAT_WRITE) &&
     agentConversationState.phase !== "loading" &&
     agentConversationState.phase !== "blocked" &&
-    recoveredSessionReady;
+    recoveredSessionReady &&
+    (!agentWorkspace || Boolean(sessionId));
 
   const sidebarRef = useRef<SessionSidebarHandle>(null);
 
@@ -711,9 +742,52 @@ export function ChatAppContent({
     loadHistory,
     clearMessages,
     onConfigRestored: handleConfigRestored,
+    sessionRouteBasePath: agentWorkspaceRouteBasePath,
   });
 
   const handleNewSessionWithReset = useCallback(() => {
+    if (agentWorkspace) {
+      if (agentWorkspaceCreating) return;
+      setAgentWorkspaceCreating(true);
+      setAgentWorkspaceError(null);
+      void agentProfileApi
+        .createConversation({
+          agent_id: agentWorkspace.agent_id,
+          expected_revision: agentWorkspace.expected_revision,
+        })
+        .then((session) => {
+          const identity = session.agent_conversation;
+          if (
+            !session.session_id ||
+            session.agent_id !== agentWorkspace.agent_id ||
+            !identity ||
+            identity.agent_id !== agentWorkspace.agent_id ||
+            identity.revision !== agentWorkspace.expected_revision
+          ) {
+            throw new Error("agent_workspace_identity_mismatch");
+          }
+          clearMessages();
+          onAgentWorkspaceSessionCreated?.(session.session_id);
+          navigate(
+            `${agentWorkspaceRouteBasePath}/${encodeURIComponent(session.session_id)}`,
+          );
+        })
+        .catch((error: unknown) => {
+          const status =
+            error !== null && typeof error === "object"
+              ? (error as { status?: number }).status
+              : undefined;
+          setAgentWorkspaceError(
+            status === 403
+              ? "当前账号无权使用该智能体。"
+              : status === 404 || status === 409
+                ? "该智能体已不可用或发布版本已更新，请返回市场重新选择。"
+                : "暂时无法创建智能体对话，请稍后重试。",
+          );
+        })
+        .finally(() => setAgentWorkspaceCreating(false));
+      return;
+    }
     const nextSelection = resolveDefaultModelSelection({
       availableModels,
       storedDefaultId: localStorage.getItem("defaultModelId") || "",
@@ -737,6 +811,12 @@ export function ChatAppContent({
     clearSelectedSkill,
     resetToDefaults,
     resetAgentOptionDefaults,
+    agentWorkspace,
+    agentWorkspaceCreating,
+    agentWorkspaceRouteBasePath,
+    onAgentWorkspaceSessionCreated,
+    clearMessages,
+    navigate,
   ]);
 
   const handleMobileClose = useCallback(
@@ -744,13 +824,33 @@ export function ChatAppContent({
     [setMobileSidebarOpen],
   );
   const handleSelectSessionAndClose = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      if (agentWorkspace) {
+        try {
+          const identity = await recoverAgentConversationIdentity(id);
+          if (
+            !identity ||
+            identity.agent_id !== agentWorkspace.agent_id ||
+            identity.revision !== agentWorkspace.expected_revision
+          ) {
+            throw new Error("agent_workspace_revision_mismatch");
+          }
+        } catch {
+          toast.error("该历史对话不属于当前发布版本，请从左侧选择其他对话。");
+          return;
+        }
+      }
       setAgentConversationState(conversationState("loading", id));
       clearSelectedSkill();
-      handleSelectSession(id);
+      await handleSelectSession(id);
       setMobileSidebarOpen(false);
     },
-    [clearSelectedSkill, handleSelectSession, setMobileSidebarOpen],
+    [
+      agentWorkspace,
+      clearSelectedSkill,
+      handleSelectSession,
+      setMobileSidebarOpen,
+    ],
   );
   const handleNewSessionAndClose = useCallback(() => {
     handleNewSessionWithReset();
@@ -804,6 +904,20 @@ export function ChatAppContent({
           onMobileClose={handleMobileClose}
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={setSidebarCollapsed}
+          sessionFilter={
+            agentWorkspace
+              ? (listedSession) =>
+                  agentWorkspaceSessionIds?.has(listedSession.id) ?? false
+              : undefined
+          }
+          agentWorkspace={
+            agentWorkspace
+              ? {
+                  name: agentWorkspace.name,
+                  description: agentWorkspace.description,
+                }
+              : undefined
+          }
         />
       }
     >
@@ -847,6 +961,19 @@ export function ChatAppContent({
           <AgentConversationIdentityBanner
             identity={agentConversationState.identity}
           />
+        ) : null}
+        {agentWorkspace && !routeSessionId && !sessionId ? (
+          <section
+            data-agent-workspace-empty
+            className="border-b border-[var(--theme-border)] px-4 py-3 text-center text-sm text-[var(--theme-text-secondary)]"
+          >
+            <p>选择左侧历史对话，或新建一个 {agentWorkspace.name} 对话。</p>
+            {agentWorkspaceError ? (
+              <p className="mt-2 text-[var(--theme-danger)]" role="alert">
+                {agentWorkspaceError}
+              </p>
+            ) : null}
+          </section>
         ) : null}
 
         <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
@@ -919,6 +1046,7 @@ export function ChatAppContent({
             externalScrollToBottom={externalScrollToBottom}
             outlineToggleRef={outlineToggleRef}
             WorkbenchShellComponent={WorkbenchShell}
+            sessionRouteBasePath={agentWorkspaceRouteBasePath}
           />
         </ChatMcpCatalogContext.Provider>
         <BlockPreviewPortal />

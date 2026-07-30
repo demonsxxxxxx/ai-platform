@@ -32,6 +32,15 @@ export function buildAgentMarketDetailPath(
   return `/agent-market/${encodeURIComponent(profile.agent_id)}/${profile.expected_revision}`;
 }
 
+/** Build the dedicated, revision-bound workspace path for an Agent Conversation. */
+export function buildAgentMarketWorkspacePath(
+  profile: SelectedAgentProfileRequest,
+  sessionId?: string,
+): string {
+  const base = `${buildAgentMarketDetailPath(profile)}/chat`;
+  return sessionId ? `${base}/${encodeURIComponent(sessionId)}` : base;
+}
+
 /** Search only the safe current public projection. */
 export function filterPublishedMarketProfiles(
   profiles: readonly AgentProfilePublicProjection[],

@@ -54,6 +54,23 @@ test("updates the chat url when a new session is created from /chat", () => {
   );
 });
 
+test("updates a published Agent workspace URL without falling back to generic chat", () => {
+  assert.deepEqual(
+    getSessionRouteSyncAction({
+      activeTab: "chat",
+      pathname: "/agent-market/agt_support/4/chat",
+      sessionRouteBasePath: "/agent-market/agt_support/4/chat",
+      sessionId: "session-123",
+      urlSessionId: undefined,
+      externalNavigate: false,
+    }),
+    {
+      type: "replace-url",
+      path: "/agent-market/agt_support/4/chat/session-123",
+    },
+  );
+});
+
 test("loads the target session when external navigation lands on chat from an empty state", () => {
   assert.equal(
     shouldLoadSessionFromUrlChange({

@@ -199,7 +199,7 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.match(shell, /aria-expanded=\{contextOpen\}/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(sidePanel, /workbenchSurface\.secondaryPanel/);
+  assert.match(sidePanel, /workbenchSurface\.compactPanel/);
   assert.match(chatInput, /LibreChatComposerFrame/);
   assert.match(composer, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
   assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
@@ -233,10 +233,6 @@ test("post-login projection panels share workbench surface tokens", () => {
   const panels = new Map([
     ["MCPPanel", read("src/components/panels/MCPPanel.tsx")],
     ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
-    [
-      "RevealedFilesWorkbenchPanel",
-      read("src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
-    ],
     ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
     ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
     [
@@ -282,22 +278,10 @@ test("workbench governance surfaces do not hard-code slate or stone palettes", (
       read("src/components/governance/GroupAvailabilityToggleRow.tsx"),
     ],
   ]);
-  const governedSources = new Map([
-    ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
-    [
-      "RevealedFilesWorkbenchPanel",
-      read("src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
-    ],
-  ]);
   const legacyPalette =
     /\b(?:bg|text|border|ring|divide)-(?:slate|stone)-|dark:(?:bg|text|border|ring|divide)-stone-/;
 
   for (const [name, source] of sharedSources) {
-    assert.doesNotMatch(source, legacyPalette, name);
-    assert.doesNotMatch(source, /bg-\[var\(--theme-bg-card\)\]/, name);
-  }
-
-  for (const [name, source] of governedSources) {
     assert.doesNotMatch(source, legacyPalette, name);
     assert.doesNotMatch(source, /bg-\[var\(--theme-bg-card\)\]/, name);
   }
@@ -732,7 +716,6 @@ test("expanded app sidebar keeps company navigation and admin skills as first-le
   for (const route of [
     "/apps",
     "/skills",
-    "/files",
     "/models",
   ]) {
     assert.match(navigation, new RegExp(`"${route}"`), route);

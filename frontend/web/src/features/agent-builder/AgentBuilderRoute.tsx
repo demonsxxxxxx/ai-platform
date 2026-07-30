@@ -5,6 +5,7 @@ import { useSkills } from "../../hooks/useSkills";
 import { useTools } from "../../hooks/useTools";
 import { modelPublicApi, type ModelOption } from "../../services/api/modelPublic";
 import { AgentBuilderWorkbench } from "./AgentBuilderWorkbench";
+import { AgentBuilderShell } from "./AgentBuilderShell";
 import {
   mapAuthorizedBuilderSkills,
   mapSafeBuilderMcpTools,
@@ -103,9 +104,11 @@ export function AgentBuilderRoute() {
   );
 
   return (
-    <AgentBuilderWorkbench
-      catalog={catalog}
-      canManageProfiles={user?.is_admin === true}
-    />
+    <AgentBuilderShell>
+      <AgentBuilderWorkbench
+        catalog={catalog}
+        canManageProfiles={user?.is_admin === true}
+      />
+    </AgentBuilderShell>
   );
 }

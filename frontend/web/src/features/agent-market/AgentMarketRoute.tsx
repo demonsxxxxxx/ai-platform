@@ -12,6 +12,7 @@ import type { AgentProfilePublicProjection } from "../../types";
 import type { AgentProfileAvatarRef, AgentProfileCategory } from "../../types/agentProfile";
 import {
   buildAgentMarketDetailPath,
+  buildAgentMarketWorkspacePath,
   filterPublishedMarketProfiles,
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
@@ -31,7 +32,6 @@ function loadState<T>(key: string, value: T, phase: LoadPhase = "loading", error
 }
 
 const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的智能体，请稍后重新加载。";
-const CANONICAL_CHAT_PATH = APP_ROUTE_PATHS.chat.replace("/:sessionId?", "");
 const CATEGORY_LABELS: Record<AgentProfileCategory, string> = {
   general: "通用助理", support: "支持服务", writing: "内容写作",
   research: "研究分析", operations: "运营效率",
@@ -73,7 +73,7 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
   );
   const handleNewSession = useCallback(() => {
     setMobileSidebarOpen(false);
-    navigate(CANONICAL_CHAT_PATH);
+    navigate("/chat");
   }, [navigate]);
 
   return (
@@ -446,7 +446,7 @@ function AgentMarketDetail({ profile }: { profile: AgentProfilePublicProjection 
         });
       }
       navigate(
-        `${CANONICAL_CHAT_PATH}/${encodeURIComponent(session.session_id)}`,
+        buildAgentMarketWorkspacePath(profile, session.session_id),
       );
     } catch (error) {
       const status = getErrorStatus(error);
@@ -460,7 +460,7 @@ function AgentMarketDetail({ profile }: { profile: AgentProfilePublicProjection 
     } finally {
       setStarting(false);
     }
-  }, [navigate, profile.agent_id, profile.expected_revision, starting]);
+  }, [navigate, profile, starting]);
 
   return (
     <main

@@ -128,6 +128,64 @@ test("published authorization reads bypass cache and preserve transport failures
   }
 });
 
+test("lists only server-authorized conversations with their immutable safe identity", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; cache?: RequestCache }> = [];
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ url: String(input), cache: init?.cache });
+    return new Response(
+      JSON.stringify({
+        sessions: [
+          {
+            session_id: "session-agent",
+            workspace_id: "default",
+            agent_id: "agt_support",
+            title: "支持助手",
+            agent_conversation: {
+              agent_id: "agt_support",
+              revision: 7,
+              name: "支持助手",
+              description: "处理已授权的支持请求。",
+              avatar_ref: "builtin:assistant",
+              category: "support",
+              model_id: "private-model",
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+
+  try {
+    const sessions = await agentProfileApi.listConversations();
+    assert.deepEqual(calls, [
+      { url: "/api/ai/chat/sessions", cache: "no-store" },
+    ]);
+    assert.deepEqual(sessions, [
+      {
+        session_id: "session-agent",
+        workspace_id: "default",
+        agent_id: "agt_support",
+        title: "支持助手",
+        agent_conversation: {
+          agent_id: "agt_support",
+          revision: 7,
+          name: "支持助手",
+          description: "处理已授权的支持请求。",
+          avatar_ref: "builtin:assistant",
+          category: "support",
+        },
+        created_at: null,
+        updated_at: null,
+      },
+    ]);
+    assert.equal("model_id" in sessions[0]!.agent_conversation!, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("creates a durable Agent Conversation with only the exact published selector", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; method?: string; body?: string | null }> = [];

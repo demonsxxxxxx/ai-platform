@@ -545,8 +545,8 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
                   element: React.createElement(AgentMarketRoute),
                 }),
                 React.createElement(Route, {
-                  path: "/chat/:sessionId",
-                  element: React.createElement("div", { "data-canonical-chat": true }),
+                  path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+                  element: React.createElement("div", { "data-agent-workspace": true }),
                 }),
               ),
             ),
@@ -653,8 +653,11 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
       { agent_id: "agt_finance", expected_revision: 2 },
       { agent_id: "agt_finance", expected_revision: 2 },
     ]);
-    assert.equal(currentPath, "/chat/session-finance");
-    assert.ok(container.querySelector("[data-canonical-chat]"));
+    assert.equal(
+      currentPath,
+      "/agent-market/agt_finance/2/chat/session-finance",
+    );
+    assert.ok(container.querySelector("[data-agent-workspace]"));
     assert.equal(catalogCalls, 1);
     assert.equal(detailCalls, 1, "detail navigation must re-authorize the current publication");
   } finally {

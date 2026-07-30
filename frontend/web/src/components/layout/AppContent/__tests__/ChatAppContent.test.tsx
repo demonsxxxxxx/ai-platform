@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
@@ -160,4 +161,15 @@ test("renders only safe Agent identity and locks MCP catalog controls", () => {
   assert.equal(exposeGenericChatControl("generic", mcpControl), mcpControl);
   const retryMcpCatalog = () => "retry-mcp-catalog";
   assert.equal(exposeGenericChatControl("bound", retryMcpCatalog), undefined);
+});
+
+test("Agent workspace source filters the sidebar by server-authorized pinned session ids", () => {
+  const source = readFileSync(
+    new URL("../ChatAppContent.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /agentWorkspaceSessionIds\?: ReadonlySet<string>/);
+  assert.match(source, /agentWorkspaceSessionIds\?\.has\(listedSession\.id\) \?\? false/);
+  assert.match(source, /onAgentWorkspaceSessionCreated\?\.\(session\.session_id\)/);
 });
