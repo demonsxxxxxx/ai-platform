@@ -961,7 +961,6 @@ MCP_IRREGULAR_RESPONSIBILITY_SUITES = {
     "app/mcp/catalog.py": ("tests/test_mcp_tool_catalog.py",),
     "app/mcp/repository.py": ("tests/test_mcp_repository.py", "tests/test_mcp_repository_postgres.py"),
     "app/schema.sql": ("tests/test_schema.py",),
-    "deploy/ai-platform/docker-compose.yml": ("tests/test_runtime_launch_script.py",),
 }
 
 
@@ -984,7 +983,6 @@ def _assert_responsibility_tests(result: subprocess.CompletedProcess[str], expec
         ("app/mcp/catalog.py", "CATALOG_READY = False\n", "CATALOG_READY = True\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/catalog.py"], "tests/test_catalog.py"),
         ("app/mcp/repository.py", "REPOSITORY_READY = False\n", "REPOSITORY_READY = True\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/repository.py"], "tests/test_repository.py"),
         ("app/schema.sql", "CREATE TABLE readiness_mapping_old (id INTEGER);\n", "CREATE TABLE readiness_mapping_new (id INTEGER);\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/schema.sql"], "tests/test_schema.py"),
-        ("deploy/ai-platform/docker-compose.yml", "services: {}\n", "services:\n  api: {}\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["deploy/ai-platform/docker-compose.yml"], "tests/test_compose_contract.py"),
     ),
 )
 def test_irregular_production_paths_run_their_exact_bounded_suites(
@@ -1009,11 +1007,42 @@ def test_irregular_production_paths_run_their_exact_bounded_suites(
     _assert_responsibility_tests(result, sorted({*suites, mirror}))
 
 
-def test_unlisted_deploy_path_remains_external_with_compose_contract_suite(
+def test_compose_path_runs_the_runtime_launch_contract_suite(
     readiness_repo: tuple[Path, str],
 ) -> None:
     repo, _authority = readiness_repo
-    production_path = "deploy/ai-platform/docker-compose.unlisted.yml"
+    production_path = "deploy/ai-platform/docker-compose.yml"
+    _write_irregular_responsibility_suites(repo, ("tests/test_runtime_launch_script.py",))
+    _write(repo, production_path, "services: {}\n")
+    _write(repo, "tests/test_compose_contract.py", "def test_compose_contract():\n    assert True\n")
+    base = _commit(repo, "compose responsibility baseline")
+    _write(repo, production_path, "services:\n  api: {}\n")
+    _write(repo, "tests/test_compose_contract.py", "def test_compose_contract_changed():\n    assert True\n")
+    head = _commit(repo, "compose responsibility change")
+
+    result = _check(repo, base, head)
+
+    _assert_responsibility_tests(
+        result,
+        ["tests/test_compose_contract.py", "tests/test_runtime_launch_script.py"],
+    )
+
+
+@pytest.mark.parametrize(
+    "production_path",
+    (
+        "deploy/ai-platform/docker-compose.unlisted.yml",
+        "deploy/ai-platform/docker-compose.yaml",
+        "deploy/ai-platform/profile-docker-compose.yml",
+        "deploy/ai-platform/docker-compose.profile.yml",
+        "deploy/ai-platform/profiles/docker-compose.yml",
+        "deploy/ai-platform-archive/docker-compose.yml",
+    ),
+)
+def test_unlisted_compose_variants_remain_external_with_the_contract_suite(
+    readiness_repo: tuple[Path, str], production_path: str
+) -> None:
+    repo, _authority = readiness_repo
     _write(repo, "tests/test_runtime_launch_script.py", "def test_compose_contract():\n    assert True\n")
     _write(repo, production_path, "services: {}\n")
     base = _commit(repo, "unlisted deploy baseline")
