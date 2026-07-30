@@ -116,6 +116,8 @@ failures require a new fixed SHA.
 - Use independent review for high-risk paths and gate work when available.
   Record reviewer role, exact scope, severity-ranked findings, decisions, and
   observed verification before claiming `reviewed`.
+- Acceptance-blocking findings cannot be deferred to claim readiness or closure,
+  and any unresolved Critical or Important finding prevents `reviewed`.
 - A local agent review may substitute for a formal GitHub reviewer when recorded
   durably. Do not call an empty GitHub `reviewDecision` formally approved.
 - Run the narrowest relevant verification first. Before PR, merge, deployment,

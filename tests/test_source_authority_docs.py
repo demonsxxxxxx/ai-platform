@@ -1348,6 +1348,11 @@ def test_governance_docs_remove_stale_rules_without_weakening_release_invariants
     assert "#15/#16/#17" not in guardrails
 
     assert "actually observed on the PR count as CI gates" in compact_github_workflow
+    assert (
+        "Acceptance-blocking findings cannot be deferred to claim readiness or closure, "
+        "and any unresolved Critical or Important finding prevents `reviewed`."
+        in compact_github_workflow
+    )
     assert "Until backend CI/CD is configured" not in github_workflow
     assert "Historical examples are non-normative" in github_workflow
     for pr in ("PR #165", "PR #168", "PR #169"):
