@@ -24,6 +24,9 @@ def test_b1_b5_context_runtime_readiness_verifies_bounded_context_runtime_contra
     assert session_evidence["run_scoped_id_stable"] is True
     assert session_evidence["different_runs_isolated"] is True
     assert session_evidence["in_process_transcript_state_absent"] is True
+    assert session_evidence["path"] == "docs/operations/b1-b5-context-runtime-follow-up.md"
+    assert session_evidence["recorded"] is True
+    assert all(session_evidence["required_terms_present"].values())
     assert readiness["non_expansion_invariants"] == {
         "does_not_touch_211": True,
         "does_not_close_b1_or_b5_gate": True,
