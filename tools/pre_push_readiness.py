@@ -407,16 +407,16 @@ class PrePushReadiness:
             raise ReadinessError("infrastructure_failure", "git_failed", _command_failure("git diff --name-status", changed))
         selected: set[str] = set()
         changed_test_modules: set[str] = set()
-        shared_paths: list[str] = []
-        mapped_behavior_paths: list[str] = []
-        production_paths: list[str] = []
-        invalid_mapped_paths: list[str] = []
+        shared_paths: set[str] = set()
+        mapped_behavior_paths: set[str] = set()
+        production_paths: set[str] = set()
+        invalid_mapped_paths: set[str] = set()
         frontend = False
         for changed_path in _changed_paths(changed.stdout):
             status = changed_path.status
-            path = changed_path.destination_path or changed_path.source_path
-            if path is None:
-                production_paths.append("<unknown-change-path>")
+            affected_paths = _affected_change_paths(changed_path)
+            if not affected_paths:
+                production_paths.add("<unknown-change-path>")
                 continue
             if _touches_code_governance_exception(changed_path):
                 if status.startswith("D"):
@@ -429,34 +429,41 @@ class PrePushReadiness:
                 ):
                     selected.add(CODE_GOVERNANCE_TEST_PATH)
                     continue
-                invalid_mapped_paths.append(CODE_GOVERNANCE_EXCEPTION_PATH)
+                invalid_mapped_paths.add(CODE_GOVERNANCE_EXCEPTION_PATH)
                 continue
-            mapped_suites = IRREGULAR_RESPONSIBILITY_SUITES.get(path)
-            if mapped_suites is not None:
+            mapped_paths_for_change: set[str] = set()
+            for path in affected_paths:
+                mapped_suites = IRREGULAR_RESPONSIBILITY_SUITES.get(path)
+                if mapped_suites is None:
+                    continue
                 if all(self._is_valid_bounded_test_suite(head, head_worktree, suite) for suite in mapped_suites):
                     selected.update(mapped_suites)
-                    mapped_behavior_paths.append(path)
+                    mapped_behavior_paths.add(path)
+                    mapped_paths_for_change.add(path)
                     continue
-                invalid_mapped_paths.append(path)
-                continue
-            pure_path = PurePosixPath(path)
-            if _is_documentation_path(pure_path):
-                continue
-            if _is_shared_test_fixture(pure_path):
-                shared_paths.append(path)
-                continue
-            if _is_frontend_path(pure_path):
-                frontend = True
-                continue
-            if _is_test_module(pure_path):
-                if (head_worktree / path).is_file():
-                    changed_test_modules.add(path)
-                    selected.add(path)
-                continue
-            if status != "R100":
-                production_paths.append(path)
+                invalid_mapped_paths.add(path)
+            move_only = status == "R100" and len(affected_paths) == 2 and all(
+                _is_ordinary_production_path(path) for path in affected_paths
+            )
+            for path in affected_paths:
+                pure_path = PurePosixPath(path)
+                if _is_documentation_path(pure_path):
+                    continue
+                if _is_shared_test_fixture(pure_path):
+                    shared_paths.add(path)
+                    continue
+                if _is_frontend_path(pure_path):
+                    frontend = True
+                    continue
+                if _is_test_module(pure_path):
+                    if (head_worktree / path).is_file():
+                        changed_test_modules.add(path)
+                        selected.add(path)
+                    continue
+                if not move_only and not mapped_paths_for_change:
+                    production_paths.add(path)
         if frontend and not (head_worktree / "frontend" / "web" / "package.json").is_file():
-            invalid_mapped_paths.append("frontend/web/package.json")
+            invalid_mapped_paths.add("frontend/web/package.json")
         if invalid_mapped_paths:
             raise ReadinessError(
                 "external_check",
@@ -482,7 +489,7 @@ class PrePushReadiness:
                 "external_check",
                 "shared_test_suite_required",
                 "a changed shared test fixture requires one or more explicit --regression-test-suite paths",
-                path=shared_paths[0],
+                path=sorted(shared_paths)[0],
             )
         if production_paths and not changed_test_modules and not declared_suites:
             raise ReadinessError(
@@ -906,6 +913,24 @@ def _is_documentation_path(path: PurePosixPath) -> bool:
         (path.parts and path.parts[0] == "docs")
         or path.suffix.lower() in {".md", ".rst"}
         or path.name.lower() in {"agents.md", "license", "notice"}
+    )
+
+
+def _affected_change_paths(change: _ChangedPath) -> tuple[str, ...]:
+    if change.status.startswith("R"):
+        return tuple(path for path in (change.source_path, change.destination_path) if path is not None)
+    path = change.destination_path or change.source_path
+    return (path,) if path is not None else ()
+
+
+def _is_ordinary_production_path(path: str) -> bool:
+    pure_path = PurePosixPath(path)
+    return (
+        path not in IRREGULAR_RESPONSIBILITY_SUITES
+        and not _is_documentation_path(pure_path)
+        and not _is_shared_test_fixture(pure_path)
+        and not _is_frontend_path(pure_path)
+        and not _is_test_module(pure_path)
     )
 
 

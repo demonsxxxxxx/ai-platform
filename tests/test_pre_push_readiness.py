@@ -958,6 +958,33 @@ def test_cross_layer_behavior_change_runs_a_changed_test_without_stem_matching(
     assert responsibility_stage["tests"] == ["tests/test_cross_layer_regression.py"]
 
 
+@pytest.mark.parametrize(
+    ("source", "destination", "production_path"),
+    (
+        ("docs/moved.py", "app/moved.py", "app/moved.py"),
+        ("app/moved.py", "docs/moved.py", "app/moved.py"),
+    ),
+)
+def test_cross_boundary_r100_rename_requires_regression_evidence(
+    readiness_repo: tuple[Path, str], source: str, destination: str, production_path: str
+) -> None:
+    repo, _authority = readiness_repo
+    _write(repo, source, "MOVED = True\n")
+    base = _commit(repo, "rename source")
+    (repo / destination).parent.mkdir(parents=True, exist_ok=True)
+    _git(repo, "mv", source, destination)
+    head = _commit(repo, "cross-boundary rename")
+
+    assert _git(repo, "diff", "--name-status", "--find-renames=50%", base, head, "--").startswith("R100")
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
+    assert payload["category"] == "external_check"
+    assert payload["failure"]["code"] == "regression_test_suite_required"
+    assert payload["failure"]["path"] == production_path
+
+
 MCP_IRREGULAR_RESPONSIBILITY_SUITES = {
     "app/mcp/__init__.py": ("tests/test_mcp_tool_catalog.py", "tests/test_mcp_repository.py"),
     "app/mcp/catalog.py": ("tests/test_mcp_tool_catalog.py",),
@@ -1046,6 +1073,25 @@ def test_irregular_production_paths_run_their_exact_bounded_suites(
     result = _check(repo, base, head)
 
     _assert_responsibility_tests(result, sorted({*suites, mirror}))
+
+
+def test_frozen_mcp_mapping_applies_to_the_source_of_an_r100_rename(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = readiness_repo
+    source = "app/mcp/catalog.py"
+    destination = "app/mcp/renamed_catalog.py"
+    suites = MCP_IRREGULAR_RESPONSIBILITY_SUITES[source]
+    _write_irregular_responsibility_suites(repo, suites)
+    _write(repo, source, "CATALOG_READY = True\n")
+    base = _commit(repo, "mapped rename source")
+    _git(repo, "mv", source, destination)
+    head = _commit(repo, "rename mapped mcp path")
+
+    assert _git(repo, "diff", "--name-status", "--find-renames=50%", base, head, "--").startswith("R100")
+    result = _check(repo, base, head)
+
+    _assert_responsibility_tests(result, list(suites))
 
 
 def test_compose_path_runs_the_runtime_launch_contract_suite(

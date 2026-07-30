@@ -207,6 +207,7 @@ def test_production_to_test_rename_counts_production_exit_and_test_entry(
     assert evaluation.metrics["test_added_loc"] == 1
     assert evaluation.metrics["test_net_loc"] == 1
     assert evaluation.metrics["test_to_production_added_loc_ratio"] is None
+    assert evaluation.metrics["test_loc_review_explanation_recommended"] is True
     assert evaluation.metrics["production_subsystems"] == ["app"]
     assert _payload(evaluation)["changes"][0]["role"] == "behavior_production"
 

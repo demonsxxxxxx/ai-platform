@@ -464,7 +464,8 @@ class CodeGovernanceEvaluator:
             "test_added_loc": test_added_loc,
             "test_net_loc": sum(item.test_net_loc for item in changes),
             "test_to_production_added_loc_ratio": test_to_production_ratio,
-            "test_loc_review_explanation_recommended": test_added_loc > TEST_ADDED_LOC_REVIEW_THRESHOLD
+            "test_loc_review_explanation_recommended": (production_added_loc == 0 and test_added_loc > 0)
+            or test_added_loc > TEST_ADDED_LOC_REVIEW_THRESHOLD
             or (test_to_production_ratio is not None and test_to_production_ratio > TEST_TO_PRODUCTION_ADDED_LOC_REVIEW_RATIO),
         }
         return violations, metrics
