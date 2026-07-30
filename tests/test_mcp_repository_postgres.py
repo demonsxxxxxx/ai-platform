@@ -11,7 +11,12 @@ import pytest
 
 from app import repositories
 from app.mcp import repository as mcp_repository
-from app.mcp.catalog import McpDiscoveredTool
+from app.mcp.catalog import (
+    MCP_TOOL_ANNOTATION_READ_ONLY,
+    MCP_TOOL_ANNOTATION_UNKNOWN,
+    MCP_TOOL_ANNOTATION_WRITE_CAPABLE,
+    McpDiscoveredTool,
+)
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_MCP_CATALOG_TEST_DSN"
@@ -302,5 +307,217 @@ async def test_mcp_catalog_postgres_expiry_tenant_scope_and_rollback(monkeypatch
             if conn is not None:
                 await conn.rollback()
                 await conn.close()
+        await admin_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_catalog_postgres_preserves_annotation_classification_distribution_and_admin_policy():
+    """Publish exact annotation classifications without bypassing Chat distribution or an admin policy."""
+
+    dsn = _postgres_dsn()
+    schema_name = f"mcp_catalog_annotations_{uuid.uuid4().hex}"
+    schema_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    admin_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    catalog_conn = None
+    try:
+        await admin_conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await _set_search_path(admin_conn, schema_name)
+        await admin_conn.execute(schema_sql)
+        await admin_conn.execute("insert into tenants(id, name) values ('tenant-a', 'tenant-a')")
+        await admin_conn.execute(
+            "insert into users(id, tenant_id, display_name) values ('admin-a', 'tenant-a', 'admin-a')"
+        )
+        await _insert_server(
+            admin_conn,
+            tenant_id="tenant-a",
+            name="compatible-server",
+            generation=9,
+            attempt=1,
+            catalog_status="syncing",
+        )
+
+        catalog_conn = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        await _set_search_path(catalog_conn, schema_name)
+        await catalog_conn.commit()
+        tools = (
+            McpDiscoveredTool("read_tool", "schema-read", True, MCP_TOOL_ANNOTATION_READ_ONLY),
+            McpDiscoveredTool("write_tool", "schema-write", False, MCP_TOOL_ANNOTATION_WRITE_CAPABLE),
+            McpDiscoveredTool("unknown_tool", "schema-unknown", False, MCP_TOOL_ANNOTATION_UNKNOWN),
+        )
+        async with catalog_conn.transaction():
+            published = await mcp_repository.publish_mcp_tool_catalog(
+                catalog_conn,
+                tenant_id="tenant-a",
+                server_name="compatible-server",
+                observed_generation=9,
+                observed_attempt=1,
+                endpoint="https://mcp.example.test/v1",
+                tools=tools,
+                actor_id="admin-a",
+            )
+            await repositories.upsert_capability_distribution_row(
+                catalog_conn,
+                tenant_id="tenant-a",
+                capability_kind="mcp_server",
+                capability_id="compatible-server",
+                status="active",
+                visible_to_user=True,
+                scope_mode="allowlist",
+                department_ids=["qa"],
+                allowed_roles=["user"],
+                metadata_json={},
+                updated_by="admin-a",
+            )
+            authorized = await mcp_repository.list_authorized_chat_mcp_tools(
+                catalog_conn,
+                tenant_id="tenant-a",
+                principal_department_id="qa",
+                principal_roles=["user"],
+                is_admin=False,
+                permissions=[],
+            )
+            unauthorized = await mcp_repository.list_authorized_chat_mcp_tools(
+                catalog_conn,
+                tenant_id="tenant-a",
+                principal_department_id="rd",
+                principal_roles=["user"],
+                is_admin=False,
+                permissions=[],
+            )
+
+        assert published["catalog_status"] == "available"
+        assert published["catalog_selectable_count"] == 3
+        assert {tool["allowed_tools"][0] for tool in authorized} == {"read_tool", "write_tool", "unknown_tool"}
+        assert unauthorized == []
+
+        classifications = await (
+            await catalog_conn.execute(
+                """
+                select entries.remote_tool_name, tools.write_capable, tools.risk_level,
+                  policies.status as policy_status, policies.reason as policy_reason
+                from mcp_tool_catalog_entries entries
+                join mcp_tools tools on tools.id = entries.tool_id
+                join tool_policies policies
+                  on policies.tenant_id = entries.tenant_id
+                 and policies.tool_id = entries.tool_id
+                where entries.tenant_id = 'tenant-a'
+                  and entries.server_name = 'compatible-server'
+                order by entries.remote_tool_name asc
+                """
+            )
+        ).fetchall()
+        assert [dict(row) for row in classifications] == [
+            {
+                "remote_tool_name": "read_tool",
+                "write_capable": False,
+                "risk_level": "low",
+                "policy_status": "active",
+                "policy_reason": "mcp_catalog_read_only",
+            },
+            {
+                "remote_tool_name": "unknown_tool",
+                "write_capable": True,
+                "risk_level": "high",
+                "policy_status": "active",
+                "policy_reason": "mcp_catalog_annotation_unknown",
+            },
+            {
+                "remote_tool_name": "write_tool",
+                "write_capable": True,
+                "risk_level": "high",
+                "policy_status": "active",
+                "policy_reason": "mcp_catalog_write_capable",
+            },
+        ]
+        await catalog_conn.commit()
+
+        async with catalog_conn.transaction():
+            await catalog_conn.execute(
+                """
+                update mcp_servers
+                set catalog_sync_attempt = 2,
+                    catalog_status = 'syncing',
+                    catalog_sync_lease_expires_at = now() + interval '5 minutes'
+                where tenant_id = 'tenant-a' and name = 'compatible-server'
+                """
+            )
+            await catalog_conn.execute(
+                """
+                update tool_policies
+                set status = 'disabled', visible_to_user = false, reason = 'admin_owned_policy'
+                where tenant_id = 'tenant-a'
+                  and tool_id = (
+                    select tool_id
+                    from mcp_tool_catalog_entries
+                    where tenant_id = 'tenant-a'
+                      and server_name = 'compatible-server'
+                      and remote_tool_name = 'unknown_tool'
+                  )
+                """
+            )
+            republished = await mcp_repository.publish_mcp_tool_catalog(
+                catalog_conn,
+                tenant_id="tenant-a",
+                server_name="compatible-server",
+                observed_generation=9,
+                observed_attempt=2,
+                endpoint="https://mcp.example.test/v1",
+                tools=(tools[2],),
+                actor_id="admin-a",
+            )
+            policy = await (
+                await catalog_conn.execute(
+                    """
+                    select status, visible_to_user, reason
+                    from tool_policies
+                    where tenant_id = 'tenant-a'
+                      and tool_id = (
+                        select tool_id
+                        from mcp_tool_catalog_entries
+                        where tenant_id = 'tenant-a'
+                          and server_name = 'compatible-server'
+                          and remote_tool_name = 'unknown_tool'
+                      )
+                    """
+                )
+            ).fetchone()
+
+        assert republished["catalog_status"] == "available"
+        assert republished["published"] is True
+        assert republished["catalog_revision"] == published["catalog_revision"] + 1
+        assert policy == {
+            "status": "disabled",
+            "visible_to_user": False,
+            "reason": "admin_owned_policy",
+        }
+
+        async with catalog_conn.transaction():
+            await catalog_conn.execute(
+                """
+                update mcp_servers
+                set catalog_sync_attempt = 3,
+                    catalog_status = 'syncing',
+                    catalog_sync_lease_expires_at = now() + interval '5 minutes'
+                where tenant_id = 'tenant-a' and name = 'compatible-server'
+                """
+            )
+            stable_republish = await mcp_repository.publish_mcp_tool_catalog(
+                catalog_conn,
+                tenant_id="tenant-a",
+                server_name="compatible-server",
+                observed_generation=9,
+                observed_attempt=3,
+                endpoint="https://mcp.example.test/v1",
+                tools=(tools[2],),
+                actor_id="admin-a",
+            )
+
+        assert stable_republish["catalog_revision"] == republished["catalog_revision"]
+        assert stable_republish["published"] is False
+    finally:
+        if catalog_conn is not None:
+            await catalog_conn.rollback()
+            await catalog_conn.close()
         await admin_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await admin_conn.close()
