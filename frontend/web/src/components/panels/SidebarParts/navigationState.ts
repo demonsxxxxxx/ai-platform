@@ -5,27 +5,26 @@ import {
 
 export type WorkbenchNavItem =
   | "apps"
+  | "agentMarket"
   | "agentBuilder"
   | "skills"
-  | "files"
   | "mcp"
   | "models";
 
 const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/apps(?:\/|$)/, "apps"],
   [/^\/agent-builder(?:\/|$)/, "agentBuilder"],
-  [/^\/agent-market(?:\/|$)/, "agentBuilder"],
+  [/^\/agent-market(?:\/|$)/, "agentMarket"],
   [/^\/skills(?:\/|$)/, "skills"],
-  [/^\/files(?:\/|$)/, "files"],
   [/^\/mcp(?:\/|$)/, "mcp"],
   [/^\/models(?:\/|$)/, "models"],
 ];
 
 const navItemToPath: Record<WorkbenchNavItem, string> = {
   apps: "/apps",
+  agentMarket: "/agent-market",
   agentBuilder: "/agent-builder",
   skills: "/skills",
-  files: "/files",
   mcp: "/mcp",
   models: "/models",
 };
@@ -51,6 +50,9 @@ export function getSafeWorkbenchNavPath(
   item: WorkbenchNavItem,
   user: WorkbenchAccessUser,
 ): string {
+  if (item === "agentMarket") {
+    return "/agent-market";
+  }
   if (item === "agentBuilder") {
     return user?.is_admin === true ? "/agent-builder" : "/agent-market";
   }

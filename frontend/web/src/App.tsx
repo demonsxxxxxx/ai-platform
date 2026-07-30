@@ -73,6 +73,11 @@ const AgentMarketRoute = lazy(() =>
     default: m.AgentMarketRoute,
   })),
 );
+const AgentWorkspaceRoute = lazy(() =>
+  import("./features/agent-market/AgentWorkspaceRoute").then((m) => ({
+    default: m.AgentWorkspaceRoute,
+  })),
+);
 const NotFoundPage = lazy(() =>
   import("./components/common/NotFoundPage").then((m) => ({
     default: m.NotFoundPage,
@@ -251,15 +256,6 @@ function ModelsPage() {
   return <AppContent key="models" activeTab="models" />;
 }
 
-function FilesPage() {
-  useSEO({
-    title: "seo.files.title",
-    description: "seo.files.description",
-    path: "/files",
-  });
-  return <AppContent key="files" activeTab="files" />;
-}
-
 function NotificationsPage() {
   useSEO({
     title: "seo.notifications.title",
@@ -396,6 +392,14 @@ function App() {
               }
             />
             <Route
+              path={APP_ROUTE_PATHS.agentMarketWorkspace}
+              element={
+                <ProtectedRoute>
+                  <AgentWorkspaceRoute />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path={APP_ROUTE_PATHS.agentMarketDetail}
               element={
                 <ProtectedRoute>
@@ -472,14 +476,6 @@ function App() {
               element={
                 <ProtectedRoute requireAdmin redirectTo="/chat">
                   <ModelsPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path={APP_ROUTE_PATHS.files}
-              element={
-                <ProtectedRoute>
-                  <FilesPage />
                 </ProtectedRoute>
               }
             />

@@ -16,6 +16,7 @@ test("AgentBuilderRoute supplies admin authority and public catalogs without own
   assert.match(source, /modelsResolved: !modelsLoading && modelsError === null/);
   assert.match(source, /BUILDER_CATALOG_LOAD_ERROR/);
   assert.match(source, /canManageProfiles=\{user\?\.is_admin === true\}/);
+  assert.match(source, /AgentBuilderShell/);
   assert.doesNotMatch(source, /error instanceof Error \? error\.message/);
   assert.doesNotMatch(source, /useAgent/);
   assert.doesNotMatch(source, /useNavigate/);

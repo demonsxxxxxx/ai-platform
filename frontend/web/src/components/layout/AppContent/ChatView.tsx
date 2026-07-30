@@ -171,6 +171,7 @@ interface ChatViewProps {
     composer?: ReactNode;
     rightPanel?: ReactNode;
   }>;
+  sessionRouteBasePath?: string;
 }
 
 export function ChatView({
@@ -221,6 +222,7 @@ export function ChatView({
   externalScrollToBottom,
   outlineToggleRef,
   WorkbenchShellComponent,
+  sessionRouteBasePath = "/chat",
 }: ChatViewProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -589,14 +591,14 @@ export function ChatView({
       try {
         const response = await sessionApi.forkMessage(sessionId, messageId);
         toast.success(t("chat.message.forkSuccess"));
-        navigate(`/chat/${response.session.id}`);
+        navigate(`${sessionRouteBasePath}/${response.session.id}`);
       } catch (error) {
         toast.error(
           error instanceof Error ? error.message : t("chat.message.forkFailed"),
         );
       }
     },
-    [navigate, sessionId, t],
+    [navigate, sessionId, sessionRouteBasePath, t],
   );
 
   const handleOpenSessionFile = useCallback(
@@ -830,6 +832,8 @@ export function ChatView({
       >
       <main
         ref={messagesContainerRef}
+        data-chat-transcript
+        data-session-id={sessionId ?? undefined}
         className={`relative min-h-0 flex-1 bg-[var(--theme-workbench-canvas)] ${
           messages.length > 0 ? "overflow-hidden" : ""
         }`}

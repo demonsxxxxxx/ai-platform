@@ -12,11 +12,11 @@ const adminUser = { is_admin: true };
 
 const ordinaryItems: WorkbenchAccessKey[] = [
   "chat",
+  "agentMarket",
   "agentBuilder",
   "apps",
   "skills",
   "mcp",
-  "files",
   "notifications",
   "memory",
 ];

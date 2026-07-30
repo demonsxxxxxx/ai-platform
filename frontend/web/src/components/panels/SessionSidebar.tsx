@@ -48,6 +48,11 @@ interface SessionSidebarProps {
   onMobileClose?: () => void;
   isCollapsed?: boolean;
   onToggleCollapsed?: (collapsed: boolean) => void;
+  sessionFilter?: (session: BackendSession) => boolean;
+  agentWorkspace?: {
+    name: string;
+    description: string;
+  };
 }
 
 export interface SessionSidebarHandle {
@@ -71,6 +76,8 @@ export const SessionSidebar = forwardRef<
     onMobileClose,
     isCollapsed: externalCollapsed,
     onToggleCollapsed,
+    sessionFilter,
+    agentWorkspace,
   },
   ref,
 ) {
@@ -118,6 +125,13 @@ export const SessionSidebar = forwardRef<
   // ─── Hooks ──────────────────────────────────────────────────────
 
   const sessionList = useSessionList(scrollEl);
+  const visibleSessions = useMemo(
+    () =>
+      sessionFilter
+        ? sessionList.sessions.filter(sessionFilter)
+        : sessionList.sessions,
+    [sessionFilter, sessionList.sessions],
+  );
 
   const handleSessionUnread = useCallback(
     (sid: string, count: number) => {
@@ -282,7 +296,7 @@ export const SessionSidebar = forwardRef<
             onNewSession={onNewSession}
             onOpenSearch={() => setIsSearchOpen(true)}
             onSetScrollEl={setScrollEl}
-            sessions={sessionList.sessions}
+            sessions={visibleSessions}
             isLoading={sessionList.isLoading}
             hasMore={sessionList.hasMore}
             isLoadingMore={sessionList.isLoadingMore}
@@ -293,6 +307,8 @@ export const SessionSidebar = forwardRef<
             sessionActions={sessionActions}
             isChatsCollapsed={isChatsCollapsed}
             onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
+            agentWorkspace={agentWorkspace}
+            hideSessionDiscovery={agentWorkspace !== undefined}
           />
         ) : (
           <div className="flex-1" />
@@ -321,7 +337,7 @@ export const SessionSidebar = forwardRef<
               onNewSession={onNewSession}
               onOpenSearch={() => setIsSearchOpen(true)}
               onSetScrollEl={setScrollEl}
-              sessions={sessionList.sessions}
+              sessions={visibleSessions}
               isLoading={sessionList.isLoading}
               hasMore={sessionList.hasMore}
               isLoadingMore={sessionList.isLoadingMore}
@@ -332,6 +348,8 @@ export const SessionSidebar = forwardRef<
               sessionActions={sessionActions}
               isChatsCollapsed={isChatsCollapsed}
               onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
+              agentWorkspace={agentWorkspace}
+              hideSessionDiscovery={agentWorkspace !== undefined}
             />
           </div>
         ) : (
@@ -354,11 +372,12 @@ export const SessionSidebar = forwardRef<
                 setIsRecentChatsOpen(true);
               }}
               onOpenLaunchpad={() => navigate("/apps")}
+              onOpenAgentMarket={() => navigate("/agent-market")}
               onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
               onOpenSkills={() => navigate("/skills")}
               onOpenMcp={() => navigate("/mcp")}
               onOpenModels={() => navigateWorkbenchItem("models")}
-              onOpenFiles={() => navigateWorkbenchItem("files")}
+              hideSessionDiscovery={agentWorkspace !== undefined}
               recentChatsBtnRef={desktopRecentChatsBtnRef}
             />
           </div>
@@ -391,16 +410,17 @@ export const SessionSidebar = forwardRef<
             setIsRecentChatsOpen(true);
           }}
           onOpenLaunchpad={() => navigate("/apps")}
+          onOpenAgentMarket={() => navigate("/agent-market")}
           onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
           onOpenSkills={() => navigate("/skills")}
           onOpenMcp={() => navigate("/mcp")}
           onOpenModels={() => navigateWorkbenchItem("models")}
-          onOpenFiles={() => navigateWorkbenchItem("files")}
+          hideSessionDiscovery={agentWorkspace !== undefined}
           recentChatsBtnRef={mobileRecentChatsBtnRef}
         />
       </div>
 
-      {isSearchOpen && (
+      {isSearchOpen && !agentWorkspace && (
         <SearchDialog
           isOpen={isSearchOpen}
           onClose={() => setIsSearchOpen(false)}
@@ -422,7 +442,7 @@ export const SessionSidebar = forwardRef<
         variant="danger"
       />
 
-      <RecentChatsDialog
+      {!agentWorkspace ? <RecentChatsDialog
         isOpen={isRecentChatsOpen}
         onClose={() => setIsRecentChatsOpen(false)}
         onSelectSession={(id) => selectAndClose(id)}
@@ -432,7 +452,7 @@ export const SessionSidebar = forwardRef<
             ? mobileRecentChatsBtnRef.current
             : desktopRecentChatsBtnRef.current
         }
-      />
+      /> : null}
     </>
   );
 });

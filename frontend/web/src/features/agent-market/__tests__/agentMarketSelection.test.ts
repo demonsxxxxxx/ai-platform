@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildAgentMarketDetailPath,
+  buildAgentMarketWorkspacePath,
   filterPublishedMarketProfiles,
   selectPublishedMarketProfile,
 } from "../agentMarketSelection";
@@ -26,6 +27,17 @@ test("market detail uses only the exact published profile identity", () => {
   assert.equal(
     buildAgentMarketDetailPath(profile),
     "/agent-market/agt_support/4",
+  );
+});
+
+test("market workspace deep links preserve the immutable published revision", () => {
+  assert.equal(
+    buildAgentMarketWorkspacePath(profile),
+    "/agent-market/agt_support/4/chat",
+  );
+  assert.equal(
+    buildAgentMarketWorkspacePath(profile, "session-42"),
+    "/agent-market/agt_support/4/chat/session-42",
   );
 });
 

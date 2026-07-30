@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
@@ -15,6 +16,7 @@ const {
   AgentConversationIdentityBanner,
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
+  getChatToolAccess,
   recoverAgentConversationIdentity,
 } = await import("../ChatAppContent.tsx");
 const { agentProfileApi } = await import("../../../../services/api/agentProfile.ts");
@@ -27,6 +29,11 @@ const safeIdentity = {
   description: "处理已授权的支持请求。",
   avatar_ref: "builtin:assistant",
   category: "support",
+} as const;
+
+const safeWorkspace = {
+  agent_id: safeIdentity.agent_id,
+  expected_revision: safeIdentity.revision,
 } as const;
 
 test("recovers an exact current Agent Conversation and keeps ordinary sessions generic", async () => {
@@ -140,6 +147,20 @@ test("rejects authoritative Agent identity returned for a different Session", as
   }
 });
 
+test("generic Chat tools remain available while Agent loading and bound workspaces expose none", () => {
+  assert.deepEqual(
+    getChatToolAccess({ agentWorkspace: undefined, phase: "generic", sessionId: "generic" }),
+    { enabled: true, sessionId: "generic" },
+  );
+
+  for (const phase of ["loading", "bound"] as const) {
+    assert.deepEqual(
+      getChatToolAccess({ agentWorkspace: safeWorkspace, phase, sessionId: "agent-a" }),
+      { enabled: false, sessionId: null },
+    );
+  }
+});
+
 test("renders only safe Agent identity and locks MCP catalog controls", () => {
   const html = renderToStaticMarkup(
     React.createElement(AgentConversationIdentityBanner, { identity: safeIdentity }),
@@ -160,4 +181,15 @@ test("renders only safe Agent identity and locks MCP catalog controls", () => {
   assert.equal(exposeGenericChatControl("generic", mcpControl), mcpControl);
   const retryMcpCatalog = () => "retry-mcp-catalog";
   assert.equal(exposeGenericChatControl("bound", retryMcpCatalog), undefined);
+});
+
+test("Agent workspace source filters the sidebar by server-authorized pinned session ids", () => {
+  const source = readFileSync(
+    new URL("../ChatAppContent.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /agentWorkspaceSessionIds\?: ReadonlySet<string>/);
+  assert.match(source, /agentWorkspaceSessionIds\?\.has\(listedSession\.id\) \?\? false/);
+  assert.match(source, /onAgentWorkspaceSessionCreated\?\.\(session\.session_id\)/);
 });

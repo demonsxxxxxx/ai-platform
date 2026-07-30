@@ -58,11 +58,3 @@ export {
   type ToolPermissionHistoryResponse,
   type ToolPermissionHistoryView,
 } from "./api/toolPermission";
-export {
-  revealedFileApi,
-  type RevealedFileItem,
-  type RevealedFileListParams,
-  type RevealedFileGroupedListParams,
-  type RevealedFileGroupedListResponse,
-  type SessionGroupItem,
-} from "./api/revealedFile";

@@ -46,6 +46,19 @@ function projectCatalogResponse(value: unknown): AgentProfileCatalogResponse {
   return { agent_profiles: profiles.map(projectAgentProfilePublicProjection) };
 }
 
+function projectConversationListResponse(
+  value: unknown,
+): AgentConversationSessionProjection[] {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid_agent_conversation_catalog");
+  }
+  const sessions = (value as { sessions?: unknown }).sessions;
+  if (!Array.isArray(sessions)) {
+    throw new Error("invalid_agent_conversation_catalog");
+  }
+  return sessions.map(projectAgentConversationSession);
+}
+
 export const agentProfileApi = {
   async listPublished(query: AgentProfileCatalogQuery = {}): Promise<AgentProfileCatalogResponse> {
     const response = await authFetch<unknown>(buildAgentProfileCatalogUrl(query), { cache: "no-store" });
@@ -55,6 +68,15 @@ export const agentProfileApi = {
   async getPublished(agentId: string): Promise<AgentProfilePublicProjection> {
     const response = await authFetch<unknown>(buildAgentProfileDetailUrl(agentId), { cache: "no-store" });
     return projectAgentProfilePublicProjection(response);
+  },
+
+  /** List only server-authorized conversations with their safe pinned identity. */
+  async listConversations(): Promise<AgentConversationSessionProjection[]> {
+    const response = await authFetch<unknown>(
+      `${API_BASE}/api/ai/chat/sessions`,
+      { cache: "no-store" },
+    );
+    return projectConversationListResponse(response);
   },
 
   async createConversation(selection: SelectedAgentProfileRequest): Promise<AgentConversationSessionProjection> {

@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- behavioral seams stay with the canonical Chat owner */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import toast from "react-hot-toast";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { Bot, FileText, Headphones, History, Search } from "lucide-react";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
@@ -56,11 +57,12 @@ import type {
   AgentConversationIdentity,
   AgentProfileAvatarRef,
   AgentProfileCategory,
+  AgentProfilePublicProjection,
 } from "../../../types/agentProfile";
 
 export type AgentConversationRecoveryPhase = "generic" | "loading" | "bound" | "blocked";
 
-interface AgentConversationRecoveryState {
+export interface AgentConversationRecoveryState {
   phase: AgentConversationRecoveryPhase;
   targetSessionId: string | null;
   identity: AgentConversationIdentity | null;
@@ -96,6 +98,56 @@ export function exposeGenericChatControl<T>(
   control: T,
 ): T | undefined {
   return areAgentConversationControlsLocked(phase) ? undefined : control;
+}
+
+interface AgentWorkspaceBindingInput {
+  agentWorkspace?: Pick<
+    AgentProfilePublicProjection,
+    "agent_id" | "expected_revision"
+  >;
+  state: AgentConversationRecoveryState;
+  sessionId: string | null | undefined;
+}
+
+/** Accept Agent transcript data only after its Session and immutable revision agree. */
+export function isExactAgentWorkspaceBinding({
+  agentWorkspace,
+  state,
+  sessionId,
+}: AgentWorkspaceBindingInput): boolean {
+  if (!agentWorkspace) {
+    return true;
+  }
+
+  return Boolean(
+    sessionId &&
+      state.phase === "bound" &&
+      state.targetSessionId === sessionId &&
+      state.identity?.agent_id === agentWorkspace.agent_id &&
+      state.identity.revision === agentWorkspace.expected_revision,
+  );
+}
+
+/** Keep a prior Session transcript out of an Agent workspace until its binding is exact. */
+export function projectAgentWorkspaceTranscript<T>({
+  messages,
+  ...binding
+}: AgentWorkspaceBindingInput & { messages: T[] }): T[] {
+  return isExactAgentWorkspaceBinding(binding) ? messages : [];
+}
+
+/** Generic Chat retains tool selection; an Agent workspace never receives it. */
+export function getChatToolAccess({
+  agentWorkspace,
+  phase,
+  sessionId,
+}: {
+  agentWorkspace?: Pick<AgentProfilePublicProjection, "agent_id" | "expected_revision">;
+  phase: AgentConversationRecoveryPhase;
+  sessionId: string | null;
+}): { enabled: boolean; sessionId: string | null } {
+  const locked = Boolean(agentWorkspace) || areAgentConversationControlsLocked(phase);
+  return { enabled: !locked, sessionId: locked ? null : sessionId };
 }
 
 /** Recover and revalidate one server-owned Agent Conversation identity. */
@@ -169,6 +221,9 @@ export interface ChatAppContentProps {
   setSidebarCollapsed: (collapsed: boolean) => void;
   mobileSidebarOpen: boolean;
   setMobileSidebarOpen: (open: boolean) => void;
+  agentWorkspace?: AgentProfilePublicProjection;
+  agentWorkspaceSessionIds?: ReadonlySet<string>;
+  onAgentWorkspaceSessionCreated?: (sessionId: string) => void;
 }
 
 export function ChatAppContent({
@@ -176,16 +231,34 @@ export function ChatAppContent({
   setSidebarCollapsed,
   mobileSidebarOpen,
   setMobileSidebarOpen,
+  agentWorkspace,
+  agentWorkspaceSessionIds,
+  onAgentWorkspaceSessionCreated,
 }: ChatAppContentProps) {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const { sessionId: routeSessionId } = useParams<{ sessionId?: string }>();
   const [agentConversationState, setAgentConversationState] = useState(() =>
-    conversationState(routeSessionId ? "loading" : "generic", routeSessionId ?? null),
+    conversationState(
+      agentWorkspace && routeSessionId ? "loading" : "generic",
+      routeSessionId ?? null,
+    ),
   );
-  const agentConversationControlsLocked =
-    areAgentConversationControlsLocked(agentConversationState.phase);
+  const [agentWorkspaceCreating, setAgentWorkspaceCreating] = useState(false);
+  const [agentWorkspaceError, setAgentWorkspaceError] = useState<string | null>(null);
+  const agentWorkspaceRouteBasePath = agentWorkspace
+    ? `/agent-market/${encodeURIComponent(agentWorkspace.agent_id)}/${agentWorkspace.expected_revision}/chat`
+    : "/chat";
+  const agentWorkspaceDetailPath = agentWorkspace
+    ? `/agent-market/${encodeURIComponent(agentWorkspace.agent_id)}/${agentWorkspace.expected_revision}`
+    : "/agent-market";
+  const chatToolAccess = getChatToolAccess({
+    agentWorkspace,
+    phase: agentConversationState.phase,
+    sessionId: null,
+  });
+  const agentConversationControlsLocked = !chatToolAccess.enabled;
   const { enableSkills, settings, availableModels, defaultModel } =
     useSettingsContext();
   const { hasPermission, isAuthenticated } = useAuth();
@@ -302,7 +375,37 @@ export function ChatAppContent({
     },
   });
 
-  const agentConversationTargetSessionId = routeSessionId ?? sessionId;
+  const sessionToolAccess = getChatToolAccess({
+    agentWorkspace,
+    phase: agentConversationState.phase,
+    sessionId,
+  });
+  const agentConversationTargetSessionId = agentWorkspace
+    ? routeSessionId ?? null
+    : routeSessionId ?? sessionId;
+  const conversationIdentityKey = agentWorkspace
+    ? `${agentWorkspace.agent_id}:${agentWorkspace.expected_revision}:${routeSessionId ?? ""}`
+    : `generic:${routeSessionId ?? ""}`;
+  const previousConversationIdentityKeyRef = useRef<string | undefined>(
+    undefined,
+  );
+  const agentWorkspaceSelectionRequestIdRef = useRef(0);
+
+  // Clear before paint whenever the rendered workspace/session identity changes.
+  useLayoutEffect(() => {
+    if (previousConversationIdentityKeyRef.current === conversationIdentityKey) {
+      return;
+    }
+    previousConversationIdentityKeyRef.current = conversationIdentityKey;
+    agentWorkspaceSelectionRequestIdRef.current += 1;
+    clearMessages();
+    setAgentConversationState(
+      agentWorkspace && routeSessionId
+        ? conversationState("loading", routeSessionId)
+        : conversationState("generic", null),
+    );
+  }, [agentWorkspace, clearMessages, conversationIdentityKey, routeSessionId]);
+
   useEffect(() => {
     if (!agentConversationTargetSessionId) {
       setAgentConversationState(conversationState("generic", null));
@@ -314,6 +417,14 @@ export function ChatAppContent({
     void recoverAgentConversationIdentity(agentConversationTargetSessionId)
       .then((identity) => {
         if (!active) return;
+        if (
+          agentWorkspace &&
+          (!identity ||
+            identity.agent_id !== agentWorkspace.agent_id ||
+            identity.revision !== agentWorkspace.expected_revision)
+        ) {
+          throw new Error("agent_workspace_revision_mismatch");
+        }
         setAgentConversationState(
           conversationState(
             identity ? "bound" : "generic",
@@ -327,12 +438,17 @@ export function ChatAppContent({
         setAgentConversationState(
           conversationState("blocked", agentConversationTargetSessionId),
         );
-        navigate("/agent-market", { replace: true });
+        navigate(agentWorkspaceDetailPath, { replace: true });
       });
     return () => {
       active = false;
     };
-  }, [agentConversationTargetSessionId, navigate]);
+  }, [
+    agentConversationTargetSessionId,
+    agentWorkspace,
+    agentWorkspaceDetailPath,
+    navigate,
+  ]);
 
   const {
     tools,
@@ -342,8 +458,8 @@ export function ChatAppContent({
     catalogState: mcpCatalogState,
     refreshTools,
   } = useTools({
-    enabled: !agentConversationControlsLocked,
-    sessionId: agentConversationControlsLocked ? null : sessionId,
+    enabled: sessionToolAccess.enabled,
+    sessionId: sessionToolAccess.sessionId,
   });
 
   const filteredModels = availableModels ?? null;
@@ -595,6 +711,24 @@ export function ChatAppContent({
     onToggleAll: exposeGenericChatControl(agentConversationState.phase, effectiveToggleAll) as typeof effectiveToggleAll,
   };
 
+  const agentWorkspaceHistoryLoadEnabled = isExactAgentWorkspaceBinding({
+    agentWorkspace,
+    state: agentConversationState,
+    sessionId: routeSessionId,
+  });
+  const agentWorkspaceTranscriptReady = isExactAgentWorkspaceBinding({
+    agentWorkspace,
+    state: agentConversationState,
+    sessionId,
+  });
+  const visibleMessages = projectAgentWorkspaceTranscript({
+    agentWorkspace,
+    state: agentConversationState,
+    sessionId,
+    messages,
+  });
+  const visibleSessionId = agentWorkspaceTranscriptReady ? sessionId : null;
+  const visibleCurrentRunId = agentWorkspaceTranscriptReady ? currentRunId : null;
   const recoveredSessionReady =
     agentConversationState.targetSessionId === null ||
     agentConversationState.targetSessionId === sessionId;
@@ -602,7 +736,8 @@ export function ChatAppContent({
     hasPermission(Permission.CHAT_WRITE) &&
     agentConversationState.phase !== "loading" &&
     agentConversationState.phase !== "blocked" &&
-    recoveredSessionReady;
+    recoveredSessionReady &&
+    (!agentWorkspace || agentWorkspaceTranscriptReady);
 
   const sidebarRef = useRef<SessionSidebarHandle>(null);
 
@@ -711,9 +846,53 @@ export function ChatAppContent({
     loadHistory,
     clearMessages,
     onConfigRestored: handleConfigRestored,
+    sessionRouteBasePath: agentWorkspaceRouteBasePath,
+    historyLoadEnabled: agentWorkspaceHistoryLoadEnabled,
   });
 
   const handleNewSessionWithReset = useCallback(() => {
+    if (agentWorkspace) {
+      if (agentWorkspaceCreating) return;
+      setAgentWorkspaceCreating(true);
+      setAgentWorkspaceError(null);
+      void agentProfileApi
+        .createConversation({
+          agent_id: agentWorkspace.agent_id,
+          expected_revision: agentWorkspace.expected_revision,
+        })
+        .then((session) => {
+          const identity = session.agent_conversation;
+          if (
+            !session.session_id ||
+            session.agent_id !== agentWorkspace.agent_id ||
+            !identity ||
+            identity.agent_id !== agentWorkspace.agent_id ||
+            identity.revision !== agentWorkspace.expected_revision
+          ) {
+            throw new Error("agent_workspace_identity_mismatch");
+          }
+          clearMessages();
+          onAgentWorkspaceSessionCreated?.(session.session_id);
+          navigate(
+            `${agentWorkspaceRouteBasePath}/${encodeURIComponent(session.session_id)}`,
+          );
+        })
+        .catch((error: unknown) => {
+          const status =
+            error !== null && typeof error === "object"
+              ? (error as { status?: number }).status
+              : undefined;
+          setAgentWorkspaceError(
+            status === 403
+              ? "当前账号无权使用该智能体。"
+              : status === 404 || status === 409
+                ? "该智能体已不可用或发布版本已更新，请返回市场重新选择。"
+                : "暂时无法创建智能体对话，请稍后重试。",
+          );
+        })
+        .finally(() => setAgentWorkspaceCreating(false));
+      return;
+    }
     const nextSelection = resolveDefaultModelSelection({
       availableModels,
       storedDefaultId: localStorage.getItem("defaultModelId") || "",
@@ -737,6 +916,12 @@ export function ChatAppContent({
     clearSelectedSkill,
     resetToDefaults,
     resetAgentOptionDefaults,
+    agentWorkspace,
+    agentWorkspaceCreating,
+    agentWorkspaceRouteBasePath,
+    onAgentWorkspaceSessionCreated,
+    clearMessages,
+    navigate,
   ]);
 
   const handleMobileClose = useCallback(
@@ -744,13 +929,53 @@ export function ChatAppContent({
     [setMobileSidebarOpen],
   );
   const handleSelectSessionAndClose = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      const selectionRequestId = ++agentWorkspaceSelectionRequestIdRef.current;
       setAgentConversationState(conversationState("loading", id));
+      clearMessages();
       clearSelectedSkill();
-      handleSelectSession(id);
+      if (agentWorkspace) {
+        try {
+          const identity = await recoverAgentConversationIdentity(id);
+          if (selectionRequestId !== agentWorkspaceSelectionRequestIdRef.current) {
+            return;
+          }
+          if (
+            !identity ||
+            identity.agent_id !== agentWorkspace.agent_id ||
+            identity.revision !== agentWorkspace.expected_revision
+          ) {
+            throw new Error("agent_workspace_revision_mismatch");
+          }
+          setAgentConversationState(conversationState("bound", id, identity));
+          navigate(
+            `${agentWorkspaceRouteBasePath}/${encodeURIComponent(id)}`,
+          );
+          setMobileSidebarOpen(false);
+          return;
+        } catch {
+          if (selectionRequestId !== agentWorkspaceSelectionRequestIdRef.current) {
+            return;
+          }
+          setAgentConversationState(conversationState("blocked", id));
+          navigate(agentWorkspaceDetailPath, { replace: true });
+          toast.error("该历史对话不属于当前发布版本，请从左侧选择其他对话。");
+          return;
+        }
+      }
+      await handleSelectSession(id);
       setMobileSidebarOpen(false);
     },
-    [clearSelectedSkill, handleSelectSession, setMobileSidebarOpen],
+    [
+      agentWorkspace,
+      agentWorkspaceDetailPath,
+      agentWorkspaceRouteBasePath,
+      clearMessages,
+      clearSelectedSkill,
+      handleSelectSession,
+      navigate,
+      setMobileSidebarOpen,
+    ],
   );
   const handleNewSessionAndClose = useCallback(() => {
     handleNewSessionWithReset();
@@ -788,9 +1013,9 @@ export function ChatAppContent({
       currentModelId={currentModelId}
       onSelectModel={handleSelectModel}
       sessionId={sessionId}
-      currentRunId={currentRunId}
+      currentRunId={visibleCurrentRunId}
       onOpenRunPlayback={handleOpenRunPlayback}
-      showOutlineButton={shouldShowMessageOutline(messages)}
+      showOutlineButton={shouldShowMessageOutline(visibleMessages)}
       onToggleOutline={handleToggleOutline}
       sidebar={
         <SessionSidebar
@@ -804,6 +1029,20 @@ export function ChatAppContent({
           onMobileClose={handleMobileClose}
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={setSidebarCollapsed}
+          sessionFilter={
+            agentWorkspace
+              ? (listedSession) =>
+                  agentWorkspaceSessionIds?.has(listedSession.id) ?? false
+              : undefined
+          }
+          agentWorkspace={
+            agentWorkspace
+              ? {
+                  name: agentWorkspace.name,
+                  description: agentWorkspace.description,
+                }
+              : undefined
+          }
         />
       }
     >
@@ -848,12 +1087,25 @@ export function ChatAppContent({
             identity={agentConversationState.identity}
           />
         ) : null}
+        {agentWorkspace && !routeSessionId && !sessionId ? (
+          <section
+            data-agent-workspace-empty
+            className="border-b border-[var(--theme-border)] px-4 py-3 text-center text-sm text-[var(--theme-text-secondary)]"
+          >
+            <p>选择左侧历史对话，或新建一个 {agentWorkspace.name} 对话。</p>
+            {agentWorkspaceError ? (
+              <p className="mt-2 text-[var(--theme-danger)]" role="alert">
+                {agentWorkspaceError}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
 
         <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
           <ChatView
-            messages={messages}
-            sessionId={sessionId}
-            currentRunId={currentRunId}
+            messages={visibleMessages}
+            sessionId={visibleSessionId}
+            currentRunId={visibleCurrentRunId}
             isLoading={isLoading}
             isLoadingHistory={isLoadingHistory}
             connectionStatus={connectionStatus}
@@ -919,6 +1171,7 @@ export function ChatAppContent({
             externalScrollToBottom={externalScrollToBottom}
             outlineToggleRef={outlineToggleRef}
             WorkbenchShellComponent={WorkbenchShell}
+            sessionRouteBasePath={agentWorkspaceRouteBasePath}
           />
         </ChatMcpCatalogContext.Provider>
         <BlockPreviewPortal />
