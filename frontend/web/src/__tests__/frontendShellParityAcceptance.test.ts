@@ -56,7 +56,6 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
     "/apps",
     "/skills",
     "/mcp",
-    "/files",
   ]) {
     assert.match(app, new RegExp(`path="${route.replace("/", "\\/")}`));
   }
@@ -83,7 +82,6 @@ test("phase 1C primary workbench routes are login reachable and fail closed insi
   for (const route of [
     "/skills",
     "/mcp",
-    "/files",
   ]) {
     const routePattern = new RegExp(
       `path="${route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,180}<`,
@@ -203,16 +201,13 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
     assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
   }
   assert.doesNotMatch(sidebar, /navigate\("\/roles"\)/);
-  for (const route of ["/files"]) {
-    assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
-  }
   for (const handler of [
     "onOpenModels",
-    "onOpenFiles",
   ]) {
     assert.match(sidebar, new RegExp(handler), handler);
   }
   assert.doesNotMatch(sidebar, /onOpenRoles|onOpenMarketplace/);
+  assert.doesNotMatch(sidebar, /onOpenFiles|navigate\("\/files"\)/);
   assert.doesNotMatch(sidebar, /Permission\.ROLE_READ|Permission\.AGENT_ADMIN|Permission\.MODEL_READ|Permission\.CHANNEL_READ/);
   assert.doesNotMatch(sidebar, /onOpenPersonaPlaza|onOpenFileLibrary/);
   assert.doesNotMatch(sidebar, /hasMoreMenuItems|MobileMoreMenuSheet|DesktopMoreMenu/);

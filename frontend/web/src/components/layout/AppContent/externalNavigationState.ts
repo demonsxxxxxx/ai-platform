@@ -1,11 +1,29 @@
-import type { RevealedFileItem } from "../../../services/api";
 import { getFullUrl } from "../../../services/api/config";
 import {
   buildSanitizedProjectRevealDataFromMeta,
   isAllowedRevealArtifactUrl,
   sanitizeProjectPath,
+  type ProjectRevealMetaInput,
   type RevealPreviewRequest,
 } from "../../chat/ChatMessage/items/revealPreviewData";
+
+type RevealedArtifactSource = "reveal_file" | "reveal_project";
+
+/** Safe artifact fields retained by Chat previews after the Files workbench removal. */
+interface RevealedArtifactNavigationProjection {
+  id: string;
+  file_key: string;
+  file_name: string;
+  file_size: number;
+  preview_url: string | null;
+  download_url: string | null;
+  url?: string | null;
+  source: RevealedArtifactSource;
+  original_path: string | null;
+  project_meta?: ProjectRevealMetaInput | null;
+  trace_id?: string | null;
+  mime_type?: string | null;
+}
 
 export interface ExternalNavigationTargetFile {
   fileId?: string;
@@ -13,7 +31,7 @@ export interface ExternalNavigationTargetFile {
   fileName?: string;
   originalPath?: string | null;
   traceId?: string | null;
-  source?: RevealedFileItem["source"];
+  source?: RevealedArtifactSource;
 }
 
 export interface ExternalNavigationState {
@@ -22,20 +40,7 @@ export interface ExternalNavigationState {
   targetFile?: ExternalNavigationTargetFile | null;
 }
 
-type RevealedFileNavigationProjection = Pick<
-  RevealedFileItem,
-  | "id"
-  | "file_key"
-  | "file_name"
-  | "file_size"
-  | "preview_url"
-  | "download_url"
-  | "source"
-  | "original_path"
-  | "project_meta"
-> & {
-  mime_type?: string | null;
-};
+type RevealedFileNavigationProjection = RevealedArtifactNavigationProjection;
 
 export function shouldResetExternalNavigateFlag(
   locationState: ExternalNavigationState | null | undefined,
@@ -112,7 +117,7 @@ function getSafeExternalFileS3Key(
 function buildExternalNavigationTargetFile(file: {
   id: string;
   trace_id?: string | null;
-  source?: RevealedFileItem["source"];
+  source?: RevealedArtifactSource;
 }): ExternalNavigationTargetFile {
   return {
     fileId: file.id,
@@ -161,7 +166,7 @@ export function buildExternalNavigationPreviewRequest(
 
 export function buildExternalNavigationStateForFile(
   file: Pick<
-    RevealedFileItem,
+    RevealedArtifactNavigationProjection,
     | "id"
     | "file_key"
     | "file_name"
