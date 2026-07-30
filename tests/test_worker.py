@@ -7058,6 +7058,89 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("public_chunks", "public_answer"),
+    [
+        (["Verified final answer ", "streams safely."], "Verified final answer streams safely."),
+        ([], ""),
+    ],
+)
+async def test_worker_persists_only_public_capability_answer_and_ordered_deltas(
+    monkeypatch,
+    public_chunks,
+    public_answer,
+):
+    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
+    events = []
+    messages = []
+
+    class StreamingMessageAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            for chunk in public_chunks:
+                await event_sink(
+                    event_type="assistant_delta",
+                    stage="message",
+                    message=chunk,
+                    payload={"delta": chunk, "visible_to_user": True, "severity": "info"},
+                )
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="adapter/1",
+                executor_type="fake",
+                executor_version="fake/1",
+                capabilities={"streaming": True},
+                result={"message": public_answer},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        events.append(kwargs)
+        return f"evt_{len(events)}"
+
+    async def complete_run(conn, **kwargs):
+        events.append({"event_type": "complete_run", "result_json": kwargs["result_json"]})
+        return True
+
+    async def append_message(conn, **kwargs):
+        messages.append(kwargs)
+        return "msg-a"
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
+
+    outcome = await process_run_payload(
+        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
+        AdapterRegistry({"fake": StreamingMessageAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    persisted_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
+    assert [event["payload"]["delta"] for event in persisted_deltas] == public_chunks
+    assert [event["stage"] for event in persisted_deltas] == ["answer"] * len(public_chunks)
+    completed = next(event["result_json"] for event in events if event["event_type"] == "complete_run")
+    assert completed["message"] == public_answer
+    assert len(messages) == 1
+    assert {
+        key: messages[0][key]
+        for key in ("tenant_id", "session_id", "run_id", "role", "content")
+    } == {
+        "tenant_id": "tenant-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "role": "assistant",
+        "content": public_answer,
+    }
+    assert sealed_pre_capability_text not in json.dumps(
+        {"events": events, "messages": messages},
+    )
+
+
+@pytest.mark.asyncio
 async def test_worker_follow_up_terminalization_reconciles_one_final_drain_only(monkeypatch):
     calls = []
 
