@@ -963,6 +963,7 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
     message,
     expected_answer,
 ):
+    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
     run = {
         "id": "run_a",
         "session_id": "ses_a",
@@ -985,6 +986,25 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
 
     async def fake_list_run_events(conn, *, tenant_id, run_id):
         return [
+            {
+                "id": "evt-sealed",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 0,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "severity": "info",
+                "visible_to_user": True,
+                "error_code": None,
+                "payload_json": {
+                    "delta": sealed_pre_capability_text,
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+                "created_at": "2026-07-19T00:00:00Z",
+            },
             {
                 "id": "evt-delta",
                 "trace_id": "trace_run_a",
@@ -1065,7 +1085,11 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
     assert public_identifier in stream_final["content"]
     assert private_identifier not in stream_response.text
     assert private_identifier not in history_response.text
+    assert sealed_pre_capability_text not in stream_response.text
+    assert sealed_pre_capability_text not in history_response.text
     assert stream_response.text.count(expected_answer) == 1
+    assert "evt-sealed" not in stream_response.text
+    assert "evt-sealed" not in history_response.text
     assert "evt-delta" not in stream_response.text
     assert "evt-delta" not in history_response.text
     assert "旧的部分输出" not in stream_response.text
@@ -2032,7 +2056,7 @@ def test_lambchat_sse_rebuilds_permission_cards_for_every_principal(
     assert "/var/lib/private" not in response.text
 
 
-def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monkeypatch):
+def test_lambchat_active_history_replays_versioned_deltas_once_in_sequence(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         return {"id": session_id}
 
@@ -2050,7 +2074,7 @@ def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monk
     async def fake_list_run_events(conn, *, tenant_id, run_id):
         return [
             {
-                "id": "evt-delta",
+                "id": "evt-delta-7",
                 "trace_id": "trace_run_a",
                 "schema_version": "ai-platform.event-envelope.v1",
                 "sequence": 7,
@@ -2060,7 +2084,25 @@ def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monk
                 "severity": "info",
                 "visible_to_user": True,
                 "payload_json": {
-                    "delta": "partial",
+                    "delta": "partial ",
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+                "created_at": None,
+            },
+            {
+                "id": "evt-delta-8",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 8,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "severity": "info",
+                "visible_to_user": True,
+                "payload_json": {
+                    "delta": "answer",
                     "source": "worker_answer_delta_v1",
                     "visible_to_user": True,
                     "severity": "info",
@@ -2096,17 +2138,10 @@ def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monk
 
     assert response.status_code == 200
     events = response.json()["events"]
-    assert len(events) == 1
-    assert events[0]["event_type"] == "message:chunk"
-    assert events[0]["sequence"] == 7
-    assert events[0]["payload"] == {
-        "projection_version": "ai-platform.chat-public-projection.v1",
-        "projection_kind": "assistant_delta",
-        "event_id": "evt-delta",
-        "sequence": 7,
-        "run_id": "run_a",
-        "content": "partial",
-    }
+    assert [event["event_type"] for event in events] == ["message:chunk", "message:chunk"]
+    assert [event["sequence"] for event in events] == [7, 8]
+    assert [event["payload"]["event_id"] for event in events] == ["evt-delta-7", "evt-delta-8"]
+    assert "".join(event["payload"]["content"] for event in events) == "partial answer"
 
 
 def test_lambchat_strict_delta_contract_is_shared_by_live_sse_and_exact_reload(monkeypatch):
@@ -2410,6 +2445,65 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     assert "/home/private" not in serialized
     assert "worker-private" not in serialized
     assert "current_step" not in serialized
+
+
+def test_lambchat_success_history_omits_sealed_delta_when_terminal_answer_is_empty():
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+
+    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+    run = {
+        "id": "run-empty-terminal",
+        "trace_id": "trace-empty-terminal",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "succeeded",
+        "result_json": {"message": ""},
+        "error_code": None,
+        "error_message": None,
+        "finished_at": "2026-07-30T00:00:00Z",
+    }
+    run_events = [
+        {
+            "id": "evt-sealed",
+            "trace_id": "trace-empty-terminal",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 1,
+            "event_type": "assistant_delta",
+            "stage": "answer",
+            "message": "",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "payload_json": {
+                "delta": sealed_pre_capability_text,
+                "source": "worker_answer_delta_v1",
+                "visible_to_user": True,
+                "severity": "info",
+            },
+            "created_at": "2026-07-30T00:00:00Z",
+        }
+    ]
+
+    records = _compatibility_events_for_run(run, run_events, [], principal)
+    history = [record.history_event for record in records]
+
+    terminal_answers = [event["data"] for event in history if event["event_type"] == "message:chunk"]
+    assert terminal_answers == [
+        {
+            "projection_version": "ai-platform.chat-public-projection.v1",
+            "projection_kind": "assistant_final",
+            "run_id": "run-empty-terminal",
+            "content": "任务完成",
+        }
+    ]
+    assert sealed_pre_capability_text not in str(history)
 
 
 def test_lambchat_sse_stream_cannot_read_cross_tenant_run_events(monkeypatch):

@@ -20,12 +20,12 @@ def _stop(index=0):
     return {"type": "content_block_stop", "index": index}
 
 
-def test_projector_flushes_short_text_only_on_matching_stop():
+def test_projector_publishes_safe_prefix_before_matching_stop():
     projector = _projector()
 
     assert projector.accept(_start()) == ()
-    assert projector.accept(_text_delta("short answer")) == ()
-    assert projector.accept(_stop()) == ("short answer",)
+    assert projector.accept(_text_delta("Short safe public answer.")) == ("Short safe public ",)
+    assert projector.accept(_stop()) == ("answer.",)
     assert projector.partial_emitted is True
 
 
@@ -45,7 +45,7 @@ def test_projector_preserves_only_prior_safe_prefix_after_later_sensitive_text()
     safe_text = "safe " * 120
 
     projector.accept(_start())
-    assert projector.accept(_text_delta(safe_text)) == (safe_text[:-512],)
+    assert projector.accept(_text_delta(safe_text)) == (safe_text,)
     assert projector.accept(_text_delta("C:\\private\\token.txt")) == ()
     assert projector.disabled is True
     assert projector.partial_emitted is True
@@ -105,8 +105,8 @@ def test_projector_rejects_wrong_and_duplicate_stop_permanently():
 
     duplicate_stop = _projector()
     duplicate_stop.accept(_start())
-    duplicate_stop.accept(_text_delta("short answer"))
-    assert duplicate_stop.accept(_stop()) == ("short answer",)
+    assert duplicate_stop.accept(_text_delta("short answer")) == ("short ",)
+    assert duplicate_stop.accept(_stop()) == ("answer",)
     assert duplicate_stop.accept(_stop()) == ()
     assert duplicate_stop.disabled is True
 

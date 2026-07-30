@@ -1711,6 +1711,8 @@ async def run_claude_agent_sdk(
             if capability_evidence_rejected:
                 return False
             capability_evidence.append(evidence)
+            if lifecycle_phase == "completed" and capability_completion_error() is None:
+                answer_stream_gate.release_after_verified_capability()
         claimed = skill_metadata is not None and claim_used_skill(canonical_identity)
         if claimed and on_skill_use:
             await on_skill_use(canonical_identity, skill_metadata)

@@ -7,9 +7,10 @@ from typing import Any
 class TrustedInternalClaudeStreamProjector:
     """Project one trusted-internal raw event stream into safe publishable text.
 
-    The interface accepts raw event dictionaries and returns only text that is
-    stable beyond the trailing safety window.  It never imports the SDK or
-    publishes callbacks; callers retain those adapter responsibilities.
+    The interface accepts raw event dictionaries and returns only text with a
+    stable lexical boundary.  A trailing safety window remains the fallback for
+    a block without a stable boundary.  It never imports the SDK or publishes
+    callbacks; callers retain those adapter responsibilities.
     """
 
     def __init__(
@@ -121,7 +122,7 @@ class TrustedInternalClaudeStreamProjector:
         if not self._is_safe(self._pending_text):
             self._disable()
             return ()
-        stable_length = len(self._pending_text) - self._trailing_chars
+        stable_length = self._stable_prefix_length()
         if stable_length <= 0:
             return ()
         chunk = self._pending_text[:stable_length]
@@ -130,6 +131,33 @@ class TrustedInternalClaudeStreamProjector:
             return ()
         self._pending_text = self._pending_text[stable_length:]
         return self._emit(chunk)
+
+    def _stable_prefix_length(self) -> int:
+        """Return a prefix that later text cannot turn into private content."""
+
+        for index in range(len(self._pending_text) - 1, -1, -1):
+            if not self._is_stable_boundary(self._pending_text[index]):
+                continue
+            candidate = self._pending_text[: index + 1]
+            if self._is_safe_prefix(candidate):
+                return len(candidate)
+        return max(0, len(self._pending_text) - self._trailing_chars)
+
+    @staticmethod
+    def _is_stable_boundary(value: str) -> bool:
+        return value.isspace() or value in "!?;。！？"
+
+    def _is_safe_prefix(self, value: str) -> bool:
+        if not self._is_safe(value):
+            return False
+        # A sensitive key may legally include whitespace before its assignment.
+        # Reject a boundary whose already-published bytes would be rewritten by
+        # the public sanitizer after the next fragment arrives.
+        for continuation in ("= synthetic-value", ': "synthetic-value"'):
+            sanitized = self._sanitizer(value + continuation)
+            if not isinstance(sanitized, str) or not sanitized.startswith(value):
+                return False
+        return True
 
     def _is_safe(self, value: str) -> bool:
         sanitized = self._sanitizer(value)

@@ -32,7 +32,9 @@ class PublicAnswerStreamGate:
         self._logical_overflowed = False
         self._accepted_text = False
         self._published_text = False
+        self._public_answer_text = ""
         self._sealed = False
+        self._released_after_verified_capability = False
         self._failed = (
             not callable(sanitizer)
             or not isinstance(max_private_token_chars, int)
@@ -86,6 +88,7 @@ class PublicAnswerStreamGate:
         if private_replacements is not None:
             self._add_replacements(private_replacements)
         self._sealed = True
+        self._released_after_verified_capability = False
         if self._failed or self._logical_overflowed:
             self._fail()
             return
@@ -100,6 +103,21 @@ class PublicAnswerStreamGate:
             or len(self._pending) > self._max_sealed_chars
         ):
             self._fail()
+
+    def release_after_verified_capability(self) -> None:
+        """Allow new text only after the caller has verified capability completion.
+
+        Text retained before the verification point is deliberately discarded: raw
+        assistant text before a capability completes is not a server-authoritative
+        final-answer projection and must not be replayed as one.
+        """
+
+        if self._failed or self._finished or not self._sealed:
+            return
+        self._pending = ""
+        self._public_answer_text = ""
+        self._sealed = False
+        self._released_after_verified_capability = True
 
     def fail_closed(self) -> None:
         """Irreversibly discard retained text when an upstream projection is unsafe."""
@@ -131,7 +149,9 @@ class PublicAnswerStreamGate:
                 self._fail()
                 return self._discard()
 
-        if not self._accepted_text:
+        if self._released_after_verified_capability:
+            candidate = self._pending
+        elif not self._accepted_text:
             candidate = safe_final
         elif self._sealed and not self._published_text:
             candidate = safe_final
@@ -143,7 +163,12 @@ class PublicAnswerStreamGate:
         chunks = self._emit(emitted)
         self._pending = ""
         self._finished = True
-        return PublicAnswerFinish(chunks, safe_final)
+        public_final_text = (
+            self._public_answer_text
+            if self._released_after_verified_capability
+            else safe_final
+        )
+        return PublicAnswerFinish(chunks, public_final_text)
 
     def _add_replacements(self, replacements: Mapping[str, str]) -> None:
         try:
@@ -248,6 +273,7 @@ class PublicAnswerStreamGate:
         if not text:
             return ()
         self._published_text = True
+        self._public_answer_text += text
         suffix_chars = self._max_private_token_chars - 1
         self._published_suffix = (self._published_suffix + text)[-suffix_chars:]
         return (text,)
