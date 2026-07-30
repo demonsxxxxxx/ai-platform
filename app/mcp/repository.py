@@ -89,6 +89,13 @@ def new_mcp_catalog_tool_id() -> str:
     return f"mcpt-{uuid.uuid4().hex}"
 
 
+def _catalog_manifest_policy_reason(existing_reason: Any, desired_reason: str) -> str | None:
+    """Compare policy provenance only while the catalog still owns that policy row."""
+
+    reason = str(existing_reason or "")
+    return desired_reason if not reason or reason in MCP_CATALOG_MANAGED_POLICY_REASONS else None
+
+
 def mcp_runtime_metadata_usable(tool: dict[str, Any]) -> bool:
     """Return whether one catalog or builtin row can be sandbox-registered."""
 
@@ -489,6 +496,11 @@ async def publish_mcp_tool_catalog(
         (tenant_id, server_name),
     )
     existing = {str(row["remote_tool_name"]): dict(row) for row in await existing_cursor.fetchall()}
+    active_existing = {
+        remote_name: row
+        for remote_name, row in existing.items()
+        if str(row.get("catalog_entry_status") or "") == "active"
+    }
     desired_names = {str(tool.remote_name) for tool in tools}
     desired_manifest = {
         str(tool.remote_name): (
@@ -496,7 +508,10 @@ async def publish_mcp_tool_catalog(
             "active",
             bool(tool.write_capable),
             str(tool.risk_level),
-            str(tool.catalog_policy_reason),
+            _catalog_manifest_policy_reason(
+                existing.get(str(tool.remote_name), {}).get("policy_reason"),
+                str(tool.catalog_policy_reason),
+            ),
         )
         for tool in tools
     }
@@ -506,9 +521,9 @@ async def publish_mcp_tool_catalog(
             str(row.get("catalog_entry_status") or "disabled"),
             bool(row.get("write_capable")),
             str(row.get("risk_level") or "low"),
-            str(row.get("policy_reason") or ""),
+            _catalog_manifest_policy_reason(row.get("policy_reason"), str(row.get("policy_reason") or "")),
         )
-        for remote_name, row in existing.items()
+        for remote_name, row in active_existing.items()
     }
     manifest_changed = desired_manifest != existing_manifest
 
@@ -591,7 +606,11 @@ async def publish_mcp_tool_catalog(
             ),
         )
 
-    removed_tool_ids = [str(row["tool_id"]) for remote_name, row in existing.items() if remote_name not in desired_names]
+    removed_tool_ids = [
+        str(row["tool_id"])
+        for remote_name, row in active_existing.items()
+        if remote_name not in desired_names
+    ]
     if removed_tool_ids:
         await conn.execute(
             """

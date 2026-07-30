@@ -229,6 +229,115 @@ async def test_catalog_publication_activates_unknown_tools_as_high_risk_through_
     assert "where tool_policies.reason = any(%s)" in policy_sql
 
 
+def test_catalog_manifest_policy_reason_preserves_managed_transitions_and_ignores_custom_policy():
+    assert mcp_repository._catalog_manifest_policy_reason(
+        "mcp_catalog_read_only", "mcp_catalog_annotation_unknown"
+    ) == "mcp_catalog_annotation_unknown"
+    assert mcp_repository._catalog_manifest_policy_reason(
+        "admin_owned_policy", "mcp_catalog_annotation_unknown"
+    ) is None
+    assert mcp_repository._catalog_manifest_policy_reason(
+        "", "mcp_catalog_annotation_unknown"
+    ) == "mcp_catalog_annotation_unknown"
+
+
+@pytest.mark.asyncio
+async def test_catalog_publication_is_idempotent_after_an_admin_owned_policy_and_stale_removal(monkeypatch):
+    class Cursor:
+        def __init__(self, *, row=None, rows=()):
+            self._row = row
+            self._rows = rows
+
+        async def fetchone(self):
+            return self._row
+
+        async def fetchall(self):
+            return self._rows
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((sql, params))
+            if "select entries.tool_id" in sql:
+                return Cursor(
+                    rows=[
+                        {
+                            "tool_id": "mcpt-compatible",
+                            "remote_tool_name": "unknown_tool",
+                            "schema_hash": "schema-unknown",
+                            "catalog_entry_status": "active",
+                            "write_capable": True,
+                            "risk_level": "high",
+                            "policy_reason": "admin_owned_policy",
+                        },
+                        {
+                            "tool_id": "mcpt-stale-read",
+                            "remote_tool_name": "read_tool",
+                            "schema_hash": "schema-read",
+                            "catalog_entry_status": "stale",
+                            "write_capable": False,
+                            "risk_level": "low",
+                            "policy_reason": "mcp_catalog_read_only",
+                        },
+                        {
+                            "tool_id": "mcpt-stale-write",
+                            "remote_tool_name": "write_tool",
+                            "schema_hash": "schema-write",
+                            "catalog_entry_status": "stale",
+                            "write_capable": True,
+                            "risk_level": "high",
+                            "policy_reason": "mcp_catalog_write_capable",
+                        },
+                    ]
+                )
+            if "update mcp_servers" in sql:
+                assert params[0] == 5
+                return Cursor(
+                    row={
+                        "catalog_status": "available",
+                        "catalog_unavailable_reason": "",
+                        "catalog_revision": 5,
+                        "catalog_discovered_count": 1,
+                        "catalog_selectable_count": 1,
+                    }
+                )
+            return Cursor()
+
+    async def active_server(conn, **kwargs):
+        return {
+            "status": "active",
+            "catalog_generation": 7,
+            "catalog_sync_attempt": 4,
+            "catalog_status": "syncing",
+            "catalog_sync_lease_active": True,
+            "catalog_revision": 5,
+            "catalog_discovered_count": 1,
+            "catalog_selectable_count": 1,
+        }
+
+    async def append_audit_log(*args, **kwargs):
+        return "audit-catalog"
+
+    monkeypatch.setattr(mcp_repository, "_locked_server", active_server)
+    monkeypatch.setattr(mcp_repository._repositories(), "append_audit_log", append_audit_log)
+
+    result = await mcp_repository.publish_mcp_tool_catalog(
+        Connection(),
+        tenant_id="tenant-a",
+        server_name="compatible-server",
+        observed_generation=7,
+        observed_attempt=4,
+        endpoint="https://mcp.example/tools",
+        tools=(McpDiscoveredTool("unknown_tool", "schema-unknown", False, MCP_TOOL_ANNOTATION_UNKNOWN),),
+        actor_id="admin-a",
+    )
+
+    assert result["catalog_revision"] == 5
+    assert result["published"] is False
+
+
 @pytest.mark.asyncio
 async def test_annotation_unknown_catalog_tool_uses_existing_chat_distribution_authorization(monkeypatch):
     compatible_tool = {

@@ -484,11 +484,37 @@ async def test_mcp_catalog_postgres_preserves_annotation_classification_distribu
             ).fetchone()
 
         assert republished["catalog_status"] == "available"
+        assert republished["published"] is True
+        assert republished["catalog_revision"] == published["catalog_revision"] + 1
         assert policy == {
             "status": "disabled",
             "visible_to_user": False,
             "reason": "admin_owned_policy",
         }
+
+        async with catalog_conn.transaction():
+            await catalog_conn.execute(
+                """
+                update mcp_servers
+                set catalog_sync_attempt = 3,
+                    catalog_status = 'syncing',
+                    catalog_sync_lease_expires_at = now() + interval '5 minutes'
+                where tenant_id = 'tenant-a' and name = 'compatible-server'
+                """
+            )
+            stable_republish = await mcp_repository.publish_mcp_tool_catalog(
+                catalog_conn,
+                tenant_id="tenant-a",
+                server_name="compatible-server",
+                observed_generation=9,
+                observed_attempt=3,
+                endpoint="https://mcp.example.test/v1",
+                tools=(tools[2],),
+                actor_id="admin-a",
+            )
+
+        assert stable_republish["catalog_revision"] == republished["catalog_revision"]
+        assert stable_republish["published"] is False
     finally:
         if catalog_conn is not None:
             await catalog_conn.rollback()
