@@ -64,6 +64,7 @@ from app.skills.catalog import (
 )
 from app.skills.execution_profiles import canonical_skill_execution_profile
 from app.skills.deliverable_runtime import (
+    append_deliverable_contract_upgrade_audit as _append_deliverable_contract_upgrade_audit,
     enforce_pinned_deliverable_result as _enforce_pinned_deliverable_contract,
     persisted_required_artifact_types,
 )
@@ -2853,6 +2854,13 @@ async def process_run_payload(
                     **result_payload,
                     "cancel_status": "cancel_requested_but_completed",
                 }
+            await _append_deliverable_contract_upgrade_audit(
+                conn,
+                payload=payload,
+                result=result,
+                trace_id=trace_id,
+                append_audit_log=repositories.append_audit_log,
+            )
             for artifact in artifact_records:
                 manifest_json = artifact_manifest_contract(
                     artifact_type=artifact["artifact_type"],

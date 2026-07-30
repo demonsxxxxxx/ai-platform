@@ -9,6 +9,7 @@ requirements from model output or a request prompt.
 from __future__ import annotations
 
 import stat
+import tempfile
 from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -264,7 +265,12 @@ def process_evidence_is_valid(
     ]
 
 
-def public_artifact_matches_contract(contract: Mapping[str, object], artifact: object) -> bool:
+def public_artifact_matches_contract(
+    contract: Mapping[str, object],
+    artifact: object,
+    *,
+    storage_binding: Mapping[str, object],
+) -> bool:
     """Reject executor-returned artifacts that cannot be public contract deliverables."""
 
     validated = validate_skill_deliverable_contract(contract)
@@ -279,14 +285,20 @@ def public_artifact_matches_contract(contract: Mapping[str, object], artifact: o
         size_bytes = int(getattr(artifact, "size_bytes", 0))
     except (TypeError, ValueError):
         return False
+    workspace_output_name = workspace_output.rsplit("/", 1)[-1] if isinstance(workspace_output, str) else ""
     return (
         str(getattr(artifact, "label", "") or "") == spec["label"]
         and str(getattr(artifact, "content_type", "") or "") == spec["content_type"]
         and 0 < size_bytes <= int(spec["max_size_bytes"])
-        and str(getattr(artifact, "storage_key", "") or "").lower().endswith(str(spec["extension"]))
         and isinstance(manifest, dict)
         and manifest.get("deliverable_type") == artifact_type
         and _is_controlled_delivery_output(workspace_output)
+        and _is_current_run_artifact_storage_key(
+            str(getattr(artifact, "storage_key", "") or ""),
+            binding=storage_binding,
+            filename=workspace_output_name,
+            extension=str(spec["extension"]),
+        )
     )
 
 
@@ -295,12 +307,60 @@ def _is_controlled_delivery_output(value: object) -> bool:
 
     if not isinstance(value, str):
         return False
+    if "\\" in value:
+        return False
     parts = value.split("/")
     return (
         len(parts) >= 3
         and parts[0] == "outputs"
         and "delivery" in parts[:-1]
         and all(part not in {"", ".", ".."} for part in parts)
+    )
+
+
+def _is_current_run_artifact_storage_key(
+    storage_key: str,
+    *,
+    binding: Mapping[str, object],
+    filename: str,
+    extension: str,
+) -> bool:
+    """Require the exact deterministic namespace owned by the current run."""
+
+    if not storage_key or "\\" in storage_key or storage_key != storage_key.strip():
+        return False
+    identity = tuple(
+        str(binding.get(field) or "")
+        for field in ("tenant_id", "workspace_id", "session_id", "run_id")
+    )
+    if any(
+        not value
+        or value != value.strip()
+        or value in {".", ".."}
+        or any(character in "/\\\x00" or ord(character) < 32 for character in value)
+        for value in identity
+    ):
+        return False
+    parts = storage_key.split("/")
+    expected_prefix = (
+        "tenants",
+        identity[0],
+        "workspaces",
+        identity[1],
+        "sessions",
+        identity[2],
+        "runs",
+        identity[3],
+        "artifacts",
+    )
+    return (
+        len(parts) == 11
+        and tuple(parts[:9]) == expected_prefix
+        and parts[9].isdigit()
+        and int(parts[9]) > 0
+        and parts[10] == filename
+        and _safe_delivery_name(filename, extension=extension)
+        and storage_key == "/".join(parts)
     )
 
 
@@ -336,6 +396,28 @@ def verified_xlsx_delivery(path: Path, *, spec: Mapping[str, object]) -> bool:
     except (AttachmentPreprocessingError, OSError, ValueError):
         return False
     return parsed.evidence.sheet_count > 0
+
+
+def verified_xlsx_delivery_bytes(content: bytes, *, filename: str, spec: Mapping[str, object]) -> bool:
+    """Apply the canonical path verifier to bounded bytes read from object storage."""
+
+    try:
+        max_size = int(spec["max_size_bytes"])
+        if not isinstance(content, bytes) or not 0 < len(content) <= max_size:
+            return False
+        with tempfile.TemporaryDirectory(prefix="ai-platform-xlsx-") as directory:
+            path = Path(directory) / filename
+            path.write_bytes(content)
+            return verified_xlsx_delivery(path, spec=spec)
+    except (OSError, ValueError):
+        return False
+
+
+def public_deliverable_completion_message(contract: Mapping[str, object] | None) -> str | None:
+    """Return a bounded type-neutral completion message for a pinned terminal contract."""
+
+    required_types = contract.get("required_terminal_types") if isinstance(contract, Mapping) else None
+    return "已生成结果文件。" if isinstance(required_types, list) and required_types else None
 
 
 def _safe_delivery_name(name: str, *, extension: str) -> bool:

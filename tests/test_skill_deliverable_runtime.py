@@ -20,12 +20,21 @@ from tests.test_skill_deliverables import usable_xlsx_bytes, xlsx_contract
 
 
 class FakeStorage:
-    def __init__(self):
+    def __init__(self, objects: dict[str, bytes] | None = None):
         self.stored: list[tuple[str, bytes, str]] = []
+        self.objects = dict(objects or {})
+        self.reads: list[tuple[str, int]] = []
 
     def put_bytes(self, *, storage_key, content, content_type):
         self.stored.append((storage_key, content, content_type))
         return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    def get_bytes_bounded(self, *, storage_key, max_bytes):
+        self.reads.append((storage_key, max_bytes))
+        content = self.objects[storage_key]
+        if len(content) > max_bytes:
+            raise ValueError("object_size_limit_exceeded")
+        return content
 
 
 def payload(*, contract=None, file_ids=None, skill_id="audit-finding-rca"):
@@ -46,6 +55,15 @@ def payload(*, contract=None, file_ids=None, skill_id="audit-finding-rca"):
 
 def artifact_dirs(workspace: Path) -> list[Path]:
     return [workspace / "outputs" / "audit-rca" / "delivery"]
+
+
+def current_delivery_storage_key(*, filename: str = "audit-result.xlsx") -> str:
+    """Return the deterministic storage namespace for the runtime fixture run."""
+
+    return (
+        "tenants/tenant-a/workspaces/workspace-a/sessions/session-a/runs/run-a/"
+        f"artifacts/1/{filename}"
+    )
 
 
 def legacy_artifact_dirs(workspace: Path) -> list[Path]:
@@ -213,6 +231,13 @@ def test_runtime_rejects_duplicate_required_xlsx_before_any_storage_write(tmp_pa
 def test_runtime_enforcer_requires_exact_attempt_evidence_and_clears_internal_artifacts():
     contract = xlsx_contract(requires_process_evidence=True)
     run = payload(contract=contract)
+    workbook = usable_xlsx_bytes()
+    storage = FakeStorage(
+        {
+            current_delivery_storage_key(): workbook,
+            current_delivery_storage_key(filename="audit-result-copy.xlsx").replace("artifacts/1/", "artifacts/2/"): workbook,
+        }
+    )
     declaration = RequiredCapabilityDeclaration.from_authorized_subject(
         capability_kind="skill",
         canonical_identity="audit-finding-rca",
@@ -250,8 +275,8 @@ def test_runtime_enforcer_requires_exact_attempt_evidence_and_clears_internal_ar
                     artifact_type="xlsx",
                     label="Excel 文件",
                     content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    storage_key="tenants/tenant-a/runs/run-a/audit-result.xlsx",
-                    size_bytes=1,
+                    storage_key=current_delivery_storage_key(),
+                    size_bytes=len(workbook),
                     manifest={
                         "deliverable_type": "xlsx",
                         "workspace_output": "outputs/audit-rca/delivery/audit-result.xlsx",
@@ -271,8 +296,12 @@ def test_runtime_enforcer_requires_exact_attempt_evidence_and_clears_internal_ar
             },
         )
 
-    accepted = enforce_pinned_deliverable_result(result_for("attempt-a"), payload=run, attempt_id="attempt-a")
-    rejected = enforce_pinned_deliverable_result(result_for("stale-attempt"), payload=run, attempt_id="attempt-a")
+    accepted = enforce_pinned_deliverable_result(
+        result_for("attempt-a"), payload=run, attempt_id="attempt-a", storage=storage
+    )
+    rejected = enforce_pinned_deliverable_result(
+        result_for("stale-attempt"), payload=run, attempt_id="attempt-a", storage=storage
+    )
     duplicate = result_for("attempt-a")
     duplicate.artifacts.insert(
         1,
@@ -280,15 +309,17 @@ def test_runtime_enforcer_requires_exact_attempt_evidence_and_clears_internal_ar
             artifact_type="xlsx",
             label="Excel 文件",
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            storage_key="tenants/tenant-a/runs/run-a/audit-result-copy.xlsx",
-            size_bytes=1,
+            storage_key=current_delivery_storage_key(filename="audit-result-copy.xlsx").replace("artifacts/1/", "artifacts/2/"),
+            size_bytes=len(workbook),
             manifest={
                 "deliverable_type": "xlsx",
                 "workspace_output": "outputs/audit-rca/delivery/audit-result-copy.xlsx",
             },
         ),
     )
-    duplicate_rejected = enforce_pinned_deliverable_result(duplicate, payload=run, attempt_id="attempt-a")
+    duplicate_rejected = enforce_pinned_deliverable_result(
+        duplicate, payload=run, attempt_id="attempt-a", storage=storage
+    )
 
     assert [artifact.artifact_type for artifact in accepted.artifacts] == ["xlsx"]
     assert accepted.result["message"] == "已生成结果文件。"
@@ -297,6 +328,114 @@ def test_runtime_enforcer_requires_exact_attempt_evidence_and_clears_internal_ar
     assert duplicate_rejected.status == "failed"
     assert duplicate_rejected.result["error_code"] == "required_artifact_cardinality_invalid"
     assert duplicate_rejected.artifacts == []
+
+
+def test_runtime_enforcer_requires_current_namespace_and_verified_storage_bytes():
+    contract = xlsx_contract(requires_process_evidence=True)
+    run = payload(contract=contract)
+    workbook = usable_xlsx_bytes()
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity="audit-finding-rca",
+    )
+
+    def result_for(*, storage_key: str, size_bytes: int) -> ExecutorResult:
+        binding = {
+            "tenant_id": run.tenant_id,
+            "workspace_id": run.workspace_id,
+            "user_id": run.user_id,
+            "session_id": run.session_id,
+            "run_id": run.run_id,
+            "attempt_id": run.attempt_id,
+        }
+        evidence = [
+            asdict(
+                RequiredCapabilityEvidence.from_controlled_runner(
+                    declaration=declaration,
+                    binding=binding,
+                    tool_call_id="storage-checked-audit",
+                    lifecycle_phase=phase,
+                )
+            )
+            for phase in ("invocation_requested", "completed")
+        ]
+        return ExecutorResult(
+            status="succeeded",
+            adapter_version="test/1",
+            executor_type="fake",
+            executor_version="test",
+            capabilities={},
+            result={"message": "internal output"},
+            artifacts=[
+                ArtifactManifest(
+                    artifact_type="xlsx",
+                    label="Excel 文件",
+                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    storage_key=storage_key,
+                    size_bytes=size_bytes,
+                    manifest={
+                        "deliverable_type": "xlsx",
+                        "workspace_output": "outputs/audit-rca/delivery/audit-result.xlsx",
+                    },
+                )
+            ],
+            executor_payload={
+                "executor_mode": "platform_controlled_runner",
+                "capability_evidence": evidence,
+            },
+        )
+
+    current_key = current_delivery_storage_key()
+    accepted_storage = FakeStorage({current_key: workbook})
+    accepted = enforce_pinned_deliverable_result(
+        result_for(storage_key=current_key, size_bytes=len(workbook)),
+        payload=run,
+        attempt_id=run.attempt_id,
+        storage=accepted_storage,
+    )
+    cross_run_key = current_key.replace("runs/run-a/", "runs/run-other/")
+    cross_run_storage = FakeStorage({cross_run_key: workbook})
+    cross_run = enforce_pinned_deliverable_result(
+        result_for(storage_key=cross_run_key, size_bytes=len(workbook)),
+        payload=run,
+        attempt_id=run.attempt_id,
+        storage=cross_run_storage,
+    )
+    missing_storage = FakeStorage()
+    missing = enforce_pinned_deliverable_result(
+        result_for(storage_key=current_key, size_bytes=len(workbook)),
+        payload=run,
+        attempt_id=run.attempt_id,
+        storage=missing_storage,
+    )
+    mismatch_storage = FakeStorage({current_key: workbook})
+    mismatch = enforce_pinned_deliverable_result(
+        result_for(storage_key=current_key, size_bytes=len(workbook) - 1),
+        payload=run,
+        attempt_id=run.attempt_id,
+        storage=mismatch_storage,
+    )
+    invalid_storage = FakeStorage({current_key: b"not an OOXML workbook"})
+    invalid = enforce_pinned_deliverable_result(
+        result_for(storage_key=current_key, size_bytes=len(b"not an OOXML workbook")),
+        payload=run,
+        attempt_id=run.attempt_id,
+        storage=invalid_storage,
+    )
+
+    assert [artifact.artifact_type for artifact in accepted.artifacts] == ["xlsx"]
+    assert accepted_storage.reads == [(current_key, len(workbook))]
+    assert accepted_storage.stored == []
+    for rejected in (cross_run, missing, mismatch, invalid):
+        assert rejected.status == "failed"
+        assert rejected.result["error_code"] == "skill_deliverable_artifact_invalid"
+        assert rejected.artifacts == []
+    assert cross_run_storage.reads == []
+    assert cross_run_storage.stored == []
+    assert missing_storage.reads == [(current_key, len(workbook))]
+    assert mismatch_storage.reads == [(current_key, len(workbook) - 1)]
+    assert invalid_storage.reads == [(current_key, len(b"not an OOXML workbook"))]
+    assert all(storage.stored == [] for storage in (missing_storage, mismatch_storage, invalid_storage))
 
 
 def test_runtime_rejects_uncontracted_skill_private_artifacts_with_upgrade_packet(tmp_path):
@@ -332,6 +471,35 @@ def test_runtime_rejects_uncontracted_skill_private_artifacts_with_upgrade_packe
         "process_evidence_values": ["required", "not_required"],
     }
     assert storage.stored == []
+
+
+def test_runtime_keeps_upgrade_packet_out_of_ordinary_result_projection():
+    run = payload(contract=None)
+    result = ExecutorResult(
+        status="succeeded",
+        adapter_version="test/1",
+        executor_type="fake",
+        executor_version="test",
+        capabilities={},
+        result={"message": "internal output"},
+        artifacts=[
+            ArtifactManifest(
+                artifact_type="runtime_file",
+                label="intermediate.json",
+                content_type="application/json",
+                storage_key="tenants/tenant-a/runs/run-a/intermediate.json",
+                size_bytes=2,
+            )
+        ],
+    )
+
+    failed = enforce_pinned_deliverable_result(result, payload=run, attempt_id=run.attempt_id)
+
+    assert failed.status == "failed"
+    assert failed.artifacts == []
+    assert failed.result["error_code"] == "skill_deliverable_contract_upgrade_required"
+    assert "deliverable_contract_upgrade" not in failed.result
+    assert failed.executor_payload["deliverable_contract_upgrade"]["status"] == "package_upgrade_required"
 
 
 def test_runtime_preserves_general_chat_artifacts_without_a_skill_delivery_contract():

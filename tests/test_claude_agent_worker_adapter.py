@@ -25,6 +25,7 @@ from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
     _allowed_skill_names,
+    _delivery_completion_message,
     _inferred_used_skill_names,
     _ordinary_run_requires_sandbox,
     _required_artifact_types,
@@ -52,6 +53,12 @@ from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.skills.pinning import build_skill_manifest_pins
 from app.skills.registry import BuiltinSkillRegistry
 from app.worker import WorkerRunCancelled
+
+
+def test_adapter_uses_type_neutral_message_for_current_and_future_delivery_contracts():
+    assert _delivery_completion_message({"required_terminal_types": ["xlsx"]}, "provider text") == "已生成结果文件。"
+    assert _delivery_completion_message({"required_terminal_types": ["pdf"]}, "provider text") == "已生成结果文件。"
+    assert _delivery_completion_message(None, "provider text") == "provider text"
 
 
 @pytest.mark.asyncio

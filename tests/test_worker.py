@@ -10,6 +10,7 @@ import pytest
 import app.worker as worker_module
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
+from app.control_plane_contracts import sanitize_public_payload
 from app.executors.base import (
     ArtifactManifest,
     ExecutorResult,
@@ -386,6 +387,84 @@ def primary_manifest(skill_id: str, version: str) -> dict:
         "staged": False,
         "used": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_worker_records_upgrade_action_that_correlates_to_admin_skill_snapshot(monkeypatch):
+    payload = RunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        agent_id="qa-word-review",
+        skill_id="audit-finding-rca",
+        file_ids=["file-a"],
+        input={"mode": "file"},
+        skill_version="hash-audit",
+        release_decision=release_decision("hash-audit"),
+        skill_manifests=[primary_manifest("audit-finding-rca", "hash-audit")],
+    )
+    result = ExecutorResult(
+        status="failed",
+        adapter_version="test/1",
+        executor_type="fake",
+        executor_version="test",
+        capabilities={},
+        result={
+            "message": "The selected Skill package must be upgraded before file delivery.",
+            "error_code": "skill_deliverable_contract_upgrade_required",
+        },
+        executor_payload={"deliverable_contract_upgrade": {"untrusted": "not persisted"}},
+    )
+    audits = []
+
+    async def append_audit_log(conn, **kwargs):
+        audits.append(kwargs)
+
+    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
+
+    await worker_module._append_deliverable_contract_upgrade_audit(
+        object(),
+        payload=payload,
+        result=result,
+        trace_id="trace-run-a",
+        append_audit_log=append_audit_log,
+    )
+
+    assert audits[0]["action"] == "skill_deliverable_contract_upgrade_required"
+    assert audits[0]["target_type"] == "skill_package"
+    assert audits[0]["target_id"] == "audit-finding-rca"
+    assert audits[0]["payload_json"] == {
+        "run_id": "run-a",
+        "skill_id": "audit-finding-rca",
+        "schema_version": "ai-platform.skill-deliverable-upgrade-packet.v1",
+        "status": "package_upgrade_required",
+        "required_front_matter_fields": [
+            "deliverable-public-types",
+            "deliverable-required-types",
+            "deliverable-process-evidence",
+        ],
+    }
+    assert sanitize_public_payload(audits[0]["payload_json"]) == audits[0]["payload_json"]
+    snapshot = repository_module._sanitize_skill_snapshot(
+        {
+            "skill_id": "audit-finding-rca",
+            "skill_version": "version-audit",
+            "content_hash": "hash-audit",
+            "source": {},
+            "dependency_ids": [],
+            "allowed": True,
+            "staged": True,
+            "used": False,
+        }
+    )
+    assert snapshot["skill_id"] == audits[0]["payload_json"]["skill_id"]
+    assert snapshot["skill_version"] == "version-audit"
+    assert snapshot["content_hash"] == "hash-audit"
+    assert "deliverable_contract_upgrade" not in result.result
+    assert "untrusted" not in str(audits[0]["payload_json"])
 
 
 def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile():

@@ -11,7 +11,9 @@ from app.skills.deliverables import (
     deliverable_contract_from_manifest,
     parse_skill_deliverable_contract,
     public_artifact_matches_contract,
+    public_deliverable_completion_message,
     verified_xlsx_delivery,
+    verified_xlsx_delivery_bytes,
 )
 
 
@@ -100,14 +102,29 @@ def test_xlsx_verifier_requires_reachable_parseable_worksheet(tmp_path):
     workbook.write_bytes(malformed.getvalue())
 
     assert verified_xlsx_delivery(workbook, spec=spec) is False
+    assert verified_xlsx_delivery_bytes(
+        usable_xlsx_bytes(), filename="audit-result.xlsx", spec=spec
+    ) is True
+    assert verified_xlsx_delivery_bytes(
+        b"not an OOXML workbook", filename="audit-result.xlsx", spec=spec
+    ) is False
 
 
 def test_contract_artifact_requires_runtime_admission_origin():
+    storage_binding = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+    }
     artifact = ArtifactManifest(
         artifact_type="xlsx",
         label="Excel 文件",
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        storage_key="tenants/tenant-a/runs/run-a/artifacts/1/audit-result.xlsx",
+        storage_key=(
+            "tenants/tenant-a/workspaces/workspace-a/sessions/session-a/runs/run-a/"
+            "artifacts/1/audit-result.xlsx"
+        ),
         size_bytes=1,
         manifest={
             "deliverable_type": "xlsx",
@@ -115,15 +132,47 @@ def test_contract_artifact_requires_runtime_admission_origin():
         },
     )
 
-    assert public_artifact_matches_contract(xlsx_contract(), artifact) is True
+    assert public_artifact_matches_contract(
+        xlsx_contract(), artifact, storage_binding=storage_binding
+    ) is True
     assert public_artifact_matches_contract(
         xlsx_contract(),
         ArtifactManifest(
             artifact_type="xlsx",
             label="Excel 文件",
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            storage_key="tenants/tenant-a/runs/run-a/artifacts/1/audit-result.xlsx",
+            storage_key=(
+                "tenants/tenant-a/workspaces/workspace-a/sessions/session-a/runs/run-a/"
+                "artifacts/1/audit-result.xlsx"
+            ),
             size_bytes=1,
             manifest={},
         ),
+        storage_binding=storage_binding,
     ) is False
+    for storage_key in (
+        "tenants/tenant-a/workspaces/workspace-a/sessions/session-a/runs/run-other/artifacts/1/audit-result.xlsx",
+        "tenants/tenant-other/workspaces/workspace-a/sessions/session-a/runs/run-a/artifacts/1/audit-result.xlsx",
+        "tenants/tenant-a/workspaces/workspace-a/sessions/session-a/runs/run-a/artifacts/1/../audit-result.xlsx",
+    ):
+        assert public_artifact_matches_contract(
+            xlsx_contract(),
+            ArtifactManifest(
+                artifact_type="xlsx",
+                label="Excel 文件",
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                storage_key=storage_key,
+                size_bytes=1,
+                manifest={
+                    "deliverable_type": "xlsx",
+                    "workspace_output": "outputs/audit-rca/delivery/audit-result.xlsx",
+                },
+            ),
+            storage_binding=storage_binding,
+        ) is False
+
+
+def test_pinned_delivery_message_is_type_neutral_for_future_server_types():
+    assert public_deliverable_completion_message({"required_terminal_types": ["xlsx"]}) == "已生成结果文件。"
+    assert public_deliverable_completion_message({"required_terminal_types": ["pdf"]}) == "已生成结果文件。"
+    assert public_deliverable_completion_message(None) is None

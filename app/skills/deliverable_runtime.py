@@ -11,7 +11,7 @@ from __future__ import annotations
 import posixpath
 import zipfile
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from xml.etree import ElementTree
@@ -26,8 +26,10 @@ from app.skills.deliverables import (
     deliverable_spec,
     process_evidence_is_valid,
     public_artifact_matches_contract,
+    public_deliverable_completion_message,
     required_deliverable_types,
     verified_xlsx_delivery,
+    verified_xlsx_delivery_bytes,
 )
 from app.storage import ObjectStorage
 
@@ -81,6 +83,7 @@ _DELIVERY_ERRORS = {
     "skill_deliverable_contract_invalid": "The selected Skill delivery contract is unavailable.",
     "skill_deliverable_contract_upgrade_required": "The selected Skill package must be upgraded before file delivery.",
     "skill_deliverable_process_evidence_missing": "The required file-delivery execution evidence is unavailable.",
+    "skill_deliverable_artifact_invalid": "The required file-delivery artifact failed verification.",
     "required_artifact_missing": "The file-required Skill did not produce every required artifact type.",
     "required_artifact_cardinality_invalid": "The file-required Skill must produce exactly one of each required artifact type.",
 }
@@ -148,6 +151,7 @@ def enforce_pinned_deliverable_result(
     *,
     payload: object,
     attempt_id: str,
+    storage: ObjectStorage | None = None,
 ) -> ExecutorResult:
     """Fail closed before artifact persistence when an executor bypasses admission."""
 
@@ -178,26 +182,20 @@ def enforce_pinned_deliverable_result(
         return result
     if not _process_evidence_is_valid(payload, contract, result.executor_payload, attempt_id=attempt_id):
         return _failed_result(result, "skill_deliverable_process_evidence_missing", _DELIVERY_ERRORS["skill_deliverable_process_evidence_missing"])
-    artifacts = [
-        artifact for artifact in result.artifacts if public_artifact_matches_contract(contract, artifact)
-    ]
-    missing_types, duplicate_types = _required_terminal_type_errors(
-        contract, (artifact.artifact_type for artifact in artifacts)
+    artifacts, error_code = _verified_pinned_result_artifacts(
+        result,
+        payload=payload,
+        contract=contract,
+        storage=storage,
     )
-    if duplicate_types:
-        return _failed_result(
-            result,
-            "required_artifact_cardinality_invalid",
-            _DELIVERY_ERRORS["required_artifact_cardinality_invalid"],
-        )
-    if missing_types:
-        return _failed_result(result, "required_artifact_missing", _DELIVERY_ERRORS["required_artifact_missing"])
+    if error_code is not None:
+        return _failed_result(result, error_code, _DELIVERY_ERRORS[error_code])
     return replace(
         result,
         artifacts=artifacts,
         result={
             **result.result,
-            "message": "已生成结果文件。",
+            "message": public_deliverable_completion_message(contract) or "任务完成",
             "artifact_count": len(artifacts),
         },
     )
@@ -363,6 +361,52 @@ def _selected_version(payload: object) -> object:
     return manifest.get("content_hash") or manifest.get("version")
 
 
+def deliverable_contract_upgrade_audit_payload(
+    payload: object,
+    result: ExecutorResult,
+) -> dict[str, object] | None:
+    """Build the bounded admin action that correlates to the run's skill snapshot."""
+
+    if str(result.result.get("error_code") or "") != "skill_deliverable_contract_upgrade_required":
+        return None
+    packet = deliverable_contract_upgrade_packet(
+        skill_id=getattr(payload, "skill_id", ""),
+        version="",
+    )
+    return {
+        "run_id": str(getattr(payload, "run_id", "") or ""),
+        "skill_id": str(getattr(payload, "skill_id", "") or ""),
+        "schema_version": packet["schema_version"],
+        "status": packet["status"],
+        "required_front_matter_fields": packet["required_front_matter_fields"],
+    }
+
+
+async def append_deliverable_contract_upgrade_audit(
+    conn: object,
+    *,
+    payload: object,
+    result: ExecutorResult,
+    trace_id: str,
+    append_audit_log: Callable[..., Awaitable[object]],
+) -> None:
+    """Persist a bounded package-upgrade action through the worker-owned audit sink."""
+
+    audit_payload = deliverable_contract_upgrade_audit_payload(payload, result)
+    if audit_payload is None:
+        return
+    await append_audit_log(
+        conn,
+        tenant_id=str(getattr(payload, "tenant_id", "") or ""),
+        user_id=None,
+        action="skill_deliverable_contract_upgrade_required",
+        target_type="skill_package",
+        target_id=str(getattr(payload, "skill_id", "") or ""),
+        trace_id=trace_id,
+        payload_json=audit_payload,
+    )
+
+
 def _failed_result(result: ExecutorResult, error_code: str, message: str) -> ExecutorResult:
     return replace(
         result,
@@ -392,6 +436,73 @@ def _process_evidence_is_valid(
         },
         executor_payload=executor_payload,
     )
+
+
+def _verified_pinned_result_artifacts(
+    result: ExecutorResult,
+    *,
+    payload: object,
+    contract: Mapping[str, object],
+    storage: ObjectStorage | None,
+) -> tuple[list[ArtifactManifest], str | None]:
+    """Read and verify every public terminal artifact before worker persistence."""
+
+    allowed_types = {
+        str(spec["artifact_type"])
+        for spec in contract["allowed_public_deliverables"]
+        if isinstance(spec, Mapping)
+    }
+    binding = {
+        field: getattr(payload, field, "")
+        for field in ("tenant_id", "workspace_id", "session_id", "run_id")
+    }
+    artifacts: list[ArtifactManifest] = []
+    for artifact in result.artifacts:
+        if artifact.artifact_type not in allowed_types:
+            continue
+        if not public_artifact_matches_contract(contract, artifact, storage_binding=binding):
+            return [], "skill_deliverable_artifact_invalid"
+        artifacts.append(artifact)
+    missing_types, duplicate_types = _required_terminal_type_errors(
+        contract, (artifact.artifact_type for artifact in artifacts)
+    )
+    if duplicate_types:
+        return [], "required_artifact_cardinality_invalid"
+    if missing_types:
+        return [], "required_artifact_missing"
+    object_storage = storage or ObjectStorage()
+    for artifact in artifacts:
+        try:
+            declared_size = int(artifact.size_bytes)
+            content = object_storage.get_bytes_bounded(
+                storage_key=artifact.storage_key,
+                max_bytes=declared_size,
+            )
+            spec = deliverable_spec(contract, artifact.artifact_type)
+        except Exception:  # noqa: BLE001 - object storage errors are not safe public facts.
+            return [], "skill_deliverable_artifact_invalid"
+        if len(content) != declared_size or not _artifact_bytes_match_contract(
+            artifact,
+            content=content,
+            spec=spec,
+        ):
+            return [], "skill_deliverable_artifact_invalid"
+    return artifacts, None
+
+
+def _artifact_bytes_match_contract(
+    artifact: ArtifactManifest,
+    *,
+    content: bytes,
+    spec: Mapping[str, object],
+) -> bool:
+    """Fail closed until every server-owned public type has a byte verifier."""
+
+    if artifact.artifact_type != "xlsx":
+        return False
+    workspace_output = artifact.manifest.get("workspace_output") if isinstance(artifact.manifest, dict) else ""
+    filename = workspace_output.rsplit("/", 1)[-1] if isinstance(workspace_output, str) else ""
+    return verified_xlsx_delivery_bytes(content, filename=filename, spec=spec)
 
 
 def _uncontracted_delivery_requires_upgrade(

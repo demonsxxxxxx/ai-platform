@@ -88,6 +88,7 @@ from app.skills.deliverable_runtime import (
     required_delivery_artifact_types,
     stage_adapter_delivery,
 )
+from app.skills.deliverables import public_deliverable_completion_message
 from app.skills.pinning import (
     MAX_SKILL_SNAPSHOT_FILE_BYTES,
     MAX_SKILL_SNAPSHOT_TOTAL_BYTES,
@@ -111,6 +112,14 @@ _SDK_ACTIONABLE_FAILURE_CODES = {
     "claude_agent_sdk_upstream_error",
 }
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
+
+
+def _delivery_completion_message(contract: dict[str, object] | None, fallback: str) -> str:
+    """Choose the pinned terminal-delivery message without naming a file type."""
+
+    return public_deliverable_completion_message(contract) or fallback
+
+
 async def _emit_public_progress_event(
     event_sink: ExecutorEventSink | None,
     *,
@@ -1779,9 +1788,10 @@ class ClaudeAgentWorkerAdapter:
             capabilities={**self.capabilities, "platform_skills": True},
             result={
                 "message": (
-                    "已生成 Excel 文件。"
-                    if delivery.contract is not None
-                    else str(executor_response.get("message") or "任务完成")
+                    _delivery_completion_message(
+                        delivery.contract,
+                        str(executor_response.get("message") or "任务完成"),
+                    )
                 ),
                 "artifact_count": len(artifacts),
                 "sdk_used": bool(executor_response.get("sdk_used")),
@@ -1984,10 +1994,8 @@ class ClaudeAgentWorkerAdapter:
                 executor_version=self.executor_version,
                 capabilities={**self.capabilities, "platform_skills": True},
                 result={
-                    "message": (
-                        "已生成 Excel 文件。"
-                        if delivery.contract is not None
-                        else sdk_result.message or "任务完成"
+                    "message": _delivery_completion_message(
+                        delivery.contract, sdk_result.message or "任务完成"
                     ),
                     "artifact_count": len(artifacts),
                     "sdk_used": True,
