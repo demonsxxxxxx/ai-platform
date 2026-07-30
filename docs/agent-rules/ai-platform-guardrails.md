@@ -36,50 +36,6 @@ Do not make product or implementation decisions from directories, ports, or
 services outside these guardrails, current code, and current 211 runtime
 evidence.
 
-## P0 Gate Order And Current Gate Sequence
-
-Current P0 work must move these gates toward closure:
-
-1. Memory / Context.
-2. MCP / Tool Permission.
-3. Event / Playback Contract.
-4. Sandbox Lease / Workspace.
-5. Agent Frontend V1 verification for the above public projections.
-
-Long Task / Platform Multi-Run Orchestration / SDK Subagent expansion must wait
-until these gates have current code, focused tests, review, and 211 smoke
-evidence.
-
-The current roadmap gate sequence is stricter than the old P0-only list:
-
-1. G0-G1 Source Authority / Security Baseline, including company AD/auth/session,
-   RBAC, tenant/workspace/user isolation, redaction, repo-local deploy
-   composition, and runtime label parity.
-2. G2-G4 Control Plane MVP contracts for session, run, file, artifact, skill,
-   tool, memory, event, and audit; executors consume platform payloads and do
-   not define platform schema.
-3. G5 Run Lifecycle / Worker Runtime V1, including queue, lease, heartbeat,
-   retry, dead-letter, cancel, resume, checkpoint, and idempotency.
-4. G6 Tool / Skill / Memory Governance, including allow/deny/ask policy,
-   retention, redaction, delete, dependency, and release-policy flows.
-5. G7 Sandbox / Resource Hardening, including Docker provider validation,
-   egress policy, runtime quota, orphan cleanup, and container security options.
-6. G8 Deferred Platform Multi-Run Gate remains a deferred parking-lot for
-   platform-owned parent/child multi-run orchestration. Historical evidence and
-   appendices may mention the old title "G8 Multi-Agent Controlled Beta"; do
-   not use that title for current status. SDK agent/subagent behavior stays
-   inside one governed platform run; the current evidence work is B3 SDK
-   subagent fanout capacity, not ordinary-user platform-level multi-run
-   exposure and not a beta route.
-7. G9 Observability / Quality / Ops, including Admin Runtime, cost/token/latency
-   metrics, error taxonomy, trace/audit export, and alerts.
-8. G10 Internal Beta / Department Rollout with explicit internal workflow owner.
-
-Compose one-command startup, packaged delivery, and public Docker convenience
-are later milestones. They must not displace intranet AD/auth/session,
-tenant-aware isolation, fair scheduling, operational visibility, or frontend
-source/version ownership as the current platform gates.
-
 ## Implementation Guardrails
 
 - Read the relevant current code and tests before changing a slice.

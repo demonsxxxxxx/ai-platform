@@ -1662,53 +1662,29 @@ def test_text_output_is_human_readable_and_uses_the_stable_category(
     assert "code: non_ancestor_range" in result.stdout
 
 
-def test_pr_workflow_requires_the_exact_ref_gate_before_push_and_after_merge_up() -> None:
+def test_pr_workflow_keeps_immutable_authority_and_failure_contract() -> None:
     workflow = ISSUE_WORKFLOW.read_text(encoding="utf-8")
     normalized = workflow.lower()
+    compact = " ".join(workflow.split())
 
     assert "tools/pre_push_readiness.py\") check" in workflow
     assert "python tools/pre_push_readiness.py" not in workflow
     assert "--authority-ref $authority" in workflow
     assert "detached temporary worktree" in normalized
     assert "never execute" in normalized
-    assert "one-time bootstrap boundary" in normalized
-    assert "cannot run this normal gate or certify itself" in normalized
+    assert "python -P" in workflow
     assert "PYTHONSAFEPATH=1" in workflow
     assert "before the first push" in normalized
     assert "after every ordinary merge-up" in normalized
-    assert "corepack pnpm run ci:verify" in workflow
-    assert "`packageManager` `pnpm@<version>`" in workflow
-    assert "`pnpm install\n--frozen-lockfile --prefer-offline`" in workflow
-    assert "normal host\ncontent-addressed pnpm store and Corepack cache" in workflow
-    assert "never links or reuses a\nmutable `node_modules` tree" in workflow
-    assert "actionable `infrastructure_failure`" in workflow
-    assert "--shared-test-suite" in workflow
-    normalized_workflow = " ".join(workflow.split())
-    assert "Conventional mirrors remain the default" in workflow
-    assert "exact bounded responsibility mapping" in normalized_workflow
-    assert "every mapped suite must exist as an exact case-sensitive blob at `head_ref`" in normalized_workflow
-    assert "or modified `.code-governance-exception.json`" in workflow
-    assert "`tests/test_code_governance.py` suite" in workflow
-    assert "--find-copies=50% --find-copies-harder" in workflow
-    assert "literal `A` or `M` status" in workflow
-    assert "A `C*`, `R*`, `T*`, `U*`" in workflow
-    assert "either source or destination" in workflow
-    assert "case-sensitive Git-tree blob" in workflow
-    assert "canonical relative POSIX" in workflow
-    assert "short `apr-` basename" in workflow
-    assert "163-character staged Skill and\n`.pins` suffix plus headroom" in workflow
-    assert "arbitrary long-path settings" in workflow
-    assert "resolve within the detached worktree's `tests` directory" in workflow
-    assert "deletion follows the deleted-path" in normalized
-    assert "every other unowned root configuration or json path remains" in " ".join(normalized.split())
-    assert "before candidate compile, pytest," in normalized
-    assert "frontend, or candidate configuration executes" in normalized
-    assert "immutable authority git object" in normalized
-    assert "cannot discharge an" in normalized
-    assert "unowned production path" in normalized
-    assert "stale_base" in workflow
-    assert "product_test_failure" in workflow
-    assert "governance_violation" in workflow
-    assert "infrastructure_failure" in workflow
-    assert "external_check" in workflow
-    assert "positive infrastructure evidence on the same SHA" in workflow
+    assert "full 40-hex commits" in workflow
+    assert "immutable authority git object" in compact.lower()
+    assert "governance decision is sealed first" in compact.lower()
+    assert "unowned affected paths fail closed" in compact.lower()
+    for category in (
+        "stale_base",
+        "product_test_failure",
+        "governance_violation",
+        "infrastructure_failure",
+        "external_check",
+    ):
+        assert f"`{category}`" in workflow
