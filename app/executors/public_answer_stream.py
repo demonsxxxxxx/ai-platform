@@ -35,8 +35,6 @@ class PublicAnswerStreamGate:
         self._public_answer_text = ""
         self._sealed = False
         self._released_after_verified_capability = False
-        self._published_before_capability_release = False
-        self._accepted_after_capability_release = False
         self._failed = (
             not callable(sanitizer)
             or not isinstance(max_private_token_chars, int)
@@ -66,8 +64,6 @@ class PublicAnswerStreamGate:
             return ()
         if not text:
             return ()
-        if self._released_after_verified_capability:
-            self._accepted_after_capability_release = True
         self._accepted_text = True
         self._extend_logical_view(text)
         candidate = self._project(self._pending + text)
@@ -119,10 +115,9 @@ class PublicAnswerStreamGate:
         if self._failed or self._finished or not self._sealed:
             return
         self._pending = ""
+        self._public_answer_text = ""
         self._sealed = False
         self._released_after_verified_capability = True
-        self._published_before_capability_release = self._published_text
-        self._accepted_after_capability_release = False
 
     def fail_closed(self) -> None:
         """Irreversibly discard retained text when an upstream projection is unsafe."""
@@ -155,12 +150,7 @@ class PublicAnswerStreamGate:
                 return self._discard()
 
         if self._released_after_verified_capability:
-            candidate = (
-                self._pending
-                if self._accepted_after_capability_release
-                or self._published_before_capability_release
-                else safe_final
-            )
+            candidate = self._pending
         elif not self._accepted_text:
             candidate = safe_final
         elif self._sealed and not self._published_text:

@@ -7058,12 +7058,19 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("public_chunks", "public_answer"),
+    [
+        (["Verified final answer ", "streams safely."], "Verified final answer streams safely."),
+        ([], ""),
+    ],
+)
 async def test_worker_persists_only_public_capability_answer_and_ordered_deltas(
     monkeypatch,
+    public_chunks,
+    public_answer,
 ):
     sealed_pre_capability_text = "raw tool output and /private/path are sealed."
-    public_chunks = ["Verified final answer ", "streams safely."]
-    public_answer = "".join(public_chunks)
     events = []
     messages = []
 
@@ -7114,7 +7121,7 @@ async def test_worker_persists_only_public_capability_answer_and_ordered_deltas(
     assert outcome.status == "succeeded"
     persisted_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
     assert [event["payload"]["delta"] for event in persisted_deltas] == public_chunks
-    assert [event["stage"] for event in persisted_deltas] == ["answer", "answer"]
+    assert [event["stage"] for event in persisted_deltas] == ["answer"] * len(public_chunks)
     completed = next(event["result_json"] for event in events if event["event_type"] == "complete_run")
     assert completed["message"] == public_answer
     assert len(messages) == 1

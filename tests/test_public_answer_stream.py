@@ -144,6 +144,22 @@ def test_verified_capability_release_discards_pre_evidence_text_and_streams_late
     assert finished.final_text == "Safe final answer."
 
 
+def test_verified_capability_release_never_falls_back_to_cumulative_terminal_text():
+    gate = _gate()
+    pre_evidence = "raw tool output must remain private"
+
+    gate.seal({CALL_ID: "tool invocation"})
+    assert gate.accept(pre_evidence) == ()
+    gate.release_after_verified_capability()
+    finished = gate.finish(
+        final_text=f"{pre_evidence} cumulative terminal answer",
+        release=True,
+    )
+
+    assert finished.chunks == ()
+    assert finished.final_text == ""
+
+
 def test_over_bound_initial_or_dynamic_private_token_fails_closed():
     initial = PublicAnswerStreamGate(
         private_replacements={"x" * 65: "external tool"},

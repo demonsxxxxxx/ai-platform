@@ -404,9 +404,8 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
     assert sealed_probe == []
     if outcome in {"success", "multiple_completed"}:
         assert result.error is None
-        assert len(deltas) == 1 and result.message == deltas[0]
+        assert (deltas, result.message) == ([], "")
         if outcome == "success":
-            assert "Safe answer via" in deltas[0]
             assert result.capability_evidence == acknowledged
             assert [item["lifecycle_phase"] for item in acknowledged] == ["invocation_requested", "completed"]
             assert not {"tool_input", "tool_response", "arguments", "error"} & set().union(*(item.keys() for item in acknowledged))
@@ -459,7 +458,7 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
     assert published_after_hook[len(published_before_hook):] == [" After ", "tool invocation."]
     assert result.error is None
     assert joined == "Before external tool. After tool invocation."
-    assert result.message == joined
+    assert result.message == " After tool invocation."
     for private_value in (
         subject["identity"],
         subject["mcp_server_config"]["url"],
@@ -556,7 +555,7 @@ async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(mon
         "skill",
         "skill",
     ]
-    assert deltas == ["done"]
+    assert (deltas, result.message) == ([], "")
     assert "Authoritative platform Skill requirement" in sdk_prompt
     assert "Authoritative platform MCP requirement" not in sdk_prompt
     assert _subject()["identity"] not in sdk_prompt
@@ -611,6 +610,59 @@ async def test_sdk_selected_skill_streams_after_completed_evidence_before_termin
     assert result.error is None
     assert result.message == text
     assert result.used_skills == ["qa-review"]
+    assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
+        "invocation_requested",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sdk_selected_skill_omits_cumulative_terminal_text_without_post_capability_delta(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    deltas = []
+    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "skill-call-1",
+        "tool_input": {"skill": "qa-review"},
+    }
+    steps = [
+        ("hook", ("PreToolUse", skill_input, "skill-call-1")),
+        *_stream_steps(sealed_pre_capability_text),
+        ("hook", ("PostToolUse", skill_input, "skill-call-1")),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            steps,
+            result_text=f"{sealed_pre_capability_text} cumulative terminal answer",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _trusted_internal_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="review",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject()],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert deltas == []
+    assert result.error is None
+    assert result.message == ""
+    assert sealed_pre_capability_text not in result.message
     assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
         "invocation_requested",
         "completed",

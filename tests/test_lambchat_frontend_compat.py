@@ -2447,6 +2447,65 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     assert "current_step" not in serialized
 
 
+def test_lambchat_success_history_omits_sealed_delta_when_terminal_answer_is_empty():
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+
+    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+    run = {
+        "id": "run-empty-terminal",
+        "trace_id": "trace-empty-terminal",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "succeeded",
+        "result_json": {"message": ""},
+        "error_code": None,
+        "error_message": None,
+        "finished_at": "2026-07-30T00:00:00Z",
+    }
+    run_events = [
+        {
+            "id": "evt-sealed",
+            "trace_id": "trace-empty-terminal",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 1,
+            "event_type": "assistant_delta",
+            "stage": "answer",
+            "message": "",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "payload_json": {
+                "delta": sealed_pre_capability_text,
+                "source": "worker_answer_delta_v1",
+                "visible_to_user": True,
+                "severity": "info",
+            },
+            "created_at": "2026-07-30T00:00:00Z",
+        }
+    ]
+
+    records = _compatibility_events_for_run(run, run_events, [], principal)
+    history = [record.history_event for record in records]
+
+    terminal_answers = [event["data"] for event in history if event["event_type"] == "message:chunk"]
+    assert terminal_answers == [
+        {
+            "projection_version": "ai-platform.chat-public-projection.v1",
+            "projection_kind": "assistant_final",
+            "run_id": "run-empty-terminal",
+            "content": "任务完成",
+        }
+    ]
+    assert sealed_pre_capability_text not in str(history)
+
+
 def test_lambchat_sse_stream_cannot_read_cross_tenant_run_events(monkeypatch):
     async def missing_authorized_run(conn, *, tenant_id, user_id, run_id):
         assert (tenant_id, user_id, run_id) == ("other", "user-a", "run_a")
