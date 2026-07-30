@@ -54,6 +54,7 @@ from app.required_tool_contract import (
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.settings import get_settings
+from app.skills import deliverable_runtime
 from app.skills.catalog import (
     RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY,
     RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY,
@@ -63,11 +64,6 @@ from app.skills.catalog import (
     resolve_authorized_skill_catalog,
 )
 from app.skills.execution_profiles import canonical_skill_execution_profile
-from app.skills.deliverable_runtime import (
-    append_deliverable_contract_upgrade_audit as _append_deliverable_contract_upgrade_audit,
-    enforce_pinned_deliverable_result as _enforce_pinned_deliverable_contract,
-    persisted_required_artifact_types,
-)
 from app.tool_permission_lifecycle import (
     drain_run_tool_permission_terminalization,
     reconcile_terminalized_permission_run,
@@ -2653,11 +2649,7 @@ async def process_run_payload(
                     "error_code": required_completion.reason,
                 },
             )
-        result = _enforce_pinned_deliverable_contract(
-            result,
-            payload=payload,
-            attempt_id=attempt_id,
-        )
+        result = deliverable_runtime.enforce_pinned_deliverable_result(result, payload=payload, attempt_id=attempt_id)
     except WorkerRunCancelled:
         reconciled_parent = None
         async with transaction() as conn:
@@ -2812,7 +2804,7 @@ async def process_run_payload(
                     run_id=payload.run_id,
                 )
             )
-            required_artifact_types = persisted_required_artifact_types(
+            required_artifact_types = deliverable_runtime.persisted_required_artifact_types(
                 payload,
                 result.executor_payload,
             )
@@ -2854,7 +2846,7 @@ async def process_run_payload(
                     **result_payload,
                     "cancel_status": "cancel_requested_but_completed",
                 }
-            await _append_deliverable_contract_upgrade_audit(
+            await deliverable_runtime.append_deliverable_contract_upgrade_audit(
                 conn,
                 payload=payload,
                 result=result,

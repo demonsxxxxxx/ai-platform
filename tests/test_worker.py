@@ -64,7 +64,7 @@ def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
 
 
 def test_worker_binds_delivery_runtime_enforcer_at_the_persistence_seam():
-    assert worker_module._enforce_pinned_deliverable_contract is enforce_pinned_deliverable_result
+    assert worker_module.deliverable_runtime.enforce_pinned_deliverable_result is enforce_pinned_deliverable_result
 
 
 @pytest.mark.asyncio
@@ -425,7 +425,7 @@ async def test_worker_records_upgrade_action_that_correlates_to_admin_skill_snap
 
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
 
-    await worker_module._append_deliverable_contract_upgrade_audit(
+    await worker_module.deliverable_runtime.append_deliverable_contract_upgrade_audit(
         object(),
         payload=payload,
         result=result,
