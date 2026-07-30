@@ -2,20 +2,13 @@
 
 Date: 2026-07-05
 
-This snapshot is the single current gate/runtime status matrix for the current
-PRD, foundation roadmap, guardrails, repository code, 211 runtime, and
-issue-driven priorities. It is not automatic gate-closure evidence and must not
-be used to auto-close GitHub issues. Gate closure still requires the
+This is a historical 2026-07-05 gate/runtime snapshot. It is not current product
+authority. It is not automatic gate-closure evidence or a basis for closing
+GitHub issues. Current decisions use `docs/agent-rules/ai-platform-guardrails.md`,
+current code, fresh runtime evidence, and the active goal's confirmed GitHub
+issues. Gate closure still requires the
 issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow in
 `docs/agent-rules/github-issue-pr-workflow.md`.
-
-Companion PRDs currently split the next-stage planning surface:
-`docs/superpowers/specs/2026-06-18-ai-platform-backend-phased-prd.md` defines
-backend B0-B6 sequencing and backend acceptance boundaries, while
-`docs/superpowers/specs/2026-06-18-librechat-frontend-ui-absorption-prd.md`
-defines the frontend UI absorption boundary. These are planning/source-authority
-documents only. They do not provide 211 verification, runtime smoke, or gate
-closure evidence by themselves.
 
 ## Current Reading Guide
 

@@ -8,12 +8,9 @@ current `ai-platform` control plane.
 Use these sources together, in this order, before implementation work:
 
 1. Current user instruction in the active session.
-2. `docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md`.
-3. `docs/superpowers/specs/2026-06-11-ai-platform-tech-acceptance.md`.
-4. `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`.
-5. This guardrails file.
-6. Current code, tests, and fresh 211 runtime evidence.
-7. GitHub issues explicitly named by the active goal and confirmed current from
+2. This guardrails file.
+3. Current code, tests, and fresh 211 runtime evidence.
+4. GitHub issues explicitly named by the active goal and confirmed current from
    fresh GitHub state.
 
 If these sources disagree, stop broad implementation and narrow the work to
@@ -36,8 +33,8 @@ source-authority repair first.
   `ai-platform-minio`.
 
 Do not make product or implementation decisions from directories, ports, or
-services outside the current PRD, roadmap, current code, and current 211
-runtime evidence.
+services outside these guardrails, current code, and current 211 runtime
+evidence.
 
 ## P0 Gate Order And Current Gate Sequence
 
