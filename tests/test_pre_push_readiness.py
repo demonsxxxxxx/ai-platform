@@ -1030,8 +1030,7 @@ def test_skill_delivery_mapping_runs_exact_suite_without_conventional_fallback(
     _write(repo, production_path, "SKILL_READY = False\n")
     _write(repo, authorized_suite, "def test_skill_baseline():\n    assert True\n")
     base = _commit(repo, "skill delivery responsibility baseline")
-    _write(repo, production_path, "SKILL_READY = True\n")
-    _write(repo, authorized_suite, "def test_skill_changed():\n    assert True\n")
+    _write(repo, production_path, "")
     head = _commit(repo, "change skill delivery path")
 
     result = _check(repo, base, head)
