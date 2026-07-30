@@ -961,6 +961,7 @@ MCP_IRREGULAR_RESPONSIBILITY_SUITES = {
     "app/mcp/catalog.py": ("tests/test_mcp_tool_catalog.py",),
     "app/mcp/repository.py": ("tests/test_mcp_repository.py", "tests/test_mcp_repository_postgres.py"),
     "app/schema.sql": ("tests/test_schema.py",),
+    "deploy/ai-platform/docker-compose.yml": ("tests/test_runtime_launch_script.py",),
 }
 
 
@@ -983,6 +984,7 @@ def _assert_responsibility_tests(result: subprocess.CompletedProcess[str], expec
         ("app/mcp/catalog.py", "CATALOG_READY = False\n", "CATALOG_READY = True\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/catalog.py"], "tests/test_catalog.py"),
         ("app/mcp/repository.py", "REPOSITORY_READY = False\n", "REPOSITORY_READY = True\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/mcp/repository.py"], "tests/test_repository.py"),
         ("app/schema.sql", "CREATE TABLE readiness_mapping_old (id INTEGER);\n", "CREATE TABLE readiness_mapping_new (id INTEGER);\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["app/schema.sql"], "tests/test_schema.py"),
+        ("deploy/ai-platform/docker-compose.yml", "services: {}\n", "services:\n  api: {}\n", MCP_IRREGULAR_RESPONSIBILITY_SUITES["deploy/ai-platform/docker-compose.yml"], "tests/test_compose_contract.py"),
     ),
 )
 def test_irregular_production_paths_run_their_exact_bounded_suites(
@@ -1005,6 +1007,26 @@ def test_irregular_production_paths_run_their_exact_bounded_suites(
     result = _check(repo, base, head)
 
     _assert_responsibility_tests(result, sorted({*suites, mirror}))
+
+
+def test_unlisted_deploy_path_remains_external_with_compose_contract_suite(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, _authority = readiness_repo
+    production_path = "deploy/ai-platform/docker-compose.unlisted.yml"
+    _write(repo, "tests/test_runtime_launch_script.py", "def test_compose_contract():\n    assert True\n")
+    _write(repo, production_path, "services: {}\n")
+    base = _commit(repo, "unlisted deploy baseline")
+    _write(repo, production_path, "services:\n  worker: {}\n")
+    head = _commit(repo, "unlisted deploy change")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 2
+    assert payload["category"] == "external_check"
+    assert payload["failure"]["code"] == "responsibility_suite_required"
+    assert payload["failure"]["path"] == production_path
 
 
 def test_irregular_mapping_deduplicates_changed_tests_and_conventional_mirrors(
