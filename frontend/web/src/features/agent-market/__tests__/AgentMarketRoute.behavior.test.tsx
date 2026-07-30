@@ -479,10 +479,10 @@ async function prepareShellHarness() {
   };
 }
 
-test("rendered Marketplace searches cards, opens versioned detail, and gates start Chat", async () => {
+test("rendered Marketplace opens the versioned workspace directly while keeping detail secondary", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
-  const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
+  const { MemoryRouter, Route, Routes, useLocation, useNavigate } = await import("react-router-dom");
   const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const shellHarness = await prepareShellHarness();
@@ -556,6 +556,14 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
     currentPath = useLocation().pathname;
     return null;
   }
+  function WorkspaceProbe() {
+    const navigate = useNavigate();
+    return React.createElement("button", {
+      "data-agent-workspace": true,
+      onClick: () => navigate("/agent-market?q=财务&category=operations"),
+      type: "button",
+    });
+  }
 
   const container = dom.document.createElement("div");
   const root = ReactDOM.createRoot(container as never);
@@ -583,7 +591,7 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
                 }),
                 React.createElement(Route, {
                   path: "/agent-market/:agentId/:revision/chat/:sessionId?",
-                  element: React.createElement("div", { "data-agent-workspace": true }),
+                  element: React.createElement(WorkspaceProbe),
                 }),
               ),
             ),
@@ -630,12 +638,37 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
     assert.match(container.textContent, /运营效率/);
     assert.doesNotMatch(container.textContent, /支持助手/);
 
-    const card = container
+    const primaryAction = container
+      .querySelectorAll("button")
+      .find((button) => button.getAttribute("aria-label") === "进入 财务助手 专属工作区");
+    assert.ok(primaryAction, "filtered published card should open its dedicated workspace");
+    assert.equal(primaryAction.nodeName, "BUTTON", "native button semantics preserve keyboard activation");
+    assert.equal(primaryAction.getAttribute("type"), "button");
+    await React.act(async () => {
+      primaryAction.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(currentPath, "/agent-market/agt_finance/2/chat");
+    assert.ok(container.querySelector("[data-agent-workspace]"));
+    assert.deepEqual(conversationSelections, [], "opening a card must not pre-create a conversation");
+    assert.equal(detailCalls, 0, "opening a card must not detour through the detail authorization request");
+
+    const returnToMarket = container.querySelector("[data-agent-workspace]");
+    assert.ok(returnToMarket);
+    await React.act(async () => {
+      returnToMarket.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const detailAction = container
       .querySelectorAll("button")
       .find((button) => button.getAttribute("aria-label") === "查看 财务助手 详情");
-    assert.ok(card, "filtered published card should remain actionable");
+    assert.ok(detailAction, "detail remains an explicit secondary action");
     await React.act(async () => {
-      card.dispatchEvent({ type: "click", bubbles: true });
+      detailAction.dispatchEvent({ type: "click", bubbles: true });
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -695,7 +728,7 @@ test("rendered Marketplace searches cards, opens versioned detail, and gates sta
       "/agent-market/agt_finance/2/chat/session-finance",
     );
     assert.ok(container.querySelector("[data-agent-workspace]"));
-    assert.equal(catalogCalls, 1);
+    assert.equal(catalogCalls, 2);
     assert.equal(detailCalls, 1, "detail navigation must re-authorize the current publication");
   } finally {
     agentProfileApi.listPublished = originalListPublished;
