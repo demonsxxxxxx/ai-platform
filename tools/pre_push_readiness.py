@@ -23,6 +23,7 @@ AUTHORITY_TOOL_PATH = "tools/pre_push_readiness.py"
 AUTHORITY_GOVERNANCE_PATH = "tools/code_governance.py"
 CODE_GOVERNANCE_EXCEPTION_PATH = ".code-governance-exception.json"
 CODE_GOVERNANCE_TEST_PATH = "tests/test_code_governance.py"
+# Frozen high-risk safety suites. Do not expand this map for ordinary product changes.
 IRREGULAR_RESPONSIBILITY_SUITES = {
     "app/skills/catalog.py": ("tests/test_authorized_skill_catalog.py",),
     "app/skills/deliverable_runtime.py": ("tests/test_skill_deliverable_runtime.py",),
@@ -130,6 +131,7 @@ class PrePushReadiness:
         base_ref: str,
         head_ref: str,
         *,
+        regression_test_suites: Sequence[str] = (),
         shared_test_suites: Sequence[str] = (),
     ) -> dict[str, Any]:
         result = _new_result(authority_ref, base_ref, head_ref)
@@ -161,7 +163,13 @@ class PrePushReadiness:
             head_added = True
             self._run_diff_check(result, base, head)
             self._seal_trusted_governance(result, authority, base, head, temporary_root, head_worktree)
-            plan = self._plan_responsibilities(base, head, head_worktree, shared_test_suites)
+            plan = self._plan_responsibilities(
+                base,
+                head,
+                head_worktree,
+                regression_test_suites,
+                shared_test_suites,
+            )
             dependency_paths = _FrontendDependencyPaths(head_worktree / FRONTEND_ROOT_PATH / "node_modules")
             if plan.frontend:
                 frontend_dependencies = (("node_modules", dependency_paths.node_modules),)
@@ -377,6 +385,7 @@ class PrePushReadiness:
         base: str,
         head: str,
         head_worktree: Path,
+        regression_test_suites: Sequence[str],
         shared_test_suites: Sequence[str],
     ) -> _ResponsibilityPlan:
         # Include unchanged source blobs so copied exception files retain C* status.
@@ -397,18 +406,21 @@ class PrePushReadiness:
         if changed.returncode != 0:
             raise ReadinessError("infrastructure_failure", "git_failed", _command_failure("git diff --name-status", changed))
         selected: set[str] = set()
-        shared_paths: list[str] = []
-        unowned_paths: list[str] = []
+        changed_test_modules: set[str] = set()
+        shared_paths: set[str] = set()
+        mapped_behavior_paths: set[str] = set()
+        production_paths: set[str] = set()
+        invalid_mapped_paths: set[str] = set()
         frontend = False
         for changed_path in _changed_paths(changed.stdout):
             status = changed_path.status
-            if status.startswith("D"):
-                continue
-            path = changed_path.destination_path or changed_path.source_path
-            if path is None:
-                unowned_paths.append("<unknown-change-path>")
+            affected_paths = _affected_change_paths(changed_path)
+            if not affected_paths:
+                production_paths.add("<unknown-change-path>")
                 continue
             if _touches_code_governance_exception(changed_path):
+                if status.startswith("D"):
+                    continue
                 if (
                     status in {"A", "M"}
                     and changed_path.source_path is None
@@ -417,40 +429,47 @@ class PrePushReadiness:
                 ):
                     selected.add(CODE_GOVERNANCE_TEST_PATH)
                     continue
-                unowned_paths.append(CODE_GOVERNANCE_EXCEPTION_PATH)
+                invalid_mapped_paths.add(CODE_GOVERNANCE_EXCEPTION_PATH)
                 continue
-            mapped_suites = IRREGULAR_RESPONSIBILITY_SUITES.get(path)
-            if mapped_suites is not None:
+            mapped_paths_for_change: set[str] = set()
+            for path in affected_paths:
+                mapped_suites = IRREGULAR_RESPONSIBILITY_SUITES.get(path)
+                if mapped_suites is None:
+                    continue
                 if all(self._is_valid_bounded_test_suite(head, head_worktree, suite) for suite in mapped_suites):
                     selected.update(mapped_suites)
+                    mapped_behavior_paths.add(path)
+                    mapped_paths_for_change.add(path)
                     continue
-                unowned_paths.append(path)
-                continue
-            pure_path = PurePosixPath(path)
-            if _is_documentation_path(pure_path):
-                continue
-            if _is_shared_test_fixture(pure_path):
-                shared_paths.append(path)
-                continue
-            if _is_frontend_path(pure_path):
-                frontend = True
-                continue
-            if _is_test_module(pure_path) and (head_worktree / path).is_file():
-                selected.add(path)
-                continue
-            mirrored = _mirrored_test_path(pure_path)
-            if mirrored is not None and (head_worktree / mirrored).is_file():
-                selected.add(mirrored)
-                continue
-            unowned_paths.append(path)
+                invalid_mapped_paths.add(path)
+            move_only = status == "R100" and len(affected_paths) == 2 and all(
+                _is_ordinary_production_path(path) for path in affected_paths
+            )
+            for path in affected_paths:
+                pure_path = PurePosixPath(path)
+                if _is_documentation_path(pure_path):
+                    continue
+                if _is_shared_test_fixture(pure_path):
+                    shared_paths.add(path)
+                    continue
+                if _is_frontend_path(pure_path):
+                    frontend = True
+                    continue
+                if _is_test_module(pure_path):
+                    if (head_worktree / path).is_file():
+                        changed_test_modules.add(path)
+                        selected.add(path)
+                    continue
+                if not move_only and not mapped_paths_for_change:
+                    production_paths.add(path)
         if frontend and not (head_worktree / "frontend" / "web" / "package.json").is_file():
-            unowned_paths.append("frontend/web/package.json")
-        if unowned_paths:
+            invalid_mapped_paths.add("frontend/web/package.json")
+        if invalid_mapped_paths:
             raise ReadinessError(
                 "external_check",
                 "responsibility_suite_required",
-                "each affected production path requires a bounded responsible suite",
-                path=sorted(unowned_paths)[0],
+                "a frozen high-risk path requires its exact bounded safety suite",
+                path=sorted(invalid_mapped_paths)[0],
             )
         if shared_test_suites and not shared_paths:
             raise ReadinessError(
@@ -458,13 +477,36 @@ class PrePushReadiness:
                 "unexpected_shared_test_suite",
                 "--shared-test-suite is only valid when a named shared test fixture changed",
             )
-        if shared_paths and not shared_test_suites:
+        declared_suites = (*regression_test_suites, *shared_test_suites)
+        if regression_test_suites and not (production_paths or mapped_behavior_paths or shared_paths):
+            raise ReadinessError(
+                "governance_violation",
+                "unexpected_regression_test_suite",
+                "--regression-test-suite is only valid when production behavior or a shared test fixture changed",
+            )
+        if shared_paths and not declared_suites:
             raise ReadinessError(
                 "external_check",
                 "shared_test_suite_required",
-                "a changed shared test fixture requires one or more explicit --shared-test-suite paths",
-                path=shared_paths[0],
+                "a changed shared test fixture requires one or more explicit --regression-test-suite paths",
+                path=sorted(shared_paths)[0],
             )
+        if production_paths and not changed_test_modules and not declared_suites:
+            raise ReadinessError(
+                "external_check",
+                "regression_test_suite_required",
+                "production behavior changed without a changed test module or an explicit --regression-test-suite",
+                path=sorted(production_paths)[0],
+            )
+        for suite in regression_test_suites:
+            if not self._is_valid_bounded_test_suite(head, head_worktree, suite):
+                raise ReadinessError(
+                    "governance_violation",
+                    "invalid_regression_test_suite",
+                    "regression_test_suite must name an existing tests/test_*.py file at head_ref",
+                    path=suite,
+                )
+            selected.add(suite)
         for suite in shared_test_suites:
             if not self._is_valid_bounded_test_suite(head, head_worktree, suite):
                 raise ReadinessError(
@@ -874,10 +916,22 @@ def _is_documentation_path(path: PurePosixPath) -> bool:
     )
 
 
-def _mirrored_test_path(path: PurePosixPath) -> str | None:
-    if path.suffix != ".py" or not path.parts or path.parts[0] not in {"app", "scripts", "tools"}:
-        return None
-    return f"tests/test_{path.stem}.py"
+def _affected_change_paths(change: _ChangedPath) -> tuple[str, ...]:
+    if change.status.startswith("R"):
+        return tuple(path for path in (change.source_path, change.destination_path) if path is not None)
+    path = change.destination_path or change.source_path
+    return (path,) if path is not None else ()
+
+
+def _is_ordinary_production_path(path: str) -> bool:
+    pure_path = PurePosixPath(path)
+    return (
+        path not in IRREGULAR_RESPONSIBILITY_SUITES
+        and not _is_documentation_path(pure_path)
+        and not _is_shared_test_fixture(pure_path)
+        and not _is_frontend_path(pure_path)
+        and not _is_test_module(pure_path)
+    )
 
 
 def _changed_paths(output: str) -> tuple[_ChangedPath, ...]:
@@ -1245,6 +1299,7 @@ def _build_parser() -> argparse.ArgumentParser:
     check.add_argument("--authority-ref", required=True)
     check.add_argument("--base-ref", required=True)
     check.add_argument("--head-ref", required=True)
+    check.add_argument("--regression-test-suite", action="append", default=[])
     check.add_argument("--shared-test-suite", action="append", default=[])
     check.add_argument("--format", choices=("text", "json"), default="text")
     return parser
@@ -1263,6 +1318,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.authority_ref,
             args.base_ref,
             args.head_ref,
+            regression_test_suites=tuple(args.regression_test_suite),
             shared_test_suites=tuple(args.shared_test_suite),
         )
     except ReadinessError as error:
