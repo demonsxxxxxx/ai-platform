@@ -17,7 +17,6 @@ const {
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
   getChatToolAccess,
-  projectAgentWorkspaceTranscript,
   recoverAgentConversationIdentity,
 } = await import("../ChatAppContent.tsx");
 const { agentProfileApi } = await import("../../../../services/api/agentProfile.ts");
@@ -36,49 +35,6 @@ const safeWorkspace = {
   agent_id: safeIdentity.agent_id,
   expected_revision: safeIdentity.revision,
 } as const;
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => {
-    resolve = complete;
-  });
-  return { promise, resolve };
-}
-
-type TestAgentIdentity = {
-  agent_id: string;
-  revision: number;
-  name: string;
-  description: string;
-  avatar_ref: "builtin:assistant";
-  category: "support";
-};
-
-type TranscriptState = {
-  phase: "generic" | "loading" | "bound" | "blocked";
-  targetSessionId: string | null;
-  identity: TestAgentIdentity | null;
-};
-
-function renderTranscript(
-  state: TranscriptState,
-  sessionId: string,
-  messages: string[],
-) {
-  const visible = projectAgentWorkspaceTranscript({
-    agentWorkspace: safeWorkspace,
-    state,
-    sessionId,
-    messages,
-  });
-  return renderToStaticMarkup(
-    React.createElement(
-      "section",
-      { "data-agent-a-transcript": true },
-      visible.map((message) => React.createElement("p", { key: message }, message)),
-    ),
-  );
-}
 
 test("recovers an exact current Agent Conversation and keeps ordinary sessions generic", async () => {
   const originalGetAuthoritative = sessionApi.getAuthoritative;
@@ -188,40 +144,6 @@ test("rejects authoritative Agent identity returned for a different Session", as
   } finally {
     sessionApi.getAuthoritative = originalGetAuthoritative;
     agentProfileApi.getPublished = originalGetPublished;
-  }
-});
-
-test("deferred Agent A recovery never renders generic or Agent B transcript nodes on deep links or reloads", async () => {
-  for (const entry of ["deep-link", "reload"] as const) {
-    const recovery = deferred<TestAgentIdentity>();
-    const sessionId = `agent-a-${entry}`;
-    const foreignMessages = ["generic-transcript", "agent-b-transcript"];
-    let state: TranscriptState = {
-      phase: "loading" as const,
-      targetSessionId: sessionId,
-      identity: null,
-    };
-
-    assert.doesNotMatch(
-      renderTranscript(state, sessionId, foreignMessages),
-      /generic-transcript|agent-b-transcript/,
-      `${entry} must not show stale history while Agent A authorization is pending`,
-    );
-
-    const resolvedState = recovery.promise.then((identity) =>
-      identity.agent_id === safeWorkspace.agent_id &&
-      identity.revision === safeWorkspace.expected_revision
-        ? { phase: "bound" as const, targetSessionId: sessionId, identity }
-        : { phase: "blocked" as const, targetSessionId: sessionId, identity: null },
-    );
-    recovery.resolve({ ...safeIdentity, agent_id: "agt_agent_b" });
-    state = await resolvedState;
-
-    assert.doesNotMatch(
-      renderTranscript(state, sessionId, foreignMessages),
-      /generic-transcript|agent-b-transcript/,
-      `${entry} must remain closed after Agent B is returned for Agent A`,
-    );
   }
 });
 

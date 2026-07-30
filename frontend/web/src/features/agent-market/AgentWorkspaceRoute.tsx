@@ -10,6 +10,13 @@ import { selectPublishedMarketProfile } from "./agentMarketSelection";
 
 type WorkspacePhase = "loading" | "ready" | "unavailable" | "error";
 
+interface LoadedAgentWorkspace {
+  agentId: string;
+  revision: string;
+  profile: AgentProfilePublicProjection;
+  sessionIds: ReadonlySet<string>;
+}
+
 /** Recover one published revision before exposing the dedicated Agent workspace. */
 export function AgentWorkspaceRoute() {
   const navigate = useNavigate();
@@ -18,12 +25,8 @@ export function AgentWorkspaceRoute() {
     revision?: string;
   }>();
   const [phase, setPhase] = useState<WorkspacePhase>("loading");
-  const [profile, setProfile] = useState<AgentProfilePublicProjection | null>(
-    null,
-  );
-  const [sessionIds, setSessionIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  const [loadedWorkspace, setLoadedWorkspace] =
+    useState<LoadedAgentWorkspace | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
@@ -33,8 +36,7 @@ export function AgentWorkspaceRoute() {
   useEffect(() => {
     let active = true;
     setPhase("loading");
-    setProfile(null);
-    setSessionIds(new Set());
+    setLoadedWorkspace(null);
 
     if (!agentId || !revision) {
       setPhase("unavailable");
@@ -58,9 +60,11 @@ export function AgentWorkspaceRoute() {
           setPhase("unavailable");
           return;
         }
-        setProfile(exactProfile);
-        setSessionIds(
-          new Set(
+        setLoadedWorkspace({
+          agentId,
+          revision,
+          profile: exactProfile,
+          sessionIds: new Set(
             conversations
               .filter(
                 (conversation) =>
@@ -71,7 +75,7 @@ export function AgentWorkspaceRoute() {
               )
               .map((conversation) => conversation.session_id),
           ),
-        );
+        });
         setPhase("ready");
       })
       .catch((error: unknown) => {
@@ -100,17 +104,39 @@ export function AgentWorkspaceRoute() {
     authApi.updateMetadata({ sidebarCollapsed: String(collapsed) }).catch(() => {});
   };
 
-  if (phase === "ready" && profile) {
+  // Route params can change before the passive fetch cleanup runs. Never let
+  // the previous URL's profile or Session allowlist reach canonical Chat.
+  const resolvedWorkspace =
+    phase === "ready" &&
+    loadedWorkspace !== null &&
+    loadedWorkspace.agentId === agentId &&
+    loadedWorkspace.revision === revision &&
+    selectPublishedMarketProfile(
+      [loadedWorkspace.profile],
+      agentId,
+      revision,
+    ) === loadedWorkspace.profile
+      ? loadedWorkspace
+      : null;
+
+  if (resolvedWorkspace) {
     return (
       <ChatAppContent
-        agentWorkspace={profile}
+        agentWorkspace={resolvedWorkspace.profile}
         mobileSidebarOpen={mobileSidebarOpen}
         setMobileSidebarOpen={setMobileSidebarOpen}
         setSidebarCollapsed={handleSetSidebarCollapsed}
         sidebarCollapsed={sidebarCollapsed}
-        agentWorkspaceSessionIds={sessionIds}
+        agentWorkspaceSessionIds={resolvedWorkspace.sessionIds}
         onAgentWorkspaceSessionCreated={(sessionId) =>
-          setSessionIds((current) => new Set(current).add(sessionId))
+          setLoadedWorkspace((current) =>
+            current
+              ? {
+                  ...current,
+                  sessionIds: new Set(current.sessionIds).add(sessionId),
+                }
+              : null,
+          )
         }
       />
     );

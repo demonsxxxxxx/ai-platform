@@ -832,6 +832,8 @@ export function ChatView({
       >
       <main
         ref={messagesContainerRef}
+        data-chat-transcript
+        data-session-id={sessionId ?? undefined}
         className={`relative min-h-0 flex-1 bg-[var(--theme-workbench-canvas)] ${
           messages.length > 0 ? "overflow-hidden" : ""
         }`}

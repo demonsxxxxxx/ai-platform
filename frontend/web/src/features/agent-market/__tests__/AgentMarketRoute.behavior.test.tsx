@@ -124,6 +124,7 @@ class TestElement extends TestNode {
   className = "";
   isContentEditable = false;
   value = "";
+  private scrollTopValue = 0;
   private text = "";
 
   constructor(readonly tagName: string) {
@@ -171,9 +172,43 @@ class TestElement extends TestNode {
     return { top: 0, right: 100, bottom: 40, left: 0, width: 100, height: 40 };
   }
 
+  get clientHeight() {
+    return 600;
+  }
+
+  get clientWidth() {
+    return 1000;
+  }
+
+  get offsetHeight() {
+    return 600;
+  }
+
+  get offsetWidth() {
+    return 1000;
+  }
+
+  get scrollHeight() {
+    return 1200;
+  }
+
+  get scrollWidth() {
+    return 1000;
+  }
+
+  get scrollTop() {
+    return this.scrollTopValue;
+  }
+
+  set scrollTop(value: number) {
+    this.scrollTopValue = value;
+  }
+
   focus() {
     this.ownerDocument.activeElement = this;
   }
+
+  scrollIntoView() {}
 
   querySelector(selector: string): TestElement | null {
     return this.querySelectorAll(selector)[0] ?? null;
@@ -279,6 +314,7 @@ function installDom() {
     cancelAnimationFrame: (id: number) => void;
     setTimeout: typeof setTimeout;
     clearTimeout: typeof clearTimeout;
+    innerWidth: number;
     innerHeight: number;
     scrollY: number;
     scrollTo: () => void;
@@ -328,6 +364,7 @@ function installDom() {
   windowTarget.cancelAnimationFrame = (id) => clearTimeout(id);
   windowTarget.setTimeout = setTimeout;
   windowTarget.clearTimeout = clearTimeout;
+  windowTarget.innerWidth = 1200;
   windowTarget.innerHeight = 800;
   windowTarget.scrollY = 0;
   windowTarget.scrollTo = () => {};
@@ -795,6 +832,287 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
     assert.equal(container.querySelector("[data-canonical-chat]"), null);
   } finally {
     agentProfileApi.getPublished = originalGetPublished;
+    shellHarness.restore();
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("a route-param change never wires Agent A into Agent B while B is loading or rejected", async () => {
+  const dom = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { flushSync } = await import("react-dom");
+  const { Router, Route, Routes } = await import("react-router-dom");
+  const { AgentWorkspaceRoute } = await import("../AgentWorkspaceRoute.tsx");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const shellHarness = await prepareShellHarness();
+  const agentA = {
+    agent_id: "agt_a",
+    expected_revision: 1,
+    name: "Agent A",
+    description: "Agent A published revision.",
+    avatar_ref: "builtin:assistant",
+    category: "support",
+  } as const;
+  const agentB = {
+    agent_id: "agt_b",
+    expected_revision: 2,
+    name: "Agent B",
+    description: "Agent B published revision.",
+    avatar_ref: "builtin:assistant",
+    category: "support",
+  } as const;
+  let rejectFirstBProfile!: (reason?: unknown) => void;
+  const firstBProfile = new Promise<typeof agentB>((_resolve, reject) => {
+    rejectFirstBProfile = reject;
+  });
+  let resolveSecondBProfile!: (value: typeof agentB) => void;
+  const secondBProfile = new Promise<typeof agentB>((resolve) => {
+    resolveSecondBProfile = resolve;
+  });
+  let resolveBSessionBinding!: (value: Record<string, unknown>) => void;
+  const bSessionBinding = new Promise<Record<string, unknown>>((resolve) => {
+    resolveBSessionBinding = resolve;
+  });
+  let bRequest = "reject" as "reject" | "bind";
+  const originalGetPublished = agentProfileApi.getPublished;
+  const originalListConversations = agentProfileApi.listConversations;
+  const originalListSessions = sessionApi.list;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGetSession = sessionApi.get;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  agentProfileApi.getPublished = ((agentId: string) => {
+    if (agentId === agentA.agent_id) return Promise.resolve(agentA);
+    return bRequest === "reject" ? firstBProfile : secondBProfile;
+  }) as typeof agentProfileApi.getPublished;
+  agentProfileApi.listConversations = (async () => [
+    {
+      session_id: "session-a",
+      agent_conversation: {
+        agent_id: agentA.agent_id,
+        revision: agentA.expected_revision,
+      },
+    },
+    {
+      session_id: "session-b",
+      agent_conversation: {
+        agent_id: agentB.agent_id,
+        revision: agentB.expected_revision,
+      },
+    },
+  ]) as typeof agentProfileApi.listConversations;
+  sessionApi.list = (async () => ({
+    sessions: [
+      {
+        id: "session-a",
+        name: "Agent A sidebar session",
+        agent_id: agentA.agent_id,
+        created_at: "2026-07-30T00:00:00Z",
+        updated_at: "2026-07-30T00:00:00Z",
+        is_active: true,
+      },
+      {
+        id: "session-b",
+        name: "Agent B sidebar session",
+        agent_id: agentB.agent_id,
+        created_at: "2026-07-30T00:00:00Z",
+        updated_at: "2026-07-30T00:00:00Z",
+        is_active: true,
+      },
+    ],
+    total: 2,
+    skip: 0,
+    limit: 20,
+    has_more: false,
+  })) as typeof sessionApi.list;
+  sessionApi.markRead = (async () => {}) as typeof sessionApi.markRead;
+  sessionApi.get = (async (sessionId: string) => {
+    const agent = sessionId === "session-a" ? agentA : agentB;
+    return {
+      id: sessionId,
+      agent_id: agent.agent_id,
+      created_at: "2026-07-30T00:00:00Z",
+      updated_at: "2026-07-30T00:00:00Z",
+      is_active: true,
+      metadata: {},
+    };
+  }) as typeof sessionApi.get;
+  sessionApi.getAuthoritative = ((sessionId: string) => {
+    const agent = sessionId === "session-a" ? agentA : agentB;
+    const value = {
+      session_id: sessionId,
+      workspace_id: "default",
+      agent_id: agent.agent_id,
+      title: agent.name,
+      agent_conversation: {
+        agent_id: agent.agent_id,
+        revision: agent.expected_revision,
+        name: agent.name,
+        description: agent.description,
+        avatar_ref: agent.avatar_ref,
+        category: agent.category,
+      },
+    };
+    return sessionId === "session-b" ? bSessionBinding : Promise.resolve(value);
+  }) as typeof sessionApi.getAuthoritative;
+  sessionApi.getEvents = (async (sessionId: string) => ({
+    events: [
+      {
+        id: `event-${sessionId}`,
+        run_id: `run-${sessionId}`,
+        event_type: "user:message",
+        timestamp: "2026-07-30T00:00:00Z",
+        data: {
+          content:
+            sessionId === "session-a"
+              ? "Agent A transcript node"
+              : "Agent B transcript node",
+        },
+      },
+    ],
+  })) as typeof sessionApi.getEvents;
+
+  const settle = async () => {
+    for (let index = 0; index < 8; index += 1) {
+      await Promise.resolve();
+    }
+  };
+  const hasTranscriptForSession = (sessionId: string) =>
+    container
+      .querySelectorAll("[data-chat-transcript]")
+      .some((transcript) => transcript.getAttribute("data-session-id") === sessionId);
+  const assertNoAgentAArtifacts = (state: string) => {
+    assert.ok(
+      container.querySelector("[data-agent-workspace-loading]"),
+      `${state} must render the fail-closed workspace state`,
+    );
+    assert.doesNotMatch(
+      container.textContent,
+      /Agent A sidebar session/,
+      `${state} must not retain Agent A sidebar history`,
+    );
+    assert.equal(
+      hasTranscriptForSession("session-a"),
+      false,
+      `${state} must not retain an Agent A transcript node`,
+    );
+    assert.equal(
+      container.querySelectorAll("button").some((button) =>
+        button.className.split(" ").includes("chat-tool-btn"),
+      ),
+      false,
+      `${state} must not expose a generic tool control`,
+    );
+  };
+  const container = dom.document.createElement("div");
+  const root = ReactDOM.createRoot(container as never);
+  let routeLocation = {
+    pathname: "/agent-market/agt_a/1/chat/session-a",
+    search: "",
+    hash: "",
+    state: null,
+    key: "agent-a",
+  };
+  const routeNavigator = {
+    createHref: (to: { pathname?: string; search?: string; hash?: string }) =>
+      `${to.pathname ?? ""}${to.search ?? ""}${to.hash ?? ""}`,
+    encodeLocation: (to: unknown) => to,
+    go: () => {},
+    push: () => {},
+    replace: () => {},
+  };
+  const renderWorkspaceRoute = () =>
+    React.createElement(
+      Router,
+      {
+        location: routeLocation,
+        navigationType: "POP" as never,
+        navigator: routeNavigator as never,
+      },
+      shellHarness.wrap(
+        React.createElement(
+          Routes,
+          null,
+          React.createElement(Route, {
+            path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+            element: React.createElement(AgentWorkspaceRoute),
+          }),
+        ),
+      ),
+    );
+  const setRoute = (pathname: string) => {
+    routeLocation = { pathname, search: "", hash: "", state: null, key: pathname };
+    flushSync(() => root.render(renderWorkspaceRoute()));
+  };
+  try {
+    await React.act(async () => {
+      root.render(renderWorkspaceRoute());
+      await settle();
+    });
+
+    assert.match(container.textContent, /Agent A sidebar session/);
+    assert.equal(hasTranscriptForSession("session-a"), true);
+
+    setRoute("/agent-market/agt_b/2/chat/session-b");
+    assertNoAgentAArtifacts("Agent B loading");
+
+    rejectFirstBProfile(new Error("Agent B rejected"));
+    await React.act(async () => {
+      await settle();
+    });
+    assertNoAgentAArtifacts("Agent B rejection");
+
+    setRoute("/agent-market/agt_a/1/chat/session-a");
+    await React.act(async () => {
+      await settle();
+    });
+    assert.equal(hasTranscriptForSession("session-a"), true);
+
+    bRequest = "bind";
+    setRoute("/agent-market/agt_b/2/chat/session-b");
+    assertNoAgentAArtifacts("Agent B revalidation");
+
+    resolveSecondBProfile(agentB);
+    await React.act(async () => {
+      await settle();
+    });
+    assert.equal(
+      hasTranscriptForSession("session-b"),
+      false,
+      "Agent B transcript must wait for its authoritative Session binding",
+    );
+
+    resolveBSessionBinding({
+      session_id: "session-b",
+      workspace_id: "default",
+      agent_id: agentB.agent_id,
+      title: agentB.name,
+      agent_conversation: {
+        agent_id: agentB.agent_id,
+        revision: agentB.expected_revision,
+        name: agentB.name,
+        description: agentB.description,
+        avatar_ref: agentB.avatar_ref,
+        category: agentB.category,
+      },
+    });
+    await React.act(async () => {
+      await settle();
+    });
+
+    assert.match(container.textContent, /Agent B sidebar session/);
+    assert.equal(hasTranscriptForSession("session-b"), true);
+    assert.doesNotMatch(container.textContent, /Agent A sidebar session/);
+    assert.equal(hasTranscriptForSession("session-a"), false);
+  } finally {
+    agentProfileApi.getPublished = originalGetPublished;
+    agentProfileApi.listConversations = originalListConversations;
+    sessionApi.list = originalListSessions;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.get = originalGetSession;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }
