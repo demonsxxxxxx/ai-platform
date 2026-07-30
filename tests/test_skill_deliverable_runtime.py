@@ -185,6 +185,31 @@ def test_runtime_fails_closed_for_py_and_json_without_required_xlsx(tmp_path):
     assert storage.stored == []
 
 
+def test_runtime_rejects_duplicate_required_xlsx_before_any_storage_write(tmp_path):
+    contract = xlsx_contract()
+    run = payload(contract=contract)
+    delivery = artifact_dirs(tmp_path)[0]
+    delivery.mkdir(parents=True)
+    (delivery / "audit-result.xlsx").write_bytes(usable_xlsx_bytes())
+    (delivery / "audit-result-copy.xlsx").write_bytes(usable_xlsx_bytes())
+    (delivery / "generate_filled_excel.py").write_text("private", encoding="utf-8")
+    storage = FakeStorage()
+
+    outcome = stage_adapter_delivery(
+        payload=run,
+        pinned_manifests={"audit-finding-rca": run.skill_manifests[0]},
+        workspace=tmp_path,
+        executor_payload={"executor_mode": "claude_agent_sdk", "capability_evidence": []},
+        source_executor="claude-agent-worker",
+        artifact_dirs=artifact_dirs,
+        storage=storage,
+    )
+
+    assert outcome.error_code == "required_artifact_cardinality_invalid"
+    assert outcome.artifacts == ()
+    assert storage.stored == []
+
+
 def test_runtime_enforcer_requires_exact_attempt_evidence_and_clears_internal_artifacts():
     contract = xlsx_contract(requires_process_evidence=True)
     run = payload(contract=contract)
@@ -248,11 +273,30 @@ def test_runtime_enforcer_requires_exact_attempt_evidence_and_clears_internal_ar
 
     accepted = enforce_pinned_deliverable_result(result_for("attempt-a"), payload=run, attempt_id="attempt-a")
     rejected = enforce_pinned_deliverable_result(result_for("stale-attempt"), payload=run, attempt_id="attempt-a")
+    duplicate = result_for("attempt-a")
+    duplicate.artifacts.insert(
+        1,
+        ArtifactManifest(
+            artifact_type="xlsx",
+            label="Excel 文件",
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            storage_key="tenants/tenant-a/runs/run-a/audit-result-copy.xlsx",
+            size_bytes=1,
+            manifest={
+                "deliverable_type": "xlsx",
+                "workspace_output": "outputs/audit-rca/delivery/audit-result-copy.xlsx",
+            },
+        ),
+    )
+    duplicate_rejected = enforce_pinned_deliverable_result(duplicate, payload=run, attempt_id="attempt-a")
 
     assert [artifact.artifact_type for artifact in accepted.artifacts] == ["xlsx"]
-    assert accepted.result["message"] == "已生成 Excel 文件。"
+    assert accepted.result["message"] == "已生成结果文件。"
     assert rejected.result["error_code"] == "skill_deliverable_process_evidence_missing"
     assert rejected.artifacts == []
+    assert duplicate_rejected.status == "failed"
+    assert duplicate_rejected.result["error_code"] == "required_artifact_cardinality_invalid"
+    assert duplicate_rejected.artifacts == []
 
 
 def test_runtime_rejects_uncontracted_skill_private_artifacts_with_upgrade_packet(tmp_path):
@@ -288,6 +332,32 @@ def test_runtime_rejects_uncontracted_skill_private_artifacts_with_upgrade_packe
         "process_evidence_values": ["required", "not_required"],
     }
     assert storage.stored == []
+
+
+def test_runtime_preserves_general_chat_artifacts_without_a_skill_delivery_contract():
+    run = payload(contract=None, file_ids=[], skill_id="general-chat")
+    result = ExecutorResult(
+        status="succeeded",
+        adapter_version="test/1",
+        executor_type="fake",
+        executor_version="test",
+        capabilities={},
+        result={"message": "general chat completed"},
+        artifacts=[
+            ArtifactManifest(
+                artifact_type="test_json",
+                label="Test JSON",
+                content_type="application/json",
+                storage_key="tenants/tenant-a/runs/run-a/result.json",
+                size_bytes=2,
+            )
+        ],
+    )
+
+    accepted = enforce_pinned_deliverable_result(result, payload=run, attempt_id="attempt-a")
+
+    assert accepted.status == "succeeded"
+    assert [artifact.artifact_type for artifact in accepted.artifacts] == ["test_json"]
 
 
 def test_runtime_collection_rejects_invalid_xlsx_before_storage(tmp_path):

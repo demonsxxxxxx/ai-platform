@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import posixpath
 import zipfile
-from collections.abc import Callable, Mapping
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from xml.etree import ElementTree
@@ -61,11 +62,27 @@ class DeliveryRuntimeOutcome:
     upgrade_packet: dict[str, object] | None = None
 
 
+@dataclass(frozen=True)
+class _WorkspaceArtifactCandidate:
+    """One validated workspace file awaiting artifact persistence."""
+
+    index: int
+    path: Path
+    artifact_type: str
+    content_type: str
+    label: str
+
+
+class _RequiredTerminalDeliverableCardinalityError(Exception):
+    """Signal bounded required-deliverable cardinality failure before storage."""
+
+
 _DELIVERY_ERRORS = {
     "skill_deliverable_contract_invalid": "The selected Skill delivery contract is unavailable.",
     "skill_deliverable_contract_upgrade_required": "The selected Skill package must be upgraded before file delivery.",
     "skill_deliverable_process_evidence_missing": "The required file-delivery execution evidence is unavailable.",
     "required_artifact_missing": "The file-required Skill did not produce every required artifact type.",
+    "required_artifact_cardinality_invalid": "The file-required Skill must produce exactly one of each required artifact type.",
 }
 
 
@@ -109,14 +126,17 @@ def stage_adapter_delivery(
         )
     if contract is not None and not _process_evidence_is_valid(payload, contract, executor_payload):
         return _outcome("skill_deliverable_process_evidence_missing", contract=contract)
-    artifacts = collect_workspace_artifacts(
-        payload=payload,
-        workspace=workspace,
-        source_executor=source_executor,
-        artifact_dirs=artifact_dirs,
-        deliverable_contract=contract,
-        storage=storage,
-    )
+    try:
+        artifacts = collect_workspace_artifacts(
+            payload=payload,
+            workspace=workspace,
+            source_executor=source_executor,
+            artifact_dirs=artifact_dirs,
+            deliverable_contract=contract,
+            storage=storage,
+        )
+    except _RequiredTerminalDeliverableCardinalityError:
+        return _outcome("required_artifact_cardinality_invalid", contract=contract)
     missing_types = _missing_terminal_types(contract, artifacts)
     if missing_types:
         return _outcome("required_artifact_missing", contract=contract, missing_types=missing_types)
@@ -140,8 +160,9 @@ def enforce_pinned_deliverable_result(
         )
     except SkillDeliverableContractError:
         return _failed_result(result, "skill_deliverable_contract_invalid", _DELIVERY_ERRORS["skill_deliverable_contract_invalid"])
-    legacy_required_types = required_artifact_types_for_skill(str(getattr(payload, "skill_id", "") or ""))
-    if result.artifacts and contract is None and not legacy_required_types:
+    skill_id = str(getattr(payload, "skill_id", "") or "")
+    legacy_required_types = required_artifact_types_for_skill(skill_id)
+    if result.artifacts and skill_id != "general-chat" and contract is None and not legacy_required_types:
         failed = _failed_result(result, "skill_deliverable_contract_upgrade_required", _DELIVERY_ERRORS["skill_deliverable_contract_upgrade_required"])
         return replace(
             failed,
@@ -160,14 +181,23 @@ def enforce_pinned_deliverable_result(
     artifacts = [
         artifact for artifact in result.artifacts if public_artifact_matches_contract(contract, artifact)
     ]
-    if _missing_terminal_types(contract, artifacts):
+    missing_types, duplicate_types = _required_terminal_type_errors(
+        contract, (artifact.artifact_type for artifact in artifacts)
+    )
+    if duplicate_types:
+        return _failed_result(
+            result,
+            "required_artifact_cardinality_invalid",
+            _DELIVERY_ERRORS["required_artifact_cardinality_invalid"],
+        )
+    if missing_types:
         return _failed_result(result, "required_artifact_missing", _DELIVERY_ERRORS["required_artifact_missing"])
     return replace(
         result,
         artifacts=artifacts,
         result={
             **result.result,
-            "message": "已生成 Excel 文件。",
+            "message": "已生成结果文件。",
             "artifact_count": len(artifacts),
         },
     )
@@ -232,47 +262,89 @@ def collect_workspace_artifacts(
     """Collect only bounded, contract-approved files before storage writes."""
 
     candidates = _workspace_candidates(workspace, artifact_dirs)
+    approved_candidates = _approved_workspace_artifact_candidates(
+        candidates=candidates,
+        workspace=workspace,
+        payload=payload,
+        deliverable_contract=deliverable_contract,
+    )
+    if deliverable_contract is not None:
+        missing_types, duplicate_types = _required_terminal_type_errors(
+            deliverable_contract,
+            (candidate.artifact_type for candidate in approved_candidates),
+        )
+        if duplicate_types:
+            raise _RequiredTerminalDeliverableCardinalityError
+        if missing_types:
+            return []
     object_storage = storage or ObjectStorage()
     artifacts: list[ArtifactManifest] = []
+    for candidate in approved_candidates:
+        storage_key = (
+            f"tenants/{getattr(payload, 'tenant_id')}/workspaces/{getattr(payload, 'workspace_id')}/"
+            f"sessions/{getattr(payload, 'session_id')}/runs/{getattr(payload, 'run_id')}/"
+            f"artifacts/{candidate.index}/{candidate.path.name}"
+        )
+        stored = object_storage.put_bytes(
+            storage_key=storage_key,
+            content=candidate.path.read_bytes(),
+            content_type=candidate.content_type,
+        )
+        artifacts.append(
+            ArtifactManifest(
+                artifact_type=candidate.artifact_type,
+                label=candidate.label,
+                content_type=candidate.content_type,
+                storage_key=stored.storage_key,
+                size_bytes=stored.size_bytes,
+                manifest={
+                    "source_executor": source_executor,
+                    "workspace_output": candidate.path.relative_to(workspace).as_posix(),
+                    **(
+                        {"deliverable_type": candidate.artifact_type}
+                        if deliverable_contract is not None
+                        else {}
+                    ),
+                },
+            )
+        )
+    return artifacts
+
+
+def _approved_workspace_artifact_candidates(
+    *,
+    candidates: Iterable[Path],
+    workspace: Path,
+    payload: object,
+    deliverable_contract: Mapping[str, object] | None,
+) -> list[_WorkspaceArtifactCandidate]:
+    """Classify every safe public candidate before any artifact storage write."""
+
+    approved: list[_WorkspaceArtifactCandidate] = []
     for index, path in enumerate(candidates, start=1):
         if deliverable_contract is not None:
             spec = _contract_delivery_spec(workspace, path, deliverable_contract)
             if spec is None:
                 continue
-            content_type = str(spec["content_type"])
             artifact_type = str(spec["artifact_type"])
+            content_type = str(spec["content_type"])
             label = str(spec["label"])
         else:
-            content_type = _artifact_content_type(path.name)
             artifact_type = _artifact_type(path.name, str(getattr(payload, "skill_id", "") or ""))
             if artifact_type in {"reviewed_docx", "translated_docx"} and not _is_usable_docx(path):
                 continue
+            content_type = _artifact_content_type(path.name)
             label = _artifact_label(path.name, artifact_type)
-        storage_key = (
-            f"tenants/{getattr(payload, 'tenant_id')}/workspaces/{getattr(payload, 'workspace_id')}/"
-            f"sessions/{getattr(payload, 'session_id')}/runs/{getattr(payload, 'run_id')}/"
-            f"artifacts/{index}/{path.name}"
-        )
-        stored = object_storage.put_bytes(
-            storage_key=storage_key,
-            content=path.read_bytes(),
-            content_type=content_type,
-        )
-        artifacts.append(
-            ArtifactManifest(
+        approved.append(
+            _WorkspaceArtifactCandidate(
+                index=index,
+                path=path,
                 artifact_type=artifact_type,
-                label=label,
                 content_type=content_type,
-                storage_key=stored.storage_key,
-                size_bytes=stored.size_bytes,
-                manifest={
-                    "source_executor": source_executor,
-                    "workspace_output": path.relative_to(workspace).as_posix(),
-                    **({"deliverable_type": artifact_type} if deliverable_contract is not None else {}),
-                },
+                label=label,
             )
         )
-    return artifacts
+    return approved
 
 
 def _payload_manifests(payload: object) -> dict[str, Mapping[str, object]]:
@@ -340,10 +412,24 @@ def _missing_terminal_types(
     contract: Mapping[str, object] | None,
     artifacts: list[ArtifactManifest] | tuple[ArtifactManifest, ...],
 ) -> tuple[str, ...]:
+    return _required_terminal_type_errors(
+        contract, (artifact.artifact_type for artifact in artifacts)
+    )[0]
+
+
+def _required_terminal_type_errors(
+    contract: Mapping[str, object] | None,
+    artifact_types: Iterable[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return missing and duplicate required types without exposing file details."""
+
     if contract is None:
-        return ()
-    return tuple(
-        sorted(set(required_deliverable_types(contract)) - {artifact.artifact_type for artifact in artifacts})
+        return (), ()
+    counts = Counter(artifact_types)
+    required_types = required_deliverable_types(contract)
+    return (
+        tuple(sorted(artifact_type for artifact_type in required_types if counts[artifact_type] == 0)),
+        tuple(sorted(artifact_type for artifact_type in required_types if counts[artifact_type] > 1)),
     )
 
 
