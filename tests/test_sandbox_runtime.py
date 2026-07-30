@@ -1918,7 +1918,14 @@ async def test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fail
 
 @pytest.mark.asyncio
 async def test_runtime_stops_live_container_when_lease_recording_fails(tmp_path):
-    provider = FakeContainerProvider(executor_url="http://executor.test")
+    created_requests = []
+
+    class RecordingProvider(FakeContainerProvider):
+        async def create_or_reuse(self, runtime_request, workspace):
+            created_requests.append(list(runtime_request.materialized_file_names))
+            return await super().create_or_reuse(runtime_request, workspace)
+
+    provider = RecordingProvider(executor_url="http://executor.test")
 
     async def execute(executor_url, task_request):
         raise AssertionError("executor must not run when lease recording fails")
@@ -1935,8 +1942,22 @@ async def test_runtime_stops_live_container_when_lease_recording_fails(tmp_path)
     )
 
     with pytest.raises(RuntimeError, match="db unavailable"):
-        await runtime.submit(request(sandbox_mode="persistent"))
+        await runtime.submit(
+            request(
+                sandbox_mode="persistent",
+                materialized_file_names=["controlled-workbook.xlsx", "controlled-report.pdf"],
+                tool_policy_subjects=[
+                    {
+                        "identity": "Skill",
+                        "registered": True,
+                        "declared": True,
+                        "allowed_skill_names": [f"controlled-file-skill-{index:03d}" for index in range(256)],
+                    }
+                ],
+            )
+        )
 
+    assert created_requests == [["controlled-workbook.xlsx", "controlled-report.pdf"]]
     assert await provider.list_runtime_containers({}) == []
 
 
