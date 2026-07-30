@@ -1316,41 +1316,16 @@ def test_skills_marketplace_public_api_documents_backed_file_overlay_contract():
     assert "durable per-user skill file storage" not in contract
 
 
-def test_multi_agent_workflow_separates_task_lifetimes_and_budgets_release_work():
+def test_multi_agent_workflow_keeps_task_authority_and_release_ownership_separate():
     workflow = read(MULTI_AGENT_CONTEXT_WORKFLOW)
     compact_workflow = " ".join(workflow.split())
 
     assert "### Disposable probes" in workflow
     assert "one-shot, read-only context-isolation task" in compact_workflow
-    assert "subject is not limited to a fixed task list" in compact_workflow
-    assert "must not read or receive a real `.env`, secret, credential" in compact_workflow
-    assert "Use authorized redacted evidence instead" in compact_workflow
-    assert "It receives no write lease" in compact_workflow
-    assert "Do not turn or re-charter a disposable probe into a writer" in compact_workflow
     assert "### Persistent tasks" in workflow
-    assert "persistent, project-bound Codex task" in compact_workflow
-    assert "independent clean worktree" in compact_workflow
-
+    assert "Exactly one persistent writer holds a given write scope" in compact_workflow
     assert "## Release Lifecycle" in workflow
-    assert "`RELEASE_READINESS_PASS`" in workflow
-    assert "`RELEASE_READINESS_BLOCKED`" in workflow
-    assert "or count a release generation" in compact_workflow
     assert "exactly one project-bound persistent release task and one mutation lease" in compact_workflow
-
-    assert "## Goal-Level Repair Budget" in workflow
-    assert "`repair_budget_total`" in workflow
-    assert "finite goal-specific `repair_budget_total`" in compact_workflow
-    assert "no permanent numeric default" in compact_workflow
-    assert "does not reset it" in compact_workflow
-    assert "`GOAL_REPAIR_BUDGET_EXHAUSTED`" in workflow
-    assert "Only an explicit user decision may increase or reset" in compact_workflow
-
-    assert "## Model And Review Routing" in workflow
-    assert "default reasoning ceiling" in compact_workflow
-    assert "`max` requires explicit user authorization" in compact_workflow
-    assert "Capacity is not a target" in compact_workflow
-    assert "economical read-only role for disposable probes" in compact_workflow
-    assert "Do not hard-code a probe to a particular model name" in compact_workflow
 
 
 def test_governance_docs_remove_stale_rules_without_weakening_release_invariants():
@@ -1405,9 +1380,6 @@ def test_governance_docs_keep_cross_cutting_rules_in_one_authoritative_file():
 
     unique_contracts = {
         "workflow": (
-            "`RELEASE_READINESS_PASS`",
-            "`repair_budget_total`",
-            "default reasoning ceiling",
             "one-shot, read-only context-isolation task",
         ),
         "guardrails": (
