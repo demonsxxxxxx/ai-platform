@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 
 import pytest
 
@@ -16,6 +16,17 @@ PUBLIC_STEP_PAYLOAD_FIELDS = {
     "artifact_public_id",
     "created_at",
 }
+
+
+class _FailingOffsetTimezone(tzinfo):
+    def __init__(self, exception_type):
+        self._exception_type = exception_type
+
+    def dst(self, value):
+        return None
+
+    def utcoffset(self, value):
+        raise self._exception_type("repository timezone failure")
 
 
 def _persisted_step(*, created_at):
@@ -74,6 +85,23 @@ def test_public_execution_row_preserves_existing_valid_timestamp_values(created_
     ],
 )
 def test_public_execution_row_rejects_naive_malformed_and_unsupported_timestamps(created_at):
+    assert public_execution_event_from_row(
+        "run-execution-1", _persisted_step(created_at=created_at)
+    ) is None
+
+
+def test_public_execution_row_rejects_datetime_utc_conversion_overflow():
+    created_at = datetime.min.replace(tzinfo=timezone(timedelta(hours=14)))
+
+    assert public_execution_event_from_row(
+        "run-execution-1", _persisted_step(created_at=created_at)
+    ) is None
+
+
+@pytest.mark.parametrize("exception_type", [ValueError, TypeError])
+def test_public_execution_row_rejects_datetime_timezone_offset_errors(exception_type):
+    created_at = datetime(2026, 7, 30, tzinfo=_FailingOffsetTimezone(exception_type))
+
     assert public_execution_event_from_row(
         "run-execution-1", _persisted_step(created_at=created_at)
     ) is None

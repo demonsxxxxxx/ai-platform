@@ -98,12 +98,17 @@ def _normalize_public_execution_created_at(value: object) -> str | None:
     if isinstance(value, str):
         try:
             parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
-        except ValueError:
+            return value if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+        except (OverflowError, ValueError, TypeError):
             return None
-        return value if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
-    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+    if not isinstance(value, datetime):
         return None
-    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").removesuffix("+00:00") + "Z"
+    try:
+        if value.tzinfo is None or value.utcoffset() is None:
+            return None
+        return value.astimezone(timezone.utc).isoformat(timespec="microseconds").removesuffix("+00:00") + "Z"
+    except (OverflowError, ValueError, TypeError):
+        return None
 
 
 def _safe_progress(value: object) -> dict[str, int] | None:
