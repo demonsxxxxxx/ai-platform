@@ -196,24 +196,6 @@ def test_artifact_card_uses_stored_filename_for_xlsx_preview_eligibility():
     assert legacy["preview_url"] is None
 
 
-def test_ordinary_xlsx_artifact_card_uses_server_owned_safe_label():
-    card = artifact_card(
-        {
-            "id": "artifact-xlsx",
-            "artifact_type": "xlsx",
-            "label": "generate_filled_excel.py",
-            "storage_key": "private/audit-result.xlsx",
-            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "manifest_json": {},
-            "created_at": None,
-        },
-        principal=principal(),
-    )
-
-    assert card["label"] == "Excel 文件"
-    assert "generate_filled_excel.py" not in str(card)
-
-
 def test_projection_keeps_terminal_tool_permission_events_as_fixed_activity():
     event = run_event_response(
         "run-a",

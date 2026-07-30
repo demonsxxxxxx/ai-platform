@@ -69,8 +69,6 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "tool_permission_denied": "任务所需工具未获授权。请调整请求或联系管理员。",
     "required_capability_unavailable": required_tool_public_detail("unavailable")["message"],
     "skill_sandbox_admission_failed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
-    "skill_deliverable_contract_upgrade_required": "所选 Skill 版本需要管理员更新后才能处理文件。",
-    "skill_deliverable_process_evidence_missing": "文件处理未取得完整执行证据。请稍后重试；如问题持续，请联系管理员。",
     "run_cancelled": "任务已取消。取消前已产生的公开内容仍会保留。",
 }
 
@@ -99,8 +97,6 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "required_tool_admin_bypass_forbidden": "required_capability_unavailable",
     "required_tool_completion_evidence_missing": "required_capability_unavailable",
     "required_tool_completion_evidence_mismatch": "required_capability_unavailable",
-    "skill_deliverable_contract_upgrade_required": "skill_deliverable_contract_upgrade_required",
-    "skill_deliverable_process_evidence_missing": "skill_deliverable_process_evidence_missing",
 }
 
 CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
@@ -295,11 +291,6 @@ PUBLIC_ARTIFACT_CONTENT_TYPES = frozenset(
         "text/plain",
     }
 )
-PUBLIC_ARTIFACT_LABELS = {
-    "xlsx": "Excel 文件",
-}
-
-
 def _public_artifact_type(value: object) -> str:
     artifact_type = str(value or "").strip().lower()
     return artifact_type if artifact_type in PUBLIC_ARTIFACT_TYPES else "file"
@@ -326,7 +317,7 @@ def _ordinary_artifact_card(row: dict[str, object]) -> dict[str, object]:
         "id": artifact_id,
         "artifact_id": artifact_id,
         "artifact_type": artifact_type,
-        "label": PUBLIC_ARTIFACT_LABELS.get(artifact_type, artifact_type),
+        "label": artifact_type,
         "content_type": content_type,
         "size_bytes": _bounded_nonnegative_int(row.get("size_bytes")),
         "download_url": artifact_download_url(artifact_id),
