@@ -36,7 +36,8 @@ from app.skills.catalog import (
 from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
     SKILL_WORKSPACE_CONTRACT_VERSION,
-    sdk_skill_file_tools_for_execution_profile,
+    SdkSkillToolAdmission,
+    sdk_skill_tool_admission_for_execution_profile,
 )
 from app.tool_policy import evaluate_tool_policy
 
@@ -425,15 +426,15 @@ def _sdk_skill_allow_patterns(skill_names: set[str]) -> list[str]:
 def _with_execution_profile_skill_tools(
     subjects: dict[str, dict[str, Any]],
     *,
-    admitted_tools: tuple[str, ...],
+    admission: SdkSkillToolAdmission | None,
 ) -> dict[str, dict[str, Any]]:
     """Project one server-selected SDK profile into complete tool subjects."""
 
     skill_subject = subjects.get("Skill")
-    if not admitted_tools or not isinstance(skill_subject, dict):
+    if admission is None or not isinstance(skill_subject, dict):
         return subjects
     resolved = dict(subjects)
-    for tool_name in admitted_tools:
+    for tool_name in admission.tool_names:
         if tool_name in resolved:
             continue
         subject = dict(skill_subject)
@@ -449,6 +450,7 @@ def _with_execution_profile_skill_tools(
                 "risk_level": "low" if tool_name in _SDK_LOCAL_READ_ONLY_TOOLS else "high",
                 "write_capable": tool_name not in _SDK_LOCAL_READ_ONLY_TOOLS,
                 "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
+                "command_isolation": admission.command_isolation,
             }
         )
         resolved[tool_name] = subject
@@ -1569,7 +1571,7 @@ async def run_claude_agent_sdk(
         configured_skills = [name for name in configured_skills if name in allowed_skill_names]
         authorized_subjects = _with_execution_profile_skill_tools(
             authorized_subjects,
-            admitted_tools=sdk_skill_file_tools_for_execution_profile(
+            admission=sdk_skill_tool_admission_for_execution_profile(
                 execution_profile=execution_profile,
                 selected_skill_id=selected_sdk_skill,
                 staged_skill_ids=configured_skills,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
 from app.skills.lifecycle import (
@@ -21,6 +22,7 @@ SDK_RESTRICTED = "sdk_restricted"
 NATIVE_COMMAND_ISOLATION = "sibling-tool-sandbox-v1"
 CONTROLLED_COMMAND_ISOLATION = "minimal-environment-v1"
 OPEN_SANDBOX_TRUSTED_INTERNAL_SDK_EXECUTION_PROFILE = "opensandbox_trusted_internal"
+OPEN_SANDBOX_TRUSTED_INTERNAL_COMMAND_ISOLATION = "opensandbox-workspace-v1"
 
 _IMPLICIT_GENERAL_CHAT_SKILL_ID = "general-chat"
 _EXPLICIT_SKILL_BASH_IDENTITY = ("Bash",)
@@ -64,10 +66,45 @@ class SkillExecutionProfile(TypedDict):
     command_isolation: str
 
 
+@dataclass(frozen=True)
+class SdkSkillToolAdmission:
+    """Complete SDK tool authority for one server-selected execution profile."""
+
+    tool_names: tuple[str, ...]
+    command_isolation: str
+
+
 class SkillExecutionProfileError(ValueError):
     """Raised when a pinned execution profile differs from server authority."""
 
     pass
+
+
+def sdk_skill_tool_admission_for_execution_profile(
+    *,
+    execution_profile: object,
+    selected_skill_id: object,
+    staged_skill_ids: object,
+    authorized_skill_ids: object,
+) -> SdkSkillToolAdmission | None:
+    """Return the exact sandbox SDK tool admission for one selected Skill."""
+
+    if (
+        execution_profile != OPEN_SANDBOX_TRUSTED_INTERNAL_SDK_EXECUTION_PROFILE
+        or not isinstance(selected_skill_id, str)
+        or not selected_skill_id
+        or not isinstance(staged_skill_ids, list | tuple | set | frozenset)
+        or not isinstance(authorized_skill_ids, list | tuple | set | frozenset)
+    ):
+        return None
+    staged = {item for item in staged_skill_ids if isinstance(item, str)}
+    authorized = {item for item in authorized_skill_ids if isinstance(item, str)}
+    if selected_skill_id not in staged or selected_skill_id not in authorized:
+        return None
+    return SdkSkillToolAdmission(
+        tool_names=_TRUSTED_INTERNAL_SDK_SKILL_FILE_TOOLS,
+        command_isolation=OPEN_SANDBOX_TRUSTED_INTERNAL_COMMAND_ISOLATION,
+    )
 
 
 def sdk_skill_file_tools_for_execution_profile(
@@ -79,19 +116,13 @@ def sdk_skill_file_tools_for_execution_profile(
 ) -> tuple[str, ...]:
     """Return the internal-beta SDK file tools for one exact staged Skill."""
 
-    if (
-        execution_profile != OPEN_SANDBOX_TRUSTED_INTERNAL_SDK_EXECUTION_PROFILE
-        or not isinstance(selected_skill_id, str)
-        or not selected_skill_id
-        or not isinstance(staged_skill_ids, list | tuple | set | frozenset)
-        or not isinstance(authorized_skill_ids, list | tuple | set | frozenset)
-    ):
-        return ()
-    staged = {item for item in staged_skill_ids if isinstance(item, str)}
-    authorized = {item for item in authorized_skill_ids if isinstance(item, str)}
-    if selected_skill_id not in staged or selected_skill_id not in authorized:
-        return ()
-    return _TRUSTED_INTERNAL_SDK_SKILL_FILE_TOOLS
+    admission = sdk_skill_tool_admission_for_execution_profile(
+        execution_profile=execution_profile,
+        selected_skill_id=selected_skill_id,
+        staged_skill_ids=staged_skill_ids,
+        authorized_skill_ids=authorized_skill_ids,
+    )
+    return admission.tool_names if admission is not None else ()
 
 
 def _known_tool_identities(values: tuple[str, ...]) -> list[str]:
