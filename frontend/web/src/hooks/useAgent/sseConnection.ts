@@ -19,6 +19,7 @@ import {
 } from "./types";
 import { handleStreamEvent, type EventHandlerContext } from "./eventHandlers";
 import { clearAllLoadingStates } from "./messageParts";
+import { collapsePublicExecutionSteps } from "./publicStreamPresentation";
 import {
   authoritativeRunStatus,
   isActiveRunStatus,
@@ -336,6 +337,12 @@ export async function connectToSSE(
   const streamAbortController = new AbortController();
   abortControllerRef.current = streamAbortController;
   const streamVersion = streamVersionRef.current;
+  ctx.publicStreamPresentation?.activate({
+    sessionId: targetSessionId,
+    runId: targetRunId,
+    assistantMessageId: messageId,
+    streamVersion,
+  });
   const isCurrentStream = () =>
     abortControllerRef.current === streamAbortController &&
     isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion);
@@ -527,13 +534,22 @@ export async function connectToSSE(
           setConnectionStatus("disconnected");
           isConnectingRef.current = false;
           ctx.setIsInitializingSandbox(false);
+          ctx.publicStreamPresentation?.flush({
+            sessionId: targetSessionId,
+            runId: targetRunId,
+            assistantMessageId: messageId,
+            streamVersion,
+          });
+          ctx.publicStreamPresentation?.invalidate();
           ctx.setMessages((prev) =>
             prev.map((m) =>
               m.id === messageId
                 ? {
                     ...m,
                     isStreaming: false,
-                    parts: clearAllLoadingStates(m.parts || []),
+                    parts: collapsePublicExecutionSteps(
+                      clearAllLoadingStates(m.parts || []),
+                    ),
                   }
                 : m,
             ),
@@ -549,6 +565,12 @@ export async function connectToSSE(
       if (!isCurrentStream()) {
         return;
       }
+      ctx.publicStreamPresentation?.flush({
+        sessionId: targetSessionId,
+        runId: targetRunId,
+        assistantMessageId: messageId,
+        streamVersion,
+      });
       // Release this owner's reference before aborting its controller so an
       // abort callback cannot observe itself as the current replacement.
       abortControllerRef.current = null;
@@ -644,6 +666,15 @@ export async function reconnectSSE(
   if (!currentSessId || !currentRId || !isCurrentReconnect()) {
     console.log("[SSE] No session/run ID, skipping reconnect");
     return;
+  }
+
+  if (currentMsgId) {
+    ctx.publicStreamPresentation?.flush({
+      sessionId: currentSessId,
+      runId: currentRId,
+      assistantMessageId: currentMsgId,
+      streamVersion: reconnectStreamVersion,
+    });
   }
 
   clearReconnectTimeout(reconnectTimeoutRef);

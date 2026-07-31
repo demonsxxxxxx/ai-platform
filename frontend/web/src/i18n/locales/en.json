@@ -581,6 +581,10 @@
         "running": "Running"
       }
     },
+    "publicExecutionProcess": {
+      "title": "Process",
+      "summary": "{{completed}} completed, {{failed}} failed of {{total}}"
+    },
     "runStatus": {
       "event": {
         "agentStepBlocked": "Execution is waiting",
