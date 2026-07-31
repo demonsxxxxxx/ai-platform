@@ -26,20 +26,12 @@ test("keeps streaming text object identity stable without using mutable content 
 test("renders public execution kind and status from frontend i18n instead of backend copy", async () => {
   const step: Extract<MessagePart, { type: "execution_step" }> = {
     type: "execution_step",
-    schema_version: "ai-platform.public-execution-event.v1",
-    event_id: "evt-step-completed",
     sequence: 6,
-    run_id: "run-execution",
     step_id: "step-prepare-report",
     kind: "processing",
-    stage: "prepare",
-    title: "Backend says Prepare report",
-    summary: "Backend says Input is ready",
     progress: { current: 4, total: 4 },
     status: "completed",
     safe_file_name: null,
-    artifact_public_id: null,
-    created_at: null,
   };
   await i18n.changeLanguage("zh");
   const zhMarkup = renderToStaticMarkup(
@@ -52,15 +44,13 @@ test("renders public execution kind and status from frontend i18n instead of bac
   await i18n.changeLanguage(PRODUCT_LANGUAGE);
 
   assert.match(zhMarkup, /处理/);
-  assert.match(zhMarkup, /已完成/);
+    assert.match(zhMarkup, /已完成/);
   assert.match(enMarkup, /Processing/);
   assert.match(enMarkup, /Completed/);
   for (const markup of [zhMarkup, enMarkup]) {
     assert.match(markup, /role="status"/);
-    assert.match(markup, /100%/);
-    assert.match(markup, /data-execution-status="completed"/);
-    assert.match(markup, /data-execution-step-id="step-prepare-report"/);
-    assert.match(markup, /role="progressbar"/);
+    assert.match(markup, /4\/4/);
+    assert.match(markup, /data-public-execution-process/);
     assert.doesNotMatch(markup, /Backend says/);
     assert.doesNotMatch(markup, /rounded-lg|border-/);
     assert.doesNotMatch(markup, /tool|execute/i);
@@ -69,7 +59,6 @@ test("renders public execution kind and status from frontend i18n instead of bac
   const [startedKey] = createMessagePartRenderKeys("message-a", [
     {
       ...step,
-      event_id: "evt-step-started",
       status: "running",
       progress: { current: 0, total: 4 },
     },
@@ -85,20 +74,12 @@ test("renders binary lifecycle as a status row without a progress bar", async ()
       isLast: true,
       part: {
         type: "execution_step",
-        schema_version: "ai-platform.public-execution-event.v1",
-        event_id: "evt-binary",
         sequence: 1,
-        run_id: "run-binary",
         step_id: "step-binary",
         kind: "analysis",
-        stage: "backend-stage-copy",
-        title: "Backend title must not render",
-        summary: "Backend summary must not render",
         progress: { current: 0, total: 1 },
         status: "running",
         safe_file_name: null,
-        artifact_public_id: null,
-        created_at: null,
       } satisfies Extract<MessagePart, { type: "execution_step" }>,
     }),
   );
@@ -107,7 +88,7 @@ test("renders binary lifecycle as a status row without a progress bar", async ()
   assert.match(markup, /Analysis/);
   assert.match(markup, /Running/);
   assert.doesNotMatch(markup, /role="progressbar"|0\/1|0%/);
-  assert.doesNotMatch(markup, /Backend|backend-stage-copy/);
+  assert.doesNotMatch(markup, /Backend|backend-stage-copy|step-binary/);
 });
 
 test("renders run status from allowlisted event type instead of backend message and stage", async () => {
