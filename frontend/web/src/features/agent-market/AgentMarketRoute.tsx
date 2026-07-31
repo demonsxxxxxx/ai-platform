@@ -341,7 +341,7 @@ function AgentMarketCatalog({
   const selectionKey = `${searchQuery}\u0000${activeCategory}`;
   const selectionKeyRef = useRef(selectionKey);
   const admissionTokenRef = useRef(0);
-  const admissionInFlightRef = useRef(false);
+  const admissionOwnerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const [creating, setCreating] = useState(false);
   const [admissionError, setAdmissionError] = useState<{
@@ -359,6 +359,8 @@ function AgentMarketCatalog({
 
   const invalidateWorkspaceAdmission = useCallback(() => {
     admissionTokenRef.current += 1;
+    admissionOwnerRef.current = null;
+    setCreating(false);
     setAdmissionError(null);
   }, []);
 
@@ -367,6 +369,7 @@ function AgentMarketCatalog({
     return () => {
       mountedRef.current = false;
       admissionTokenRef.current += 1;
+      admissionOwnerRef.current = null;
     };
   }, []);
 
@@ -378,10 +381,10 @@ function AgentMarketCatalog({
 
   const handleOpenWorkspace = useCallback(
     async (profile: AgentProfilePublicProjection) => {
-      if (admissionInFlightRef.current) return;
+      if (admissionOwnerRef.current !== null) return;
 
-      admissionInFlightRef.current = true;
       const token = ++admissionTokenRef.current;
+      admissionOwnerRef.current = token;
       const profileKey = `${profile.agent_id}:${profile.expected_revision}`;
       let navigated = false;
       setCreating(true);
@@ -403,9 +406,11 @@ function AgentMarketCatalog({
         if (token !== admissionTokenRef.current) return;
         setAdmissionError({ profileKey, message: conversationAdmissionError(error) });
       } finally {
-        admissionInFlightRef.current = false;
-        if (mountedRef.current && !navigated) {
-          setCreating(false);
+        if (admissionOwnerRef.current === token) {
+          admissionOwnerRef.current = null;
+          if (mountedRef.current && !navigated) {
+            setCreating(false);
+          }
         }
       }
     },
