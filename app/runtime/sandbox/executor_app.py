@@ -1424,6 +1424,7 @@ async def _default_executor_runner(
             "on_tool_lifecycle": on_tool_lifecycle,
             "tool_policy_subjects": _task_tool_policy_subjects(request),
             "execution_policy": "sandbox_brokered",
+            "execution_profile": str(request.config.get("sdk_execution_profile") or ""),
             "attachment_contexts": attachment_contexts,
         }
         if system_prompt is not None:
