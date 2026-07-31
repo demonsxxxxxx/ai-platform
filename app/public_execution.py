@@ -217,7 +217,7 @@ def _safe_progress(value: object) -> dict[str, int] | None:
     return {"current": current, "total": total}
 
 
-def validate_public_execution_step_payload(
+def _validate_public_execution_step_payload_v1(
     payload: object, *, expected_kind: str | None = None
 ) -> dict[str, object] | None:
     """Accept only the exact persisted step payload contract."""
@@ -333,7 +333,7 @@ def _versioned_public_execution_step_payload(
         if validated_v2 is None:
             return None
         return PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION, validated_v2
-    validated_v1 = validate_public_execution_step_payload(
+    validated_v1 = _validate_public_execution_step_payload_v1(
         payload,
         expected_kind=expected_kind,
     )
@@ -342,7 +342,7 @@ def _versioned_public_execution_step_payload(
     return PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION, validated_v1
 
 
-def validate_persistable_public_execution_step_payload(
+def validate_public_execution_step_payload(
     payload: object,
     *,
     expected_kind: str | None = None,

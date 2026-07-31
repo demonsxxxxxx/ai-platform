@@ -1,6 +1,6 @@
 from app.public_execution import (
     PUBLIC_EXECUTION_EVENT_TYPES,
-    validate_persistable_public_execution_step_payload,
+    validate_public_execution_step_payload,
 )
 from app.runtime.kernel_contracts import AgentEvent
 
@@ -62,7 +62,7 @@ def _private_executor_event() -> dict[str, object]:
 
 def agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
     if event.type in PUBLIC_EXECUTION_EVENT_TYPES:
-        payload = validate_persistable_public_execution_step_payload(
+        payload = validate_public_execution_step_payload(
             event.payload,
             expected_kind=event.type,
         )
