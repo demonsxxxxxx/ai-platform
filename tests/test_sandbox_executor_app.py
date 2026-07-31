@@ -20,6 +20,7 @@ from app.file_parser_contracts import (
     MaterializedAttachmentFact,
     build_attachment_preprocessing_contract,
 )
+from app.public_execution import PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS
 from app.required_tool_contract import RequiredCapabilityDeclaration
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
@@ -109,6 +110,15 @@ def callback_ack(payload: dict[str, object]) -> dict[str, object]:
 
     events = payload.get("events")
     return {"accepted": True, "event_count": 1 + len(events) if isinstance(events, list) else 1}
+
+
+def mapped_execution_fact(invocation_id: str, lifecycle: str, *, fact_kind: str = "tool_invocation"):
+    public_label = "Tenant Search" if fact_kind == "capability_invocation" else "Running controlled processing"
+    return executor_app._PrivateExecutionFact(fact={"fact_kind": fact_kind, "invocation_id": invocation_id, "lifecycle": lifecycle, "public_label": public_label})
+
+
+def public_execution_events(callbacks):
+    return [event for callback in callbacks for event in callback.get("events", []) if event["type"].startswith("execution_")]
 
 
 def create_test_client(tmp_path, **kwargs) -> TestClient:
@@ -542,6 +552,94 @@ def test_executor_callback_persists_only_strict_public_execution_event_shape(tmp
     assert response.status_code == 200
     emitted = [event for callback in callbacks for event in callback.get("events", [])]
     assert emitted == []
+
+
+def test_executor_active_progress_is_bounded_rate_limited_and_invocation_scoped(tmp_path, monkeypatch):
+    callbacks, started_ids, progress_times = [], [], {}
+    both_progressed, second_progressed_after_terminal = asyncio.Event(), asyncio.Event()
+    interval_seconds = 0.015
+    async def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        for event in payload.get("events", []):
+            step_id = event.get("payload", {}).get("step_id")
+            if event["type"] == "execution_step":
+                started_ids.append(step_id)
+            elif event["type"] == "execution_progress":
+                progress_times.setdefault(step_id, []).append(time.monotonic())
+                if len(started_ids) >= 2 and all(progress_times.get(item) for item in started_ids[:2]):
+                    both_progressed.set()
+                if len(started_ids) >= 2 and progress_times.get(started_ids[1], []) and terminal_seen[0]:
+                    second_progressed_after_terminal.set()
+            elif event["type"] == "execution_step_completed" and started_ids and step_id == started_ids[0]:
+                terminal_seen[0] = True
+        return callback_ack(payload)
+    terminal_seen = [False]
+    async def executor_runner(_request, _workspace_root, emit_event):
+        assert await emit_event(mapped_execution_fact("private-capability-a", "started", fact_kind="capability_invocation"))
+        assert await emit_event(mapped_execution_fact("private-tool-b", "started"))
+        await asyncio.wait_for(both_progressed.wait(), timeout=1.0)
+        assert await emit_event(mapped_execution_fact("private-capability-a", "completed", fact_kind="capability_invocation"))
+        await asyncio.wait_for(second_progressed_after_terminal.wait(), timeout=1.0)
+        assert await emit_event(mapped_execution_fact("private-tool-b", "failed"))
+        assert await emit_event(mapped_execution_fact("private-short-c", "started"))
+        assert await emit_event(mapped_execution_fact("private-short-c", "completed"))
+        await asyncio.sleep(interval_seconds * 2.5)
+        return {"status": "failed", "error_code": "controlled_failure", "error_message": "Stopped"}
+    monkeypatch.setattr(executor_app, "_ACTIVE_PROGRESS_INTERVAL_SECONDS", interval_seconds)
+    client = create_test_client(tmp_path, executor_runner=executor_runner, callback_sender=callback_sender)
+    assert client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers()).status_code == 200
+    events = public_execution_events(callbacks)
+    assert len(started_ids) == len(set(started_ids)) == 3
+    by_step = {step_id: [event for event in events if event["payload"]["step_id"] == step_id] for step_id in started_ids}
+    assert by_step[started_ids[0]][-1]["type"] == "execution_step_completed"
+    assert by_step[started_ids[1]][-1]["type"] == "execution_step_failed"
+    assert [event["type"] for event in by_step[started_ids[2]]] == ["execution_step", "execution_step_completed"]
+    assert len(progress_times[started_ids[1]]) >= 2
+    assert progress_times[started_ids[1]][1] - progress_times[started_ids[1]][0] >= interval_seconds * 0.75
+    assert all(event["payload"]["progress"] == {"current": 0, "total": 1} for event in events if event["type"] == "execution_progress")
+    assert all(set(event["payload"]) <= PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS for event in events)
+    assert not any(value in json.dumps(events) for value in ("private-capability-a", "private-tool-b", "private-short-c", "state_patch", "tool_call_id"))
+
+
+@pytest.mark.parametrize("mode", ["accepted", "rejected", "exception", "cancelled"])
+def test_executor_active_progress_drains_on_callback_failure_runner_completion_or_cancel(tmp_path, monkeypatch, mode):
+    callbacks, runner_cancelled = [], []
+    first_progress, interval_seconds = asyncio.Event(), 0.01
+    async def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        if any(event["type"] == "execution_progress" for event in payload.get("events", [])):
+            first_progress.set()
+            if mode == "exception":
+                raise RuntimeError("progress callback failed")
+            if mode == "rejected":
+                return {"accepted": False, "event_count": 1 + len(payload["events"])}
+        return callback_ack(payload)
+    async def executor_runner(_request, _workspace_root, emit_event):
+        assert await emit_event(mapped_execution_fact("private-active-call", "started"))
+        try:
+            if mode == "cancelled":
+                await asyncio.Event().wait()
+            await asyncio.wait_for(first_progress.wait(), timeout=1.0)
+            if mode in {"rejected", "exception"}:
+                await asyncio.sleep(interval_seconds * 3.5)
+            return {"status": "completed", "message": "trusted result"}
+        except asyncio.CancelledError:
+            runner_cancelled.append(True)
+            raise
+    monkeypatch.setattr(executor_app, "_ACTIVE_PROGRESS_INTERVAL_SECONDS", interval_seconds)
+    raw = task_payload()
+    raw["config"]["resource_limits"]["max_seconds"] = 0.05 if mode == "cancelled" else 60
+    client = create_test_client(tmp_path, executor_runner=executor_runner, callback_sender=callback_sender)
+    response = client.post("/v1/tasks/execute", json=raw, headers=auth_headers())
+    progress_count = sum(event["type"] == "execution_progress" for event in public_execution_events(callbacks))
+    assert progress_count >= 1 if mode == "cancelled" else progress_count == 1
+    assert runner_cancelled == ([True] if mode == "cancelled" else [])
+    assert (response.json().get("callback_errors") == ["running"]) is (mode in {"rejected", "exception"})
+    finished = next(index for index, item in enumerate(callbacks) if item.get("state_patch", {}).get("stage") == "executor_finished")
+    assert not any(event["type"] == "execution_progress" for item in callbacks[finished + 1 :] for event in item.get("events", []))
+    callback_count = len(callbacks)
+    time.sleep(interval_seconds * 3)
+    assert len(callbacks) == callback_count
 
 
 @pytest.mark.asyncio

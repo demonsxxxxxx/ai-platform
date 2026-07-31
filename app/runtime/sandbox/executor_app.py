@@ -69,7 +69,7 @@ CallbackSender = Callable[[str, CallbackPayload, str], Awaitable[CallbackResult]
 class _PrivateExecutionFact(NamedTuple):
     """Private runner fact paired with an optional public capability event."""
 
-    fact: dict[str, str] | None
+    fact: dict[str, object] | None
     public_event: AgentEvent | None = None
 
     @property
@@ -170,6 +170,7 @@ _CONTROLLED_FILE_SKILL_CAPABILITIES = {
 _CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
 _CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS = 5.0
 _EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
+_ACTIVE_PROGRESS_INTERVAL_SECONDS = 15.0
 _SDK_PRESERVED_FAILURE_CODES = frozenset(
     {
         "claude_agent_sdk_disabled",
@@ -1519,10 +1520,52 @@ def create_executor_app(
         capability_callback_failed = {"value": False}
         public_execution_projector = PublicExecutionProjector()
         runner_event_lock = asyncio.Lock()
+        active_progress_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        progress_tasks: set[asyncio.Task[None]] = set()
+
+        def active_progress_identity(
+            event: _PrivateExecutionFact,
+        ) -> tuple[tuple[str, str], dict[str, object], str] | None:
+            fact = event.fact
+            if not isinstance(fact, dict):
+                return None
+            fact_kind = str(fact.get("fact_kind") or "")
+            invocation_id = str(fact.get("invocation_id") or "")
+            lifecycle = str(fact.get("lifecycle") or "")
+            public_label = str(fact.get("public_label") or "")
+            if (
+                fact_kind not in {"capability_invocation", "tool_invocation"}
+                or not invocation_id
+                or lifecycle not in {"started", "progress", "completed", "failed"}
+                or not public_label
+            ):
+                return None
+            return (
+                (fact_kind, invocation_id),
+                {
+                    "fact_kind": fact_kind,
+                    "invocation_id": invocation_id,
+                    "lifecycle": "progress",
+                    "public_label": public_label,
+                    "progress": {"current": 0, "total": 1},
+                },
+                lifecycle,
+            )
+
+        def stop_active_progress(identity: tuple[str, str]) -> None:
+            task = active_progress_tasks.pop(identity, None)
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+
+        def stop_all_active_progress() -> None:
+            active_progress_tasks.clear()
+            for task in tuple(progress_tasks):
+                task.cancel()
 
         def seal_runner_events_after_capability_failure() -> None:
             capability_callback_failed["value"] = True
             runner_events_open["value"] = False
+            stop_all_active_progress()
 
         async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
             try:
@@ -1535,10 +1578,18 @@ def create_executor_app(
             except Exception:
                 callback_errors.append(event.status)
                 return False
-            lifecycle_event_count = sum(
-                agent_event.type.startswith("capability_") for agent_event in event.events
+            strict_event_count = sum(
+                agent_event.type.startswith("capability_")
+                or agent_event.type
+                in {
+                    "execution_step",
+                    "execution_progress",
+                    "execution_step_completed",
+                    "execution_step_failed",
+                }
+                for agent_event in event.events
             )
-            if lifecycle_event_count:
+            if strict_event_count:
                 acknowledged = _callback_acknowledges_exact_batch(
                     result,
                     event_count=len(event.events),
@@ -1558,6 +1609,9 @@ def create_executor_app(
                 if not agent_events:
                     return True
                 event_type = event.type
+                active_progress = active_progress_identity(event)
+                if active_progress is not None and active_progress[2] in {"completed", "failed"}:
+                    stop_active_progress(active_progress[0])
             else:
                 agent_event = event if isinstance(event, AgentEvent) else AgentEvent.model_validate(event)
                 raw_payload = dict(agent_event.payload)
@@ -1598,6 +1652,22 @@ def create_executor_app(
             acknowledged = await dispatch_callback_event(callback_event)
             if is_capability_event and not acknowledged:
                 seal_runner_events_after_capability_failure()
+            elif isinstance(event, _PrivateExecutionFact) and active_progress is not None:
+                identity, progress_fact, lifecycle = active_progress
+                if lifecycle == "started" and acknowledged:
+                    task = asyncio.create_task(emit_active_progress(identity, progress_fact))
+                    active_progress_tasks[identity] = task
+                    progress_tasks.add(task)
+                    _observe_detached_task(task)
+
+                    def forget_progress_task(completed_task: asyncio.Task[None]) -> None:
+                        progress_tasks.discard(completed_task)
+                        if active_progress_tasks.get(identity) is completed_task:
+                            active_progress_tasks.pop(identity, None)
+
+                    task.add_done_callback(forget_progress_task)
+                elif lifecycle == "progress" and not acknowledged:
+                    stop_active_progress(identity)
             if artifact_started_at is not None:
                 artifact_upload_latency_ms += _elapsed_ms(artifact_started_at)
             return acknowledged
@@ -1617,6 +1687,33 @@ def create_executor_app(
                     seal_runner_events_after_capability_failure()
                 raise
 
+        async def emit_active_progress(
+            identity: tuple[str, str],
+            progress_fact: dict[str, object],
+        ) -> None:
+            current_task = asyncio.current_task()
+            while (
+                runner_events_open["value"]
+                and not capability_callback_failed["value"]
+                and active_progress_tasks.get(identity) is current_task
+            ):
+                await asyncio.sleep(_ACTIVE_PROGRESS_INTERVAL_SECONDS)
+                if (
+                    not runner_events_open["value"]
+                    or capability_callback_failed["value"]
+                    or active_progress_tasks.get(identity) is not current_task
+                ):
+                    return
+                acknowledged = await emit_runner_event(_PrivateExecutionFact(fact=progress_fact))
+                if not acknowledged:
+                    return
+
+        async def drain_active_progress() -> None:
+            stop_all_active_progress()
+            pending = tuple(progress_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
         runner_event_emitter = _SealableExecutorEventEmitter(
             emit_event=emit_runner_event,
             seal_capability_failure=seal_runner_events_after_capability_failure,
@@ -1624,50 +1721,53 @@ def create_executor_app(
 
         await dispatch_callback_event(running_event)
         runner_result: dict[str, Any] = {}
-        if invalid_max_seconds:
-            runner_result = {
-                "status": "failed",
-                "error_code": "executor_invalid_max_seconds",
-                "error_message": "Executor max_seconds must be a finite number",
-            }
-        elif not timed_out:
-            if max_seconds is not None and not _is_async_callable(resolved_executor_runner):
+        try:
+            if invalid_max_seconds:
                 runner_result = {
                     "status": "failed",
-                    "error_code": "executor_deadline_requires_async_runner",
-                    "error_message": "Positive executor deadlines require an async runner",
+                    "error_code": "executor_invalid_max_seconds",
+                    "error_message": "Executor max_seconds must be a finite number",
                 }
-            else:
-                try:
-                    deadline_started_at = time.monotonic()
-                    raw_runner_result = resolved_executor_runner(
-                        request,
-                        resolved_workspace_root,
-                        runner_event_emitter,
-                    )
-                    if inspect.isawaitable(raw_runner_result):
-                        if max_seconds is not None:
-                            raw_runner_result, timed_out = await _await_with_deadline(
-                                raw_runner_result,
-                                timeout_seconds=max_seconds,
-                                on_timeout=lambda: runner_events_open.update(value=False),
-                            )
-                        else:
-                            raw_runner_result = await raw_runner_result
-                    runner_result = raw_runner_result if isinstance(raw_runner_result, dict) else {}
-                except _ExecutorCleanupError as exc:
+            elif not timed_out:
+                if max_seconds is not None and not _is_async_callable(resolved_executor_runner):
                     runner_result = {
                         "status": "failed",
-                        "error_code": exc.error_code,
-                        "error_message": exc.error_message,
+                        "error_code": "executor_deadline_requires_async_runner",
+                        "error_message": "Positive executor deadlines require an async runner",
                     }
-                except Exception as exc:
-                    runner_result = {
-                        "status": "failed",
-                        "error_code": "executor_runner_failed",
-                        "error_message": str(exc),
-                    }
-        runner_events_open["value"] = False
+                else:
+                    try:
+                        deadline_started_at = time.monotonic()
+                        raw_runner_result = resolved_executor_runner(
+                            request,
+                            resolved_workspace_root,
+                            runner_event_emitter,
+                        )
+                        if inspect.isawaitable(raw_runner_result):
+                            if max_seconds is not None:
+                                raw_runner_result, timed_out = await _await_with_deadline(
+                                    raw_runner_result,
+                                    timeout_seconds=max_seconds,
+                                    on_timeout=lambda: runner_events_open.update(value=False),
+                                )
+                            else:
+                                raw_runner_result = await raw_runner_result
+                        runner_result = raw_runner_result if isinstance(raw_runner_result, dict) else {}
+                    except _ExecutorCleanupError as exc:
+                        runner_result = {
+                            "status": "failed",
+                            "error_code": exc.error_code,
+                            "error_message": exc.error_message,
+                        }
+                    except Exception as exc:
+                        runner_result = {
+                            "status": "failed",
+                            "error_code": "executor_runner_failed",
+                            "error_message": str(exc),
+                        }
+        finally:
+            runner_events_open["value"] = False
+            await drain_active_progress()
 
         if capability_callback_failed["value"]:
             runner_result["status"] = "failed"
