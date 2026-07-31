@@ -819,6 +819,121 @@ def test_executor_callback_persists_exact_timeline_for_chat_and_history(monkeypa
     assert records[0].history_event["payload"] == records[0].stream_data
 
 
+def _arbitrary_v2_step(
+    *,
+    event_type="execution_step",
+    status="running",
+    progress=None,
+    safe_label="Caller selected Skill",
+):
+    payload = {
+        "schema_version": "ai-platform.public-execution-event.v2",
+        "step_id": "pex_caller_reused",
+        "presentation_kind": "skill",
+        "kind": "capability",
+        "stage": "execution",
+        "status": status,
+        "progress": progress or {"current": 0, "total": 1},
+    }
+    if safe_label is not ...:
+        payload["safe_label"] = safe_label
+    return {"type": event_type, "message": "", "payload": payload}
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [_arbitrary_v2_step()],
+        [
+            _arbitrary_v2_step(
+                event_type="execution_step_completed",
+                status="completed",
+                progress={"current": 1, "total": 1},
+            )
+        ],
+        [
+            _arbitrary_v2_step(
+                event_type="execution_step_completed",
+                status="completed",
+                progress={"current": 1, "total": 1},
+            ),
+            _arbitrary_v2_step(
+                event_type="execution_step_failed",
+                status="failed",
+                progress={"current": 1, "total": 1},
+            ),
+        ],
+        [_arbitrary_v2_step(), _arbitrary_v2_step()],
+        [_arbitrary_v2_step(safe_label=None)],
+    ],
+    ids=[
+        "caller-selected-skill-label-and-kind",
+        "terminal-without-start",
+        "completed-then-failed",
+        "step-replay-reuse",
+        "null-safe-label",
+    ],
+)
+def test_executor_callback_rejects_arbitrary_v2_lifecycles_without_public_persistence(
+    monkeypatch,
+    events,
+):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    persisted = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def fake_get_run_identity(conn, *, run_id, for_update=False):
+        return {
+            "tenant_id": "tenant-a",
+            "id": run_id,
+            "session_id": "session-a",
+            "status": "running",
+        }
+
+    async def fake_append_event(conn, **event):
+        persisted.append(event)
+        return f"evt_{len(persisted)}"
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "get_run_identity",
+        fake_get_run_identity,
+    )
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "append_event",
+        fake_append_event,
+    )
+    patch_active_attempt(monkeypatch, runtime_callbacks)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(new_message=None, state_patch={}, events=events),
+    )
+
+    assert response.status_code == 200
+    assert [event["event_type"] for event in persisted] == [
+        "executor_callback",
+        *["executor_private_event" for _event in events],
+    ]
+    assert not {
+        "execution_step",
+        "execution_step_completed",
+        "execution_step_failed",
+    } & {event["event_type"] for event in persisted}
+    assert "Caller selected Skill" not in str(persisted)
+
+
 def test_executor_callback_canonicalizes_assistant_delta_and_projects_lambchat_chunk(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     persisted = []

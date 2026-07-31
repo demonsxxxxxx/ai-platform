@@ -99,7 +99,7 @@ class _V2InvocationState:
     terminal: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class PersistablePublicExecutionStepV2:
     """One validated v2 event ready for the persisted event envelope."""
 
@@ -113,32 +113,14 @@ class PersistablePublicExecutionStepV2:
     progress_total: int
     safe_label: str | None = None
 
-    def __post_init__(self) -> None:
-        if (
-            validate_persistable_public_execution_step_v2(
-                self.payload_json,
-                expected_kind=self.event_type,
-            )
-            is None
-        ):
-            raise ValueError("public_execution_v2_step_invalid")
+    def __init__(self) -> None:
+        raise TypeError("PersistablePublicExecutionStepV2 is projector-created")
 
     @property
     def payload_json(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "schema_version": PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
-            "step_id": self.step_id,
-            "presentation_kind": self.presentation_kind,
-            "kind": self.kind,
-            "stage": self.stage,
-            "status": self.status,
-            "progress": {
-                "current": self.progress_current,
-                "total": self.progress_total,
-            },
-        }
-        if self.safe_label is not None:
-            payload["safe_label"] = self.safe_label
+        payload = _serialize_persistable_public_execution_step_v2(self)
+        if payload is None:
+            raise RuntimeError("projected public execution v2 step became invalid")
         return payload
 
 
@@ -259,7 +241,7 @@ def _validate_public_execution_step_payload_v1(
     }
 
 
-def validate_persistable_public_execution_step_v2(
+def _validate_public_execution_step_payload_v2(
     payload: object,
     *,
     expected_kind: str | None = None,
@@ -301,7 +283,8 @@ def validate_persistable_public_execution_step_v2(
         or progress["total"] != 1
         or expected_kind == "execution_step" and progress["current"] != 0
         or expected_kind != "execution_step" and progress["current"] != 1
-        or has_safe_label and safe_label != payload.get("safe_label")
+        or has_safe_label
+        and (safe_label is None or safe_label != payload.get("safe_label"))
         or has_safe_label
         and presentation_config[0] not in {"skill", "mcp"}
     ):
@@ -318,6 +301,64 @@ def validate_persistable_public_execution_step_v2(
     }
 
 
+def _serialize_persistable_public_execution_step_v2(
+    step: object,
+) -> dict[str, object] | None:
+    if type(step) is not PersistablePublicExecutionStepV2:
+        return None
+    try:
+        payload: dict[str, object] = {
+            "schema_version": PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
+            "step_id": step.step_id,
+            "presentation_kind": step.presentation_kind,
+            "kind": step.kind,
+            "stage": step.stage,
+            "status": step.status,
+            "progress": {
+                "current": step.progress_current,
+                "total": step.progress_total,
+            },
+        }
+        if step.safe_label is not None:
+            payload["safe_label"] = step.safe_label
+        return _validate_public_execution_step_payload_v2(
+            payload,
+            expected_kind=step.event_type,
+        )
+    except AttributeError:
+        return None
+
+
+def _projected_public_execution_step_v2(
+    *,
+    event_type: str,
+    step_id: str,
+    presentation_kind: str,
+    kind: str,
+    stage: str,
+    status: str,
+    progress_current: int,
+    progress_total: int,
+    safe_label: str | None,
+) -> PersistablePublicExecutionStepV2:
+    step = object.__new__(PersistablePublicExecutionStepV2)
+    for field_name, value in {
+        "event_type": event_type,
+        "step_id": step_id,
+        "presentation_kind": presentation_kind,
+        "kind": kind,
+        "stage": stage,
+        "status": status,
+        "progress_current": progress_current,
+        "progress_total": progress_total,
+        "safe_label": safe_label,
+    }.items():
+        object.__setattr__(step, field_name, value)
+    if _serialize_persistable_public_execution_step_v2(step) is None:
+        raise ValueError("public_execution_v2_step_invalid")
+    return step
+
+
 def _versioned_public_execution_step_payload(
     payload: object,
     *,
@@ -326,7 +367,7 @@ def _versioned_public_execution_step_payload(
     if not isinstance(expected_kind, str):
         return None
     if isinstance(payload, dict) and "schema_version" in payload:
-        validated_v2 = validate_persistable_public_execution_step_v2(
+        validated_v2 = _validate_public_execution_step_payload_v2(
             payload,
             expected_kind=expected_kind,
         )
@@ -347,13 +388,12 @@ def validate_public_execution_step_payload(
     *,
     expected_kind: str | None = None,
 ) -> dict[str, object] | None:
-    """Version-discriminate one strict v1/v2 payload for persistence."""
+    """Accept only the historical v1 callback persistence contract."""
 
-    versioned = _versioned_public_execution_step_payload(
+    return _validate_public_execution_step_payload_v1(
         payload,
         expected_kind=expected_kind,
     )
-    return versioned[1] if versioned is not None else None
 
 
 def public_execution_event_from_row(run_id: object, row: Mapping[str, object]) -> dict[str, object] | None:
@@ -419,7 +459,8 @@ class PublicExecutionV2Projector:
             or invocation_id != raw_invocation_id
             or presentation_config is None
             or lifecycle_config is None
-            or has_safe_label and safe_label != fact.get("safe_label")
+            or has_safe_label
+            and (safe_label is None or safe_label != fact.get("safe_label"))
             or has_safe_label and tool_name not in {"Skill", "MCP"}
         ):
             return None
@@ -443,7 +484,7 @@ class PublicExecutionV2Projector:
             next_state = state
         event_type, status, progress_current = lifecycle_config
         presentation_kind, kind, stage = presentation_config
-        projected = PersistablePublicExecutionStepV2(
+        projected = _projected_public_execution_step_v2(
             event_type=event_type,
             step_id=next_state.step_id,
             presentation_kind=presentation_kind,

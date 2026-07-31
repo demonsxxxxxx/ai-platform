@@ -9,6 +9,7 @@ from app.public_execution import (
     PublicExecutionProjector,
     PublicExecutionV2Projector,
     public_execution_event_from_row,
+    validate_public_execution_step_payload,
 )
 
 PUBLIC_STEP_PAYLOAD_FIELDS = {
@@ -185,6 +186,31 @@ def test_v2_projector_owns_the_closed_server_tool_mapping(
     assert "private-call-1" not in str(projected.payload_json)
 
 
+def test_v2_projector_output_is_not_arbitrary_dict_persistence_ingress():
+    projected = PublicExecutionV2Projector().project(_v2_fact())
+    assert projected is not None
+
+    assert validate_public_execution_step_payload(
+        projected.payload_json,
+        expected_kind=projected.event_type,
+    ) is None
+
+
+def test_v2_persistable_value_cannot_be_constructed_outside_the_projector():
+    with pytest.raises(TypeError):
+        PersistablePublicExecutionStepV2(
+            event_type="execution_step",
+            step_id="pex_forged",
+            presentation_kind="skill",
+            kind="capability",
+            stage="execution",
+            status="running",
+            progress_current=0,
+            progress_total=1,
+            safe_label="Caller selected label",
+        )
+
+
 @pytest.mark.parametrize(
     ("terminal_lifecycle", "event_type", "terminal_status"),
     [
@@ -280,6 +306,9 @@ def test_v2_projector_rejects_safe_label_drift_and_labels_for_non_capabilities()
     ) is not None
     assert PublicExecutionV2Projector().project(
         _v2_fact(tool_name="Bash", safe_label="Friendly command")
+    ) is None
+    assert PublicExecutionV2Projector().project(
+        {**_v2_fact(tool_name="Skill"), "safe_label": None}
     ) is None
 
 
@@ -390,6 +419,18 @@ def test_public_execution_row_rejects_v1_fields_under_the_v2_schema_version():
     assert public_execution_event_from_row(
         "run-execution-v2-1",
         _v2_row(payload),
+    ) is None
+
+
+def test_public_execution_row_rejects_explicit_null_v2_safe_label():
+    projected = PublicExecutionV2Projector().project(
+        _v2_fact(tool_name="Skill", safe_label="Document review")
+    )
+    assert projected is not None
+
+    assert public_execution_event_from_row(
+        "run-execution-v2-1",
+        _v2_row({**projected.payload_json, "safe_label": None}),
     ) is None
 
 

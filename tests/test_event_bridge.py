@@ -57,7 +57,7 @@ def test_bridge_fails_closed_for_known_event_with_private_execution_fields():
     }
 
 
-def test_bridge_accepts_only_a_strict_persistable_v2_execution_payload():
+def test_bridge_rejects_projector_payload_until_typed_runtime_integration_exists():
     projected = PublicExecutionV2Projector().project(
         {
             "invocation_id": "private-read-1",
@@ -76,10 +76,10 @@ def test_bridge_accepts_only_a_strict_persistable_v2_execution_payload():
     )
 
     assert bridged == {
-        "event_type": "execution_step",
-        "stage": "file",
+        "event_type": "executor_private_event",
+        "stage": "runtime",
         "message": "",
-        "payload": projected.payload_json,
+        "payload": {"visible_to_user": False, "admin_only": True},
     }
 
 
