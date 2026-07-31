@@ -1524,17 +1524,151 @@ test("upserts strict public execution steps by step id without merging them into
   const executionStep = completed.parts[1] as {
     type: string;
     step_id: string;
-    title: string;
-    summary: string;
+    kind: string;
     progress: { current: number; total: number };
     status: string;
+    safe_file_name: string | null;
   };
   assert.equal(executionStep.type, "execution_step");
   assert.equal(executionStep.step_id, "step-prepare-report");
-  assert.equal(executionStep.title, "准备报告");
-  assert.equal(executionStep.summary, "输入已准备完成");
+  assert.equal(executionStep.kind, "processing");
   assert.deepEqual(executionStep.progress, { current: 4, total: 4 });
   assert.equal(executionStep.status, "completed");
+  assert.equal(executionStep.safe_file_name, "report.docx");
+  assert.doesNotMatch(
+    JSON.stringify(completed.parts),
+    /evt-step|run-execution|准备报告|输入已准备|artifact-public|2026-07-27/,
+  );
+});
+
+test("collapses terminal public execution state without changing answer or artifact siblings", () => {
+  const parts: MessagePart[] = [
+    { type: "text", content: "公开答复" },
+    {
+      type: "execution_step",
+      sequence: 2,
+      step_id: "step-one",
+      kind: "processing",
+      status: "completed",
+      progress: { current: 1, total: 1 },
+      safe_file_name: null,
+    },
+    {
+      type: "artifact",
+      artifact_id: "artifact-public",
+      artifact_type: "document",
+      label: "report.docx",
+      content_type: "application/octet-stream",
+      size_bytes: 1,
+    },
+    {
+      type: "execution_step",
+      sequence: 3,
+      step_id: "step-two",
+      kind: "verification",
+      status: "completed",
+      progress: { current: 1, total: 1 },
+      safe_file_name: "report.docx",
+    },
+  ];
+
+  const terminal = processMessageEvent(
+    "execution_step",
+    {},
+    parts,
+    "公开答复",
+    [],
+    0,
+    [],
+    false,
+    "message-terminal",
+  );
+
+  assert.deepEqual(terminal.parts.map((part) => part.type), [
+    "text",
+    "execution_process",
+    "artifact",
+  ]);
+  const process = terminal.parts[1];
+  assert.equal(process?.type, "execution_process");
+  if (process?.type !== "execution_process") {
+    throw new Error("expected public execution process");
+  }
+  assert.deepEqual(process.steps.map((step) => step.step_id), [
+    "step-one",
+    "step-two",
+  ]);
+  assert.equal(terminal.content, "公开答复");
+});
+
+test("fails closed when a history envelope carries a raw execution field", () => {
+  const result = processMessageEvent(
+    "run_event",
+    {
+      schema_version: "ai-platform.public-execution-event.v1",
+      event_id: "evt-history-raw",
+      run_id: "run-history-raw",
+      sequence: 7,
+      event_type: "execution_step",
+      timestamp: "2026-07-31T01:00:00.000Z",
+      step_id: "step-history-raw",
+      kind: "processing",
+      stage: "prepare",
+      status: "running",
+      title: "private title",
+      summary: "private summary",
+      progress: { current: 0, total: 1 },
+      safe_file_name: null,
+      artifact_public_id: null,
+      created_at: null,
+      command: "private command must fail closed",
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "assistant-history-raw",
+  );
+
+  assert.deepEqual(result.parts, []);
+  assert.equal(result.content, "");
+});
+
+test("drops a path-like safe_file_name before public execution state is retained", () => {
+  const result = processMessageEvent(
+    "execution_step",
+    {
+      schema_version: "ai-platform.public-execution-event.v1",
+      event_id: "evt-unsafe-file-name",
+      run_id: "run-unsafe-file-name",
+      sequence: 1,
+      step_id: "step-unsafe-file-name",
+      kind: "processing",
+      stage: "prepare",
+      status: "running",
+      title: "private title",
+      summary: "private summary",
+      progress: { current: 0, total: 1 },
+      safe_file_name: "C:\\private\\report.xlsx",
+      artifact_public_id: null,
+      created_at: null,
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "assistant-unsafe-file-name",
+  );
+
+  const step = result.parts[0];
+  assert.equal(step?.type, "execution_step");
+  if (step?.type !== "execution_step") throw new Error("expected execution step");
+  assert.equal(step.safe_file_name, null);
+  assert.doesNotMatch(JSON.stringify(result), /C:\\private/);
 });
 
 test("fails closed for malformed, unknown, or step-id-less public execution events", () => {

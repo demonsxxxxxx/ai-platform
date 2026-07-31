@@ -581,6 +581,10 @@
         "running": "进行中"
       }
     },
+    "publicExecutionProcess": {
+      "title": "处理过程",
+      "summary": "共 {{total}} 步，已完成 {{completed}} 步，失败 {{failed}} 步"
+    },
     "runStatus": {
       "event": {
         "agentStepBlocked": "执行正在等待",

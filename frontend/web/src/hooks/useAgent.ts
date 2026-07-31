@@ -70,6 +70,11 @@ import {
 } from "./useAgent/runLifecycle";
 import { clearAllLoadingStates } from "./useAgent/messageParts";
 import {
+  collapsePublicExecutionSteps,
+  expandPublicExecutionSteps,
+  PublicStreamPresentation,
+} from "./useAgent/publicStreamPresentation";
+import {
   type AcceptedRunEventSequence,
   type EventHandlerContext,
 } from "./useAgent/eventHandlers";
@@ -711,6 +716,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   // Stream version to invalidate stale SSE events after clearMessages
   const streamVersionRef = useRef(0);
+  const publicStreamPresentationRef = useRef<PublicStreamPresentation | null>(
+    null,
+  );
+  if (publicStreamPresentationRef.current === null) {
+    publicStreamPresentationRef.current = new PublicStreamPresentation();
+  }
   // One owner covers concurrent online/visibility/history/transport recovery
   // for the same session/run/generation.
   const reconcileOwnerRef = useRef<ReconcileOwner | null>(null);
@@ -872,6 +883,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       historyLoadTokenRef.current += 1;
       sessionGenerationRef.current += 1;
       sessionAgentAuthorityRef.current = null;
+      publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       clearReconcileOwners();
       clearReconnectTimeout(reconnectTimeoutRef);
@@ -927,6 +939,18 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return false;
       }
 
+      const presentationSessionId = sessionIdRef.current;
+      const presentationMessageId = streamingMessageIdRef.current || messageId;
+      const presentationStreamVersion = streamVersionRef.current;
+      if (presentationSessionId && presentationMessageId) {
+        publicStreamPresentationRef.current?.flush({
+          sessionId: presentationSessionId,
+          runId,
+          assistantMessageId: presentationMessageId,
+          streamVersion: presentationStreamVersion,
+        });
+      }
+      publicStreamPresentationRef.current?.invalidate();
       currentRunIdRef.current = null;
       clearReconcileOwners();
       streamVersionRef.current += 1;
@@ -1002,12 +1026,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             return message;
           }
           matched = true;
-          const parts = clearAllLoadingStates(message.parts || []).filter(
+          const parts = collapsePublicExecutionSteps(
+            clearAllLoadingStates(message.parts || []).filter(
             (part) =>
               !(
                 part.type === "run_status" &&
                 terminalRunStatus(part.event_type) === outcome
               ),
+            ),
           );
           if (
             card &&
@@ -1199,6 +1225,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setSandboxError,
       onRunTerminal: finalizeTerminalRun,
       onRunStatusUnavailable: finalizeRunStatusUnavailable,
+      publicStreamPresentation: publicStreamPresentationRef.current || undefined,
     }),
     [options, finalizeTerminalRun, finalizeRunStatusUnavailable],
   );
@@ -1287,6 +1314,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
       activePreAdmissionSubmissionRef.current = null;
+      publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       statusRetryCountRef.current = 0;
       acceptedRunEventSequenceRef.current = {
@@ -1358,6 +1386,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
+      publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       clearReconcileOwners();
       isSendingRef.current = false;
@@ -1591,7 +1620,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               historyCurrentRunId,
               () => uuid(),
             );
-            reconstructedMessages = prepared.messages;
+            reconstructedMessages = prepared.messages.map((message) =>
+              message.id === prepared.streamingMessageId
+                ? {
+                    ...message,
+                    parts: expandPublicExecutionSteps(message.parts || []),
+                  }
+                : message,
+            );
             streamingMessageId = prepared.streamingMessageId;
           }
           messagesRef.current = reconstructedMessages;
@@ -1877,6 +1913,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const submissionToken = ++submissionTokenRef.current;
       const mountedGeneration = mountedGenerationRef.current;
       const requestSessionGeneration = sessionGenerationRef.current;
+      publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       clearReconcileOwners();
       statusRetryCountRef.current = 0;
@@ -2378,6 +2415,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     handoffActivePreAdmissionSubmission({ projectMessages: false });
     sessionGenerationRef.current += 1;
     submissionTokenRef.current += 1;
+    publicStreamPresentationRef.current?.invalidate();
     streamVersionRef.current += 1;
     isLoadingHistoryRef.current = false;
     isSendingRef.current = false;

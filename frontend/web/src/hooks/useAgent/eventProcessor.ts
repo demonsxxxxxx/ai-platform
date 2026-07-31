@@ -24,6 +24,10 @@ import type {
   SummaryPart,
 } from "../../types";
 import type { ExecutionTimelinePart } from "../../types/message";
+import {
+  collapsePublicExecutionSteps,
+  upsertPublicExecutionStep,
+} from "./publicStreamPresentation";
 import i18n from "../../i18n";
 import { translateBackendError } from "../../utils/backendErrors";
 import {
@@ -390,7 +394,7 @@ export function processMessageEvent(
     case "execution_step_failed": {
       const executionPart = createExecutionTimelinePart(eventType, data);
       if (executionPart) {
-        result.parts = upsertExecutionTimelinePart(parts, executionPart);
+        result.parts = upsertPublicExecutionStep(parts, executionPart);
       }
       break;
     }
@@ -464,7 +468,7 @@ export function processMessageEvent(
       if (PUBLIC_EXECUTION_EVENT_TYPES.has(executionKind as never)) {
         const executionPart = createExecutionTimelinePart(executionKind, data);
         if (executionPart) {
-          result.parts = upsertExecutionTimelinePart(parts, executionPart);
+          result.parts = upsertPublicExecutionStep(parts, executionPart);
         }
         break;
       }
@@ -646,6 +650,9 @@ export function processMessageEvent(
     }
   }
 
+  if (!isStreaming) {
+    result.parts = collapsePublicExecutionSteps(result.parts);
+  }
   return result;
 }
 
@@ -743,47 +750,87 @@ function createExecutionTimelinePart(
   eventType: string,
   data: EventData,
 ): ExecutionTimelinePart | null {
-  if (!isPublicExecutionEvent(eventType, data)) {
+  const publicEvent = normalizePublicExecutionEvent(eventType, data);
+  if (!publicEvent) {
     return null;
   }
   return {
     type: "execution_step",
-    schema_version: data.schema_version,
-    event_id: data.event_id,
-    sequence: data.sequence,
-    run_id: data.run_id,
-    step_id: data.step_id,
-    kind: data.kind as ExecutionTimelinePart["kind"],
-    stage: data.stage,
-    status: data.status as ExecutionTimelinePart["status"],
-    title: data.title,
-    summary: data.summary,
-    progress: data.progress,
-    safe_file_name: data.safe_file_name ?? null,
-    artifact_public_id: data.artifact_public_id ?? null,
-    created_at: data.created_at ?? null,
+    sequence: publicEvent.sequence,
+    step_id: publicEvent.step_id,
+    kind: publicEvent.kind,
+    status: publicEvent.status,
+    progress: publicEvent.progress,
+    safe_file_name: safePublicExecutionFileName(publicEvent.safe_file_name),
   };
 }
 
-function upsertExecutionTimelinePart(
-  parts: MessagePart[],
-  executionPart: ExecutionTimelinePart,
-): MessagePart[] {
-  const existing = parts.find(
-    (part): part is ExecutionTimelinePart =>
-      part.type === "execution_step" && part.step_id === executionPart.step_id,
-  );
-  if (!existing) {
-    return [...parts, executionPart];
+function safePublicExecutionFileName(value: string | null): string | null {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 128 ||
+    value !== value.trim() ||
+    value === "." ||
+    value === ".." ||
+    /[\\/:*?"<>|]/.test(value) ||
+    [...value].some((character) => character.charCodeAt(0) < 32)
+  ) {
+    return null;
   }
-  if (executionPart.sequence < existing.sequence) {
-    return parts;
+  return value;
+}
+
+const PUBLIC_EXECUTION_V1_FIELDS = new Set([
+  "schema_version",
+  "event_id",
+  "sequence",
+  "run_id",
+  "step_id",
+  "kind",
+  "stage",
+  "status",
+  "title",
+  "summary",
+  "progress",
+  "safe_file_name",
+  "artifact_public_id",
+  "created_at",
+]);
+const PUBLIC_EXECUTION_HISTORY_ENVELOPE_FIELDS = new Set([
+  ...PUBLIC_EXECUTION_V1_FIELDS,
+  "event_type",
+  "timestamp",
+]);
+
+type ValidPublicExecutionEvent = EventData & {
+  sequence: number;
+  step_id: string;
+  kind: ExecutionTimelinePart["kind"];
+  status: ExecutionTimelinePart["status"];
+  progress: ExecutionTimelinePart["progress"];
+  safe_file_name: string | null;
+};
+
+function normalizePublicExecutionEvent(
+  eventType: string,
+  data: EventData,
+): ValidPublicExecutionEvent | null {
+  if (isPublicExecutionEvent(eventType, data)) return data;
+  const source = data as Record<string, unknown>;
+  if (
+    source.event_type !== eventType ||
+    (source.timestamp !== undefined && typeof source.timestamp !== "string") ||
+    !Object.keys(source).every((key) =>
+      PUBLIC_EXECUTION_HISTORY_ENVELOPE_FIELDS.has(key),
+    )
+  ) {
+    return null;
   }
-  return parts.map((part) =>
-    part.type === "execution_step" && part.step_id === executionPart.step_id
-      ? executionPart
-      : part,
-  );
+  const normalized = Object.fromEntries(
+    [...PUBLIC_EXECUTION_V1_FIELDS].map((key) => [key, source[key]]),
+  ) as EventData;
+  return isPublicExecutionEvent(eventType, normalized) ? normalized : null;
 }
 
 function shouldProjectRunStatus(data: EventData): boolean {
