@@ -9,13 +9,20 @@ from datetime import datetime, timezone
 
 PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION = "ai-platform.public-execution-event.v1"
 PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION = "ai-platform.public-execution-event.v2"
+PUBLIC_AGENT_PROGRESS_SCHEMA_VERSION = "ai-platform.public-agent-progress.v1"
+PUBLIC_AGENT_PROGRESS_EVENT_TYPE = "agent_public_progress"
 PUBLIC_EXECUTION_KINDS = frozenset({"analysis", "capability", "file_read", "processing", "generation", "verification", "artifact", "collaboration"})
 PUBLIC_EXECUTION_EVENT_TYPES = frozenset({"execution_step", "execution_progress", "execution_step_completed", "execution_step_failed"})
 PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS = frozenset({"step_id", "kind", "stage", "status", "title", "summary", "progress", "safe_file_name", "artifact_public_id"})
 _REQUIRED_STEP_PAYLOAD_FIELDS = PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS - {"safe_file_name", "artifact_public_id"}
 PUBLIC_EXECUTION_EVENT_FIELDS = frozenset({"schema_version", "event_id", "sequence", "run_id", *PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS, "created_at"})
 PUBLIC_EXECUTION_V2_EVENT_TYPES = frozenset(
-    {"execution_step", "execution_step_completed", "execution_step_failed"}
+    {
+        "execution_step",
+        "execution_progress",
+        "execution_step_completed",
+        "execution_step_failed",
+    }
 )
 PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS = frozenset(
     {
@@ -51,6 +58,7 @@ _LIFECYCLE_CONFIG = {
 _EVENT_STATUS = {config[0]: config[1] for config in _LIFECYCLE_CONFIG.values()}
 _V2_LIFECYCLE_CONFIG = {
     "started": ("execution_step", "running", 0),
+    "progress": ("execution_progress", "running", 0),
     "completed": ("execution_step_completed", "completed", 1),
     "failed": ("execution_step_failed", "failed", 1),
 }
@@ -60,18 +68,116 @@ _V2_EVENT_STATUS = {
 _V2_PUBLIC_TOOL_CONFIG = {
     "Skill": ("skill", "capability", "execution"),
     "MCP": ("mcp", "capability", "execution"),
-    "Read": ("read", "file_read", "file"),
-    "Glob": ("read", "file_read", "file"),
-    "Grep": ("read", "file_read", "file"),
-    "LS": ("read", "file_read", "file"),
-    "Write": ("write", "generation", "file"),
-    "Edit": ("write", "generation", "file"),
-    "NotebookEdit": ("write", "generation", "file"),
-    "Bash": ("bash", "processing", "execution"),
+    "Read": ("read", "file_read", "read"),
+    "Glob": ("read", "file_read", "search"),
+    "Grep": ("read", "file_read", "search"),
+    "LS": ("read", "file_read", "search"),
+    "Write": ("write", "generation", "edit"),
+    "Edit": ("write", "generation", "edit"),
+    "NotebookEdit": ("write", "generation", "edit"),
+    "Bash": ("processing", "processing", "data"),
+    "Python": ("processing", "processing", "data"),
     "Agent": ("agent", "collaboration", "execution"),
     "Task": ("agent", "collaboration", "execution"),
+    "Artifact": ("artifact", "generation", "artifact"),
+    "Validate": ("verification", "verification", "artifact"),
+    "Adjust": ("adjustment", "processing", "execution"),
 }
 _V2_PUBLIC_PRESENTATION_CONFIGS = frozenset(_V2_PUBLIC_TOOL_CONFIG.values())
+_V2_PUBLIC_TOOL_LABELS = {
+    "Skill": "Skill",
+    "MCP": "MCP",
+    "Read": "Reading authorized files",
+    "Glob": "Finding authorized files",
+    "Grep": "Finding authorized files",
+    "LS": "Finding authorized files",
+    "Write": "Updating authorized files",
+    "Edit": "Updating authorized files",
+    "NotebookEdit": "Updating authorized files",
+    "Bash": "Data processing",
+    "Python": "Data processing",
+    "Agent": "Coordinating task",
+    "Task": "Coordinating task",
+    "Artifact": "Generating artifact",
+    "Validate": "Checking result",
+    "Adjust": "Adjusting result",
+}
+_PLATFORM_PHASE_CONFIG = {
+    "attachment_materialization": ("read", "file_read", "attachments"),
+    "skill_staging": ("skill", "capability", "skills"),
+    "sandbox_preparation": ("processing", "processing", "sandbox_preparation"),
+    "sandbox_submission": ("processing", "processing", "sandbox_submission"),
+    "model_wait": ("processing", "processing", "execution"),
+    "artifact_validation": ("verification", "verification", "artifact_validation"),
+    "artifact_recovery": ("artifact", "generation", "artifact_recovery"),
+}
+_PLATFORM_PHASE_LABELS = {
+    "attachment_materialization": "Preparing authorized attachments",
+    "skill_staging": "Loading authorized Skills",
+    "sandbox_preparation": "Preparing controlled execution",
+    "sandbox_submission": "Running controlled task",
+    "model_wait": "Waiting for the model response",
+    "artifact_validation": "Checking generated results",
+    "artifact_recovery": "Preparing result recovery",
+}
+_V2_STATIC_LABELS_BY_PRESENTATION = {
+    **{
+        config: _V2_PUBLIC_TOOL_LABELS[tool_name]
+        for tool_name, config in _V2_PUBLIC_TOOL_CONFIG.items()
+        if tool_name not in {"Skill", "MCP"}
+    },
+    **{
+        config: _PLATFORM_PHASE_LABELS[phase]
+        for phase, config in _PLATFORM_PHASE_CONFIG.items()
+    },
+}
+_PLATFORM_PHASE_PROGRESS_MESSAGES = {
+    "attachment_materialization": {
+        "started": "Preparing authorized attachments",
+        "progress": "Preparing authorized attachments",
+        "completed": "Authorized attachments are ready",
+        "failed": "Authorized attachments could not be prepared",
+    },
+    "skill_staging": {
+        "started": "Loading authorized Skills",
+        "progress": "Loading authorized Skills",
+        "completed": "Authorized Skills are ready",
+        "failed": "Authorized Skills could not be loaded",
+    },
+    "sandbox_preparation": {
+        "started": "Preparing controlled execution",
+        "progress": "Preparing controlled execution",
+        "completed": "Controlled execution is ready",
+        "failed": "Controlled execution could not be prepared",
+    },
+    "sandbox_submission": {
+        "started": "Running controlled task",
+        "progress": "Controlled task is still running",
+        "completed": "Controlled task has completed",
+        "failed": "Controlled task did not complete",
+    },
+    "model_wait": {
+        "started": "Waiting for the model response",
+        "progress": "Waiting for the model response",
+        "completed": "Model response is ready",
+        "failed": "Model response was not available",
+    },
+    "artifact_validation": {
+        "started": "Checking generated results",
+        "progress": "Checking generated results",
+        "completed": "Generated results have been checked",
+        "failed": "Generated results could not be checked",
+    },
+    "artifact_recovery": {
+        "started": "Preparing result recovery",
+        "progress": "Preparing result recovery",
+        "completed": "Result recovery is ready",
+        "failed": "Result recovery did not complete",
+    },
+}
+PUBLIC_AGENT_PROGRESS_PAYLOAD_FIELDS = frozenset(
+    {"schema_version", "step_id", "phase", "lifecycle", "message"}
+)
 _V2_RAW_FACT_FIELDS = frozenset(
     {"invocation_id", "tool_name", "lifecycle", "safe_label"}
 )
@@ -281,11 +387,16 @@ def _validate_public_execution_step_payload_v2(
         or presentation_config not in _V2_PUBLIC_PRESENTATION_CONFIGS
         or progress is None
         or progress["total"] != 1
-        or expected_kind == "execution_step" and progress["current"] != 0
-        or expected_kind != "execution_step" and progress["current"] != 1
+        or expected_kind in {"execution_step", "execution_progress"}
+        and progress["current"] != 0
+        or expected_kind in {"execution_step_completed", "execution_step_failed"}
+        and progress["current"] != 1
         or has_safe_label
         and (safe_label is None or safe_label != payload.get("safe_label"))
-        or has_safe_label
+        or presentation_config in _V2_STATIC_LABELS_BY_PRESENTATION
+        and safe_label != _V2_STATIC_LABELS_BY_PRESENTATION[presentation_config]
+        or presentation_config not in _V2_STATIC_LABELS_BY_PRESENTATION
+        and has_safe_label
         and presentation_config[0] not in {"skill", "mcp"}
     ):
         return None
@@ -396,6 +507,60 @@ def validate_public_execution_step_payload(
     )
 
 
+def validate_versioned_public_execution_step_payload(
+    payload: object,
+    *,
+    expected_kind: str | None = None,
+) -> dict[str, object] | None:
+    """Validate either public execution wire version before persistence."""
+
+    versioned = _versioned_public_execution_step_payload(
+        payload,
+        expected_kind=expected_kind,
+    )
+    return versioned[1] if versioned is not None else None
+
+
+def public_execution_phase_progress_payload(
+    *,
+    phase: object,
+    lifecycle: object,
+    step_id: object,
+) -> dict[str, str] | None:
+    """Return one fixed public phase message without accepting caller text."""
+
+    if (
+        not isinstance(phase, str)
+        or not isinstance(lifecycle, str)
+        or step_id != f"phase_{phase}"
+        or phase not in _PLATFORM_PHASE_CONFIG
+    ):
+        return None
+    message = _PLATFORM_PHASE_PROGRESS_MESSAGES.get(phase, {}).get(lifecycle)
+    if message is None:
+        return None
+    return {
+        "schema_version": PUBLIC_AGENT_PROGRESS_SCHEMA_VERSION,
+        "step_id": f"phase_{phase}",
+        "phase": phase,
+        "lifecycle": lifecycle,
+        "message": message,
+    }
+
+
+def validate_public_agent_progress_payload(payload: object) -> dict[str, str] | None:
+    """Accept only an exact platform-generated public phase message."""
+
+    if not isinstance(payload, dict) or set(payload) != PUBLIC_AGENT_PROGRESS_PAYLOAD_FIELDS:
+        return None
+    expected = public_execution_phase_progress_payload(
+        phase=payload.get("phase"),
+        lifecycle=payload.get("lifecycle"),
+        step_id=payload.get("step_id"),
+    )
+    return expected if expected == payload else None
+
+
 def public_execution_event_from_row(run_id: object, row: Mapping[str, object]) -> dict[str, object] | None:
     """Compose one versioned public event from persisted envelope authority."""
 
@@ -484,6 +649,11 @@ class PublicExecutionV2Projector:
             next_state = state
         event_type, status, progress_current = lifecycle_config
         presentation_kind, kind, stage = presentation_config
+        public_label = (
+            safe_label
+            if tool_name in {"Skill", "MCP"} and safe_label is not None
+            else _V2_PUBLIC_TOOL_LABELS[tool_name]
+        )
         projected = _projected_public_execution_step_v2(
             event_type=event_type,
             step_id=next_state.step_id,
@@ -493,12 +663,55 @@ class PublicExecutionV2Projector:
             status=status,
             progress_current=progress_current,
             progress_total=1,
-            safe_label=safe_label,
+            safe_label=public_label,
         )
         if lifecycle == "started":
             self._invocations[invocation_id] = next_state
         else:
             state.terminal = lifecycle
+        return projected
+
+
+class PublicExecutionPhasePublisher:
+    """Publish only fixed platform-owned execution phases on the v2 wire."""
+
+    def __init__(self) -> None:
+        self._phases: dict[str, str | None] = {}
+
+    def project(
+        self,
+        *,
+        phase: object,
+        lifecycle: object,
+    ) -> PersistablePublicExecutionStepV2 | None:
+        if not isinstance(phase, str) or not isinstance(lifecycle, str):
+            return None
+        presentation_config = _PLATFORM_PHASE_CONFIG.get(phase)
+        lifecycle_config = _V2_LIFECYCLE_CONFIG.get(lifecycle)
+        if presentation_config is None or lifecycle_config is None:
+            return None
+        terminal = self._phases.get(phase)
+        if lifecycle == "started":
+            if phase in self._phases:
+                return None
+            self._phases[phase] = None
+        elif phase not in self._phases or terminal is not None:
+            return None
+        event_type, status, progress_current = lifecycle_config
+        presentation_kind, kind, stage = presentation_config
+        projected = _projected_public_execution_step_v2(
+            event_type=event_type,
+            step_id=f"phase_{phase}",
+            presentation_kind=presentation_kind,
+            kind=kind,
+            stage=stage,
+            status=status,
+            progress_current=progress_current,
+            progress_total=1,
+            safe_label=_PLATFORM_PHASE_LABELS[phase],
+        )
+        if lifecycle in {"completed", "failed"}:
+            self._phases[phase] = lifecycle
         return projected
 
 

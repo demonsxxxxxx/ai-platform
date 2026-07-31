@@ -120,6 +120,10 @@ export interface ExecutionTimelinePart {
   sequence: number;
   step_id: string;
   kind: ExecutionTimelineKind;
+  presentation_kind?: string;
+  stage?: string;
+  title?: string;
+  summary?: string;
   status: ExecutionTimelineStatus;
   progress: ExecutionTimelineProgress;
   safe_file_name: string | null;

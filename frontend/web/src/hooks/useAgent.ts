@@ -1223,11 +1223,19 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         setConnectionStatus(status as ConnectionStatus),
       setIsInitializingSandbox,
       setSandboxError,
-      onRunTerminal: finalizeTerminalRun,
+      // A terminal SSE frame proves only the run state. Rehydrate the exact
+      // run before collapsing its process so late persisted steps cannot be
+      // hidden behind an older running presentation.
+      onRunTerminal: (runId, status, messageId) => {
+        const activeSessionId = sessionIdRef.current;
+        if (!activeSessionId) return false;
+        void hydrateTerminalRun(activeSessionId, runId, status, messageId);
+        return true;
+      },
       onRunStatusUnavailable: finalizeRunStatusUnavailable,
       publicStreamPresentation: publicStreamPresentationRef.current || undefined,
     }),
-    [options, finalizeTerminalRun, finalizeRunStatusUnavailable],
+    [options, finalizeRunStatusUnavailable, hydrateTerminalRun],
   );
 
   // Create SSE connection context

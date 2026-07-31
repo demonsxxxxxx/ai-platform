@@ -33,6 +33,7 @@ import { translateBackendError } from "../../utils/backendErrors";
 import {
   CHAT_PUBLIC_PROGRESS_EVENT_TYPES,
   CHAT_PUBLIC_PROJECTION_VERSION,
+  isPublicAgentProgressEvent,
   isAssistantTextProjection,
   isPublicExecutionEvent,
   PUBLIC_EXECUTION_EVENT_TYPES,
@@ -759,6 +760,18 @@ function createExecutionTimelinePart(
     sequence: publicEvent.sequence,
     step_id: publicEvent.step_id,
     kind: publicEvent.kind,
+    presentation_kind: publicEvent.presentation_kind,
+    stage: publicEvent.stage,
+    title:
+      typeof publicEvent.title === "string"
+        ? publicEvent.title
+        : typeof publicEvent.safe_label === "string"
+          ? publicEvent.safe_label
+          : undefined,
+    summary:
+      typeof publicEvent.summary === "string"
+        ? publicEvent.summary
+        : undefined,
     status: publicEvent.status,
     progress: publicEvent.progress,
     safe_file_name: safePublicExecutionFileName(publicEvent.safe_file_name),
@@ -797,8 +810,23 @@ const PUBLIC_EXECUTION_V1_FIELDS = new Set([
   "artifact_public_id",
   "created_at",
 ]);
+const PUBLIC_EXECUTION_V2_FIELDS = new Set([
+  "schema_version",
+  "event_id",
+  "sequence",
+  "run_id",
+  "step_id",
+  "presentation_kind",
+  "kind",
+  "stage",
+  "status",
+  "progress",
+  "safe_label",
+  "created_at",
+]);
 const PUBLIC_EXECUTION_HISTORY_ENVELOPE_FIELDS = new Set([
   ...PUBLIC_EXECUTION_V1_FIELDS,
+  ...PUBLIC_EXECUTION_V2_FIELDS,
   "event_type",
   "timestamp",
 ]);
@@ -810,6 +838,11 @@ type ValidPublicExecutionEvent = EventData & {
   status: ExecutionTimelinePart["status"];
   progress: ExecutionTimelinePart["progress"];
   safe_file_name: string | null;
+  stage: string;
+  presentation_kind?: string;
+  title?: string;
+  summary?: string;
+  safe_label?: string;
 };
 
 function normalizePublicExecutionEvent(
@@ -827,8 +860,12 @@ function normalizePublicExecutionEvent(
   ) {
     return null;
   }
+  const fields =
+    source.schema_version === "ai-platform.public-execution-event.v2"
+      ? PUBLIC_EXECUTION_V2_FIELDS
+      : PUBLIC_EXECUTION_V1_FIELDS;
   const normalized = Object.fromEntries(
-    [...PUBLIC_EXECUTION_V1_FIELDS].map((key) => [key, source[key]]),
+    [...fields].map((key) => [key, source[key]]),
   ) as EventData;
   return isPublicExecutionEvent(eventType, normalized) ? normalized : null;
 }
@@ -839,6 +876,9 @@ function shouldProjectRunStatus(data: EventData): boolean {
     return false;
   }
   const eventType = String(data.event_type || data.type || "").toLowerCase();
+  if (eventType === "agent_public_progress") {
+    return isPublicAgentProgressEvent(data);
+  }
   return (
     data.projection_version === CHAT_PUBLIC_PROJECTION_VERSION &&
     CHAT_PUBLIC_STATUS_EVENT_TYPES.has(eventType)
