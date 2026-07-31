@@ -1,13 +1,9 @@
 {
   "schema_version": "ai-platform.code-governance-exception.v1",
-  "expires_on": "2026-08-04",
+  "expires_on": "2026-08-07",
   "owner": "AI Platform controller 019f9c5e-81c5-7071-a09a-ce37393fb4b1",
-  "reason": "PR #767 on codex/746-p0-semantic-stream-experience, merged from exact origin/main de8a87471f3fdefb724da9c167323e773edb1c10, is one bounded semantic-stream vertical slice. It exempts only the current range-wide subsystem count and executor_app.py net growth required to publish typed safe phases, progress, and callbacks; no lint, file-count, net-LOC, or other hot-file policy is relaxed.",
+  "reason": "Issue #746 internal-beta trusted OpenSandbox SDK Skill admission from exact origin/main 9746ea3cb34537fc9a575d75e56604430a66635b must align the pinned Skill profile, verified sandbox lease dispatch, and SDK adapter. This exempts only the resulting three-subsystem count; no lint, file-count, net-LOC, or hot-file policy is relaxed.",
   "violations": [
-    {
-      "code": "hot_file_growth",
-      "path": "app/runtime/sandbox/executor_app.py"
-    },
     {
       "code": "production_subsystem_count",
       "path": null

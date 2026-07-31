@@ -20,6 +20,7 @@ SDK_RESTRICTED = "sdk_restricted"
 
 NATIVE_COMMAND_ISOLATION = "sibling-tool-sandbox-v1"
 CONTROLLED_COMMAND_ISOLATION = "minimal-environment-v1"
+OPEN_SANDBOX_TRUSTED_INTERNAL_SDK_EXECUTION_PROFILE = "opensandbox_trusted_internal"
 
 _IMPLICIT_GENERAL_CHAT_SKILL_ID = "general-chat"
 _EXPLICIT_SKILL_BASH_IDENTITY = ("Bash",)
@@ -31,6 +32,14 @@ _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS = {
 }
 _PLATFORM_CONTROLLED_SKILLS = frozenset({"baoyu-translate", "qa-file-reviewer"})
 _NATIVE_UPLOADED_TOOL_IDENTITIES = (
+    "Read",
+    "Glob",
+    "LS",
+    "Bash",
+    "Write",
+    "Edit",
+)
+_TRUSTED_INTERNAL_SDK_SKILL_FILE_TOOLS = (
     "Read",
     "Glob",
     "LS",
@@ -59,6 +68,30 @@ class SkillExecutionProfileError(ValueError):
     """Raised when a pinned execution profile differs from server authority."""
 
     pass
+
+
+def sdk_skill_file_tools_for_execution_profile(
+    *,
+    execution_profile: object,
+    selected_skill_id: object,
+    staged_skill_ids: object,
+    authorized_skill_ids: object,
+) -> tuple[str, ...]:
+    """Return the internal-beta SDK file tools for one exact staged Skill."""
+
+    if (
+        execution_profile != OPEN_SANDBOX_TRUSTED_INTERNAL_SDK_EXECUTION_PROFILE
+        or not isinstance(selected_skill_id, str)
+        or not selected_skill_id
+        or not isinstance(staged_skill_ids, list | tuple | set | frozenset)
+        or not isinstance(authorized_skill_ids, list | tuple | set | frozenset)
+    ):
+        return ()
+    staged = {item for item in staged_skill_ids if isinstance(item, str)}
+    authorized = {item for item in authorized_skill_ids if isinstance(item, str)}
+    if selected_skill_id not in staged or selected_skill_id not in authorized:
+        return ()
+    return _TRUSTED_INTERNAL_SDK_SKILL_FILE_TOOLS
 
 
 def _known_tool_identities(values: tuple[str, ...]) -> list[str]:

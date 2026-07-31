@@ -62,6 +62,9 @@ from app.runtime.sandbox.opensandbox_trusted_internal import (
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.settings import get_settings
+from app.skills.execution_profiles import (
+    OPEN_SANDBOX_TRUSTED_INTERNAL_SDK_EXECUTION_PROFILE,
+)
 
 
 EventSink = Callable[[AgentEvent], Awaitable[None] | None]
@@ -491,6 +494,17 @@ class SandboxRuntime:
                 "input_files": request.file_ids,
                 "materialized_file_names": request.materialized_file_names,
             }
+            trusted_internal_execution_profile = (
+                lease.provider == "opensandbox"
+                and str(lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or "")
+                == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
+                and configured_security_profile(self.settings)
+                == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL
+            )
+            if trusted_internal_execution_profile:
+                task_config["sdk_execution_profile"] = (
+                    OPEN_SANDBOX_TRUSTED_INTERNAL_SDK_EXECUTION_PROFILE
+                )
             if request.context_manifest:
                 task_config["context_manifest"] = dict(request.context_manifest)
             if request.context_retrieval_scope is not None:
