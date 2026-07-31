@@ -399,12 +399,22 @@ export function ChatAppContent({
     previousConversationIdentityKeyRef.current = conversationIdentityKey;
     agentWorkspaceSelectionRequestIdRef.current += 1;
     clearMessages();
+    // A task Skill is scoped to the composer that selected it.  A route or
+    // workspace identity change clears the session, so it must also clear the
+    // local selector before a later submit can create an unbound conversation.
+    clearSelectedSkill();
     setAgentConversationState(
       agentWorkspace && routeSessionId
         ? conversationState("loading", routeSessionId)
         : conversationState("generic", null),
     );
-  }, [agentWorkspace, clearMessages, conversationIdentityKey, routeSessionId]);
+  }, [
+    agentWorkspace,
+    clearMessages,
+    clearSelectedSkill,
+    conversationIdentityKey,
+    routeSessionId,
+  ]);
 
   useEffect(() => {
     if (!agentConversationTargetSessionId) {
