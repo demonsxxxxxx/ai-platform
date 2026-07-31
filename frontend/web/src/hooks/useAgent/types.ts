@@ -343,7 +343,7 @@ export function isPublicExecutionEvent(
       (typeof source.safe_label === "string" &&
         source.safe_label.length > 0 &&
         source.safe_label.length <= 96 &&
-        !/[\\/:.;`'"<>|{}\[\]$\n\r\t]/.test(source.safe_label) &&
+        !/[\\/:.;`'"<>|{}[\]$\n\r\t]/.test(source.safe_label) &&
         (expectedSafeLabel === undefined || source.safe_label === expectedSafeLabel))) &&
     (expectedSafeLabel === undefined || source.safe_label === expectedSafeLabel)
   );
