@@ -436,6 +436,56 @@ class _McpCatalogPublicationFenceLost(RuntimeError):
         self.catalog_state = catalog_state
 
 
+async def _locked_mcp_catalog_manifest(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    server_name: str,
+) -> dict[str, dict[str, Any]]:
+    """Lock mandatory manifest rows, then the optional tenant policy rows legally."""
+
+    manifest_cursor = await conn.execute(
+        """
+        select entries.tool_id, entries.remote_tool_name, entries.schema_hash,
+          entries.status as catalog_entry_status, mcp_tools.write_capable,
+          mcp_tools.risk_level
+        from mcp_tool_catalog_entries entries
+        join mcp_tools on mcp_tools.id = entries.tool_id
+        where entries.tenant_id = %s
+          and entries.server_name = %s
+        order by entries.remote_tool_name asc
+        for update of entries, mcp_tools
+        """,
+        (tenant_id, server_name),
+    )
+    manifest_rows = [dict(row) for row in await manifest_cursor.fetchall()]
+    tool_ids = [str(row["tool_id"]) for row in manifest_rows]
+    policy_reasons: dict[str, Any] = {}
+    if tool_ids:
+        policy_cursor = await conn.execute(
+            """
+            select tool_id, reason as policy_reason
+            from tool_policies
+            where tenant_id = %s
+              and tool_id = any(%s)
+            order by tool_id asc
+            for update
+            """,
+            (tenant_id, tool_ids),
+        )
+        policy_reasons = {
+            str(row["tool_id"]): row.get("policy_reason")
+            for row in await policy_cursor.fetchall()
+        }
+    return {
+        str(row["remote_tool_name"]): {
+            **row,
+            "policy_reason": policy_reasons.get(str(row["tool_id"])),
+        }
+        for row in manifest_rows
+    }
+
+
 async def publish_mcp_tool_catalog(
     conn: AsyncConnection,
     *,
@@ -479,23 +529,11 @@ async def publish_mcp_tool_catalog(
             "published": False,
         }
 
-    existing_cursor = await conn.execute(
-        """
-        select entries.tool_id, entries.remote_tool_name, entries.schema_hash,
-          entries.status as catalog_entry_status, mcp_tools.write_capable,
-          mcp_tools.risk_level, tool_policies.reason as policy_reason
-        from mcp_tool_catalog_entries entries
-        join mcp_tools on mcp_tools.id = entries.tool_id
-        left join tool_policies
-          on tool_policies.tenant_id = entries.tenant_id
-         and tool_policies.tool_id = entries.tool_id
-        where entries.tenant_id = %s
-          and entries.server_name = %s
-        for update
-        """,
-        (tenant_id, server_name),
+    existing = await _locked_mcp_catalog_manifest(
+        conn,
+        tenant_id=tenant_id,
+        server_name=server_name,
     )
-    existing = {str(row["remote_tool_name"]): dict(row) for row in await existing_cursor.fetchall()}
     active_existing = {
         remote_name: row
         for remote_name, row in existing.items()

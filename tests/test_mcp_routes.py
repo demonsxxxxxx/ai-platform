@@ -434,6 +434,78 @@ def test_explicit_catalog_sync_requires_the_configured_nonsecret_endpoint_and_re
     assert any(name == "catalog_sync" for name, _ in calls)
 
 
+def test_admin_mcp_update_returns_safe_catalog_failure_after_publication_terminalizes(monkeypatch):
+    from app.mcp.catalog import McpDiscoveredTool, McpToolCatalogSynchronizer
+    from app.routes import mcp
+
+    install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
+    outcomes = []
+
+    class CompleteDiscovery:
+        async def discover(self, endpoint):
+            return (McpDiscoveredTool("search_docs", "schema-hash", True),)
+
+    class FailingPublicationStore:
+        async def begin(self, command):
+            return {
+                "started": True,
+                "catalog_status": "syncing",
+                "catalog_unavailable_reason": "refresh_required",
+                "catalog_revision": 0,
+                "catalog_discovered_count": 0,
+                "catalog_selectable_count": 0,
+                "catalog_sync_attempt": 1,
+            }
+
+        async def record_outcome(self, command, *, observed_attempt, reason):
+            outcomes.append((observed_attempt, reason))
+            return {
+                "catalog_status": "unavailable",
+                "catalog_unavailable_reason": reason,
+                "catalog_revision": 0,
+                "catalog_discovered_count": 0,
+                "catalog_selectable_count": 0,
+            }
+
+        async def publish(self, command, *, observed_attempt, tools):
+            raise RuntimeError(
+                "FOR UPDATE cannot lock private endpoint https://mcp.example/tools"
+            )
+
+    monkeypatch.setattr(
+        mcp,
+        "MCP_TOOL_CATALOG_SYNCHRONIZER",
+        McpToolCatalogSynchronizer(
+            discovery=CompleteDiscovery(),
+            store=FailingPublicationStore(),
+        ),
+    )
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/admin/mcp/catalog-safe",
+        json={
+            "enabled": True,
+            "transport": "streamable_http",
+            "url": "https://mcp.example/tools",
+        },
+        headers=headers(roles="admin"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["catalog_sync"] == {
+        "status": "unavailable",
+        "reason": "sync_failed",
+        "catalog_revision": 0,
+        "discovered_count": 0,
+        "selectable_count": 0,
+        "published": False,
+    }
+    assert outcomes == [(1, "sync_failed")]
+    assert "FOR UPDATE" not in response.text
+    assert "mcp.example" not in response.text
+
+
 def test_mcp_read_contract_bounds_ordinary_catalog_and_keeps_tool_discovery(monkeypatch):
     calls = install_mcp_route_fakes(monkeypatch)
     client = TestClient(create_app())
