@@ -30,6 +30,7 @@ import {
 import { ThinkingBlock, SubagentBlock, SandboxItem } from "./SubagentBlocks";
 import { TodoBlock } from "./TodoBlock";
 import { SummaryItem } from "./SummaryItem";
+import { PublicExecutionProcess } from "./PublicExecutionProcess";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createToolPartAnchorId } from "./messagePartAnchors";
@@ -313,7 +314,17 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "execution_step") {
-    return <ExecutionTimelineItem part={part} isStreaming={isStreaming === true} />;
+    return (
+      <PublicExecutionProcess
+        steps={[part]}
+        isStreaming={isStreaming === true}
+        expandable={false}
+      />
+    );
+  }
+
+  if (part.type === "execution_process") {
+    return <PublicExecutionProcess steps={part.steps} isStreaming={false} />;
   }
 
   if (part.type === "cancelled") {
@@ -448,105 +459,6 @@ function RunStatusItem({
   );
 }
 
-function ExecutionTimelineItem({
-  part,
-  isStreaming,
-}: {
-  part: Extract<MessagePart, { type: "execution_step" }>;
-  isStreaming: boolean;
-}) {
-  const { t } = useTranslation();
-  const hasAuthoritativeProgress =
-    Number.isInteger(part.progress.current) &&
-    Number.isInteger(part.progress.total) &&
-    part.progress.total > 1 &&
-    part.progress.current >= 0 &&
-    part.progress.current <= part.progress.total;
-  const progressPercent = hasAuthoritativeProgress
-    ? Math.min(
-        100,
-        Math.max(
-          0,
-          Math.round((part.progress.current / part.progress.total) * 100),
-        ),
-      )
-    : 0;
-  const kindLabel = t(`chat.executionTimeline.kind.${part.kind}`);
-  const statusLabel = t(`chat.executionTimeline.status.${part.status}`);
-  const Icon =
-    part.status === "failed"
-      ? XCircle
-      : part.status === "completed"
-        ? CheckCircle
-        : LoaderCircle;
-  const tone =
-    part.status === "failed"
-      ? "text-red-700 dark:text-red-300"
-      : part.status === "completed"
-        ? "text-emerald-800 dark:text-emerald-200"
-        : "text-[var(--theme-text-secondary)]";
-
-  return (
-    <div
-      role={part.status === "failed" ? "alert" : "status"}
-      data-execution-status={part.status}
-      data-execution-step-id={part.step_id}
-      className={clsx("my-1.5 flex max-w-xl min-w-0 items-start gap-2.5 py-1 text-sm", tone)}
-    >
-      <Icon
-        size={16}
-        className={clsx(
-          "mt-0.5 shrink-0",
-          isStreaming && part.status === "running" && "animate-spin",
-        )}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="break-words font-medium leading-snug">{kindLabel}</div>
-        <div className="mt-0.5 break-words text-xs opacity-80">
-          {statusLabel}
-          {hasAuthoritativeProgress &&
-            ` · ${t("chat.executionTimeline.progress", {
-              current: part.progress.current,
-              total: part.progress.total,
-            })}`}
-        </div>
-        {hasAuthoritativeProgress && (
-          <div
-            className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[var(--theme-border)]/70"
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={part.progress.total}
-            aria-valuenow={part.progress.current}
-            aria-label={t("chat.executionTimeline.progressLabel", {
-              kind: kindLabel,
-              status: statusLabel,
-              current: part.progress.current,
-              total: part.progress.total,
-            })}
-          >
-            <div
-              className={clsx(
-                "h-full rounded-sm transition-[width] duration-200",
-                part.status === "failed"
-                  ? "bg-red-500"
-                  : part.status === "completed"
-                    ? "bg-emerald-500"
-                    : "bg-sky-500",
-              )}
-              style={{ width: `${progressPercent}%` }}
-            />
-          </div>
-        )}
-        {part.safe_file_name && (
-          <div className="mt-1.5 truncate text-xs opacity-70">
-            {part.safe_file_name}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 const ARTIFACT_DOWNLOAD_FAILURE_MESSAGE = "下载失败，请稍后重试。";
 const ARTIFACT_DOWNLOAD_RETRY_LABEL = "重试下载";
 const messagePartObjectTokens = new WeakMap<object, number>();
@@ -578,6 +490,8 @@ function createMessagePartIdentity(part: MessagePart): string {
         : `${part.type}:object:${getMessagePartObjectToken(part)}`;
     case "execution_step":
       return `${part.type}:${part.step_id}`;
+    case "execution_process":
+      return part.type;
     case "thinking":
       return part.thinking_id
         ? `${part.type}:${part.thinking_id}`
