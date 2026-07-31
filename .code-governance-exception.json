@@ -1,0 +1,12 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v1",
+  "expires_on": "2026-08-07",
+  "owner": "AI Platform controller 019f9c5e-81c5-7071-a09a-ce37393fb4b1",
+  "reason": "Issue #746 internal-beta trusted OpenSandbox SDK Skill admission from exact origin/main 9746ea3cb34537fc9a575d75e56604430a66635b must align the pinned Skill profile, verified sandbox lease dispatch, and SDK adapter. This exempts only the resulting three-subsystem count; no lint, file-count, net-LOC, or hot-file policy is relaxed.",
+  "violations": [
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}
