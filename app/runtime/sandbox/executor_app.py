@@ -40,8 +40,10 @@ from app.file_parser_contracts import (
     parse_xlsx_attachment,
 )
 from app.public_execution import (
-    PublicExecutionProjector,
-    public_execution_event_type_for_lifecycle,
+    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+    PublicExecutionPhasePublisher,
+    PublicExecutionV2Projector,
+    public_execution_phase_progress_payload,
 )
 from app.required_tool_contract import (
     RequiredCapabilityDeclaration,
@@ -78,22 +80,60 @@ class _PrivateExecutionFact(NamedTuple):
 
         return self.public_event.type if self.public_event is not None else "execution_step"
 
-    def public_events(self, projector: PublicExecutionProjector) -> list[AgentEvent]:
+    def public_events(self, projector: PublicExecutionV2Projector) -> list[AgentEvent]:
         """Project this private fact into one ordered, public-safe callback batch."""
 
         events = []
         if self.public_event is not None:
             events.append(AgentEvent.model_validate(self.public_event.model_dump()))
         timeline = projector.project(self.fact)
-        timeline_type = public_execution_event_type_for_lifecycle(
-            self.fact.get("lifecycle") if self.fact is not None else None
-        )
-        if timeline is not None and timeline_type is not None:
-            events.append(AgentEvent(type=timeline_type, message="", payload=timeline))
+        if timeline is not None:
+            events.append(
+                AgentEvent(
+                    type=timeline.event_type,
+                    message="",
+                    payload=timeline.payload_json,
+                )
+            )
         return events
 
 
-ExecutorEventEmitter = Callable[[AgentEvent | _PrivateExecutionFact], Awaitable[bool]]
+class _PlatformExecutionPhaseFact(NamedTuple):
+    """One server-owned phase transition with no caller-provided presentation."""
+
+    phase: str
+    lifecycle: str
+
+    @property
+    def type(self) -> str:
+        return "execution_step"
+
+    def public_events(
+        self,
+        publisher: PublicExecutionPhasePublisher,
+    ) -> list[AgentEvent]:
+        step = publisher.project(phase=self.phase, lifecycle=self.lifecycle)
+        if step is None:
+            return []
+        progress = public_execution_phase_progress_payload(
+            phase=self.phase,
+            lifecycle=self.lifecycle,
+            step_id=step.step_id,
+        )
+        if progress is None:
+            return []
+        return [
+            AgentEvent(type=step.event_type, message="", payload=step.payload_json),
+            AgentEvent(
+                type=PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+                message="",
+                payload=progress,
+            ),
+        ]
+
+
+ExecutorEvent = AgentEvent | _PrivateExecutionFact | _PlatformExecutionPhaseFact
+ExecutorEventEmitter = Callable[[ExecutorEvent], Awaitable[bool]]
 
 
 class _SealableExecutorEventEmitter(NamedTuple):
@@ -102,7 +142,7 @@ class _SealableExecutorEventEmitter(NamedTuple):
     emit_event: ExecutorEventEmitter
     seal_capability_failure: Callable[[], None]
 
-    async def __call__(self, event: AgentEvent | _PrivateExecutionFact) -> bool:
+    async def __call__(self, event: ExecutorEvent) -> bool:
         return await self.emit_event(event)
 
 
@@ -110,18 +150,26 @@ ExecutorRunner = Callable[
     [ExecutorTaskRequest, Path, ExecutorEventEmitter],
     Awaitable[dict[str, Any]] | dict[str, Any],
 ]
-_PUBLIC_TOOL_LIFECYCLE_LABELS = {
-    "Read": "Reading authorized files",
-    "Glob": "Finding authorized files",
-    "Grep": "Searching authorized files",
-    "LS": "Listing authorized files",
-    "Bash": "Running controlled processing",
-    "Write": "Updating authorized files",
-    "Edit": "Updating authorized files",
-    "NotebookEdit": "Updating authorized files",
-    "Agent": "Coordinating task",
-    "Task": "Coordinating task",
-}
+_PUBLIC_TOOL_LIFECYCLE_NAMES = frozenset(
+    {
+        "Skill",
+        "MCP",
+        "Read",
+        "Glob",
+        "Grep",
+        "LS",
+        "Bash",
+        "Python",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+        "Agent",
+        "Task",
+        "Artifact",
+        "Validate",
+        "Adjust",
+    }
+)
 
 
 def _callback_acknowledges_exact_batch(result: object, *, event_count: int) -> bool:
@@ -144,13 +192,18 @@ def _private_capability_fact(
     callback_status, timeline_status = {"invocation_requested": ("invoking", "started"),
                                         "completed": ("completed", "completed"),
                                         "failed": ("failed", "failed")}[evidence.lifecycle_phase]
+    tool_name = {"skill": "Skill", "mcp": "MCP"}.get(evidence.capability_kind)
     return _PrivateExecutionFact(
-        fact={
-            "fact_kind": "capability_invocation",
-            "invocation_id": str(evidence.tool_call_id),
-            "lifecycle": timeline_status,
-            "public_label": timeline_label,
-        },
+        fact=(
+            {
+                "invocation_id": str(evidence.tool_call_id),
+                "tool_name": tool_name,
+                "lifecycle": timeline_status,
+                "safe_label": timeline_label,
+            }
+            if tool_name is not None
+            else None
+        ),
         public_event=AgentEvent(
             type=f"capability_{callback_status}",
             message="Capability lifecycle update",
@@ -170,7 +223,7 @@ _CONTROLLED_FILE_SKILL_CAPABILITIES = {
 _CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
 _CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS = 5.0
 _EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
-_ACTIVE_PROGRESS_INTERVAL_SECONDS = 15.0
+_ACTIVE_PROGRESS_INTERVAL_SECONDS = 12.0
 _SDK_PRESERVED_FAILURE_CODES = frozenset(
     {
         "claude_agent_sdk_disabled",
@@ -1187,6 +1240,9 @@ async def _default_executor_runner(
             "sdk_used": False,
             "executor_mode": "context_retrieval_invalid",
         }
+    await emit_event(
+        _PlatformExecutionPhaseFact("attachment_materialization", "started")
+    )
     attachment_contexts, attachment_error = await _preprocess_typed_attachments(
         request,
         workspace_root,
@@ -1196,6 +1252,9 @@ async def _default_executor_runner(
     )
     parser_evidence = [context.evidence.model_dump(mode="json") for context in attachment_contexts]
     if attachment_error:
+        await emit_event(
+            _PlatformExecutionPhaseFact("attachment_materialization", "failed")
+        )
         return {
             "status": "failed",
             "message": "Platform attachment preprocessing failed",
@@ -1205,6 +1264,9 @@ async def _default_executor_runner(
             "executor_mode": "platform_attachment_preprocessor",
             "attachment_parser_evidence": parser_evidence,
         }
+    await emit_event(
+        _PlatformExecutionPhaseFact("attachment_materialization", "completed")
+    )
 
     if not attachment_contexts:
         controlled_result = await _run_selected_authorized_file_skill(
@@ -1226,7 +1288,9 @@ async def _default_executor_runner(
             "attachment_parser_evidence": parser_evidence,
         }
 
+    await emit_event(_PlatformExecutionPhaseFact("skill_staging", "started"))
     skill_ids = _task_skill_ids(request)
+    await emit_event(_PlatformExecutionPhaseFact("skill_staging", "completed"))
     model_id = str(request.config.get("model") or "") or None
 
     async def on_text(delta: str) -> None:
@@ -1242,16 +1306,15 @@ async def _default_executor_runner(
 
         if capability_evidence_error["code"]:
             return
-        label = _PUBLIC_TOOL_LIFECYCLE_LABELS.get(str(fact.get("tool_name") or ""))
-        if label is None:
+        tool_name = str(fact.get("tool_name") or "")
+        if tool_name not in _PUBLIC_TOOL_LIFECYCLE_NAMES:
             return
         await emit_event(
             _PrivateExecutionFact(
                 fact={
-                    "fact_kind": "tool_invocation",
                     "invocation_id": str(fact.get("invocation_id") or ""),
+                    "tool_name": tool_name,
                     "lifecycle": str(fact.get("lifecycle") or ""),
-                    "public_label": label,
                 },
             )
         )
@@ -1344,6 +1407,7 @@ async def _default_executor_runner(
             poison_capability_evidence()
             raise
 
+    await emit_event(_PlatformExecutionPhaseFact("model_wait", "started"))
     try:
         sdk_kwargs = {
             "prompt": request.prompt,
@@ -1368,6 +1432,7 @@ async def _default_executor_runner(
             **sdk_kwargs,
         )
     except ClaudeAgentSdkNotAvailable:
+        await emit_event(_PlatformExecutionPhaseFact("model_wait", "failed"))
         return {
             "status": "failed",
             "error_code": "claude_agent_sdk_unavailable",
@@ -1383,6 +1448,12 @@ async def _default_executor_runner(
     )
     if used_sdk and not error and not received_structured_terminal:
         error = "claude_agent_sdk_missing_structured_terminal"
+    await emit_event(
+        _PlatformExecutionPhaseFact(
+            "model_wait",
+            "completed" if used_sdk and not error else "failed",
+        )
+    )
     response = {
         "status": "completed" if used_sdk and not error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
@@ -1518,37 +1589,49 @@ def create_executor_app(
         artifact_upload_latency_ms = 0
         runner_events_open = {"value": True}
         capability_callback_failed = {"value": False}
-        public_execution_projector = PublicExecutionProjector()
+        public_execution_projector = PublicExecutionV2Projector()
+        public_execution_phase_publisher = PublicExecutionPhasePublisher()
         runner_event_lock = asyncio.Lock()
         active_progress_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         progress_tasks: set[asyncio.Task[None]] = set()
 
         def active_progress_identity(
-            event: _PrivateExecutionFact,
-        ) -> tuple[tuple[str, str], dict[str, object], str] | None:
+            event: _PrivateExecutionFact | _PlatformExecutionPhaseFact,
+        ) -> tuple[
+            tuple[str, str],
+            _PrivateExecutionFact | _PlatformExecutionPhaseFact,
+            str,
+        ] | None:
+            if isinstance(event, _PlatformExecutionPhaseFact):
+                if event.lifecycle not in {"started", "progress", "completed", "failed"}:
+                    return None
+                return (
+                    ("phase", event.phase),
+                    _PlatformExecutionPhaseFact(event.phase, "progress"),
+                    event.lifecycle,
+                )
             fact = event.fact
             if not isinstance(fact, dict):
                 return None
-            fact_kind = str(fact.get("fact_kind") or "")
             invocation_id = str(fact.get("invocation_id") or "")
+            tool_name = str(fact.get("tool_name") or "")
             lifecycle = str(fact.get("lifecycle") or "")
-            public_label = str(fact.get("public_label") or "")
             if (
-                fact_kind not in {"capability_invocation", "tool_invocation"}
-                or not invocation_id
+                not invocation_id
+                or tool_name not in _PUBLIC_TOOL_LIFECYCLE_NAMES
                 or lifecycle not in {"started", "progress", "completed", "failed"}
-                or not public_label
             ):
                 return None
+            progress_fact: dict[str, object] = {
+                "invocation_id": invocation_id,
+                "tool_name": tool_name,
+                "lifecycle": "progress",
+            }
+            if "safe_label" in fact:
+                progress_fact["safe_label"] = fact["safe_label"]
             return (
-                (fact_kind, invocation_id),
-                {
-                    "fact_kind": fact_kind,
-                    "invocation_id": invocation_id,
-                    "lifecycle": "progress",
-                    "public_label": public_label,
-                    "progress": {"current": 0, "total": 1},
-                },
+                ("tool", invocation_id),
+                _PrivateExecutionFact(fact=progress_fact),
                 lifecycle,
             )
 
@@ -1599,13 +1682,22 @@ def create_executor_app(
                 return acknowledged
             return True
 
-        async def emit_runner_event_locked(event: AgentEvent | _PrivateExecutionFact) -> bool:
+        async def emit_runner_event_locked(event: ExecutorEvent) -> bool:
             nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
             if capability_callback_failed["value"] or not runner_events_open["value"]:
                 return False
             if isinstance(event, _PrivateExecutionFact):
                 agent_event = event.public_event
                 agent_events = event.public_events(public_execution_projector)
+                if not agent_events:
+                    return True
+                event_type = event.type
+                active_progress = active_progress_identity(event)
+                if active_progress is not None and active_progress[2] in {"completed", "failed"}:
+                    stop_active_progress(active_progress[0])
+            elif isinstance(event, _PlatformExecutionPhaseFact):
+                agent_event = None
+                agent_events = event.public_events(public_execution_phase_publisher)
                 if not agent_events:
                     return True
                 event_type = event.type
@@ -1652,7 +1744,7 @@ def create_executor_app(
             acknowledged = await dispatch_callback_event(callback_event)
             if is_capability_event and not acknowledged:
                 seal_runner_events_after_capability_failure()
-            elif isinstance(event, _PrivateExecutionFact) and active_progress is not None:
+            elif isinstance(event, (_PrivateExecutionFact, _PlatformExecutionPhaseFact)) and active_progress is not None:
                 identity, progress_fact, lifecycle = active_progress
                 if lifecycle == "started" and acknowledged:
                     task = asyncio.create_task(emit_active_progress(identity, progress_fact))
@@ -1672,7 +1764,7 @@ def create_executor_app(
                 artifact_upload_latency_ms += _elapsed_ms(artifact_started_at)
             return acknowledged
 
-        async def emit_runner_event(event: AgentEvent | _PrivateExecutionFact) -> bool:
+        async def emit_runner_event(event: ExecutorEvent) -> bool:
             is_capability_event = str(getattr(event, "type", "")).startswith("capability_")
             try:
                 async with runner_event_lock:
@@ -1689,7 +1781,7 @@ def create_executor_app(
 
         async def emit_active_progress(
             identity: tuple[str, str],
-            progress_fact: dict[str, object],
+            progress_fact: _PrivateExecutionFact | _PlatformExecutionPhaseFact,
         ) -> None:
             current_task = asyncio.current_task()
             while (
@@ -1704,7 +1796,7 @@ def create_executor_app(
                     or active_progress_tasks.get(identity) is not current_task
                 ):
                     return
-                acknowledged = await emit_runner_event(_PrivateExecutionFact(fact=progress_fact))
+                acknowledged = await emit_runner_event(progress_fact)
                 if not acknowledged:
                     return
 
@@ -1719,7 +1811,16 @@ def create_executor_app(
             seal_capability_failure=seal_runner_events_after_capability_failure,
         )
 
+        await emit_runner_event(
+            _PlatformExecutionPhaseFact("sandbox_preparation", "started")
+        )
         await dispatch_callback_event(running_event)
+        await emit_runner_event(
+            _PlatformExecutionPhaseFact("sandbox_preparation", "completed")
+        )
+        await emit_runner_event(
+            _PlatformExecutionPhaseFact("sandbox_submission", "started")
+        )
         runner_result: dict[str, Any] = {}
         try:
             if invalid_max_seconds:
@@ -1748,7 +1849,7 @@ def create_executor_app(
                                 raw_runner_result, timed_out = await _await_with_deadline(
                                     raw_runner_result,
                                     timeout_seconds=max_seconds,
-                                    on_timeout=lambda: runner_events_open.update(value=False),
+                                    on_timeout=lambda: None,
                                 )
                             else:
                                 raw_runner_result = await raw_runner_result
@@ -1766,7 +1867,6 @@ def create_executor_app(
                             "error_message": str(exc),
                         }
         finally:
-            runner_events_open["value"] = False
             await drain_active_progress()
 
         if capability_callback_failed["value"]:
@@ -1778,6 +1878,18 @@ def create_executor_app(
 
         runner_status = str(runner_result.get("status") or "").strip().lower()
         failed = timed_out or runner_status not in {"completed", "succeeded"}
+        if runner_events_open["value"]:
+            phase_lifecycle = "failed" if failed else "completed"
+            await emit_runner_event(
+                _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+            )
+            await emit_runner_event(
+                _PlatformExecutionPhaseFact("artifact_validation", "started")
+            )
+            await emit_runner_event(
+                _PlatformExecutionPhaseFact("artifact_validation", phase_lifecycle)
+            )
+        runner_events_open["value"] = False
         positive_deadline_exceeded = timed_out and max_seconds is not None and max_seconds > 0
         error_code = (
             "executor_deadline_exceeded"

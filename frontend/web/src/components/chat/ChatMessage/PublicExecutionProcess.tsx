@@ -29,6 +29,18 @@ function hasPublicProgress(step: ExecutionTimelinePart): boolean {
   );
 }
 
+const PRESENTATION_TITLES: Readonly<Record<string, string>> = {
+  skill: "使用 Skill",
+  mcp: "调用已授权工具",
+  read: "读取和搜索文件",
+  processing: "数据处理",
+  write: "写入和编辑内容",
+  agent: "协调任务",
+  artifact: "生成交付物",
+  verification: "校验结果",
+  adjustment: "调整处理",
+};
+
 function StepRow({
   step,
   isStreaming,
@@ -38,7 +50,12 @@ function StepRow({
 }) {
   const { t } = useTranslation();
   const progress = hasPublicProgress(step);
-  const kindLabel = t(`chat.executionTimeline.kind.${step.kind}`);
+  const kindLabel =
+    step.title ||
+    (step.presentation_kind
+      ? PRESENTATION_TITLES[step.presentation_kind]
+      : undefined) ||
+    t(`chat.executionTimeline.kind.${step.kind}`);
   const statusLabel = t(`chat.executionTimeline.status.${step.status}`);
   const safeFileName = safePublicBasename(step.safe_file_name);
   const Icon =
@@ -69,7 +86,8 @@ function StepRow({
       <div className="min-w-0 flex-1">
         <div className="break-words font-medium leading-snug">{kindLabel}</div>
         <div className="mt-0.5 text-xs opacity-80">
-          {statusLabel}
+          {step.summary || statusLabel}
+          {step.summary && ` · ${statusLabel}`}
           {progress &&
             ` · ${t("chat.executionTimeline.progress", {
               current: step.progress.current,
@@ -84,7 +102,7 @@ function StepRow({
   );
 }
 
-/** Renders only the v1 allowlisted public execution process fields. */
+/** Renders only versioned allowlisted public execution process fields. */
 export function PublicExecutionProcess({
   steps,
   isStreaming,
