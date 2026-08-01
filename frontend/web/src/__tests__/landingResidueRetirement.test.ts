@@ -40,17 +40,16 @@ test("landing stylesheet residue is retired from the active frontend", () => {
   assert.doesNotMatch(authSources, /blog-btn-(?:primary|ghost)/);
 });
 
-test("retired top-level landing translations are absent in every locale", () => {
+test("retired landing translations are absent in every locale", () => {
   for (const locale of ["en", "zh", "ja", "ko", "ru"]) {
     const messages = JSON.parse(
       source(`src/i18n/locales/${locale}.json`),
     ) as Record<string, unknown> & {
-      seo?: { landing?: { title?: unknown; description?: unknown } };
+      seo?: Record<string, unknown>;
     };
 
     assert.equal(Object.hasOwn(messages, "landing"), false, locale);
-    assert.equal(typeof messages.seo?.landing?.title, "string", locale);
-    assert.equal(typeof messages.seo?.landing?.description, "string", locale);
+    assert.equal(Object.hasOwn(messages.seo ?? {}, "landing"), false, locale);
   }
 });
 
