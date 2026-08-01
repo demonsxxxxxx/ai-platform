@@ -124,6 +124,18 @@ test("browser harness checks executable candidates with the real Node filesystem
   assert.doesNotMatch(smoke, /__nodeFs/);
 });
 
+test("browser harness exercises direct upload without the retired dedup protocol", () => {
+  const smoke = read("scripts/authorized-skill-browser-smoke.mjs");
+
+  assert.match(smoke, /class MockUploadRequest/);
+  assert.match(smoke, /url\.pathname !== "\/api\/upload\/file"/);
+  assert.match(smoke, /path: url\.pathname/);
+  assert.match(smoke, /requestEvidence\.uploads/);
+  assert.match(smoke, /key: "file-smoke-key"/);
+  assert.match(smoke, /name: "evidence\.txt"/);
+  assert.doesNotMatch(smoke, /\/api\/upload\/check/);
+});
+
 test("selected Skill state is owned by one focused hook with explicit recovery", () => {
   const hookPath = join(root, "src/hooks/useSelectedSkillTask.ts");
   assert.equal(existsSync(hookPath), true);
