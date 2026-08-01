@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  APP_ROUTE_PATHS,
+  resolveAppRoute,
+} from "../appRouteManifest.ts";
 
 const appSource = readFileSync(resolve(import.meta.dirname, "../App.tsx"), "utf8");
 const typesSource = readFileSync(
@@ -34,8 +38,12 @@ const oauthCallbackSource = readFileSync(
   "utf8",
 );
 test("launchpad route is protected and mapped to AppContent", () => {
-  assert.match(appSource, /path="\/apps"/);
-  assert.match(appSource, /<LaunchpadPage \/>/);
+  assert.equal(APP_ROUTE_PATHS.apps, "/apps");
+  assert.equal(resolveAppRoute("/apps"), "apps");
+  assert.match(
+    appSource,
+    /path=\{APP_ROUTE_PATHS\.apps\}[\s\S]{0,160}<ProtectedRoute>[\s\S]{0,80}<LaunchpadPage \/>/,
+  );
   assert.match(appSource, /activeTab="apps"/);
 });
 
@@ -53,9 +61,14 @@ test("chat workbench is the default authenticated landing destination", () => {
 });
 
 test("root path routes by auth state instead of rendering the marketing landing page", () => {
+  assert.equal(APP_ROUTE_PATHS.root, "/");
+  assert.equal(resolveAppRoute("/"), "root");
   assert.doesNotMatch(appSource, /LandingPage/);
   assert.match(appSource, /function RootRedirect\(\)/);
   assert.match(appSource, /<Navigate to="\/chat" replace \/>/);
   assert.match(appSource, /<Navigate to="\/auth\/login" replace \/>/);
-  assert.match(appSource, /path="\/"\s+element=\{<RootRedirect \/>}/);
+  assert.match(
+    appSource,
+    /path=\{APP_ROUTE_PATHS\.root\}\s+element=\{<RootRedirect \/>}/,
+  );
 });

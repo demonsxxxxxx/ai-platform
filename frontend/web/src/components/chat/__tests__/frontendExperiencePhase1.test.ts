@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveCommandPrefixPanel } from "../chatInputCommands";
+import {
+  getWorkbenchNavItemFromPathname,
+  getWorkbenchNavPath,
+} from "../../panels/SidebarParts/navigationState";
 
 const root = process.cwd();
 
@@ -84,7 +88,16 @@ test("composer renders durable selected context chips", () => {
   assert.match(chatInputSource, /referenceId:\s*attachment\.id/);
 });
 
-test("rail exposes company navigation admin Skills and MCP as first-level workbench entries", () => {
+test("rail follows the authenticated workbench navigation manifest", () => {
+  for (const [path, item] of [
+    ["/apps", "apps"],
+    ["/skills", "skills"],
+    ["/mcp", "mcp"],
+  ] as const) {
+    assert.equal(getWorkbenchNavItemFromPathname(path), item);
+    assert.equal(getWorkbenchNavPath(item), path);
+  }
+
   assert.match(sidebarRailSource, /onOpenLaunchpad/);
   assert.match(sidebarRailSource, /onOpenSkills/);
   assert.doesNotMatch(sidebarRailSource, /onOpenMarketplace/);
@@ -93,7 +106,8 @@ test("rail exposes company navigation admin Skills and MCP as first-level workbe
   assert.match(sessionSidebarSource, /navigate\("\/skills"\)/);
   assert.doesNotMatch(sessionSidebarSource, /navigate\("\/marketplace"\)/);
   assert.match(sessionSidebarSource, /navigate\("\/mcp"\)/);
-  assert.match(sessionSidebarSource, /navigateWorkbenchItem\("files"\)/);
+  assert.match(sessionSidebarSource, /getSafeWorkbenchNavPath\(item, user\)/);
+  assert.doesNotMatch(sessionSidebarSource, /navigateWorkbenchItem\("files"\)/);
 });
 
 test("Chinese shell copy names the PRD surfaces directly", () => {

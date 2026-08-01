@@ -34,7 +34,15 @@ test("model projections flow from app content into chat input", () => {
     /onSelectModel\?:\s*\(modelId:\s*string,\s*modelValue:\s*string\)\s*=>\s*void/,
   );
 
-  assert.match(chatApp, /availableModels=\{filteredModels \?\? \[\]\}/);
+  assert.match(
+    chatApp,
+    /availableModels=\{\s*agentConversationControlsLocked\s*\?\s*\[\]\s*:\s*filteredModels\s*\?\?\s*\[\]\s*\}/,
+  );
+  assert.match(
+    chatApp,
+    /availableModels=\{agentConversationControlsLocked \? null : filteredModels\}/,
+  );
+  assert.match(chatApp, /reconcileCurrentModelSelection\(\{/);
   assert.match(chatApp, /currentModelId=\{currentModelId\}/);
   assert.match(chatApp, /onSelectModel=\{handleSelectModel\}/);
 

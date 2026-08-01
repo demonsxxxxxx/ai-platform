@@ -262,15 +262,24 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     "toggleAll must guard hook-level enabled before using target state",
   );
   assert.match(skillsHook, /effectivePermissions/);
-  assert.match(toolsHook, /mcpApi\.list\(/);
-  assert.match(toolsHook, /mcpApi\.discoverTools\(/);
   assert.match(
     toolsHook,
-    /server\.enabled && !tool\.system_disabled && !tool\.user_disabled/,
+    /if \(!hookEnabled\) \{[\s\S]*?setCatalog\(\{ generation, status: "empty", \.\.\.EMPTY_CATALOG \}\);[\s\S]*?return;/,
+  );
+  assert.match(
+    toolsHook,
+    /authenticatedRequest\(`\/api\/mcp\/chat-tools\$\{query\}`\)/,
+  );
+  assert.match(toolsHook, /if \(!rawResponse\.ok\) throw new Error\("chat_mcp_catalog_request_failed"\)/);
+  assert.match(toolsHook, /parseChatMcpCatalogResponse\(await rawResponse\.json\(\)\)/);
+  assert.match(toolsHook, /publishChatMcpCatalogFailure\(current, generation\)/);
+  assert.match(
+    toolsHook,
+    /const authorizedIds = new Set\(tools\.map\(\(tool\) => tool\.name\)\);[\s\S]*?filter\(\(toolId\) => authorizedIds\.has\(toolId\)\)/,
   );
   assert.doesNotMatch(
     toolsHook,
-    /void agentIdRef\.current;\s*setTools\(\[\]\);/,
+    /mcpApi\.|void agentIdRef\.current;\s*setTools\(\[\]\);/,
   );
   assert.match(skillsList, /canImportSkills/);
   assert.match(skillsList, /canEditSkills/);
