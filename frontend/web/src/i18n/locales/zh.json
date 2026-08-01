@@ -2601,10 +2601,6 @@
       "description": "选择平台批准的智能体或应用模式。",
       "label": "智能体"
     },
-    "context": {
-      "description": "在当前工作区启用后挂载会话、记忆或频道上下文。",
-      "label": "上下文"
-    },
     "file": {
       "description": "从输入框引用允许使用的文件和产物。",
       "label": "文件"
@@ -2627,15 +2623,6 @@
     "skill": {
       "description": "搜索允许的 Skills，并加入持久 Skill chip。",
       "label": "Skill"
-    },
-    "contextSelector": {
-      "chip": "/context",
-      "description": "上下文选择器已在输入框展示，但当前工作区还不能使用保存的上下文。",
-      "title": "上下文选择器暂不可用"
-    },
-    "unavailable": {
-      "failClosed": "Fail-closed surface",
-      "subtitle": "已在输入框展示，但当前工作区尚未启用。"
     }
   },
   "models": {

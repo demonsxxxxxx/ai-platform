@@ -273,10 +273,6 @@ test("workbench governance surfaces do not hard-code slate or stone palettes", (
       "GovernanceAvailabilityBadge",
       read("src/components/governance/GovernanceAvailabilityBadge.tsx"),
     ],
-    [
-      "GroupAvailabilityToggleRow",
-      read("src/components/governance/GroupAvailabilityToggleRow.tsx"),
-    ],
   ]);
   const legacyPalette =
     /\b(?:bg|text|border|ring|divide)-(?:slate|stone)-|dark:(?:bg|text|border|ring|divide)-stone-/;
@@ -810,10 +806,6 @@ test("post-login composer and selector surfaces use shared semantic workbench to
     ["LibreChatComposer", read("src/librechat-ui/Composer.tsx")],
     ["LibreChatCommandMenu", read("src/librechat-ui/CommandMenu.tsx")],
     ["LibreChatComposerChip", read("src/librechat-ui/Chips.tsx")],
-    [
-      "ComposerUnavailablePanel",
-      read("src/components/chat/ComposerUnavailablePanel.tsx"),
-    ],
     ["SkillSelector", read("src/components/selectors/SkillSelector.tsx")],
     ["ToolSelector", read("src/components/selectors/ToolSelector.tsx")],
   ]);
@@ -835,7 +827,6 @@ test("post-login composer and selector surfaces use shared semantic workbench to
 
   const commandMenu = sources.get("LibreChatCommandMenu")!;
   const chips = sources.get("LibreChatComposerChip")!;
-  const unavailablePanel = sources.get("ComposerUnavailablePanel")!;
   const toolSelector = sources.get("ToolSelector")!;
   const skillSelector = sources.get("SkillSelector")!;
 
@@ -843,8 +834,6 @@ test("post-login composer and selector surfaces use shared semantic workbench to
   assert.match(commandMenu, /bg-\[var\(--theme-workbench-panel\)\]/);
   assert.match(chips, /data-librechat-composer-chip/);
   assert.match(chips, /theme-warning-soft/);
-  assert.match(unavailablePanel, /data-composer-unavailable-panel/);
-  assert.match(unavailablePanel, /theme-warning-soft/);
   assert.match(toolSelector, /data-composer-mcp-selector/);
   assert.match(toolSelector, /theme-danger-soft/);
   assert.match(skillSelector, /data-composer-skill-selector/);

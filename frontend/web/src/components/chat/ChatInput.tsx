@@ -366,7 +366,6 @@ export const ChatInput = memo(function ChatInput({
         thinking: "context",
         model: "model",
         file: "file",
-        context: "context",
       };
       const kind = selectionKindByPanel[command.panel];
       const label = command.query

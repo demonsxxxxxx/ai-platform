@@ -2588,10 +2588,6 @@
       "description": "Select a platform-approved agent or app mode.",
       "label": "Agent"
     },
-    "context": {
-      "description": "Attach conversation, memory, or channel context when it is enabled for your workspace.",
-      "label": "Context"
-    },
     "file": {
       "description": "Reference allowed files and artifacts from the composer.",
       "label": "File"
@@ -2614,15 +2610,6 @@
     "skill": {
       "description": "Search allowed Skills and add a durable Skill chip.",
       "label": "Skill"
-    },
-    "contextSelector": {
-      "chip": "/context",
-      "description": "Context selection is visible in the composer, but your workspace cannot use saved context yet.",
-      "title": "Context selector unavailable"
-    },
-    "unavailable": {
-      "failClosed": "Fail-closed surface",
-      "subtitle": "Visible in the composer, but not enabled for your workspace yet."
     }
   },
   "models": {

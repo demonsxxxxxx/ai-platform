@@ -138,7 +138,6 @@ test("active composer and state surfaces consume librechat-ui primitives", () =>
     ["src/components/chat/ChatInput.tsx", /LibreChatComposerFrame/],
     ["src/components/chat/ComposerChips.tsx", /LibreChatComposerChip/],
     ["src/components/chat/SlashCommandMenu.tsx", /LibreChatCommandMenu/],
-    ["src/components/chat/ComposerUnavailablePanel.tsx", /LibreChatStateSurface/],
     ["src/components/workbench/WorkbenchStateSurface.tsx", /LibreChatStateSurface/],
   ] as const) {
     const source = read(path);

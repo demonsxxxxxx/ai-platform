@@ -75,7 +75,7 @@ test("feature menu names current ai-platform capabilities in PRD terms", () => {
   assert.match(featureMenuSource, /featureMenu\.mcpTools/);
   assert.match(featureMenuSource, /featureMenu\.fileReference/);
   assert.match(featureMenuSource, /featureMenu\.model/);
-  assert.match(featureMenuSource, /featureMenu\.context/);
+  assert.doesNotMatch(featureMenuSource, /featureMenu\.context/);
 });
 
 test("composer renders durable selected context chips", () => {

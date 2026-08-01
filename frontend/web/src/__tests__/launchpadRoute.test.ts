@@ -33,11 +33,6 @@ const oauthCallbackSource = readFileSync(
   resolve(import.meta.dirname, "../components/auth/OAuthCallback.tsx"),
   "utf8",
 );
-const landingSource = readFileSync(
-  resolve(import.meta.dirname, "../components/landing/LandingPage.tsx"),
-  "utf8",
-);
-
 test("launchpad route is protected and mapped to AppContent", () => {
   assert.match(appSource, /path="\/apps"/);
   assert.match(appSource, /<LaunchpadPage \/>/);
@@ -55,7 +50,6 @@ test("chat workbench is the default authenticated landing destination", () => {
   assert.match(authRedirectSource, /return redirectPath \|\| "\/chat"/);
   assert.match(appSource, /navigate\(redirectPath \?\? "\/chat"/);
   assert.match(oauthCallbackSource, /getRedirectPath\(\) \|\| "\/chat"/);
-  assert.match(landingSource, /navigate\("\/apps", \{ replace: true \}\)/);
 });
 
 test("root path routes by auth state instead of rendering the marketing landing page", () => {

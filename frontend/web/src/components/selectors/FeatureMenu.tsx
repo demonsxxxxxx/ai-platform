@@ -32,8 +32,6 @@ export type FeaturePanel =
   | "skills"
   | "model"
   | "file"
-  // Kept as an unreachable legacy panel member until shared selector types are retired.
-  | "context"
   | "thinking"
   | null;
 

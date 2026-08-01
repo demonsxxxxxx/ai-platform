@@ -43,7 +43,7 @@ import {
   THEME_STORAGE_KEY,
 } from "../../utils/themeDom";
 import { getModelIconUrl, isMonochromeIcon } from "../agent/modelIcon";
-import { ScrollButtons } from "../landing/components/ScrollButtons";
+import { ScrollButtons } from "./ScrollButtons";
 import { ShareUnavailableState } from "./ShareUnavailableState";
 
 // Theme management for shared page (independent of main app context)
