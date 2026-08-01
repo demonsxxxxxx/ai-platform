@@ -13,7 +13,6 @@ import {
   ListTree,
   PlayCircle,
   RefreshCw,
-  Users,
   XCircle,
 } from "lucide-react";
 import { LoadingSpinner } from "../../common";
@@ -27,7 +26,6 @@ import {
   type RunPlaybackDisplayStatus,
   type RunPlaybackPanelSummary,
   type RunPlaybackPanelViewModel,
-  type RunPlaybackStepItem,
   type RunPlaybackTimelineItem,
 } from "./runPlaybackPanelState";
 import { downloadRunPlaybackArtifact } from "./runPlaybackDownload";
@@ -97,10 +95,6 @@ export function RunPlaybackPanel({ lifecycle, panelKey }: RunPlaybackPanelProps)
             />
             <TimelineSection items={viewModel.timeline} />
             <ArtifactsSection artifacts={viewModel.artifacts} />
-            <MultiAgentSection
-              counts={viewModel.multiAgent.counts}
-              steps={viewModel.multiAgent.steps}
-            />
           </div>
         )}
       </div>
@@ -578,68 +572,6 @@ function ArtifactRow({ artifact }: { artifact: RunPlaybackArtifactItem }) {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-function MultiAgentSection({
-  counts,
-  steps,
-}: {
-  counts: { label: string; value: number }[];
-  steps: RunPlaybackStepItem[];
-}) {
-  const { t } = useTranslation();
-  return (
-    <PanelSection
-      icon={<Users size={14} />}
-      title={t("runPlayback.multiAgent")}
-      count={steps.length}
-    >
-      {counts.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {counts.map((count) => (
-            <span
-              key={count.label}
-              className="inline-flex items-center gap-1 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] text-stone-600 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-300"
-            >
-              <span>{translateStatus(t, count.label)}</span>
-              <span className="font-semibold tabular-nums">{count.value}</span>
-            </span>
-          ))}
-        </div>
-      )}
-      {steps.length === 0 ? (
-        <SectionEmpty label={t("runPlayback.noSteps")} />
-      ) : (
-        <div className="space-y-1.5">
-          {steps.map((step) => (
-            <StepRow key={step.id} step={step} />
-          ))}
-        </div>
-      )}
-    </PanelSection>
-  );
-}
-
-function StepRow({ step }: { step: RunPlaybackStepItem }) {
-  return (
-    <div className="flex gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900">
-      <StatusIcon status={step.status} kind="step" />
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-xs font-medium text-stone-800 dark:text-stone-100">
-            {step.label}
-          </span>
-          <StatusBadge status={step.status} />
-        </div>
-        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-stone-500 dark:text-stone-500">
-          {step.sequence !== null && <span>#{step.sequence}</span>}
-          {step.role && <span>{step.role}</span>}
-          {step.kind && <span>{step.kind}</span>}
-          {step.startedAt && <span>{step.startedAt}</span>}
-        </div>
-      </div>
     </div>
   );
 }

@@ -351,33 +351,8 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
     assert playback["run"]["error_message"] == ""
     assert playback["events"][0] == event
     assert playback["artifacts"][0]["artifact_id"] == "artifact-a"
-    snapshot = playback["multi_agent"]
-    assert snapshot["counts"] == {
-        "total": 2,
-        "pending": 0,
-        "succeeded": 1,
-        "failed": 1,
-        "running": 0,
-        "cancelled": 0,
-        "reused": 0,
-        "blocked": 1,
-    }
-    failed_snapshot_step = snapshot["steps"][1]
-    assert failed_snapshot_step["step_id"] == "step-failed"
-    assert failed_snapshot_step["step_key"] == "step-failed"
-    assert failed_snapshot_step["status"] == "failed"
-    assert failed_snapshot_step["payload"] == {
-        "dependency_count": 1,
-        "depends_on": ["step-plan"],
-        "missing_dependency_count": 1,
-        "artifact_count": 1,
-        "progress": 50,
-    }
-    assert snapshot["steps"][0]["payload"] == {
-        "artifact_count": 0,
-        "progress": 25,
-    }
-    assert "event: multi_agent_snapshot" in stream_response.text
+    assert "multi_agent" not in playback
+    assert "event: multi_agent_snapshot" not in stream_response.text
     for rendered in (events_response.text, stream_response.text, playback_response.text):
         assert all(term not in rendered for term in raw_terms)
 

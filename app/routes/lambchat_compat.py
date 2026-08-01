@@ -187,9 +187,6 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
     "subagent_failed": _ChatPublicRunEventProjection(
         "subagent_failed", "agent", "协同处理未能完成", "failed"
     ),
-    "run_multi_agent_child_created": _ChatPublicRunEventProjection(
-        "run_child_created", "agent", "已安排协同任务", "active"
-    ),
     "run_child_created": _ChatPublicRunEventProjection(
         "run_child_created", "agent", "已安排协同任务", "active"
     ),

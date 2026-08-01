@@ -104,15 +104,8 @@ CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
 def public_terminal_projection(
     status: object,
     error_code: object = None,
-    *,
-    run_id: str | None = None,
-    step_rows: list[dict[str, object]] | None = None,
 ) -> dict[str, object] | None:
-    """Build the sole ordinary-user projection for failed or cancelled terminals.
-
-    The optional raw step rows are reprojected internally.  Callers cannot
-    assert that an arbitrary ``multi_agent`` dictionary is public.
-    """
+    """Build the sole ordinary-user projection for failed or cancelled terminals."""
     normalized_status = normalize_run_status(str(status or ""))
     if normalized_status == "cancelled":
         detail_code = "run_cancelled"
@@ -124,17 +117,12 @@ def public_terminal_projection(
     else:
         return None
     message = PUBLIC_TERMINAL_DETAIL_MESSAGES[detail_code]
-    result: dict[str, object] = {"message": message}
-    if run_id and step_rows:
-        multi_agent = _ordinary_multi_agent_snapshot(run_id, step_rows)
-        if multi_agent is not None:
-            result["multi_agent"] = multi_agent
     return {
         "detail_kind": detail_kind,
         "detail_code": detail_code,
         "message": message,
         "error_code": detail_code if detail_kind == "failed" else None,
-        "result": result,
+        "result": {"message": message},
         "event_payload": {},
     }
 
@@ -246,21 +234,6 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
         "event_payload": {"detail_code": detail_code},
         "severity": "error" if detail_kind == "failed" else "info",
     }
-
-
-def ordinary_nonterminal_run_result(
-    *,
-    run_id: str,
-    step_rows: list[dict[str, object]],
-) -> dict[str, object]:
-    """Build the complete ordinary-user result for a queued or running run.
-
-    Executor-owned ``result_json`` is not a public progress contract.  The
-    existing multi-agent snapshot is retained because it is reconstructed from
-    durable step rows by this module's server-owned allowlist.
-    """
-    multi_agent = _ordinary_multi_agent_snapshot(run_id, step_rows)
-    return {"multi_agent": multi_agent} if multi_agent is not None else {}
 
 
 PUBLIC_ARTIFACT_TYPES = frozenset(
@@ -1029,46 +1002,3 @@ def run_step_responses(
         step_id_mapping = _ordinary_step_id_mapping(rows)
         return [_ordinary_run_step_response(row, step_id_mapping=step_id_mapping) for row in rows]
     return [run_step_response(row, principal=principal) for row in rows]
-
-
-def _multi_agent_snapshot_from_step_responses(
-    run_id: str,
-    steps: list[dict[str, object]],
-) -> dict[str, object] | None:
-    if not steps:
-        return None
-    counts = {
-        "total": len(steps),
-        "pending": sum(1 for item in steps if item["status"] == "pending"),
-        "succeeded": sum(1 for item in steps if item["status"] == "succeeded"),
-        "failed": sum(1 for item in steps if item["status"] == "failed"),
-        "running": sum(1 for item in steps if item["status"] == "running"),
-        "cancelled": sum(1 for item in steps if item["status"] == "cancelled"),
-        "reused": sum(1 for item in steps if bool(item["payload"].get("checkpoint_reused"))),
-        "blocked": sum(1 for item in steps if bool(item["payload"].get("missing_dependency_count"))),
-    }
-    return {"run_id": run_id, "steps": steps, "counts": counts}
-
-
-def _ordinary_multi_agent_snapshot(
-    run_id: str,
-    rows: list[dict[str, object]],
-) -> dict[str, object] | None:
-    step_id_mapping = _ordinary_step_id_mapping(rows)
-    return _multi_agent_snapshot_from_step_responses(
-        run_id,
-        [_ordinary_run_step_response(row, step_id_mapping=step_id_mapping) for row in rows],
-    )
-
-
-def multi_agent_snapshot_from_steps(
-    run_id: str,
-    rows: list[dict[str, object]],
-    principal: AuthPrincipal | None = None,
-) -> dict[str, object] | None:
-    if principal is not None and not is_ai_admin(principal):
-        return _multi_agent_snapshot_from_step_responses(run_id, run_step_responses(rows, principal=principal))
-    return _multi_agent_snapshot_from_step_responses(
-        run_id,
-        run_step_responses(rows, principal=principal),
-    )

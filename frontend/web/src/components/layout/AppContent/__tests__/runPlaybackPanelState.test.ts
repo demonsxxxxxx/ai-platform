@@ -95,26 +95,6 @@ test("buildRunPlaybackPanelViewModel exposes only public display fields", () => 
     events: [],
     artifacts: [],
     steps: [],
-    multi_agent: {
-      run_id: "run-1",
-      counts: {
-        total: 2,
-        succeeded: 1,
-        running: 1,
-        resource_limits: { memory_mb: 512 },
-      },
-      steps: [
-        {
-          step_id: "step-2",
-          step_kind: "review",
-          title: "Review implementation",
-          role: "review",
-          status: "running",
-          sequence: 4,
-          work_dir: "/workspace/private",
-        },
-      ],
-    },
     context_ref: {
       context_snapshot_id: "ctx-private",
       source: "stored_context_snapshot",
@@ -193,25 +173,6 @@ test("buildRunPlaybackPanelViewModel exposes only public display fields", () => 
       createdAt: null,
     },
   ]);
-  assert.deepEqual(viewModel.multiAgent, {
-    counts: [
-      { label: "total", value: 2 },
-      { label: "succeeded", value: 1 },
-      { label: "running", value: 1 },
-    ],
-    steps: [
-      {
-        id: "step-2",
-        label: "Review implementation",
-        role: "review",
-        kind: "review",
-        status: "running",
-        sequence: 4,
-        startedAt: null,
-        finishedAt: null,
-      },
-    ],
-  });
   assert.deepEqual(viewModel.contextProvenance, {
     source: "stored_context_snapshot",
     executionTier: "document_worker",
@@ -272,7 +233,6 @@ test("timeline labels and statuses are stable for events, artifacts, and steps",
     events: [],
     artifacts: [],
     steps: [],
-    multi_agent: null,
   } as RunPlaybackResponse);
 
   assert.deepEqual(
@@ -302,7 +262,6 @@ test("loading, error, and empty view models do not throw", () => {
     },
     timeline: [],
     artifacts: [],
-    multiAgent: { counts: [], steps: [] },
     contextProvenance: null,
     errorMessage: null,
   });
@@ -322,7 +281,6 @@ test("loading, error, and empty view models do not throw", () => {
       },
       timeline: [],
       artifacts: [],
-      multiAgent: { counts: [], steps: [] },
       contextProvenance: null,
       errorMessage: "Network failed",
     },
@@ -334,12 +292,10 @@ test("loading, error, and empty view models do not throw", () => {
     events: [],
     artifacts: [],
     steps: [],
-    multi_agent: null,
   } as RunPlaybackResponse);
 
   assert.equal(empty.state, "empty");
   assert.deepEqual(empty.timeline, []);
   assert.deepEqual(empty.artifacts, []);
-  assert.deepEqual(empty.multiAgent, { counts: [], steps: [] });
   assert.equal(empty.contextProvenance, null);
 });

@@ -628,5 +628,4 @@ def run_control_readiness_snapshot(
         },
         "checkpoint_candidates": checkpoint_candidates,
         "queue_insight": queue_insight,
-        "multi_agent": multi_agent_readiness_snapshot(run=run, steps=steps, principal=principal),
     }

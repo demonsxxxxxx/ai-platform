@@ -52,25 +52,9 @@ export interface RunPlaybackArtifactItem {
   createdAt: string | null;
 }
 
-export interface RunPlaybackStepItem {
-  id: string;
-  label: string;
-  role: string | null;
-  kind: string | null;
-  status: RunPlaybackDisplayStatus;
-  sequence: number | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-}
-
 export interface RunPlaybackCountItem {
   label: string;
   value: number;
-}
-
-export interface RunPlaybackMultiAgentViewModel {
-  counts: RunPlaybackCountItem[];
-  steps: RunPlaybackStepItem[];
 }
 
 export interface RunPlaybackContextProvenanceViewModel {
@@ -88,26 +72,9 @@ export interface RunPlaybackPanelViewModel {
   summary: RunPlaybackPanelSummary;
   timeline: RunPlaybackTimelineItem[];
   artifacts: RunPlaybackArtifactItem[];
-  multiAgent: RunPlaybackMultiAgentViewModel;
   contextProvenance: RunPlaybackContextProvenanceViewModel | null;
   errorMessage: string | null;
 }
-
-const EMPTY_MULTI_AGENT: RunPlaybackMultiAgentViewModel = {
-  counts: [],
-  steps: [],
-};
-
-const MULTI_AGENT_COUNT_ORDER = [
-  "total",
-  "succeeded",
-  "running",
-  "failed",
-  "cancelled",
-  "reused",
-  "blocked",
-  "pending",
-] as const;
 
 const PUBLIC_CONTEXT_INPUT_KEYS = new Set([
   "attachments",
@@ -131,7 +98,6 @@ export function buildRunPlaybackLoadingViewModel(
     summary: buildFallbackSummary(runId, "loading", null),
     timeline: [],
     artifacts: [],
-    multiAgent: EMPTY_MULTI_AGENT,
     contextProvenance: null,
     errorMessage: null,
   };
@@ -147,7 +113,6 @@ export function buildRunPlaybackErrorViewModel(
     summary: buildFallbackSummary(runId, "error", errorMessage),
     timeline: [],
     artifacts: [],
-    multiAgent: EMPTY_MULTI_AGENT,
     contextProvenance: null,
     errorMessage,
   };
@@ -159,13 +124,10 @@ export function buildRunPlaybackPanelViewModel(
   const summary = buildSummary(response);
   const timeline = buildTimelineItems(response);
   const artifacts = buildArtifactItems(response);
-  const multiAgent = buildMultiAgentViewModel(response);
   const contextProvenance = buildContextProvenanceViewModel(response?.context_ref);
   const hasContent =
     timeline.length > 0 ||
     artifacts.length > 0 ||
-    multiAgent.counts.length > 0 ||
-    multiAgent.steps.length > 0 ||
     contextProvenance !== null;
 
   return {
@@ -173,7 +135,6 @@ export function buildRunPlaybackPanelViewModel(
     summary,
     timeline,
     artifacts,
-    multiAgent,
     contextProvenance,
     errorMessage: null,
   };
@@ -350,25 +311,6 @@ function buildArtifactItems(
   }));
 }
 
-function buildMultiAgentViewModel(
-  response: RunPlaybackResponse | null | undefined,
-): RunPlaybackMultiAgentViewModel {
-  const multiAgent = response?.multi_agent;
-  if (!multiAgent) {
-    return EMPTY_MULTI_AGENT;
-  }
-
-  return {
-    counts: MULTI_AGENT_COUNT_ORDER.flatMap((label) => {
-      const value = multiAgent.counts?.[label];
-      return typeof value === "number" && value > 0 ? [{ label, value }] : [];
-    }),
-    steps: (multiAgent.steps ?? []).map((step, index) =>
-      buildStepItem(step, index),
-    ),
-  };
-}
-
 function buildContextProvenanceViewModel(
   contextRef: RunPlaybackContextRef | null | undefined,
 ): RunPlaybackContextProvenanceViewModel | null {
@@ -415,22 +357,6 @@ function countItem(
   value: number | undefined,
 ): RunPlaybackCountItem | null {
   return typeof value === "number" && value > 0 ? { label, value } : null;
-}
-
-function buildStepItem(
-  step: RunPlaybackStep,
-  index: number,
-): RunPlaybackStepItem {
-  return {
-    id: step.step_id ?? step.id ?? String(step.sequence ?? index),
-    label: getStepLabel(step),
-    role: step.role ?? null,
-    kind: step.step_kind ?? null,
-    status: getStepStatus(step.status),
-    sequence: toNullableNumber(step.sequence),
-    startedAt: step.started_at ?? null,
-    finishedAt: step.finished_at ?? null,
-  };
 }
 
 function getEventStatus(event: RunPlaybackEvent): RunPlaybackDisplayStatus {

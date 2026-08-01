@@ -74,6 +74,10 @@ from app.required_tool_contract import (
     declaration_from_input,
     public_required_tool_detail,
 )
+from app.run_admission_policy import (
+    PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+    contains_platform_multi_agent_control,
+)
 from app.settings import get_settings
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
@@ -846,18 +850,11 @@ def _file_ids_from_request(request: ChatStreamRequest) -> list[str]:
 
 
 def _has_legacy_client_mcp_selector(value: object) -> bool:
-    """Reject client-owned nested MCP selectors; Chat accepts the structured field only."""
+    """Reject client-owned MCP selectors; Chat accepts the structured field only."""
 
     if not isinstance(value, dict):
         return False
-    if "mcp_tool_ids" in value or "mcpToolIds" in value:
-        return True
-    steps = value.get("multi_agent_steps")
-    return isinstance(steps, list) and any(
-        isinstance(step, dict)
-        and ("mcp_tool_ids" in step or "mcpToolIds" in step)
-        for step in steps
-    )
+    return "mcp_tool_ids" in value or "mcpToolIds" in value
 
 
 def _requested_model_selection(request: ChatStreamRequest) -> dict[str, str] | None:
@@ -1250,6 +1247,20 @@ async def chat_stream(
                 return _chat_stream_response_from_submission(existing_submission_row)
             if fingerprint_matches:
                 return _chat_stream_response_from_submission(existing_submission_row)
+    if contains_platform_multi_agent_control(request.input):
+        code = PLATFORM_MULTI_AGENT_NOT_SUPPORTED
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request=request,
+            query_agent_id=query_agent_id,
+            workspace_id=request.workspace_id,
+            session_id=request.session_id,
+            code=code,
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=400, code=code)
+        raise HTTPException(status_code=400, detail=code)
     execution_polarity = classify_execution_polarity(request.message)
     selected_agent_profile = request.selected_agent_profile
     allowed = execution_polarity != "non_execution" or selected_agent_profile is not None

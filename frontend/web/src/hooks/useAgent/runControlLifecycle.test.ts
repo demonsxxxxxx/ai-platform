@@ -90,7 +90,6 @@ async function refreshAfterCancel(playbackStatus: string) {
         events: [],
         artifacts: [],
         steps: [],
-        multi_agent: null,
       }),
     )) as typeof fetch;
   lifecycle.configure({
@@ -128,7 +127,6 @@ async function refreshReload(playbackStatus: string) {
         events: [],
         artifacts: [],
         steps: [],
-        multi_agent: null,
       }),
     )) as typeof fetch;
   lifecycle.configure({
@@ -308,7 +306,6 @@ test("RunControlLifecycle reload resolves the persisted operation without inferr
         events: [],
         artifacts: [],
         steps: [],
-        multi_agent: null,
       }),
     )) as typeof fetch;
   first.configure({
