@@ -20,18 +20,6 @@ export interface MessageAttachment {
   isUploading?: boolean;
 }
 
-// Upload state for tracking progress
-export interface UploadState {
-  id: string;
-  file: File;
-  progress: number;
-  loaded: number;
-  total: number;
-  status: "pending" | "uploading" | "completed" | "error";
-  attachment?: MessageAttachment;
-  error?: string;
-}
-
 export interface UploadConfig {
   enabled: boolean;
   provider?: string;
@@ -51,14 +39,4 @@ export interface UploadResult {
   type: FileCategory;
   mimeType: string;
   size: number;
-}
-
-export interface FileCheckResult {
-  exists: boolean;
-  key?: string;
-  url?: string;
-  name?: string;
-  type?: FileCategory;
-  mimeType?: string;
-  size?: number;
 }
