@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v1",
   "expires_on": "2026-08-15",
   "owner": "ai-platform-governance",
-  "reason": "Issue #772 atomically retires deterministic unreachable and obsolete tombstones against stacked base a07e3c594a178d797a69dfc7ce5cfd7ff1a732c9. The exact candidate currently spans 72 behavior production files and 12 classifier subsystems with production net LOC -8032. This temporary exception exempts only production_file_count and production_subsystem_count; Ruff, net-LOC, hot-file, and test requirements remain enforced. Remove this exception immediately after the PR merges to restore the normal governance contract.",
+  "reason": "Issue #772 atomically retires deterministic unreachable and obsolete tombstones against stacked base a07e3c594a178d797a69dfc7ce5cfd7ff1a732c9. The exact candidate currently spans 83 behavior production files and 12 classifier subsystems with production net LOC -10616. This temporary exception exempts only production_file_count and production_subsystem_count; Ruff, net-LOC, hot-file, and test requirements remain enforced. Remove this exception immediately after the PR merges to restore the normal governance contract.",
   "violations": [
     {
       "code": "production_file_count",
