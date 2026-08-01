@@ -345,6 +345,46 @@
   }
 }
 
+/* Public shared-session scroll progress */
+.share-scroll-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 100;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    #d97706,
+    #f59e0b,
+    #fbbf24,
+    #e879f9,
+    #f59e0b,
+    #d97706
+  );
+  background-size: 400% 100%;
+  opacity: 0.7;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.3);
+  transition: width 0.1s linear;
+  animation: share-scroll-progress-shimmer 8s ease infinite;
+}
+
+@keyframes share-scroll-progress-shimmer {
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    background-position: 300% 0%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .share-scroll-progress {
+    background: linear-gradient(90deg, #f59e0b, #d97706);
+    opacity: 0.5;
+    animation: none !important;
+  }
+}
+
 /* Desktop modal - centered */
 @media (min-width: 640px) {
   .modal-bottom-sheet {
