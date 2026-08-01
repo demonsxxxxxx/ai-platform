@@ -35,6 +35,7 @@ _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
     ".codex/tmp/",
     ".codex/skills/",
+    ".superpowers/sdd/",
     "assets/ai-platform-architecture-illustrations/",
     "assets/multi-agent-architecture-illustrations/",
     "docs/",

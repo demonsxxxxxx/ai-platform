@@ -100,6 +100,7 @@ def test_runtime_affecting_dirty_paths_ignore_local_agent_artifacts_but_keep_run
                 stdout=(
                     "?? .codex/tmp/ai-platform-source.tar.gz\n"
                     "?? .codex/skills/local-only/SKILL.md\n"
+                    "?? .superpowers/sdd/review.diff\n"
                     " M app/worker.py\n"
                     " M docs/notes.md\n"
                 ),
@@ -118,6 +119,7 @@ def test_runtime_affecting_dirty_paths_ignore_local_agent_artifacts_but_keep_run
     assert foundation_alpha_readiness._resolve_source_tree_dirty_paths() == [
         ".codex/tmp/ai-platform-source.tar.gz",
         ".codex/skills/local-only/SKILL.md",
+        ".superpowers/sdd/review.diff",
         "app/worker.py",
         "docs/notes.md",
     ]
