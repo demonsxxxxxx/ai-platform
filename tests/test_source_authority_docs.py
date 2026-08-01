@@ -939,7 +939,6 @@ def test_gitignore_excludes_real_env_variants_but_not_templates():
         ".ai-platform-source-snapshot.json",
         ".codex/tmp/",
         ".codex/skills/",
-        ".superpowers/sdd/",
     }
 
     assert required_patterns.issubset(gitignore_lines)

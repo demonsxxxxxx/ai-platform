@@ -6,6 +6,10 @@ This board is a branch-local coordination ledger for parallel Codex sessions in
 the `ai-platform` repository. It is not PRD closure evidence, runtime evidence,
 or a substitute for issue, PR, review, merge, or 211 verification.
 
+Historical-path note: the `docs/superpowers/...` files named in the 2026-07-05
+write-scope record below have since been removed from the repository. The paths
+remain in this ledger only to preserve that session's original historical scope.
+
 ## Status
 
 - [x] B4 pinned snapshot worker row claimed for this branch.
