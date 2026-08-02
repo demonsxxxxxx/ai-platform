@@ -166,9 +166,6 @@ Static audit on 2026-06-07:
   admin projection boundary, route scope, and required remap/hide action. This
   narrows the G6/G9 gap from missing route mapping to active route enforcement
   plus inactive legacy source remap.
-- The legacy Memory CRUD client and its barrel export are retired. The active
-  `/memory` workbench uses named, governed ai-platform APIs under
-  `/api/ai/memory/*`, plus role-gated `/api/ai/admin/memory/*` projections.
 - `frontend/web/src/services/api/runPlayback.ts`,
   `frontend/web/src/services/api/memory.ts`,
   `frontend/web/src/hooks/useAgent/eventProcessor.ts`, and artifact/reveal
@@ -188,6 +185,12 @@ Static audit on 2026-06-07:
   not satisfy the recorded capacity-evidence gate or close G6/G9 because
   load-test evidence, legacy route remap, and packaged frontend image
   delivery/release acceptance remain open.
+
+Retirement update on 2026-08-02:
+
+- The legacy Memory CRUD client and its barrel export are retired.
+- The active `/memory` workbench uses named, governed ai-platform APIs under
+  `/api/ai/memory/*`, plus role-gated `/api/ai/admin/memory/*` projections.
 
 Remaining audit risks:
 
