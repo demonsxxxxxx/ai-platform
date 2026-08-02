@@ -49,6 +49,12 @@ def test_governance_readiness_import_is_runtime_dependency_neutral():
     assert result.returncode == 0, result.stderr
 
 
+def test_runtime211_base_url_setting_stays_retired():
+    from app.settings import Settings
+
+    assert "runtime_211_base_url" not in Settings.model_fields
+
+
 def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets():
     readiness = build_governance_readiness(
         SecretBearingSettings(),
@@ -415,17 +421,21 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "frontend_active_legacy_route_policy_audit" in domains["frontend_projection"]["implemented"]
     assert "frontend_active_browser_projection_audit_clear" in domains["frontend_projection"]["implemented"]
     assert "frontend_run_playback_context_provenance_projection" in domains["frontend_projection"]["implemented"]
-    assert "inactive_legacy_secret_like_frontend_sources_quarantined" in domains["frontend_projection"]["implemented"]
+    assert "legacy_model_admin_client_retired" in domains["frontend_projection"]["implemented"]
+    assert "frontend_quarantined_legacy_source_violations_clear" in domains["frontend_projection"]["implemented"]
+    assert "inactive_legacy_secret_like_frontend_sources_quarantined" not in domains["frontend_projection"]["implemented"]
     assert "frontend_profile_envvar_surface_fail_closed" in domains["frontend_projection"]["implemented"]
     assert "admin_runtime_capacity_governance_frontend_section" in domains["frontend_projection"]["implemented"]
     assert "admin_runtime_211_frontend_acceptance" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_blocker_traceability" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_definition_traceability" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_ci_build_provenance_contract" in domains["frontend_projection"]["implemented"]
-    assert "ordinary_user_g9_acceptance_for_legacy_admin_model_envvar_routes" in domains["frontend_projection"]["gaps"]
+    assert "ordinary_user_g9_acceptance_for_active_envvar_and_roles_routes" in domains["frontend_projection"]["gaps"]
+    assert "inactive_legacy_channel_and_admin_sources_need_policy_or_projection_remap" in domains["frontend_projection"]["gaps"]
+    assert "ordinary_user_g9_acceptance_for_legacy_admin_model_envvar_routes" not in domains["frontend_projection"]["gaps"]
     assert "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes" not in domains["frontend_projection"]["gaps"]
     assert "active_envvar_profile_surface_needs_policy_or_projection_remap" not in domains["frontend_projection"]["gaps"]
-    assert "quarantined_legacy_frontend_sources_need_projection_remap" in domains["frontend_projection"]["gaps"]
+    assert "quarantined_legacy_frontend_sources_need_projection_remap" not in domains["frontend_projection"]["gaps"]
     assert "frontend_packaged_image_delivery_and_release_acceptance" in domains["frontend_projection"]["gaps"]
     assert "frontend_packaged_image_release_trace_to_backend_worker_commit" not in domains["frontend_projection"]["gaps"]
     assert "admin_runtime_211_visual_acceptance" not in domains["frontend_projection"]["gaps"]
@@ -433,7 +443,10 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "add and verify the packaged frontend image definition before release acceptance" not in domains["frontend_projection"]["next_checks"]
     assert "verify the packaged frontend image on a Docker-capable host before release acceptance" in domains["frontend_projection"]["next_checks"]
     assert "enforce frontend checks in CI before closing source ownership" not in domains["frontend_projection"]["next_checks"]
-    assert "hide or policy-gate remaining legacy admin/model/envvar/channel surfaces for ordinary users" in domains["frontend_projection"]["next_checks"]
+    assert "policy-gate or remap active /api/env-vars and /api/roles routes before ordinary-user G9 acceptance" in domains["frontend_projection"]["next_checks"]
+    assert "remove, remap, or keep fail-closed the remaining inactive channel/admin compatibility sources before release" in domains["frontend_projection"]["next_checks"]
+    assert not any("model" in check.lower() for check in domains["frontend_projection"]["next_checks"])
+    assert not any("quarantin" in check.lower() for check in domains["frontend_projection"]["next_checks"])
     assert not any("MCP" in check for check in domains["frontend_projection"]["next_checks"])
     projection_evidence = domains["frontend_projection"]["evidence"]["projection_audit"]
     packaged_contract = domains["frontend_projection"]["evidence"]["packaged_runtime_smoke_contract"]
