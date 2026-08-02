@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -7,6 +8,7 @@ import time
 from tools.frontend_projection_audit import (
     LEGACY_ROUTE_POLICY_MAP,
     SAFE_PUBLIC_ROUTE_PREFIXES,
+    _resolve_relative_module,
     build_frontend_projection_audit,
     render_frontend_projection_audit_markdown,
 )
@@ -193,6 +195,101 @@ def test_frontend_projection_audit_returns_without_scan_timeout():
 
     assert audit["schema_version"] == "ai-platform.frontend-projection-audit.v1"
     assert time.perf_counter() - started < 25
+
+
+def test_frontend_projection_audit_uses_vite_order_across_hash_seeds(
+    tmp_path,
+):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text(
+        'import "./dual.tsx";\nimport "./directory";\n',
+        encoding="utf-8",
+    )
+    (source_root / "dual.tsx").write_text(
+        'import "./dual";\nexport const safeRoute = "/api/skills";\n',
+        encoding="utf-8",
+    )
+    (source_root / "dual.ts").write_text(
+        'export const legacyRoute = "/api/env-vars";\n',
+        encoding="utf-8",
+    )
+    directory = source_root / "directory"
+    directory.mkdir()
+    (directory / "index.js").write_text(
+        'export const vitePreferredRoute = "/api/github";\n',
+        encoding="utf-8",
+    )
+    (directory / "index.ts").write_text(
+        'export const lowerPriorityRoute = "/api/roles";\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _resolve_relative_module(source_root / "dual.tsx", "./dual") == (
+        source_root / "dual.ts"
+    ).resolve()
+    assert _resolve_relative_module(source_root / "main.tsx", "./directory") == (
+        directory / "index.js"
+    ).resolve()
+
+    repo_root = Path(__file__).resolve().parents[1]
+    probe = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from tools.frontend_projection_audit import build_frontend_projection_audit\n"
+        "audit = build_frontend_projection_audit(Path(sys.argv[1]))\n"
+        "print(json.dumps({\n"
+        "  'files': audit['active_browser_entry']['files'],\n"
+        "  'route_inventory': audit['active_browser_entry']['route_inventory'],\n"
+        "  'open_gaps': audit['open_gaps'],\n"
+        "}, sort_keys=True))\n"
+    )
+    results = []
+    for seed in ("0", "1", "2", "3", "42", "123"):
+        env = os.environ.copy()
+        env["PYTHONHASHSEED"] = seed
+        completed = subprocess.run(
+            [sys.executable, "-c", probe, str(tmp_path)],
+            cwd=repo_root,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results.append(json.loads(completed.stdout))
+
+    assert results == [results[0]] * len(results)
+    assert results[0]["files"] == [
+        "frontend/web/src/directory/index.js",
+        "frontend/web/src/dual.ts",
+        "frontend/web/src/dual.tsx",
+        "frontend/web/src/main.tsx",
+    ]
+    active_routes = results[0]["route_inventory"]
+    assert [
+        item["route_prefix"]
+        for item in active_routes["safe_public_projection_routes"]
+    ] == ["/api/github", "/api/skills"]
+    assert [
+        item["route_prefix"]
+        for item in active_routes["legacy_policy_required_routes"]
+    ] == ["/api/env-vars"]
+    assert results[0]["open_gaps"] == [
+        "legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+        "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+        "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+    ]
 
 
 def test_frontend_projection_audit_detects_private_payload_consumption(tmp_path):
