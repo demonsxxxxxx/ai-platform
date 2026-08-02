@@ -455,7 +455,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert projection_evidence["status"] == "pass_with_policy_gaps"
     assert projection_evidence["summary"]["active_forbidden_projection_violations"] == 0
     assert projection_evidence["summary"]["active_legacy_route_policies"] >= 1
-    assert projection_evidence["summary"]["quarantined_legacy_source_violations"] >= 1
+    assert projection_evidence["summary"]["quarantined_legacy_source_violations"] == 0
     gap_details = {item["gap"]: item for item in projection_evidence["open_gap_details"]}
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in gap_details
     active_legacy_routes = {
@@ -466,8 +466,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     }
     assert "/api/mcp" not in active_legacy_routes
     assert "/api/admin/mcp" not in active_legacy_routes
-    assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in gap_details
-    assert gap_details["quarantined_legacy_sources_need_ai_platform_projection_remap"]["sample_violations"]
+    assert "quarantined_legacy_sources_need_ai_platform_projection_remap" not in gap_details
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "callback-secret" not in serialized
