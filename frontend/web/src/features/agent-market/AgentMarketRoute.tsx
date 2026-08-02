@@ -214,7 +214,7 @@ function useAgentMarketConversationAdmission() {
   const [creating, setCreating] = useState(false);
   const [admissionError, setAdmissionError] = useState<ConversationAdmissionError | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
