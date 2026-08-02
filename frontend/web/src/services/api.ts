@@ -42,7 +42,6 @@ export {
   type SessionInputFile,
   type SessionInputFilesResponse,
 } from "./api/session";
-export { modelApi } from "./api/model";
 export { skillApi } from "./api/skill";
 export { workbenchApi } from "./api/workbench";
 export { mcpApi } from "./api/mcp";
