@@ -9,7 +9,9 @@ from typing import Any
 SCHEMA_VERSION = "ai-platform.frontend-projection-audit.v1"
 FRONTEND_PATH = Path("frontend/web")
 SOURCE_ROOT = FRONTEND_PATH / "src"
-SOURCE_SUFFIXES = {".ts", ".tsx", ".js", ".jsx"}
+# Vite's default resolve.extensions order, limited to the source types audited
+# here. TypeScript bundler resolution also resolves .ts before .tsx.
+SOURCE_SUFFIXES = (".js", ".ts", ".jsx", ".tsx")
 
 FORBIDDEN_PRIVATE_TERMS = [
     ".claude",
@@ -269,8 +271,8 @@ def _resolve_relative_module(path: Path, specifier: str) -> Path | None:
         if candidate.is_file():
             return candidate
     if base.is_dir():
-        for name in ("index.tsx", "index.ts", "index.jsx", "index.js"):
-            candidate = base / name
+        for suffix in SOURCE_SUFFIXES:
+            candidate = base / f"index{suffix}"
             if candidate.is_file():
                 return candidate
     return None
@@ -1113,7 +1115,6 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
         gated_files=active_gated_files,
         requested_symbols_by_path=active_requested_symbols_by_path,
     )
-    legacy_routes = route_inventory["legacy_policy_required_routes"]
     legacy_route_policies = route_inventory["legacy_route_policies"]
     active_legacy_route_policies = active_route_inventory["legacy_route_policies"]
     ordinary_user_reachable_active_legacy_route_policies = active_route_inventory[
