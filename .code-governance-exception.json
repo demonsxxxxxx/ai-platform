@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v1",
   "expires_on": "2026-08-15",
   "owner": "ai-platform-governance",
-  "reason": "Issue #772 atomically retires deterministic unreachable and obsolete tombstones against stacked base a07e3c594a178d797a69dfc7ce5cfd7ff1a732c9. The exact candidate currently spans 83 behavior production files and 12 classifier subsystems with production net LOC -10616. This temporary exception exempts only production_file_count and production_subsystem_count; Ruff, net-LOC, hot-file, and test requirements remain enforced. Remove this exception immediately after the PR merges to restore the normal governance contract.",
+  "reason": "PR #771 is the atomic retirement integration scope, including #770 and #772, measured over immutable authority 475197b77bb66b3f531f9a2c071ea837c5d08947 to a2f2118afe14ac5634f8d90ca78556f0f467be45. The exact report covers 95 behavior production files, 13 classifier subsystems, production net LOC -11306, 147 changed files, and 36 test files. This temporary exception exempts only production_file_count and production_subsystem_count; all other governance requirements remain enforced. PR #775 will remove this exception immediately after the integration merges.",
   "violations": [
     {
       "code": "production_file_count",
