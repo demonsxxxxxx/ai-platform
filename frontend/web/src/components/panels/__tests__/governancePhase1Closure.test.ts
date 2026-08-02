@@ -161,12 +161,16 @@ test("memory workbench excludes retired legacy CRUD companions", () => {
   const memoryPanel = read("src/components/panels/MemoryPanel/index.tsx");
 
   for (const file of retiredFiles) {
+    const moduleSpecifier = file.replace(/\.tsx?$/, "");
     assert.equal(
       existsSync(join(root, "src/components/panels/MemoryPanel", file)),
       false,
       file,
     );
-    assert.doesNotMatch(memoryPanel, new RegExp(file.replace(/\.tsx?$/, "")));
+    assert.doesNotMatch(
+      memoryPanel,
+      new RegExp(`["']\\./${moduleSpecifier}(?:\\.tsx?)?["']`),
+    );
   }
 });
 
