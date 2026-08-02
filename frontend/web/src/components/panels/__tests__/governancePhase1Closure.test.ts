@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -126,8 +126,6 @@ test("authenticated admin surfaces avoid legacy glass and heavy modal styling", 
   const activeSurfaceFiles = [
     "src/components/panels/RolesPanel.tsx",
     "src/components/panels/MemoryPanel/index.tsx",
-    "src/components/panels/MemoryPanel/MemoryFilter.tsx",
-    "src/components/panels/MemoryPanel/MemoryEditor.tsx",
     "src/components/common/ConfirmDialog.tsx",
     "src/components/common/AboutDialog.tsx",
     "src/components/common/ContactAdminDialog.tsx",
@@ -148,6 +146,27 @@ test("authenticated admin surfaces avoid legacy glass and heavy modal styling", 
       /bg-\[var\(--glass-bg(?:-subtle|-hover)?\)\]/,
       path,
     );
+  }
+});
+
+test("memory workbench excludes retired legacy CRUD companions", () => {
+  const retiredFiles = [
+    "DeleteModal.tsx",
+    "DetailModal.tsx",
+    "MemoryEditor.tsx",
+    "MemoryFilter.tsx",
+    "constants.ts",
+    "useRelativeTime.ts",
+  ];
+  const memoryPanel = read("src/components/panels/MemoryPanel/index.tsx");
+
+  for (const file of retiredFiles) {
+    assert.equal(
+      existsSync(join(root, "src/components/panels/MemoryPanel", file)),
+      false,
+      file,
+    );
+    assert.doesNotMatch(memoryPanel, new RegExp(file.replace(/\.tsx?$/, "")));
   }
 });
 
