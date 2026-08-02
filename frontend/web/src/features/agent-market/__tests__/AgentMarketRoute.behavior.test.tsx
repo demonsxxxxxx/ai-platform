@@ -964,6 +964,22 @@ test("Marketplace card admission is single-flight and ignores a late response af
     });
     assert.equal(currentPath, "/agent-market/agt_card/3");
     assert.ok(container.querySelector("[data-agent-market-detail]"));
+    const detailStart = container
+      .querySelectorAll("button")
+      .find((button) => button.hasAttribute("data-agent-market-start-chat"));
+    assert.ok(detailStart);
+    assert.equal(
+      detailStart.hasAttribute("disabled"),
+      true,
+      "the replacement detail must share the catalog's outstanding admission",
+    );
+    await React.act(async () => {
+      detailStart.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.deepEqual(selections, [
+      { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+    ]);
 
     await React.act(async () => {
       resolveAdmission?.({
@@ -985,6 +1001,14 @@ test("Marketplace card admission is single-flight and ignores a late response af
     });
     assert.equal(currentPath, "/agent-market/agt_card/3");
     assert.equal(container.querySelector("[data-agent-workspace]"), null);
+    assert.equal(
+      container
+        .querySelectorAll("button")
+        .find((button) => button.hasAttribute("data-agent-market-start-chat"))
+        ?.hasAttribute("disabled"),
+      false,
+      "the current detail can request admission after the stale request settles",
+    );
   } finally {
     agentProfileApi.listPublished = originalListPublished;
     agentProfileApi.getPublished = originalGetPublished;
@@ -994,7 +1018,7 @@ test("Marketplace card admission is single-flight and ignores a late response af
   }
 });
 
-test("Marketplace releases an invalidated card admission so the replacement card owns navigation", async () => {
+test("Marketplace holds an invalidated card admission until the replacement can safely reapply", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
@@ -1121,11 +1145,15 @@ test("Marketplace releases an invalidated card admission so the replacement card
       primaryAction().dispatchEvent({ type: "click", bubbles: true });
       await Promise.resolve();
     });
+    assert.equal(
+      primaryAction().hasAttribute("disabled"),
+      true,
+      "the replacement card must remain blocked until the first admission settles",
+    );
     assert.deepEqual(selections, [
       { agent_id: profileA.agent_id, expected_revision: profileA.expected_revision },
-      { agent_id: profileB.agent_id, expected_revision: profileB.expected_revision },
     ]);
-    assert.ok(resolveB);
+    assert.equal(resolveB, null);
 
     await React.act(async () => {
       resolveA?.(sessionFor(profileA, "session-a"));
@@ -1134,7 +1162,21 @@ test("Marketplace releases an invalidated card admission so the replacement card
     });
     assert.equal(currentPath, "/agent-market");
     assert.equal(container.querySelector("[data-agent-workspace]"), null);
-    assert.equal(primaryAction().hasAttribute("disabled"), true);
+    assert.equal(
+      primaryAction().hasAttribute("disabled"),
+      false,
+      "the current replacement can request admission after the stale request settles",
+    );
+
+    await React.act(async () => {
+      primaryAction().dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.deepEqual(selections, [
+      { agent_id: profileA.agent_id, expected_revision: profileA.expected_revision },
+      { agent_id: profileB.agent_id, expected_revision: profileB.expected_revision },
+    ]);
+    assert.ok(resolveB);
 
     await React.act(async () => {
       resolveB?.(sessionFor(profileB, "session-b"));
@@ -1144,6 +1186,164 @@ test("Marketplace releases an invalidated card admission so the replacement card
     assert.equal(currentPath, "/agent-market/agt_b/4/chat/session-b");
   } finally {
     agentProfileApi.listPublished = originalListPublished;
+    agentProfileApi.createConversation = originalCreateConversation;
+    shellHarness.restore();
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("Marketplace detail admission stays route-scoped after returning to the catalog", async () => {
+  const dom = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
+  const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const shellHarness = await prepareShellHarness();
+  const profile: AgentProfilePublicProjection = {
+    agent_id: "agt_detail",
+    expected_revision: 5,
+    name: "详情智能体",
+    description: "从详情发起的公开智能体。",
+    avatar_ref: "builtin:assistant",
+    category: "support",
+  };
+  const originalListPublished = agentProfileApi.listPublished;
+  const originalGetPublished = agentProfileApi.getPublished;
+  const originalCreateConversation = agentProfileApi.createConversation;
+  const selections: unknown[] = [];
+  const resolvers: Array<(value: Awaited<ReturnType<typeof agentProfileApi.createConversation>>) => void> = [];
+  agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
+  agentProfileApi.getPublished = async () => profile;
+  agentProfileApi.createConversation = async (selection) => {
+    selections.push(selection);
+    return new Promise((resolve) => {
+      resolvers.push(resolve);
+    });
+  };
+  const sessionFor = (sessionId: string) => ({
+    session_id: sessionId,
+    workspace_id: "default",
+    agent_id: profile.agent_id,
+    title: profile.name,
+    agent_conversation: {
+      agent_id: profile.agent_id,
+      revision: profile.expected_revision,
+      name: profile.name,
+      description: profile.description,
+      avatar_ref: profile.avatar_ref,
+      category: profile.category,
+    },
+  });
+  let currentPath = "";
+  function LocationProbe() {
+    currentPath = useLocation().pathname;
+    return null;
+  }
+  const container = dom.document.createElement("div");
+  const root = ReactDOM.createRoot(container as never);
+  const catalogPrimary = () => {
+    const action = container
+      .querySelectorAll("button")
+      .find((button) => button.hasAttribute("data-agent-market-open-workspace"));
+    assert.ok(action);
+    return action;
+  };
+
+  try {
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: ["/agent-market/agt_detail/5"] },
+          shellHarness.wrap(
+            React.createElement(
+              React.Fragment,
+              null,
+              React.createElement(LocationProbe),
+              React.createElement(
+                Routes,
+                null,
+                React.createElement(Route, {
+                  path: "/agent-market",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+                React.createElement(Route, {
+                  path: "/agent-market/:agentId/:revision",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+                React.createElement(Route, {
+                  path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+                  element: React.createElement("div", { "data-agent-workspace": true }),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const startChat = container
+      .querySelectorAll("button")
+      .find((button) => button.hasAttribute("data-agent-market-start-chat"));
+    assert.ok(startChat);
+    await React.act(async () => {
+      startChat.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.deepEqual(selections, [
+      { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+    ]);
+    assert.equal(startChat.hasAttribute("disabled"), true);
+
+    const returnToCatalog = container
+      .querySelectorAll("button")
+      .find((button) => button.getAttribute("aria-label") === "返回智能体市场");
+    assert.ok(returnToCatalog);
+    await React.act(async () => {
+      returnToCatalog.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market");
+    assert.equal(catalogPrimary().hasAttribute("disabled"), true);
+
+    await React.act(async () => {
+      catalogPrimary().dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.deepEqual(selections, [
+      { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+    ]);
+
+    await React.act(async () => {
+      resolvers[0]?.(sessionFor("session-detail-late"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market");
+    assert.equal(container.querySelector("[data-agent-workspace]"), null);
+    assert.equal(catalogPrimary().hasAttribute("disabled"), false);
+
+    await React.act(async () => {
+      catalogPrimary().dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.deepEqual(selections, [
+      { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+      { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+    ]);
+
+    await React.act(async () => {
+      resolvers[1]?.(sessionFor("session-current"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market/agt_detail/5/chat/session-current");
+  } finally {
+    agentProfileApi.listPublished = originalListPublished;
+    agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.createConversation = originalCreateConversation;
     shellHarness.restore();
     await React.act(async () => root.unmount());
