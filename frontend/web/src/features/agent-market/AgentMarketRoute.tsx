@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Bot, FileText, Headphones, MessageCircle, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -728,7 +728,7 @@ export function AgentMarketRoute() {
   const routeKey = isDetailRoute ? detailKey : catalogKey;
   const routeKeyRef = useRef(routeKey);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (routeKeyRef.current === routeKey) return;
     routeKeyRef.current = routeKey;
     invalidateNavigation();

@@ -1018,6 +1018,170 @@ test("Marketplace card admission is single-flight and ignores a late response af
   }
 });
 
+test("Marketplace invalidates an externally replaced route before a deferred admission resolves", async () => {
+  const dom = installDom();
+  const { flushSync } = await import("react-dom");
+  const ReactDOM = await import("react-dom/client");
+  const { Route, Router, Routes, useLocation } = await import("react-router-dom");
+  const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const shellHarness = await prepareShellHarness();
+  const profileA: AgentProfilePublicProjection = {
+    agent_id: "agt_history_a",
+    expected_revision: 3,
+    name: "历史智能体 A",
+    description: "外部路由替换前的智能体。",
+    avatar_ref: "builtin:assistant",
+    category: "support",
+  };
+  const profileB: AgentProfilePublicProjection = {
+    agent_id: "agt_history_b",
+    expected_revision: 4,
+    name: "历史智能体 B",
+    description: "外部路由替换后的智能体。",
+    avatar_ref: "builtin:document",
+    category: "operations",
+  };
+  const originalListPublished = agentProfileApi.listPublished;
+  const originalGetPublished = agentProfileApi.getPublished;
+  const originalCreateConversation = agentProfileApi.createConversation;
+  const selections: unknown[] = [];
+  const pushedPaths: string[] = [];
+  let resolveAdmission: ((value: Awaited<ReturnType<typeof agentProfileApi.createConversation>>) => void) | null = null;
+  agentProfileApi.listPublished = async () => ({ agent_profiles: [profileA] });
+  agentProfileApi.getPublished = async () => profileB;
+  agentProfileApi.createConversation = async (selection) => {
+    selections.push(selection);
+    return new Promise((resolve) => {
+      resolveAdmission = resolve;
+    });
+  };
+  const staleSession = {
+    session_id: "session-history-a",
+    workspace_id: "default",
+    agent_id: profileA.agent_id,
+    title: profileA.name,
+    agent_conversation: {
+      agent_id: profileA.agent_id,
+      revision: profileA.expected_revision,
+      name: profileA.name,
+      description: profileA.description,
+      avatar_ref: profileA.avatar_ref,
+      category: profileA.category,
+    },
+  };
+  let currentPath = "";
+  function HistoryDriver() {
+    const location = useLocation();
+    currentPath = location.pathname;
+    React.useLayoutEffect(() => {
+      if (location.pathname === "/agent-market/agt_history_b/4") {
+        resolveAdmission?.(staleSession);
+      }
+    }, [location.pathname]);
+    return null;
+  }
+  const locationFor = (pathname: string) => ({
+    hash: "",
+    key: pathname,
+    pathname,
+    search: "",
+    state: null,
+  });
+  const pathFor = (to: unknown) =>
+    typeof to === "string"
+      ? to
+      : (to as { hash?: string; pathname?: string; search?: string }).pathname ?? "";
+  const encodeLocation = (to: unknown) => {
+    if (typeof to === "string") {
+      return { hash: "", pathname: to, search: "" };
+    }
+    const path = to as { hash?: string; pathname?: string; search?: string };
+    return {
+      hash: path.hash ?? "",
+      pathname: path.pathname ?? "",
+      search: path.search ?? "",
+    };
+  };
+  const historyNavigator = {
+    createHref: pathFor,
+    encodeLocation,
+    go: () => {},
+    push: (to: unknown) => pushedPaths.push(pathFor(to)),
+    replace: (to: unknown) => pushedPaths.push(pathFor(to)),
+  };
+  const container = dom.document.createElement("div");
+  const root = ReactDOM.createRoot(container as never);
+  const renderRoute = (location: ReturnType<typeof locationFor>) =>
+    React.createElement(
+      Router,
+      { location, navigator: historyNavigator },
+      shellHarness.wrap(
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(HistoryDriver),
+          React.createElement(
+            Routes,
+            null,
+            React.createElement(Route, {
+              path: "/agent-market",
+              element: React.createElement(AgentMarketRoute),
+            }),
+            React.createElement(Route, {
+              path: "/agent-market/:agentId/:revision",
+              element: React.createElement(AgentMarketRoute),
+            }),
+            React.createElement(Route, {
+              path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+              element: React.createElement("div", { "data-agent-workspace": true }),
+            }),
+          ),
+        ),
+      ),
+    );
+
+  try {
+    await React.act(async () => {
+      root.render(renderRoute(locationFor("/agent-market")));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const primaryAction = container
+      .querySelectorAll("button")
+      .find((button) => button.hasAttribute("data-agent-market-open-workspace"));
+    assert.ok(primaryAction);
+    await React.act(async () => {
+      primaryAction.dispatchEvent({ type: "click", bubbles: true });
+      primaryAction.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.deepEqual(selections, [
+      { agent_id: profileA.agent_id, expected_revision: profileA.expected_revision },
+    ]);
+    assert.ok(resolveAdmission);
+
+    flushSync(() => {
+      root.render(renderRoute(locationFor("/agent-market/agt_history_b/4")));
+    });
+    await Promise.resolve();
+
+    assert.deepEqual(selections, [
+      { agent_id: profileA.agent_id, expected_revision: profileA.expected_revision },
+    ]);
+    assert.equal(currentPath, "/agent-market/agt_history_b/4");
+    assert.deepEqual(pushedPaths, []);
+    assert.equal(container.querySelector("[data-agent-workspace]"), null);
+  } finally {
+    agentProfileApi.listPublished = originalListPublished;
+    agentProfileApi.getPublished = originalGetPublished;
+    agentProfileApi.createConversation = originalCreateConversation;
+    shellHarness.restore();
+    await React.act(async () => root.unmount());
+  }
+});
+
 test("Marketplace holds an invalidated card admission until the replacement can safely reapply", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
