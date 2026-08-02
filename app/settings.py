@@ -23,7 +23,6 @@ class Settings(BaseSettings):
     s3_bucket: str = Field(default="ai-platform-artifacts")
     s3_region: str = Field(default="us-east-1")
 
-    runtime_211_base_url: str = Field(default="")
     sandbox_workspace_root: str = Field(default="/tmp/ai-platform-sandbox-workspaces")
     sandbox_container_provider: str = Field(default="fake")
     sandbox_security_profile: Literal["governed", "trusted_internal"] = Field(default="governed")
