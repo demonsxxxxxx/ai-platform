@@ -1,11 +1,9 @@
-from app.executors.runtime211 import Runtime211RunPayload
 from app.main import create_app
 from app.executors.base import RunPayload
 from app.models import AgentApp, CreateRunRequest, QueueRunPayload, SkillDefinition
 from app.control_plane_contracts import sanitize_public_payload
 from app.repositories import new_id
 from fastapi.testclient import TestClient
-import os
 
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
@@ -73,29 +71,6 @@ def test_health_reports_dynamic_runtime_commit(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "runtime_commit": commit}
-
-
-def test_runtime211_payload_keeps_platform_context():
-    payload = Runtime211RunPayload(
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        agent_id="qa-word-review",
-        skill_id="qa-file-reviewer",
-        file_ids=["file-a"],
-        input={"mode": "file"},
-        skill_version="hash-primary",
-        release_decision=release_decision("hash-primary"),
-        skill_manifests=[primary_manifest("qa-file-reviewer", "hash-primary")],
-    )
-
-    assert payload.tenant_id == "tenant-a"
-    assert payload.session_id == "session-a"
-    assert payload.run_id == "run-a"
-    assert payload.skill_id == "qa-file-reviewer"
 
 
 def test_run_request_rejects_unsafe_ids():

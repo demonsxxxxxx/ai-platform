@@ -253,7 +253,7 @@ test("RunControlLifecycle keeps cancel acknowledgement separate from terminal co
   } finally {
     playback.resolve(
       new Response(
-        JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+        JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }),
       ),
     );
     sessionApi.cancelRun = originalCancel;
@@ -281,7 +281,7 @@ test("RunControlLifecycle treats a post-commit retry 5xx as unconfirmed and GET-
   globalThis.fetch = (async () => {
     playbackReads += 1;
     return new Response(
-      JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+      JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }),
     );
   }) as typeof fetch;
   lifecycle.configure({
@@ -333,7 +333,6 @@ test("RunControlLifecycle unlocks retry after deterministic no-side-effect rejec
         events: [],
         artifacts: [],
         steps: [],
-        multi_agent: null,
       }),
     )) as typeof fetch;
   lifecycle.configure({
@@ -576,7 +575,6 @@ test("RunControlLifecycle keeps resolver 409/412/422 pending and never replays t
           events: [],
           artifacts: [],
           steps: [],
-          multi_agent: null,
         }),
       )) as typeof fetch;
     lifecycle.configure({

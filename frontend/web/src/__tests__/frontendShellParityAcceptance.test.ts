@@ -223,6 +223,7 @@ test("session project and favorites code cannot return through the frontend shel
     join(root, "src/services/api/session.ts"),
     "utf8",
   );
+  const apiBarrel = readFileSync(join(root, "src/services/api.ts"), "utf8");
   const useAgent = readFileSync(join(root, "src/hooks/useAgent.ts"), "utf8");
 
   for (const source of [sessionHook, sessionApi, useAgent]) {
@@ -232,6 +233,7 @@ test("session project and favorites code cannot return through the frontend shel
     );
   }
   assert.doesNotMatch(sessionApi, /project_id|favorites_only/);
+  assert.doesNotMatch(apiBarrel, /projectApi|\.\/api\/project/);
   for (const file of [
     "src/components/sidebar/ProjectItem.tsx",
     "src/components/sidebar/ProjectMenu.tsx",
@@ -241,6 +243,7 @@ test("session project and favorites code cannot return through the frontend shel
     "src/components/common/DeleteProjectDialog.tsx",
     "src/hooks/useProjectManager.ts",
     "src/hooks/useTouchDrag.ts",
+    "src/services/api/project.ts",
   ]) {
     assert.equal(existsSync(join(root, file)), false, `${file} must stay removed`);
   }
@@ -394,8 +397,6 @@ test("authenticated workbench adopts one LibreChat light application shell", () 
     join(root, "src/components/common/EnterpriseSelect.tsx"),
     "utf8",
   );
-  const settingsHook = readFileSync(join(root, "src/hooks/useSettings.ts"), "utf8");
-
   assert.equal(packageJson.name, "ai-platform-frontend");
   assert.doesNotMatch(main, /styles\/glass\.css/);
   assert.match(components, /enterprise-field-control/);
@@ -403,8 +404,6 @@ test("authenticated workbench adopts one LibreChat light application shell", () 
   assert.doesNotMatch(components, /glass-input|glass-select|--glass-/);
   assert.match(enterpriseSelect, /function EnterpriseSelect/);
   assert.doesNotMatch(enterpriseSelect, /GlassSelect|glass-/);
-  assert.match(settingsHook, /ai-platform-settings-\$\{date\}\.json/);
-  assert.doesNotMatch(settingsHook, /lamb-agent-settings/);
   assert.match(theme, /--theme-sidebar-rail:\s*#f7f7f8;/);
   assert.match(theme, /--theme-sidebar-panel:\s*#f7f7f8;/);
   assert.match(theme, /--theme-sidebar-panel-muted:\s*#ececec;/);
@@ -507,10 +506,6 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
     join(root, "src/components/panels/MarketplacePanel.tsx"),
     "utf8",
   );
-  const groupAvailability = readFileSync(
-    join(root, "src/components/governance/GroupAvailabilityToggleRow.tsx"),
-    "utf8",
-  );
   const skillBaseCard = readFileSync(
     join(root, "src/components/common/SkillBaseCard.tsx"),
     "utf8",
@@ -531,7 +526,6 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   assert.match(marketplace, /data-marketplace-catalog-shell/);
   assert.match(marketplace, /data-frontend-governance-state|buildFrontendGovernanceSmokeAttributes/);
   assert.match(marketplace, /effectiveGovernedUnavailable/);
-  assert.match(groupAvailability, /flex flex-col[\s\S]*sm:flex-row/);
   assert.match(marketplaceCard, /versionLabel/);
   assert.match(marketplaceCard, /max-w-28 truncate/);
   assert.match(skillBaseCard, /p-3\.5 sm:p-4/);

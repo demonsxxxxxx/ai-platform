@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.validation import assert_safe_id, assert_safe_principal_user_id
 
 SUPPORTED_AGENT_EVENT_TYPES = {
+    "agent_public_progress",
     "run_queued",
     "run_started",
     "runtime_container_started",

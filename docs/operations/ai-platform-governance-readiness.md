@@ -1,13 +1,14 @@
 # ai-platform G6 Governance Readiness
 
-Date: 2026-06-12
+Date: 2026-08-02
 
 This document records the current G6 Tool / Skill / Memory Governance baseline.
 It is an operator readiness snapshot, not a gate-closure claim. G6 remains
 partial until frontend route policy enforcement/remap, release governance
-evidence, quarantined inactive legacy source remap, packaged frontend image
-delivery/release acceptance, full dashboard/visual acceptance, production
-Docker sandbox hardening, and ordinary-user G9 acceptance are complete. The
+evidence, active env-var/RBAC route remediation, inactive channel/admin source
+disposition, packaged frontend image delivery/release acceptance, full
+dashboard/visual acceptance, production Docker sandbox hardening, and
+ordinary-user G9 acceptance are complete. The
 reviewed `8e0389e` live worker-run evidence records executor context-pack 211
 acceptance for the named #22 runtime gap, and PR #44 keeps reviewed 211 sandbox
 latency split evidence for the named #22 cold-start runtime gap.
@@ -47,9 +48,10 @@ frontend projection-audit evidence summary for operator use. The summary keeps
 the Admin Runtime hot path lightweight, but the CLI output includes
 `domains.frontend_projection.evidence.projection_audit.open_gap_details` with
 route counts, route scopes, required remap/hide actions, and quarantined-source
-samples. This makes the G6/G9 frontend blockers actionable without exposing raw
-storage keys, executor-private payload names, sandbox workdirs, secret-like
-values, or local machine paths in the governance readiness JSON.
+samples when such violations exist. This makes the G6/G9 frontend blockers
+actionable without exposing raw storage keys, executor-private payload names,
+sandbox workdirs, secret-like values, or local machine paths in the governance
+readiness JSON.
 
 ## Admin Runtime Signal Path
 
@@ -76,17 +78,20 @@ or secret-like runtime configuration.
 
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
-| Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, exact `tool_call_id` / stable request-fingerprint decision lookup source tests, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py`, platform-registered-MCP-only policy evidence with ordinary-user custom MCP disabled, and contract-only Admin bulk-review dashboard readiness through `tools/tool_policy_bulk_review_readiness.py` / `admin_policy_bulk_review_dashboard_contract` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, plus `admin_policy_bulk_review_runtime_acceptance`, `admin_policy_bulk_review_visual_acceptance`, and `admin_policy_bulk_review_211_acceptance` |
+| Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, exact `tool_call_id` / stable request-fingerprint decision lookup source tests, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py`, platform-registered-MCP-only policy evidence with ordinary-user custom MCP disabled, and contract-only Admin bulk-review dashboard readiness through `tools/tool_policy_bulk_review_readiness.py` / `admin_policy_bulk_review_dashboard_contract` | Policy enforcement or ai-platform projection remap for the remaining legacy frontend admin/envvar/roles/channel routes or sources, plus `admin_policy_bulk_review_runtime_acceptance`, `admin_policy_bulk_review_visual_acceptance`, and `admin_policy_bulk_review_211_acceptance` |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract, source-level `ai-platform.skill-signed-package-evidence-contract.v1` / `skill_signed_package_evidence_contract`, source-level validation for signed-package evidence JSON, and contract-only Admin Skill release dashboard readiness through `tools/skill_release_dashboard_readiness.py` / `admin_skill_release_dashboard_contract` | SBOM or signed-package release evidence plus reviewed manifests, dependency vulnerability/license evidence, `skill_dependency_review_policy_runtime_acceptance`, plus `admin_skill_release_dashboard_runtime_acceptance`, `admin_skill_release_dashboard_visual_acceptance`, and `admin_skill_release_dashboard_211_acceptance` |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack contract/readiness through `tools/office_context_readiness.py`, B1 memory/context readiness rollup through `tools/b1_memory_context_readiness.py`, source-level context-pack persistence/versioning through `source_level_context_pack_persistence_and_versioning`, context snapshot public provenance projection with `context_pack_version` and `context_pack_generated_at`, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, source-level office execution-tier router tests, executor context-pack prompt injection source tests, document-centric follow-up state source tests, reviewed B1 `211_memory_enabled_document_workflow_smoke` evidence, B1 merged-source runtime evidence review for `87528bf`, B1 rollback boundary local operator contract, reviewed `8e0389e` 211 executor context-pack evidence, the source-level sandbox cold-start latency split observability contract, and reviewed PR #44 211 sandbox cold-start latency split evidence. | Full G6/G9 dashboard/visual acceptance, long-term cross-session memory policy closure, production Docker sandbox hardening, packaged frontend acceptance, and ordinary-user rollout acceptance |
-| Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
+| Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph and full production scan clear of forbidden private/secret-like projection terms, legacy model administration client retired, quarantined legacy source violations at zero, Profile env-var tab kept outside the active graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Policy-gate or remap the active ordinary-user `/api/env-vars` and `/api/roles` routes reached through other frontend entrypoints, remove/remap or keep fail-closed the remaining inactive channel/admin compatibility sources, and record packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
-The frontend projection evidence now records three current structured blockers:
-all legacy production routes still need policy enforcement or ai-platform
-projection remap, the active browser entry graph still references 15 legacy
-route policies that must be hidden or policy-gated before ordinary-user G9
-acceptance, and 40 quarantined legacy source violations remain outside the
-active entry graph but must be remapped or removed before rollout.
+The current frontend projection audit reports zero forbidden private/secret-like
+projection violations and zero quarantined legacy source violations. Three
+legacy production route policies remain (`/api/admin/`, `/api/env-vars`, and
+`/api/roles`); the latter two are active and ordinary-user reachable, so they
+still require policy enforcement or ai-platform projection remap before G9
+acceptance. Those active env-var references come from other entrypoints; the
+Profile env-var tab itself remains outside the active graph. Inactive
+channel/admin compatibility sources also remain a release disposition risk even
+though they are not quarantined forbidden-term findings.
 
 ## Source Readiness Evidence
 

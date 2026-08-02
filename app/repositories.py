@@ -41,6 +41,7 @@ from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_
 from app.persistence import RepositoryNotFoundError
 from app.persistence import chat_submissions
 from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
+from app.run_admission_policy import RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
 from app.skills.execution_profiles import (
     SkillExecutionProfileError,
@@ -6512,12 +6513,7 @@ async def _stage_run_tool_permission_terminalization(
     return await cursor.fetchone()
 
 
-async def _has_unterminalized_run_tool_permissions(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    run_id: str,
-) -> bool:
+async def _has_unterminalized_run_tool_permissions(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> bool:
     """Return whether a staged run still has an authority-bearing permission row."""
 
     cursor = await conn.execute(
@@ -6537,17 +6533,14 @@ async def _has_unterminalized_run_tool_permissions(
 
 
 async def progress_run_tool_permission_terminalization(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    run_id: str,
+    conn: AsyncConnection, *, tenant_id: str, run_id: str
 ) -> dict[str, Any] | None:
     """Advance one durable, bounded terminalization transaction and finalize only when clear."""
 
     cursor = await conn.execute(
         """
         select id, trace_id, status, permission_terminalization_target,
-               permission_terminalization_reason, permission_terminalization_result_json,
+               user_id, permission_terminalization_reason, permission_terminalization_result_json,
                permission_terminalization_error_code, permission_terminalization_error_message,
                latency_ms, input_token_count, output_token_count, total_token_count,
                estimated_cost_minor
@@ -6566,10 +6559,7 @@ async def progress_run_tool_permission_terminalization(
         if run_status in {"succeeded", "failed", "cancelled"}:
             terminal_status = "invalidated" if run_status == "succeeded" else run_status
             await terminalize_pending_tool_permission_requests(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                terminal_status=terminal_status,
+                conn, tenant_id=tenant_id, run_id=run_id, terminal_status=terminal_status,
                 terminal_reason="legacy_terminal_run_permission_drain",
             )
             return ToolPermissionTerminalizationProgress(
@@ -6578,18 +6568,13 @@ async def progress_run_tool_permission_terminalization(
             )
         if run_status == "running":
             expired_rows = await expire_pending_tool_permission_requests(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-            )
+                conn, tenant_id=tenant_id, run_id=run_id)
             if expired_rows:
                 return ToolPermissionTerminalizationProgress(completed=False, status="running")
         return ToolPermissionTerminalizationProgress(completed=False, status=None)
     terminal_reason = str(staged.get("permission_terminalization_reason") or "run_terminalized")
     await terminalize_pending_tool_permission_requests(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
+        conn, tenant_id=tenant_id, run_id=run_id,
         terminal_status="cancelled" if target_status == "cancel_requested" else target_status,
         terminal_reason=terminal_reason,
     )
@@ -6693,14 +6678,18 @@ async def progress_run_tool_permission_terminalization(
     )
     artifact_row = await artifact_cursor.fetchone()
     artifact_count = _coerce_int(artifact_row.get("artifact_count")) if artifact_row is not None else 0
+    retired_admission_rejection = target_status == "failed" and terminal_reason == RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON
     if target_status == "failed":
         await _fail_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-        event_type, stage, message = "run_failed", "worker", "Run failed"
+        event_type, stage, message = (
+            ("run_failed", "control", "Run rejected: persisted input uses retired platform orchestration.")
+            if retired_admission_rejection else ("run_failed", "worker", "Run failed")
+        )
     elif target_status == "cancelled":
         await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
         event_type, stage, message = "run_cancelled", "control", "任务已取消"
     event_payload = {
-        "visible_to_user": True,
+        "visible_to_user": not retired_admission_rejection,
         "severity": "error" if target_status == "failed" else "warning",
         "artifact_count": artifact_count,
         "result_status": target_status,
@@ -6711,6 +6700,8 @@ async def progress_run_tool_permission_terminalization(
         safe_error_message = sanitize_public_text(staged.get("permission_terminalization_error_message"))
         if safe_error_message:
             event_payload["error_message"] = safe_error_message
+    if retired_admission_rejection:
+        event_payload["retryable"] = False
     await append_event(
         conn,
         tenant_id=tenant_id,
@@ -6720,23 +6711,31 @@ async def progress_run_tool_permission_terminalization(
         stage=stage,
         message=message,
         payload=event_payload,
+        visible_to_user=not retired_admission_rejection,
         latency_ms=latency_ms,
         input_token_count=input_tokens,
         output_token_count=output_tokens,
         total_token_count=total_tokens,
         estimated_cost_minor=estimated_cost_minor,
     )
-    await append_audit_log(conn, tenant_id=tenant_id, user_id=None, action=f"run.{target_status}", target_type="run",
-                           target_id=run_id, trace_id=staged.get("trace_id"), payload_json={
-                               "reason": terminal_reason,
-                               "artifact_count": artifact_count,
-                               "latency_ms": latency_ms,
-                               "input_token_count": input_tokens,
-                               "output_token_count": output_tokens,
-                               "total_token_count": total_tokens,
-                               "estimated_cost_minor": estimated_cost_minor,
-                               "error_code": staged.get("permission_terminalization_error_code"),
-                           })
+    audit_payload = {
+        "reason": terminal_reason,
+        "artifact_count": artifact_count,
+        "latency_ms": latency_ms,
+        "input_token_count": input_tokens,
+        "output_token_count": output_tokens,
+        "total_token_count": total_tokens,
+        "estimated_cost_minor": estimated_cost_minor,
+        "error_code": staged.get("permission_terminalization_error_code"),
+    }
+    if retired_admission_rejection:
+        audit_payload["retryable"] = False
+    await append_audit_log(
+        conn, tenant_id=tenant_id,
+        user_id=staged.get("user_id") if retired_admission_rejection else None,
+        action="run.admission.rejected" if retired_admission_rejection else f"run.{target_status}",
+        target_type="run", target_id=run_id, trace_id=staged.get("trace_id"), payload_json=audit_payload,
+    )
     return ToolPermissionTerminalizationProgress(completed=True, status=target_status, did_transition=True, needs_reconcile=True)
 
 
@@ -11717,6 +11716,7 @@ async def fail_run(
     error_code: str,
     error_message: str,
     result_json: dict[str, Any] | None = None,
+    terminal_reason: str = "run_failed",
 ) -> ToolPermissionTerminalizationProgress:
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     staged = await _stage_run_tool_permission_terminalization(
@@ -11724,7 +11724,7 @@ async def fail_run(
         tenant_id=tenant_id,
         run_id=run_id,
         target_status="failed",
-        terminal_reason="run_failed",
+        terminal_reason=terminal_reason,
         result_json=result_json,
         error_code=error_code,
         error_message=error_message,

@@ -19,11 +19,52 @@ export const CHAT_PUBLIC_PROJECTION_VERSION =
   "ai-platform.chat-public-projection.v1";
 export const PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION =
   "ai-platform.public-execution-event.v1";
+export const PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION =
+  "ai-platform.public-execution-event.v2";
+export const PUBLIC_AGENT_PROGRESS_SCHEMA_VERSION =
+  "ai-platform.public-agent-progress.v1";
+export const PUBLIC_AGENT_PROGRESS_EVENT_TYPE = "agent_public_progress";
 export type PublicExecutionEventType = "execution_step" | "execution_progress" | "execution_step_completed" | "execution_step_failed";
 export const PUBLIC_EXECUTION_EVENT_TYPES: ReadonlySet<PublicExecutionEventType> = new Set(["execution_step", "execution_progress", "execution_step_completed", "execution_step_failed"]);
-const PUBLIC_EXECUTION_EVENT_FIELDS = "schema_version event_id sequence run_id step_id kind stage status title summary progress safe_file_name artifact_public_id created_at".split(" ");
+const PUBLIC_EXECUTION_V1_EVENT_FIELDS = "schema_version event_id sequence run_id step_id kind stage status title summary progress safe_file_name artifact_public_id created_at".split(" ");
+const PUBLIC_EXECUTION_V2_EVENT_FIELDS = "schema_version event_id sequence run_id step_id presentation_kind kind stage status progress safe_label created_at".split(" ");
 const PUBLIC_EXECUTION_STATUSES: Record<PublicExecutionEventType, string> = { execution_step: "running", execution_progress: "running", execution_step_completed: "completed", execution_step_failed: "failed" };
 const EXECUTION_TIMELINE_KINDS = new Set<ExecutionTimelineKind>(["analysis", "capability", "file_read", "processing", "generation", "verification", "artifact", "collaboration"]);
+const PUBLIC_EXECUTION_V2_PRESENTATIONS = new Set([
+  "skill:capability:execution",
+  "mcp:capability:execution",
+  "read:file_read:read",
+  "read:file_read:search",
+  "write:generation:edit",
+  "processing:processing:data",
+  "agent:collaboration:execution",
+  "artifact:generation:artifact",
+  "verification:verification:artifact",
+  "adjustment:processing:execution",
+  "read:file_read:attachments",
+  "skill:capability:skills",
+  "processing:processing:sandbox_preparation",
+  "processing:processing:sandbox_submission",
+  "verification:verification:artifact_validation",
+  "artifact:generation:artifact_recovery",
+]);
+const PUBLIC_EXECUTION_V2_STATIC_LABELS: Record<string, string> = {
+  "read:file_read:read": "Reading authorized files",
+  "read:file_read:search": "Finding authorized files",
+  "write:generation:edit": "Updating authorized files",
+  "processing:processing:data": "Data processing",
+  "agent:collaboration:execution": "Coordinating task",
+  "artifact:generation:artifact": "Generating artifact",
+  "verification:verification:artifact": "Checking result",
+  "adjustment:processing:execution": "Adjusting result",
+  "read:file_read:attachments": "Preparing authorized attachments",
+  "skill:capability:skills": "Loading authorized Skills",
+  "processing:processing:sandbox_preparation": "Preparing controlled execution",
+  "processing:processing:sandbox_submission": "Running controlled task",
+  "processing:processing:execution": "Waiting for the model response",
+  "verification:verification:artifact_validation": "Checking generated results",
+  "artifact:generation:artifact_recovery": "Preparing result recovery",
+};
 
 export const CHAT_PUBLIC_PROGRESS_EVENT_TYPES: ReadonlySet<string> = new Set([
   "queued",
@@ -47,6 +88,7 @@ export const CHAT_PUBLIC_PROGRESS_EVENT_TYPES: ReadonlySet<string> = new Set([
   "artifact_created",
   "cancel_requested",
   "cancel_requested_but_completed",
+  PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
 ]);
 
 export type AssistantTextProjectionKind =
@@ -171,6 +213,8 @@ export interface EventData {
   progress?: { current: number; total: number };
   safe_file_name?: string | null;
   artifact_public_id?: string | null;
+  presentation_kind?: string;
+  safe_label?: string;
   // ai-platform artifact_card fields
   artifact_id?: string;
   artifact_type?: string;
@@ -233,7 +277,9 @@ export function isPublicExecutionEvent(
   eventType: string,
   data: EventData,
 ): data is EventData & {
-  schema_version: typeof PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION;
+  schema_version:
+    | typeof PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION
+    | typeof PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION;
   event_id: string;
   sequence: number;
   run_id: string;
@@ -241,8 +287,10 @@ export function isPublicExecutionEvent(
   kind: ExecutionTimelineKind;
   stage: string;
   status: "running" | "completed" | "failed";
-  title: string;
-  summary: string;
+  title?: string;
+  summary?: string;
+  presentation_kind?: string;
+  safe_label?: string;
   progress: { current: number; total: number };
   safe_file_name: string | null;
   artifact_public_id: string | null;
@@ -253,16 +301,13 @@ export function isPublicExecutionEvent(
   }
   const source = data as unknown as Record<string, unknown>;
   if (
-    Object.keys(source).length !== PUBLIC_EXECUTION_EVENT_FIELDS.length ||
-    !PUBLIC_EXECUTION_EVENT_FIELDS.every((key) => Object.hasOwn(source, key)) ||
-    source.schema_version !== PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION ||
     !isOpaquePublicId(source.event_id) ||
     !isOpaquePublicId(source.run_id) ||
     !isOpaquePublicId(source.step_id) ||
     typeof source.sequence !== "number" ||
     !Number.isSafeInteger(source.sequence) ||
     source.sequence < 0 ||
-    !["stage", "title", "summary"].every((key) => typeof source[key] === "string" && source[key]) ||
+    typeof source.stage !== "string" || !source.stage ||
     !isExecutionProgress(source.progress) ||
     (source.safe_file_name !== null && typeof source.safe_file_name !== "string") ||
     (source.artifact_public_id !== null && !isOpaquePublicId(source.artifact_public_id)) ||
@@ -270,7 +315,106 @@ export function isPublicExecutionEvent(
   ) {
     return false;
   }
-  return isExecutionTimelineKind(source.kind) && source.status === PUBLIC_EXECUTION_STATUSES[eventType as PublicExecutionEventType];
+  if (!isExecutionTimelineKind(source.kind) || source.status !== PUBLIC_EXECUTION_STATUSES[eventType as PublicExecutionEventType]) {
+    return false;
+  }
+  if (source.schema_version === PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION) {
+    return (
+      Object.keys(source).length === PUBLIC_EXECUTION_V1_EVENT_FIELDS.length &&
+      PUBLIC_EXECUTION_V1_EVENT_FIELDS.every((key) => Object.hasOwn(source, key)) &&
+      typeof source.title === "string" && !!source.title &&
+      typeof source.summary === "string" && !!source.summary &&
+      (source.safe_file_name === null || typeof source.safe_file_name === "string") &&
+      (source.artifact_public_id === null || isOpaquePublicId(source.artifact_public_id))
+    );
+  }
+  if (source.schema_version !== PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION) return false;
+  const presentation = `${String(source.presentation_kind)}:${String(source.kind)}:${String(source.stage)}`;
+  const hasSafeLabel = Object.hasOwn(source, "safe_label");
+  const expectedSafeLabel = PUBLIC_EXECUTION_V2_STATIC_LABELS[presentation];
+  return (
+    Object.keys(source).length ===
+      PUBLIC_EXECUTION_V2_EVENT_FIELDS.length - (hasSafeLabel ? 0 : 1) &&
+    PUBLIC_EXECUTION_V2_EVENT_FIELDS
+      .filter((key) => key !== "safe_label" || hasSafeLabel)
+      .every((key) => Object.hasOwn(source, key)) &&
+    PUBLIC_EXECUTION_V2_PRESENTATIONS.has(presentation) &&
+    (!hasSafeLabel ||
+      (typeof source.safe_label === "string" &&
+        source.safe_label.length > 0 &&
+        source.safe_label.length <= 96 &&
+        !/[\\/:.;`'"<>|{}[\]$\n\r\t]/.test(source.safe_label) &&
+        (expectedSafeLabel === undefined || source.safe_label === expectedSafeLabel))) &&
+    (expectedSafeLabel === undefined || source.safe_label === expectedSafeLabel)
+  );
+}
+
+const PUBLIC_AGENT_PROGRESS_MESSAGES: Record<string, Record<string, string>> = {
+  attachment_materialization: {
+    started: "Preparing authorized attachments",
+    progress: "Preparing authorized attachments",
+    completed: "Authorized attachments are ready",
+    failed: "Authorized attachments could not be prepared",
+  },
+  skill_staging: {
+    started: "Loading authorized Skills",
+    progress: "Loading authorized Skills",
+    completed: "Authorized Skills are ready",
+    failed: "Authorized Skills could not be loaded",
+  },
+  sandbox_preparation: {
+    started: "Preparing controlled execution",
+    progress: "Preparing controlled execution",
+    completed: "Controlled execution is ready",
+    failed: "Controlled execution could not be prepared",
+  },
+  sandbox_submission: {
+    started: "Running controlled task",
+    progress: "Controlled task is still running",
+    completed: "Controlled task has completed",
+    failed: "Controlled task did not complete",
+  },
+  model_wait: {
+    started: "Waiting for the model response",
+    progress: "Waiting for the model response",
+    completed: "Model response is ready",
+    failed: "Model response was not available",
+  },
+  artifact_validation: {
+    started: "Checking generated results",
+    progress: "Checking generated results",
+    completed: "Generated results have been checked",
+    failed: "Generated results could not be checked",
+  },
+  artifact_recovery: {
+    started: "Preparing result recovery",
+    progress: "Preparing result recovery",
+    completed: "Result recovery is ready",
+    failed: "Result recovery did not complete",
+  },
+};
+
+/** Accept only a fixed server-owned public phase message. */
+export function isPublicAgentProgressEvent(data: EventData): boolean {
+  const payload = data.payload as Record<string, unknown> | undefined;
+  if (
+    data.projection_version !== CHAT_PUBLIC_PROJECTION_VERSION ||
+    data.event_type !== PUBLIC_AGENT_PROGRESS_EVENT_TYPE ||
+    typeof data.stage !== "string" ||
+    typeof data.message !== "string" ||
+    !payload ||
+    Object.keys(payload).length !== 5 ||
+    payload.schema_version !== PUBLIC_AGENT_PROGRESS_SCHEMA_VERSION ||
+    typeof payload.phase !== "string" ||
+    typeof payload.lifecycle !== "string" ||
+    typeof payload.step_id !== "string" ||
+    payload.step_id !== `phase_${payload.phase}` ||
+    payload.message !== data.message ||
+    payload.phase !== data.stage
+  ) {
+    return false;
+  }
+  return PUBLIC_AGENT_PROGRESS_MESSAGES[payload.phase]?.[payload.lifecycle] === data.message;
 }
 
 /** A persisted sequence that proves new public progress on this run. */

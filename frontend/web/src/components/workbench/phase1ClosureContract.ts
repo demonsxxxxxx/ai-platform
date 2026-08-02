@@ -12,14 +12,12 @@ export const PHASE1_COMPOSER_COMMANDS = [
   "/mcp",
   "/model",
   "/file",
-  "/context",
 ] as const;
 
 export const PHASE1_FAIL_CLOSED_SURFACES = [
   "mcp-lifecycle",
   "mcp-credentials",
   "share-acl-create",
-  "context-selector",
 ] as const;
 
 export const PHASE1_CLOSURE_SCREENSHOTS = [

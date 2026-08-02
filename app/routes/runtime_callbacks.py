@@ -11,7 +11,10 @@ from app.context_retrieval import (
     RepositoryContextRetrievalRepository,
 )
 from app.db import transaction
-from app.public_execution import PUBLIC_EXECUTION_EVENT_TYPES
+from app.public_execution import (
+    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+    PUBLIC_EXECUTION_EVENT_TYPES,
+)
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
@@ -190,7 +193,11 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
                 event_stage = str(executor_event["stage"])
                 event_message = str(executor_event["message"])
                 event_payload = executor_payload
-            if executor_event_type not in PUBLIC_EXECUTION_EVENT_TYPES and executor_event_type != "assistant_delta":
+            if (
+                executor_event_type not in PUBLIC_EXECUTION_EVENT_TYPES
+                and executor_event_type
+                not in {"assistant_delta", PUBLIC_AGENT_PROGRESS_EVENT_TYPE}
+            ):
                 event_payload["source"] = "executor_callback"
             await repositories.append_event(
                 conn,

@@ -36,6 +36,8 @@ from app.skills.catalog import (
 from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
     SKILL_WORKSPACE_CONTRACT_VERSION,
+    SdkSkillToolAdmission,
+    sdk_skill_tool_admission_for_execution_profile,
 )
 from app.tool_policy import evaluate_tool_policy
 
@@ -419,6 +421,40 @@ def _sdk_skill_allow_patterns(skill_names: set[str]) -> list[str]:
     """Return exact Claude SDK permission patterns for staged, authorized Skills."""
 
     return [f"Skill({name})" for name in sorted(skill_names)]
+
+
+def _with_execution_profile_skill_tools(
+    subjects: dict[str, dict[str, Any]],
+    *,
+    admission: SdkSkillToolAdmission | None,
+) -> dict[str, dict[str, Any]]:
+    """Project one server-selected SDK profile into complete tool subjects."""
+
+    skill_subject = subjects.get("Skill")
+    if admission is None or not isinstance(skill_subject, dict):
+        return subjects
+    resolved = dict(subjects)
+    for tool_name in admission.tool_names:
+        if tool_name in resolved:
+            continue
+        subject = dict(skill_subject)
+        subject.update(
+            {
+                "identity": tool_name,
+                "declared_identities": [tool_name],
+                "allowed_parameter_keys": list(_BUILTIN_PARAMETER_KEYS[tool_name]),
+                "required_parameter_keys": list(
+                    _BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ())
+                ),
+                "allowed_skill_names": [],
+                "risk_level": "low" if tool_name in _SDK_LOCAL_READ_ONLY_TOOLS else "high",
+                "write_capable": tool_name not in _SDK_LOCAL_READ_ONLY_TOOLS,
+                "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
+                "command_isolation": admission.command_isolation,
+            }
+        )
+        resolved[tool_name] = subject
+    return resolved
 
 
 def _sdk_permission_type(sdk: object, name: str):
@@ -1421,6 +1457,7 @@ async def run_claude_agent_sdk(
     on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[None]] | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
+    execution_profile: str = "",
     attachment_contexts: list[ParsedAttachmentContext] | None = None,
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
 ) -> ClaudeAgentSdkRunResult:
@@ -1532,6 +1569,15 @@ async def run_claude_agent_sdk(
             if isinstance(name, str) and name in set(configured_skills)
         }
         configured_skills = [name for name in configured_skills if name in allowed_skill_names]
+        authorized_subjects = _with_execution_profile_skill_tools(
+            authorized_subjects,
+            admission=sdk_skill_tool_admission_for_execution_profile(
+                execution_profile=execution_profile,
+                selected_skill_id=selected_sdk_skill,
+                staged_skill_ids=configured_skills,
+                authorized_skill_ids=allowed_skill_names,
+            ),
+        )
         allowed_tools = [
             pattern
             for identity in authorized_subjects

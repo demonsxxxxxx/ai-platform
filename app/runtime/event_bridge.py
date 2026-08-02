@@ -1,6 +1,8 @@
 from app.public_execution import (
+    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
-    validate_public_execution_step_payload,
+    validate_public_agent_progress_payload,
+    validate_versioned_public_execution_step_payload,
 )
 from app.runtime.kernel_contracts import AgentEvent
 
@@ -61,8 +63,18 @@ def _private_executor_event() -> dict[str, object]:
 
 
 def agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
+    if event.type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE:
+        payload = validate_public_agent_progress_payload(event.payload)
+        if payload is None or event.admin_only or event.message:
+            return _private_executor_event()
+        return {
+            "event_type": PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+            "stage": "agent_progress",
+            "message": payload["message"],
+            "payload": payload,
+        }
     if event.type in PUBLIC_EXECUTION_EVENT_TYPES:
-        payload = validate_public_execution_step_payload(
+        payload = validate_versioned_public_execution_step_payload(
             event.payload,
             expected_kind=event.type,
         )

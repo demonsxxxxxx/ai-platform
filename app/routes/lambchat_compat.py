@@ -29,8 +29,10 @@ from app.projection_redaction import (
     public_skill_display_label,
 )
 from app.public_execution import (
+    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
     public_execution_event_from_row,
+    validate_public_agent_progress_payload,
 )
 from app.routes.auth import _login_principal
 from app.routes.files import upload_file as upload_platform_file
@@ -113,6 +115,12 @@ class _ChatPublicRunEventProjection:
 
 
 CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
+    PUBLIC_AGENT_PROGRESS_EVENT_TYPE: _ChatPublicRunEventProjection(
+        PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+        "agent_progress",
+        "Agent progress update",
+        "active",
+    ),
     "run_queued": _ChatPublicRunEventProjection(
         "queued", "queue", "任务正在排队", "waiting", "queue_capacity"
     ),
@@ -178,9 +186,6 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
     ),
     "subagent_failed": _ChatPublicRunEventProjection(
         "subagent_failed", "agent", "协同处理未能完成", "failed"
-    ),
-    "run_multi_agent_child_created": _ChatPublicRunEventProjection(
-        "run_child_created", "agent", "已安排协同任务", "active"
     ),
     "run_child_created": _ChatPublicRunEventProjection(
         "run_child_created", "agent", "已安排协同任务", "active"
@@ -431,6 +436,13 @@ def _public_run_event_envelope(
     presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS.get(raw_event_type)
     if presentation is None:
         return None
+    public_progress = (
+        validate_public_agent_progress_payload(event.get("payload_json"))
+        if raw_event_type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE
+        else None
+    )
+    if raw_event_type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE and public_progress is None:
+        return None
     typed_product = _strict_typed_chat_event_product(run, event, principal)
     if typed_product is not None and typed_product.kind == "capability":
         capability_status = str(typed_product.payload["capability"]["status"])
@@ -457,6 +469,18 @@ def _public_run_event_envelope(
     payload = typed_product.payload if typed_product is not None else _chat_projection_payload(projected)
     message = presentation.message
     stage = presentation.stage
+    if public_progress is not None:
+        payload = public_progress
+        message = public_progress["message"]
+        stage = public_progress["phase"]
+        presentation = _ChatPublicRunEventProjection(
+            PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+            stage,
+            message,
+            "failed" if public_progress["lifecycle"] == "failed" else "completed"
+            if public_progress["lifecycle"] == "completed"
+            else "active",
+        )
     if raw_event_type == "error":
         terminal = public_chat_terminal_projection(
             {"status": "failed", "error_code": event.get("error_code")}
@@ -999,11 +1023,6 @@ async def upload_config() -> dict[str, object]:
         "allowed_extensions": ["docx", "txt", "pdf"],
         "categories": ["document"],
     }
-
-
-@router.post("/upload/check")
-async def upload_check() -> dict[str, object]:
-    return {"exists": False}
 
 
 @router.post("/upload/file")

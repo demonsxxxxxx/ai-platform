@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { UploadRequestError } from "../../services/api/upload.ts";
-import type { FileCheckResult, MessageAttachment, UploadResult } from "../../types";
+import type { MessageAttachment, UploadResult } from "../../types";
 import {
   cancelTemporaryUpload,
   settleUploadFailure,
@@ -123,7 +123,6 @@ test("cancellation during compression tombstones the temporary attachment before
   const harness = createHarness();
   const prepareEntered = deferred<void>();
   const prepared = deferred<File>();
-  let hashCalls = 0;
   let uploadCalls = 0;
   const task = startFileUploadTask({
     file: harness.file,
@@ -136,12 +135,7 @@ test("cancellation during compression tombstones the temporary attachment before
       prepareEntered.resolve();
       return prepared.promise;
     },
-    hashFile: () => {
-      hashCalls += 1;
-      return Promise.resolve("hash");
-    },
     uploadClient: {
-      checkFile: () => Promise.resolve({ exists: false }),
       uploadFile: () => {
         uploadCalls += 1;
         return { promise: Promise.resolve(uploadResult()), abort: () => {} };
@@ -162,115 +156,6 @@ test("cancellation during compression tombstones the temporary attachment before
   );
   assert.equal(harness.cancelled.has(task.tempId), true);
   prepared.resolve(harness.file);
-  await task.done;
-
-  assert.equal(hashCalls, 0);
-  assert.equal(uploadCalls, 0);
-  assert.equal(harness.attachments.length, 0);
-  assert.equal(harness.state.removals, 1);
-  assert.deepEqual(harness.toasts, []);
-  assert.deepEqual(harness.reports, []);
-  assert.equal(harness.abortMap.size, 0);
-  assert.equal(harness.cancelled.size, 0);
-});
-
-test("cancellation during hashing cannot advance to check or upload", async () => {
-  const harness = createHarness();
-  const hashEntered = deferred<void>();
-  const hash = deferred<string>();
-  let checkCalls = 0;
-  let uploadCalls = 0;
-  const task = startFileUploadTask({
-    file: harness.file,
-    fileCategory: "document",
-    t: translate,
-    onAttachmentsChange: harness.onAttachmentsChange,
-    abortMap: harness.abortMap,
-    cancelled: harness.cancelled,
-    prepareFile: () => Promise.resolve(harness.file),
-    hashFile: () => {
-      hashEntered.resolve();
-      return hash.promise;
-    },
-    uploadClient: {
-      checkFile: () => {
-        checkCalls += 1;
-        return Promise.resolve({ exists: false });
-      },
-      uploadFile: () => {
-        uploadCalls += 1;
-        return { promise: Promise.resolve(uploadResult()), abort: () => {} };
-      },
-    },
-    createId: () => "hash",
-    notifyError: (message) => harness.toasts.push(message),
-    reportFailure: (error) => harness.reports.push(error),
-  });
-
-  await hashEntered.promise;
-  cancelTemporaryUpload(
-    task.tempId,
-    harness.abortMap,
-    harness.cancelled,
-    harness.onAttachmentsChange,
-  );
-  hash.resolve("hash");
-  await task.done;
-
-  assert.equal(checkCalls, 0);
-  assert.equal(uploadCalls, 0);
-  assert.equal(harness.attachments.length, 0);
-  assert.equal(harness.state.removals, 1);
-  assert.deepEqual(harness.toasts, []);
-  assert.deepEqual(harness.reports, []);
-  assert.equal(harness.abortMap.size, 0);
-  assert.equal(harness.cancelled.size, 0);
-});
-
-test("cancellation during check or dedup cannot start an upload", async () => {
-  const harness = createHarness();
-  const checkEntered = deferred<void>();
-  const check = deferred<FileCheckResult>();
-  let uploadCalls = 0;
-  const task = startFileUploadTask({
-    file: harness.file,
-    fileCategory: "document",
-    t: translate,
-    onAttachmentsChange: harness.onAttachmentsChange,
-    abortMap: harness.abortMap,
-    cancelled: harness.cancelled,
-    prepareFile: () => Promise.resolve(harness.file),
-    hashFile: () => Promise.resolve("hash"),
-    uploadClient: {
-      checkFile: () => {
-        checkEntered.resolve();
-        return check.promise;
-      },
-      uploadFile: () => {
-        uploadCalls += 1;
-        return { promise: Promise.resolve(uploadResult()), abort: () => {} };
-      },
-    },
-    createId: () => "check",
-    notifyError: (message) => harness.toasts.push(message),
-    reportFailure: (error) => harness.reports.push(error),
-  });
-
-  await checkEntered.promise;
-  cancelTemporaryUpload(
-    task.tempId,
-    harness.abortMap,
-    harness.cancelled,
-    harness.onAttachmentsChange,
-  );
-  check.resolve({
-    exists: true,
-    key: "stale-existing-key",
-    name: "stale.txt",
-    type: "document",
-    mimeType: "text/plain",
-    size: 5,
-  });
   await task.done;
 
   assert.equal(uploadCalls, 0);
@@ -296,9 +181,7 @@ test("active XHR cancellation is idempotent and fences stale progress and result
     abortMap: harness.abortMap,
     cancelled: harness.cancelled,
     prepareFile: () => Promise.resolve(harness.file),
-    hashFile: () => Promise.resolve("hash"),
     uploadClient: {
-      checkFile: () => Promise.resolve({ exists: false }),
       uploadFile: (_file, options) => {
         onProgress = options.onProgress;
         uploadEntered.resolve();
@@ -368,9 +251,7 @@ test("compression fallback continues through normal progress and success", async
         return harness.file;
       }
     },
-    hashFile: () => Promise.resolve("hash"),
     uploadClient: {
-      checkFile: () => Promise.resolve({ exists: false }),
       uploadFile: (_file, options) => {
         progress = options.onProgress;
         uploadEntered.resolve();
@@ -396,119 +277,6 @@ test("compression fallback continues through normal progress and success", async
   assert.equal(harness.attachments.length, 1);
   assert.equal(harness.attachments[0]?.id, "fallback-final");
   assert.equal(harness.attachments[0]?.key, "uploaded-key");
-  assert.deepEqual(harness.toasts, []);
-  assert.deepEqual(harness.reports, []);
-  assert.equal(harness.abortMap.size, 0);
-  assert.equal(harness.cancelled.size, 0);
-});
-
-test("hash and check failures fall back to upload", async () => {
-  for (const failedStep of ["hash", "check"] as const) {
-    const harness = createHarness();
-    const failedStepEntered = deferred<void>();
-    const uploadEntered = deferred<void>();
-    const result = deferred<UploadResult>();
-    let uploadCalls = 0;
-    const task = startFileUploadTask({
-      file: harness.file,
-      fileCategory: "document",
-      t: translate,
-      onAttachmentsChange: harness.onAttachmentsChange,
-      abortMap: harness.abortMap,
-      cancelled: harness.cancelled,
-      prepareFile: () => Promise.resolve(harness.file),
-      hashFile: () => {
-        if (failedStep === "hash") {
-          failedStepEntered.resolve();
-          return Promise.reject(new Error("hash failed"));
-        }
-        return Promise.resolve("hash");
-      },
-      uploadClient: {
-        checkFile: () => {
-          if (failedStep === "check") {
-            failedStepEntered.resolve();
-            return Promise.reject(new Error("check failed"));
-          }
-          return Promise.resolve({ exists: false });
-        },
-        uploadFile: () => {
-          uploadCalls += 1;
-          uploadEntered.resolve();
-          return { promise: result.promise, abort: () => {} };
-        },
-      },
-      createId: (() => {
-        const ids = [`${failedStep}-temp`, `${failedStep}-final`];
-        return () => ids.shift() ?? "unexpected";
-      })(),
-      notifyError: (message) => harness.toasts.push(message),
-      reportFailure: (error) => harness.reports.push(error),
-    });
-
-    await failedStepEntered.promise;
-    await uploadEntered.promise;
-    result.resolve(uploadResult());
-    await task.done;
-
-    assert.equal(uploadCalls, 1, `${failedStep} fallback starts upload`);
-    assert.equal(harness.attachments[0]?.key, "uploaded-key");
-    assert.deepEqual(harness.toasts, []);
-    assert.deepEqual(harness.reports, []);
-    assert.equal(harness.abortMap.size, 0);
-    assert.equal(harness.cancelled.size, 0);
-  }
-});
-
-test("dedup hit replaces the temporary attachment without starting XHR", async () => {
-  const harness = createHarness();
-  const checkEntered = deferred<void>();
-  const check = deferred<FileCheckResult>();
-  let uploadCalls = 0;
-  const task = startFileUploadTask({
-    file: harness.file,
-    fileCategory: "document",
-    t: translate,
-    onAttachmentsChange: harness.onAttachmentsChange,
-    abortMap: harness.abortMap,
-    cancelled: harness.cancelled,
-    prepareFile: () => Promise.resolve(harness.file),
-    hashFile: () => Promise.resolve("hash"),
-    uploadClient: {
-      checkFile: () => {
-        checkEntered.resolve();
-        return check.promise;
-      },
-      uploadFile: () => {
-        uploadCalls += 1;
-        return { promise: Promise.resolve(uploadResult()), abort: () => {} };
-      },
-    },
-    createId: (() => {
-      const ids = ["dedup-temp", "dedup-final"];
-      return () => ids.shift() ?? "unexpected";
-    })(),
-    notifyError: (message) => harness.toasts.push(message),
-    reportFailure: (error) => harness.reports.push(error),
-  });
-
-  await checkEntered.promise;
-  check.resolve({
-    exists: true,
-    key: "existing-key",
-    name: "existing.txt",
-    type: "document",
-    mimeType: "text/plain",
-    size: 5,
-    url: "https://files.example/existing-key",
-  });
-  await task.done;
-
-  assert.equal(uploadCalls, 0);
-  assert.equal(harness.attachments.length, 1);
-  assert.equal(harness.attachments[0]?.id, "dedup-final");
-  assert.equal(harness.attachments[0]?.key, "existing-key");
-  assert.equal(harness.attachments[0]?.isUploading, false);
   assert.deepEqual(harness.toasts, []);
   assert.deepEqual(harness.reports, []);
   assert.equal(harness.abortMap.size, 0);

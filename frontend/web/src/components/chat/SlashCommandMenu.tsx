@@ -1,4 +1,4 @@
-import { Boxes, FileText, Layers, Sparkles, Wrench } from "lucide-react";
+import { Boxes, FileText, Sparkles, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
   ComposerCommandName,
@@ -17,7 +17,6 @@ const commandIcons: Record<
   mcp: Wrench,
   model: Boxes,
   file: FileText,
-  context: Layers,
 };
 
 const commandAlias: Partial<Record<Exclude<ComposerCommandName, "menu">, string>> =

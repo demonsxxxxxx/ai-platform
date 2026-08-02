@@ -52,17 +52,13 @@ async def _release_stopped_admin_cancel_leases(
 async def _remove_cancelled_queue_payloads(
     *,
     tenant_id: str,
-    parent_run_id: str,
+    run_id: str,
     result: dict[str, Any],
 ) -> list[Exception]:
     failures: list[Exception] = []
-    run_ids: list[str] = []
     if result["status"] == "cancelled":
-        run_ids.append(parent_run_id)
-    run_ids.extend(str(child_run_id) for child_run_id in result.get("queued_child_run_ids") or [])
-    for queued_run_id in run_ids:
         try:
-            await remove_queued_run(tenant_id=tenant_id, run_id=queued_run_id)
+            await remove_queued_run(tenant_id=tenant_id, run_id=run_id)
         except Exception as exc:
             failures.append(exc)
     return failures
@@ -136,34 +132,6 @@ async def admin_run_cancel(
             admin_user_id=principal.user_id,
             run_id=run_id,
         )
-        if result is not None:
-            propagation = await repositories.propagate_multi_agent_parent_cancel(
-                conn,
-                tenant_id=principal.tenant_id,
-                parent_run_id=run_id,
-                requested_by=principal.user_id,
-                requested_by_role="admin",
-            )
-            if propagation.get("queued_child_run_ids"):
-                result["queued_child_run_ids"] = list(propagation["queued_child_run_ids"])
-            if propagation.get("child_run_ids"):
-                result["_permission_terminalization_child_run_ids"] = list(propagation["child_run_ids"])
-            if propagation.get("_permission_terminalization_child_progress"):
-                result["_permission_terminalization_child_progress"] = propagation[
-                    "_permission_terminalization_child_progress"
-                ]
-            if propagation.get("active_sandbox_leases"):
-                result["active_sandbox_leases"] = [
-                    *list(result.get("active_sandbox_leases") or []),
-                    *list(propagation["active_sandbox_leases"]),
-                ]
-            finalized_parent = await repositories.finalize_multi_agent_parent_run_if_ready(
-                conn,
-                tenant_id=principal.tenant_id,
-                parent_run_id=run_id,
-            )
-            if finalized_parent and finalized_parent.get("status"):
-                result["status"] = str(finalized_parent["status"])
     if result is not None:
         initial_progress = result.pop("_permission_terminalization_progress", None)
         if initial_progress is not None:
@@ -191,37 +159,11 @@ async def admin_run_cancel(
             progress=progress,
             transaction_factory=transaction,
         )
-        child_progress_by_id = result.pop("_permission_terminalization_child_progress", {})
-        for child_run_id in result.pop("_permission_terminalization_child_run_ids", []):
-            child_run_id = str(child_run_id)
-            initial_child_progress = (
-                child_progress_by_id.get(child_run_id)
-                if isinstance(child_progress_by_id, dict)
-                else None
-            )
-            if initial_child_progress is not None:
-                await reconcile_terminalized_permission_run(
-                    tenant_id=principal.tenant_id,
-                    run_id=child_run_id,
-                    progress=initial_child_progress,
-                    transaction_factory=transaction,
-                )
-            child_progress = await drain_run_tool_permission_terminalization(
-                tenant_id=principal.tenant_id,
-                run_id=child_run_id,
-                transaction_factory=transaction,
-            )
-            await reconcile_terminalized_permission_run(
-                tenant_id=principal.tenant_id,
-                run_id=child_run_id,
-                progress=child_progress,
-                transaction_factory=transaction,
-            )
     if result is None:
         raise HTTPException(status_code=404, detail="active_run_not_found")
     queue_cleanup_failures = await _remove_cancelled_queue_payloads(
         tenant_id=principal.tenant_id,
-        parent_run_id=run_id,
+        run_id=run_id,
         result=result,
     )
     try:

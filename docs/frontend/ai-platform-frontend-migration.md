@@ -13,7 +13,7 @@ auth/session, DB schema, or compose delivery behavior.
 | --- | --- |
 | #15 roadmap governance | Open. The roadmap has a gate-based sync, but release evidence and execution history are still mixed in older sections. |
 | #16 tenant-aware concurrency | Open. #20 closed the current G5 scheduling/admission gaps, but #21 still blocks capacity claims and production default increases. |
-| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and has a GitHub Actions frontend workflow with source checks plus a packaged-image build/provenance contract. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, and the Profile env-var surface is no longer active. Inactive legacy secret-like model/channel/envvar sources remain quarantined and must be remapped before G9 rollout. Full closure still needs packaged image smoke/release acceptance on 211 or another Docker-capable host. |
+| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and has a GitHub Actions frontend workflow with source checks plus a packaged-image build/provenance contract. `ci:verify` starts with the projection audit launcher; the active browser entry graph and full production-source scan are currently clear of forbidden private/secret-like projection terms. The obsolete model administration client is retired; active `/api/env-vars/*` and `/api/roles/*` route-policy gaps plus inactive channel/admin follow-up remain before G9 rollout. Full closure still needs packaged image smoke/release acceptance on 211 or another Docker-capable host. |
 | #20 G5 scheduling/admission gaps | Closed on 2026-06-06 by `f5da825` and `e203412`, with local full pytest and 211 smoke evidence recorded in the issue. |
 | #21 capacity baseline | GitHub issue currently closed, but current default active worker execution is still about three runs, and recorded load-test evidence is required before raising concurrency defaults. |
 | #22 office UX/context continuity | Open at G6/G9 level. Source-level context-pack readiness, context-pack persistence/versioning, user-visible context provenance API projection tests, execution-tier routing tests, executor prompt-injection tests, document-centric follow-up state source tests, and the sandbox cold-start latency split observability contract now exist through `tools/office_context_readiness.py`, context route tests, router tests, worker adapter tests, and sandbox runtime/provider tests. Reviewed `8e0389e` evidence records 211 executor context-pack acceptance, and PR #44 records reviewed 211 sandbox latency split evidence for the named #22 runtime gaps. This frontend migration still does not close G6/G9, production Docker sandbox hardening, or packaged frontend acceptance. |
@@ -25,7 +25,7 @@ Gate summary:
   point to the same commit as backend/worker changes through
   `tools/frontend_release_traceability.py`; frontend `ci:verify` starts with
   the projection audit launcher and now records active-entry projection
-  evidence plus quarantined legacy source gaps.
+  evidence plus the remaining legacy route-policy gaps.
   `.github/workflows/ai-platform-frontend.yml` now enforces the frontend source
   checks and a non-push packaged image build/provenance check for relevant
   source changes. GitHub Actions run `27104398690` passed on commit
@@ -40,8 +40,8 @@ Gate summary:
   are not implemented by this migration and must not expand ordinary-user
   exposure until #16/#21 and frontend/user-loop gates pass.
 - G9 Agent Frontend V1 is the active frontend gate. Source migration and
-  active-entry projection audit move the gate forward, but quarantined legacy
-  surfaces still need ai-platform projection remap, policy enforcement, and
+  active-entry projection audit move the gate forward, but remaining legacy
+  route surfaces still need ai-platform projection remap, policy enforcement, and
   product acceptance before broad trial.
 
 ## Source And Runtime Evidence
@@ -149,23 +149,22 @@ Static audit on 2026-06-07:
 - The audit now emits `open_gap_details` for each remaining G6/G9 frontend
   blocker. These details include the affected route scope, route count, sampled
   route references, required remap/hide action, and quarantined-source samples
-  so operators can see exactly what still blocks ordinary-user rollout without
+  when such violations exist, so operators can see exactly what still blocks ordinary-user rollout without
   reading executor-private payloads, raw storage keys, sandbox workdirs, or
   secret-like values.
-- The audit now separates the active browser entry graph from quarantined
-  legacy source files. `/channels` and `/models` render a fail-closed
-  quarantine panel until those surfaces are remapped to ai-platform public or
-  same-tenant admin projections.
+- The audit separates the active browser entry graph from inactive legacy
+  source files. The current scan has no quarantined forbidden-term violations;
+  inactive channel/admin sources remain outside the active browser graph and
+  are tracked through route-policy follow-up.
 - Ordinary model selectors now use `frontend/web/src/services/api/modelPublic.ts`,
   which exposes only safe model options, provider names, and per-user pinned
-  model preferences. Legacy model administration code remains source-visible
-  but is not part of the active browser entry graph.
+  model preferences. The unused credential-bearing model administration client
+  and its barrel export are retired.
 - The audit now emits a machine-readable legacy route policy map for each
   scanned legacy route and a separate active-browser legacy route policy map.
   It records the required governance gate, ordinary-user fail-closed exposure,
   admin projection boundary, route scope, and required remap/hide action. This
-  narrows the G6/G9 gap from missing route mapping to active route enforcement
-  plus inactive legacy source remap.
+  narrows the G6/G9 gap from missing route mapping to active route enforcement.
 - `frontend/web/src/services/api/runPlayback.ts`,
   `frontend/web/src/services/api/memory.ts`,
   `frontend/web/src/hooks/useAgent/eventProcessor.ts`, and artifact/reveal
@@ -186,19 +185,27 @@ Static audit on 2026-06-07:
   load-test evidence, legacy route remap, and packaged frontend image
   delivery/release acceptance remain open.
 
+Retirement update on 2026-08-02:
+
+- The legacy Memory CRUD client and its barrel export are retired.
+- The active `/memory` workbench uses named, governed ai-platform APIs under
+  `/api/ai/memory/*`, plus role-gated `/api/ai/admin/memory/*` projections.
+- The orphaned legacy model administration client and its `modelApi` barrel
+  export are retired. The governed `modelPublicApi` read and pinned-preference
+  contract remains the only browser model client.
+
 Remaining audit risks:
 
-- Imported legacy LambChat panels still include admin/model/MCP/envvar/channel
-  surfaces that can handle or read user-entered credentials. The projection
-  audit now reports inactive secret-like model/channel/envvar sources as
-  quarantined legacy source gaps rather than active browser entry violations.
-  The Profile env-var tab is hidden from the active browser entry graph until
-  `/api/env-vars/*` is remapped to an ai-platform projection, masked,
-  admin/policy-gated, or removed before ordinary-user Agent Frontend rollout.
-- Legacy `/api/memory/*`, `/api/mcp/*`, `/api/env-vars/*`,
-  `/api/agent/models/*`, and channel/admin endpoints now have audit-visible
-  route policy mappings, but still need actual enforcement, hiding, or remap to
-  ai-platform public/admin projections before G9 ordinary-user acceptance.
+- Imported legacy LambChat admin/MCP/envvar/channel sources remain. The current
+  projection scan reports zero forbidden or quarantined secret-like source
+  violations, but the active browser graph still reaches `/api/env-vars/*` and
+  `/api/roles/*`; those routes need projection remap or policy enforcement
+  before ordinary-user Agent Frontend rollout.
+- Legacy env-var, RBAC, and channel/admin endpoints have audit-visible route
+  policy mappings but still need actual enforcement, hiding, or remap to
+  ai-platform public/admin projections before G9 ordinary-user acceptance. The
+  generic fail-closed policy for `/api/agent/models/*` remains as a regression
+  guard even though no legacy model client is present.
 
 ## Multi-Image Delivery Plan
 
@@ -280,7 +287,7 @@ Current local and CI-contract evidence on 2026-06-08:
 - `python tools/frontend_projection_audit.py --format json` records the
   current production-source route inventory, active browser entry graph,
   active-browser route inventory,
-  quarantined legacy source findings, CI integration status, forbidden
+  quarantined legacy source findings when present, CI integration status, forbidden
   secret-like projection findings, and remaining legacy route policy gaps
   without printing local absolute paths or secret-like runtime configuration.
   The current status is `pass_with_policy_gaps`; this allows local
@@ -411,11 +418,11 @@ packaged frontend image trace.
 
 ## Remaining Risks
 
-- The imported frontend still contains legacy LambChat admin/model/MCP/persona
-  and sandbox-related panels. Secret-like `/channels`, `/models`, and Profile
-  env-var surfaces are now quarantined from the active browser entry graph; the
-  remaining route inventory still needs ai-platform remap/policy acceptance
-  before ordinary-user rollout.
+- The imported frontend still contains legacy LambChat admin/MCP/persona,
+  channel, and sandbox-related sources. The legacy model administration client
+  is gone and `/models` uses the governed public projection; active env-var and
+  RBAC compatibility routes plus the remaining route inventory still need
+  ai-platform remap/policy acceptance before ordinary-user rollout.
 - The source worktree on 211 was dirty at migration time; this import captures
   the hash-matched snapshot but does not clean the upstream LambChat POC repo.
 - Recorded capacity/load-test evidence remains missing, so no production concurrency

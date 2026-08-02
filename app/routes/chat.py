@@ -74,6 +74,12 @@ from app.required_tool_contract import (
     declaration_from_input,
     public_required_tool_detail,
 )
+from app.run_admission_policy import (
+    PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+    contains_persisted_platform_multi_agent_control,
+    contains_platform_multi_agent_control,
+)
+from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
 from app.settings import get_settings
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
@@ -169,6 +175,11 @@ def _canonical_pre_persistence_rejection_fingerprint(
 
 def _chat_stream_response_from_submission(row: dict[str, Any]) -> ChatStreamResponse:
     state = str(row.get("state") or "")
+    if state == "admission_rejected":
+        raise HTTPException(
+            status_code=409,
+            detail=str(row.get("rejection_code") or PLATFORM_MULTI_AGENT_NOT_SUPPORTED),
+        )
     if state == "rejected_before_persist":
         code = str(row.get("rejection_code") or "chat_submission_rejected")
         raise _chat_submission_http_error(
@@ -191,6 +202,11 @@ def _chat_stream_response_from_submission(row: dict[str, Any]) -> ChatStreamResp
 
 
 def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
+    if str(row.get("state") or "") == "admission_rejected":
+        raise HTTPException(
+            status_code=409,
+            detail=str(row.get("rejection_code") or PLATFORM_MULTI_AGENT_NOT_SUPPORTED),
+        )
     outcome = row.get("outcome_json")
     return ChatSubmissionResponse(
         submission_id=str(row["submission_id"]),
@@ -203,6 +219,15 @@ def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
         rejection_code=str(row["rejection_code"]) if row.get("rejection_code") else None,
         outcome=ChatStreamResponse.model_validate(outcome) if isinstance(outcome, dict) and outcome else None,
     )
+
+
+def _require_chat_submission_admitted(resolution: ChatSubmissionResponse) -> ChatSubmissionResponse:
+    if resolution.state == "admission_rejected":
+        raise HTTPException(
+            status_code=409,
+            detail=resolution.rejection_code or PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+        )
+    return resolution
 
 
 async def _resolve_chat_submission(
@@ -412,7 +437,12 @@ async def _admit_chat_submission(
         )
         if submission is None:
             raise HTTPException(status_code=404, detail="chat_submission_not_found")
-        if str(submission.get("state")) in {"rejected_before_persist", "enqueue_failed", "needs_confirmation"}:
+        if str(submission.get("state")) in {
+            "admission_rejected",
+            "rejected_before_persist",
+            "enqueue_failed",
+            "needs_confirmation",
+        }:
             return _chat_submission_resolution(submission)
         run_id = str(submission.get("run_id") or "")
         if not run_id:
@@ -426,6 +456,36 @@ async def _admit_chat_submission(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
+        execution_snapshot: dict[str, Any] | None = None
+        if str(run.get("status") or "") == "queued":
+            execution_snapshot = repositories.copied_run_execution_snapshot(run.get("input_json"))
+        retired_control_rejected = (
+            str(run.get("error_code") or "") == PLATFORM_MULTI_AGENT_NOT_SUPPORTED
+            or (
+                execution_snapshot is not None
+                and contains_persisted_platform_multi_agent_control(run.get("input_json"))
+            )
+        )
+        if retired_control_rejected:
+            if str(run.get("error_code") or "") != PLATFORM_MULTI_AGENT_NOT_SUPPORTED:
+                await terminalize_retired_platform_multi_agent_run(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=run_id,
+                )
+            await repositories.finalize_chat_submission(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                submission_id=submission_id,
+                state="admission_rejected",
+                rejection_code=PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+            )
+            return ChatSubmissionResponse(
+                submission_id=submission_id,
+                state="admission_rejected",
+                rejection_code=PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+            )
         if str(run.get("status") or "") != "queued":
             if str(run.get("error_code") or "") == "queue_enqueue_failed":
                 if str(submission.get("state")) != "enqueue_failed":
@@ -454,7 +514,8 @@ async def _admit_chat_submission(
                 submission["state"] = "queued"
                 submission["outcome_json"] = queued_outcome.model_dump(mode="json")
             return _chat_submission_resolution(submission)
-        execution_snapshot = repositories.copied_run_execution_snapshot(run.get("input_json"))
+        if execution_snapshot is None:
+            raise HTTPException(status_code=409, detail="chat_submission_not_admitted")
         queue_payload = _validate_queue_payload_for_enqueue(
             {
                 "tenant_id": principal.tenant_id,
@@ -606,7 +667,12 @@ async def _admit_chat_submission(
         )
         if submission is None:
             raise HTTPException(status_code=404, detail="chat_submission_not_found")
-        if str(submission.get("state")) in {"rejected_before_persist", "enqueue_failed", "needs_confirmation"}:
+        if str(submission.get("state")) in {
+            "admission_rejected",
+            "rejected_before_persist",
+            "enqueue_failed",
+            "needs_confirmation",
+        }:
             return _chat_submission_resolution(submission)
         prior_outcome = _chat_stream_response_from_submission(submission)
         queued_outcome = prior_outcome.model_copy(
@@ -846,18 +912,11 @@ def _file_ids_from_request(request: ChatStreamRequest) -> list[str]:
 
 
 def _has_legacy_client_mcp_selector(value: object) -> bool:
-    """Reject client-owned nested MCP selectors; Chat accepts the structured field only."""
+    """Reject client-owned MCP selectors; Chat accepts the structured field only."""
 
     if not isinstance(value, dict):
         return False
-    if "mcp_tool_ids" in value or "mcpToolIds" in value:
-        return True
-    steps = value.get("multi_agent_steps")
-    return isinstance(steps, list) and any(
-        isinstance(step, dict)
-        and ("mcp_tool_ids" in step or "mcpToolIds" in step)
-        for step in steps
-    )
+    return "mcp_tool_ids" in value or "mcpToolIds" in value
 
 
 def _requested_model_selection(request: ChatStreamRequest) -> dict[str, str] | None:
@@ -1250,6 +1309,20 @@ async def chat_stream(
                 return _chat_stream_response_from_submission(existing_submission_row)
             if fingerprint_matches:
                 return _chat_stream_response_from_submission(existing_submission_row)
+    if contains_platform_multi_agent_control(request.input):
+        code = PLATFORM_MULTI_AGENT_NOT_SUPPORTED
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request=request,
+            query_agent_id=query_agent_id,
+            workspace_id=request.workspace_id,
+            session_id=request.session_id,
+            code=code,
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=400, code=code)
+        raise HTTPException(status_code=400, detail=code)
     execution_polarity = classify_execution_polarity(request.message)
     selected_agent_profile = request.selected_agent_profile
     allowed = execution_polarity != "non_execution" or selected_agent_profile is not None
@@ -2174,7 +2247,9 @@ async def chat_stream(
         raise HTTPException(status_code=409, detail=code) from exc
     if submission_id is not None:
         try:
-            admitted = await _admit_chat_submission(principal=principal, submission_id=submission_id)
+            admitted = _require_chat_submission_admitted(
+                await _admit_chat_submission(principal=principal, submission_id=submission_id)
+            )
         except HTTPException:
             raise
         except Exception:
@@ -2262,7 +2337,9 @@ async def retry_chat_submission_admission(
         )
         if isinstance(resolved, ChatSubmissionPreLedgerAbsenceResponse):
             return resolved
-        return await _admit_chat_submission(principal=principal, submission_id=str(submission_id))
+        return _require_chat_submission_admitted(
+            await _admit_chat_submission(principal=principal, submission_id=str(submission_id))
+        )
     except HTTPException as exc:
         headers = {**(exc.headers or {}), "Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL}
         raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers) from exc

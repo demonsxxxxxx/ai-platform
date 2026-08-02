@@ -56,7 +56,6 @@ export function SkillsPanel({
     !isGovernedUnavailable &&
     (canPublishByAuth || effectivePermissions.has(Permission.MARKETPLACE_PUBLISH));
   const canEditSkills = skillFileWriteBacked && canWrite;
-  const canCreateSkills = false;
   const canImportSkills =
     skillImportBacked && (canWrite || actions.canAdminUploadSkills);
   const canBatchSkills =
@@ -105,7 +104,6 @@ export function SkillsPanel({
         clearError={actions.clearError}
         canWrite={canWrite && !isGovernedUnavailable}
         canEdit={canEditSkills && !isGovernedUnavailable}
-        canCreate={canCreateSkills && !isGovernedUnavailable}
         canImport={canImportSkills && !isGovernedUnavailable}
         canBatch={canBatchSkills && !isGovernedUnavailable}
         canDelete={canDeleteSkill && !isGovernedUnavailable}
@@ -132,14 +130,13 @@ export function SkillsPanel({
         }
         onSelectSkill={actions.handleSelectSkill}
         onSelectAll={actions.handleSelectAll}
-        onCreate={actions.handleCreate}
         onGithubClick={actions.handleGithubClick}
         onZipClick={actions.handleZipClick}
       />
 
       <SkillFormSidebar
         showModal={actions.showModal}
-        isCreating={actions.isCreating}
+        isCreating={false}
         editingSkill={actions.editingSkill}
         isLoading={actions.isLoading}
         onSave={actions.handleSave}
