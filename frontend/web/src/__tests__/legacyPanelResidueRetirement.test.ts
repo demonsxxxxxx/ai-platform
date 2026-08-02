@@ -9,6 +9,13 @@ import test from "node:test";
 
 const root = process.cwd();
 const locales = ["en", "zh", "ja", "ko", "ru"] as const;
+const memoryRootKeys = {
+  en: ["title", "workbench"],
+  zh: ["title", "workbench"],
+  ja: ["title"],
+  ko: ["title"],
+  ru: ["title"],
+} as const;
 
 const retainedKeys = {
   users: ["user"],
@@ -149,6 +156,81 @@ test("retired legacy memory service is absent while ai-platform memory APIs rema
       new RegExp(`export (?:async )?function ${api}\\b`),
       api,
     );
+  }
+});
+
+test("memory locale namespaces keep governed roots and cover active consumers", () => {
+  const memoryPanel = source("src/components/panels/MemoryPanel/index.tsx");
+  const consumedWorkbenchKeys = [
+    ...new Set(
+      Array.from(
+        memoryPanel.matchAll(/["'`]memory\.workbench\.([A-Za-z0-9_-]+)["'`]/g),
+        (match) => match[1],
+      ),
+    ),
+  ].sort();
+
+  assert.ok(consumedWorkbenchKeys.length > 0, "memory.workbench consumers");
+  assert.ok(consumedWorkbenchKeys.includes("source"), "memory.workbench.source");
+
+  for (const locale of locales) {
+    const messages = JSON.parse(
+      source(`src/i18n/locales/${locale}.json`),
+    ) as {
+      common: Record<string, unknown> & { timeAgo: Record<string, unknown> };
+      memory: Record<string, unknown>;
+      seo: { memory: Record<string, unknown> };
+    };
+
+    assert.deepEqual(
+      sortedKeys(messages.memory),
+      [...memoryRootKeys[locale]],
+      `${locale}:memory`,
+    );
+    assert.equal(typeof messages.memory.title, "string", `${locale}:memory.title`);
+
+    if (locale === "en" || locale === "zh") {
+      const workbench = messages.memory.workbench;
+      assert.equal(
+        typeof workbench === "object" && workbench !== null && !Array.isArray(workbench),
+        true,
+        `${locale}:memory.workbench`,
+      );
+      for (const key of consumedWorkbenchKeys) {
+        assert.equal(
+          Object.hasOwn(workbench as Record<string, unknown>, key),
+          true,
+          `${locale}:memory.workbench.${key}`,
+        );
+      }
+      assert.equal(
+        typeof (workbench as Record<string, unknown>).source,
+        "string",
+        `${locale}:memory.workbench.source`,
+      );
+    } else {
+      assert.equal(
+        Object.hasOwn(messages.memory, "workbench"),
+        false,
+        `${locale}:memory.workbench`,
+      );
+    }
+
+    for (const key of ["description", "title"]) {
+      const value = messages.seo.memory[key];
+      assert.equal(typeof value, "string", `${locale}:seo.memory.${key}`);
+      assert.notEqual(value, "", `${locale}:seo.memory.${key}`);
+    }
+    for (const key of ["daysAgo", "hoursAgo", "justNow", "minutesAgo", "monthsAgo"]) {
+      const value = messages.common.timeAgo[key];
+      assert.equal(typeof value, "string", `${locale}:common.timeAgo.${key}`);
+      assert.notEqual(value, "", `${locale}:common.timeAgo.${key}`);
+    }
+    for (const key of ["timeMonthsAgo", "timeWeeksAgo"]) {
+      const value = messages.common[key];
+      assert.equal(typeof value, "string", `${locale}:common.${key}`);
+      assert.notEqual(value, "", `${locale}:common.${key}`);
+    }
   }
 });
 
