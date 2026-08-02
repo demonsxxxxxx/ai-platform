@@ -76,6 +76,7 @@ from app.required_tool_contract import (
 )
 from app.run_admission_policy import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+    contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
 )
 from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
@@ -462,7 +463,7 @@ async def _admit_chat_submission(
             str(run.get("error_code") or "") == PLATFORM_MULTI_AGENT_NOT_SUPPORTED
             or (
                 execution_snapshot is not None
-                and contains_platform_multi_agent_control(execution_snapshot["input"])
+                and contains_persisted_platform_multi_agent_control(run.get("input_json"))
             )
         )
         if retired_control_rejected:
@@ -470,9 +471,7 @@ async def _admit_chat_submission(
                 await terminalize_retired_platform_multi_agent_run(
                     conn,
                     tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
                     run_id=run_id,
-                    trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
                 )
             await repositories.finalize_chat_submission(
                 conn,

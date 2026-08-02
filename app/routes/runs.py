@@ -72,6 +72,7 @@ from app.run_provenance import (
 )
 from app.run_admission_policy import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+    contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
 )
 from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
@@ -635,7 +636,7 @@ async def prepare_copied_run_for_queue(
     snapshot_auth_source = copied.get("auth_source") if queue_principal is not None else principal.source
     copied_snapshot = repositories.copied_run_execution_snapshot(copied)
     copied_input = copied_snapshot["input"]
-    if contains_platform_multi_agent_control(copied_input):
+    if contains_persisted_platform_multi_agent_control(copied):
         raise RepositoryConflictError(PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
@@ -1182,16 +1183,15 @@ async def _mutate_run_control_child(
                 operation_id=normalized_operation_id,
             )
             if copied is not None:
-                existing_snapshot = repositories.copied_run_execution_snapshot(copied.get("input_json"))
-                retired_control_rejected = contains_platform_multi_agent_control(existing_snapshot["input"])
+                retired_control_rejected = contains_persisted_platform_multi_agent_control(
+                    copied.get("input_json")
+                )
                 if retired_control_rejected:
                     child_run_id = str(copied["run_id"])
                     await terminalize_retired_platform_multi_agent_run(
                         conn,
                         tenant_id=principal.tenant_id,
-                        user_id=principal.user_id,
                         run_id=child_run_id,
-                        trace_id=standard_trace_id(child_run_id),
                     )
             if copied is None:
                 await enforce_user_active_run_limit(

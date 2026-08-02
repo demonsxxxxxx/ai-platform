@@ -9,7 +9,10 @@ from app.auth import AuthPrincipal
 from app.main import create_app
 from app.models import ChatSubmissionResponse
 from app.repositories import RepositoryConflictError
-from app.run_admission_policy import contains_platform_multi_agent_control
+from app.run_admission_policy import (
+    contains_persisted_platform_multi_agent_control,
+    contains_platform_multi_agent_control,
+)
 from app.routes.chat import get_chat_submission, retry_chat_submission_admission
 from app.routes.lambchat_compat import CHAT_PUBLIC_RUN_EVENT_PROJECTIONS
 from app.routes.runs import prepare_copied_run_for_queue
@@ -52,6 +55,29 @@ def test_platform_multi_agent_input_policy_does_not_reject_sdk_semantic_events()
     assert contains_platform_multi_agent_control(
         {"message": "coordinate this task", "event_type": "subagent_started"}
     ) is False
+
+
+@pytest.mark.parametrize(
+    "input_json",
+    [
+        {"execution_mode": "multi_agent"},
+        {"input": {"execution_mode": "multi_agent"}},
+        {"multi_agent_steps": [{"step_key": "review"}]},
+        {"input": {"multi_agent_steps": [{"step_key": "review"}]}},
+        {"multi_agent_dispatch": {"parent_run_id": "run-parent"}},
+        {"input": {"multi_agent_dispatch": {"parent_run_id": "run-parent"}}},
+    ],
+    ids=[
+        "root-execution-mode",
+        "nested-execution-mode",
+        "root-steps",
+        "nested-steps",
+        "root-dispatch",
+        "nested-dispatch",
+    ],
+)
+def test_persisted_input_policy_recognizes_root_and_nested_historical_controls(input_json):
+    assert contains_persisted_platform_multi_agent_control(input_json) is True
 
 
 @pytest.mark.parametrize(
@@ -135,10 +161,30 @@ async def test_copied_run_rejects_historical_platform_multi_agent_input_before_r
 
 
 @pytest.mark.parametrize("action", ["retry", "resume"])
+@pytest.mark.parametrize(
+    "persisted_input_json",
+    [
+        {"execution_mode": "multi_agent"},
+        {"input": {"execution_mode": "multi_agent"}},
+        {"multi_agent_steps": [{"step_key": "review"}]},
+        {"input": {"multi_agent_steps": [{"step_key": "review"}]}},
+        {"multi_agent_dispatch": {"parent_run_id": "run-parent"}},
+        {"input": {"multi_agent_dispatch": {"parent_run_id": "run-parent"}}},
+    ],
+    ids=[
+        "root-execution-mode",
+        "nested-execution-mode",
+        "root-steps",
+        "nested-steps",
+        "root-dispatch",
+        "nested-dispatch",
+    ],
+)
 def test_committed_run_control_recovery_terminalizes_retired_snapshot_without_enqueue(
     monkeypatch,
     client,
     action,
+    persisted_input_json,
 ):
     operation_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
     terminalizations: list[dict[str, object]] = []
@@ -164,7 +210,7 @@ def test_committed_run_control_recovery_terminalizes_retired_snapshot_without_en
             "user_id": "user-a",
             "agent_id": "general-agent",
             "skill_id": "general-chat",
-            "input_json": {"input": {"multi_agent_steps": [{"step_key": "review"}]}},
+            "input_json": persisted_input_json,
         }
 
     async def terminalize(_conn, **kwargs):
@@ -201,15 +247,35 @@ def test_committed_run_control_recovery_terminalizes_retired_snapshot_without_en
     assert terminalizations == [
         {
             "tenant_id": "tenant-a",
-            "user_id": "user-a",
             "run_id": "run-retired-child",
-            "trace_id": "trace_run_retired_child",
         }
     ]
 
 
 @pytest.mark.asyncio
-async def test_chat_retry_terminalizes_retired_persisted_snapshot_before_enqueue(monkeypatch):
+@pytest.mark.parametrize(
+    "persisted_input_json",
+    [
+        {"execution_mode": "multi_agent"},
+        {"input": {"execution_mode": "multi_agent"}},
+        {"multi_agent_steps": [{"step_key": "review"}]},
+        {"input": {"multi_agent_steps": [{"step_key": "review"}]}},
+        {"multi_agent_dispatch": {"parent_run_id": "run-parent"}},
+        {"input": {"multi_agent_dispatch": {"parent_run_id": "run-parent"}}},
+    ],
+    ids=[
+        "root-execution-mode",
+        "nested-execution-mode",
+        "root-steps",
+        "nested-steps",
+        "root-dispatch",
+        "nested-dispatch",
+    ],
+)
+async def test_chat_retry_terminalizes_retired_persisted_snapshot_before_enqueue(
+    monkeypatch,
+    persisted_input_json,
+):
     submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
     submission = {
         "submission_id": submission_id,
@@ -225,7 +291,7 @@ async def test_chat_retry_terminalizes_retired_persisted_snapshot_before_enqueue
         "agent_id": "general-agent",
         "skill_id": "general-chat",
         "trace_id": "trace-retired-chat",
-        "input_json": {"input": {"multi_agent_dispatch": {"parent_run_id": "run-parent"}}},
+        "input_json": persisted_input_json,
     }
     calls: list[tuple[str, dict[str, object]]] = []
     committed_transactions = 0

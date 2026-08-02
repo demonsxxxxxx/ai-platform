@@ -7929,8 +7929,10 @@ async def test_terminalization_progresses_in_bounded_crash_retry_batches_without
     assert len(request_audits) == request_count
     assert len({audit["target_id"] for audit in request_audits}) == request_count
     assert len(run_events) == len(run_audits) == 1
+    assert run_events[0]["visible_to_user"] is True
     assert run_events[0]["payload"]["artifact_count"] == 2
     assert run_events[0]["payload"]["result"] == {"message": "failed"}
+    assert run_audits[0]["action"] == f"run.{target_status}"
     if target_status == "failed":
         assert run_events[0]["payload"]["error_code"] == "executor_failure"
         assert run_events[0]["payload"]["error_message"] == "failed"
