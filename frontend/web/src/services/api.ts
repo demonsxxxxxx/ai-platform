@@ -48,7 +48,6 @@ export { mcpApi } from "./api/mcp";
 export { envvarApi } from "./api/envvar";
 export { uploadApi } from "./api/upload";
 export { versionApi } from "./api/version";
-export { projectApi } from "./api/project";
 export {
   type ToolPermissionHistoryResponse,
   type ToolPermissionHistoryView,
