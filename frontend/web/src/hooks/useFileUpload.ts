@@ -2,7 +2,6 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { uploadApi, UploadRequestError } from "../services/api/upload";
-import type { FileCheckResult } from "../types";
 import { compressImageFile } from "../utils/imageCompression";
 import { uuid } from "../utils/uuid";
 import type { MessageAttachment, FileCategory } from "../types";
@@ -55,29 +54,7 @@ function getFileCategory(file: File): FileCategory {
   return "document";
 }
 
-function computeFileHash(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(
-      new URL("../workers/hashWorker.ts", import.meta.url),
-      { type: "module" },
-    );
-    worker.onmessage = (e) => {
-      worker.terminate();
-      if (e.data.error) {
-        reject(new Error(e.data.error));
-      } else {
-        resolve(e.data.hash);
-      }
-    };
-    worker.onerror = (e) => {
-      worker.terminate();
-      reject(new Error(e.message));
-    };
-    worker.postMessage({ file });
-  });
-}
-
-type UploadClient = Pick<typeof uploadApi, "checkFile"> & {
+type UploadClient = {
   uploadFile: (
     file: File,
     options: { onProgress?: (progress: number) => void },
@@ -92,7 +69,6 @@ interface FileUploadTaskOptions {
   abortMap: Map<string, () => void>;
   cancelled: Set<string>;
   prepareFile: (file: File) => Promise<File>;
-  hashFile: (file: File) => Promise<string>;
   uploadClient: UploadClient;
   createId: () => string;
   notifyError: (message: string) => void;
@@ -141,7 +117,6 @@ export function startFileUploadTask({
   abortMap,
   cancelled,
   prepareFile,
-  hashFile,
   uploadClient,
   createId,
   notifyError,
@@ -186,63 +161,6 @@ export function startFileUploadTask({
             : attachment,
         ),
       );
-
-      let check: FileCheckResult = { exists: false };
-      try {
-        const hash = await hashFile(processedFile);
-        if (isCancelled()) {
-          finish();
-          return;
-        }
-        onAttachmentsChange((previous) =>
-          previous.map((attachment) =>
-            attachment.id === tempId
-              ? { ...attachment, uploadProgress: 1 }
-              : attachment,
-          ),
-        );
-        check = await uploadClient.checkFile(
-          hash,
-          processedFile.size,
-          processedFile.name,
-          processedFile.type,
-        );
-      } catch {
-        if (isCancelled()) {
-          finish();
-          return;
-        }
-      }
-
-      if (isCancelled()) {
-        finish();
-        return;
-      }
-      if (check.exists && "key" in check) {
-        const existing = check as FileCheckResult;
-        const finalAttachment: MessageAttachment = {
-          id: createId(),
-          key: existing.key ?? "",
-          name: existing.name || processedFile.name,
-          type: existing.type as FileCategory,
-          mimeType: existing.mimeType ?? processedFile.type,
-          size: existing.size ?? processedFile.size,
-          url: existing.url || `/api/upload/file/${existing.key ?? ""}`,
-        };
-        onAttachmentsChange((previous) =>
-          previous.map((attachment) =>
-            attachment.id === tempId
-              ? {
-                  ...finalAttachment,
-                  uploadProgress: 100,
-                  isUploading: false,
-                }
-              : attachment,
-          ),
-        );
-        finish();
-        return;
-      }
 
       const handle = uploadClient.uploadFile(processedFile, {
         onProgress: (progress) => {
@@ -392,7 +310,6 @@ export function useFileUpload({
           fileCategory === "image"
             ? compressImageFile(source).catch(() => source)
             : Promise.resolve(source),
-        hashFile: computeFileHash,
         uploadClient: uploadApi,
         createId: uuid,
         notifyError: toast.error,

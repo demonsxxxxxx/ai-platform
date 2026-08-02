@@ -1,9 +1,13 @@
 {
   "schema_version": "ai-platform.code-governance-exception.v1",
-  "expires_on": "2026-08-07",
-  "owner": "AI Platform controller 019f9c5e-81c5-7071-a09a-ce37393fb4b1",
-  "reason": "Issue #746 internal-beta trusted OpenSandbox SDK Skill admission covers the original exact range 9746ea3cb34537fc9a575d75e56604430a66635b to 694129d15a4c4a946552db9ca2003023e8eff522 and the post-deploy exact repair 843793c3f3d10a5e3b399ece88f6fd1e10d86d02 to 2be05dcfe7f6aac6cbaaa6e1605bce9812842107. The repair aligns the selected Skill's OpenSandbox workspace isolation with its SDK tool subjects. This exempts only the resulting production-subsystem count; no lint, file-count, net-LOC, or hot-file policy is relaxed.",
+  "expires_on": "2026-08-15",
+  "owner": "ai-platform-governance",
+  "reason": "PR #771 is the atomic retirement integration scope, including #770 and #772, measured over immutable authority 475197b77bb66b3f531f9a2c071ea837c5d08947 to de8bf162cf08d6c4f94336b0945fa78663b78f0d. The exact report covers 96 behavior production files, 13 classifier subsystems, production net LOC -11327, 149 changed files, and 37 test files. This temporary exception exempts only production_file_count and production_subsystem_count; all other governance requirements remain enforced. PR #775 will remove this exception immediately after the integration merges.",
   "violations": [
+    {
+      "code": "production_file_count",
+      "path": null
+    },
     {
       "code": "production_subsystem_count",
       "path": null

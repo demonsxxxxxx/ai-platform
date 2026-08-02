@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -8,25 +8,6 @@ const root = process.cwd();
 function read(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
-
-test("department skill policy is rendered as a fail-closed group toggle row", () => {
-  assert.equal(
-    existsSync(
-      join(root, "src/components/governance/GroupAvailabilityToggleRow.tsx"),
-    ),
-    true,
-  );
-
-  const toggle = read("src/components/governance/GroupAvailabilityToggleRow.tsx");
-  const availability = read("src/components/governance/groupAvailability.ts");
-
-  assert.match(toggle, /data-group-toggle-ui/);
-  assert.match(toggle, /department-skill-policy/);
-  assert.match(toggle, /backed,/);
-  assert.match(toggle, /aria-disabled=\{disabled\}/);
-  assert.match(availability, /backed === false/);
-  assert.match(availability, /state:\s*"unavailable"/);
-});
 
 test("skills and marketplace surfaces avoid obsolete department availability placeholders", () => {
   const skillsHub = read("src/components/panels/SkillsHubPanel.tsx");
@@ -141,49 +122,9 @@ test("mcp lifecycle governance exposes the backed admin lifecycle within role bo
   assert.doesNotMatch(mcp, /updateCredentials\(/);
 });
 
-test("admin feedback and notification panels use shared enterprise primitives", () => {
-  const feedback = read("src/components/panels/FeedbackPanel.tsx");
-  const notifications = read("src/components/panels/NotificationPanel.tsx");
-  const componentsCss = read("src/styles/components.css");
-  const enterpriseSelect = read("src/components/common/EnterpriseSelect.tsx");
-
-  for (const utility of [
-    "enterprise-modal-backdrop",
-    "enterprise-modal-shell",
-    "enterprise-form-input",
-    "enterprise-field-control",
-    "enterprise-icon-button",
-    "enterprise-empty-state",
-  ]) {
-    assert.match(componentsCss, new RegExp(`\\.${utility}`));
-  }
-
-  for (const source of [feedback, notifications]) {
-    assert.match(source, /enterprise-modal-backdrop/);
-    assert.match(source, /enterprise-modal-shell/);
-    assert.match(source, /enterprise-empty-state/);
-    assert.doesNotMatch(source, /shadow-xl/);
-    assert.doesNotMatch(source, /fixed inset-0 z-50 bg-black\/50/);
-    assert.doesNotMatch(source, /glass-card/);
-    assert.doesNotMatch(source, /ChatGPT style/i);
-  }
-
-  assert.match(notifications, /enterprise-form-input/);
-  assert.match(notifications, /enterprise-divider/);
-  assert.match(notifications, /enterprise-form-textarea/);
-  assert.match(feedback, /enterprise-code-chip/);
-  assert.match(enterpriseSelect, /enterprise-select-dropdown/);
-  assert.doesNotMatch(enterpriseSelect, /GlassSelect|glass-/);
-});
-
 test("authenticated admin surfaces avoid legacy glass and heavy modal styling", () => {
   const activeSurfaceFiles = [
-    "src/components/panels/UsersPanel.tsx",
     "src/components/panels/RolesPanel.tsx",
-    "src/components/panels/SettingsPanel.tsx",
-    "src/components/panels/JsonSchemaEditor.tsx",
-    "src/components/panels/SystemHealthSection.tsx",
-    "src/components/panels/AdminRuntimeCapacitySection.tsx",
     "src/components/panels/MemoryPanel/index.tsx",
     "src/components/panels/MemoryPanel/MemoryFilter.tsx",
     "src/components/panels/MemoryPanel/MemoryEditor.tsx",
@@ -290,7 +231,6 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
   for (const apiName of [
     "getSkill",
     "getFullSkill",
-    "createSkill",
     "updateSkill",
     "deleteSkill",
     "toggleSkill",
@@ -322,19 +262,27 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     "toggleAll must guard hook-level enabled before using target state",
   );
   assert.match(skillsHook, /effectivePermissions/);
-  assert.match(toolsHook, /mcpApi\.list\(/);
-  assert.match(toolsHook, /mcpApi\.discoverTools\(/);
   assert.match(
     toolsHook,
-    /server\.enabled && !tool\.system_disabled && !tool\.user_disabled/,
+    /if \(!hookEnabled\) \{[\s\S]*?setCatalog\(\{ generation, status: "empty", \.\.\.EMPTY_CATALOG \}\);[\s\S]*?return;/,
+  );
+  assert.match(
+    toolsHook,
+    /authenticatedRequest\(`\/api\/mcp\/chat-tools\$\{query\}`\)/,
+  );
+  assert.match(toolsHook, /if \(!rawResponse\.ok\) throw new Error\("chat_mcp_catalog_request_failed"\)/);
+  assert.match(toolsHook, /parseChatMcpCatalogResponse\(await rawResponse\.json\(\)\)/);
+  assert.match(toolsHook, /publishChatMcpCatalogFailure\(current, generation\)/);
+  assert.match(
+    toolsHook,
+    /const authorizedIds = new Set\(tools\.map\(\(tool\) => tool\.name\)\);[\s\S]*?filter\(\(toolId\) => authorizedIds\.has\(toolId\)\)/,
   );
   assert.doesNotMatch(
     toolsHook,
-    /void agentIdRef\.current;\s*setTools\(\[\]\);/,
+    /mcpApi\.|void agentIdRef\.current;\s*setTools\(\[\]\);/,
   );
   assert.match(skillsList, /canImportSkills/);
   assert.match(skillsList, /canEditSkills/);
-  assert.match(skillsList, /canCreateSkills/);
   assert.match(skillsList, /canBatchSkills/);
   assert.match(skillsList, /canManageSkills/);
   assert.match(skillCard, /hasWriteActions/);
@@ -357,12 +305,11 @@ test("read-only skills catalog removes write controls instead of showing disable
 
   assert.match(skillsList, /canImportSkills/);
   assert.match(skillsList, /canEditSkills/);
-  assert.match(skillsList, /canCreateSkills/);
   assert.match(skillsList, /canBatchSkills/);
   assert.match(skillsList, /canManageSkills/);
   assert.match(skillsList, /\{canBatchSkills && filteredSkills\.length > 0 &&/);
   assert.match(skillsList, /\{canImportSkills && \(/);
-  assert.match(skillsList, /\{canCreateSkills && \(/);
+  assert.doesNotMatch(skillsList, /canCreateSkills|onCreate/);
   assert.doesNotMatch(
     skillsList,
     /disabled=\{governedUnavailable \|\| !canWrite\}/,
@@ -384,16 +331,12 @@ test("read-only skills catalog removes write controls instead of showing disable
   assert.match(skillsPanel, /skillFileWriteBacked = true/);
   assert.match(skillsPanel, /skillImportBacked = true/);
   assert.match(skillsPanel, /skillBatchWriteBacked = true/);
-  assert.match(skillsPanel, /canCreateSkills = false/);
   assert.match(skillsPanel, /canWrite=\{canWrite && !isGovernedUnavailable\}/);
   assert.match(
     skillsPanel,
     /canEdit=\{canEditSkills && !isGovernedUnavailable\}/,
   );
-  assert.match(
-    skillsPanel,
-    /canCreate=\{canCreateSkills && !isGovernedUnavailable\}/,
-  );
+  assert.doesNotMatch(skillsPanel, /canCreateSkills|onCreate=\{/);
   assert.match(
     skillsPanel,
     /canImport=\{canImportSkills && !isGovernedUnavailable\}/,
@@ -434,7 +377,6 @@ test("skills phase one backed operations match current public contracts", () => 
   assert.match(skillApi, /async installGitHub/);
   assert.match(skillsPanel, /skillFileWriteBacked = true/);
   assert.match(skillsPanel, /skillImportBacked = true/);
-  assert.match(skillsPanel, /canCreateSkills = false/);
   assert.match(skillsPanel, /skillBatchWriteBacked = true/);
   assert.match(skillsList, /\{canBatchSkills && filteredSkills\.length > 0 &&/);
   assert.match(
@@ -442,6 +384,8 @@ test("skills phase one backed operations match current public contracts", () => 
     /initialZipSkillSelection\(result\.skills, canAdminUploadSkills\)/,
   );
   assert.match(skillsActions, /canAdminUploadSkills = isAiAdminUser\(user\)/);
+  assert.doesNotMatch(skillsActions, /handleCreate|createSkill/);
+  assert.doesNotMatch(skillApi, /async create\(data: SkillCreate\)/);
   assert.doesNotMatch(skillsActions, /Permission\.SKILL_ADMIN/);
   assert.match(zipUploadModal, /const backedCount = zipSkills\.filter\(\(s\) => s\.already_exists\)\.length/);
   assert.match(zipUploadModal, /canSelectZipSkill\(skill, adminRelease\)/);

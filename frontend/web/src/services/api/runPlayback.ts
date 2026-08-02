@@ -93,23 +93,6 @@ export interface RunPlaybackStep {
   updated_at?: string | null;
 }
 
-export interface RunPlaybackMultiAgentCounts {
-  total?: number;
-  pending?: number;
-  succeeded?: number;
-  failed?: number;
-  running?: number;
-  cancelled?: number;
-  reused?: number;
-  blocked?: number;
-}
-
-export interface RunPlaybackMultiAgent {
-  run_id?: string;
-  steps: RunPlaybackStep[];
-  counts: RunPlaybackMultiAgentCounts;
-}
-
 export interface RunPlaybackReferencedMaterials {
   file_count?: number;
   message_count?: number;
@@ -157,7 +140,6 @@ export interface RunPlaybackResponse {
   events: RunPlaybackEvent[];
   artifacts: RunPlaybackArtifact[];
   steps: RunPlaybackStep[];
-  multi_agent: RunPlaybackMultiAgent | null;
   context_ref?: RunPlaybackContextRef | null;
 }
 
@@ -314,7 +296,6 @@ export function normalizeRunPlayback(
     events: normalizeArray(source.events, normalizeEvent),
     artifacts: normalizeArray(source.artifacts, normalizeArtifact),
     steps: normalizeArray(source.steps, normalizeStep),
-    multi_agent: normalizeMultiAgent(source.multi_agent),
     context_ref: normalizeContextRef(source.context_ref),
   };
 }
@@ -436,33 +417,6 @@ function normalizeStep(value: unknown): RunPlaybackStep {
     finished_at: asNullableString(source.finished_at),
     created_at: asNullableString(source.created_at),
     updated_at: asNullableString(source.updated_at),
-  });
-}
-
-function normalizeMultiAgent(value: unknown): RunPlaybackMultiAgent | null {
-  const source = asRecord(value);
-  if (!source) return null;
-
-  return {
-    run_id: asString(source.run_id),
-    steps: normalizeArray(source.steps, normalizeStep),
-    counts: normalizeMultiAgentCounts(source.counts),
-  };
-}
-
-function normalizeMultiAgentCounts(value: unknown): RunPlaybackMultiAgentCounts {
-  const source = asRecord(value);
-  if (!source) return {};
-
-  return compactObject({
-    total: asNumber(source.total),
-    pending: asNumber(source.pending),
-    succeeded: asNumber(source.succeeded),
-    failed: asNumber(source.failed),
-    running: asNumber(source.running),
-    cancelled: asNumber(source.cancelled),
-    reused: asNumber(source.reused),
-    blocked: asNumber(source.blocked),
   });
 }
 

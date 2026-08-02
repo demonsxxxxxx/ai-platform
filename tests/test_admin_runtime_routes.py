@@ -39,6 +39,7 @@ def signed_runtime_lease(
     workspace_id = "workspace-a"
     user_id = "user-a"
     session_id = f"session-{run_id}"
+    attempt_id = f"attempt-{run_id}"
     container_id = f"exec-{run_id}"
     container_name = f"executor-{container_id}"
     image = "registry.test/executor@sha256:" + "a" * 64
@@ -57,6 +58,7 @@ def signed_runtime_lease(
         user_id=user_id,
         session_id=session_id,
         run_id=run_id,
+        attempt_id=attempt_id,
         image_subject=image,
         image_digest="sha256:" + "a" * 64,
         authorized_skill_scope=governed_egress_authorized_skill_scope(skill_ids=[], mcp_tool_ids=[]),
@@ -77,7 +79,7 @@ def signed_runtime_lease(
             "evidence_class": "runtime_lease_projection",
             "container_id": container_id,
             "container_name": container_name,
-            "labels": {},
+            "labels": {"ai-platform.attempt_id": attempt_id},
             **{
                 f"governed_egress_{field}": proof[field]
                 for field in (
@@ -184,69 +186,14 @@ def test_admin_runtime_containers_requires_admin(monkeypatch):
     assert response.json()["detail"] == "not_ai_admin"
 
 
-def test_admin_runtime_multi_agent_dispatch_cleanup_requires_admin(monkeypatch):
-    async def fail_cleanup(*args, **kwargs):
-        raise AssertionError("ordinary users must fail before cleanup")
-
+@pytest.mark.parametrize("request_headers", [user_headers(), admin_headers()])
+def test_admin_runtime_multi_agent_dispatch_cleanup_is_not_mounted(monkeypatch, request_headers):
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.cleanup_expired_multi_agent_dispatch_claims",
-        fail_cleanup,
-        raising=False,
-    )
     client = TestClient(create_app())
 
-    response = client.post("/api/ai/admin/runtime/multi-agent/dispatch/cleanup", headers=user_headers())
+    response = client.post("/api/ai/admin/runtime/multi-agent/dispatch/cleanup", headers=request_headers)
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "not_ai_admin"
-
-
-def test_admin_runtime_multi_agent_dispatch_cleanup_returns_same_tenant_expired_claims(monkeypatch):
-    calls = []
-
-    @asynccontextmanager
-    async def cleanup_transaction():
-        yield object()
-
-    async def fake_cleanup(conn, *, tenant_id, cleaned_by, limit=100):
-        calls.append((tenant_id, cleaned_by, limit))
-        return [
-            {
-                "step_id": "step-code",
-                "run_id": "run-ready",
-                "step_key": "code",
-                "dispatch_id": "dispatch-code",
-                "status": "pending",
-            }
-        ]
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", cleanup_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.cleanup_expired_multi_agent_dispatch_claims",
-        fake_cleanup,
-        raising=False,
-    )
-    client = TestClient(create_app())
-
-    response = client.post("/api/ai/admin/runtime/multi-agent/dispatch/cleanup", headers=admin_headers())
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "tenant_id": "default",
-        "expired_count": 1,
-        "expired_claims": [
-            {
-                "step_id": "step-code",
-                "run_id": "run-ready",
-                "step_key": "code",
-                "dispatch_id": "dispatch-code",
-                "status": "pending",
-            }
-        ],
-    }
-    assert calls == [("default", "dev-admin", 100)]
+    assert response.status_code == 404
 
 
 def test_admin_runtime_queue_omits_raw_redis_keys(monkeypatch):
@@ -609,9 +556,8 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
         assert status == "active"
         return [
             {
-                        "id": "lease-active",
-                        "tenant_id": "default",
-                        "run_id": "run-a",
+                "id": "lease-active",
+                "tenant_id": "default",
                 "workspace_id": "default",
                 "user_id": "user-a",
                 "session_id": "session-a",

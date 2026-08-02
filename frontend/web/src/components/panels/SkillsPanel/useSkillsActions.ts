@@ -68,7 +68,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     listError,
     getSkill,
     getFullSkill,
-    createSkill,
     updateSkill,
     deleteSkill,
     batchDeleteSkills,
@@ -120,7 +119,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
 
   // Form modal state
   const [editingSkill, setEditingSkill] = useState<SkillResponse | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
   const [showModal, setShowModal] = useState(false);
 
   // Batch selection state
@@ -181,25 +179,16 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   const [githubExporting, setGithubExporting] = useState(false);
 
   // CRUD handlers
-  const handleCreate = () => {
-    setIsCreating(true);
-    setEditingSkill(null);
-    setShowModal(true);
-  };
-
   const handleEdit = async (skill: SkillResponse) => {
     const fullSkill = await getSkill(skill.name);
     setEditingSkill(fullSkill || skill);
-    setIsCreating(false);
     setShowModal(true);
   };
 
   const handleSave = async (data: SkillCreate): Promise<boolean> => {
     let success = false;
     try {
-      if (isCreating) {
-        success = await createSkill(data);
-      } else if (editingSkill) {
+      if (editingSkill) {
         // Use filePaths (lazy-load mode) when available, fallback to files keys
         const oldFiles = editingSkill.filePaths?.length
           ? editingSkill.filePaths
@@ -216,7 +205,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
       if (success) {
         setShowModal(false);
         setEditingSkill(null);
-        setIsCreating(false);
       }
     } catch {
       success = false;
@@ -227,7 +215,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   const handleCancel = () => {
     setShowModal(false);
     setEditingSkill(null);
-    setIsCreating(false);
   };
 
   const handleExportZip = async (name: string) => {
@@ -707,9 +694,7 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
 
     // Form modal
     editingSkill,
-    isCreating,
     showModal,
-    handleCreate,
     handleEdit,
     handleSave,
     handleCancel,

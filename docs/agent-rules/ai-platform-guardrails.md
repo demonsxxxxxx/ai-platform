@@ -44,6 +44,19 @@ evidence.
   sandbox, schema, shared contracts, platform multi-run / SDK subagent
   expansion, and frontend-backend auth/session contracts as high-verification
   areas.
+- Keep Agent/Harness orchestration behind the Engine adapter boundary. The
+  platform owns admission, authorization, context binding, queueing, sandbox
+  policy, persistence, and public projections; the selected Engine SDK owns
+  model/tool loops and any internal subagent coordination.
+- Platform-owned multi-run admission is retired. Client input containing
+  `execution_mode=multi_agent`, `multi_agent_steps`, or
+  `multi_agent_dispatch` must fail closed instead of creating platform child
+  runs. Generic run steps and SDK-originated semantic subagent events remain
+  valid public projection inputs and must not imply a platform dispatcher.
+- Engine-specific SDK types and callbacks must terminate inside the Engine
+  adapter. Routes, repositories, queue contracts, and public SSE contracts
+  must remain stable when replacing the current Claude Agent SDK adapter with
+  another Harness such as Pi.
 - Keep tenant/workspace/user boundaries explicit in queue, quota, worker
   maintenance, memory cleanup, dispatcher, and Admin operational projections.
 - Do not let AD/company auth stand in for per-tenant quota, fair scheduling, or

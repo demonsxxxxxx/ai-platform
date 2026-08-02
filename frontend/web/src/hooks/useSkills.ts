@@ -16,7 +16,6 @@ import type {
   SkillSource,
   UserSkill,
   UserSkillDetail,
-  SkillCreate,
   PublishToMarketplaceRequest,
   BinaryFileInfo,
 } from "../types/skill";
@@ -123,7 +122,6 @@ export function useSkills(options?: {
   const [listError, setListError] = useState<string | null>(null);
 
   // Per-operation loading states for better UX
-  const [isCreating, setIsCreating] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -339,26 +337,6 @@ export function useSkills(options?: {
       }
     },
     [enabled, skills],
-  );
-
-  // Create skill
-  const createSkill = useCallback(
-    async (data: SkillCreate): Promise<boolean> => {
-      if (!enabled) return false;
-      setIsCreating(true);
-      setError(null);
-      try {
-        await skillApi.create(data);
-        await fetchSkills();
-        return true;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to create skill");
-        return false;
-      } finally {
-        setIsCreating(false);
-      }
-    },
-    [enabled, fetchSkills],
   );
 
   // Update skill
@@ -867,7 +845,6 @@ export function useSkills(options?: {
     fetchSkills,
     getSkill,
     getFullSkill,
-    createSkill,
     updateSkill,
     deleteSkill,
     batchDeleteSkills,
@@ -887,7 +864,6 @@ export function useSkills(options?: {
     publishToMarketplace,
     pendingSkillNames,
     isMutating,
-    isCreating,
     isUpdating,
     isDeleting,
     isUploading,

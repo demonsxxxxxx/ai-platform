@@ -4,11 +4,10 @@ import pytest
 from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
-from app.models import MultiAgentDispatchClaimRequest, QueueRunPayload
+from app.models import QueueRunPayload
 from app.routes import lambchat_compat
 from app.routes.runs import (
     _compensate_enqueue_failure,
-    claim_multi_agent_dispatch,
     copy_run,
     resume_run,
     retry_run,
@@ -68,25 +67,6 @@ async def test_worker_missing_physical_snapshot_never_rebuilds_context(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_multi_agent_dispatch_is_rejected_before_transaction_or_candidate_claim(monkeypatch):
-    async def forbidden_transaction():
-        raise AssertionError("deferred dispatch must not open a candidate transaction")
-        yield object()
-
-    monkeypatch.setattr("app.routes.runs.transaction", forbidden_transaction)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await claim_multi_agent_dispatch(
-            "run-a",
-            MultiAgentDispatchClaimRequest(step_key="step-a"),
-            principal=_principal(),
-        )
-
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "multi_agent_dispatch_not_available"
-
-
-@pytest.mark.asyncio
 async def test_run_enqueue_compensation_uses_the_durable_failed_transition(monkeypatch):
     calls = []
 
@@ -121,7 +101,7 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
     repository_method,
     source_run_id,
 ):
-    """Copy, retry, and resume share a committed post-enqueue failure transition."""
+    """Copy compensates, while idempotent retry/resume retain their committed child."""
 
     committed: list[list[tuple[str, str]]] = []
 
@@ -142,6 +122,18 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
     async def allow_admission(_conn, **_kwargs):
         return None
 
+    async def allow_reauthorization(_conn, **_kwargs):
+        return None
+
+    async def acquire_operation_lock(_conn, **_kwargs):
+        return None
+
+    async def no_existing_operation(_conn, **_kwargs):
+        return None
+
+    async def record_operation(_conn, **_kwargs):
+        return "event-operation"
+
     async def create_copied_run(conn, **_kwargs):
         conn.pending.append(("run_created", "run-enqueue-failure"))
         return {"run_id": "run-enqueue-failure", "session_id": "session-a"}
@@ -158,6 +150,19 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
 
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", allow_admission)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", allow_reauthorization)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.acquire_run_control_operation_lock",
+        acquire_operation_lock,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_run_control_operation",
+        no_existing_operation,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.record_run_control_operation",
+        record_operation,
+    )
     monkeypatch.setattr(f"app.routes.runs.repositories.{repository_method}", create_copied_run)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepared_queue_payload)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
@@ -167,10 +172,14 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
         await route(source_run_id, principal=_principal())
 
     assert exc_info.value.status_code == 503
-    assert committed == [
-        [("run_created", "run-enqueue-failure")],
-        [("run_failed", "run-enqueue-failure")],
-    ]
+    assert committed == (
+        [
+            [("run_created", "run-enqueue-failure")],
+            [("run_failed", "run-enqueue-failure")],
+        ]
+        if repository_method == "copy_run_as_new_task"
+        else [[("run_created", "run-enqueue-failure")]]
+    )
 
 
 @pytest.mark.asyncio

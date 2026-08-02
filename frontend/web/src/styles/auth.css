@@ -69,7 +69,7 @@ html.dark .auth-crosshatch::before {
     linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
 }
 
-/* Auth atmospheric gradients (matches landing page hero) */
+/* Auth atmospheric gradients */
 .auth-atmosphere {
   position: absolute;
   inset: 0;
@@ -231,7 +231,7 @@ html.dark .auth-primary-button:hover {
     0 12px 32px rgba(0, 0, 0, 0.34);
 }
 
-/* Shimmer sweep on hover (matches blog-btn-primary) */
+/* Shimmer sweep on hover */
 .auth-primary-button::after {
   content: "";
   position: absolute;
@@ -261,7 +261,7 @@ html.dark .auth-primary-button::after {
   );
 }
 
-/* Auth secondary button - ghost pill (matches landing ghost button) */
+/* Auth secondary button - ghost pill */
 .auth-secondary-button {
   border: 1px solid rgba(231, 229, 228, 0.8);
   background: transparent;

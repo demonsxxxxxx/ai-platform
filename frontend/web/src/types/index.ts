@@ -172,10 +172,8 @@ export type {
 export type {
   FileCategory,
   MessageAttachment,
-  UploadState,
   UploadConfig,
   UploadResult,
-  FileCheckResult,
 } from "./upload";
 
 // ============================================

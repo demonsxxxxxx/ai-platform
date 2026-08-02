@@ -1,5 +1,9 @@
 # Capability Distribution V1 Backend Rescue Status
 
+Historical-path note: the `docs/superpowers/...` plan and design files cited
+below have since been removed from the repository. Their paths remain only to
+preserve this rescue record; they are not current source-authority documents.
+
 Status:
 - [x] Phase 0: isolated rescue worktree created at `C:\aiwt\capability-distribution-v1-backend-rescue-20260710` on branch `codex/capability-distribution-v1-backend-rescue-20260710`; root dirty checkout remains untouched.
 - [x] Phase 1: current source selected as `origin/main` commit `db8bef4add20fb457786f1d58031963687ec9e9f`; the rescue branch was rebased without conflicts after S1A/S2A and S0B, and all earlier bases are historical.

@@ -64,7 +64,6 @@ test("normalizeRunPlayback fills missing array fields with empty arrays", () => 
   assert.deepEqual(normalized.events, []);
   assert.deepEqual(normalized.artifacts, []);
   assert.deepEqual(normalized.steps, []);
-  assert.equal(normalized.multi_agent, null);
   assert.equal(normalized.context_ref, null);
 });
 
@@ -75,7 +74,6 @@ test("normalizeRunPlayback handles empty responses as default playback data", ()
   assert.deepEqual(normalized.events, []);
   assert.deepEqual(normalized.artifacts, []);
   assert.deepEqual(normalized.steps, []);
-  assert.equal(normalized.multi_agent, null);
   assert.equal(normalized.context_ref, null);
 });
 
@@ -292,21 +290,6 @@ test("normalizeRunPlayback does not pass through dangerous fields", () => {
         sandbox_mode: "ephemeral",
       },
     ],
-    multi_agent: {
-      run_id: "run-1",
-      steps: [
-        {
-          step_id: "step-2",
-          title: "Nested step",
-          payload: { raw: true },
-          mcp_tool_ids: ["internal-tool"],
-        },
-      ],
-      counts: {
-        total: 1,
-        resource_limits: { memory_mb: 512 },
-      },
-    },
   } as unknown as RunPlaybackResponse);
 
   const serialized = JSON.stringify(normalized);

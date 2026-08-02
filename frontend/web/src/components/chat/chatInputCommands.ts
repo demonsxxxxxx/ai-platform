@@ -5,16 +5,13 @@ export type ComposerCommandName =
   | "skill"
   | "mcp"
   | "model"
-  | "file"
-  // Kept as an unreachable legacy type member until SlashCommandMenu drops its icon key.
-  | "context";
+  | "file";
 
 export type ComposerCommandPanel =
   | Exclude<FeaturePanel, null>
   | "command-menu"
   | "model"
-  | "file"
-  | "context";
+  | "file";
 
 export interface ComposerCommandAvailability {
   skills: boolean;
@@ -57,11 +54,10 @@ const commandPanelByName: Record<ComposerCommandName, ComposerCommandPanel> = {
   mcp: "tools",
   model: "model",
   file: "file",
-  context: "context",
 };
 
 const commandAvailabilityKey: Record<
-  Exclude<ComposerCommandName, "menu" | "context">,
+  Exclude<ComposerCommandName, "menu">,
   keyof ComposerCommandAvailability
 > = {
   skill: "skills",
@@ -77,7 +73,7 @@ const panelCommandNames = new Set<ComposerCommandName>([
 ]);
 
 export interface SlashCommandMenuItem {
-  command: Exclude<ComposerCommandName, "menu" | "context">;
+  command: Exclude<ComposerCommandName, "menu">;
   panel: Exclude<ComposerCommandPanel, "command-menu">;
   query: string;
   unavailable: boolean;
@@ -139,7 +135,7 @@ function normalizeAvailability(
 
 function isComposerCommandName(
   value: string,
-): value is Exclude<ComposerCommandName, "menu" | "context"> {
+): value is Exclude<ComposerCommandName, "menu"> {
   return value in commandAvailabilityKey;
 }
 
@@ -203,7 +199,7 @@ export function parseComposerCommand(
   }
 
   const [rawCommand = "", ...queryParts] = body.trimStart().split(/\s+/);
-  const command = rawCommand as Exclude<ComposerCommandName, "menu" | "context">;
+  const command = rawCommand as Exclude<ComposerCommandName, "menu">;
   const query = queryParts.join(" ");
 
   const availabilityKey = commandAvailabilityKey[command];
@@ -243,8 +239,7 @@ export function resolveComposerCommandDraft(
       ? "command-menu"
       : command.panel === "skills" ||
           command.panel === "tools" ||
-          command.panel === "model" ||
-          command.panel === "context"
+          command.panel === "model"
         ? command.panel
         : null;
   const shouldExecute =
