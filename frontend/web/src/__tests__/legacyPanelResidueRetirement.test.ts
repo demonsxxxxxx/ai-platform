@@ -110,6 +110,48 @@ test("retired legacy panel clients and barrel exports are absent", () => {
   }
 });
 
+test("retired legacy memory service is absent while ai-platform memory APIs remain", () => {
+  const memoryService = source("src/services/api/memory.ts");
+  const barrel = source("src/services/api.ts");
+
+  assert.doesNotMatch(memoryService, /\bmemoryApi\b/);
+  assert.doesNotMatch(memoryService, /\bMemoryItem\b/);
+  assert.doesNotMatch(memoryService, /\/api\/memory(?:\/|\?|["'`])/);
+  assert.doesNotMatch(barrel, /\bmemoryApi\b/);
+
+  for (const endpoint of [
+    "/api/ai/memory/policy",
+    "/api/ai/memory/records",
+    "/api/ai/admin/memory/policies",
+    "/api/ai/admin/memory/records",
+    "/api/ai/admin/memory/retention/cleanup",
+  ]) {
+    assert.equal(memoryService.includes(endpoint), true, endpoint);
+  }
+
+  for (const api of [
+    "buildMemoryPolicyUrl",
+    "buildMemoryRecordsUrl",
+    "buildAdminMemoryPoliciesUrl",
+    "buildAdminMemoryRecordsUrl",
+    "buildCleanupExpiredMemoryUrl",
+    "normalizeMemoryRecord",
+    "fetchMemoryPolicy",
+    "setMemoryPolicy",
+    "fetchAdminMemoryPolicies",
+    "fetchMemoryRecords",
+    "fetchAdminMemoryRecords",
+    "deleteMemoryRecord",
+    "cleanupExpiredMemoryRecords",
+  ]) {
+    assert.match(
+      memoryService,
+      new RegExp(`export (?:async )?function ${api}\\b`),
+      api,
+    );
+  }
+});
+
 test("legacy panel locale residue keeps only audited active keys", () => {
   for (const locale of locales) {
     const messages = JSON.parse(

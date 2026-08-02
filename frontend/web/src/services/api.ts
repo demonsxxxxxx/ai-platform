@@ -46,7 +46,6 @@ export { modelApi } from "./api/model";
 export { skillApi } from "./api/skill";
 export { workbenchApi } from "./api/workbench";
 export { mcpApi } from "./api/mcp";
-export { memoryApi } from "./api/memory";
 export { envvarApi } from "./api/envvar";
 export { uploadApi } from "./api/upload";
 export { versionApi } from "./api/version";
