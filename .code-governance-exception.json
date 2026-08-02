@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v1",
   "expires_on": "2026-08-15",
   "owner": "ai-platform-governance",
-  "reason": "PR #771 is the atomic retirement integration scope, including #770 and #772, measured over immutable authority 475197b77bb66b3f531f9a2c071ea837c5d08947 to a2f2118afe14ac5634f8d90ca78556f0f467be45. The exact report covers 95 behavior production files, 13 classifier subsystems, production net LOC -11306, 147 changed files, and 36 test files. This temporary exception exempts only production_file_count and production_subsystem_count; all other governance requirements remain enforced. PR #775 will remove this exception immediately after the integration merges.",
+  "reason": "PR #771 is the atomic retirement integration scope, including #770 and #772, measured over immutable authority 475197b77bb66b3f531f9a2c071ea837c5d08947 to de8bf162cf08d6c4f94336b0945fa78663b78f0d. The exact report covers 96 behavior production files, 13 classifier subsystems, production net LOC -11327, 149 changed files, and 37 test files. This temporary exception exempts only production_file_count and production_subsystem_count; all other governance requirements remain enforced. PR #775 will remove this exception immediately after the integration merges.",
   "violations": [
     {
       "code": "production_file_count",
