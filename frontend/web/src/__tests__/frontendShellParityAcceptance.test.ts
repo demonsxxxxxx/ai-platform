@@ -223,6 +223,7 @@ test("session project and favorites code cannot return through the frontend shel
     join(root, "src/services/api/session.ts"),
     "utf8",
   );
+  const apiBarrel = readFileSync(join(root, "src/services/api.ts"), "utf8");
   const useAgent = readFileSync(join(root, "src/hooks/useAgent.ts"), "utf8");
 
   for (const source of [sessionHook, sessionApi, useAgent]) {
@@ -232,6 +233,7 @@ test("session project and favorites code cannot return through the frontend shel
     );
   }
   assert.doesNotMatch(sessionApi, /project_id|favorites_only/);
+  assert.doesNotMatch(apiBarrel, /projectApi|\.\/api\/project/);
   for (const file of [
     "src/components/sidebar/ProjectItem.tsx",
     "src/components/sidebar/ProjectMenu.tsx",
@@ -241,6 +243,7 @@ test("session project and favorites code cannot return through the frontend shel
     "src/components/common/DeleteProjectDialog.tsx",
     "src/hooks/useProjectManager.ts",
     "src/hooks/useTouchDrag.ts",
+    "src/services/api/project.ts",
   ]) {
     assert.equal(existsSync(join(root, file)), false, `${file} must stay removed`);
   }

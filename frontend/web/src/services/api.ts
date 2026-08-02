@@ -42,14 +42,12 @@ export {
   type SessionInputFile,
   type SessionInputFilesResponse,
 } from "./api/session";
-export { modelApi } from "./api/model";
 export { skillApi } from "./api/skill";
 export { workbenchApi } from "./api/workbench";
 export { mcpApi } from "./api/mcp";
 export { envvarApi } from "./api/envvar";
 export { uploadApi } from "./api/upload";
 export { versionApi } from "./api/version";
-export { projectApi } from "./api/project";
 export {
   type ToolPermissionHistoryResponse,
   type ToolPermissionHistoryView,
