@@ -1192,11 +1192,6 @@ def check_upload_attachment_chat(
     wait_attempts: int = 45,
 ) -> Gate:
     headers = principal_headers("upload-gate-user-a", "Upload Gate User")
-    check_status, check_payload = http_json_post_with_headers(
-        f"{api_url.rstrip('/')}/api/upload/check",
-        {"hash": "upload-gate", "size": 18, "name": "upload-gate.txt"},
-        headers=headers,
-    )
     upload_status, upload_payload = http_multipart_file_post(
         f"{api_url.rstrip('/')}/api/upload/file?folder=uploads",
         field_name="file",
@@ -1299,10 +1294,7 @@ group by r.id;
         or (run_terminal_turn_limit and attachment_context_recorded)
     )
     ok = (
-        check_status == 200
-        and isinstance(check_payload, dict)
-        and check_payload.get("exists") is False
-        and upload_status == 200
+        upload_status == 200
         and isinstance(upload_payload, dict)
         and str(upload_payload.get("key") or "").startswith("file_")
         and chat_status == 200
@@ -1313,8 +1305,6 @@ group by r.id;
         "upload_attachment_chat",
         ok,
         {
-            "upload_check_status": check_status,
-            "upload_check_payload": check_payload,
             "upload_status": upload_status,
             "upload_payload": upload_payload,
             "chat_status": chat_status,

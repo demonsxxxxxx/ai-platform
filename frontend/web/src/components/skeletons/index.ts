@@ -16,10 +16,8 @@ export { PanelHeaderSkeleton } from "./PanelHeaderSkeleton";
 export {
   SkillsPanelSkeleton,
   MarketplacePanelSkeleton,
-  UsersPanelSkeleton,
   RolesPanelSkeleton,
   MCPPanelSkeleton,
-  FeedbackPanelSkeleton,
   ChannelsPanelSkeleton,
   AgentPanelSkeleton,
   ModelPanelSkeleton,

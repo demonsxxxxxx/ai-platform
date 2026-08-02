@@ -520,13 +520,15 @@ def test_lambchat_upload_file_endpoint_matches_frontend_contract(monkeypatch, tm
     assert payload["size"] == 12
 
 
-def test_lambchat_upload_check_returns_not_existing():
+def test_lambchat_upload_check_route_is_retired():
     client = TestClient(create_app())
 
-    response = client.post("/api/upload/check", json={"hash": "abc", "size": 12, "name": "sample.docx"})
+    response = client.post(
+        "/api/upload/check",
+        json={"hash": "abc", "size": 12, "name": "sample.docx"},
+    )
 
-    assert response.status_code == 200
-    assert response.json() == {"exists": False}
+    assert response.status_code == 404
 
 
 def test_lambchat_permissions_include_user_and_admin_capabilities():

@@ -141,100 +141,6 @@ export function MarketplacePanelSkeleton() {
   );
 }
 
-/** Users panel: table rows (desktop) + cards (mobile) */
-export function UsersPanelSkeleton() {
-  return (
-    <div className="flex h-full flex-col gap-4 animate-fade-in">
-      <PanelHeaderSkeleton />
-      <div className="flex-1 overflow-y-auto min-h-0 py-2 sm:py-4 px-4">
-        {/* Desktop table */}
-        <div className="hidden sm:block">
-          <div className="panel-card !p-0 overflow-hidden">
-            {/* Table header */}
-            <div
-              className="flex items-center gap-4 px-6 py-3"
-              style={{
-                backgroundColor:
-                  "color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg))",
-              }}
-            >
-              <SkeletonLine width="w-24 xl:w-28" className="!h-3 !rounded" />
-              <SkeletonLine
-                width="w-32 xl:w-44"
-                className="!h-3 !rounded flex-1"
-              />
-              <SkeletonLine width="w-20 xl:w-24" className="!h-3 !rounded" />
-              <SkeletonLine width="w-16" className="!h-3 !rounded" />
-              <SkeletonLine width="w-20 xl:w-28" className="!h-3 !rounded" />
-              <SkeletonLine width="w-16 xl:w-20" className="!h-3 !rounded" />
-            </div>
-            {Array.from({ length: 8 }).map((_, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-4 px-6 py-4"
-                style={{
-                  borderTop:
-                    "1px solid var(--theme-border)",
-                }}
-              >
-                <div className="flex items-center gap-3 w-28 xl:w-32 shrink-0">
-                  <div className="skeleton-line size-8 rounded-full shrink-0" />
-                  <SkeletonLine
-                    width={i % 2 === 0 ? "w-16 xl:w-20" : "w-20 xl:w-24"}
-                    className="!h-4"
-                  />
-                </div>
-                <SkeletonLine
-                  width={i % 3 === 0 ? "w-36 xl:w-52" : "w-44 xl:w-60"}
-                  className="!h-3.5 flex-1"
-                />
-                <div className="flex gap-1 w-20 xl:w-24 shrink-0">
-                  <SkeletonLine width="w-14" className="!h-5 !rounded-full" />
-                </div>
-                <SkeletonLine
-                  width="w-16"
-                  className="!h-5 !rounded-full shrink-0"
-                />
-                <SkeletonLine width="w-20" className="!h-3 shrink-0" />
-                <div className="flex gap-1 w-16 shrink-0">
-                  <div className="skeleton-line size-7 rounded-lg" />
-                  <div className="skeleton-line size-7 rounded-lg" />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-        {/* Mobile cards */}
-        <div className="space-y-3 sm:hidden">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="panel-card p-4">
-              <div className="flex items-start gap-3">
-                <div className="skeleton-line size-10 rounded-full shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <SkeletonLine
-                    width={i % 2 === 0 ? "w-24" : "w-20"}
-                    className="!h-4"
-                  />
-                  <SkeletonLine width="w-36" className="!h-3 mt-1" />
-                </div>
-                <div className="skeleton-line size-7 rounded-lg shrink-0" />
-              </div>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                <SkeletonLine width="w-14" className="!h-5 !rounded-full" />
-                <SkeletonLine width="w-16" className="!h-5 !rounded-full" />
-              </div>
-              <div className="mt-3 flex items-center justify-between">
-                <SkeletonLine width="w-16" className="!h-5 !rounded-full" />
-                <SkeletonLine width="w-20" className="!h-3" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /** Roles panel: vertically stacked cards matching real RolesPanel layout */
 export function RolesPanelSkeleton() {
   return (
@@ -314,7 +220,7 @@ export function RolesPanelSkeleton() {
   );
 }
 
-/** MCP panel: server cards matching real MCPServerCard structure */
+/** MCP panel: server cards matching the active catalog structure */
 export function MCPPanelSkeleton() {
   return (
     <div className="flex h-full flex-col gap-3 sm:gap-4 animate-fade-in">
@@ -369,102 +275,6 @@ export function MCPPanelSkeleton() {
             </div>
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-/** Feedback panel: stats cards + feedback items */
-export function FeedbackPanelSkeleton() {
-  return (
-    <div className="flex h-full flex-col gap-3 sm:gap-4 animate-fade-in">
-      <PanelHeaderSkeleton hasSearch={false} />
-
-      {/* Stats section */}
-      <div className="grid grid-cols-2 gap-3 px-4 sm:grid-cols-4 sm:gap-4 sm:px-6">
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="panel-card p-4">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg"
-                style={{
-                  backgroundColor:
-                    "color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg))",
-                }}
-              >
-                <div className="skeleton-line size-6 rounded-md" />
-              </div>
-              <div className="min-w-0">
-                <SkeletonLine width="w-10 sm:w-12" className="!h-2.5 sm:!h-3" />
-                <SkeletonLine
-                  width="w-6 sm:w-8"
-                  className="!h-5 sm:!h-6 mt-1"
-                />
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Feedback list */}
-      <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:px-6">
-        {/* Desktop */}
-        <div className="hidden space-y-3 sm:block">
-          {Array.from({ length: 7 }).map((_, i) => (
-            <div key={i} className="panel-card p-5">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                  <div className="skeleton-line size-9 sm:size-10 rounded-full shrink-0" />
-                  <div className="min-w-0">
-                    <SkeletonLine
-                      width={i % 2 === 0 ? "w-16 sm:w-20" : "w-20 sm:w-24"}
-                      className="!h-3.5 sm:!h-4"
-                    />
-                    <SkeletonLine
-                      width="w-32 sm:w-40"
-                      className="!h-2.5 !mt-1 !opacity-50"
-                    />
-                  </div>
-                </div>
-                <SkeletonLine
-                  width="w-12 sm:w-16"
-                  className="!h-5 sm:!h-6 !rounded-full shrink-0"
-                />
-              </div>
-              <SkeletonLine
-                width="w-3/4"
-                className="!h-2.5 sm:!h-3 mt-2.5 sm:mt-3"
-              />
-            </div>
-          ))}
-        </div>
-        {/* Mobile */}
-        <div className="space-y-3 sm:hidden">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="panel-card p-4">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="skeleton-line size-9 rounded-full shrink-0" />
-                  <div className="min-w-0">
-                    <SkeletonLine
-                      width={i % 2 === 0 ? "w-16" : "w-20"}
-                      className="!h-3.5"
-                    />
-                    <SkeletonLine
-                      width="w-28"
-                      className="!h-2.5 !mt-1 !opacity-50"
-                    />
-                  </div>
-                </div>
-                <SkeletonLine
-                  width="w-12"
-                  className="!h-5 !rounded-full shrink-0"
-                />
-              </div>
-              <SkeletonLine width="w-3/4" className="!h-2.5 mt-2" />
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );

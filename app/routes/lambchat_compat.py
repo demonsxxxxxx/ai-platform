@@ -1025,11 +1025,6 @@ async def upload_config() -> dict[str, object]:
     }
 
 
-@router.post("/upload/check")
-async def upload_check() -> dict[str, object]:
-    return {"exists": False}
-
-
 @router.post("/upload/file")
 async def upload_file(
     file: UploadFile = File(...),

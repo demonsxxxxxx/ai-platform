@@ -9,27 +9,16 @@ function read(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
-test("composer phase one exposes model and unavailable panels", () => {
+test("composer exposes the backed model panel", () => {
   assert.equal(
     existsSync(join(root, "src/components/chat/ComposerModelPanel.tsx")),
     true,
   );
-  assert.equal(
-    existsSync(join(root, "src/components/chat/ComposerUnavailablePanel.tsx")),
-    true,
-  );
-
   const modelPanel = read("src/components/chat/ComposerModelPanel.tsx");
-  const unavailablePanel = read(
-    "src/components/chat/ComposerUnavailablePanel.tsx",
-  );
 
   assert.match(modelPanel, /data-composer-model-panel/);
   assert.match(modelPanel, /ModelOption/);
   assert.match(modelPanel, /onSelectModel\(model\.id,\s*model\.value\)/);
-  assert.match(unavailablePanel, /data-composer-unavailable-panel/);
-  assert.match(unavailablePanel, /data-fail-closed-surface=\{surface\}/);
-  assert.match(unavailablePanel, /context-selector/);
 });
 
 test("model projections flow from app content into chat input", () => {
@@ -45,7 +34,15 @@ test("model projections flow from app content into chat input", () => {
     /onSelectModel\?:\s*\(modelId:\s*string,\s*modelValue:\s*string\)\s*=>\s*void/,
   );
 
-  assert.match(chatApp, /availableModels=\{filteredModels \?\? \[\]\}/);
+  assert.match(
+    chatApp,
+    /availableModels=\{\s*agentConversationControlsLocked\s*\?\s*\[\]\s*:\s*filteredModels\s*\?\?\s*\[\]\s*\}/,
+  );
+  assert.match(
+    chatApp,
+    /availableModels=\{agentConversationControlsLocked \? null : filteredModels\}/,
+  );
+  assert.match(chatApp, /reconcileCurrentModelSelection\(\{/);
   assert.match(chatApp, /currentModelId=\{currentModelId\}/);
   assert.match(chatApp, /onSelectModel=\{handleSelectModel\}/);
 
@@ -95,14 +92,12 @@ test("removing the model chip is local-only and does not silently switch models"
   );
 });
 
-test("composer model labels remain localized without requiring context selector labels", () => {
+test("composer model labels remain localized", () => {
   const en = read("src/i18n/locales/en.json");
   const zh = read("src/i18n/locales/zh.json");
 
   assert.match(en, /"modelSelector"/);
-  assert.match(en, /"unavailable"/);
   assert.match(zh, /"modelSelector"/);
-  assert.match(zh, /"unavailable"/);
 });
 
 test("composer model selector uses restrained workbench overlay styling", () => {
@@ -120,7 +115,6 @@ test("composer model selector uses restrained workbench overlay styling", () => 
 
 test("authenticated workbench popovers avoid legacy heavy overlays", () => {
   const activePopoverFiles = [
-    "src/components/chat/ComposerUnavailablePanel.tsx",
     "src/components/chat/AgentOptionButton.tsx",
     "src/components/chat/ChatInputShortcuts.tsx",
     "src/components/chat/ChatMessage/FeedbackDialog.tsx",
@@ -147,7 +141,6 @@ test("authenticated workbench popovers avoid legacy heavy overlays", () => {
 test("governed composer selector sheets use one workbench token palette", () => {
   const selectorFiles = [
     "src/components/chat/ComposerModelPanel.tsx",
-    "src/components/chat/ComposerUnavailablePanel.tsx",
     "src/components/selectors/SkillSelector.tsx",
     "src/components/selectors/ToolSelector.tsx",
   ];
@@ -207,7 +200,6 @@ test("authenticated chat support surfaces use restrained enterprise workbench to
     ["ViewerToolbar", read("src/components/common/ViewerToolbar.tsx")],
     ["AttachmentCard", read("src/components/common/AttachmentCard.tsx")],
     ["ErrorBoundary", read("src/components/common/ErrorBoundary.tsx")],
-    ["AttachmentPreview", read("src/components/chat/AttachmentPreview.tsx")],
     ["SlashCommandMenu", read("src/components/chat/SlashCommandMenu.tsx")],
     ["ChatMessage", read("src/components/chat/ChatMessage/index.tsx")],
     [
@@ -230,14 +222,12 @@ test("authenticated chat support surfaces use restrained enterprise workbench to
       "ToolResultPanel",
       read("src/components/chat/ChatMessage/items/ToolResultPanel.tsx"),
     ],
-    ["UsersPanel", read("src/components/panels/UsersPanel.tsx")],
     ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
     ["MCPPanel", read("src/components/panels/MCPPanel.tsx")],
     [
       "SkillsList",
       read("src/components/panels/SkillsPanel/SkillsList.tsx"),
     ],
-    ["FeedbackPanel", read("src/components/panels/FeedbackPanel.tsx")],
   ]);
 
   for (const [name, source] of sources) {
