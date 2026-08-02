@@ -166,6 +166,9 @@ Static audit on 2026-06-07:
   admin projection boundary, route scope, and required remap/hide action. This
   narrows the G6/G9 gap from missing route mapping to active route enforcement
   plus inactive legacy source remap.
+- The legacy Memory CRUD client and its barrel export are retired. The active
+  `/memory` workbench uses named, governed ai-platform APIs under
+  `/api/ai/memory/*`, plus role-gated `/api/ai/admin/memory/*` projections.
 - `frontend/web/src/services/api/runPlayback.ts`,
   `frontend/web/src/services/api/memory.ts`,
   `frontend/web/src/hooks/useAgent/eventProcessor.ts`, and artifact/reveal
@@ -195,10 +198,10 @@ Remaining audit risks:
   The Profile env-var tab is hidden from the active browser entry graph until
   `/api/env-vars/*` is remapped to an ai-platform projection, masked,
   admin/policy-gated, or removed before ordinary-user Agent Frontend rollout.
-- Legacy `/api/memory/*`, `/api/mcp/*`, `/api/env-vars/*`,
-  `/api/agent/models/*`, and channel/admin endpoints now have audit-visible
-  route policy mappings, but still need actual enforcement, hiding, or remap to
-  ai-platform public/admin projections before G9 ordinary-user acceptance.
+- Legacy `/api/mcp/*`, `/api/env-vars/*`, `/api/agent/models/*`, and
+  channel/admin endpoints now have audit-visible route policy mappings, but
+  still need actual enforcement, hiding, or remap to ai-platform public/admin
+  projections before G9 ordinary-user acceptance.
 
 ## Multi-Image Delivery Plan
 
