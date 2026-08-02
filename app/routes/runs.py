@@ -74,6 +74,7 @@ from app.run_admission_policy import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
     contains_platform_multi_agent_control,
 )
+from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
 from app.run_control_readiness import run_control_readiness_snapshot
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
@@ -1157,6 +1158,7 @@ async def _mutate_run_control_child(
 ) -> RunControlMutationResponse:
     normalized_operation_id = str(operation_id)
     created = False
+    retired_control_rejected = False
     queue_payload: dict[str, Any] | None = None
     copied: dict[str, Any] | None = None
     try:
@@ -1179,6 +1181,18 @@ async def _mutate_run_control_child(
                 action=action,
                 operation_id=normalized_operation_id,
             )
+            if copied is not None:
+                existing_snapshot = repositories.copied_run_execution_snapshot(copied.get("input_json"))
+                retired_control_rejected = contains_platform_multi_agent_control(existing_snapshot["input"])
+                if retired_control_rejected:
+                    child_run_id = str(copied["run_id"])
+                    await terminalize_retired_platform_multi_agent_run(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        run_id=child_run_id,
+                        trace_id=standard_trace_id(child_run_id),
+                    )
             if copied is None:
                 await enforce_user_active_run_limit(
                     conn,
@@ -1229,6 +1243,8 @@ async def _mutate_run_control_child(
     except RepositoryConflictError as exc:
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if retired_control_rejected:
+        raise HTTPException(status_code=409, detail=PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     status = str(copied.get("status") or "queued")

@@ -1188,7 +1188,14 @@ class ChatSubmissionResponse(BaseModel):
     """Principal-scoped durable resolution of one keyed chat submission."""
 
     submission_id: str
-    state: Literal["queued", "accepted_pending_enqueue", "enqueue_failed", "needs_confirmation", "rejected_before_persist"]
+    state: Literal[
+        "queued",
+        "accepted_pending_enqueue",
+        "admission_rejected",
+        "enqueue_failed",
+        "needs_confirmation",
+        "rejected_before_persist",
+    ]
     submission_disposition: Literal["rejected_before_persist"] | None = None
     rejection_code: str | None = None
     outcome: ChatStreamResponse | None = None
