@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import repositories
+from app import run_event_repository
 from app.models import QueueRunPayload
 from app.repositories import (
     RepositoryConflictError,
@@ -56,6 +57,10 @@ from app.repositories import (
     renew_sandbox_lease,
     upsert_run_step,
 )
+
+
+async def _record_noop_event(*_args, **_kwargs):
+    return "evt-test"
 
 
 def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
@@ -4285,7 +4290,7 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
 
 
 @pytest.mark.asyncio
-async def test_cancel_run_closes_non_terminal_run_steps():
+async def test_cancel_run_closes_non_terminal_run_steps(monkeypatch):
     class RecordingConnection:
         def __init__(self):
             self.calls = []
@@ -4316,6 +4321,7 @@ async def test_cancel_run_closes_non_terminal_run_steps():
             return FakeCursor()
 
     conn = RecordingConnection()
+    monkeypatch.setattr(repositories, "append_event", _record_noop_event)
 
     result = await cancel_run(
         conn,
@@ -4342,7 +4348,7 @@ async def test_cancel_run_closes_non_terminal_run_steps():
 
 
 @pytest.mark.asyncio
-async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_progress():
+async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_progress(monkeypatch):
     class RecordingConnection:
         def __init__(self):
             self.calls = []
@@ -4376,6 +4382,7 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
             return FakeCursor()
 
     conn = RecordingConnection()
+    monkeypatch.setattr(repositories, "append_event", _record_noop_event)
 
     result = await fail_run(
         conn,
@@ -4907,8 +4914,18 @@ async def test_mark_run_running_requires_run_session_scope_to_match():
 
 
 @pytest.mark.asyncio
-async def test_append_event_persists_standard_envelope_columns():
+async def test_append_event_persists_standard_envelope_columns(monkeypatch):
     conn = RecordingConnection()
+    captured = []
+
+    async def append_one(_conn, *, tenant_id, run_id, event):
+        captured.append((tenant_id, run_id, event))
+        return run_event_repository._ledger.EventReceipt(
+            "evt-a",
+            run_event_repository._ledger.RunCursor(run_id, 1),
+        )
+
+    monkeypatch.setattr(run_event_repository._ledger, "append_event", append_one)
 
     await append_event(
         conn,
@@ -4922,21 +4939,20 @@ async def test_append_event_persists_standard_envelope_columns():
         latency_ms=12,
     )
 
-    sql, params = conn.calls[0]
-    assert "trace_id" in sql
-    assert "schema_version" in sql
-    assert "sequence" in sql
-    assert "coalesce(max(sequence), 0) + 1" in sql
-    assert "severity" in sql
-    assert "visible_to_user" in sql
-    assert "error_code" in sql
-    assert "latency_ms" in sql
-    assert "trace_a" in params
-    assert "ai-platform.event-envelope.v1" in params
-    assert "error" in params
-    assert False in params
-    assert "executor_failure" in params
-    assert 12 in params
+    assert captured == [
+        (
+            "tenant-a",
+            "run-a",
+            run_event_repository._ledger.LedgerEvent(
+                event_type="run_failed",
+                stage="worker",
+                message="Run failed",
+                payload={"severity": "error", "visible_to_user": False, "error_code": "executor_failure"},
+                trace_id="trace_a",
+                latency_ms=12,
+            ),
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -9447,7 +9463,7 @@ async def test_mark_multi_agent_dispatch_parent_awaiting_dispatch_uses_top_level
 
 
 @pytest.mark.asyncio
-async def test_mark_multi_agent_dispatch_enqueue_failed_resets_parent_step_and_stages_child_terminalization():
+async def test_mark_multi_agent_dispatch_enqueue_failed_resets_parent_step_and_stages_child_terminalization(monkeypatch):
     class Cursor:
         def __init__(self, row):
             self.row = row
@@ -9469,6 +9485,7 @@ async def test_mark_multi_agent_dispatch_enqueue_failed_resets_parent_step_and_s
             return Cursor({"id": "evt-or-audit"})
 
     conn = Connection()
+    monkeypatch.setattr(repositories, "append_event", _record_noop_event)
 
     result = await mark_multi_agent_dispatch_enqueue_failed(
         conn,

@@ -41,6 +41,7 @@ from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_
 from app.persistence import RepositoryNotFoundError
 from app.persistence import chat_submissions
 from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
+from app import run_event_repository as _run_event_repository
 from app.run_admission_policy import RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
 from app.skills.execution_profiles import (
@@ -197,22 +198,8 @@ def _tool_policy_projection(row: dict[str, Any], *, tenant_id: str) -> dict[str,
     }
 
 
-def _event_severity(payload: dict[str, Any] | None, severity: str | None = None) -> str:
-    candidate = severity or (payload or {}).get("severity") or "info"
-    return str(candidate) if str(candidate) in {"info", "warning", "error"} else "info"
-
-
-def _event_visible(payload: dict[str, Any] | None, visible_to_user: bool | None = None) -> bool:
-    if visible_to_user is not None:
-        return bool(visible_to_user)
-    if isinstance(payload, dict) and "visible_to_user" in payload:
-        return bool(payload["visible_to_user"])
-    return True
-
-
-def _event_error_code(payload: dict[str, Any] | None, error_code: str | None = None) -> str | None:
-    candidate = error_code or ((payload or {}).get("error_code") if isinstance(payload, dict) else None)
-    return standard_error_code(str(candidate)) if candidate else None
+def _repository_ledger_conflict(error: _run_event_repository.RunEventLedgerConflictError) -> RepositoryConflictError:
+    return RepositoryConflictError(str(error))
 
 
 def _required_schema_version(row: dict[str, Any], field: str, expected: str, error_code: str) -> str:
@@ -4811,46 +4798,69 @@ async def append_event(
     total_token_count: int = 0,
     estimated_cost_minor: int = 0,
 ) -> str:
-    event_id = new_id("evt")
-    payload_json = payload or {}
-    resolved_trace_id = trace_id or standard_trace_id(run_id)
-    await conn.execute(
-        """
-        insert into run_events(
-          id, tenant_id, run_id, trace_id, schema_version, sequence, event_type, stage, message,
-          severity, visible_to_user, error_code, latency_ms,
-          input_token_count, output_token_count, total_token_count, estimated_cost_minor,
-          payload_json
+    try:
+        return await _run_event_repository.append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type=event_type,
+            stage=stage,
+            message=message,
+            payload=payload,
+            trace_id=trace_id,
+            severity=severity,
+            visible_to_user=visible_to_user,
+            error_code=error_code,
+            latency_ms=latency_ms,
+            input_token_count=input_token_count,
+            output_token_count=output_token_count,
+            total_token_count=total_token_count,
+            estimated_cost_minor=estimated_cost_minor,
         )
-        values (
-          %s, %s, %s, %s, %s,
-          (select coalesce(max(sequence), 0) + 1 from run_events where tenant_id = %s and run_id = %s),
-          %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb
+    except _run_event_repository.RunEventLedgerConflictError as exc:
+        raise _repository_ledger_conflict(exc) from exc
+
+
+async def append_event_batch(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    batch_id: str,
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        return await _run_event_repository.append_event_batch(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            batch_id=batch_id,
+            events=events,
         )
-        """,
-        (
-            event_id,
-            tenant_id,
-            run_id,
-            resolved_trace_id,
-            EVENT_ENVELOPE_SCHEMA_VERSION,
-            tenant_id,
-            run_id,
-            event_type,
-            stage,
-            message,
-            _event_severity(payload_json, severity),
-            _event_visible(payload_json, visible_to_user),
-            _event_error_code(payload_json, error_code),
-            latency_ms,
-            int(input_token_count or 0),
-            int(output_token_count or 0),
-            int(total_token_count or 0),
-            int(estimated_cost_minor or 0),
-            dumps_json(payload_json),
-        ),
-    )
-    return event_id
+    except _run_event_repository.RunEventLedgerConflictError as exc:
+        raise _repository_ledger_conflict(exc) from exc
+
+
+async def acquire_run_event_terminal_drain_fence(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    batch_id: str,
+) -> dict[str, bool]:
+    try:
+        return await _run_event_repository.acquire_terminal_drain_fence(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            batch_id=batch_id,
+        )
+    except _run_event_repository.RunEventLedgerConflictError as exc:
+        raise _repository_ledger_conflict(exc) from exc
 
 
 async def get_run(conn: AsyncConnection, *, tenant_id: str, run_id: str, for_update: bool = False) -> dict[str, Any] | None:
@@ -4993,27 +5003,13 @@ async def list_run_events(
     after_sequence: int | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    sequence_filter = "and sequence > %s" if after_sequence is not None else ""
-    limit_clause = "limit %s" if limit is not None else ""
-    params: list[Any] = [tenant_id, run_id]
-    if after_sequence is not None:
-        params.append(int(after_sequence))
-    if limit is not None:
-        params.append(int(limit))
-    cursor = await conn.execute(
-        f"""
-        select id, trace_id, schema_version, sequence, event_type, stage, message, severity, visible_to_user,
-               error_code, latency_ms, input_token_count, output_token_count, total_token_count,
-               estimated_cost_minor, payload_json, created_at
-        from run_events
-        where tenant_id = %s and run_id = %s
-          {sequence_filter}
-        order by sequence asc, created_at asc
-        {limit_clause}
-        """,
-        tuple(params),
+    return await _run_event_repository.list_run_events(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        after_sequence=after_sequence,
+        limit=limit,
     )
-    return list(await cursor.fetchall())
 
 
 async def create_context_snapshot(
@@ -7318,24 +7314,15 @@ async def list_current_sandbox_runtime_leases_for_attempt(
     run_id: str,
     attempt_id: str,
 ) -> list[dict[str, Any]]:
-    """Lock exact-attempt unexpired active runtime leases for one authoritative run."""
-
-    cursor = await conn.execute(
-        """
-        select *
-        from sandbox_leases
-        where tenant_id = %s
-          and run_id = %s
-          and lease_payload_json ->> 'attempt_id' = %s
-          and status = 'active'
-          and expires_at is not null
-          and expires_at > clock_timestamp()
-        order by created_at asc
-        for update
-        """,
-        (tenant_id, run_id, attempt_id),
+    return await _run_event_repository.list_current_sandbox_runtime_leases_for_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
     )
-    return list(await cursor.fetchall())
+
+
+list_terminal_sandbox_runtime_leases_for_attempt = _run_event_repository.list_terminal_sandbox_runtime_leases_for_attempt
 
 
 async def list_sandbox_leases_for_run(
