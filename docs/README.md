@@ -19,6 +19,10 @@ release procedure. It requires a read-only readiness packet and one release
 owner with one mutation lease. No document here authorizes a manual deployment
 or substitutes for current host evidence.
 
+`operations/s72-opensandbox-gateway-runbook.md` is the separate root-owned s72
+gateway install and rollback authority. It does not replace the 211 procedure or
+make a 211 verification claim.
+
 ## Contracts And Evidence
 
 Source contracts live in their owning code and focused tests. Public frontend

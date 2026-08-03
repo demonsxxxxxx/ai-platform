@@ -8,6 +8,7 @@ GUARDRAILS = ROOT / "docs/agent-rules/ai-platform-guardrails.md"
 MULTI_AGENT_WORKFLOW = ROOT / "docs/agent-rules/multi-agent-context-workflow.md"
 GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
 RUNBOOK = ROOT / "docs/operations/211-release-operations-runbook.md"
+S72_RUNBOOK = ROOT / "docs/operations/s72-opensandbox-gateway-runbook.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 
 
@@ -26,6 +27,7 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
         "agent-rules/multi-agent-context-workflow.md",
         "agent-rules/github-issue-pr-workflow.md",
         "operations/211-release-operations-runbook.md",
+        "operations/s72-opensandbox-gateway-runbook.md",
         "release-evidence/README.md",
     ):
         assert relative_path in index
@@ -55,6 +57,26 @@ def test_release_runbook_remains_the_only_211_executable_authority():
     assert "s72 gateway runbook" not in runbook
 
 
+def test_s72_runbook_owns_gateway_install_and_rollback_contracts():
+    runbook = " ".join(read(S72_RUNBOOK).split())
+
+    assert "deploy/opensandbox/install-s72.sh" in runbook
+    assert "deploy/opensandbox/rollback-s72.sh" in runbook
+    assert "one mutation lease" in runbook
+    assert "root-owned, clean source checkout" in runbook
+    assert "OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA" in runbook
+    assert "/etc/opensandbox-gateway" in runbook
+    assert "`0750`" in runbook
+    assert "`0640`" in runbook
+    assert "`0440`" in runbook
+    assert "tls/upstream-ca.pem" in runbook
+    assert "system trust store" in runbook
+    assert "Before an ai-platform provider switch" in runbook
+    assert "/var/lib/opensandbox-gateway-deploy/install.lock" in runbook
+    assert "recovery snapshot" in runbook
+    assert "cannot establish a `211 verified` claim" in runbook
+
+
 def test_release_evidence_index_is_a_contract_not_a_status_snapshot():
     index = read(RELEASE_EVIDENCE_INDEX)
 
@@ -73,7 +95,6 @@ def test_historical_status_and_manual_release_docs_are_not_retained():
         "docs/operations/ai-platform-observability-readiness.md",
         "docs/operations/ai-platform-parallel-session-board.md",
         "docs/operations/frontend-static-release-deploy.md",
-        "docs/operations/s72-opensandbox-gateway-runbook.md",
         "docs/frontend/ai-platform-frontend-migration.md",
         "docs/frontend/prd-closure-browser-smoke.md",
         "docs/frontend/prd-frontend-closure-matrix.md",
