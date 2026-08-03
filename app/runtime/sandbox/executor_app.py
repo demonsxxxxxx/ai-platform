@@ -25,7 +25,7 @@ from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
-from app.context_retrieval import ContextRetrievalDenied
+from app.context.retrieval import ContextRetrievalDenied
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,

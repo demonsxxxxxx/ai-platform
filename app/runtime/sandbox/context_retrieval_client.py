@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from app.context_retrieval import ContextRetrievalDenied
+from app.context.retrieval import ContextRetrievalDenied
 from app.path_safety import ensure_creatable_inside
 from app.runtime.sandbox.contracts import ContextRetrievalScope
 from app.validation import assert_safe_id

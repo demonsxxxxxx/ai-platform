@@ -10,7 +10,7 @@ from typing import Any
 
 from app.control_plane_contracts import sanitize_public_payload
 from app.context_manifest import ContextPlanner
-from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied, InMemoryContextRetrievalRepository
+from app.context.retrieval import ContextRetrievalAuthority, ContextRetrievalDenied
 from app.executors.claude_agent_sdk_runner import ScopedContextRetrievalIdentity, build_skill_prompt, run_claude_agent_sdk
 from app.session_continuity import sdk_session_id_for_run
 
@@ -311,9 +311,9 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
     sdk_runner.get_settings = lambda: settings
     with tempfile.TemporaryDirectory(prefix="ai-platform-b1-b5-sdk-") as workspace:
         tmp_root = Path(workspace)
-        retrieval = ContextRetrieval(
-            InMemoryContextRetrievalRepository(
-                files=[
+        retrieval = ContextRetrievalAuthority.in_memory_for_workspace(
+            {
+                "files": [
                     {
                         "tenant_id": "tenant-a",
                         "workspace_id": "workspace-a",
@@ -330,7 +330,8 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
                         },
                     }
                 ]
-            )
+            },
+            tmp_root,
         )
         try:
             result = await run_claude_agent_sdk(
@@ -394,34 +395,37 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
 
 
 async def _stage_byte_cap_probe() -> dict[str, Any]:
-    retrieval = ContextRetrieval(
-        InMemoryContextRetrievalRepository(
-            files=[
-                {
-                    "tenant_id": "tenant-a",
-                    "workspace_id": "workspace-a",
-                    "user_id": "user-a",
-                    "session_id": "session-a",
-                    "run_id": "run-a",
-                    "file_id": "file-large",
-                    "original_name": "large.txt",
-                    "content": "0123456789abcdef",
-                }
-            ]
-        )
-    )
     with tempfile.TemporaryDirectory(prefix="ai-platform-b1-b5-stage-") as workspace:
         tmp_root = Path(workspace)
+        retrieval = ContextRetrievalAuthority.in_memory_for_workspace(
+            {
+                "files": [
+                    {
+                        "tenant_id": "tenant-a",
+                        "workspace_id": "workspace-a",
+                        "user_id": "user-a",
+                        "session_id": "session-a",
+                        "run_id": "run-a",
+                        "file_id": "file-large",
+                        "original_name": "large.txt",
+                        "content": "0123456789abcdef",
+                    }
+                ]
+            },
+            tmp_root,
+        )
         try:
-            await retrieval.stage_context_file_to_workspace(
-                tenant_id="tenant-a",
-                workspace_id="workspace-a",
-                user_id="user-a",
-                session_id="session-a",
-                run_id="run-a",
-                file_id="file-large",
-                workspace_root=str(tmp_root),
-                max_bytes=8,
+            await retrieval.execute(
+                "stage_context_file_to_workspace",
+                ScopedContextRetrievalIdentity(
+                    tenant_id="tenant-a",
+                    workspace_id="workspace-a",
+                    user_id="user-a",
+                    session_id="session-a",
+                    run_id="run-a",
+                    agent_id="general-agent",
+                ),
+                {"file_id": "file-large", "max_bytes": 8},
             )
             denied = False
         except ContextRetrievalDenied as exc:
