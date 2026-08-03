@@ -113,6 +113,69 @@ def test_callback_completed_new_message_preserves_final_assistant_delta():
     ]
 
 
+@pytest.mark.parametrize("value", ["", 7, True, [], {}, None])
+def test_callback_rejects_empty_or_non_string_explicit_delta(value):
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="completed",
+        progress=100,
+        new_message={"delta": value},
+    )
+
+    with pytest.raises(ValueError, match="executor_callback_new_message_delta_invalid"):
+        callback_event_to_run_events(callback)
+
+
+@pytest.mark.parametrize("value", ["", 7, True, [], {}, None])
+def test_callback_rejects_empty_or_non_string_text_fallback(value):
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="running",
+        progress=20,
+        new_message={"text": value},
+    )
+
+    with pytest.raises(ValueError, match="executor_callback_new_message_text_invalid"):
+        callback_event_to_run_events(callback)
+
+
+def test_callback_rejects_invalid_explicit_delta_without_falling_back_to_text():
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="completed",
+        progress=100,
+        new_message={"delta": 7, "text": "must not become a fallback"},
+    )
+
+    with pytest.raises(ValueError, match="executor_callback_new_message_delta_invalid"):
+        callback_event_to_run_events(callback)
+
+
+def test_callback_uses_valid_text_only_when_delta_is_absent():
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="completed",
+        progress=100,
+        new_message={"text": "text fallback"},
+    )
+
+    assert [(event.type, event.message, event.payload) for event in callback_event_to_run_events(callback)] == [
+        ("assistant_delta", "text fallback", {"delta": "text fallback"})
+    ]
+
+
 @pytest.mark.parametrize("status", ["failed", "cancelled"])
 def test_callback_non_success_terminal_new_message_does_not_synthesize_delta(status):
     callback = ExecutorCallbackEvent(

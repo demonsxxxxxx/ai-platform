@@ -17,15 +17,30 @@ def container_started_event(lease: ContainerLease) -> AgentEvent:
     )
 
 
+def _compatibility_message_delta(new_message: dict[str, object] | None) -> str | None:
+    """Extract one public answer chunk without coercing untrusted callback values."""
+
+    message = new_message or {}
+    if "delta" in message:
+        value = message["delta"]
+        if not isinstance(value, str) or not value:
+            raise ValueError("executor_callback_new_message_delta_invalid")
+        return value
+    if "text" in message:
+        value = message["text"]
+        if not isinstance(value, str) or not value:
+            raise ValueError("executor_callback_new_message_text_invalid")
+        return value
+    return None
+
+
 def callback_event_to_run_events(callback: ExecutorCallbackEvent) -> list[AgentEvent]:
     events: list[AgentEvent] = []
     mirrored_delta: str | None = None
 
     if callback.status in {"running", "completed"}:
-        message = callback.new_message or {}
-        delta = message.get("delta") or message.get("text")
-        if delta:
-            mirrored_delta = str(delta)
+        mirrored_delta = _compatibility_message_delta(callback.new_message)
+        if mirrored_delta is not None:
             events.append(
                 AgentEvent(
                     type="assistant_delta",
