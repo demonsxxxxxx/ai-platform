@@ -530,6 +530,7 @@ create table if not exists runs (
 create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at desc);
 create index if not exists idx_runs_session_created on runs(session_id, created_at desc);
 create index if not exists idx_runs_status on runs(status);
+create unique index if not exists uq_runs_tenant_id on runs(tenant_id, id);
 
 alter table runs add column if not exists trace_id text not null default '';
 alter table runs add column if not exists schema_version text not null default 'ai-platform.run.v1';
@@ -1765,6 +1766,142 @@ alter table run_events add column if not exists total_token_count integer not nu
 alter table run_events add column if not exists estimated_cost_minor integer not null default 0;
 
 create index if not exists idx_run_events_run_sequence on run_events(tenant_id, run_id, sequence);
+
+do $$
+begin
+  if exists (
+    select 1
+    from run_events events
+    join runs on runs.id = events.run_id
+    where runs.tenant_id is distinct from events.tenant_id
+  ) then
+    raise exception 'run_events_tenant_run_scope_mismatch';
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'fk_run_events_run_scope'
+      and conrelid = 'run_events'::regclass
+  ) then
+    alter table run_events
+      add constraint fk_run_events_run_scope
+      foreign key (tenant_id, run_id) references runs(tenant_id, id);
+  end if;
+end $$;
+
+create table if not exists run_event_cursors (
+  tenant_id text not null,
+  run_id text not null,
+  next_sequence bigint not null default 1 check (next_sequence > 0),
+  updated_at timestamptz not null default now(),
+  primary key (tenant_id, run_id),
+  constraint fk_run_event_cursors_run_scope
+    foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+create table if not exists run_event_batches (
+  id text primary key,
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  batch_id text not null,
+  event_ids_json jsonb not null default '[]'::jsonb,
+  first_sequence bigint,
+  through_sequence bigint,
+  durable_committed_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (tenant_id, run_id, attempt_id, batch_id),
+  constraint fk_run_event_batches_run_scope
+    foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+create table if not exists run_event_terminal_drains (
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  batch_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, run_id, attempt_id),
+  constraint fk_run_event_terminal_drains_run_scope
+    foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+do $$
+declare
+  repair_needed boolean;
+begin
+  select exists (
+    select 1
+    from run_events
+    group by tenant_id, run_id
+    having min(sequence) < 1 or count(*) <> count(distinct sequence)
+  ) into repair_needed;
+
+  if repair_needed then
+    lock table run_events in share row exclusive mode;
+    select exists (
+      select 1
+      from run_events
+      group by tenant_id, run_id
+      having min(sequence) < 1 or count(*) <> count(distinct sequence)
+    ) into repair_needed;
+
+    if repair_needed then
+      with affected_groups as (
+        select tenant_id, run_id
+        from run_events
+        group by tenant_id, run_id
+        having min(sequence) < 1 or count(*) <> count(distinct sequence)
+      ), ranked as (
+        select events.id,
+               row_number() over (
+                 partition by events.tenant_id, events.run_id
+                 order by events.sequence asc, events.created_at asc, events.id asc
+               ) as replacement_sequence
+        from run_events events
+        join affected_groups using (tenant_id, run_id)
+      )
+      update run_events events
+      set sequence = -ranked.replacement_sequence
+      from ranked
+      where events.id = ranked.id;
+
+      with affected_groups as (
+        select tenant_id, run_id
+        from run_events
+        group by tenant_id, run_id
+        having min(sequence) < 0
+      ), ranked as (
+        select events.id,
+               row_number() over (
+                 partition by events.tenant_id, events.run_id
+                 order by events.sequence desc, events.created_at asc, events.id asc
+               ) as replacement_sequence
+        from run_events events
+        join affected_groups using (tenant_id, run_id)
+      )
+      update run_events events
+      set sequence = ranked.replacement_sequence
+      from ranked
+      where events.id = ranked.id;
+    end if;
+  end if;
+end $$;
+
+create unique index if not exists uq_run_events_tenant_run_sequence
+  on run_events(tenant_id, run_id, sequence);
+
+insert into run_event_cursors(tenant_id, run_id, next_sequence)
+select tenant_id, run_id, coalesce(max(sequence), 0) + 1
+from run_events
+group by tenant_id, run_id
+on conflict (tenant_id, run_id) do update
+set next_sequence = excluded.next_sequence,
+    updated_at = now()
+where run_event_cursors.next_sequence < excluded.next_sequence;
 
 create table if not exists run_tool_permission_requests (
   id text primary key,
