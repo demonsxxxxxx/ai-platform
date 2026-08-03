@@ -14,6 +14,7 @@ from app import repositories
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
+POSTGRES_STAGE_TIMEOUT_SECONDS = 15
 
 
 def _postgres_dsn() -> str:
@@ -72,6 +73,13 @@ async def _wait_for_blocker(
     raise AssertionError("legacy_writer_not_blocked_by_migration_lock")
 
 
+async def _within_postgres_stage(stage: str, awaitable):
+    try:
+        return await asyncio.wait_for(awaitable, timeout=POSTGRES_STAGE_TIMEOUT_SECONDS)
+    except TimeoutError as exc:
+        raise AssertionError(f"streaming_schema_postgres_{stage}_timeout") from exc
+
+
 @pytest.mark.asyncio
 async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
     """Validate A3's adapter protocol, not a shared product schema or credential."""
@@ -114,8 +122,10 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
             """
         )
         repair_sql, index_and_cursor_sql = _run_event_repair_statements(schema_sql)
-        migrator = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
-        legacy_writer = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        # Search-path setup must not leave an outer transaction open. Each
+        # explicit transaction below is the entire migration or writer unit.
+        migrator = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+        legacy_writer = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
         connections.extend((migrator, legacy_writer))
         await _set_search_path(migrator, schema_name)
         await _set_search_path(legacy_writer, schema_name)
@@ -156,12 +166,15 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
             )
             assert await lock.fetchone() == {"granted": True}
             writer_task = asyncio.create_task(append_with_legacy_max_sequence())
-            await writer_selected_sequence.wait()
-            await _wait_for_blocker(admin, blocked_pid=writer_pid, blocker_pid=migrator_pid)
-            await migrator.execute(repair_sql)
-            await migrator.execute(index_and_cursor_sql)
+            await _within_postgres_stage("legacy_writer_selected_sequence", writer_selected_sequence.wait())
+            await _within_postgres_stage(
+                "legacy_writer_block_observation",
+                _wait_for_blocker(admin, blocked_pid=writer_pid, blocker_pid=migrator_pid),
+            )
+            await _within_postgres_stage("migration_repair", migrator.execute(repair_sql))
+            await _within_postgres_stage("migration_index_cursor", migrator.execute(index_and_cursor_sql))
         with pytest.raises(psycopg.errors.UniqueViolation):
-            await writer_task
+            await _within_postgres_stage("legacy_writer_release", writer_task)
 
         await admin.execute(schema_sql)
 
@@ -184,8 +197,8 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
                 """
             )
 
-        first = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
-        second = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        first = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+        second = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
         connections.extend((first, second))
         await _set_search_path(first, schema_name)
         await _set_search_path(second, schema_name)
@@ -202,7 +215,10 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
                     payload={"delta": message},
                 )
 
-        event_ids = await asyncio.gather(append_one(first, "one"), append_one(second, "two"))
+        event_ids = await _within_postgres_stage(
+            "concurrent_append",
+            asyncio.gather(append_one(first, "one"), append_one(second, "two")),
+        )
         assert len(set(event_ids)) == 2
         allocated = await admin.execute(
             "select sequence from run_events where id = any(%s) order by sequence",
@@ -276,7 +292,7 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
                 fence_contenders += 1
                 if fence_contenders == 2:
                     fence_ready.set()
-                await fence_ready.wait()
+                await _within_postgres_stage("terminal_fence_contender_ready", fence_ready.wait())
                 try:
                     receipt = await repositories.acquire_run_event_terminal_drain_fence(
                         conn,
@@ -289,9 +305,12 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
                     return "conflict", batch_id, str(exc)
                 return "accepted", batch_id, receipt
 
-        competition = await asyncio.gather(
-            compete_for_terminal_fence(first, "batch-a"),
-            compete_for_terminal_fence(second, "batch-other"),
+        competition = await _within_postgres_stage(
+            "terminal_fence_competition",
+            asyncio.gather(
+                compete_for_terminal_fence(first, "batch-a"),
+                compete_for_terminal_fence(second, "batch-other"),
+            ),
         )
         accepted = [outcome for outcome in competition if outcome[0] == "accepted"]
         conflicts = [outcome for outcome in competition if outcome[0] == "conflict"]
