@@ -1810,29 +1810,37 @@ create table if not exists run_event_terminal_drains (
 
 do $$
 declare
+  unique_index_present boolean;
   repair_needed boolean;
 begin
   select exists (
-    select 1
-    from run_events
-    group by tenant_id, run_id
+    select 1 from pg_index indexes
+    where indexes.indexrelid = to_regclass(format('%I.%I', current_schema(), 'uq_run_events_tenant_run_sequence'))
+      and indexes.indrelid = 'run_events'::regclass
+      and indexes.indisunique and indexes.indisvalid
+  ) into unique_index_present;
+  select not unique_index_present or exists (
+    select 1 from run_events group by tenant_id, run_id
     having min(sequence) < 1 or count(*) <> count(distinct sequence)
   ) into repair_needed;
 
   if repair_needed then
     lock table run_events in share row exclusive mode;
     select exists (
-      select 1
-      from run_events
-      group by tenant_id, run_id
+      select 1 from pg_index indexes
+      where indexes.indexrelid = to_regclass(format('%I.%I', current_schema(), 'uq_run_events_tenant_run_sequence'))
+        and indexes.indrelid = 'run_events'::regclass
+        and indexes.indisunique and indexes.indisvalid
+    ) into unique_index_present;
+    select not unique_index_present or exists (
+      select 1 from run_events group by tenant_id, run_id
       having min(sequence) < 1 or count(*) <> count(distinct sequence)
     ) into repair_needed;
 
     if repair_needed then
+      if not unique_index_present then drop index if exists uq_run_events_tenant_run_sequence; end if;
       with affected_groups as (
-        select tenant_id, run_id
-        from run_events
-        group by tenant_id, run_id
+        select tenant_id, run_id from run_events group by tenant_id, run_id
         having min(sequence) < 1 or count(*) <> count(distinct sequence)
       ), ranked as (
         select events.id,
@@ -1843,14 +1851,9 @@ begin
         from run_events events
         join affected_groups using (tenant_id, run_id)
       )
-      update run_events events
-      set sequence = -ranked.replacement_sequence
-      from ranked
-      where events.id = ranked.id;
+      update run_events events set sequence = -ranked.replacement_sequence from ranked where events.id = ranked.id;
 
-      update run_events
-      set sequence = -sequence
-      where sequence < 0;
+      update run_events set sequence = -sequence where sequence < 0;
     end if;
   end if;
 end $$;
@@ -1858,12 +1861,8 @@ end $$;
 create unique index if not exists uq_run_events_tenant_run_sequence on run_events(tenant_id, run_id, sequence);
 
 insert into run_event_cursors(tenant_id, run_id, next_sequence)
-select tenant_id, run_id, coalesce(max(sequence), 0) + 1
-from run_events
-group by tenant_id, run_id
-on conflict (tenant_id, run_id) do update
-set next_sequence = excluded.next_sequence,
-    updated_at = now()
+select tenant_id, run_id, coalesce(max(sequence), 0) + 1 from run_events group by tenant_id, run_id
+on conflict (tenant_id, run_id) do update set next_sequence = excluded.next_sequence, updated_at = now()
 where run_event_cursors.next_sequence < excluded.next_sequence;
 
 create table if not exists run_tool_permission_requests (

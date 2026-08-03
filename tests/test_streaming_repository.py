@@ -194,6 +194,24 @@ def test_run_event_schema_declares_repairable_composite_ledger_authority():
     assert "foreign key (tenant_id, run_id) references runs(tenant_id, id)" in content
 
 
+def test_run_event_schema_locks_for_missing_current_schema_unique_index_before_repair():
+    schema = Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
+    migration = schema[schema.index("declare\n  unique_index_present boolean;"):schema.index("create table if not exists run_tool_permission_requests")]
+
+    assert "to_regclass(format('%I.%I', current_schema(), 'uq_run_events_tenant_run_sequence'))" in migration
+    assert "indexes.indisunique" in migration
+    assert "indexes.indisvalid" in migration
+    assert migration.count("not unique_index_present or exists") == 2
+    assert migration.index("not unique_index_present or exists") < migration.index("lock table run_events in share row exclusive mode")
+    assert migration.index("lock table run_events in share row exclusive mode") < migration.index("with affected_groups as")
+    assert migration.index("lock table run_events in share row exclusive mode") < migration.index(
+        "create unique index if not exists uq_run_events_tenant_run_sequence"
+    )
+    assert migration.index("create unique index if not exists uq_run_events_tenant_run_sequence") < migration.index(
+        "insert into run_event_cursors"
+    )
+
+
 def test_run_event_schema_retains_every_a1_ledger_written_column():
     schema = Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
     ledger_source = Path(run_event_repository._ledger.__file__).read_text(encoding="utf-8")

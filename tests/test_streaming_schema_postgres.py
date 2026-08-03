@@ -47,6 +47,31 @@ async def _seed_run(conn: psycopg.AsyncConnection) -> None:
     )
 
 
+def _run_event_repair_statements(schema_sql: str) -> tuple[str, str]:
+    repair_start = schema_sql.index("do $$\ndeclare\n  unique_index_present boolean;")
+    index_start = schema_sql.index("create unique index if not exists uq_run_events_tenant_run_sequence", repair_start)
+    section_end = schema_sql.index("\n\ncreate table if not exists run_tool_permission_requests", index_start)
+    return schema_sql[repair_start:index_start], schema_sql[index_start:section_end]
+
+
+async def _wait_for_blocker(
+    observer: psycopg.AsyncConnection,
+    *,
+    blocked_pid: int,
+    blocker_pid: int,
+) -> None:
+    for _ in range(100):
+        result = await observer.execute(
+            "select %s = any(pg_blocking_pids(%s)) as blocked",
+            (blocker_pid, blocked_pid),
+        )
+        if (await result.fetchone())["blocked"]:
+            return
+        # The lock view is the proof; this only yields to the writer task.
+        await asyncio.sleep(0)
+    raise AssertionError("legacy_writer_not_blocked_by_migration_lock")
+
+
 @pytest.mark.asyncio
 async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
     """Validate A3's adapter protocol, not a shared product schema or credential."""
@@ -85,10 +110,59 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
             values
               ('legacy-a', 'tenant-a', 'run-a', 0, 'assistant_delta', 'streaming', 'a', '2024-01-01T00:00:00Z'),
               ('legacy-b', 'tenant-a', 'run-a', 0, 'assistant_delta', 'streaming', 'b', '2024-01-01T00:00:01Z'),
-              ('legacy-c', 'tenant-a', 'run-a', 3, 'assistant_delta', 'streaming', 'c', '2024-01-01T00:00:02Z')
+              ('legacy-c', 'tenant-a', 'run-a', 0, 'assistant_delta', 'streaming', 'c', '2024-01-01T00:00:02Z')
             """
         )
-        await admin.execute(schema_sql)
+        repair_sql, index_and_cursor_sql = _run_event_repair_statements(schema_sql)
+        migrator = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        legacy_writer = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        connections.extend((migrator, legacy_writer))
+        await _set_search_path(migrator, schema_name)
+        await _set_search_path(legacy_writer, schema_name)
+        migrator_pid = (await (await migrator.execute("select pg_backend_pid() as pid")).fetchone())["pid"]
+        writer_pid = (await (await legacy_writer.execute("select pg_backend_pid() as pid")).fetchone())["pid"]
+        writer_selected_sequence = asyncio.Event()
+
+        async def append_with_legacy_max_sequence() -> None:
+            async with legacy_writer.transaction():
+                selected = await legacy_writer.execute(
+                    "select coalesce(max(sequence), 0) + 1 as sequence from run_events where tenant_id = %s and run_id = %s",
+                    ("tenant-a", "run-a"),
+                )
+                sequence = (await selected.fetchone())["sequence"]
+                writer_selected_sequence.set()
+                await legacy_writer.execute(
+                    """
+                    insert into run_events(id, tenant_id, run_id, sequence, event_type, stage, message)
+                    values ('legacy-max', 'tenant-a', 'run-a', %s, 'assistant_delta', 'streaming', 'legacy')
+                    """,
+                    (sequence,),
+                )
+
+        async with migrator.transaction():
+            await migrator.execute("lock table run_events in share row exclusive mode")
+            lock = await admin.execute(
+                """
+                select locks.granted
+                from pg_locks locks
+                join pg_class relation on relation.oid = locks.relation
+                join pg_namespace namespace on namespace.oid = relation.relnamespace
+                where locks.pid = %s
+                  and locks.mode = 'ShareRowExclusiveLock'
+                  and namespace.nspname = %s
+                  and relation.relname = 'run_events'
+                """,
+                (migrator_pid, schema_name),
+            )
+            assert await lock.fetchone() == {"granted": True}
+            writer_task = asyncio.create_task(append_with_legacy_max_sequence())
+            await writer_selected_sequence.wait()
+            await _wait_for_blocker(admin, blocked_pid=writer_pid, blocker_pid=migrator_pid)
+            await migrator.execute(repair_sql)
+            await migrator.execute(index_and_cursor_sql)
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            await writer_task
+
         await admin.execute(schema_sql)
 
         repaired = await admin.execute(
@@ -145,6 +219,18 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
                 batch_id="batch-a",
                 events=[{"event_type": "assistant_delta", "stage": "streaming", "message": "batch", "payload": {}}],
             )
+        assert initial_receipt["duplicate"] is False
+        initial_timestamps = await admin.execute(
+            """
+            select callback_received_at, durable_committed_at
+            from run_event_batches
+            where tenant_id = 'tenant-a' and run_id = 'run-a' and attempt_id = 'attempt-a' and batch_id = 'batch-a'
+            """
+        )
+        first_timestamps = await initial_timestamps.fetchone()
+        assert first_timestamps["callback_received_at"] is not None
+        assert first_timestamps["durable_committed_at"] is not None
+        assert first_timestamps["callback_received_at"] <= first_timestamps["durable_committed_at"]
         async with second.transaction():
             replay_receipt = await repositories.append_event_batch(
                 second,
@@ -154,8 +240,15 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
                 batch_id="batch-a",
                 events=[{"event_type": "assistant_delta", "stage": "streaming", "message": "ignored", "payload": {}}],
             )
-        assert initial_receipt["duplicate"] is False
         assert replay_receipt == {**initial_receipt, "duplicate": True}
+        replay_timestamps = await admin.execute(
+            """
+            select callback_received_at, durable_committed_at
+            from run_event_batches
+            where tenant_id = 'tenant-a' and run_id = 'run-a' and attempt_id = 'attempt-a' and batch_id = 'batch-a'
+            """
+        )
+        assert await replay_timestamps.fetchone() == first_timestamps
 
         before_rollback = await admin.execute("select next_sequence from run_event_cursors where tenant_id = 'tenant-a' and run_id = 'run-a'")
         with pytest.raises(RuntimeError, match="rollback"):
@@ -174,21 +267,43 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
         assert await no_receipt.fetchone() is None
         assert await after_rollback.fetchone() == await before_rollback.fetchone()
 
+        fence_contenders = 0
+        fence_ready = asyncio.Event()
+
+        async def compete_for_terminal_fence(conn: psycopg.AsyncConnection, batch_id: str) -> tuple[str, str, object]:
+            nonlocal fence_contenders
+            async with conn.transaction():
+                fence_contenders += 1
+                if fence_contenders == 2:
+                    fence_ready.set()
+                await fence_ready.wait()
+                try:
+                    receipt = await repositories.acquire_run_event_terminal_drain_fence(
+                        conn,
+                        tenant_id="tenant-a",
+                        run_id="run-a",
+                        attempt_id="attempt-a",
+                        batch_id=batch_id,
+                    )
+                except repositories.RepositoryConflictError as exc:
+                    return "conflict", batch_id, str(exc)
+                return "accepted", batch_id, receipt
+
+        competition = await asyncio.gather(
+            compete_for_terminal_fence(first, "batch-a"),
+            compete_for_terminal_fence(second, "batch-other"),
+        )
+        accepted = [outcome for outcome in competition if outcome[0] == "accepted"]
+        conflicts = [outcome for outcome in competition if outcome[0] == "conflict"]
+        assert len(accepted) == 1
+        assert accepted[0][2] == {"accepted": True, "duplicate": False}
+        assert conflicts == [("conflict", "batch-a" if accepted[0][1] == "batch-other" else "batch-other", "terminal_drain_already_consumed")]
+        winning_batch_id = accepted[0][1]
         async with first.transaction():
-            initial_fence = await repositories.acquire_run_event_terminal_drain_fence(
-                first, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", batch_id="batch-a"
-            )
-        async with second.transaction():
             replay_fence = await repositories.acquire_run_event_terminal_drain_fence(
-                second, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", batch_id="batch-a"
+                first, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", batch_id=winning_batch_id
             )
-        assert initial_fence == {"accepted": True, "duplicate": False}
         assert replay_fence == {"accepted": True, "duplicate": True}
-        async with first.transaction():
-            with pytest.raises(repositories.RepositoryConflictError, match="terminal_drain_already_consumed"):
-                await repositories.acquire_run_event_terminal_drain_fence(
-                    first, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", batch_id="batch-other"
-                )
         async with second.transaction():
             isolated_fence = await repositories.acquire_run_event_terminal_drain_fence(
                 second, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-b", batch_id="batch-other"
