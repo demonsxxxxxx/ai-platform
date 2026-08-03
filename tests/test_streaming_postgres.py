@@ -269,3 +269,56 @@ async def test_postgres_terminal_fence_rejects_concurrent_competitor_and_isolate
         finally:
             await first_conn.close()
             await second_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_read_event_rows_honors_cursor_limit_order_and_exact_scope():
+    """Prove the adapter's replay contract in an isolated disposable schema."""
+
+    async with _temporary_ledger_schema() as (dsn, schema_name):
+        conn = await _connect(dsn, schema_name)
+        try:
+            async with conn.transaction():
+                for value in ("one", "two", "three"):
+                    await postgres.append_event(
+                        conn,
+                        tenant_id="tenant-a",
+                        run_id="run-a",
+                        event=_delta(value),
+                    )
+                await postgres.append_event(
+                    conn,
+                    tenant_id="tenant-b",
+                    run_id="run-a",
+                    event=_delta("other-tenant"),
+                )
+                await postgres.append_event(
+                    conn,
+                    tenant_id="tenant-a",
+                    run_id="run-b",
+                    event=_delta("other-run"),
+                )
+
+            bounded = await postgres.read_event_rows(
+                conn,
+                tenant_id="tenant-a",
+                cursor=postgres.RunCursor(run_id="run-a", sequence=0),
+                limit=2,
+            )
+            unbounded = await postgres.read_event_rows(
+                conn,
+                tenant_id="tenant-a",
+                cursor=postgres.RunCursor(run_id="run-a", sequence=1),
+                limit=None,
+            )
+
+            assert [(row["sequence"], row["payload_json"]["delta"]) for row in bounded] == [
+                (1, "one"),
+                (2, "two"),
+            ]
+            assert [(row["sequence"], row["payload_json"]["delta"]) for row in unbounded] == [
+                (2, "two"),
+                (3, "three"),
+            ]
+        finally:
+            await conn.close()
