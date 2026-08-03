@@ -7,6 +7,7 @@ from typing import Any
 from psycopg import AsyncConnection
 
 from app.streaming import postgres as _ledger
+from app.streaming.authority import RunCursor
 
 
 RunEventLedgerConflictError = _ledger.RunEventLedgerConflictError
@@ -181,27 +182,9 @@ async def list_run_events(
     after_sequence: int | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    sequence_filter = "and sequence > %s" if after_sequence is not None else ""
-    limit_clause = "limit %s" if limit is not None else ""
-    params: list[Any] = [tenant_id, run_id]
-    if after_sequence is not None:
-        params.append(int(after_sequence))
-    if limit is not None:
-        params.append(int(limit))
-    cursor = await conn.execute(
-        f"""
-        select id, trace_id, schema_version, sequence, event_type, stage, message, severity, visible_to_user,
-               error_code, latency_ms, input_token_count, output_token_count, total_token_count,
-               estimated_cost_minor, payload_json, created_at
-        from run_events
-        where tenant_id = %s and run_id = %s
-          {sequence_filter}
-        order by sequence asc, created_at asc
-        {limit_clause}
-        """,
-        tuple(params),
-    )
-    return list(await cursor.fetchall())
+    cursor = RunCursor(run_id=run_id, sequence=0 if after_sequence is None else int(after_sequence))
+    rows = await _ledger.read_event_rows(conn, tenant_id=tenant_id, cursor=cursor, limit=limit)
+    return [dict(row) for row in rows]
 
 
 async def list_current_sandbox_runtime_leases_for_attempt(
