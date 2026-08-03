@@ -9,7 +9,6 @@ from app.backend_stage_closure_evidence import find_stage_issue_closure_evidence
 from app.foundation_alpha_readiness import (
     _resolve_runtime_affecting_changes_between as _resolve_source_runtime_affecting_changes_between,
 )
-from app.sandbox_hardening_contract import bounded_error_projection_is_safe
 
 
 SCHEMA_VERSION = "ai-platform.b2-sandbox-readiness.v1"
