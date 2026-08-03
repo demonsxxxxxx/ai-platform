@@ -81,6 +81,8 @@ authority requires explicit re-charter.
 - Record review evidence and status claims according to
   `docs/agent-rules/github-issue-pr-workflow.md`; chat-only output is not durable
   PR or issue evidence.
+- Do not persist a session board or phase ledger in repository docs. The active
+  controller checkpoint is the only current coordination record.
 
 ## Recovery And Reporting
 

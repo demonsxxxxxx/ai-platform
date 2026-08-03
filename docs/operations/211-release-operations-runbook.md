@@ -184,8 +184,8 @@ the s72 egress policy; the s72 broker connects to the IP directly and uses the
 hostname only for SNI/hostname verification. Mount the full chain and private
 key read-only through the two Compose paths above. Do not place certificate or
 key bytes in the image, `.env`, Compose environment, logs, or Git. Provision
-only the non-secret issuing CA certificate to s72 at the app-scoped path in the
-s72 gateway runbook; do not install it in either host's system trust store.
+only the non-secret issuing CA certificate to s72 at its app-scoped path; do not
+install it in either host's system trust store.
 
 The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not
 publish `8443`, request bridge variables, or mount bridge certificates. The
