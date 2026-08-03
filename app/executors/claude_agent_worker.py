@@ -17,10 +17,7 @@ from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     available_context_retrieval_tools,
 )
-from app.context_retrieval import (
-    ContextRetrieval,
-    TransactionalContextRetrievalRepository,
-)
+from app.context.retrieval import ContextRetrievalAuthority
 from app.control_plane_contracts import (
     artifact_lineage_contract,
     standard_trace_id,
@@ -1101,11 +1098,11 @@ class ClaudeAgentWorkerAdapter:
         self,
         payload: RunPayload,
         context_pack: dict[str, Any],
-    ) -> tuple[ContextRetrieval | None, ScopedContextRetrievalIdentity | None]:
+        workspace: Path,
+    ) -> tuple[ContextRetrievalAuthority | None, ScopedContextRetrievalIdentity | None]:
         manifest = _context_manifest_from_pack(context_pack)
         if manifest is None:
             return None, None
-        repository = TransactionalContextRetrievalRepository(transaction, storage=ObjectStorage())
         identity = ScopedContextRetrievalIdentity(
             tenant_id=payload.tenant_id,
             workspace_id=payload.workspace_id,
@@ -1114,7 +1111,14 @@ class ClaudeAgentWorkerAdapter:
             run_id=payload.run_id,
             agent_id=payload.agent_id,
         )
-        return ContextRetrieval(repository), identity
+        return (
+            ContextRetrievalAuthority.for_transaction(
+                transaction,
+                ObjectStorage(),
+                workspace_root=workspace,
+            ),
+            identity,
+        )
 
     def _context_retrieval_scope_for_payload(
         self,
@@ -2031,7 +2035,11 @@ class ClaudeAgentWorkerAdapter:
             )
         if system_prompt is None:
             system_prompt = self._agent_profile_system_prompt(payload)
-        context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack)
+        context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(
+            payload,
+            context_pack,
+            workspace,
+        )
 
         async def on_text(delta: str) -> None:
             if event_sink:

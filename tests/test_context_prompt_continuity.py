@@ -5,7 +5,11 @@ import types
 import pytest
 
 import app.executors.claude_agent_sdk_runner as sdk_runner
-from app.context_retrieval import ContextRetrieval, InMemoryContextRetrievalRepository
+from app.context.retrieval import (
+    ContextRetrieval,
+    ContextRetrievalAuthority,
+    InMemoryContextRetrievalRepository,
+)
 from app.executors.claude_agent_sdk_runner import (
     build_skill_prompt,
     internal_context_tool_policy_subjects,
@@ -265,7 +269,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
         query=query,
         tool=tool,
     )
-    retrieval = ContextRetrieval(
+    retrieval = ContextRetrievalAuthority(
         InMemoryContextRetrievalRepository(
             messages=[
                 {
@@ -305,7 +309,8 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
                     "content": "artifact bytes",
                 }
             ],
-        )
+        ),
+        workspace_root=tmp_path,
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)

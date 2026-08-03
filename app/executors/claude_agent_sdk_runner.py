@@ -18,7 +18,12 @@ from app.context_manifest import (
     truncate_utf8_text,
     utf8_token_estimate,
 )
-from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
+from app.context.retrieval import (
+    ContextRetrievalAuthority,
+    ContextRetrievalDenied,
+    ContextRetrievalIdentity,
+    ContextRetrievalInputError,
+)
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.executors.claude_stream_projection import TrustedInternalClaudeStreamProjector
 from app.executors.public_answer_stream import PublicAnswerStreamGate
@@ -344,14 +349,7 @@ def _canonical_sdk_error(
     return _SDK_UPSTREAM_ERROR
 
 
-@dataclass(frozen=True)
-class ScopedContextRetrievalIdentity:
-    tenant_id: str
-    workspace_id: str
-    user_id: str
-    session_id: str
-    run_id: str
-    agent_id: str
+ScopedContextRetrievalIdentity = ContextRetrievalIdentity
 
 
 def _split_csv(value: str) -> list[str]:
@@ -856,28 +854,11 @@ def _context_retrieval_tool_error(reason: str, *, action: str = "context_retriev
     }
 
 
-def _safe_positive_int(value: object, *, default: int, maximum: int) -> int:
-    try:
-        normalized = int(value)
-    except (TypeError, ValueError):
-        normalized = default
-    return max(1, min(maximum, normalized))
-
-
-def _safe_non_negative_int(value: object, *, default: int, maximum: int) -> int:
-    try:
-        normalized = int(value)
-    except (TypeError, ValueError):
-        normalized = default
-    return max(0, min(maximum, normalized))
-
-
 def _build_context_retrieval_mcp_server(
     sdk: object,
     *,
-    retrieval: ContextRetrieval | None,
+    retrieval: ContextRetrievalAuthority | None,
     identity: ScopedContextRetrievalIdentity | None,
-    workspace_root: Path,
     tool_names: list[str] | None = None,
 ):
     if retrieval is None or identity is None:
@@ -892,9 +873,15 @@ def _build_context_retrieval_mcp_server(
     if not selected_tool_names:
         return None
 
-    async def _run(action, args: dict[str, Any], *, audit_action: str = "context_retrieval.tool") -> dict[str, Any]:
+    async def _run(action: str, args: object) -> dict[str, Any]:
+        audit_action = f"context_retrieval.{action}"
+        tool_args = args if isinstance(args, dict) else {}
         try:
-            return _context_retrieval_tool_response(await action(args))
+            return _context_retrieval_tool_response(
+                await retrieval.execute(action, identity, tool_args)
+            )
+        except ContextRetrievalInputError as exc:
+            return _context_retrieval_tool_error(str(exc), action=audit_action)
         except ContextRetrievalDenied as exc:
             reason = str(exc) or "context_scope_denied"
             if reason not in {"context_file_too_large", "context_file_size_required"}:
@@ -913,20 +900,7 @@ def _build_context_retrieval_mcp_server(
         },
     )
     async def read_session_messages(args):
-        return await _run(
-            lambda tool_args: retrieval.read_session_messages(
-                tenant_id=identity.tenant_id,
-                workspace_id=identity.workspace_id,
-                user_id=identity.user_id,
-                session_id=identity.session_id,
-                run_id=identity.run_id,
-                limit=_safe_positive_int(tool_args.get("limit"), default=20, maximum=100),
-                offset=_safe_non_negative_int(tool_args.get("offset"), default=0, maximum=10000),
-                max_tokens=_safe_positive_int(tool_args.get("max_tokens"), default=1200, maximum=8000),
-            ),
-            args if isinstance(args, dict) else {},
-            audit_action="context_retrieval.read_session_messages",
-        )
+        return await _run("read_session_messages", args)
 
     @sdk_tool(
         "read_context_file",
@@ -937,23 +911,7 @@ def _build_context_retrieval_mcp_server(
         },
     )
     async def read_context_file(args):
-        tool_args = args if isinstance(args, dict) else {}
-        file_id = str(tool_args.get("file_id") or "")
-        if not file_id:
-            return _context_retrieval_tool_error("file_id_required")
-        return await _run(
-            lambda inner: retrieval.read_context_file(
-                tenant_id=identity.tenant_id,
-                workspace_id=identity.workspace_id,
-                user_id=identity.user_id,
-                session_id=identity.session_id,
-                run_id=identity.run_id,
-                file_id=file_id,
-                max_bytes=_safe_positive_int(inner.get("max_bytes"), default=65536, maximum=262144),
-            ),
-            tool_args,
-            audit_action="context_retrieval.read_context_file",
-        )
+        return await _run("read_context_file", args)
 
     @sdk_tool(
         "read_run_artifact",
@@ -964,23 +922,7 @@ def _build_context_retrieval_mcp_server(
         },
     )
     async def read_run_artifact(args):
-        tool_args = args if isinstance(args, dict) else {}
-        artifact_id = str(tool_args.get("artifact_id") or "")
-        if not artifact_id:
-            return _context_retrieval_tool_error("artifact_id_required")
-        return await _run(
-            lambda inner: retrieval.read_run_artifact(
-                tenant_id=identity.tenant_id,
-                workspace_id=identity.workspace_id,
-                user_id=identity.user_id,
-                session_id=identity.session_id,
-                run_id=identity.run_id,
-                artifact_id=artifact_id,
-                max_bytes=_safe_positive_int(inner.get("max_bytes"), default=65536, maximum=262144),
-            ),
-            tool_args,
-            audit_action="context_retrieval.read_run_artifact",
-        )
+        return await _run("read_run_artifact", args)
 
     @sdk_tool(
         "stage_context_file_to_workspace",
@@ -991,24 +933,7 @@ def _build_context_retrieval_mcp_server(
         },
     )
     async def stage_context_file_to_workspace(args):
-        tool_args = args if isinstance(args, dict) else {}
-        file_id = str(tool_args.get("file_id") or "")
-        if not file_id:
-            return _context_retrieval_tool_error("file_id_required")
-        return await _run(
-            lambda _inner: retrieval.stage_context_file_to_workspace(
-                tenant_id=identity.tenant_id,
-                workspace_id=identity.workspace_id,
-                user_id=identity.user_id,
-                session_id=identity.session_id,
-                run_id=identity.run_id,
-                file_id=file_id,
-                workspace_root=str(workspace_root),
-                max_bytes=_safe_positive_int(tool_args.get("max_bytes"), default=1048576, maximum=1048576),
-            ),
-            tool_args,
-            audit_action="context_retrieval.stage_context_file_to_workspace",
-        )
+        return await _run("stage_context_file_to_workspace", args)
 
     @sdk_tool(
         "stage_run_artifact_to_workspace",
@@ -1019,28 +944,7 @@ def _build_context_retrieval_mcp_server(
         },
     )
     async def stage_run_artifact_to_workspace(args):
-        tool_args = args if isinstance(args, dict) else {}
-        artifact_id = str(tool_args.get("artifact_id") or "")
-        if not artifact_id:
-            return _context_retrieval_tool_error("artifact_id_required")
-        return await _run(
-            lambda _inner: retrieval.stage_run_artifact_to_workspace(
-                tenant_id=identity.tenant_id,
-                workspace_id=identity.workspace_id,
-                user_id=identity.user_id,
-                session_id=identity.session_id,
-                run_id=identity.run_id,
-                artifact_id=artifact_id,
-                workspace_root=str(workspace_root),
-                max_bytes=_safe_positive_int(
-                    tool_args.get("max_bytes"),
-                    default=16777216,
-                    maximum=16777216,
-                ),
-            ),
-            tool_args,
-            audit_action="context_retrieval.stage_run_artifact_to_workspace",
-        )
+        return await _run("stage_run_artifact_to_workspace", args)
 
     @sdk_tool(
         "search_memory",
@@ -1052,21 +956,7 @@ def _build_context_retrieval_mcp_server(
         },
     )
     async def search_memory(args):
-        tool_args = args if isinstance(args, dict) else {}
-        return await _run(
-            lambda inner: retrieval.search_memory(
-                tenant_id=identity.tenant_id,
-                workspace_id=identity.workspace_id,
-                user_id=identity.user_id,
-                agent_id=identity.agent_id,
-                session_id=identity.session_id,
-                query=str(inner.get("query") or ""),
-                limit=_safe_positive_int(inner.get("limit"), default=10, maximum=50),
-                max_tokens=_safe_positive_int(inner.get("max_tokens"), default=1200, maximum=8000),
-            ),
-            tool_args,
-            audit_action="context_retrieval.search_memory",
-        )
+        return await _run("search_memory", args)
 
     return create_server(
         "ai-platform-context",
@@ -1445,7 +1335,7 @@ async def run_claude_agent_sdk(
     cwd: Path,
     skill_id: str,
     session_id: str | None = None,
-    context_retrieval: ContextRetrieval | None = None,
+    context_retrieval: ContextRetrievalAuthority | None = None,
     context_retrieval_identity: ScopedContextRetrievalIdentity | None = None,
     model_id: str | None = None,
     system_prompt: str | None = None,
@@ -1602,22 +1492,25 @@ async def run_claude_agent_sdk(
             error=_SDK_SELECTED_SKILL_NOT_AUTHORIZED,
             turn_diagnostics=turn_diagnostics(_SDK_SELECTED_SKILL_NOT_AUTHORIZED),
         )
+    context_retrieval_registration_error: str | None = None
     try:
         context_retrieval_server = _build_context_retrieval_mcp_server(
             sdk,
             retrieval=context_retrieval,
             identity=context_retrieval_identity,
-            workspace_root=cwd,
             tool_names=(
                 requested_internal_context_tools
                 if tool_policy_subjects is not None
                 else list(_SDK_INTERNAL_CONTEXT_TOOLS)
             ),
         )
+        if requested_internal_context_tools and context_retrieval_server is None:
+            context_retrieval_registration_error = "context_retrieval_registration_unavailable"
     except Exception:  # noqa: BLE001
         context_retrieval_server = None
+        context_retrieval_registration_error = "context_retrieval_registration_failed"
     if requested_internal_context_tools and context_retrieval_server is None:
-        error_code = _SDK_TOOL_ADMISSION_FAILED
+        error_code = context_retrieval_registration_error or _SDK_TOOL_ADMISSION_FAILED
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             error=error_code,

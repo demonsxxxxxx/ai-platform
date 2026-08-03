@@ -5,9 +5,12 @@ import hmac
 import pytest
 from fastapi.testclient import TestClient
 
-from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied, InMemoryContextRetrievalRepository
+from app.context.retrieval import (
+    ContextRetrievalAuthority,
+    ContextRetrievalDenied,
+    ContextRetrievalInputError,
+)
 from app.main import create_app
-from app.routes.runtime_callbacks import _run_context_retrieval_action
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
 from app.runtime.sandbox.contracts import ContextRetrievalScope
 
@@ -85,7 +88,9 @@ def _patch_route(
             return []
         return [{"lease_payload_json": {"attempt_id": lease_attempt}}]
 
-    async def run_action(retrieval, *, action, arguments, identity):
+    async def run_action(action, identity, arguments):
+        if "tenant_id" in arguments:
+            raise ContextRetrievalInputError("context_retrieval_parameters_invalid")
         calls.append((action, arguments, identity))
         if isinstance(action_result, Exception):
             raise action_result
@@ -110,9 +115,12 @@ def _patch_route(
     monkeypatch.setattr(callbacks.repositories, "get_bound_executor_context_snapshot", get_snapshot)
     monkeypatch.setattr(callbacks.repositories, "append_event", append_event)
     monkeypatch.setattr(callbacks, "ObjectStorage", lambda: object())
-    monkeypatch.setattr(callbacks, "RepositoryContextRetrievalRepository", lambda conn, storage: object())
-    monkeypatch.setattr(callbacks, "ContextRetrieval", lambda repository: object())
-    monkeypatch.setattr(callbacks, "_run_context_retrieval_action", run_action)
+    authority = type("Authority", (), {"execute": staticmethod(run_action)})()
+    monkeypatch.setattr(
+        callbacks.ContextRetrievalAuthority,
+        "for_connection",
+        staticmethod(lambda conn, storage: authority),
+    )
     return calls
 
 
@@ -411,9 +419,9 @@ async def test_platform_context_client_rejects_forged_scope_before_callback(monk
 
 @pytest.mark.asyncio
 async def test_callback_dispatcher_exports_only_bounded_broker_payload():
-    retrieval = ContextRetrieval(
-        InMemoryContextRetrievalRepository(
-            artifacts=[
+    retrieval = ContextRetrievalAuthority.in_memory(
+        {
+            "artifacts": [
                 {
                     "tenant_id": "tenant-a",
                     "workspace_id": "workspace-a",
@@ -425,7 +433,7 @@ async def test_callback_dispatcher_exports_only_bounded_broker_payload():
                     "content": "artifact-bytes",
                 }
             ]
-        )
+        }
     )
     identity = {
         "tenant_id": "tenant-a",
@@ -436,11 +444,10 @@ async def test_callback_dispatcher_exports_only_bounded_broker_payload():
         "agent_id": "agent-a",
     }
 
-    result = await _run_context_retrieval_action(
-        retrieval,
-        action="stage_run_artifact_to_workspace",
-        arguments={"artifact_id": "artifact-a", "max_bytes": 32},
-        identity=identity,
+    result = await retrieval.execute(
+        "stage_run_artifact_to_workspace",
+        identity,
+        {"artifact_id": "artifact-a", "max_bytes": 32},
     )
 
     assert base64.b64decode(result["content_base64"]) == b"artifact-bytes"
