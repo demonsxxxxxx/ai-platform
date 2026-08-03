@@ -15,8 +15,19 @@ def _row(sequence: int, event_type: str, **overrides: object) -> dict[str, objec
         "sequence": sequence,
         "event_type": event_type,
         "stage": "answer" if event_type == "assistant_delta" else "runtime",
+        "message": "",
+        "severity": "info",
         "visible_to_user": True,
-        "payload_json": {},
+        "payload_json": (
+            {
+                "delta": f"delta-{sequence}",
+                "source": "worker_answer_delta_v1",
+                "visible_to_user": True,
+                "severity": "info",
+            }
+            if event_type == "assistant_delta"
+            else {}
+        ),
     }
     row.update(overrides)
     return row
@@ -53,11 +64,11 @@ def test_postgres_adapter_is_explicitly_psycopg_only():
 
 def test_page_advances_over_hidden_rows_without_exposing_payloads_or_duplicates():
     rows = [
-        _row(7, "assistant_delta", payload_json={"delta": "one", "internal": "not public"}),
+        _row(7, "assistant_delta", payload_json={"delta": "one", "source": "worker_answer_delta_v1", "visible_to_user": True, "severity": "info"}),
         _row(8, "executor_callback", visible_to_user=False),
         _row(9, "assistant_delta", visible_to_user=False, payload_json={"delta": "hidden"}),
-        _row(10, "assistant_delta", payload_json={"delta": "two"}),
-        _row(10, "assistant_delta", payload_json={"delta": "duplicate"}),
+        _row(10, "assistant_delta", payload_json={"delta": "two", "source": "worker_answer_delta_v1", "visible_to_user": True, "severity": "info"}),
+        _row(10, "assistant_delta", payload_json={"delta": "duplicate", "source": "worker_answer_delta_v1", "visible_to_user": True, "severity": "info"}),
     ]
     page = event_page(
         cursor=RunCursor(run_id="run-a", sequence=6),
@@ -77,7 +88,7 @@ def test_terminal_control_is_delivered_only_after_the_page_drains_later_deltas()
         cursor=RunCursor(run_id="run-a", sequence=10),
         rows=[
             _row(11, "run_succeeded"),
-            _row(12, "assistant_delta", payload_json={"delta": "durable after terminal"}),
+            _row(12, "assistant_delta", payload_json={"delta": "durable after terminal", "source": "worker_answer_delta_v1", "visible_to_user": True, "severity": "info"}),
         ],
     )
 
@@ -87,17 +98,34 @@ def test_terminal_control_is_delivered_only_after_the_page_drains_later_deltas()
     assert page.terminal.drain_through == RunCursor(run_id="run-a", sequence=12)
 
 
-def test_malformed_or_private_delta_fails_closed_while_the_cursor_advances():
+def test_only_the_exact_canonical_assistant_delta_envelope_projects_publicly():
     page = event_page(
         cursor=RunCursor(run_id="run-a", sequence=1),
         rows=[
-            _row(2, "assistant_delta", payload_json={"private_payload": "secret", "delta": "never"}),
-            _row(3, "assistant_delta", payload_json={"delta": 7}),
+            _row(2, "assistant_delta", payload_json={"delta": "accepted", "source": "worker_answer_delta_v1", "visible_to_user": True, "severity": "info"}),
+            _row(3, "assistant_delta", payload_json={"delta": "legacy", "visible_to_user": True, "severity": "info"}),
+            _row(4, "assistant_delta", payload_json={"delta": "forged", "source": "executor_callback", "visible_to_user": True, "severity": "info"}),
+            _row(5, "assistant_delta", payload_json={"delta": "private", "source": "worker_answer_delta_v1", "visible_to_user": True, "severity": "info", "private_payload": "secret"}),
+            _row(6, "assistant_delta", payload_json={"delta": 7, "source": "worker_answer_delta_v1", "visible_to_user": True, "severity": "info"}),
+            _row(7, "assistant_delta", message="not canonical", payload_json={"delta": "wrong-row", "source": "worker_answer_delta_v1", "visible_to_user": True, "severity": "info"}),
         ],
     )
 
-    assert page.events == ()
-    assert page.through_cursor == RunCursor(run_id="run-a", sequence=3)
+    assert [(event.cursor.sequence, event.delta) for event in page.events] == [(2, "accepted")]
+    assert page.through_cursor == RunCursor(run_id="run-a", sequence=7)
+
+
+def test_page_exposes_cursor_bound_durable_rows_while_public_projection_stays_allowlisted():
+    page = event_page(
+        cursor=RunCursor(run_id="run-a", sequence=3),
+        rows=[
+            _row(5, "assistant_delta", payload_json={"delta": "five", "source": "worker_answer_delta_v1", "visible_to_user": True, "severity": "info"}),
+            _row(4, "executor_callback", visible_to_user=False),
+        ],
+    )
+
+    assert [(row.cursor.sequence, row.row["id"]) for row in page.durable_rows] == [(4, "evt-4"), (5, "evt-5")]
+    assert [(event.cursor.sequence, event.delta) for event in page.events] == [(5, "five")]
 
 
 class _Cursor:
@@ -376,3 +404,24 @@ def test_incremental_page_read_uses_the_run_bound_cursor_and_limit():
     statement, params = conn.executed[-1]
     assert "sequence > %s" in statement
     assert params == ("tenant-a", "run-a", 8, 25)
+
+
+def test_unbounded_page_read_uses_the_same_run_bound_cursor_without_a_limit():
+    async def read_page() -> tuple[list[dict[str, object]], _UnitOfWork]:
+        conn = _UnitOfWork()
+        conn.read_rows = [_row(9, "assistant_delta")]
+        rows = await postgres.read_event_rows(
+            conn,
+            cursor=RunCursor(run_id="run-a", sequence=8),
+            tenant_id="tenant-a",
+            limit=None,
+        )
+        return list(rows), conn
+
+    rows, conn = asyncio.run(read_page())
+
+    assert rows == [_row(9, "assistant_delta")]
+    statement, params = conn.executed[-1]
+    assert "sequence > %s" in statement
+    assert "limit %s" not in statement
+    assert params == ("tenant-a", "run-a", 8)

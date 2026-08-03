@@ -306,23 +306,27 @@ async def read_event_rows(
     *,
     tenant_id: str,
     cursor: RunCursor,
-    limit: int,
+    limit: int | None,
 ) -> tuple[Mapping[str, object], ...]:
     """Read one incremental event page after a run-bound cursor."""
 
     _require_nonempty(tenant_id, field_name="tenant_id")
-    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
         raise ValueError("run_event_page_limit_invalid")
+    limit_clause = "limit %s" if limit is not None else ""
+    params: tuple[object, ...] = (tenant_id, cursor.run_id, cursor.sequence)
+    if limit is not None:
+        params += (limit,)
     result = await conn.execute(
-        """
+        f"""
         select id, trace_id, schema_version, sequence, event_type, stage, message, severity, visible_to_user,
                error_code, latency_ms, input_token_count, output_token_count, total_token_count,
                estimated_cost_minor, payload_json, created_at
         from run_events
         where tenant_id = %s and run_id = %s and sequence > %s
-        order by sequence asc
-        limit %s
+        order by sequence asc, created_at asc
+        {limit_clause}
         """,
-        (tenant_id, cursor.run_id, cursor.sequence, limit),
+        params,
     )
     return tuple(await result.fetchall())
