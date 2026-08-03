@@ -1,9 +1,9 @@
 """PostgreSQL adapter for durable run-event ledger operations.
 
-The caller owns the transaction. This adapter never commits or rolls back: a
-batch receipt, its events, and its cursor allocation therefore share the
-caller's PostgreSQL transaction and either persist together or are rolled back
-together.
+The caller passes the ``psycopg.AsyncConnection`` yielded by ``app.db``'s
+transaction context. This adapter never commits or rolls back: a batch receipt,
+its events, and its cursor allocation therefore share that PostgreSQL
+transaction and either persist together or are rolled back together.
 """
 
 from __future__ import annotations
@@ -12,7 +12,8 @@ import json
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+
+from psycopg import AsyncConnection
 
 from app.control_plane_contracts import EVENT_ENVELOPE_SCHEMA_VERSION, standard_error_code, standard_trace_id
 from app.streaming.authority import RunCursor
@@ -20,18 +21,6 @@ from app.streaming.authority import RunCursor
 
 class RunEventLedgerConflictError(ValueError):
     """Signal an unavailable durable receipt, cursor, or terminal fence."""
-
-
-class RunEventRowCursor(Protocol):
-    async def fetchone(self) -> Mapping[str, object] | None: ...
-
-    async def fetchall(self) -> Sequence[Mapping[str, object]]: ...
-
-
-class RunEventSqlConnection(Protocol):
-    """The transaction-owned SQL protocol required by the PostgreSQL adapter."""
-
-    async def execute(self, statement: str, params: tuple[object, ...]) -> RunEventRowCursor: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +114,7 @@ def _batch_receipt(row: Mapping[str, object], *, run_id: str, duplicate: bool) -
 
 
 async def _allocate_cursor(
-    conn: RunEventSqlConnection,
+    conn: AsyncConnection[dict[str, object]],
     *,
     tenant_id: str,
     run_id: str,
@@ -161,7 +150,7 @@ async def _allocate_cursor(
 
 
 async def append_event(
-    conn: RunEventSqlConnection,
+    conn: AsyncConnection[dict[str, object]],
     *,
     tenant_id: str,
     run_id: str,
@@ -213,7 +202,7 @@ async def append_event(
 
 
 async def append_batch(
-    conn: RunEventSqlConnection,
+    conn: AsyncConnection[dict[str, object]],
     *,
     tenant_id: str,
     run_id: str,
@@ -271,7 +260,7 @@ async def append_batch(
 
 
 async def acquire_terminal_drain_fence(
-    conn: RunEventSqlConnection,
+    conn: AsyncConnection[dict[str, object]],
     *,
     tenant_id: str,
     run_id: str,
@@ -313,7 +302,7 @@ async def acquire_terminal_drain_fence(
 
 
 async def read_event_rows(
-    conn: RunEventSqlConnection,
+    conn: AsyncConnection[dict[str, object]],
     *,
     tenant_id: str,
     cursor: RunCursor,

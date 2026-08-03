@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,14 @@ def test_postgres_adapter_is_not_coupled_to_app_repositories():
     source = Path(postgres.__file__).read_text(encoding="utf-8")
 
     assert "app.repositories" not in source
+
+
+def test_postgres_adapter_is_explicitly_psycopg_only():
+    source = Path(postgres.__file__).read_text(encoding="utf-8")
+
+    assert "from psycopg import AsyncConnection" in source
+    assert "asyncpg" not in source
+    assert "RunEventSqlConnection" not in source
 
 
 def test_page_advances_over_hidden_rows_without_exposing_payloads_or_duplicates():
@@ -151,9 +160,8 @@ class _UnitOfWork:
         if "update run_event_batches" in sql:
             for receipt in self.batches.values():
                 if receipt["id"] == params[3]:
-                    event_ids = [*self.events]
                     receipt.update(
-                        event_ids_json=event_ids,
+                        event_ids_json=json.loads(str(params[0])),
                         first_sequence=params[1],
                         through_sequence=params[2],
                     )
@@ -256,6 +264,44 @@ def test_batch_receipt_replay_and_rollback_are_owned_by_the_transaction_protocol
     assert failing.events == {}
 
 
+def test_batch_receipt_identity_is_exact_across_tenant_run_and_attempt():
+    async def append(
+        conn: _UnitOfWork,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+    ) -> postgres.BatchReceipt:
+        return await conn.transaction(
+            lambda: postgres.append_batch(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                batch_id="shared-batch",
+                events=[postgres.LedgerEvent(event_type="assistant_delta", stage="answer")],
+            )
+        )
+
+    async def exercise() -> tuple[postgres.BatchReceipt, postgres.BatchReceipt, list[postgres.BatchReceipt], _UnitOfWork]:
+        conn = _UnitOfWork()
+        first = await append(conn, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a")
+        replay = await append(conn, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a")
+        isolated = [
+            await append(conn, tenant_id="tenant-b", run_id="run-a", attempt_id="attempt-a"),
+            await append(conn, tenant_id="tenant-a", run_id="run-b", attempt_id="attempt-a"),
+            await append(conn, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-b"),
+        ]
+        return first, replay, isolated, conn
+
+    first, replay, isolated, conn = asyncio.run(exercise())
+
+    assert first.duplicate is False
+    assert replay.duplicate is True
+    assert all(receipt.duplicate is False for receipt in isolated)
+    assert len(conn.batches) == 4
+
+
 def test_terminal_fence_is_idempotent_for_one_batch_and_rejects_a_competing_batch():
     async def exercise() -> tuple[dict[str, object], dict[str, object]]:
         conn = _UnitOfWork()
@@ -275,6 +321,41 @@ def test_terminal_fence_is_idempotent_for_one_batch_and_rejects_a_competing_batc
 
     assert first.duplicate is False
     assert replay.duplicate is True
+
+
+def test_terminal_fence_keys_are_exact_across_tenant_run_and_attempt():
+    async def claim(
+        conn: _UnitOfWork,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        batch_id: str,
+    ) -> postgres.TerminalDrainReceipt:
+        return await postgres.acquire_terminal_drain_fence(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            batch_id=batch_id,
+        )
+
+    async def exercise() -> tuple[list[postgres.TerminalDrainReceipt], _UnitOfWork]:
+        conn = _UnitOfWork()
+        await claim(conn, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", batch_id="batch-a")
+        with pytest.raises(postgres.RunEventLedgerConflictError, match="terminal_drain_already_consumed"):
+            await claim(conn, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", batch_id="batch-b")
+        isolated = [
+            await claim(conn, tenant_id="tenant-b", run_id="run-a", attempt_id="attempt-a", batch_id="batch-b"),
+            await claim(conn, tenant_id="tenant-a", run_id="run-b", attempt_id="attempt-a", batch_id="batch-b"),
+            await claim(conn, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-b", batch_id="batch-b"),
+        ]
+        return isolated, conn
+
+    isolated, conn = asyncio.run(exercise())
+
+    assert all(receipt.duplicate is False for receipt in isolated)
+    assert len(conn.drains) == 4
 
 
 def test_incremental_page_read_uses_the_run_bound_cursor_and_limit():
