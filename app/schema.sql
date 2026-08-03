@@ -1769,18 +1769,6 @@ create index if not exists idx_run_events_run_sequence on run_events(tenant_id, 
 
 do $$
 begin
-  if exists (
-    select 1
-    from run_events events
-    join runs on runs.id = events.run_id
-    where runs.tenant_id is distinct from events.tenant_id
-  ) then
-    raise exception 'run_events_tenant_run_scope_mismatch';
-  end if;
-end $$;
-
-do $$
-begin
   if not exists (
     select 1 from pg_constraint
     where conname = 'fk_run_events_run_scope'
@@ -1797,25 +1785,19 @@ create table if not exists run_event_cursors (
   run_id text not null,
   next_sequence bigint not null default 1 check (next_sequence > 0),
   updated_at timestamptz not null default now(),
-  primary key (tenant_id, run_id),
-  constraint fk_run_event_cursors_run_scope
-    foreign key (tenant_id, run_id) references runs(tenant_id, id)
+  primary key (tenant_id, run_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
 
 create table if not exists run_event_batches (
   id text primary key,
   tenant_id text not null,
   run_id text not null,
-  attempt_id text not null,
-  batch_id text not null,
+  attempt_id text not null, batch_id text not null,
   event_ids_json jsonb not null default '[]'::jsonb,
-  first_sequence bigint,
-  through_sequence bigint,
+  first_sequence bigint, through_sequence bigint,
+  callback_received_at timestamptz not null default now(),
   durable_committed_at timestamptz,
-  created_at timestamptz not null default now(),
-  unique (tenant_id, run_id, attempt_id, batch_id),
-  constraint fk_run_event_batches_run_scope
-    foreign key (tenant_id, run_id) references runs(tenant_id, id)
+  unique (tenant_id, run_id, attempt_id, batch_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
 
 create table if not exists run_event_terminal_drains (
@@ -1823,10 +1805,7 @@ create table if not exists run_event_terminal_drains (
   run_id text not null,
   attempt_id text not null,
   batch_id text not null,
-  created_at timestamptz not null default now(),
-  primary key (tenant_id, run_id, attempt_id),
-  constraint fk_run_event_terminal_drains_run_scope
-    foreign key (tenant_id, run_id) references runs(tenant_id, id)
+  primary key (tenant_id, run_id, attempt_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
 
 do $$
@@ -1869,30 +1848,14 @@ begin
       from ranked
       where events.id = ranked.id;
 
-      with affected_groups as (
-        select tenant_id, run_id
-        from run_events
-        group by tenant_id, run_id
-        having min(sequence) < 0
-      ), ranked as (
-        select events.id,
-               row_number() over (
-                 partition by events.tenant_id, events.run_id
-                 order by events.sequence desc, events.created_at asc, events.id asc
-               ) as replacement_sequence
-        from run_events events
-        join affected_groups using (tenant_id, run_id)
-      )
-      update run_events events
-      set sequence = ranked.replacement_sequence
-      from ranked
-      where events.id = ranked.id;
+      update run_events
+      set sequence = -sequence
+      where sequence < 0;
     end if;
   end if;
 end $$;
 
-create unique index if not exists uq_run_events_tenant_run_sequence
-  on run_events(tenant_id, run_id, sequence);
+create unique index if not exists uq_run_events_tenant_run_sequence on run_events(tenant_id, run_id, sequence);
 
 insert into run_event_cursors(tenant_id, run_id, next_sequence)
 select tenant_id, run_id, coalesce(max(sequence), 0) + 1

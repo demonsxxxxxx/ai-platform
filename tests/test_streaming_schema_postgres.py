@@ -61,6 +61,21 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
         await _set_search_path(admin, schema_name)
         await admin.execute(schema_sql)
         await admin.execute(schema_sql)
+        batch_timestamp_columns = await admin.execute(
+            """
+            select column_name
+            from information_schema.columns
+            where table_schema = %s
+              and table_name = 'run_event_batches'
+              and column_name in ('callback_received_at', 'durable_committed_at')
+            order by column_name
+            """,
+            (schema_name,),
+        )
+        assert [row["column_name"] for row in await batch_timestamp_columns.fetchall()] == [
+            "callback_received_at",
+            "durable_committed_at",
+        ]
         await _seed_run(admin)
 
         await admin.execute("drop index uq_run_events_tenant_run_sequence")

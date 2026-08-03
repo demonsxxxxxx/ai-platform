@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from app import repositories
+from app import run_event_repository
 from app.streaming import postgres as ledger
 from app.streaming.authority import RunCursor
 
@@ -36,7 +37,7 @@ async def test_append_event_uses_ledger_and_preserves_generic_conflict_identity(
         observed.append((tenant_id, run_id, event))
         return ledger.EventReceipt("evt_1", RunCursor(run_id, 4))
 
-    monkeypatch.setattr(repositories._run_event_ledger, "append_event", append_one)
+    monkeypatch.setattr(run_event_repository._ledger, "append_event", append_one)
 
     event_id = await repositories.append_event(
         conn,
@@ -82,8 +83,8 @@ async def test_batch_receipt_and_terminal_fence_keep_existing_dict_contract(monk
     async def fence(_conn, **_kwargs):
         return ledger.TerminalDrainReceipt(duplicate=False)
 
-    monkeypatch.setattr(repositories._run_event_ledger, "append_batch", append_batch)
-    monkeypatch.setattr(repositories._run_event_ledger, "acquire_terminal_drain_fence", fence)
+    monkeypatch.setattr(run_event_repository._ledger, "append_batch", append_batch)
+    monkeypatch.setattr(run_event_repository._ledger, "acquire_terminal_drain_fence", fence)
 
     receipt = await repositories.append_event_batch(
         conn,
@@ -122,7 +123,7 @@ async def test_batch_event_validation_is_strict_and_ledger_conflicts_only_are_tr
         called = True
         raise ledger.RunEventLedgerConflictError("terminal_drain_already_consumed")
 
-    monkeypatch.setattr(repositories._run_event_ledger, "append_batch", append_batch)
+    monkeypatch.setattr(run_event_repository._ledger, "append_batch", append_batch)
 
     with pytest.raises(ValueError, match="run_event_payload_invalid"):
         await repositories.append_event_batch(
@@ -190,4 +191,64 @@ def test_run_event_schema_declares_repairable_composite_ledger_authority():
     assert "primary key (tenant_id, run_id, attempt_id)" in content
     assert "row_number() over" in content
     assert "lock table run_events in share row exclusive mode" in content
-    assert "run_events_tenant_run_scope_mismatch" in content
+    assert "foreign key (tenant_id, run_id) references runs(tenant_id, id)" in content
+
+
+def test_run_event_schema_retains_every_a1_ledger_written_column():
+    schema = Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
+    ledger_source = Path(run_event_repository._ledger.__file__).read_text(encoding="utf-8")
+    required_columns = {
+        "run_events": (
+            "id",
+            "tenant_id",
+            "run_id",
+            "trace_id",
+            "schema_version",
+            "sequence",
+            "event_type",
+            "stage",
+            "message",
+            "severity",
+            "visible_to_user",
+            "error_code",
+            "latency_ms",
+            "input_token_count",
+            "output_token_count",
+            "total_token_count",
+            "estimated_cost_minor",
+            "payload_json",
+        ),
+        "run_event_cursors": ("tenant_id", "run_id", "next_sequence", "updated_at"),
+        "run_event_batches": (
+            "id",
+            "tenant_id",
+            "run_id",
+            "attempt_id",
+            "batch_id",
+            "event_ids_json",
+            "first_sequence",
+            "through_sequence",
+            "callback_received_at",
+            "durable_committed_at",
+        ),
+        "run_event_terminal_drains": ("tenant_id", "run_id", "attempt_id", "batch_id"),
+    }
+
+    for table, columns in required_columns.items():
+        table_start = schema.index(f"create table if not exists {table}")
+        table_end = schema.index("\n);", table_start)
+        table_definition = schema[table_start:table_end]
+        assert f"{table}" in ledger_source
+        for column in columns:
+            assert column in table_definition
+
+    assert "durable_committed_at = now()" in ledger_source
+    assert "callback_received_at timestamptz not null default now()" in schema
+    assert "durable_committed_at timestamptz" in schema
+
+
+def test_repository_dependency_direction_keeps_ledger_adapter_independent():
+    implementation = Path(run_event_repository.__file__).read_text(encoding="utf-8")
+
+    assert "from app import repositories" not in implementation
+    assert "from app.streaming import postgres as _ledger" in implementation

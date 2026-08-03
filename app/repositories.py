@@ -41,6 +41,7 @@ from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_
 from app.persistence import RepositoryNotFoundError
 from app.persistence import chat_submissions
 from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
+from app import run_event_repository as _run_event_repository
 from app.run_admission_policy import RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
 from app.skills.execution_profiles import (
@@ -53,7 +54,6 @@ from app.skills.pinning import (
     build_skill_snapshot_governance,
 )
 from app.skills.release_policy import resolve_rollout_skill_decision
-from app.streaming import postgres as _run_event_ledger
 from app.tool_policy import evaluate_tool_policy, max_risk
 from app.validation import SAFE_ID_PATTERN
 from app.tool_permission_lifecycle import (
@@ -198,66 +198,7 @@ def _tool_policy_projection(row: dict[str, Any], *, tenant_id: str) -> dict[str,
     }
 
 
-def _ledger_event_from_values(
-    *,
-    event_type: object,
-    stage: object,
-    message: object = "",
-    payload: object = None,
-    trace_id: object = None,
-    severity: object = None,
-    visible_to_user: object = None,
-    error_code: object = None,
-    latency_ms: object = None,
-    input_token_count: object = 0,
-    output_token_count: object = 0,
-    total_token_count: object = 0,
-    estimated_cost_minor: object = 0,
-) -> _run_event_ledger.LedgerEvent:
-    required = {"type": event_type, "stage": stage}
-    for field, value in required.items():
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"run_event_{field}_invalid")
-    if not isinstance(message, str):
-        raise ValueError("run_event_message_invalid")
-    if payload is None:
-        payload = {}
-    if not isinstance(payload, dict):
-        raise ValueError("run_event_payload_invalid")
-    optional_strings = {"trace_id": trace_id, "severity": severity, "error_code": error_code}
-    for field, value in optional_strings.items():
-        if value is not None and not isinstance(value, str):
-            raise ValueError(f"run_event_{field}_invalid")
-    if visible_to_user is not None and not isinstance(visible_to_user, bool):
-        raise ValueError("run_event_visible_to_user_invalid")
-    integer_values = {
-        "latency_ms": latency_ms,
-        "input_token_count": input_token_count,
-        "output_token_count": output_token_count,
-        "total_token_count": total_token_count,
-        "estimated_cost_minor": estimated_cost_minor,
-    }
-    for field, value in integer_values.items():
-        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
-            raise ValueError(f"run_event_{field}_invalid")
-    return _run_event_ledger.LedgerEvent(
-        event_type=event_type,
-        stage=stage,
-        message=message,
-        payload=payload,
-        trace_id=trace_id,
-        severity=severity,
-        visible_to_user=visible_to_user,
-        error_code=error_code,
-        latency_ms=latency_ms,
-        input_token_count=input_token_count,
-        output_token_count=output_token_count,
-        total_token_count=total_token_count,
-        estimated_cost_minor=estimated_cost_minor,
-    )
-
-
-def _repository_ledger_conflict(error: _run_event_ledger.RunEventLedgerConflictError) -> RepositoryConflictError:
+def _repository_ledger_conflict(error: _run_event_repository.RunEventLedgerConflictError) -> RepositoryConflictError:
     return RepositoryConflictError(str(error))
 
 
@@ -4857,46 +4798,27 @@ async def append_event(
     total_token_count: int = 0,
     estimated_cost_minor: int = 0,
 ) -> str:
-    event = _ledger_event_from_values(
-        event_type=event_type,
-        stage=stage,
-        message=message,
-        payload=payload,
-        trace_id=trace_id,
-        severity=severity,
-        visible_to_user=visible_to_user,
-        error_code=error_code,
-        latency_ms=latency_ms,
-        input_token_count=input_token_count,
-        output_token_count=output_token_count,
-        total_token_count=total_token_count,
-        estimated_cost_minor=estimated_cost_minor,
-    )
     try:
-        receipt = await _run_event_ledger.append_event(conn, tenant_id=tenant_id, run_id=run_id, event=event)
-    except _run_event_ledger.RunEventLedgerConflictError as exc:
+        return await _run_event_repository.append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type=event_type,
+            stage=stage,
+            message=message,
+            payload=payload,
+            trace_id=trace_id,
+            severity=severity,
+            visible_to_user=visible_to_user,
+            error_code=error_code,
+            latency_ms=latency_ms,
+            input_token_count=input_token_count,
+            output_token_count=output_token_count,
+            total_token_count=total_token_count,
+            estimated_cost_minor=estimated_cost_minor,
+        )
+    except _run_event_repository.RunEventLedgerConflictError as exc:
         raise _repository_ledger_conflict(exc) from exc
-    return receipt.event_id
-
-
-def _ledger_event_from_dict(event: object) -> _run_event_ledger.LedgerEvent:
-    if not isinstance(event, dict):
-        raise ValueError("run_event_batch_event_invalid")
-    return _ledger_event_from_values(
-        event_type=event.get("event_type"),
-        stage=event.get("stage"),
-        message=event.get("message", ""),
-        payload=event.get("payload"),
-        trace_id=event.get("trace_id"),
-        severity=event.get("severity"),
-        visible_to_user=event.get("visible_to_user"),
-        error_code=event.get("error_code"),
-        latency_ms=event.get("latency_ms"),
-        input_token_count=event.get("input_token_count", 0),
-        output_token_count=event.get("output_token_count", 0),
-        total_token_count=event.get("total_token_count", 0),
-        estimated_cost_minor=event.get("estimated_cost_minor", 0),
-    )
 
 
 async def append_event_batch(
@@ -4908,26 +4830,17 @@ async def append_event_batch(
     batch_id: str,
     events: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    ledger_events = tuple(_ledger_event_from_dict(event) for event in events)
     try:
-        receipt = await _run_event_ledger.append_batch(
+        return await _run_event_repository.append_event_batch(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
             attempt_id=attempt_id,
             batch_id=batch_id,
-            events=ledger_events,
+            events=events,
         )
-    except _run_event_ledger.RunEventLedgerConflictError as exc:
+    except _run_event_repository.RunEventLedgerConflictError as exc:
         raise _repository_ledger_conflict(exc) from exc
-    return {
-        "accepted": True,
-        "duplicate": receipt.duplicate,
-        "id": receipt.receipt_id,
-        "event_ids_json": list(receipt.event_ids),
-        "first_sequence": receipt.first_cursor.sequence if receipt.first_cursor else None,
-        "through_sequence": receipt.through_cursor.sequence if receipt.through_cursor else None,
-    }
 
 
 async def acquire_run_event_terminal_drain_fence(
@@ -4939,16 +4852,15 @@ async def acquire_run_event_terminal_drain_fence(
     batch_id: str,
 ) -> dict[str, bool]:
     try:
-        receipt = await _run_event_ledger.acquire_terminal_drain_fence(
+        return await _run_event_repository.acquire_terminal_drain_fence(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
             attempt_id=attempt_id,
             batch_id=batch_id,
         )
-    except _run_event_ledger.RunEventLedgerConflictError as exc:
+    except _run_event_repository.RunEventLedgerConflictError as exc:
         raise _repository_ledger_conflict(exc) from exc
-    return {"accepted": True, "duplicate": receipt.duplicate}
 
 
 async def get_run(conn: AsyncConnection, *, tenant_id: str, run_id: str, for_update: bool = False) -> dict[str, Any] | None:
@@ -5091,27 +5003,13 @@ async def list_run_events(
     after_sequence: int | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    sequence_filter = "and sequence > %s" if after_sequence is not None else ""
-    limit_clause = "limit %s" if limit is not None else ""
-    params: list[Any] = [tenant_id, run_id]
-    if after_sequence is not None:
-        params.append(int(after_sequence))
-    if limit is not None:
-        params.append(int(limit))
-    cursor = await conn.execute(
-        f"""
-        select id, trace_id, schema_version, sequence, event_type, stage, message, severity, visible_to_user,
-               error_code, latency_ms, input_token_count, output_token_count, total_token_count,
-               estimated_cost_minor, payload_json, created_at
-        from run_events
-        where tenant_id = %s and run_id = %s
-          {sequence_filter}
-        order by sequence asc, created_at asc
-        {limit_clause}
-        """,
-        tuple(params),
+    return await _run_event_repository.list_run_events(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        after_sequence=after_sequence,
+        limit=limit,
     )
-    return list(await cursor.fetchall())
 
 
 async def create_context_snapshot(
@@ -7416,51 +7314,15 @@ async def list_current_sandbox_runtime_leases_for_attempt(
     run_id: str,
     attempt_id: str,
 ) -> list[dict[str, Any]]:
-    """Lock exact-attempt unexpired active runtime leases for one authoritative run."""
-
-    cursor = await conn.execute(
-        """
-        select *
-        from sandbox_leases
-        where tenant_id = %s
-          and run_id = %s
-          and lease_payload_json ->> 'attempt_id' = %s
-          and status = 'active'
-          and expires_at is not null
-          and expires_at > clock_timestamp()
-        order by created_at asc
-        for update
-        """,
-        (tenant_id, run_id, attempt_id),
+    return await _run_event_repository.list_current_sandbox_runtime_leases_for_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
     )
-    return list(await cursor.fetchall())
 
 
-async def list_terminal_sandbox_runtime_leases_for_attempt(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    run_id: str,
-    attempt_id: str,
-    release_reason: str,
-) -> list[dict[str, Any]]:
-    """Lock released runtime leases for one exact terminal attempt and reason."""
-
-    cursor = await conn.execute(
-        """
-        select *
-        from sandbox_leases
-        where tenant_id = %s
-          and run_id = %s
-          and lease_payload_json ->> 'attempt_id' = %s
-          and status = 'released'
-          and release_reason = %s
-        order by released_at desc, id asc
-        for update
-        """,
-        (tenant_id, run_id, attempt_id, release_reason),
-    )
-    return list(await cursor.fetchall())
+list_terminal_sandbox_runtime_leases_for_attempt = _run_event_repository.list_terminal_sandbox_runtime_leases_for_attempt
 
 
 async def list_sandbox_leases_for_run(

@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import repositories
+from app import run_event_repository
 from app.models import QueueRunPayload
 from app.repositories import (
     RepositoryConflictError,
@@ -4919,12 +4920,12 @@ async def test_append_event_persists_standard_envelope_columns(monkeypatch):
 
     async def append_one(_conn, *, tenant_id, run_id, event):
         captured.append((tenant_id, run_id, event))
-        return repositories._run_event_ledger.EventReceipt(
+        return run_event_repository._ledger.EventReceipt(
             "evt-a",
-            repositories._run_event_ledger.RunCursor(run_id, 1),
+            run_event_repository._ledger.RunCursor(run_id, 1),
         )
 
-    monkeypatch.setattr(repositories._run_event_ledger, "append_event", append_one)
+    monkeypatch.setattr(run_event_repository._ledger, "append_event", append_one)
 
     await append_event(
         conn,
@@ -4942,7 +4943,7 @@ async def test_append_event_persists_standard_envelope_columns(monkeypatch):
         (
             "tenant-a",
             "run-a",
-            repositories._run_event_ledger.LedgerEvent(
+            run_event_repository._ledger.LedgerEvent(
                 event_type="run_failed",
                 stage="worker",
                 message="Run failed",
