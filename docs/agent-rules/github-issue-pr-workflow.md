@@ -23,6 +23,8 @@ of expanding an unrelated product PR.
   infrastructure decisions that need durable explanation.
 - Record blockers and evidence on the issue or PR. Historical evidence cannot
   prove current readiness.
+- Do not create repository status pages, phase ledgers, or manual-release logs
+  for an active change. The issue or PR is the durable status record.
 
 ## Status Language
 

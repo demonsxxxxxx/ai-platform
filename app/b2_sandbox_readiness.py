@@ -32,10 +32,6 @@ _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
     ".github/workflows/ai-platform-backend.yml",
     "app/b2_sandbox_readiness.py",
     "app/foundation_alpha_readiness.py",
-    "docs/operations/ai-platform-gate-status.md",
-    "docs/operations/opensandbox-provider-phase-status.md",
-    "docs/release-evidence/README.md",
-    "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json",
     "scripts/generate_sandbox_runtime_evidence_211.py",
     "scripts/verify_sandbox_runtime_211.py",
     "tools/b2_sandbox_readiness.py",
@@ -45,11 +41,7 @@ _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
     "tests/test_source_authority_docs.py",
 }
 _B2_RUNTIME_NEUTRAL_PREFIXES = (
-    "docs/release-evidence/b2-sandbox/",
-    "docs/release-evidence/b2-sandbox-source-review/",
-    "docs/release-evidence/b1-memory-context/",
-    "docs/release-evidence/foundation-alpha-poc/",
-    "docs/release-evidence/foundation-runtime-concurrency/",
+    "docs/",
     "frontend/",
 )
 
