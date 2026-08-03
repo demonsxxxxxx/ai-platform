@@ -201,13 +201,6 @@ async def executor_context_retrieval_callback(
         run_id=request.run_id,
         attempt_id=request.attempt_id,
     )
-    try:
-        arguments = ContextRetrievalAuthority.validate_arguments(
-            request.action,
-            request.arguments,
-        )
-    except ContextRetrievalInputError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     async with transaction() as conn:
         run_identity = await repositories.get_run_identity(conn, run_id=request.run_id, for_update=True)
         if run_identity is None:
@@ -248,9 +241,9 @@ async def executor_context_retrieval_callback(
             "run_id": request.run_id,
             "agent_id": agent_id,
         }
-        retrieval = ContextRetrievalAuthority.for_connection(conn, ObjectStorage())
+        retrieval = ContextRetrievalAuthority.for_broker_connection(conn, ObjectStorage())
         try:
-            result = await retrieval.execute(request.action, identity, arguments)
+            result = await retrieval.execute(request.action, identity, request.arguments)
         except ContextRetrievalInputError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ContextRetrievalDenied as exc:

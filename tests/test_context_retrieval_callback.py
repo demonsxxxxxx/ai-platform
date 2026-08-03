@@ -118,7 +118,7 @@ def _patch_route(
     authority = type("Authority", (), {"execute": staticmethod(run_action)})()
     monkeypatch.setattr(
         callbacks.ContextRetrievalAuthority,
-        "for_connection",
+        "for_broker_connection",
         staticmethod(lambda conn, storage: authority),
     )
     return calls
@@ -225,7 +225,7 @@ def test_context_retrieval_callback_rejects_missing_attempt_and_caller_tenant(mo
     assert calls == []
 
 
-def test_context_retrieval_callback_rejects_unadvertised_and_extra_parameters(monkeypatch):
+def test_context_retrieval_callback_rejects_unadvertised_action(monkeypatch):
     calls = _patch_route(monkeypatch, tools=["read_session_messages"])
     client = TestClient(create_app())
     headers = {"X-AI-Platform-Callback-Token": _token("secret")}
@@ -235,14 +235,20 @@ def test_context_retrieval_callback_rejects_unadvertised_and_extra_parameters(mo
         headers=headers,
         json=_payload(),
     )
-    extra = client.post(
-        "/api/ai/runtime/callbacks/context-retrieval",
-        headers=headers,
-        json=_payload(arguments={"artifact_id": "artifact-a", "tenant_id": "tenant-b"}),
-    )
 
     assert unadvertised.status_code == 403
     assert unadvertised.json() == {"detail": "context_retrieval_not_authorized"}
+    assert calls == []
+
+
+def test_context_retrieval_callback_maps_authority_argument_denial(monkeypatch):
+    calls = _patch_route(monkeypatch, tools=["read_run_artifact"])
+    extra = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers={"X-AI-Platform-Callback-Token": _token("secret")},
+        json=_payload(arguments={"artifact_id": "artifact-a", "tenant_id": "tenant-b"}),
+    )
+
     assert extra.status_code == 422
     assert extra.json() == {"detail": "context_retrieval_parameters_invalid"}
     assert calls == []
@@ -419,7 +425,7 @@ async def test_platform_context_client_rejects_forged_scope_before_callback(monk
 
 @pytest.mark.asyncio
 async def test_callback_dispatcher_exports_only_bounded_broker_payload():
-    retrieval = ContextRetrievalAuthority.in_memory(
+    retrieval = ContextRetrievalAuthority.in_memory_for_broker(
         {
             "artifacts": [
                 {

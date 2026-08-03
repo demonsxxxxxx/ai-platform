@@ -4220,6 +4220,47 @@ async def test_direct_general_chat_sdk_path_removes_file_tools_but_keeps_artifac
     ]
 
 
+def test_worker_constructs_context_retrieval_authority_from_existing_scope(monkeypatch, tmp_path):
+    captured = {}
+    authority = object()
+    storage = object()
+
+    class AuthorityFactory:
+        @staticmethod
+        def for_workspace_transaction(transaction_factory, storage_adapter, workspace_root):
+            captured["factory"] = (transaction_factory, storage_adapter, workspace_root)
+            return authority
+
+    monkeypatch.setattr(claude_agent_worker, "ContextRetrievalAuthority", AuthorityFactory)
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", lambda: storage)
+    current_payload = payload(
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "context_manifest": {
+                "schema_version": "ai-platform.context-manifest.v1",
+                "available_retrieval_tools": ["read_context_file"],
+            },
+        }
+    )
+    adapter = ClaudeAgentWorkerAdapter()
+
+    retrieval, identity = adapter._context_retrieval_for_payload(
+        current_payload,
+        current_payload.context_pack,
+        tmp_path,
+    )
+    scope = adapter._context_retrieval_scope_for_payload(
+        current_payload,
+        current_payload.context_pack,
+    )
+
+    assert retrieval is authority
+    assert scope is not None
+    assert identity is not None
+    assert identity.__dict__ == scope.model_dump()
+    assert captured["factory"] == (claude_agent_worker.transaction, storage, tmp_path)
+
+
 @pytest.mark.asyncio
 async def test_worker_passes_scoped_context_retrieval_to_sdk_runner_for_manifest(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)

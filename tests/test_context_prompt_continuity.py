@@ -269,7 +269,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
         query=query,
         tool=tool,
     )
-    retrieval = ContextRetrievalAuthority(
+    retrieval = ContextRetrievalAuthority.in_memory_for_workspace(
         InMemoryContextRetrievalRepository(
             messages=[
                 {
@@ -310,7 +310,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
                 }
             ],
         ),
-        workspace_root=tmp_path,
+        tmp_path,
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -346,9 +346,14 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert "stage_context_file_to_workspace" in captured["allowed_tools"]
     assert "stage_run_artifact_to_workspace" in captured["allowed_tools"]
     message_tool = server["tools"][0]
-    tool_result = await message_tool.handler({"tenant_id": "tenant-b", "limit": 5, "offset": 0, "max_tokens": 20})
+    denied_scope = await message_tool.handler(
+        {"tenant_id": "tenant-b", "limit": 5, "offset": 0, "max_tokens": 20}
+    )
+    assert denied_scope["is_error"] is True
+    assert "context_retrieval_parameters_invalid" in denied_scope["content"][0]["text"]
+    assert "scoped private message" not in denied_scope["content"][0]["text"]
+    tool_result = await message_tool.handler({"limit": 5, "offset": 0, "max_tokens": 20})
     assert "scoped private messa" in tool_result["content"][0]["text"]
-    assert "tenant-b" not in tool_result["content"][0]["text"]
     stage_tool = server["tools"][3]
     stage_result = await stage_tool.handler({"file_id": "file-a"})
     assert "context/file-a/source.txt" in stage_result["content"][0]["text"]

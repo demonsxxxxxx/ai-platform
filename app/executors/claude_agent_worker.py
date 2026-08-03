@@ -1100,24 +1100,14 @@ class ClaudeAgentWorkerAdapter:
         context_pack: dict[str, Any],
         workspace: Path,
     ) -> tuple[ContextRetrievalAuthority | None, ScopedContextRetrievalIdentity | None]:
-        manifest = _context_manifest_from_pack(context_pack)
-        if manifest is None:
+        scope = self._context_retrieval_scope_for_payload(payload, context_pack)
+        if scope is None:
             return None, None
-        identity = ScopedContextRetrievalIdentity(
-            tenant_id=payload.tenant_id,
-            workspace_id=payload.workspace_id,
-            user_id=payload.user_id,
-            session_id=payload.session_id,
-            run_id=payload.run_id,
-            agent_id=payload.agent_id,
-        )
         return (
-            ContextRetrievalAuthority.for_transaction(
-                transaction,
-                ObjectStorage(),
-                workspace_root=workspace,
+            ContextRetrievalAuthority.for_workspace_transaction(
+                transaction, ObjectStorage(), workspace
             ),
-            identity,
+            ScopedContextRetrievalIdentity(**scope.model_dump()),
         )
 
     def _context_retrieval_scope_for_payload(
@@ -2035,11 +2025,7 @@ class ClaudeAgentWorkerAdapter:
             )
         if system_prompt is None:
             system_prompt = self._agent_profile_system_prompt(payload)
-        context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(
-            payload,
-            context_pack,
-            workspace,
-        )
+        context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack, workspace)
 
         async def on_text(delta: str) -> None:
             if event_sink:

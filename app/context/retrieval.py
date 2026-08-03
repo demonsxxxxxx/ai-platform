@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from app import repositories
 from app.context_manifest import truncate_utf8_text, utf8_token_estimate
@@ -304,10 +304,12 @@ class ContextRetrievalAuthority:
         self,
         repository: InMemoryContextRetrievalRepository | ContextRetrievalRepository,
         *,
-        workspace_root: str | Path | None = None,
+        _stage_delivery: Literal["broker_export", "local_workspace"] | None = None,
+        _workspace_root: str | Path | None = None,
     ) -> None:
         self._repository = repository
-        self._workspace_root = str(workspace_root) if workspace_root is not None else None
+        self._stage_delivery = _stage_delivery
+        self._workspace_root = str(_workspace_root) if _workspace_root is not None else None
 
     @classmethod
     def for_connection(
@@ -318,51 +320,97 @@ class ContextRetrievalAuthority:
         return cls(RepositoryContextRetrievalRepository(conn, storage=storage))
 
     @classmethod
+    def for_broker_connection(
+        cls,
+        conn: Any,
+        storage: Any,
+    ) -> ContextRetrievalAuthority:
+        return cls(
+            RepositoryContextRetrievalRepository(conn, storage=storage),
+            _stage_delivery="broker_export",
+        )
+
+    @classmethod
     def for_transaction(
         cls,
         transaction_factory: Callable[[], AbstractAsyncContextManager[Any]],
         storage: Any,
-        *,
-        workspace_root: str | Path | None = None,
+    ) -> ContextRetrievalAuthority:
+        return cls(TransactionalContextRetrievalRepository(transaction_factory, storage=storage))
+
+    @classmethod
+    def for_workspace_transaction(
+        cls,
+        transaction_factory: Callable[[], AbstractAsyncContextManager[Any]],
+        storage: Any,
+        workspace_root: str | Path,
     ) -> ContextRetrievalAuthority:
         return cls(
             TransactionalContextRetrievalRepository(transaction_factory, storage=storage),
-            workspace_root=workspace_root,
+            _stage_delivery="local_workspace",
+            _workspace_root=workspace_root,
         )
 
     @classmethod
     def in_memory(
         cls,
         fixtures: InMemoryContextRetrievalRepository | Mapping[str, Any] | None = None,
-        *,
-        workspace_root: str | Path | None = None,
     ) -> ContextRetrievalAuthority:
+        return cls(cls._in_memory_repository(fixtures))
+
+    @classmethod
+    def in_memory_for_broker(
+        cls,
+        fixtures: InMemoryContextRetrievalRepository | Mapping[str, Any] | None = None,
+    ) -> ContextRetrievalAuthority:
+        return cls(cls._in_memory_repository(fixtures), _stage_delivery="broker_export")
+
+    @classmethod
+    def in_memory_for_workspace(
+        cls,
+        fixtures: InMemoryContextRetrievalRepository | Mapping[str, Any] | None,
+        workspace_root: str | Path,
+    ) -> ContextRetrievalAuthority:
+        return cls(
+            cls._in_memory_repository(fixtures),
+            _stage_delivery="local_workspace",
+            _workspace_root=workspace_root,
+        )
+
+    @staticmethod
+    def _in_memory_repository(
+        fixtures: InMemoryContextRetrievalRepository | Mapping[str, Any] | None,
+    ) -> InMemoryContextRetrievalRepository:
         if isinstance(fixtures, InMemoryContextRetrievalRepository):
-            repository = fixtures
+            return fixtures
         else:
             values = dict(fixtures or {})
             unexpected = set(values) - {"messages", "files", "artifacts", "memory_records"}
             if unexpected:
                 raise TypeError("unsupported context retrieval fixtures")
-            repository = InMemoryContextRetrievalRepository(
+            return InMemoryContextRetrievalRepository(
                 messages=values.get("messages"),
                 files=values.get("files"),
                 artifacts=values.get("artifacts"),
                 memory_records=values.get("memory_records"),
             )
-        return cls(repository, workspace_root=workspace_root)
 
     @classmethod
-    def validate_arguments(
+    def _validated_arguments(
         cls,
         action: str,
         arguments: Mapping[str, Any] | None,
-    ) -> dict[str, Any]:
-        """Validate transport input without touching persistence."""
-
-        action_name, values, unexpected = cls._normalized_arguments(action, arguments)
-        if unexpected:
+    ) -> tuple[str, dict[str, Any]]:
+        action_name = str(action or "").strip()
+        allowed_arguments = _CONTEXT_ACTION_ARGUMENTS.get(action_name)
+        if allowed_arguments is None:
+            raise ContextRetrievalInputError("context_retrieval_action_invalid")
+        if arguments is not None and not isinstance(arguments, Mapping):
             raise ContextRetrievalInputError("context_retrieval_parameters_invalid")
+        supplied = dict(arguments or {})
+        if set(supplied) - allowed_arguments:
+            raise ContextRetrievalInputError("context_retrieval_parameters_invalid")
+        values = {key: supplied[key] for key in allowed_arguments if key in supplied}
         required_key = {
             "read_context_file": "file_id",
             "read_run_artifact": "artifact_id",
@@ -371,26 +419,7 @@ class ContextRetrievalAuthority:
         }.get(action_name)
         if required_key:
             cls._required_identifier(values, required_key)
-        return values
-
-    @classmethod
-    def _normalized_arguments(
-        cls,
-        action: str,
-        arguments: Mapping[str, Any] | None,
-    ) -> tuple[str, dict[str, Any], set[str]]:
-        action_name = str(action or "").strip()
-        allowed_arguments = _CONTEXT_ACTION_ARGUMENTS.get(action_name)
-        if allowed_arguments is None:
-            raise ContextRetrievalInputError("context_retrieval_action_invalid")
-        if arguments is not None and not isinstance(arguments, Mapping):
-            raise ContextRetrievalInputError("context_retrieval_parameters_invalid")
-        supplied = dict(arguments or {})
-        return (
-            action_name,
-            {key: supplied[key] for key in allowed_arguments if key in supplied},
-            set(supplied) - allowed_arguments,
-        )
+        return action_name, values
 
     async def execute(
         self,
@@ -400,15 +429,7 @@ class ContextRetrievalAuthority:
     ) -> dict[str, Any]:
         """Execute one bounded retrieval action for an exact platform-owned scope."""
 
-        action_name, values, _unexpected = self._normalized_arguments(action, arguments)
-        required_key = {
-            "read_context_file": "file_id",
-            "read_run_artifact": "artifact_id",
-            "stage_context_file_to_workspace": "file_id",
-            "stage_run_artifact_to_workspace": "artifact_id",
-        }.get(action_name)
-        if required_key:
-            self._required_identifier(values, required_key)
+        action_name, values = self._validated_arguments(action, arguments)
 
         identity = self._scoped_identity(scoped_identity, require_agent=action_name == "search_memory")
         if action_name == "read_session_messages":
@@ -452,7 +473,7 @@ class ContextRetrievalAuthority:
             minimum=1,
             maximum=(1048576 if identifier_key == "file_id" else 16777216),
         )
-        if self._workspace_root is not None:
+        if self._stage_delivery == "local_workspace" and self._workspace_root is not None:
             stage = (
                 self.stage_context_file_to_workspace
                 if identifier_key == "file_id"
@@ -464,6 +485,8 @@ class ContextRetrievalAuthority:
                 workspace_root=self._workspace_root,
                 max_bytes=max_bytes,
             )
+        if self._stage_delivery != "broker_export":
+            raise ContextRetrievalInputError("context_retrieval_stage_delivery_required")
         export = (
             self.export_context_file_for_broker
             if identifier_key == "file_id"

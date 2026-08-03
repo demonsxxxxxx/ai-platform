@@ -311,7 +311,7 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
     sdk_runner.get_settings = lambda: settings
     with tempfile.TemporaryDirectory(prefix="ai-platform-b1-b5-sdk-") as workspace:
         tmp_root = Path(workspace)
-        retrieval = ContextRetrievalAuthority.in_memory(
+        retrieval = ContextRetrievalAuthority.in_memory_for_workspace(
             {
                 "files": [
                     {
@@ -331,7 +331,7 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
                     }
                 ]
             },
-            workspace_root=tmp_root,
+            tmp_root,
         )
         try:
             result = await run_claude_agent_sdk(
@@ -397,7 +397,7 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
 async def _stage_byte_cap_probe() -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="ai-platform-b1-b5-stage-") as workspace:
         tmp_root = Path(workspace)
-        retrieval = ContextRetrievalAuthority.in_memory(
+        retrieval = ContextRetrievalAuthority.in_memory_for_workspace(
             {
                 "files": [
                     {
@@ -412,7 +412,7 @@ async def _stage_byte_cap_probe() -> dict[str, Any]:
                     }
                 ]
             },
-            workspace_root=tmp_root,
+            tmp_root,
         )
         try:
             await retrieval.execute(

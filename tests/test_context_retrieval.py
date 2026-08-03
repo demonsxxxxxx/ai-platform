@@ -7,6 +7,7 @@ from app.context.retrieval import (
     ContextRetrievalAuthority,
     ContextRetrievalDenied,
     ContextRetrievalIdentity,
+    ContextRetrievalInputError,
     InMemoryContextRetrievalRepository,
 )
 
@@ -149,12 +150,20 @@ async def test_authority_execute_owns_dispatch_bounds_and_scope():
     )
 
     assert [item["message_id"] for item in result["items"]] == ["msg-1"]
-    injected_scope = await retrieval.execute(
-        "read_session_messages",
-        identity,
-        {"tenant_id": "tenant-b", "limit": 1},
-    )
-    assert injected_scope["items"][0]["message_id"] == "msg-1"
+    with pytest.raises(ContextRetrievalInputError, match="context_retrieval_parameters_invalid"):
+        await retrieval.execute(
+            "read_session_messages",
+            identity,
+            {"tenant_id": "tenant-b", "limit": 1},
+        )
+    with pytest.raises(ContextRetrievalInputError, match="file_id_required"):
+        await retrieval.execute("read_context_file", identity, {})
+    with pytest.raises(ContextRetrievalInputError, match="context_retrieval_stage_delivery_required"):
+        await retrieval.execute(
+            "stage_context_file_to_workspace",
+            identity,
+            {"file_id": "file-a"},
+        )
     with pytest.raises(ContextRetrievalDenied, match="context_scope_denied"):
         await retrieval.execute(
             "read_session_messages",
