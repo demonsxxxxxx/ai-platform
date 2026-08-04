@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from redis.asyncio import Redis
 
 from app.models import QueueRunPayload
+from app.redis_client import RedisClientHandle, get_redis_client
 from app.settings import get_settings
 
 
@@ -995,9 +996,8 @@ class QueueAdmissionRejected(ValueError):
     """A deterministic local rejection that occurs before Redis admission begins."""
 
 
-async def get_redis() -> Redis:
-    settings = get_settings()
-    return Redis.from_url(settings.redis_url, decode_responses=True)
+async def get_redis() -> RedisClientHandle:
+    return get_redis_client()
 
 
 def get_queue_keys() -> QueueKeys:

@@ -17,6 +17,7 @@ from app.db import close_pool, transaction
 from app.executors.registry import AdapterRegistry
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
+from app.redis_client import close_redis_client
 from app.settings import get_settings
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
@@ -25,6 +26,13 @@ from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_p
 _next_memory_cleanup_at = 0.0
 logger = logging.getLogger(__name__)
 _CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS = 5
+
+
+async def _close_runtime_clients() -> None:
+    try:
+        await close_redis_client()
+    finally:
+        await close_pool()
 
 
 class ReconciliationFenceLost(RuntimeError):
@@ -721,7 +729,7 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
             heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
-        await close_pool()
+        await _close_runtime_clients()
 
 
 async def _run_worker_slot(
@@ -790,14 +798,14 @@ async def run_worker_pool(
         for task in [*tasks, maintenance_task, heartbeat_task]:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        await close_pool()
+        await _close_runtime_clients()
 
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
     try:
         return await run_once(timeout_seconds=timeout_seconds)
     finally:
-        await close_pool()
+        await _close_runtime_clients()
 
 
 def main() -> None:

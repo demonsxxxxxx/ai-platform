@@ -114,7 +114,7 @@ def test_compose_forwards_queue_quota_settings_to_api_and_worker():
     worker_section = compose_text.split("\n  worker:", 1)[1].split("\nvolumes:", 1)[0]
 
     expected_settings = {
-        "MAX_ACTIVE_WORKER_RUNS": "3",
+        "MAX_ACTIVE_WORKER_RUNS": "10",
         "QUEUE_TENANT_PROCESSING_LIMIT": "0",
         "QUEUE_USER_PROCESSING_LIMIT": "0",
         "QUEUE_LEASE_SCAN_LIMIT": "50",
@@ -134,10 +134,23 @@ def test_worker_compose_forwards_worker_concurrency_setting_only_to_worker():
     worker_section = compose_text.split("\n  worker:", 1)[1].split("\nvolumes:", 1)[0]
 
     name = "WORKER_CONCURRENCY"
-    default = "1"
+    default = "10"
     assert f"{name}={default}" in env_example_text
     assert f"{name}: ${{{name}:-{default}}}" in worker_section
     assert name not in api_section
+
+
+def test_compose_forwards_bounded_redis_pool_to_api_and_worker_without_limiting_server():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    api_section = compose_text.split("\n  api:", 1)[1].split("\n  worker:", 1)[0]
+    worker_section = compose_text.split("\n  worker:", 1)[1].split("\nvolumes:", 1)[0]
+    redis_section = compose_text.split("\n  redis:", 1)[1].split("\n  minio:", 1)[0]
+
+    assert "REDIS_MAX_CONNECTIONS=10" in env_example_text
+    assert "REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-10}" in api_section
+    assert "REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-10}" in worker_section
+    assert "maxclients" not in redis_section.lower()
 
 
 def test_worker_compose_forwards_maintenance_interval_setting():
