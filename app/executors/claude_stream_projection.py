@@ -26,6 +26,8 @@ class ClaudeStreamProjector:
         self._trailing_chars = max(0, trailing_chars)
         self._max_pending_chars = max(1, max_pending_chars)
         self._active_text_index: int | None = None
+        self._ignored_block_index: int | None = None
+        self._ignored_block_type: str | None = None
         self._pending_text = ""
         self._disabled = False
         self._partial_emitted = False
@@ -66,11 +68,11 @@ class ClaudeStreamProjector:
     def close_unfinished(self) -> None:
         """Disable an open text block that never received an exact stop event."""
 
-        if self._active_text_index is not None:
+        if self._active_text_index is not None or self._ignored_block_index is not None:
             self._disable()
 
     def _accept_start(self, event: dict[str, Any]) -> tuple[str, ...]:
-        if self._active_text_index is not None:
+        if self._active_text_index is not None or self._ignored_block_index is not None:
             self._disable()
             return ()
         index = event.get("index")
@@ -78,13 +80,26 @@ class ClaudeStreamProjector:
         if not self._is_exact_index(index) or not isinstance(content_block, dict):
             self._disable()
             return ()
-        if content_block.get("type") != "text":
+        content_type = content_block.get("type")
+        if not isinstance(content_type, str) or not content_type:
+            self._disable()
+            return ()
+        if content_type != "text":
+            self._ignored_block_index = index
+            self._ignored_block_type = content_type
             return ()
         self._active_text_index = index
         return ()
 
     def _accept_stop(self, event: dict[str, Any]) -> tuple[str, ...]:
         index = event.get("index")
+        if self._ignored_block_index is not None:
+            if self._ignored_block_type is None or not self._is_ignored_index(index):
+                self._disable()
+                return ()
+            self._ignored_block_index = None
+            self._ignored_block_type = None
+            return ()
         if not self._is_active_index(index):
             self._disable()
             return ()
@@ -99,6 +114,16 @@ class ClaudeStreamProjector:
     def _accept_delta(self, event: dict[str, Any]) -> tuple[str, ...]:
         index = event.get("index")
         delta = event.get("delta")
+        if self._ignored_block_index is not None:
+            if (
+                self._ignored_block_type is None
+                or not self._is_ignored_index(index)
+                or not isinstance(delta, dict)
+                or not isinstance(delta.get("type"), str)
+                or delta.get("type") == "text_delta"
+            ):
+                self._disable()
+            return ()
         if self._active_text_index is None:
             if isinstance(delta, dict) and delta.get("type") != "text_delta":
                 return ()
@@ -173,9 +198,14 @@ class ClaudeStreamProjector:
         self._disabled = True
         self._pending_text = ""
         self._active_text_index = None
+        self._ignored_block_index = None
+        self._ignored_block_type = None
 
     def _is_active_index(self, value: object) -> bool:
         return self._is_exact_index(value) and value == self._active_text_index
+
+    def _is_ignored_index(self, value: object) -> bool:
+        return self._is_exact_index(value) and value == self._ignored_block_index
 
     @staticmethod
     def _is_exact_index(value: object) -> bool:

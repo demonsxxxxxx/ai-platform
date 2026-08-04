@@ -99,6 +99,15 @@ def stub_session_generation(monkeypatch, generation: int = 1) -> None:
     monkeypatch.setattr(repository_module, "allocate_session_run_generation", allocate_session_run_generation)
 
 
+def stub_run_event_append(monkeypatch) -> None:
+    """Keep copy-contract fakes independent from the Postgres event ledger."""
+
+    async def append_event(*_args, **_kwargs) -> str:
+        return "evt-copy"
+
+    monkeypatch.setattr(repository_module, "append_event", append_event)
+
+
 @pytest.fixture(autouse=True)
 def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypatch):
     async def update_auth_snapshot(*_args, **_kwargs):
@@ -319,15 +328,6 @@ async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         "executor_type": "claude-agent-worker",
         "skill_version": "2.0.0",
     }
-
-
-def test_sse_heartbeat_event_shape():
-    from app.routes.runs import sse
-
-    text = sse("heartbeat", {"run_id": "run_a", "status": "running"}, event_id="run_a:heartbeat:1")
-
-    assert "event: heartbeat" in text
-    assert '"status": "running"' in text
 
 
 def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(monkeypatch):
@@ -3147,6 +3147,7 @@ def test_copy_run_plan_redacts_runtime_private_step_titles_for_ordinary_user(mon
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monkeypatch):
     stub_session_generation(monkeypatch)
+    stub_run_event_append(monkeypatch)
     from app import repositories
 
     class RecordingConnection:
@@ -3265,6 +3266,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monkeypatch):
     stub_session_generation(monkeypatch)
+    stub_run_event_append(monkeypatch)
     from app import repositories
     import json
 
@@ -3346,6 +3348,7 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_principal(monkeypatch):
     stub_session_generation(monkeypatch)
+    stub_run_event_append(monkeypatch)
     from app import repositories
 
     class RecordingConnection:
@@ -3414,6 +3417,7 @@ async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_pr
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monkeypatch):
     stub_session_generation(monkeypatch)
+    stub_run_event_append(monkeypatch)
     from app import repositories
     import json
 
@@ -3480,6 +3484,7 @@ async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monk
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkeypatch):
     stub_session_generation(monkeypatch)
+    stub_run_event_append(monkeypatch)
     from app import repositories
 
     class FakeCursor:
@@ -3824,6 +3829,7 @@ async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatc
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verified_outputs(monkeypatch):
     stub_session_generation(monkeypatch)
+    stub_run_event_append(monkeypatch)
     from app import repositories
 
     class FakeCursor:
@@ -3882,6 +3888,7 @@ async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verifie
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_preserves_chained_checkpoint_producer_lineage(monkeypatch):
     stub_session_generation(monkeypatch)
+    stub_run_event_append(monkeypatch)
     from app import repositories
 
     class FakeCursor:

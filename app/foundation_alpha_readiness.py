@@ -111,6 +111,7 @@ class _ReadinessDefaultSettings:
     model_gateway_request_concurrency_limit = 0
     memory_retention_worker_cleanup_enabled = True
     memory_retention_worker_cleanup_limit = 200
+    multi_agent_dispatch_worker_enabled = False
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -1166,7 +1167,7 @@ def _mcp_tool_permission_runtime_controls_summary(
             ],
         },
         "covered_runtime_control_tests": [
-            "tests/test_repositories.py::test_harness_backed_ragflow_skill_authorization_fails_closed_for_current_parent_and_tool_state",
+            "tests/test_worker.py::test_worker_audits_read_only_ragflow_tool_call",
             "tests/test_worker.py::test_worker_blocks_disabled_mcp_tool_before_dispatch",
             "tests/test_zero_click_tool_policy.py",
             "tests/test_tool_permission_routes.py",

@@ -1125,6 +1125,48 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
 
 
 @pytest.mark.asyncio
+async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(monkeypatch, tmp_path):
+    captured = {}
+    deltas = []
+    streamed_text = "Safe answer after tool use."
+    events = [
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "tool_use", "id": "tool-1", "name": "Skill"},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": '{"skill":"general-chat"}'},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": streamed_text}},
+        {"type": "content_block_stop", "index": 1},
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _streaming_sdk(captured, events, result_text=streamed_text),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert captured["include_partial_messages"] is True
+    assert result.error is None
+    assert "".join(deltas) == streamed_text
+    assert result.message == streamed_text
+
+
+@pytest.mark.asyncio
 async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(monkeypatch, tmp_path):
     captured = {}
     deltas = []
