@@ -1,11 +1,8 @@
-import asyncio
-import json
 import re
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import UUID4
 
 from app import repositories
@@ -80,7 +77,6 @@ from app.run_control_readiness import run_control_readiness_snapshot
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
-from app.streaming.authority import RunCursor, event_page, parse_last_event_id
 from app.skills.lifecycle import is_user_runnable_status
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.skills.pinning import (
@@ -238,10 +234,6 @@ async def _governed_skill_manifest_pins(
     return skill_manifests
 
 
-def _json_default(value: Any) -> str:
-    return value.isoformat() if hasattr(value, "isoformat") else str(value)
-
-
 def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_id: str) -> dict[str, Any]:
     return {
         **release_decision,
@@ -249,12 +241,6 @@ def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_i
         "skill_version": release_decision.get("selected_version"),
         "visible_to_user": False,
     }
-
-
-def sse(event: str, data: dict[str, object], event_id: str | None = None) -> str:
-    prefix = f"id: {event_id}\n" if event_id else ""
-    payload = json.dumps(data, ensure_ascii=False, default=_json_default)
-    return f"{prefix}event: {event}\ndata: {payload}\n\n"
 
 
 def _resume_manifest_public_depends_on(values: object, *, raw_terms: set[str]) -> list[str]:
@@ -1866,127 +1852,3 @@ async def get_run_steps(
             raise HTTPException(status_code=404, detail="run_not_found")
         steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
     return {"run_id": run_id, "steps": run_step_responses(steps, principal=principal)}
-
-
-@router.get("/runs/{run_id}/events/stream")
-async def stream_run_events(
-    run_id: str,
-    after_sequence: int | None = None,
-    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
-    principal: AuthPrincipal = Depends(require_principal),
-) -> StreamingResponse:
-    if not isinstance(last_event_id, str):
-        last_event_id = None
-    if last_event_id is not None:
-        cursor = parse_last_event_id(last_event_id, run_id=run_id)
-        if cursor is None:
-            raise HTTPException(status_code=400, detail="invalid_last_event_id")
-    else:
-        try:
-            cursor = RunCursor(run_id=run_id, sequence=0 if after_sequence is None else after_sequence)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="invalid_after_sequence") from exc
-    async with transaction() as conn:
-        initial_run = await repositories.get_authorized_run(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            run_id=run_id,
-        )
-        if initial_run is None:
-            raise HTTPException(status_code=404, detail="run_not_found")
-        run_contract_version(initial_run)
-        executor_result_schema_version(initial_run)
-
-    async def stream():
-        last_cursor = cursor
-        heartbeat_index = 0
-        max_heartbeats = max(int(get_settings().run_event_stream_max_heartbeats), 1)
-        terminal_observed = False
-
-        async def list_events(conn):
-            if last_cursor.sequence == 0 and last_event_id is None and after_sequence is None:
-                return await repositories.list_run_events(conn, tenant_id=principal.tenant_id, run_id=run_id)
-            return await repositories.list_run_events(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                after_sequence=last_cursor.sequence,
-            )
-
-        for _ in range(max_heartbeats):
-            async with transaction() as conn:
-                run = await repositories.get_authorized_run(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    run_id=run_id,
-                )
-                if run is None:
-                    yield sse("error", {"error": "run_not_found"})
-                    yield sse("done", {"status": "not_found"})
-                    return
-                run_contract_version(run)
-                executor_result_schema_version(run)
-                rows = await list_events(conn)
-            previous_cursor = last_cursor
-            page = event_page(cursor=last_cursor, rows=rows)
-            last_cursor = page.through_cursor
-            public_deltas = {event.cursor.sequence: event for event in page.events}
-            for durable_event in page.durable_rows:
-                row = dict(durable_event.row)
-                if page.terminal is not None and durable_event.cursor == page.terminal.cursor:
-                    continue
-                public_delta = public_deltas.get(durable_event.cursor.sequence)
-                if row.get("event_type") == "assistant_delta":
-                    if public_delta is None:
-                        continue
-                    yield sse(
-                        "assistant_delta",
-                        {
-                            "event_id": public_delta.event_id,
-                            "run_id": run_id,
-                            "sequence": public_delta.cursor.sequence,
-                            "delta": public_delta.delta,
-                        },
-                        event_id=public_delta.cursor.event_id,
-                    )
-                    continue
-                if not event_visible_to_principal(row, principal):
-                    continue
-                try:
-                    payload = run_event_response(run_id, row, principal=principal)
-                except HTTPException as exc:
-                    yield sse("error", {"error": str(exc.detail)})
-                    yield sse("done", {"status": "error"})
-                    return
-                yield sse("run_event", payload, event_id=durable_event.cursor.event_id)
-            status = str(run["status"])
-            if status in {"succeeded", "failed", "cancelled", "canceled"}:
-                if terminal_observed and last_cursor == previous_cursor:
-                    yield sse("done", {"status": normalize_run_status(status)})
-                    return
-                terminal_observed = True
-            else:
-                terminal_observed = False
-            heartbeat_index += 1
-            heartbeat_payload: dict[str, object] = {"run_id": run_id, "status": status}
-            if run.get("cancel_requested_at"):
-                heartbeat_payload["cancel_requested_at"] = run.get("cancel_requested_at")
-                heartbeat_payload["cancel_requested_by"] = run.get("cancel_requested_by")
-            if status == "queued":
-                queue_position = await get_run_queue_position(tenant_id=principal.tenant_id, run_id=run_id)
-                if queue_position is not None:
-                    heartbeat_payload["queue_position"] = queue_position
-            queue_insight = await queue_insight_for_status(status, principal.tenant_id, user_id=principal.user_id)
-            if queue_insight is not None:
-                heartbeat_payload["queue_insight"] = queue_insight
-            yield sse(
-                "heartbeat",
-                heartbeat_payload,
-            )
-            await asyncio.sleep(1)
-        yield sse("error", {"error": "stream_timeout"})
-        yield sse("done", {"status": "timeout"})
-
-    return StreamingResponse(stream(), media_type="text/event-stream")
