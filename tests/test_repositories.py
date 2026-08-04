@@ -1133,7 +1133,7 @@ async def test_resolve_agent_skill_uses_global_skill_lifecycle_and_canonical_bac
             "skill_status": "active",
             "skill_version": "0.1.0",
             "skill_version_status": "active",
-            "executor_type": "ragflow",
+            "executor_type": "claude-agent-worker",
             "backing_mcp_tool_id": "ragflow-knowledge-search",
             "input_modes": ["chat"],
         }
@@ -1437,7 +1437,7 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
 
 
 @pytest.mark.asyncio
-async def test_authorize_replay_run_capabilities_reauthorizes_pinned_historical_mcp(monkeypatch):
+async def test_authorize_replay_run_capabilities_reauthorizes_harness_pinned_mcp(monkeypatch):
     calls = []
 
     async def shared_authorizer(conn, **kwargs):
@@ -1465,7 +1465,7 @@ async def test_authorize_replay_run_capabilities_reauthorizes_pinned_historical_
         agent_id="general-agent",
         skill_id="knowledge-v1",
         pinned_version="hash-v1",
-        pinned_executor_type="ragflow",
+        pinned_executor_type="claude-agent-worker",
         skill_manifests=[
             {
                 "skill_id": "knowledge-v1",
@@ -1485,6 +1485,22 @@ async def test_authorize_replay_run_capabilities_reauthorizes_pinned_historical_
     )
 
     assert calls == [{"message": "search", "mcp_tool_ids": ["historical-search"]}]
+
+
+def test_historical_direct_ragflow_replay_fails_closed():
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        repositories.pinned_replay_mcp_tool_ids(
+            skill_id="knowledge-v1",
+            pinned_version="hash-v1",
+            pinned_executor_type="ragflow",
+            skill_manifests=[
+                {
+                    "skill_id": "knowledge-v1",
+                    "version": "hash-v1",
+                    "mcp_tool_ids": ["historical-search"],
+                }
+            ],
+        )
 
 
 def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
@@ -2639,14 +2655,14 @@ async def test_capability_distribution_authorization_allows_same_department_skil
 
 
 @pytest.mark.asyncio
-async def test_direct_ragflow_authorization_derives_canonical_backing_tool_without_explicit_selector(monkeypatch):
+async def test_harness_skill_authorization_derives_canonical_backing_tool_without_explicit_selector(monkeypatch):
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return {
             "skill_id": skill_id,
             "skill_status": "active",
-            "executor_type": "ragflow",
+            "executor_type": "claude-agent-worker",
             "backing_mcp_tool_id": "tenant-search",
         }
 
@@ -2698,12 +2714,15 @@ async def test_direct_ragflow_authorization_derives_canonical_backing_tool_witho
     "denial",
     ["backing_missing", "tool_missing", "hidden", "disabled", "department", "role", "parent_disabled"],
 )
-async def test_direct_ragflow_authorization_fails_closed_for_current_parent_and_tool_state(monkeypatch, denial):
+async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_current_parent_and_tool_state(
+    monkeypatch,
+    denial,
+):
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return {
             "skill_id": skill_id,
             "skill_status": "active",
-            "executor_type": "ragflow",
+            "executor_type": "claude-agent-worker",
             "backing_mcp_tool_id": None if denial == "backing_missing" else "tenant-search",
         }
 
@@ -2746,7 +2765,7 @@ async def test_direct_ragflow_authorization_fails_closed_for_current_parent_and_
             object(),
             tenant_id="tenant-a",
             agent_id="sop-assistant",
-            skill_id="knowledge-skill",
+            skill_id="ragflow-knowledge-search",
             normalized_input={},
             principal_department_id="qa",
             principal_roles=["qa_operator"],

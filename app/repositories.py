@@ -69,7 +69,7 @@ finalize_chat_submission = chat_submissions.finalize_chat_submission
 get_chat_submission = chat_submissions.get_chat_submission
 
 
-DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker", "ragflow"}
+DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 RETRYABLE_RUN_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
@@ -384,34 +384,6 @@ async def ensure_mcp_tool_active(conn: AsyncConnection, *, tenant_id: str, tool_
     if policy["effective_status"] != "active" or not policy["visible_to_user"]:
         raise RepositoryConflictError("mcp_tool_disabled")
     return policy
-
-
-async def list_agent_app_projections(conn: AsyncConnection, *, tenant_id: str) -> list[dict[str, Any]]:
-    cursor = await conn.execute(
-        """
-        select
-          agents.id as app_id,
-          agents.name,
-          agents.agent_type,
-          agents.default_skill_id,
-          agents.status,
-          skills.input_modes,
-          skills.output_modes
-        from agents
-        join skills on skills.id = agents.default_skill_id
-        where agents.tenant_id = %s
-          and agents.id in ('baoyu-translate', 'qa-word-review')
-          and agents.status = 'active'
-          and skills.status = 'active'
-        order by case agents.id
-          when 'baoyu-translate' then 1
-          when 'qa-word-review' then 2
-          else 99
-        end
-        """,
-        (tenant_id,),
-    )
-    return list(await cursor.fetchall())
 
 
 async def ensure_agent_profile_identity(
@@ -2923,13 +2895,14 @@ def extract_run_mcp_tool_ids(normalized_input: dict[str, Any]) -> list[str]:
 
 
 def run_mcp_tool_ids_for_skill(skill: dict[str, Any], normalized_input: dict[str, Any]) -> list[str]:
-    """Return one canonical MCP authorization set for direct and explicit tools."""
+    """Return one canonical MCP authorization set for a Harness-backed Skill."""
 
     requested_tool_ids: list[str] = []
-    if str(skill.get("executor_type") or "") == "ragflow":
-        backing_tool_id = str(skill.get("backing_mcp_tool_id") or "").strip()
-        if not backing_tool_id:
-            raise _capability_not_authorized()
+    skill_id = str(skill.get("skill_id") or "").strip()
+    backing_tool_id = str(skill.get("backing_mcp_tool_id") or "").strip()
+    if skill_id == _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID and not backing_tool_id:
+        raise _capability_not_authorized()
+    if backing_tool_id:
         requested_tool_ids.append(backing_tool_id)
     for tool_id in extract_run_mcp_tool_ids(normalized_input):
         if tool_id not in requested_tool_ids:
@@ -3294,7 +3267,10 @@ def pinned_replay_mcp_tool_ids(
     ):
         raise _capability_not_authorized()
     pinned_mcp_tool_ids = list(dict.fromkeys(raw_mcp_tool_ids))
-    if pinned_executor_type == "ragflow" and not pinned_mcp_tool_ids:
+    if (
+        skill_id == _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID
+        and _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID not in pinned_mcp_tool_ids
+    ):
         raise _capability_not_authorized()
     return pinned_mcp_tool_ids
 
@@ -3953,7 +3929,7 @@ async def list_workbench_capabilities(
               or coalesce(tenant_capability_distributions.status, 'disabled') <> 'active'
               or coalesce(tenant_capability_distributions.visible_to_user, false) = false
             then 'disabled'
-            when skills.executor_type = 'ragflow'
+            when skills.id = 'ragflow-knowledge-search'
              and (
                coalesce(mcp_tools.status, 'disabled') <> 'active'
                or coalesce(tool_policies.status, 'disabled') <> 'active'

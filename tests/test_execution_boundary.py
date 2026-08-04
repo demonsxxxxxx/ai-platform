@@ -63,11 +63,11 @@ def test_non_parked_multi_agent_fails_closed(mcp_requires_sandbox):
     assert decision.local_sdk_allowed is False
 
 
-def test_non_claude_adapter_keeps_adapter_managed_execution():
+def test_injected_non_harness_test_adapter_keeps_adapter_managed_execution():
     module = _module()
 
     decision = module.decide_execution_boundary(
-        executor_type="ragflow",
+        executor_type="test-adapter",
         execution_mode="",
         execution_tier="sdk_only_writing",
         mcp_requires_sandbox=False,
@@ -94,11 +94,11 @@ def test_mcp_requirement_forces_real_sandbox_without_synthetic_execution_tier():
     assert decision.reason == "mcp_execution_requires_real_sandbox"
 
 
-def test_mcp_requirement_preserves_non_claude_worker_sandbox_override():
+def test_mcp_requirement_preserves_injected_test_adapter_sandbox_override():
     module = _module()
 
     decision = module.decide_execution_boundary(
-        executor_type="ragflow",
+        executor_type="test-adapter",
         execution_mode="",
         execution_tier="",
         mcp_requires_sandbox=True,
@@ -114,7 +114,7 @@ def test_invalid_mcp_requirement_fails_closed_without_local_execution():
     module = _module()
 
     decision = module.decide_execution_boundary(
-        executor_type="ragflow",
+        executor_type="test-adapter",
         execution_mode="",
         execution_tier="",
         mcp_requires_sandbox=None,

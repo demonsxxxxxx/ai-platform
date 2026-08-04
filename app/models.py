@@ -430,26 +430,6 @@ class RunControlOperationResponse(BaseModel):
     queue_admission: Literal["admitted", "pending", "settled", "unknown"] | None = None
 
 
-class AgentApp(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    app_id: str
-    name: str
-    mode: Literal["chat", "file", "chat_file"]
-    default_skill_id: str
-    allowed_input_types: list[str] = Field(default_factory=list)
-    output_types: list[str] = Field(default_factory=list)
-    status: Literal["active", "disabled"] = "active"
-
-
-class AgentAppProjection(AgentApp):
-    pass
-
-
-class AgentAppsResponse(BaseModel):
-    agent_apps: list[AgentAppProjection]
-
-
 class SkillDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
