@@ -38,13 +38,12 @@ Backed routes:
 - `DELETE /api/skills/{skill_name}`
 - `POST /api/skills/batch/delete`
 - `POST /api/skills/batch/toggle`
-- `POST /api/skills/{skill_name}/publish`
 
 `GET /api/skills/` returns the frontend list contract with `skills`, `total`, `skip`, `limit`, `available_tags`, and `effective_permissions`. Catalog data is projected from public workbench skills, tenant availability, and the effective skill version snapshot.
 
 `PATCH /api/skills/{skill_name}/toggle` maps to tenant skill availability in `tenant_workbench_skills`; it does not invoke admin promote or rollback.
 
-`POST /api/skills/{skill_name}/publish` records a public publish request audit and returns the marketplace projection for the skill. It does not substitute for `/api/ai/admin/skills/{skill_id}/promote`.
+No public `/api/skills/{skill_name}/publish` route is backed. Global Skill release remains exclusively under the Admin review, materialization, promote, and rollback lifecycle at `/api/ai/admin/skills/*`.
 
 `POST /api/skills/batch/delete` and `POST /api/skills/batch/toggle` map to tenant skill availability and audit each affected skill. Batch delete disables tenant availability; it does not delete global built-in Skill packages or admin release records.
 

@@ -364,6 +364,34 @@ def test_valid_exact_exception_exempts_only_requested_violation(
     assert evaluation.exception["status"] == "applied"
 
 
+def test_inherited_exception_cannot_authorize_a_later_candidate(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _initial = governance_repo
+    _write(repo, "app/billing_rules.py", _python_lines(3001))
+    _write(
+        repo,
+        code_governance.EXCEPTION_PATH,
+        json.dumps(
+            {
+                "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+                "expires_on": "2026-08-01",
+                "owner": "platform-governance",
+                "reason": "candidate-bound hot-file migration",
+                "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
+            }
+        ),
+    )
+    base = _commit(repo, "exception-bearing base")
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
+    head = _commit(repo, "later candidate inherits exception")
+
+    with pytest.raises(code_governance.GovernanceError, match="inherited exceptions are invalid") as caught:
+        _evaluate(repo, base, head)
+
+    assert caught.value.code == "invalid_exception"
+
+
 def test_missing_ruff_fails_closed_and_command_is_deterministic(
     governance_repo: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

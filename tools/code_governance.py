@@ -355,6 +355,11 @@ class CodeGovernanceEvaluator:
         ordered = _sort_violations(violations)
         exception_contract = self._git_reader.load_exception(git_range.head)
         if exception_contract is not None:
+            if not any(change.new_path == EXCEPTION_PATH for change in changes):
+                raise GovernanceError(
+                    "invalid_exception",
+                    "exception must be added or changed in the evaluated range; inherited exceptions are invalid",
+                )
             _validate_exception_payload(exception_contract, self._today)
         active, exempted, exception_summary = self._apply_exception(ordered, exception_contract)
         mode = _evaluation_mode(changes)
