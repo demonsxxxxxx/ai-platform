@@ -15,8 +15,6 @@ import type {
   UserSkill,
   SkillFileResponse,
   SkillToggleResponse,
-  MarketplaceSkillResponse,
-  PublishToMarketplaceRequest,
   SkillsResponse,
 } from "../../types/skill";
 
@@ -753,19 +751,6 @@ export const skillApi = {
     return authFetch(`${SKILLS_API}/batch/toggle`, {
       method: "POST",
       body: JSON.stringify({ names, enabled }),
-    });
-  },
-
-  /**
-   * Publish skill to marketplace
-   */
-  async publishToMarketplace(
-    skillName: string,
-    data?: PublishToMarketplaceRequest,
-  ): Promise<MarketplaceSkillResponse> {
-    return authFetch(`${SKILLS_API}/${encodeURIComponent(skillName)}/publish`, {
-      method: "POST",
-      body: JSON.stringify(data || {}),
     });
   },
 };

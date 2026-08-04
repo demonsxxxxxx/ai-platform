@@ -32,7 +32,6 @@ from app.models import (
     PublicSkillsResponse,
     PublicSkillToggleRequest,
     PublicSkillToggleResponse,
-    PublishToMarketplaceRequest,
 )
 from app.settings import get_settings
 from app.skills.marketplace_projection import (
@@ -907,53 +906,6 @@ async def delete_skill(
     except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
         raise _repository_http_exception(exc) from exc
     return {"message": "Skill removed"}
-
-
-@router.post("/skills/{skill_name}/publish", response_model=MarketplaceSkillResponse)
-async def publish_skill(
-    skill_name: str,
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> MarketplaceSkillResponse:
-    """Expose a user-facing publish contract without invoking admin release APIs."""
-
-    _require_permission(principal, "marketplace:publish")
-    request = _request_model(PublishToMarketplaceRequest, payload or {})
-    safe_skill_name = _safe_skill_name(skill_name)
-    resolved_row, decision = await _public_skill_access(
-        principal=principal,
-        skill_name=safe_skill_name,
-        include_user_file_overlays=False,
-    )
-    row = dict(resolved_row)
-    if request.description:
-        row["description"] = request.description
-    if request.version:
-        row["version"] = request.version
-    if request.tags:
-        source = dict(row.get("source") if isinstance(row.get("source"), dict) else {})
-        source["tags"] = request.tags
-        row["source"] = source
-    async with transaction() as conn:
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            action="skill.public.publish_requested",
-            target_type="skill",
-            target_id=safe_skill_name,
-            payload_json=_skill_distribution_audit_payload(
-                principal=principal,
-                skill_name=safe_skill_name,
-                decision=decision,
-                payload={
-                    "marketplace_skill_name": request.skill_name or safe_skill_name,
-                    "version": request.version,
-                    "department_id": principal.department_id,
-                },
-            ),
-        )
-    return _marketplace_item(row, principal)
 
 
 @router.post("/github/preview")

@@ -1381,17 +1381,6 @@ class PublicSkillImportUploadResponse(BaseModel):
     skill_count: int
 
 
-class PublishToMarketplaceRequest(BaseModel):
-    """User-facing publish request accepted by the public Skills contract."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    skill_name: str | None = None
-    description: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    version: str | None = None
-
-
 class MarketplaceSkillResponse(BaseModel):
     """Marketplace catalog item for frontend browsing and preview."""
 

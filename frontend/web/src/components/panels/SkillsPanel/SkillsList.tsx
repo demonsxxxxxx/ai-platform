@@ -43,13 +43,11 @@ interface SkillsListProps {
   canImport: boolean;
   canBatch: boolean;
   canDelete: boolean;
-  canPublish: boolean;
   selectedNames: Set<string>;
   onToggle: (name: string) => void;
   onEdit: (skill: SkillResponse) => void;
   onDelete: (name: string) => void;
   onExportZip: (name: string) => void;
-  onPublish: ((skill: SkillResponse) => void) | undefined;
   onSelectSkill: (name: string) => void;
   onSelectAll: () => void;
   onGithubClick: () => void;
@@ -81,13 +79,11 @@ export function SkillsList({
   canImport,
   canBatch,
   canDelete,
-  canPublish,
   selectedNames,
   onToggle,
   onEdit,
   onDelete,
   onExportZip,
-  onPublish,
   onSelectSkill,
   onSelectAll,
   onGithubClick,
@@ -326,9 +322,6 @@ export function SkillsList({
                 onEdit={onEdit}
                 onDelete={onDelete}
                 onExportZip={governedUnavailable ? undefined : onExportZip}
-                onPublish={
-                  canPublish ? (s: SkillResponse) => onPublish?.(s) : undefined
-                }
                 canWrite={canToggleSkills}
                 canEdit={canEditSkills}
                 canDelete={canDelete}

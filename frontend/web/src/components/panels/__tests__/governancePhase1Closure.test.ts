@@ -262,7 +262,6 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     "previewZipSkills",
     "previewGitHubSkills",
     "installGitHubSkills",
-    "publishToMarketplace",
   ]) {
     assert.match(
       skillsHook,
@@ -282,6 +281,11 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     "toggleAll must guard hook-level enabled before using target state",
   );
   assert.match(skillsHook, /effectivePermissions/);
+  assert.doesNotMatch(skillsHook, /publishToMarketplace|isPublishing/);
+  assert.doesNotMatch(
+    read("src/services/api/skill.ts"),
+    /\/api\/skills\/.*\/publish|publishToMarketplace/,
+  );
   assert.match(
     toolsHook,
     /if \(!hookEnabled\) \{[\s\S]*?setCatalog\(\{ generation, status: "empty", \.\.\.EMPTY_CATALOG \}\);[\s\S]*?return;/,
@@ -340,6 +344,7 @@ test("read-only skills catalog removes write controls instead of showing disable
   assert.match(skillCard, /\{canWrite && \(/);
   assert.match(skillCard, /\{canEdit && \(/);
   assert.match(skillCard, /\{canDelete && \(/);
+  assert.doesNotMatch(skillCard, /onPublish|publishToMarketplace|republish/);
   assert.doesNotMatch(skillCard, /disabled=\{!canWrite\}/);
   assert.doesNotMatch(skillCard, /disabled=\{!canEdit\}/);
   assert.doesNotMatch(skillCard, /disabled=\{!canDelete\}/);

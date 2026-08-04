@@ -69,7 +69,6 @@ export type {
   MarketplaceInstallResponse,
   MarketplaceUpdateResponse,
   TagsResponse,
-  PublishToMarketplaceRequest,
 } from "./skill";
 
 export type { AgentOption } from "./agentOptions";

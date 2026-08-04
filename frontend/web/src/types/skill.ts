@@ -65,14 +65,6 @@ export interface SkillToggleResponse {
   message: string;
 }
 
-// Publish to marketplace request
-export interface PublishToMarketplaceRequest {
-  skill_name?: string;
-  description?: string;
-  tags?: string[];
-  version?: string;
-}
-
 // ============================================
 // Frontend Skill Type (composed from API)
 // ============================================
