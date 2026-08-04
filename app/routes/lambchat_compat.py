@@ -1419,14 +1419,6 @@ async def chat_session_stream(
         # A reconnect has no connection-local fold state. Seed only public
         # singleton/strict facts from its authorized durable prefix; emit none.
         async with transaction() as conn:
-            seed_run = await repositories.get_authorized_run(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                run_id=run_id,
-            )
-            if seed_run is None or seed_run.get("session_id") != session_id:
-                raise HTTPException(status_code=404, detail="run_not_found")
             seed_rows = await repositories.list_run_events(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -1440,7 +1432,7 @@ async def chat_session_stream(
             and 0 < row["sequence"] <= cursor.sequence
         ]
         _, fold_state = _compatibility_events_for_run_page(
-            seed_run,
+            initial_run,
             prefix_rows,
             [],
             principal,
