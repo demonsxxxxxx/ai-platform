@@ -1975,16 +1975,6 @@ async def _release_worker_runtime_sandbox_lease(
     )
 
 
-def _is_top_level_multi_agent_parent_for_worker_dispatch(payload: QueueRunPayload) -> bool:
-    if not bool(get_settings().multi_agent_dispatch_worker_enabled):
-        return False
-    if str(payload.input.get("execution_mode") or "") != "multi_agent":
-        return False
-    if payload.input.get("copied_from_run_id"):
-        return False
-    return not isinstance(payload.input.get("multi_agent_dispatch"), dict)
-
-
 def _has_context_snapshot(payload: QueueRunPayload) -> bool:
     return bool(payload.context_snapshot_id)
 
@@ -2305,80 +2295,9 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-            if _is_top_level_multi_agent_parent_for_worker_dispatch(payload):
-                parked = await repositories.mark_multi_agent_dispatch_parent_awaiting_dispatch(
-                    conn,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    worker_id=worker_id,
-                )
-                if parked:
-                    await repositories.append_event(
-                        conn,
-                        tenant_id=run_identity["tenant_id"],
-                        run_id=run_identity["run_id"],
-                        event_type="multi_agent_dispatch_parent_parked",
-                        stage="control",
-                        message="Multi-agent parent parked for dispatcher",
-                        visible_to_user=False,
-                        payload={
-                            "visible_to_user": False,
-                            "orchestration_state": "awaiting_dispatch",
-                            "source": "worker",
-                        },
-                    )
-                    return WorkerOutcome(
-                        "skipped",
-                        run_identity["run_id"],
-                        "multi_agent_dispatch_parent_parked",
-                        "Multi-agent parent parked for dispatcher",
-                    )
-            if payload.executor_type == "runtime211":
-                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
-                    conn,
-                    payload=payload,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    error_code="legacy_runtime211_direct_executor_disabled",
-                    error_message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
-                )
-                if not terminal_written:
-                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                        WorkerOutcome(
-                            "skipped",
-                            run_identity["run_id"],
-                            "stale_terminal_state",
-                            "Run already reached a terminal state",
-                        ),
-                        payload,
-                        None,
-                    )
-                    return terminal_after_transaction.outcome
-                await repositories.append_event(
-                    conn,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    event_type="legacy_runtime211_direct_executor_denied",
-                    stage="policy",
-                    message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
-                    payload={
-                        "executor_type": payload.executor_type,
-                        "visible_to_user": False,
-                        "severity": "error",
-                    },
-                )
-                terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                    WorkerOutcome(
-                        "failed",
-                        run_identity["run_id"],
-                        "legacy_runtime211_direct_executor_disabled",
-                        "Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
-                    ),
-                    payload,
-                    reconciled_parent,
-                )
-                return terminal_after_transaction.outcome
             try:
+                if payload.executor_type == "runtime211":
+                    raise KeyError("Unknown executor type: runtime211")
                 adapter = adapter_registry.get(payload.executor_type)
             except KeyError as exc:
                 terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(

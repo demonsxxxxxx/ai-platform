@@ -15,7 +15,6 @@ from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 from app.db import close_pool, transaction
 from app.executors.registry import AdapterRegistry
-from app.multi_agent_dispatcher import dispatch_multi_agent_ready_steps_for_worker
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 from app.settings import get_settings
@@ -428,7 +427,6 @@ async def run_worker_maintenance(settings: object | None = None) -> None:
     await cleanup_expired_sandbox_leases()
     await cleanup_expired_memory_records_for_worker(settings)
     await progress_pending_tool_permission_terminalizations_for_worker(settings)
-    await dispatch_multi_agent_ready_steps_for_worker(settings)
     await queue.reclaim_expired_leases(
         visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
     )
@@ -764,7 +762,6 @@ async def run_worker_pool(
     settings = get_settings()
     process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
     await run_worker_maintenance(settings)
-    registry = AdapterRegistry()
     maintenance_task = asyncio.create_task(
         _maintenance_until_done(settings, _worker_maintenance_interval_seconds(settings)),
         name="ai-platform-worker-maintenance",

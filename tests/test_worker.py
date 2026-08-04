@@ -5586,83 +5586,6 @@ async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_worker_parks_top_level_multi_agent_parent_for_dispatcher_without_running_adapter(monkeypatch):
-    calls = []
-
-    class Settings:
-        multi_agent_dispatch_worker_enabled = True
-        claude_agent_sdk_enabled = False
-        claude_agent_model = "test-model"
-
-    class ShouldNotRunAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            raise AssertionError("parked multi-agent parent must not execute adapter steps")
-
-    locked_run = locked_run_from_payload(
-        base_payload(
-            file_ids=[],
-            agent_id="general-agent",
-            skill_id="general-chat",
-            input={
-                "message": "build feature",
-                "execution_mode": "multi_agent",
-                "multi_agent_steps": [{"step_key": "code", "depends_on": []}],
-            },
-            executor_type="fake",
-            skill_manifests=[primary_manifest("general-chat", "hash-general-chat")],
-        )
-    )
-    locked_run["trace_id"] = "trace-run-a"
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return locked_run
-
-    async def mark_parent_awaiting_dispatch(conn, *, tenant_id, run_id, worker_id):
-        calls.append(("park", tenant_id, run_id, worker_id))
-        return True
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload") or {}))
-        return "evt-a"
-
-    async def fail_create_sandbox_lease(*args, **kwargs):
-        raise AssertionError("parked multi-agent parent must not create runtime sandbox leases")
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.get_settings", lambda: Settings(), raising=False)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr(
-        "app.worker.repositories.mark_multi_agent_dispatch_parent_awaiting_dispatch",
-        mark_parent_awaiting_dispatch,
-        raising=False,
-    )
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
-
-    outcome = await process_run_payload(
-        base_payload(
-            file_ids=[],
-            agent_id="general-agent",
-            skill_id="general-chat",
-            input={"message": "build feature"},
-            executor_type="fake",
-            skill_manifests=[primary_manifest("general-chat", "hash-general-chat")],
-        ),
-        AdapterRegistry({"fake": ShouldNotRunAdapter()}),
-        worker_id="worker-a",
-    )
-
-    assert outcome.status == "skipped"
-    assert calls[0] == ("running", "tenant-a", "run-a")
-    assert ("park", "tenant-a", "run-a", "worker-a") in calls
-    parked_events = [item for item in calls if item[0] == "event" and item[1] == "multi_agent_dispatch_parent_parked"]
-    assert parked_events
-    assert parked_events[0][3]["visible_to_user"] is False
-    assert parked_events[0][3]["orchestration_state"] == "awaiting_dispatch"
-
-
-@pytest.mark.asyncio
 async def test_worker_stops_running_executor_after_cancel_requested_on_event_boundary(monkeypatch):
     calls = []
     cancel_checks = 0
@@ -6069,7 +5992,7 @@ async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_worker_blocks_direct_runtime211_queue_payload(monkeypatch):
+async def test_worker_routes_retired_runtime211_through_unknown_executor_guard(monkeypatch):
     calls = []
 
     class DirectRuntime211Adapter:
@@ -6099,17 +6022,13 @@ async def test_worker_blocks_direct_runtime211_queue_payload(monkeypatch):
     )
 
     assert outcome.status == "failed"
-    assert outcome.error_code == "legacy_runtime211_direct_executor_disabled"
+    assert outcome.error_code == "unknown_executor_type"
     assert ("running", "tenant-a", "run-a") in calls
     assert not any(item[0] == "adapter" for item in calls)
-    assert any(
-        item[0] == "fail" and item[1] == "legacy_runtime211_direct_executor_disabled"
-        for item in calls
-    )
-    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "legacy_runtime211_direct_executor_denied")
-    assert denied_event[1] == "legacy_runtime211_direct_executor_denied"
-    assert denied_event[2] == "policy"
-    assert denied_event[3]["visible_to_user"] is False
+    assert any(item[0] == "fail" and item[1] == "unknown_executor_type" for item in calls)
+    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "error")
+    assert denied_event[2] == "worker"
+    assert denied_event[3]["executor_type"] == "runtime211"
 
 
 @pytest.mark.asyncio
