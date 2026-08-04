@@ -29,13 +29,14 @@ def test_stale_run_reconciliation_settings_reject_unsafe_bounds(field, value):
         Settings(_env_file=None, **{field: value})
 
 
-def test_sandbox_security_profile_defaults_governed_and_accepts_explicit_trusted_internal(monkeypatch):
+def test_sandbox_security_profile_defaults_governed_and_rejects_retired_profile(monkeypatch):
     assert Settings(_env_file=None).sandbox_security_profile == "governed"
 
     monkeypatch.setenv("SANDBOX_SECURITY_PROFILE", "trusted_internal")
     monkeypatch.setenv("SANDBOX_CONTAINER_PROVIDER", "opensandbox")
 
-    assert Settings(_env_file=None).sandbox_security_profile == "trusted_internal"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_sandbox_security_profile_rejects_unknown_values():
@@ -43,8 +44,8 @@ def test_sandbox_security_profile_rejects_unknown_values():
         Settings(_env_file=None, sandbox_security_profile="permissive")
 
 
-@pytest.mark.parametrize("provider", ["fake", "docker"])
-def test_trusted_internal_security_profile_rejects_non_opensandbox_provider(provider):
+@pytest.mark.parametrize("provider", ["fake", "docker", "opensandbox"])
+def test_retired_security_profile_is_rejected_for_every_provider(provider):
     with pytest.raises(ValidationError):
         Settings(
             _env_file=None,

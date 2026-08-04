@@ -379,7 +379,7 @@ def test_compose_exposes_sandbox_runtime_configuration():
     assert "SANDBOX_CONTAINER_PROVIDER: docker" in sandbox_text
 
 
-def test_opensandbox_overlay_selects_explicit_trusted_internal_profile_and_requires_stock_inputs():
+def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
     import yaml
 
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
@@ -387,33 +387,39 @@ def test_opensandbox_overlay_selects_explicit_trusted_internal_profile_and_requi
     env_example = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
 
     for service_name in ("api", "worker"):
-        assert compose["services"][service_name]["environment"]["SANDBOX_SECURITY_PROFILE"] == (
-            "${SANDBOX_SECURITY_PROFILE:-governed}"
-        )
+        assert compose["services"][service_name]["environment"]["SANDBOX_SECURITY_PROFILE"] == "governed"
         environment = overlay["services"][service_name]["environment"]
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
-        assert environment["SANDBOX_SECURITY_PROFILE"] == "trusted_internal"
+        assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
         for required in (
+            "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
+            "SANDBOX_RUNTIME_SUBJECT",
             "OPENSANDBOX_DOMAIN",
             "OPENSANDBOX_PROTOCOL",
             "OPENSANDBOX_API_KEY",
+            "OPENSANDBOX_ATTESTATION_PATH",
+            "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION",
             "OPENSANDBOX_EXECUTOR_IMAGE",
             "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
-            "OPENSANDBOX_TRUSTED_INTERNAL_CALLBACK_BASE_URL",
-            "OPENSANDBOX_TRUSTED_INTERNAL_OPENAI_BASE_URL",
-            "OPENSANDBOX_TRUSTED_INTERNAL_ANTHROPIC_BASE_URL",
+            "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",
+            "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
+            "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT",
+            "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT",
+            "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL",
+            "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL",
+            "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL",
         ):
             assert environment[required].startswith("${")
             assert ":?set " in environment[required]
 
-    assert set(overlay["services"]) == {"api", "worker"}
-    assert "AI_PLATFORM_S72_BRIDGE_" not in OPENSANDBOX_COMPOSE_FILE.read_text(encoding="utf-8")
+    frontend = overlay["services"]["frontend"]
+    assert frontend["environment"]["NGINX_ENVSUBST_TEMPLATE_DIR"] == "/etc/nginx/templates-opensandbox"
+    assert frontend["ports"] == ["${AI_PLATFORM_S72_BRIDGE_PORT:-18443}:8443"]
+    assert len(frontend["volumes"]) == 2
+    assert set(overlay["services"]) == {"api", "worker", "frontend"}
     assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
-    assert "trusted_internal" in env_example
-    assert "OPENSANDBOX_TRUSTED_INTERNAL_CALLBACK_BASE_URL=http://10.56.0.211:8020" in env_example
-    assert "OPENSANDBOX_TRUSTED_INTERNAL_OPENAI_BASE_URL=http://10.56.0.211:3002/v1" in env_example
-    assert "OPENSANDBOX_TRUSTED_INTERNAL_ANTHROPIC_BASE_URL=http://10.56.0.211:3002" in env_example
-    assert "AI_PLATFORM_S72_BRIDGE_" not in env_example
+    assert "trusted_internal" not in env_example
+    assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
 
 
 def test_compose_does_not_mount_docker_socket_by_default():
