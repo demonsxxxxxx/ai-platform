@@ -12,12 +12,18 @@ from app.capability_distribution import (
 )
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
+from app.department_directory import (
+    DepartmentDirectoryError,
+    fetch_department_directory,
+    validate_distribution_department_authorities,
+)
 from app.models import (
     CapabilityDistributionListResponse,
     CapabilityDistributionResponse,
     CapabilityDistributionToggleRequest,
     CapabilityDistributionUpdateRequest,
     CapabilityDistributionWriteResponse,
+    DepartmentDirectoryResponse,
 )
 from app.validation import assert_safe_id
 
@@ -44,6 +50,31 @@ def _safe_capability_id(capability_id: str) -> str:
         return assert_safe_id(capability_id, "capability_id")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def _safe_distribution_department_ids(
+    capability_kind: CapabilityKind,
+    department_ids: list[str],
+) -> list[str]:
+    if capability_kind == "skill":
+        if not department_ids:
+            return []
+        try:
+            directory = await fetch_department_directory()
+            return validate_distribution_department_authorities(department_ids, directory)
+        except DepartmentDirectoryError as exc:
+            status_code = 422 if str(exc) == "capability_distribution_department_authority_invalid" else 503
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    normalized: list[str] = []
+    try:
+        for department_id in department_ids:
+            candidate = assert_safe_id(department_id.strip(), "department_ids")
+            if candidate not in normalized:
+                normalized.append(candidate)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="capability_distribution_department_authority_invalid") from exc
+    return normalized
 
 
 def _require_unreserved_distribution_metadata(request: CapabilityDistributionUpdateRequest) -> None:
@@ -111,8 +142,10 @@ async def _write_distribution(
     capability_id: str,
     request: CapabilityDistributionUpdateRequest | CapabilityDistributionToggleRequest,
 ) -> CapabilityDistributionWriteResponse:
+    department_ids: list[str] = []
     if isinstance(request, CapabilityDistributionUpdateRequest):
         _require_unreserved_distribution_metadata(request)
+        department_ids = await _safe_distribution_department_ids(capability_kind, request.department_ids)
     action = (
         "capability_distribution.updated"
         if isinstance(request, CapabilityDistributionUpdateRequest)
@@ -141,7 +174,7 @@ async def _write_distribution(
                     status=request.status,
                     visible_to_user=request.visible_to_user,
                     scope_mode=request.scope_mode,
-                    department_ids=request.department_ids,
+                    department_ids=department_ids,
                     allowed_roles=request.allowed_roles,
                     metadata_json=request.metadata,
                     updated_by=principal.user_id,
@@ -207,6 +240,22 @@ async def admin_list_capability_distributions(
         capability_distributions=distributions,
         total=len(distributions),
     )
+
+
+@router.get(
+    "/admin/capability-distributions/department-directory",
+    response_model=DepartmentDirectoryResponse,
+)
+async def admin_department_directory(
+    principal: AuthPrincipal = Depends(require_principal),
+) -> DepartmentDirectoryResponse:
+    """Return the pure department tree only after the AI-admin boundary."""
+
+    _require_admin(principal)
+    try:
+        return await fetch_department_directory()
+    except DepartmentDirectoryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get(
