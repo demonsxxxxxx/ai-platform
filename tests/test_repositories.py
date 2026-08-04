@@ -4713,6 +4713,79 @@ async def test_create_session_validates_workspace_tenant_before_insert(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_create_session_conflict_is_atomic_and_requires_exact_binding(monkeypatch):
+    async def ensure_workspace_belongs_to_tenant(_conn, *, tenant_id, workspace_id):
+        assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
+
+    monkeypatch.setattr(
+        repositories,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+    )
+    conn = SingleRowConnection(None)
+
+    with pytest.raises(RepositoryConflictError, match="session_scope_mismatch"):
+        await repositories.create_session(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            agent_id="agent-a",
+            title="Agent A",
+            session_id="session-shared",
+            admitted_agent_profile_revision=3,
+            admitted_agent_profile_hash="profile-hash",
+        )
+
+    assert conn.sql.startswith("insert into sessions")
+    assert "on conflict (id) do update" in conn.sql
+    assert "sessions.tenant_id = excluded.tenant_id" in conn.sql
+    assert "sessions.workspace_id = excluded.workspace_id" in conn.sql
+    assert "sessions.user_id is not distinct from excluded.user_id" in conn.sql
+    assert "sessions.agent_id = excluded.agent_id" in conn.sql
+    assert "sessions.admitted_agent_profile_revision is not distinct from excluded.admitted_agent_profile_revision" in conn.sql
+    assert "sessions.admitted_agent_profile_hash is not distinct from excluded.admitted_agent_profile_hash" in conn.sql
+    assert "returning sessions.id" in conn.sql
+
+
+@pytest.mark.asyncio
+async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
+    async def ensure_workspace_belongs_to_tenant(_conn, *, tenant_id, workspace_id):
+        assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
+
+    monkeypatch.setattr(
+        repositories,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+    )
+    conn = SingleRowConnection({"id": "session-shared"})
+
+    session_id = await repositories.create_session(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id=None,
+        agent_id="agent-a",
+        title="Agent A",
+        session_id="session-shared",
+        admitted_agent_profile_revision=None,
+        admitted_agent_profile_hash=None,
+    )
+
+    assert session_id == "session-shared"
+    assert conn.params == (
+        "session-shared",
+        "tenant-a",
+        "workspace-a",
+        None,
+        "agent-a",
+        "Agent A",
+        None,
+        None,
+    )
+
+
+@pytest.mark.asyncio
 async def test_create_run_validates_workspace_tenant_before_insert(monkeypatch):
     calls = []
 

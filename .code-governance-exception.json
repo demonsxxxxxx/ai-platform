@@ -1,0 +1,16 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "6a12fc88511dc7b8255b81b2bb04af5430751357",
+    "scope_sha256": "90cd2342a7549cf04b06dcb031fa857cc93dc534b0798d5a40f5193de9dfd762"
+  },
+  "expires_on": "2026-08-19",
+  "owner": "agent-platform",
+  "reason": "Issue #818 is one atomic datastore safety slice: PostgreSQL session identity, Redis bounded runtime state, and deployment readiness must change together so Agent conversations cannot be admitted through a falsely healthy or inconsistent runtime.",
+  "violations": [
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}
