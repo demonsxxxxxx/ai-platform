@@ -980,6 +980,7 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
     expected_answer,
 ):
     sealed_pre_capability_text = "raw tool output and /private/path are sealed."
+    event_reads = []
     run = {
         "id": "run_a",
         "session_id": "ses_a",
@@ -1000,7 +1001,10 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
         assert (tenant_id, user_id, run_id) == ("default", "user-a", "run_a")
         return run
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        event_reads.append(after_sequence)
+        if after_sequence is not None:
+            return []
         return [
             {
                 "id": "evt-sealed",
@@ -1049,7 +1053,7 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
         "app.routes.lambchat_compat.get_settings",
-        lambda: SimpleNamespace(run_event_stream_max_heartbeats=1),
+        lambda: SimpleNamespace(run_event_stream_max_heartbeats=2),
     )
     monkeypatch.setattr(
         "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
@@ -1080,6 +1084,7 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
 
     assert stream_response.status_code == 200
     assert history_response.status_code == 200
+    assert event_reads == [None, 1, None]
     stream_payloads = [
         json.loads(line.removeprefix("data: "))
         for line in stream_response.text.splitlines()
@@ -1106,10 +1111,20 @@ def test_lambchat_terminal_answer_replaces_private_identifier_for_sse_and_histor
     assert stream_response.text.count(expected_answer) == 1
     assert "evt-sealed" not in stream_response.text
     assert "evt-sealed" not in history_response.text
-    assert "evt-delta" not in stream_response.text
-    assert "evt-delta" not in history_response.text
-    assert "旧的部分输出" not in stream_response.text
-    assert "旧的部分输出" not in history_response.text
+    stream_delta = next(
+        payload
+        for payload in stream_payloads
+        if payload.get("projection_kind") == "assistant_delta"
+    )
+    history_delta = next(
+        event["data"]
+        for event in history_response.json()["events"]
+        if event["data"].get("projection_kind") == "assistant_delta"
+    )
+    assert stream_delta == history_delta
+    assert stream_delta["event_id"] == "evt-delta"
+    assert stream_delta["content"] == "旧的部分输出"
+    assert stream_response.text.index("旧的部分输出") < stream_response.text.index(expected_answer)
 
 
 @pytest.mark.parametrize(
@@ -1139,6 +1154,7 @@ def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_relo
     expected_detail_code,
     expected_message,
 ):
+    event_reads = []
     raw_terms = (
         "command=render-report --private-param=amber",
         raw_sdk_error,
@@ -1169,7 +1185,10 @@ def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_relo
         assert (tenant_id, user_id, run_id) == ("default", "user-a", "run_a")
         return run
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        event_reads.append(after_sequence)
+        if after_sequence is not None:
+            return []
         return [
             {
                 "id": "evt-terminal",
@@ -1202,7 +1221,7 @@ def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_relo
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
         "app.routes.lambchat_compat.get_settings",
-        lambda: SimpleNamespace(run_event_stream_max_heartbeats=1),
+        lambda: SimpleNamespace(run_event_stream_max_heartbeats=2),
     )
     monkeypatch.setattr(
         "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
@@ -1233,6 +1252,7 @@ def test_lambchat_failed_terminal_uses_same_allowlist_for_sse_and_exact_run_relo
 
     assert stream_response.status_code == 200
     assert history_response.status_code == 200
+    assert event_reads == [None, 1, None]
     stream_payloads = [
         json.loads(line.removeprefix("data: "))
         for line in stream_response.text.splitlines()
@@ -2161,6 +2181,7 @@ def test_lambchat_active_history_replays_versioned_deltas_once_in_sequence(monke
 
 
 def test_lambchat_strict_delta_contract_is_shared_by_live_sse_and_exact_reload(monkeypatch):
+    event_reads = []
     unsafe_terms = (
         "malformed fallback must stay hidden",
         "extra-key private payload must stay hidden",
@@ -2198,7 +2219,10 @@ def test_lambchat_strict_delta_contract_is_shared_by_live_sse_and_exact_reload(m
         assert (tenant_id, user_id, run_id) == ("default", "user-a", "run_a")
         return run
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        event_reads.append(after_sequence)
+        if after_sequence is not None:
+            return []
         base = {
             "trace_id": "trace_run_a",
             "schema_version": "ai-platform.event-envelope.v1",
@@ -2370,6 +2394,7 @@ def test_lambchat_strict_delta_contract_is_shared_by_live_sse_and_exact_reload(m
 
     assert stream_response.status_code == 200
     assert reload_response.status_code == 200
+    assert event_reads == [None, 8, None]
     stream_payloads = [
         json.loads(line.removeprefix("data: "))
         for line in stream_response.text.splitlines()
@@ -2700,8 +2725,8 @@ def test_lambchat_sse_stream_authorizes_exact_run_before_response_or_metadata(mo
     if case == "active":
         assert response.status_code == 200
         assert response.text.index("event: metadata") < response.text.index("event: message:chunk")
-        assert calls == 2
-        assert child_reads == ["events", "artifacts"]
+        assert calls == 3
+        assert child_reads == ["events", "artifacts", "events", "artifacts"]
     else:
         assert response.status_code == 404
         assert response.json()["detail"] == "run_not_found"

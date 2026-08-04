@@ -1516,8 +1516,7 @@ async def chat_session_stream(
             if status in {"succeeded", "failed", "cancelled"}:
                 if terminal_observed and last_cursor == previous_cursor:
                     for record in _compatibility_events_for_run(run, [], [], principal):
-                        if record.terminal or record.stream_data.get("projection_kind") == "assistant_final":
-                            yield _sse(record.stream_event_type, record.stream_data)
+                        yield _sse(record.stream_event_type, record.stream_data)
                         if record.terminal:
                             return
                 terminal_observed = True
