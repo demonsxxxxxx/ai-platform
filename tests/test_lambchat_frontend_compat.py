@@ -604,6 +604,8 @@ def test_lambchat_sse_stream_emits_finished_run_answer(monkeypatch):
 
 
 def test_lambchat_sse_stream_replays_run_events_and_artifact_cards(monkeypatch):
+    event_reads = []
+
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         assert user_id == "user-a"
         return {
@@ -615,7 +617,10 @@ def test_lambchat_sse_stream_replays_run_events_and_artifact_cards(monkeypatch):
             "error_message": None,
         }
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        event_reads.append(after_sequence)
+        if after_sequence is not None:
+            return []
         return [
             {
                 "id": "evt-tool",
@@ -683,6 +688,7 @@ def test_lambchat_sse_stream_replays_run_events_and_artifact_cards(monkeypatch):
     assert "storage_key" not in response.text
     assert "tenants/default" not in response.text
     assert "/tmp/private" not in response.text
+    assert event_reads == [None, 4]
 
 
 def test_lambchat_sse_stream_reports_bad_event_projection_as_sse_error(monkeypatch):
