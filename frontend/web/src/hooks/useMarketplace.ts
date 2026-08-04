@@ -3,7 +3,6 @@ import { marketplaceApi } from "../services/api/marketplace";
 import type {
   MarketplaceSkillResponse,
   MarketplaceSkillFilesResponse,
-  MarketplaceCreateRequest,
 } from "../types";
 
 interface BinaryFileInfo {
@@ -200,50 +199,6 @@ export function useMarketplace(options?: { enabled?: boolean }) {
     setDebouncedSearch("");
   }, []);
 
-  // Create and publish skill directly in marketplace
-  const createAndPublish = useCallback(
-    async (data: MarketplaceCreateRequest): Promise<boolean> => {
-      if (!enabled) return false;
-      setIsLoading(true);
-      setError(null);
-      try {
-        await marketplaceApi.createAndPublish(data);
-        await fetchSkills();
-        await fetchTags();
-        return true;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to create skill");
-        return false;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled, fetchSkills, fetchTags],
-  );
-
-  // Update marketplace skill directly (creator only)
-  const updateMarketplaceSkill = useCallback(
-    async (
-      skillName: string,
-      data: MarketplaceCreateRequest,
-    ): Promise<boolean> => {
-      if (!enabled) return false;
-      setIsLoading(true);
-      setError(null);
-      try {
-        await marketplaceApi.updateMarketplaceSkill(skillName, data);
-        await fetchSkills();
-        return true;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to update skill");
-        return false;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled, fetchSkills],
-  );
-
   // Admin: activate/deactivate skill
   const activateSkill = useCallback(
     async (skillName: string, isActive: boolean): Promise<boolean> => {
@@ -278,44 +233,6 @@ export function useMarketplace(options?: { enabled?: boolean }) {
     [enabled, fetchSkills],
   );
 
-  // Load marketplace skill for editing (without local copy)
-  const loadMarketplaceSkillForEdit = useCallback(async (skillName: string) => {
-    if (!enabled) return null;
-    try {
-      const [filesResp, skillDetail] = await Promise.all([
-        marketplaceApi.listFiles(skillName),
-        marketplaceApi.get(skillName),
-      ]);
-
-      const fileContents: Record<string, string> = {};
-      await Promise.all(
-        filesResp.files.map(async (path) => {
-          const resp = await marketplaceApi.getFile(skillName, path);
-          fileContents[path] = resp.content;
-        }),
-      );
-
-      return {
-        name: skillName,
-        description: skillDetail.description,
-        tags: skillDetail.tags,
-        content: fileContents["SKILL.md"] || "",
-        files: fileContents,
-        enabled: true,
-        source: "marketplace" as const,
-        file_count: filesResp.files.length,
-        installed_from: "marketplace" as const,
-        is_published: true,
-        marketplace_is_active: skillDetail.is_active,
-      };
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to load marketplace skill",
-      );
-      return null;
-    }
-  }, [enabled]);
-
   // Initial load
   useEffect(() => {
     if (!enabled) return;
@@ -345,11 +262,8 @@ export function useMarketplace(options?: { enabled?: boolean }) {
     fetchSkills,
     installSkill,
     updateSkill,
-    createAndPublish,
-    updateMarketplaceSkill,
     activateSkill,
     deleteSkill,
-    loadMarketplaceSkillForEdit,
     clearError: () => setError(null),
     // Preview
     previewSkill,

@@ -218,11 +218,8 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     "updateSkill",
     "openPreview",
     "readPreviewFile",
-    "createAndPublish",
-    "updateMarketplaceSkill",
     "activateSkill",
     "deleteSkill",
-    "loadMarketplaceSkillForEdit",
   ]) {
     assert.match(
       marketplaceHook,
@@ -265,7 +262,6 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     "previewZipSkills",
     "previewGitHubSkills",
     "installGitHubSkills",
-    "publishToMarketplace",
   ]) {
     assert.match(
       skillsHook,
@@ -285,6 +281,11 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     "toggleAll must guard hook-level enabled before using target state",
   );
   assert.match(skillsHook, /effectivePermissions/);
+  assert.doesNotMatch(skillsHook, /publishToMarketplace|isPublishing/);
+  assert.doesNotMatch(
+    read("src/services/api/skill.ts"),
+    /\/api\/skills\/.*\/publish|publishToMarketplace/,
+  );
   assert.match(
     toolsHook,
     /if \(!hookEnabled\) \{[\s\S]*?setCatalog\(\{ generation, status: "empty", \.\.\.EMPTY_CATALOG \}\);[\s\S]*?return;/,
@@ -343,6 +344,7 @@ test("read-only skills catalog removes write controls instead of showing disable
   assert.match(skillCard, /\{canWrite && \(/);
   assert.match(skillCard, /\{canEdit && \(/);
   assert.match(skillCard, /\{canDelete && \(/);
+  assert.doesNotMatch(skillCard, /onPublish|publishToMarketplace|republish/);
   assert.doesNotMatch(skillCard, /disabled=\{!canWrite\}/);
   assert.doesNotMatch(skillCard, /disabled=\{!canEdit\}/);
   assert.doesNotMatch(skillCard, /disabled=\{!canDelete\}/);
@@ -416,18 +418,14 @@ test("skills phase one backed operations match current public contracts", () => 
   assert.doesNotMatch(skillsPanel, /skillBatchWriteBacked = false/);
 });
 
-test("marketplace exposes direct write governance only through permission gates", () => {
+test("marketplace keeps catalog distribution controls without a second release writer", () => {
   const marketplace = read("src/components/panels/MarketplacePanel.tsx");
   const marketplaceCard = read(
     "src/components/panels/MarketplacePanel/SkillCard.tsx",
   );
+  const marketplaceApi = read("src/services/api/marketplace.ts");
+  const marketplaceHook = read("src/hooks/useMarketplace.ts");
 
-  assert.match(marketplace, /marketplaceDirectWriteBacked = true/);
-  assert.match(marketplace, /canCreateInMarketplace/);
-  assert.doesNotMatch(
-    marketplace,
-    /canCreateInMarketplace =[\s\S]*?Permission\.MARKETPLACE_PUBLISH/,
-  );
   assert.match(marketplace, /Permission\.MARKETPLACE_ADMIN/);
   assert.match(marketplace, /canInstall/);
   assert.match(marketplace, /Permission\.SKILL_WRITE/);
@@ -448,8 +446,22 @@ test("marketplace exposes direct write governance only through permission gates"
     marketplace,
     /const canWrite =\s*hasAnyPermission\(\[Permission\.MARKETPLACE_PUBLISH\]\)/,
   );
+  for (const source of [marketplace, marketplaceApi, marketplaceHook]) {
+    assert.doesNotMatch(source, /createAndPublish|updateMarketplaceSkill/);
+  }
+  assert.doesNotMatch(marketplace, /SkillFormSidebar|handleCreate|handleEdit/);
+  assert.doesNotMatch(marketplaceApi, /method:\s*"PUT"/);
+  assert.doesNotMatch(
+    marketplaceApi,
+    /authFetch<MarketplaceSkillResponse>\(`\$\{MARKETPLACE_API\}\/`,\s*\{\s*method:\s*"POST"/,
+  );
+  assert.match(marketplaceApi, /\/install/);
+  assert.match(marketplaceApi, /\/update/);
+  assert.match(marketplaceApi, /\/activate/);
+  assert.match(marketplaceApi, /method:\s*"DELETE"/);
   assert.match(marketplaceCard, /canInstall/);
   assert.doesNotMatch(marketplaceCard, /canWrite/);
+  assert.doesNotMatch(marketplaceCard, /onEdit/);
 });
 
 test("role plaza stays reachable without claiming missing backend projection", () => {

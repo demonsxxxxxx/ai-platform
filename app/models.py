@@ -430,26 +430,6 @@ class RunControlOperationResponse(BaseModel):
     queue_admission: Literal["admitted", "pending", "settled", "unknown"] | None = None
 
 
-class AgentApp(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    app_id: str
-    name: str
-    mode: Literal["chat", "file", "chat_file"]
-    default_skill_id: str
-    allowed_input_types: list[str] = Field(default_factory=list)
-    output_types: list[str] = Field(default_factory=list)
-    status: Literal["active", "disabled"] = "active"
-
-
-class AgentAppProjection(AgentApp):
-    pass
-
-
-class AgentAppsResponse(BaseModel):
-    agent_apps: list[AgentAppProjection]
-
-
 class SkillDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1399,17 +1379,6 @@ class PublicSkillImportUploadResponse(BaseModel):
     created: list[PublicSkillImportCreatedItem] = Field(default_factory=list)
     errors: list[PublicSkillImportErrorItem] = Field(default_factory=list)
     skill_count: int
-
-
-class PublishToMarketplaceRequest(BaseModel):
-    """User-facing publish request accepted by the public Skills contract."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    skill_name: str | None = None
-    description: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    version: str | None = None
 
 
 class MarketplaceSkillResponse(BaseModel):

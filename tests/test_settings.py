@@ -29,13 +29,14 @@ def test_stale_run_reconciliation_settings_reject_unsafe_bounds(field, value):
         Settings(_env_file=None, **{field: value})
 
 
-def test_sandbox_security_profile_defaults_governed_and_accepts_explicit_trusted_internal(monkeypatch):
+def test_sandbox_security_profile_defaults_governed_and_rejects_retired_profile(monkeypatch):
     assert Settings(_env_file=None).sandbox_security_profile == "governed"
 
     monkeypatch.setenv("SANDBOX_SECURITY_PROFILE", "trusted_internal")
     monkeypatch.setenv("SANDBOX_CONTAINER_PROVIDER", "opensandbox")
 
-    assert Settings(_env_file=None).sandbox_security_profile == "trusted_internal"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_sandbox_security_profile_rejects_unknown_values():
@@ -43,11 +44,30 @@ def test_sandbox_security_profile_rejects_unknown_values():
         Settings(_env_file=None, sandbox_security_profile="permissive")
 
 
-@pytest.mark.parametrize("provider", ["fake", "docker"])
-def test_trusted_internal_security_profile_rejects_non_opensandbox_provider(provider):
+@pytest.mark.parametrize("provider", ["fake", "docker", "opensandbox"])
+def test_retired_security_profile_is_rejected_for_every_provider(provider):
     with pytest.raises(ValidationError):
         Settings(
             _env_file=None,
             sandbox_container_provider=provider,
             sandbox_security_profile="trusted_internal",
         )
+
+
+def test_retired_runtime_authority_settings_are_not_configurable():
+    retired_fields = {
+        "multi_agent_dispatch_worker_enabled",
+        "multi_agent_dispatch_worker_interval_seconds",
+        "multi_agent_dispatch_worker_limit",
+        "multi_agent_dispatch_worker_user_id",
+        "multi_agent_dispatch_lease_ttl_seconds",
+        "enable_legacy_runtime211_fallback",
+        "ragflow_api_url",
+        "ragflow_api_key",
+        "ragflow_default_dataset_id",
+        "ragflow_timeout_seconds",
+        "ragflow_top_k",
+        "ragflow_similarity_threshold",
+    }
+
+    assert retired_fields.isdisjoint(Settings.model_fields)

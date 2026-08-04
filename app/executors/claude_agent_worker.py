@@ -548,11 +548,6 @@ class ClaudeAgentWorkerAdapter:
         "skills": True,
     }
 
-    def __init__(self, delegate: Any | None = None) -> None:
-        # Primary execution is Claude Agent SDK with platform-owned staged Skills.
-        # runtime211 is not a dependency of ai-platform execution.
-        self._delegate = delegate
-
     async def submit_run(
         self,
         payload: RunPayload,
@@ -767,13 +762,7 @@ class ClaudeAgentWorkerAdapter:
         result: ExecutorResult,
         *,
         multi_agent: bool = False,
-        legacy_runtime_fallback_used: bool = False,
     ) -> ExecutorResult:
-        legacy_runtime_fallback_used = (
-            legacy_runtime_fallback_used
-            or bool(result.result.get("legacy_runtime_fallback_used"))
-            or bool(result.executor_payload.get("legacy_runtime_fallback_used"))
-        )
         return ExecutorResult(
             status=result.status,
             adapter_version=self.adapter_version,
@@ -789,7 +778,6 @@ class ClaudeAgentWorkerAdapter:
                 "delegate_used": bool(result.result.get("delegate_used", result.executor_payload.get("delegate_used", True))),
                 "worker_boundary": self.executor_type,
                 "delegate_executor_type": result.executor_type,
-                "legacy_runtime_fallback_used": legacy_runtime_fallback_used,
             },
             artifacts=result.artifacts,
             executor_payload={
@@ -801,7 +789,6 @@ class ClaudeAgentWorkerAdapter:
                 "delegate_used": bool(result.executor_payload.get("delegate_used", result.result.get("delegate_used", True))),
                 "worker_boundary": self.executor_type,
                 "delegate_executor_type": result.executor_type,
-                "legacy_runtime_fallback_used": legacy_runtime_fallback_used,
             },
         )
 
@@ -1013,20 +1000,6 @@ class ClaudeAgentWorkerAdapter:
         if sdk_result is not None:
             return sdk_result
         return self._sdk_required_result(payload, sdk_result=None)
-
-    async def _emit_legacy_runtime_fallback_marker(self, event_sink: ExecutorEventSink | None) -> None:
-        if event_sink is None:
-            return
-        await event_sink(
-            event_type="legacy_runtime_fallback_used",
-            stage="executor",
-            message="runtime211 legacy fallback used",
-            payload={
-                "delegate_executor_type": "runtime211",
-                "visible_to_user": False,
-                "severity": "warning",
-            },
-        )
 
     async def _emit_agent_step(
         self,

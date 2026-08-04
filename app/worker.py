@@ -446,7 +446,6 @@ FORBIDDEN_ARTIFACT_KEYS = {
     "cwd",
 }
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native", "platform_controlled_runner"}
-RAGFLOW_AUDIT_PAYLOAD_KEYS = {"dataset_ids", "reference_ids"}
 
 
 AGENT_STEP_EVENT_STATUS = {
@@ -675,10 +674,6 @@ def _event_observability_kwargs(observability: dict[str, Any], executor_payload:
         "total_token_count": token_counts["total"],
         "estimated_cost_minor": observability["cost"]["estimated_cost_minor"],
     }
-
-
-def _ragflow_audit_payload(executor_payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: executor_payload[key] for key in RAGFLOW_AUDIT_PAYLOAD_KEYS if key in executor_payload}
 
 
 def _step_key_from_event(payload: dict[str, Any]) -> str:
@@ -939,24 +934,7 @@ def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]
 
 
 def _skill_manifests_for_persistence(result: ExecutorResult, payload: QueueRunPayload) -> list[dict[str, Any]]:
-    manifests = _skill_manifests_from_result(result)
-    if manifests or payload.executor_type != "ragflow":
-        return _attach_payload_snapshot_governance(manifests, payload)
-    persisted: list[dict[str, Any]] = []
-    for item in payload.skill_manifests:
-        if not isinstance(item, dict):
-            continue
-        manifest = dict(item)
-        skill_id = str(manifest.get("skill_id") or "").strip()
-        if skill_id == payload.skill_id:
-            succeeded = result.status == "succeeded"
-            manifest["allowed"] = bool(manifest.get("allowed", True))
-            manifest["staged"] = True
-            manifest["used"] = succeeded
-            manifest["used_skills_source"] = "executor_native" if succeeded else ""
-            manifest["inferred_used"] = False
-        persisted.append(manifest)
-    return persisted
+    return _attach_payload_snapshot_governance(_skill_manifests_from_result(result), payload)
 
 
 def _payload_snapshot_governance_by_skill(payload: QueueRunPayload) -> dict[str, dict[str, Any]]:
@@ -1975,16 +1953,6 @@ async def _release_worker_runtime_sandbox_lease(
     )
 
 
-def _is_top_level_multi_agent_parent_for_worker_dispatch(payload: QueueRunPayload) -> bool:
-    if not bool(get_settings().multi_agent_dispatch_worker_enabled):
-        return False
-    if str(payload.input.get("execution_mode") or "") != "multi_agent":
-        return False
-    if payload.input.get("copied_from_run_id"):
-        return False
-    return not isinstance(payload.input.get("multi_agent_dispatch"), dict)
-
-
 def _has_context_snapshot(payload: QueueRunPayload) -> bool:
     return bool(payload.context_snapshot_id)
 
@@ -2305,80 +2273,9 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-            if _is_top_level_multi_agent_parent_for_worker_dispatch(payload):
-                parked = await repositories.mark_multi_agent_dispatch_parent_awaiting_dispatch(
-                    conn,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    worker_id=worker_id,
-                )
-                if parked:
-                    await repositories.append_event(
-                        conn,
-                        tenant_id=run_identity["tenant_id"],
-                        run_id=run_identity["run_id"],
-                        event_type="multi_agent_dispatch_parent_parked",
-                        stage="control",
-                        message="Multi-agent parent parked for dispatcher",
-                        visible_to_user=False,
-                        payload={
-                            "visible_to_user": False,
-                            "orchestration_state": "awaiting_dispatch",
-                            "source": "worker",
-                        },
-                    )
-                    return WorkerOutcome(
-                        "skipped",
-                        run_identity["run_id"],
-                        "multi_agent_dispatch_parent_parked",
-                        "Multi-agent parent parked for dispatcher",
-                    )
-            if payload.executor_type == "runtime211":
-                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
-                    conn,
-                    payload=payload,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    error_code="legacy_runtime211_direct_executor_disabled",
-                    error_message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
-                )
-                if not terminal_written:
-                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                        WorkerOutcome(
-                            "skipped",
-                            run_identity["run_id"],
-                            "stale_terminal_state",
-                            "Run already reached a terminal state",
-                        ),
-                        payload,
-                        None,
-                    )
-                    return terminal_after_transaction.outcome
-                await repositories.append_event(
-                    conn,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    event_type="legacy_runtime211_direct_executor_denied",
-                    stage="policy",
-                    message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
-                    payload={
-                        "executor_type": payload.executor_type,
-                        "visible_to_user": False,
-                        "severity": "error",
-                    },
-                )
-                terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                    WorkerOutcome(
-                        "failed",
-                        run_identity["run_id"],
-                        "legacy_runtime211_direct_executor_disabled",
-                        "Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
-                    ),
-                    payload,
-                    reconciled_parent,
-                )
-                return terminal_after_transaction.outcome
             try:
+                if payload.executor_type in {"ragflow", "runtime211"}:
+                    raise KeyError(f"Unknown executor type: {payload.executor_type}")
                 adapter = adapter_registry.get(payload.executor_type)
             except KeyError as exc:
                 terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
@@ -2560,51 +2457,6 @@ async def process_run_payload(
                 await release_runtime_sandbox_lease(conn, reason="run_terminal_interrupted")
         except Exception:  # noqa: BLE001 - interruption cleanup is best effort.
             return
-
-    async def record_ragflow_completion(conn) -> None:
-        """Persist Ragflow completion only inside the final successful run transaction."""
-
-        if payload.executor_type != "ragflow":
-            return
-        subjects = payload.input.get("_runtime_tool_policy_subjects")
-        backing = next((item for item in subjects if item.get("public_tool_category") == "mcp"), None) if isinstance(subjects, list) else None
-        if not isinstance(backing, dict):
-            raise TypeError("ragflow_backing_mcp_identity_unavailable")
-        backing_identity = {
-            "mcp_tool_id": str(backing.get("capability_id") or ""),
-            "mcp_server_id": str(backing.get("mcp_server") or ""),
-            "mcp_tool_name": str(backing.get("mcp_tool") or ""),
-            "mcp_identity": str(backing.get("identity") or ""),
-        }
-        if not all(backing_identity.values()):
-            raise RuntimeError("ragflow_backing_mcp_identity_unavailable")
-        await append_user_event(
-            conn,
-            tenant_id=payload.tenant_id,
-            run_id=payload.run_id,
-            event_type="mcp_tool_call_completed",
-            stage="tool",
-            message="知识库检索完成",
-            payload={**backing_identity, "write_capable": False},
-        )
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=payload.tenant_id,
-            user_id=None,
-            action="mcp_tool_call_completed",
-            target_type="mcp_tool",
-            target_id=backing_identity["mcp_tool_id"],
-            trace_id=trace_id,
-            payload_json={
-                "run_id": payload.run_id,
-                "session_id": payload.session_id,
-                "agent_id": payload.agent_id,
-                "skill_id": payload.skill_id,
-                **backing_identity,
-                "write_capable": False,
-                **_ragflow_audit_payload(result.executor_payload),
-            },
-        )
 
     try:
         if adapter is None:
@@ -2958,7 +2810,6 @@ async def process_run_payload(
                 if not terminal_written:
                     raise _WorkerSuccessCommitBlocked()
                 else:
-                    await record_ragflow_completion(conn)
                     reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
                         conn,
                         payload=payload,

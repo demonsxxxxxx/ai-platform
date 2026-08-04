@@ -64,13 +64,11 @@ export type {
   SkillCreate,
   MarketplaceSkillResponse,
   MarketplaceListResponse,
-  MarketplaceCreateRequest,
   MarketplaceSkillFilesResponse,
   MarketplaceSkillFileResponse,
   MarketplaceInstallResponse,
   MarketplaceUpdateResponse,
   TagsResponse,
-  PublishToMarketplaceRequest,
 } from "./skill";
 
 export type { AgentOption } from "./agentOptions";

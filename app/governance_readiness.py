@@ -442,10 +442,6 @@ def build_governance_readiness(
                 "memory_retention_worker_cleanup_limit",
                 200,
             ),
-            "multi_agent_dispatch_worker_enabled": _bool_setting(
-                resolved_settings,
-                "multi_agent_dispatch_worker_enabled",
-            ),
         },
         "domains": domains,
         "open_gaps": warnings,

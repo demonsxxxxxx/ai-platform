@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes.agent_apps import router as agent_apps_router
+from app.routes.agent_profiles import router as agent_profiles_router
 from app.routes.admin_runtime import router as admin_runtime_router
 from app.routes.admin_runs import router as admin_runs_router
 from app.routes.admin_skills import router as admin_skills_router
@@ -58,7 +58,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(health_router, prefix="/api/ai")
     app.include_router(auth_router, prefix="/api/ai")
-    app.include_router(agent_apps_router, prefix="/api/ai")
+    app.include_router(agent_profiles_router, prefix="/api/ai")
     app.include_router(chat_router, prefix="/api/ai")
     app.include_router(context_router, prefix="/api/ai")
     app.include_router(files_router, prefix="/api/ai")

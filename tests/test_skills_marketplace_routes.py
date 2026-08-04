@@ -351,90 +351,9 @@ def install_route_fakes(
             "visible_to_user": True,
         }
 
-    async def fake_upsert_skill_version(
-        conn,
-        *,
-        skill_id,
-        version,
-        content_hash,
-        description,
-        source_json,
-        dependency_ids,
-        status="active",
-        created_by=None,
-    ):
-        calls.append(
-            (
-                "upsert_skill_version",
-                {
-                    "skill_id": skill_id,
-                    "version": version,
-                    "content_hash": content_hash,
-                    "description": description,
-                    "source_json": source_json,
-                    "dependency_ids": dependency_ids,
-                    "status": status,
-                    "created_by": created_by,
-                },
-            )
-        )
-        skill_versions[(skill_id, version)] = {
-            "description": description,
-            "source": source_json,
-            "dependency_ids": dependency_ids,
-            "created_by": created_by,
-            "created_at": "2026-06-23T00:00:00Z",
-        }
-
-    async def fake_get_release_policy(conn, *, tenant_id, skill_id, channel="stable"):
-        calls.append(
-            (
-                "get_release_policy",
-                {"tenant_id": tenant_id, "skill_id": skill_id, "channel": channel},
-            )
-        )
-        if release_policy and release_policy["skill_id"] == skill_id:
-            return dict(release_policy)
-        return None
-
-    async def fake_set_release_policy(
-        conn,
-        *,
-        tenant_id,
-        skill_id,
-        version,
-        previous_version,
-        promoted_by,
-        channel="stable",
-        rollout_percent=100,
-        status="active",
-    ):
-        nonlocal release_policy
-        calls.append(
-            (
-                "set_release_policy",
-                {
-                    "tenant_id": tenant_id,
-                    "skill_id": skill_id,
-                    "version": version,
-                    "previous_version": previous_version,
-                    "promoted_by": promoted_by,
-                    "channel": channel,
-                    "rollout_percent": rollout_percent,
-                    "status": status,
-                },
-            )
-        )
-        release_policy = {
-            "skill_id": skill_id,
-            "channel": channel,
-            "current_version": version,
-            "previous_version": previous_version,
-            "rollout_percent": rollout_percent,
-            "status": status,
-            "promoted_by": promoted_by,
-            "promoted_at": None,
-        }
+    async def fail_direct_release_write(*args, **kwargs):
+        calls.append(("forbidden_release_write", kwargs))
+        raise AssertionError("marketplace routes must not write Skill versions or release policy")
 
     async def fake_ensure_user(conn, *, tenant_id, user_id, display_name=None):
         calls.append(
@@ -464,9 +383,8 @@ def install_route_fakes(
     monkeypatch.setattr(skills_marketplace.repositories, "upsert_user_skill_file", fake_upsert_file)
     monkeypatch.setattr(skills_marketplace.repositories, "delete_user_skill_file", fake_delete_file)
     monkeypatch.setattr(skills_marketplace.repositories, "set_public_skill_enabled", fake_set_status)
-    monkeypatch.setattr(skills_marketplace.repositories, "upsert_skill_version", fake_upsert_skill_version)
-    monkeypatch.setattr(skills_marketplace.repositories, "get_skill_release_policy", fake_get_release_policy)
-    monkeypatch.setattr(skills_marketplace.repositories, "set_skill_release_policy", fake_set_release_policy)
+    monkeypatch.setattr(skills_marketplace.repositories, "upsert_skill_version", fail_direct_release_write)
+    monkeypatch.setattr(skills_marketplace.repositories, "set_skill_release_policy", fail_direct_release_write)
     monkeypatch.setattr(skills_marketplace.repositories, "ensure_user", fake_ensure_user)
     monkeypatch.setattr(skills_marketplace.repositories, "append_audit_log", fake_audit)
     return calls
@@ -837,21 +755,6 @@ def test_skill_and_marketplace_write_contracts_fail_closed_without_permissions(m
     assert toggle_response.status_code == 403
     assert toggle_response.json()["detail"] == "missing_permission:skill:write"
 
-    bodyless_publish_response = client.post(
-        "/api/skills/qa-file-reviewer/publish",
-        headers=headers("skill:read,marketplace:read"),
-    )
-    assert bodyless_publish_response.status_code == 403
-    assert bodyless_publish_response.json()["detail"] == "missing_permission:marketplace:publish"
-
-    publish_response = client.post(
-        "/api/skills/qa-file-reviewer/publish",
-        json={"skill_name": "qa-file-reviewer"},
-        headers=headers("skill:read,marketplace:read"),
-    )
-    assert publish_response.status_code == 403
-    assert publish_response.json()["detail"] == "missing_permission:marketplace:publish"
-
     install_response = client.post(
         "/api/marketplace/qa-file-reviewer/install",
         headers=headers("marketplace:read"),
@@ -860,108 +763,17 @@ def test_skill_and_marketplace_write_contracts_fail_closed_without_permissions(m
     assert install_response.json()["detail"] == "missing_permission:skill:write"
 
 
-def test_publish_distribution_allows_authorized_skill(monkeypatch):
-    calls = install_route_fakes(
-        monkeypatch,
-        distribution_rows=[
-            {
-                "capability_kind": "skill",
-                "capability_id": "qa-file-reviewer",
-                "status": "active",
-                "visible_to_user": True,
-                "scope_mode": "allowlist",
-                "department_ids": ["qa"],
-                "allowed_roles": [],
-                "metadata_json": {},
-            }
-        ],
-    )
+def test_public_skill_publish_request_contract_is_not_exposed(monkeypatch):
+    install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
     response = client.post(
         "/api/skills/qa-file-reviewer/publish",
-        json={"description": "Approved publish preview."},
-        headers=headers("marketplace:publish"),
-    )
-
-    assert response.status_code == 200
-    assert response.json()["description"] == "Approved publish preview."
-    assert any(
-        name == "audit" and payload["action"] == "skill.public.publish_requested"
-        for name, payload in calls
-    )
-
-
-def test_publish_distribution_hides_cross_department_skill(monkeypatch):
-    calls = install_route_fakes(
-        monkeypatch,
-        distribution_rows=[
-            {
-                "capability_kind": "skill",
-                "capability_id": "qa-file-reviewer",
-                "status": "active",
-                "visible_to_user": True,
-                "scope_mode": "allowlist",
-                "department_ids": ["qa"],
-                "allowed_roles": [],
-                "metadata_json": {},
-            }
-        ],
-    )
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/skills/qa-file-reviewer/publish",
-        json={"description": "Unauthorized publish preview."},
-        headers=headers("marketplace:publish", department_id="rd"),
+        json={"skill_name": "qa-file-reviewer"},
+        headers=headers("marketplace:publish", roles="admin"),
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "skill_not_found"
-    assert not any(name == "audit" for name, _ in calls)
-
-
-def test_publish_distribution_hides_disabled_and_missing_rows(monkeypatch):
-    distributions = [
-        {
-            "capability_kind": "skill",
-            "capability_id": "qa-file-reviewer",
-            "status": "disabled",
-            "visible_to_user": True,
-            "scope_mode": "allowlist",
-            "department_ids": [],
-            "allowed_roles": [],
-            "metadata_json": {},
-        }
-    ]
-    calls = install_route_fakes(monkeypatch, distribution_rows=distributions)
-    client = TestClient(create_app())
-    publish_headers = headers("marketplace:publish")
-
-    disabled = client.post("/api/skills/qa-file-reviewer/publish", json={}, headers=publish_headers)
-    distributions.clear()
-    missing = client.post("/api/skills/qa-file-reviewer/publish", json={}, headers=publish_headers)
-
-    assert disabled.status_code == 404
-    assert disabled.json()["detail"] == "skill_not_found"
-    assert missing.status_code == 404
-    assert missing.json()["detail"] == "skill_not_found"
-    assert not any(name == "audit" for name, _ in calls)
-
-
-def test_publish_admin_bypass_audit_preserves_distribution_decision(monkeypatch):
-    calls = install_route_fakes(monkeypatch, distribution_rows=admin_bypass_distribution_rows())
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/skills/qa-file-reviewer/publish",
-        json={"description": "Admin publish preview."},
-        headers=headers("marketplace:publish", roles="admin", department_id="platform"),
-    )
-
-    assert response.status_code == 200
-    payload_json = assert_admin_bypass_audit(calls, action="skill.public.publish_requested")
-    assert payload_json["marketplace_skill_name"] == "qa-file-reviewer"
 
 
 def test_zip_import_admin_bypass_audit_preserves_distribution_decision(monkeypatch):
@@ -2362,7 +2174,7 @@ def test_public_skill_github_preview_rejects_duplicate_discovered_skill_ids(monk
     assert not any(name == "upsert_file" for name, _ in calls)
 
 
-def test_public_skill_direct_marketplace_lifecycle_updates_catalog_release_policy_and_availability(monkeypatch):
+def test_marketplace_release_writes_fail_closed_while_distribution_lifecycle_remains_backed(monkeypatch):
     calls = install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
@@ -2384,11 +2196,8 @@ def test_public_skill_direct_marketplace_lifecycle_updates_catalog_release_polic
         },
         headers=headers("marketplace:admin"),
     )
-    assert direct_marketplace.status_code == 200
-    direct_marketplace_body = direct_marketplace.json()
-    assert direct_marketplace_body["skill_name"] == "qa-file-reviewer"
-    assert direct_marketplace_body["description"] == "Published from marketplace admin."
-    assert direct_marketplace_body["tags"] == ["document", "admin"]
+    assert direct_marketplace.status_code == 409
+    assert direct_marketplace.json()["detail"] == "marketplace_direct_write_contract_not_backed"
 
     update_response = client.put(
         "/api/marketplace/qa-file-reviewer",
@@ -2398,10 +2207,8 @@ def test_public_skill_direct_marketplace_lifecycle_updates_catalog_release_polic
         },
         headers=headers("marketplace:admin"),
     )
-    assert update_response.status_code == 200
-    assert update_response.json()["description"] == "Edited marketplace description."
-    assert update_response.json()["tags"] == ["edited"]
-    assert update_response.json()["version"].startswith("marketplace.")
+    assert update_response.status_code == 409
+    assert update_response.json()["detail"] == "marketplace_direct_write_contract_not_backed"
 
     deactivate_response = client.patch(
         "/api/marketplace/qa-file-reviewer/activate",
@@ -2425,66 +2232,40 @@ def test_public_skill_direct_marketplace_lifecycle_updates_catalog_release_polic
     assert delete_response.status_code == 200
     assert delete_response.json() == {"message": "Marketplace skill disabled", "skill_name": "qa-file-reviewer"}
 
-    assert any(
-        name == "upsert_skill_version"
-        and payload["skill_id"] == "qa-file-reviewer"
-        and payload["version"] == "hash-marketplace"
-        and payload["source_json"]["tags"] == ["document", "admin"]
-        for name, payload in calls
-    )
-    assert not any(name == "update_catalog_version" for name, _ in calls)
-    assert any(
-        name == "set_release_policy"
-        and payload["skill_id"] == "qa-file-reviewer"
-        and str(payload["version"]).startswith("marketplace.")
-        and payload["previous_version"] == "hash-marketplace"
-        for name, payload in calls
-    )
+    assert not any(name == "forbidden_release_write" for name, _ in calls)
     assert [payload["enabled"] for name, payload in calls if name == "toggle_distribution"] == [False, True]
     assert [payload["capability_id"] for name, payload in calls if name == "archive_distribution"] == [
         "qa-file-reviewer"
     ]
     audit_actions = [payload["action"] for name, payload in calls if name == "audit"]
-    assert "marketplace.skill.created" in audit_actions
-    assert "marketplace.skill.updated" in audit_actions
+    assert "marketplace.skill.created" not in audit_actions
+    assert "marketplace.skill.updated" not in audit_actions
     assert "marketplace.skill.activation_changed" in audit_actions
     assert "marketplace.skill.disabled" in audit_actions
-    update_audit = next(
-        payload
-        for name, payload in calls
-        if name == "audit" and payload["action"] == "marketplace.skill.updated"
-    )
-    assert update_audit["payload_json"]["previous_version"] == "hash-marketplace"
-    assert str(update_audit["payload_json"]["version"]).startswith("marketplace.")
-    assert update_audit["payload_json"]["previous_description"] == "Published from marketplace admin."
-    assert update_audit["payload_json"]["description"] == "Edited marketplace description."
-    assert update_audit["payload_json"]["previous_tags"] == ["document", "admin"]
-    assert update_audit["payload_json"]["tags"] == ["edited"]
-
     read_after_write = client.get("/api/marketplace/qa-file-reviewer", headers=headers("marketplace:read"))
     assert read_after_write.status_code == 404
     assert read_after_write.json()["detail"] == "skill_not_found"
 
 
-def test_public_skill_direct_marketplace_lifecycle_rejects_mismatch_and_missing_skill(monkeypatch):
+def test_marketplace_release_write_compatibility_routes_do_not_probe_catalog(monkeypatch):
     calls = install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
-    mismatch_response = client.put(
+    mismatched_payload_response = client.put(
         "/api/marketplace/qa-file-reviewer",
         json={"skill_name": "other-skill", "version": "hash-other"},
         headers=headers("marketplace:admin"),
     )
-    assert mismatch_response.status_code == 400
-    assert mismatch_response.json()["detail"] == "marketplace_skill_name_mismatch"
+    assert mismatched_payload_response.status_code == 409
+    assert mismatched_payload_response.json()["detail"] == "marketplace_direct_write_contract_not_backed"
 
     missing_response = client.put(
         "/api/marketplace/missing-skill",
         json={"version": "hash-missing"},
         headers=headers("marketplace:admin"),
     )
-    assert missing_response.status_code == 404
-    assert missing_response.json()["detail"] == "skill_not_found"
+    assert missing_response.status_code == 409
+    assert missing_response.json()["detail"] == "marketplace_direct_write_contract_not_backed"
 
     denied_response = client.put(
         "/api/marketplace/missing-skill",
@@ -2493,10 +2274,10 @@ def test_public_skill_direct_marketplace_lifecycle_rejects_mismatch_and_missing_
     )
     assert denied_response.status_code == 403
     assert denied_response.json()["detail"] == "missing_permission:marketplace:admin"
-    assert not any(name == "upsert_skill_version" for name, _ in calls)
+    assert not any(name in {"list", "forbidden_release_write"} for name, _ in calls)
 
 
-def test_public_skill_direct_marketplace_lifecycle_rejects_same_version_metadata_conflict(monkeypatch):
+def test_marketplace_release_write_rejects_every_payload_before_release_mutation(monkeypatch):
     calls = install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
@@ -2507,8 +2288,8 @@ def test_public_skill_direct_marketplace_lifecycle_rejects_same_version_metadata
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "marketplace_version_conflict"
-    assert not any(name == "upsert_skill_version" for name, _ in calls)
+    assert response.json()["detail"] == "marketplace_direct_write_contract_not_backed"
+    assert not any(name == "forbidden_release_write" for name, _ in calls)
 
 
 def test_public_skill_direct_marketplace_activation_accepts_frontend_is_active_payload(monkeypatch):
@@ -2600,14 +2381,8 @@ def test_marketplace_activation_uses_non_rollout_admin_response_inside_write_tra
     [
         ("patch", "/api/marketplace/qa-file-reviewer/activate", {"active": False}),
         ("patch", "/api/marketplace/qa-file-reviewer/activate", {"active": True}),
-        (
-            "post",
-            "/api/marketplace/",
-            {"skill_name": "qa-file-reviewer", "description": "Created response failure"},
-        ),
-        ("put", "/api/marketplace/qa-file-reviewer", {"description": "Updated response failure"}),
     ],
-    ids=["deactivate", "activate", "create", "update"],
+    ids=["deactivate", "activate"],
 )
 def test_marketplace_writes_roll_back_when_response_model_build_fails(monkeypatch, method, path, payload):
     calls = install_route_fakes(monkeypatch)
@@ -2651,14 +2426,8 @@ def test_marketplace_writes_roll_back_when_response_model_build_fails(monkeypatc
     [
         ("patch", "/api/marketplace/qa-file-reviewer/activate", {"active": False}),
         ("patch", "/api/marketplace/qa-file-reviewer/activate", {"active": True}),
-        (
-            "post",
-            "/api/marketplace/",
-            {"skill_name": "qa-file-reviewer", "description": "Created missing response"},
-        ),
-        ("put", "/api/marketplace/qa-file-reviewer", {"description": "Updated missing response"}),
     ],
-    ids=["deactivate", "activate", "create", "update"],
+    ids=["deactivate", "activate"],
 )
 def test_marketplace_writes_roll_back_when_response_catalog_row_is_missing(monkeypatch, method, path, payload):
     calls = install_route_fakes(monkeypatch)

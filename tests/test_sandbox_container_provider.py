@@ -2833,6 +2833,26 @@ def test_create_container_provider_rejects_unknown_provider(monkeypatch):
         container_provider.create_container_provider()
 
 
+def test_create_container_provider_rejects_retired_profile_before_backend_selection(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    container_provider.reset_container_provider_cache()
+    monkeypatch.setattr(
+        container_provider,
+        "get_settings",
+        lambda: type(
+            "StubSettings",
+            (),
+            {
+                "sandbox_container_provider": "opensandbox",
+                "sandbox_security_profile": "trusted_internal",
+            },
+        )(),
+    )
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="not governed"):
+        container_provider.create_container_provider()
+
+
 def test_create_container_provider_selects_opensandbox_and_still_rejects_unknown_provider(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     container_provider.reset_container_provider_cache()

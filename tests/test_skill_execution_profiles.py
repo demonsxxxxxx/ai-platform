@@ -5,11 +5,14 @@ import pytest
 from app.skills.execution_profiles import (
     CONTROLLED_COMMAND_ISOLATION,
     NATIVE_COMMAND_ISOLATION,
+    OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION,
+    OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE,
     PLATFORM_CONTROLLED,
     SDK_NATIVE,
     SDK_RESTRICTED,
     canonical_skill_execution_profile,
     resolve_skill_execution_profile,
+    sdk_skill_tool_admission_for_execution_profile,
 )
 from app.skills.pinning import build_skill_version_manifest_pin
 from app import worker
@@ -118,6 +121,28 @@ def test_reviewed_uploaded_skill_retains_native_bash_isolation():
     assert profile["strategy"] == SDK_NATIVE
     assert profile["builtin_tool_identities"] == ["Read", "Glob", "LS", "Bash", "Write", "Edit"]
     assert profile["command_isolation"] == NATIVE_COMMAND_ISOLATION
+
+
+def test_governed_opensandbox_admits_file_tools_only_for_the_selected_authorized_skill():
+    admission = sdk_skill_tool_admission_for_execution_profile(
+        execution_profile=OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE,
+        selected_skill_id="reviewed-upload",
+        staged_skill_ids=["reviewed-upload"],
+        authorized_skill_ids={"reviewed-upload"},
+    )
+
+    assert admission is not None
+    assert admission.tool_names == ("Read", "Glob", "LS", "Bash", "Write", "Edit")
+    assert admission.command_isolation == OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION
+    assert (
+        sdk_skill_tool_admission_for_execution_profile(
+            execution_profile="opensandbox_trusted_internal",
+            selected_skill_id="reviewed-upload",
+            staged_skill_ids=["reviewed-upload"],
+            authorized_skill_ids={"reviewed-upload"},
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(

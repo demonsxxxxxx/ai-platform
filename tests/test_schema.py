@@ -96,8 +96,15 @@ def test_schema_seeds_first_agent_apps():
 
 def test_schema_enables_read_only_ragflow_mcp_tool_poc():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
+    skill_seed = schema[schema.index("insert into skills"):schema.index("insert into skill_versions")]
     mcp_tool_seed = schema[schema.index("insert into mcp_tools"):schema.index("insert into agents")]
 
+    assert (
+        "'ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', "
+        "'Query company knowledge base with scoped citations through the platform-managed MCP tool.', "
+        "'[\"chat\"]'::jsonb, '[\"answer\", \"citations\"]'::jsonb, 'claude-agent-worker')"
+    ) in skill_seed
+    assert "'ragflow')" not in skill_seed
     assert "'ragflow-knowledge-search'" in mcp_tool_seed
     assert "'[\"ragflow_search\"]'::jsonb" in mcp_tool_seed
     assert "'active',\n    false,\n    'low'" in mcp_tool_seed

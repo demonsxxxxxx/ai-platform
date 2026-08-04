@@ -1,6 +1,6 @@
 from app.main import create_app
 from app.executors.base import RunPayload
-from app.models import AgentApp, CreateRunRequest, QueueRunPayload, SkillDefinition
+from app.models import CreateRunRequest, QueueRunPayload, SkillDefinition
 from app.control_plane_contracts import sanitize_public_payload
 from app.repositories import new_id
 from fastapi.testclient import TestClient
@@ -44,7 +44,8 @@ def test_app_registers_platform_routes():
 
     assert "/api/ai/health" in paths
     assert "/api/ai/admin/status" in paths
-    assert "/api/ai/agent-apps" in paths
+    assert "/api/ai/agent-apps" not in paths
+    assert "/api/ai/agent-profiles" in paths
     assert "/api/ai/files" in paths
     assert "/api/ai/runs" in paths
     assert "/api/ai/runs/{run_id}" in paths
@@ -848,19 +849,6 @@ def test_run_payload_carries_skill_manifest_pins():
     assert payload.skill_manifests == [{"skill_id": "qa-file-reviewer", "content_hash": "hash-primary"}]
 
 
-def test_agent_app_contract_is_stable():
-    app = AgentApp(
-        app_id="translate",
-        name="翻译",
-        mode="chat_file",
-        default_skill_id="baoyu-translate",
-        allowed_input_types=["docx"],
-        output_types=["translated_docx"],
-    )
-    assert app.default_skill_id == "baoyu-translate"
-    assert app.mode == "chat_file"
-
-
 def test_skill_definition_contract_is_stable():
     skill = SkillDefinition(
         skill_id="baoyu-translate",
@@ -883,9 +871,12 @@ def test_default_registry_does_not_expose_runtime211_direct_executor():
         raise AssertionError("runtime211 must not be available as a default direct executor")
 
 
-def test_registry_includes_ragflow_executor():
+def test_default_registry_keeps_ragflow_behind_the_harness_mcp_boundary():
     from app.executors.registry import AdapterRegistry
 
-    adapter = AdapterRegistry().get("ragflow")
-
-    assert adapter.executor_type == "ragflow"
+    try:
+        AdapterRegistry().get("ragflow")
+    except KeyError as exc:
+        assert "ragflow" in str(exc)
+    else:
+        raise AssertionError("RAGFlow must be an MCP tool, not a second default executor")
