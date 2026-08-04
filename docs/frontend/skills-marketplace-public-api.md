@@ -87,8 +87,6 @@ Backed routes:
 - `GET /api/marketplace/{skill_name}/files/{file_path}`
 - `POST /api/marketplace/{skill_name}/install`
 - `POST /api/marketplace/{skill_name}/update`
-- `POST /api/marketplace/`
-- `PUT /api/marketplace/{skill_name}`
 - `PATCH /api/marketplace/{skill_name}/activate`
 - `DELETE /api/marketplace/{skill_name}`
 
@@ -96,13 +94,22 @@ Marketplace list/detail/files are projected only from globally active public wor
 
 `install` and `update` enable the selected public skill in tenant availability and write audit evidence. They do not expose package upload, release promote, rollback, MCP lifecycle, or tool execution controls to ordinary users.
 
-Direct marketplace lifecycle routes are backed for authorized marketplace admins:
+Tenant Marketplace distribution lifecycle routes are backed for authorized marketplace admins:
 
-- `POST /api/marketplace/` and `PUT /api/marketplace/{skill_name}` materialize tenant-facing Skill metadata as an immutable `skill_versions` snapshot and point the tenant stable release policy at that snapshot. They do not mutate the global `skills` catalog row.
 - `PATCH /api/marketplace/{skill_name}/activate` accepts either `active` or the frontend-compatible `is_active` body field and updates tenant availability.
 - `DELETE /api/marketplace/{skill_name}` disables tenant Marketplace availability without deleting global Skill records.
 
-Package upload, rollback, and low-level release management remain under the admin release-management surface at `/api/ai/admin/skills/*`.
+The following compatibility routes are fail-closed and return
+`409 marketplace_direct_write_contract_not_backed` without reading or mutating
+the Skill catalog, version rows, release policy, or tenant distribution:
+
+- `POST /api/marketplace/`
+- `PUT /api/marketplace/{skill_name}`
+
+The Admin release-management surface under `/api/ai/admin/skills/*` is the only
+authority for immutable version upload, review, promote, rollout policy, and
+rollback. Marketplace routes remain projections and tenant-distribution
+controls; they cannot create an active version or redirect a release policy.
 
 ## MCP Routes
 

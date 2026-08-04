@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import base64
-import hashlib
-import json
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
@@ -38,13 +36,9 @@ from app.models import (
 )
 from app.settings import get_settings
 from app.skills.marketplace_projection import (
-    SkillFileProjection,
-    _decode_skill_file_content,
-    _fallback_skill_markdown,
     attach_user_file_overlays as _attach_user_file_overlays,
     available_marketplace_tags as _available_tags,
     filter_marketplace_rows as _filter_rows,
-    marketplace_tags as _tags_from_row,
     normalize_skill_file_path as _safe_file_path,
     project_public_skill as _public_skill_item,
     project_public_skill_detail as _skill_detail,
@@ -80,15 +74,6 @@ ORDERED_PUBLIC_PERMISSIONS = (
 )
 
 
-class MarketplaceLifecycleRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    skill_name: str | None = None
-    description: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    version: str | None = None
-
-
 class MarketplaceActivationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -98,13 +83,6 @@ class MarketplaceActivationRequest(BaseModel):
 def _safe_skill_name(skill_name: str) -> str:
     try:
         return assert_safe_id(skill_name, "skill_name")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-def _safe_skill_version(version: str) -> str:
-    try:
-        return assert_safe_id(version, "version")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -396,7 +374,7 @@ def _request_names(payload: Any) -> list[str]:
     return names
 
 
-def _direct_marketplace_write_not_backed(skill_name: str | None = None) -> None:
+def _direct_marketplace_write_not_backed(skill_name: str | None = None) -> NoReturn:
     if skill_name is not None:
         _safe_skill_name(skill_name)
     raise HTTPException(status_code=409, detail="marketplace_direct_write_contract_not_backed")
@@ -491,130 +469,6 @@ async def _github_packages_from_payload(payload: Any) -> tuple[str, str, list[Gi
     except GitHubImportError as exc:
         raise _github_import_http_exception(exc) from exc
     return normalized_repo_url, safe_branch, packages
-
-
-def _marketplace_lifecycle_request(payload: Any) -> MarketplaceLifecycleRequest:
-    if payload is None:
-        payload = {}
-    return _request_model(MarketplaceLifecycleRequest, payload)
-
-
-def _marketplace_row_with_request(
-    row: dict[str, Any],
-    request: MarketplaceLifecycleRequest,
-    *,
-    fallback_skill_name: str,
-) -> dict[str, Any]:
-    updated = dict(row)
-    updated["skill_id"] = fallback_skill_name
-    if request.description is not None:
-        updated["description"] = request.description
-    if request.version is not None:
-        updated["version"] = _safe_skill_version(request.version)
-    if "tags" in request.model_fields_set:
-        source = dict(updated.get("source") if isinstance(updated.get("source"), dict) else {})
-        source["tags"] = request.tags
-        updated["source"] = source
-    if request.version is None and _marketplace_request_updates_metadata(request):
-        updated["version"] = _marketplace_generated_version(updated)
-    return updated
-
-
-def _marketplace_request_updates_metadata(request: MarketplaceLifecycleRequest) -> bool:
-    return request.description is not None or "tags" in request.model_fields_set
-
-
-def _marketplace_generated_version(row: dict[str, Any]) -> str:
-    source = row.get("source") if isinstance(row.get("source"), dict) else {}
-    payload = {
-        "skill_id": str(row.get("skill_id") or ""),
-        "description": str(row.get("description") or ""),
-        "source": source,
-        "dependency_ids": [str(item) for item in row.get("dependency_ids") or []],
-    }
-    digest = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    return f"marketplace.{digest[:24]}"
-
-
-async def _persist_marketplace_lifecycle(
-    *,
-    principal: AuthPrincipal,
-    skill_name: str,
-    request: MarketplaceLifecycleRequest,
-    audit_action: str,
-) -> MarketplaceSkillResponse:
-    safe_skill_name = _safe_skill_name(request.skill_name or skill_name)
-    if safe_skill_name != skill_name:
-        raise HTTPException(status_code=400, detail="marketplace_skill_name_mismatch")
-    async with transaction() as conn:
-        rows = await repositories.list_public_skill_catalog(
-            conn,
-            tenant_id=principal.tenant_id,
-            include_disabled=True,
-        )
-        existing_row = _find_row(rows, skill_name=safe_skill_name)
-        policy = await repositories.get_skill_release_policy(
-            conn,
-            tenant_id=principal.tenant_id,
-            skill_id=safe_skill_name,
-        )
-        previous_version = str(policy["current_version"]) if policy else str(existing_row.get("version") or "") or None
-        row = _marketplace_row_with_request(
-            existing_row,
-            request,
-            fallback_skill_name=safe_skill_name,
-        )
-        version = _safe_skill_version(str(row.get("version") or ""))
-        if request.version is not None and version == previous_version and _marketplace_request_updates_metadata(request):
-            raise HTTPException(status_code=409, detail="marketplace_version_conflict")
-        description = str(row.get("description") or "")
-        source = dict(row.get("source") if isinstance(row.get("source"), dict) else {})
-        dependency_ids = [str(item) for item in row.get("dependency_ids") or []]
-        await repositories.upsert_skill_version(
-            conn,
-            skill_id=safe_skill_name,
-            version=version,
-            content_hash=version,
-            description=description,
-            source_json=source,
-            dependency_ids=dependency_ids,
-            status="active",
-            created_by=principal.user_id,
-        )
-        await repositories.set_skill_release_policy(
-            conn,
-            tenant_id=principal.tenant_id,
-            skill_id=safe_skill_name,
-            version=version,
-            previous_version=previous_version,
-            promoted_by=principal.user_id,
-        )
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            action=audit_action,
-            target_type="skill",
-            target_id=safe_skill_name,
-            payload_json={
-                "version": version,
-                "previous_version": previous_version,
-                "description": description,
-                "previous_description": str(existing_row.get("description") or ""),
-                "department_id": principal.department_id,
-                "tags": _tags_from_row(row),
-                "previous_tags": _tags_from_row(existing_row),
-            },
-        )
-        rows_after = await repositories.list_public_skill_catalog(
-            conn,
-            tenant_id=principal.tenant_id,
-            include_disabled=True,
-        )
-        response_row = _find_row(rows_after, skill_name=safe_skill_name)
-        return _marketplace_item(response_row, principal)
 
 
 async def _persist_public_import_package(
@@ -1199,19 +1053,13 @@ async def create_marketplace_skill(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
 ) -> MarketplaceSkillResponse:
-    """Publish an existing public Skill into the tenant Marketplace projection."""
+    """Retained compatibility route; release writes belong to the Admin lifecycle."""
 
     _require_permission(principal, "marketplace:admin")
     _require_ai_admin(principal)
-    request = _marketplace_lifecycle_request(payload)
-    if not request.skill_name:
+    if not isinstance(payload, dict) or not payload.get("skill_name"):
         raise HTTPException(status_code=400, detail="marketplace_skill_name_required")
-    return await _persist_marketplace_lifecycle(
-        principal=principal,
-        skill_name=_safe_skill_name(request.skill_name),
-        request=request,
-        audit_action="marketplace.skill.created",
-    )
+    _direct_marketplace_write_not_backed(str(payload["skill_name"]))
 
 
 @router.get("/marketplace/tags", response_model=MarketplaceTagsResponse)
@@ -1254,17 +1102,11 @@ async def update_marketplace_skill_direct(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
 ) -> MarketplaceSkillResponse:
-    """Update tenant Marketplace metadata for an existing public Skill."""
+    """Retained compatibility route; release writes belong to the Admin lifecycle."""
 
     _require_permission(principal, "marketplace:admin")
     _require_ai_admin(principal)
-    safe_skill_name = _safe_skill_name(skill_name)
-    return await _persist_marketplace_lifecycle(
-        principal=principal,
-        skill_name=safe_skill_name,
-        request=_marketplace_lifecycle_request(payload),
-        audit_action="marketplace.skill.updated",
-    )
+    _direct_marketplace_write_not_backed(skill_name)
 
 
 @router.patch("/marketplace/{skill_name}/activate")
