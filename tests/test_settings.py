@@ -52,3 +52,22 @@ def test_retired_security_profile_is_rejected_for_every_provider(provider):
             sandbox_container_provider=provider,
             sandbox_security_profile="trusted_internal",
         )
+
+
+def test_retired_runtime_authority_settings_are_not_configurable():
+    retired_fields = {
+        "multi_agent_dispatch_worker_enabled",
+        "multi_agent_dispatch_worker_interval_seconds",
+        "multi_agent_dispatch_worker_limit",
+        "multi_agent_dispatch_worker_user_id",
+        "multi_agent_dispatch_lease_ttl_seconds",
+        "enable_legacy_runtime211_fallback",
+        "ragflow_api_url",
+        "ragflow_api_key",
+        "ragflow_default_dataset_id",
+        "ragflow_timeout_seconds",
+        "ragflow_top_k",
+        "ragflow_similarity_threshold",
+    }
+
+    assert retired_fields.isdisjoint(Settings.model_fields)

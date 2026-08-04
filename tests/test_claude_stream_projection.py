@@ -1,11 +1,11 @@
 import pytest
 
 from app.control_plane_contracts import sanitize_public_payload
-from app.executors.claude_stream_projection import TrustedInternalClaudeStreamProjector
+from app.executors.claude_stream_projection import ClaudeStreamProjector
 
 
 def _projector(**kwargs):
-    return TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload, **kwargs)
+    return ClaudeStreamProjector(sanitizer=sanitize_public_payload, **kwargs)
 
 
 def _start(index=0, content_type="text"):

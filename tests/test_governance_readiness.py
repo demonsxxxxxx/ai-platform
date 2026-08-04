@@ -23,7 +23,6 @@ class SecretBearingSettings:
     claude_agent_permission_mode = "dontAsk"
     memory_retention_worker_cleanup_enabled = True
     memory_retention_worker_cleanup_limit = 200
-    multi_agent_dispatch_worker_enabled = False
 
 
 def test_governance_readiness_import_is_runtime_dependency_neutral():
@@ -34,7 +33,6 @@ def test_governance_readiness_import_is_runtime_dependency_neutral():
         "    sandbox_container_provider = 'fake'\n"
         "    memory_retention_worker_cleanup_enabled = True\n"
         "    memory_retention_worker_cleanup_limit = 200\n"
-        "    multi_agent_dispatch_worker_enabled = False\n"
         "def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):\n"
         "    if name == 'app.settings':\n"
         "        raise ModuleNotFoundError(\"No module named 'pydantic_settings'\")\n"

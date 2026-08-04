@@ -974,8 +974,6 @@ def _warnings_for(limits: dict[str, Any]) -> list[str]:
     if limits["sandbox"]["container_provider"] != "docker":
         warnings.append("sandbox_provider_not_production_docker")
     warnings.append("sandbox_hardening_evidence_missing")
-    if limits["multi_agent"]["worker_enabled"]:
-        warnings.append("multi_agent_dispatch_enabled_requires_capacity_evidence")
     return warnings
 
 
@@ -1058,10 +1056,6 @@ def build_capacity_baseline(settings: object | None = None) -> dict[str, Any]:
             ),
             "limit_enforcement": "not_implemented",
             "capacity_evidence": "unproven_without_load_test",
-        },
-        "multi_agent": {
-            "worker_enabled": _bool_setting(resolved_settings, "multi_agent_dispatch_worker_enabled"),
-            "worker_limit": _int_setting(resolved_settings, "multi_agent_dispatch_worker_limit", 1),
         },
     }
     return {
@@ -3005,7 +2999,6 @@ def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
             ),
         ),
         ("Model gateway concurrency", model_gateway_concurrency),
-        ("Multi-agent dispatcher enabled", str(limits["multi_agent"]["worker_enabled"]).lower()),
     ]
     table = "\n".join(f"| {name} | {value} |" for name, value in rows)
     gates = "\n".join(f"- {gate}" for gate in baseline["load_test_gates"])

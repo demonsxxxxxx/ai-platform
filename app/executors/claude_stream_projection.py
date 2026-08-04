@@ -1,11 +1,11 @@
-"""Fail-closed projection of trusted-internal Claude raw stream events."""
+"""Fail-closed projection of Claude SDK raw stream events."""
 
 from collections.abc import Callable
 from typing import Any
 
 
-class TrustedInternalClaudeStreamProjector:
-    """Project one trusted-internal raw event stream into safe publishable text.
+class ClaudeStreamProjector:
+    """Project one SDK raw event stream into safe publishable text.
 
     The interface accepts raw event dictionaries and returns only text with a
     stable lexical boundary.  A trailing safety window remains the fallback for

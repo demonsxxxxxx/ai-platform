@@ -85,11 +85,6 @@ class Settings(BaseSettings):
     memory_retention_worker_cleanup_enabled: bool = Field(default=True)
     memory_retention_worker_cleanup_interval_seconds: float = Field(default=300.0)
     memory_retention_worker_cleanup_limit: int = Field(default=200)
-    multi_agent_dispatch_worker_enabled: bool = Field(default=False)
-    multi_agent_dispatch_worker_interval_seconds: float | str = Field(default=30.0)
-    multi_agent_dispatch_worker_limit: int | str = Field(default=1)
-    multi_agent_dispatch_worker_user_id: str = Field(default="system:multi-agent-dispatcher")
-    multi_agent_dispatch_lease_ttl_seconds: int = Field(default=900)
     run_event_stream_max_heartbeats: int = Field(default=3600)
     default_tenant_id: str = Field(default="default")
     default_workspace_id: str = Field(default="default")
@@ -137,14 +132,6 @@ class Settings(BaseSettings):
     platform_skills_root: str = Field(default="skills")
     skill_staging_subdir: str = Field(default=".claude/skills")
     public_skill_file_overlay_max_bytes: int = Field(default=262144)
-    enable_legacy_runtime211_fallback: bool = Field(default=False)
-
-    ragflow_api_url: str = Field(default="")
-    ragflow_api_key: str = Field(default="")
-    ragflow_default_dataset_id: str = Field(default="")
-    ragflow_timeout_seconds: float = Field(default=30.0)
-    ragflow_top_k: int = Field(default=3)
-    ragflow_similarity_threshold: float = Field(default=0.2)
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

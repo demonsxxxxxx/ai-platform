@@ -56,6 +56,7 @@ from app.runtime.sandbox.opensandbox_policy import (
     SANDBOX_SECURITY_PROFILE_GOVERNED,
     SANDBOX_SECURITY_PROFILE_LABEL,
 )
+from app.skills.execution_profiles import OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.settings import get_settings
 
@@ -465,6 +466,8 @@ class SandboxRuntime:
                 "input_files": request.file_ids,
                 "materialized_file_names": request.materialized_file_names,
             }
+            if lease.provider == "opensandbox":
+                task_config["sdk_execution_profile"] = OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE
             if request.context_manifest:
                 task_config["context_manifest"] = dict(request.context_manifest)
             if request.context_retrieval_scope is not None:

@@ -11,7 +11,7 @@ from app.execution_boundary import (
 from app.settings import get_settings
 from app.runtime.sandbox.container_provider import ContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease
-from app.runtime.sandbox.opensandbox_trusted_internal import trusted_internal_cleanup_labels_from_persisted_row
+from app.runtime.sandbox.opensandbox_legacy_cleanup import trusted_internal_cleanup_labels_from_persisted_row
 from app.validation import assert_safe_id
 from app import repositories
 from app.db import transaction

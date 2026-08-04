@@ -446,7 +446,6 @@ FORBIDDEN_ARTIFACT_KEYS = {
     "cwd",
 }
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native", "platform_controlled_runner"}
-RAGFLOW_AUDIT_PAYLOAD_KEYS = {"dataset_ids", "reference_ids"}
 
 
 AGENT_STEP_EVENT_STATUS = {
@@ -675,10 +674,6 @@ def _event_observability_kwargs(observability: dict[str, Any], executor_payload:
         "total_token_count": token_counts["total"],
         "estimated_cost_minor": observability["cost"]["estimated_cost_minor"],
     }
-
-
-def _ragflow_audit_payload(executor_payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: executor_payload[key] for key in RAGFLOW_AUDIT_PAYLOAD_KEYS if key in executor_payload}
 
 
 def _step_key_from_event(payload: dict[str, Any]) -> str:
@@ -939,24 +934,7 @@ def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]
 
 
 def _skill_manifests_for_persistence(result: ExecutorResult, payload: QueueRunPayload) -> list[dict[str, Any]]:
-    manifests = _skill_manifests_from_result(result)
-    if manifests or payload.executor_type != "ragflow":
-        return _attach_payload_snapshot_governance(manifests, payload)
-    persisted: list[dict[str, Any]] = []
-    for item in payload.skill_manifests:
-        if not isinstance(item, dict):
-            continue
-        manifest = dict(item)
-        skill_id = str(manifest.get("skill_id") or "").strip()
-        if skill_id == payload.skill_id:
-            succeeded = result.status == "succeeded"
-            manifest["allowed"] = bool(manifest.get("allowed", True))
-            manifest["staged"] = True
-            manifest["used"] = succeeded
-            manifest["used_skills_source"] = "executor_native" if succeeded else ""
-            manifest["inferred_used"] = False
-        persisted.append(manifest)
-    return persisted
+    return _attach_payload_snapshot_governance(_skill_manifests_from_result(result), payload)
 
 
 def _payload_snapshot_governance_by_skill(payload: QueueRunPayload) -> dict[str, dict[str, Any]]:
@@ -2296,8 +2274,8 @@ async def process_run_payload(
                 )
                 return terminal_after_transaction.outcome
             try:
-                if payload.executor_type == "runtime211":
-                    raise KeyError("Unknown executor type: runtime211")
+                if payload.executor_type in {"ragflow", "runtime211"}:
+                    raise KeyError(f"Unknown executor type: {payload.executor_type}")
                 adapter = adapter_registry.get(payload.executor_type)
             except KeyError as exc:
                 terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
@@ -2479,51 +2457,6 @@ async def process_run_payload(
                 await release_runtime_sandbox_lease(conn, reason="run_terminal_interrupted")
         except Exception:  # noqa: BLE001 - interruption cleanup is best effort.
             return
-
-    async def record_ragflow_completion(conn) -> None:
-        """Persist Ragflow completion only inside the final successful run transaction."""
-
-        if payload.executor_type != "ragflow":
-            return
-        subjects = payload.input.get("_runtime_tool_policy_subjects")
-        backing = next((item for item in subjects if item.get("public_tool_category") == "mcp"), None) if isinstance(subjects, list) else None
-        if not isinstance(backing, dict):
-            raise TypeError("ragflow_backing_mcp_identity_unavailable")
-        backing_identity = {
-            "mcp_tool_id": str(backing.get("capability_id") or ""),
-            "mcp_server_id": str(backing.get("mcp_server") or ""),
-            "mcp_tool_name": str(backing.get("mcp_tool") or ""),
-            "mcp_identity": str(backing.get("identity") or ""),
-        }
-        if not all(backing_identity.values()):
-            raise RuntimeError("ragflow_backing_mcp_identity_unavailable")
-        await append_user_event(
-            conn,
-            tenant_id=payload.tenant_id,
-            run_id=payload.run_id,
-            event_type="mcp_tool_call_completed",
-            stage="tool",
-            message="知识库检索完成",
-            payload={**backing_identity, "write_capable": False},
-        )
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=payload.tenant_id,
-            user_id=None,
-            action="mcp_tool_call_completed",
-            target_type="mcp_tool",
-            target_id=backing_identity["mcp_tool_id"],
-            trace_id=trace_id,
-            payload_json={
-                "run_id": payload.run_id,
-                "session_id": payload.session_id,
-                "agent_id": payload.agent_id,
-                "skill_id": payload.skill_id,
-                **backing_identity,
-                "write_capable": False,
-                **_ragflow_audit_payload(result.executor_payload),
-            },
-        )
 
     try:
         if adapter is None:
@@ -2877,7 +2810,6 @@ async def process_run_payload(
                 if not terminal_written:
                     raise _WorkerSuccessCommitBlocked()
                 else:
-                    await record_ragflow_completion(conn)
                     reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
                         conn,
                         payload=payload,
