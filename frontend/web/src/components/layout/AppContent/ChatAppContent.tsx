@@ -3,10 +3,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { Bot, FileText, Headphones, History, Search } from "lucide-react";
+import { ArrowRight, Bot, FileText, Headphones, History, MessageCircle, Search, ShieldCheck } from "lucide-react";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
+import type { SessionSidebarSessionSource } from "../../panels/SessionSidebar";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { useAgent } from "../../../hooks/useAgent";
 import { useApprovals } from "../../../hooks/useApprovals";
@@ -162,11 +163,8 @@ export async function recoverAgentConversationIdentity(
   if (session.agent_id !== identity.agent_id)
     throw new Error("agent_conversation_identity_mismatch");
   const currentProfile = await agentProfileApi.getPublished(identity.agent_id);
-  if (
-    currentProfile.agent_id !== identity.agent_id ||
-    currentProfile.expected_revision !== identity.revision
-  )
-    throw new Error("agent_conversation_revision_mismatch");
+  if (currentProfile.agent_id !== identity.agent_id)
+    throw new Error("agent_conversation_identity_mismatch");
   return identity;
 }
 
@@ -216,13 +214,129 @@ export function AgentConversationIdentityBanner({
   );
 }
 
+export function AgentWorkspaceWelcome({
+  profile,
+  creating,
+  error,
+  historyError,
+  onRetryHistory,
+  onStart,
+  onOpenDetail,
+}: {
+  profile: AgentProfilePublicProjection;
+  creating: boolean;
+  error: string | null;
+  historyError: string | null;
+  onRetryHistory?: () => void;
+  onStart: () => void;
+  onOpenDetail: () => void;
+}) {
+  return (
+    <main
+      className="min-h-0 flex-1 overflow-y-auto bg-[var(--theme-workbench-canvas)] px-4 py-8 text-[var(--theme-text)] sm:px-6 sm:py-12"
+      data-agent-workspace-welcome
+    >
+      <section className="mx-auto max-w-3xl overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-sm">
+        <div className="border-b border-[var(--theme-border)] bg-gradient-to-br from-emerald-50/80 via-transparent to-sky-50/70 px-6 py-7 dark:from-emerald-950/20 dark:to-sky-950/20 sm:px-8 sm:py-9">
+          <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
+            <span
+              aria-label={`${profile.name} 头像`}
+              className="inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700 shadow-sm dark:bg-emerald-950/60 dark:text-emerald-300"
+              data-agent-avatar-ref={profile.avatar_ref}
+              role="img"
+            >
+              <AgentConversationAvatar avatarRef={profile.avatar_ref} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 text-xs font-medium">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
+                  <ShieldCheck size={14} aria-hidden="true" />
+                  企业已发布
+                </span>
+                <span className="rounded-full bg-[var(--theme-bg-sidebar)] px-2.5 py-1 text-[var(--theme-text-secondary)]">
+                  {AGENT_CATEGORY_LABELS[profile.category]}
+                </span>
+                <span className="rounded-full bg-[var(--theme-bg-sidebar)] px-2.5 py-1 text-[var(--theme-text-secondary)]">
+                  版本 {profile.expected_revision}
+                </span>
+              </div>
+              <h1 className="mt-4 text-2xl font-semibold tracking-tight sm:text-3xl">
+                {profile.name}
+              </h1>
+              <p className="mt-3 max-w-2xl whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
+                {profile.description || "该智能体已通过企业平台发布，可在受控会话中使用。"}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-4 px-6 py-6 sm:grid-cols-2 sm:px-8">
+          <div className="rounded-lg border border-[var(--theme-border)] p-4">
+            <h2 className="text-sm font-semibold">专属会话</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+              对话会固定到这个发布版本，历史记录只在当前智能体工作区显示。
+            </p>
+          </div>
+          <div className="rounded-lg border border-[var(--theme-border)] p-4">
+            <h2 className="text-sm font-semibold">企业受控能力</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+              模型、Skills 与工具由平台统一配置，使用者无需自行选择或调整。
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 border-t border-[var(--theme-border)] px-6 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+          <button
+            className="inline-flex items-center gap-1 text-sm font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-primary)]"
+            onClick={onOpenDetail}
+            type="button"
+          >
+            查看智能体详情
+            <ArrowRight size={15} aria-hidden="true" />
+          </button>
+          <button
+            aria-label={`开始与 ${profile.name} 对话`}
+            className="btn-primary inline-flex min-h-10 items-center justify-center gap-2 px-5 disabled:cursor-not-allowed disabled:opacity-60"
+            data-agent-workspace-start
+            disabled={creating}
+            onClick={onStart}
+            type="button"
+          >
+            <MessageCircle size={17} aria-hidden="true" />
+            {creating ? "正在创建专属会话…" : "开始新对话"}
+          </button>
+        </div>
+      </section>
+
+      {error ? (
+        <p className="mx-auto mt-4 max-w-3xl text-sm text-[var(--theme-danger)]" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {historyError ? (
+        <div className="mx-auto mt-4 flex max-w-3xl items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
+          <span>历史会话暂时无法加载，新建会话不受影响。</span>
+          {onRetryHistory ? (
+            <button className="font-medium underline" onClick={onRetryHistory} type="button">
+              重试
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </main>
+  );
+}
+
 export interface ChatAppContentProps {
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (collapsed: boolean) => void;
   mobileSidebarOpen: boolean;
   setMobileSidebarOpen: (open: boolean) => void;
   agentWorkspace?: AgentProfilePublicProjection;
-  agentWorkspaceSessionIds?: ReadonlySet<string>;
+  agentWorkspaceStartProfile?: AgentProfilePublicProjection;
+  agentWorkspaceSessionSource?: SessionSidebarSessionSource;
+  agentWorkspaceHistoryError?: string | null;
+  onAgentWorkspaceHistoryRetry?: () => void;
   onAgentWorkspaceSessionCreated?: (sessionId: string) => void;
 }
 
@@ -232,7 +346,10 @@ export function ChatAppContent({
   mobileSidebarOpen,
   setMobileSidebarOpen,
   agentWorkspace,
-  agentWorkspaceSessionIds,
+  agentWorkspaceStartProfile,
+  agentWorkspaceSessionSource,
+  agentWorkspaceHistoryError = null,
+  onAgentWorkspaceHistoryRetry,
   onAgentWorkspaceSessionCreated,
 }: ChatAppContentProps) {
   const { t } = useTranslation();
@@ -863,12 +980,23 @@ export function ChatAppContent({
   const handleNewSessionWithReset = useCallback(() => {
     if (agentWorkspace) {
       if (agentWorkspaceCreating) return;
+      const startProfile = agentWorkspaceStartProfile ?? agentWorkspace;
+      if (
+        startProfile.agent_id !== agentWorkspace.agent_id ||
+        startProfile.expected_revision !== agentWorkspace.expected_revision
+      ) {
+        clearMessages();
+        navigate(
+          `/agent-market/${encodeURIComponent(startProfile.agent_id)}/${startProfile.expected_revision}/chat`,
+        );
+        return;
+      }
       setAgentWorkspaceCreating(true);
       setAgentWorkspaceError(null);
       void agentProfileApi
         .createConversation({
-          agent_id: agentWorkspace.agent_id,
-          expected_revision: agentWorkspace.expected_revision,
+          agent_id: startProfile.agent_id,
+          expected_revision: startProfile.expected_revision,
         })
         .then((session) => {
           const identity = session.agent_conversation;
@@ -927,6 +1055,7 @@ export function ChatAppContent({
     resetToDefaults,
     resetAgentOptionDefaults,
     agentWorkspace,
+    agentWorkspaceStartProfile,
     agentWorkspaceCreating,
     agentWorkspaceRouteBasePath,
     onAgentWorkspaceSessionCreated,
@@ -1040,11 +1169,11 @@ export function ChatAppContent({
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={setSidebarCollapsed}
           sessionFilter={
-            agentWorkspace
-              ? (listedSession) =>
-                  agentWorkspaceSessionIds?.has(listedSession.id) ?? false
+            agentWorkspace && !agentWorkspaceSessionSource
+              ? () => false
               : undefined
           }
+          sessionSource={agentWorkspaceSessionSource}
           agentWorkspace={
             agentWorkspace
               ? {
@@ -1098,21 +1227,18 @@ export function ChatAppContent({
           />
         ) : null}
         {agentWorkspace && !routeSessionId && !sessionId ? (
-          <section
-            data-agent-workspace-empty
-            className="border-b border-[var(--theme-border)] px-4 py-3 text-center text-sm text-[var(--theme-text-secondary)]"
-          >
-            <p>选择左侧历史对话，或新建一个 {agentWorkspace.name} 对话。</p>
-            {agentWorkspaceError ? (
-              <p className="mt-2 text-[var(--theme-danger)]" role="alert">
-                {agentWorkspaceError}
-              </p>
-            ) : null}
-          </section>
-        ) : null}
-
-        <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
-          <ChatView
+          <AgentWorkspaceWelcome
+            creating={agentWorkspaceCreating}
+            error={agentWorkspaceError}
+            historyError={agentWorkspaceHistoryError}
+            onOpenDetail={() => navigate(agentWorkspaceDetailPath)}
+            onRetryHistory={onAgentWorkspaceHistoryRetry}
+            onStart={handleNewSessionWithReset}
+            profile={agentWorkspace}
+          />
+        ) : (
+          <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
+            <ChatView
             messages={visibleMessages}
             sessionId={visibleSessionId}
             currentRunId={visibleCurrentRunId}
@@ -1120,6 +1246,11 @@ export function ChatAppContent({
             isLoadingHistory={isLoadingHistory}
             connectionStatus={connectionStatus}
             canSendMessage={canSendMessage}
+            composerPlaceholder={
+              agentWorkspace
+                ? `向 ${agentWorkspace.name} 描述要完成的任务…`
+                : undefined
+            }
             tools={agentConversationControlsLocked ? [] : effectiveTools}
             onToggleTool={exposedMcpControls.onToggleTool}
             onToggleCategory={exposedMcpControls.onToggleCategory}
@@ -1182,8 +1313,9 @@ export function ChatAppContent({
             outlineToggleRef={outlineToggleRef}
             WorkbenchShellComponent={WorkbenchShell}
             sessionRouteBasePath={agentWorkspaceRouteBasePath}
-          />
-        </ChatMcpCatalogContext.Provider>
+            />
+          </ChatMcpCatalogContext.Provider>
+        )}
         <BlockPreviewPortal />
       </>
     </AppShell>

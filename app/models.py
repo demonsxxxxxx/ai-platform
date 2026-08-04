@@ -919,6 +919,7 @@ class SessionRenameRequest(BaseModel):
 
 class ChatSessionsResponse(BaseModel):
     sessions: list[ChatSessionResponse]
+    next_cursor: str | None = None
 
 
 class ChatMessageResponse(BaseModel):

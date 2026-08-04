@@ -540,6 +540,17 @@ alter table runs add column if not exists principal_department_id text not null 
 alter table runs add column if not exists auth_source text;
 alter table sessions add column if not exists admitted_agent_profile_revision bigint;
 alter table sessions add column if not exists admitted_agent_profile_hash text;
+create index if not exists idx_sessions_agent_conversation_history
+  on sessions(
+    tenant_id,
+    user_id,
+    agent_id,
+    admitted_agent_profile_revision,
+    updated_at desc,
+    created_at desc,
+    id desc
+  )
+  where status = 'active' and admitted_agent_profile_revision is not null;
 alter table runs add column if not exists admitted_agent_profile_revision bigint;
 alter table runs add column if not exists admitted_agent_profile_hash text;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;

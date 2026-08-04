@@ -114,6 +114,7 @@ interface ChatViewProps {
   isLoadingHistory: boolean;
   connectionStatus?: ConnectionStatus;
   canSendMessage: boolean;
+  composerPlaceholder?: string;
   tools: ToolState[];
   onToggleTool: (name: string) => void;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
@@ -182,6 +183,7 @@ export function ChatView({
   isLoadingHistory,
   connectionStatus,
   canSendMessage,
+  composerPlaceholder,
   tools,
   onToggleTool,
   onToggleCategory,
@@ -714,6 +716,7 @@ export function ChatView({
     onStop: onStopGeneration,
     isLoading: sessionRunning,
     canSend: canSendMessage,
+    placeholder: composerPlaceholder,
     tools,
     onToggleTool,
     onToggleCategory,
