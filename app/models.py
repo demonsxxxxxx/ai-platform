@@ -131,6 +131,28 @@ class CapabilityDistributionWriteResponse(BaseModel):
     audit_action: Literal["capability_distribution.updated", "capability_distribution.toggled"]
 
 
+class DepartmentDirectoryNodeResponse(BaseModel):
+    """Department-only node safe for an administrator ACL editor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    directory_id: str
+    authority_id: str
+    name: str
+    path: str
+    children: list["DepartmentDirectoryNodeResponse"] = Field(default_factory=list)
+    selectable: bool
+    reason: Literal["duplicate_authority_id"] | None = None
+
+
+class DepartmentDirectoryResponse(BaseModel):
+    """Admin-only company directory projection without employee identity fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    departments: list[DepartmentDirectoryNodeResponse] = Field(default_factory=list)
+
+
 class SelectedSkillRequest(BaseModel):
     """Ordinary-user Skill selection locked to one projected package hash."""
 
