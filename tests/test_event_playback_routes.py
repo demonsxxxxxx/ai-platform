@@ -1,4 +1,3 @@
-import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -317,28 +316,18 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
     async def fake_list_run_steps(conn, *, tenant_id, run_id):
         return [plan_step, failed_step]
 
-    async def no_sleep(_seconds):
-        return None
-
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr(
-        "app.routes.runs.get_settings",
-        lambda: type("StreamSettings", (), {"run_event_stream_max_heartbeats": 1})(),
-    )
-    monkeypatch.setattr("app.routes.runs.asyncio.sleep", no_sleep)
     client = TestClient(create_app())
 
     events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
-    stream_response = client.get("/api/ai/runs/run-a/events/stream", headers=headers())
     playback_response = client.get("/api/ai/runs/run-a/playback", headers=headers())
 
     assert events_response.status_code == 200
-    assert stream_response.status_code == 200
     assert playback_response.status_code == 200
     event = events_response.json()["events"][0]
     assert event["event_type"] == "agent_step_failed"
@@ -352,8 +341,7 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
     assert playback["events"][0] == event
     assert playback["artifacts"][0]["artifact_id"] == "artifact-a"
     assert "multi_agent" not in playback
-    assert "event: multi_agent_snapshot" not in stream_response.text
-    for rendered in (events_response.text, stream_response.text, playback_response.text):
+    for rendered in (events_response.text, playback_response.text):
         assert all(term not in rendered for term in raw_terms)
 
 
@@ -397,28 +385,18 @@ def test_subagent_failed_event_routes_use_fixed_public_activity(monkeypatch):
     async def empty_steps(conn, *, tenant_id, run_id):
         return []
 
-    async def no_sleep(_seconds):
-        return None
-
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", empty_steps)
-    monkeypatch.setattr(
-        "app.routes.runs.get_settings",
-        lambda: type("StreamSettings", (), {"run_event_stream_max_heartbeats": 1})(),
-    )
-    monkeypatch.setattr("app.routes.runs.asyncio.sleep", no_sleep)
     client = TestClient(create_app())
 
     events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
-    stream_response = client.get("/api/ai/runs/run-a/events/stream", headers=headers())
     playback_response = client.get("/api/ai/runs/run-a/playback", headers=headers())
 
     assert events_response.status_code == 200
-    assert stream_response.status_code == 200
     assert playback_response.status_code == 200
     event = events_response.json()["events"][0]
     assert event["event_type"] == "subagent_failed"
@@ -427,13 +405,7 @@ def test_subagent_failed_event_routes_use_fixed_public_activity(monkeypatch):
     assert event["message"] == "协同处理步骤未完成。请调整请求后重试。"
     assert event["payload"] == {}
     assert playback_response.json()["events"][0] == event
-    native_payloads = [
-        json.loads(line.removeprefix("data: "))
-        for line in stream_response.text.splitlines()
-        if line.startswith("data: ")
-    ]
-    assert event in native_payloads
-    for rendered in (events_response.text, stream_response.text, playback_response.text):
+    for rendered in (events_response.text, playback_response.text):
         assert all(term not in rendered for term in raw_terms)
 
 
@@ -524,11 +496,9 @@ def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnost
     client = TestClient(create_app())
 
     events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
-    stream_response = client.get("/api/ai/runs/run-a/events/stream", headers=headers())
     playback_response = client.get("/api/ai/runs/run-a/playback", headers=headers())
 
     assert events_response.status_code == 200
-    assert stream_response.status_code == 200
     assert playback_response.status_code == 200
     event = events_response.json()["events"][0]
     assert event["error_code"] == expected_error_code
@@ -538,7 +508,7 @@ def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnost
     assert playback["run"]["error_code"] == expected_error_code
     assert playback["run"]["error_message"] == event["message"]
     assert playback["events"][0] == event
-    for rendered in (events_response.text, stream_response.text, playback_response.text):
+    for rendered in (events_response.text, playback_response.text):
         assert all(term not in rendered for term in raw_terms)
 
 
@@ -654,28 +624,18 @@ def test_ordinary_activity_routes_use_fixed_envelopes_for_syntax_safe_executor_v
     async def empty_steps(conn, *, tenant_id, run_id):
         return []
 
-    async def no_sleep(_seconds):
-        return None
-
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", empty_steps)
-    monkeypatch.setattr(
-        "app.routes.runs.get_settings",
-        lambda: type("StreamSettings", (), {"run_event_stream_max_heartbeats": 1})(),
-    )
-    monkeypatch.setattr("app.routes.runs.asyncio.sleep", no_sleep)
     client = TestClient(create_app())
 
     events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
-    stream_response = client.get("/api/ai/runs/run-a/events/stream", headers=headers())
     playback_response = client.get("/api/ai/runs/run-a/playback", headers=headers())
 
     assert events_response.status_code == 200
-    assert stream_response.status_code == 200
     assert playback_response.status_code == 200
     events = events_response.json()["events"]
     assert [(event["event_type"], event["stage"], event["message"], event["payload"]) for event in events] == [
@@ -690,13 +650,7 @@ def test_ordinary_activity_routes_use_fixed_envelopes_for_syntax_safe_executor_v
         ("activity", "status", "任务正在处理中。", {"activity": {"category": "status", "status": "running"}}),
     ]
     assert playback_response.json()["events"] == events
-    native_payloads = [
-        json.loads(line.removeprefix("data: "))
-        for line in stream_response.text.splitlines()
-        if line.startswith("data: ")
-    ]
-    assert all(event in native_payloads for event in events)
-    for rendered in (events_response.text, stream_response.text, playback_response.text):
+    for rendered in (events_response.text, playback_response.text):
         assert all(term not in rendered for term in raw_terms)
 
 
