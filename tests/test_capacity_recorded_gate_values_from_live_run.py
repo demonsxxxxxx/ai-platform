@@ -30,6 +30,8 @@ class Settings:
     sandbox_executor_health_timeout_seconds = 60
     sandbox_max_active_ephemeral_containers = 2
     sandbox_max_active_persistent_containers = 1
+    multi_agent_dispatch_worker_enabled = False
+    multi_agent_dispatch_worker_limit = 1
     llm_gateway_provider = "openai_compatible"
     model_gateway_request_concurrency_limit = 0
     openai_base_url = "https://model-gateway.internal/v1"

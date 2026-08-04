@@ -27,6 +27,7 @@ class SecretBearingSettings:
     anthropic_auth_token = "anthropic-secret"
     llm_gateway_provider = "openai_compatible"
     model_gateway_request_concurrency_limit = 0
+    multi_agent_dispatch_worker_enabled = False
 
 
 def _valid_release_evidence_runtime_acceptance() -> dict:
@@ -117,6 +118,7 @@ def test_observability_readiness_import_is_runtime_dependency_neutral():
         "    sandbox_container_provider = 'fake'\n"
         "    llm_gateway_provider = 'openai_compatible'\n"
         "    model_gateway_request_concurrency_limit = 0\n"
+        "    multi_agent_dispatch_worker_enabled = False\n"
         "def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):\n"
         "    if name == 'app.settings':\n"
         "        raise ModuleNotFoundError(\"No module named 'pydantic_settings'\")\n"
