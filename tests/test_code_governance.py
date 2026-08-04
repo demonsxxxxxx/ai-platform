@@ -32,6 +32,16 @@ def _run(repo: Path, *arguments: str, check: bool = True) -> subprocess.Complete
     )
 
 
+def _run_bytes(repo: Path, *arguments: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        list(arguments),
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        input=input_bytes,
+    )
+
+
 def _git(repo: Path, *arguments: str) -> str:
     return _run(repo, "git", *arguments).stdout.strip()
 
@@ -108,6 +118,13 @@ def _candidate_binding(repo: Path, base: str, scope_head: str) -> dict[str, str]
         "base_ref": base,
         "scope_sha256": reader.exception_scope_sha256(base, scope_head),
     }
+
+
+def _commit_raw_path(repo: Path, base: str, path: bytes) -> str:
+    blob = _run_bytes(repo, "git", "hash-object", "-w", "--stdin", input_bytes=b"same content\n").stdout.strip()
+    tree_input = b"100644 blob " + blob + b"\t" + path + b"\0"
+    tree = _run_bytes(repo, "git", "mktree", "-z", input_bytes=tree_input).stdout.decode("ascii").strip()
+    return _git(repo, "commit-tree", tree, "-p", base, "-m", "raw path candidate")
 
 
 def test_small_non_python_change_passes(governance_repo: tuple[Path, str]) -> None:
@@ -466,6 +483,17 @@ def test_semantically_unchanged_exception_rewrite_cannot_renew_authority(
 
     assert initial != base
     assert caught.value.code == "invalid_exception"
+
+
+def test_candidate_scope_hash_preserves_non_utf8_git_path_bytes(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, base = governance_repo
+    first_head = _commit_raw_path(repo, base, b"raw-\xff.py")
+    second_head = _commit_raw_path(repo, base, b"raw-\xfe.py")
+    reader = code_governance._GitChangeReader(repo, code_governance._CommandRunner())
+
+    assert reader.exception_scope_sha256(base, first_head) != reader.exception_scope_sha256(base, second_head)
 
 
 def test_missing_ruff_fails_closed_and_command_is_deterministic(

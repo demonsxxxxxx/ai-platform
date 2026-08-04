@@ -76,6 +76,14 @@ class _CommandRunner:
         )
         return _CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
+    def run_bytes(self, command: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            list(command),
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+        )
+
 
 @dataclass(frozen=True)
 class _ChangedFile:
@@ -304,7 +312,8 @@ class _GitChangeReader:
     def exception_scope_sha256(self, base: str, head: str) -> str:
         """Bind an exception to every non-exception tree change in the exact range."""
 
-        scope = self._git(
+        command = (
+            "git",
             "-c",
             "core.quotepath=false",
             "diff",
@@ -317,8 +326,12 @@ class _GitChangeReader:
             "--",
             ".",
             f":(exclude){EXCEPTION_PATH}",
-        ).stdout
-        return hashlib.sha256(scope.encode("utf-8")).hexdigest()
+        )
+        scope = self.runner.run_bytes(command, cwd=self.repo_root)
+        if scope.returncode != 0:
+            message = scope.stderr.decode("utf-8", errors="replace").strip()
+            raise GovernanceError("git_failed", message or "git diff failed")
+        return hashlib.sha256(scope.stdout).hexdigest()
 
     def _resolve_full_commit(self, value: str, label: str) -> str:
         if FULL_SHA.fullmatch(value) is None:
