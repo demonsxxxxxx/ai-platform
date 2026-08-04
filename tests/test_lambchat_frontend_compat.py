@@ -835,7 +835,9 @@ def test_lambchat_sse_stream_defers_persisted_terminal_until_status_and_final_pa
             "error_message": None,
         }
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        if after_sequence is not None:
+            return []
         return [
             {
                 "id": "evt-succeeded",
@@ -876,7 +878,7 @@ def test_lambchat_sse_stream_defers_persisted_terminal_until_status_and_final_pa
     response = client.get("/api/chat/sessions/ses_a/stream?run_id=run_a", headers=auth_headers())
 
     assert response.status_code == 200
-    assert calls == 2
+    assert calls == 3
     assert '"event_type": "run_succeeded"' not in response.text
     assert response.text.index("final answer") < response.text.index("event: done")
 
@@ -893,7 +895,9 @@ def test_lambchat_sse_stream_does_not_duplicate_answer_when_assistant_delta_was_
             "error_message": None,
         }
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        if after_sequence is not None:
+            return []
         return [
             {
                 "id": "evt-delta",
