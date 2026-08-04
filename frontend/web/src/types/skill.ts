@@ -167,14 +167,6 @@ export interface MarketplaceListResponse {
   catalog_read_resolved: boolean;
 }
 
-// Direct create in marketplace request
-export interface MarketplaceCreateRequest {
-  skill_name: string;
-  description?: string;
-  tags?: string[];
-  version?: string;
-}
-
 // Marketplace skill files response
 export interface MarketplaceSkillFilesResponse {
   files: string[];

@@ -64,7 +64,6 @@ export type {
   SkillCreate,
   MarketplaceSkillResponse,
   MarketplaceListResponse,
-  MarketplaceCreateRequest,
   MarketplaceSkillFilesResponse,
   MarketplaceSkillFileResponse,
   MarketplaceInstallResponse,

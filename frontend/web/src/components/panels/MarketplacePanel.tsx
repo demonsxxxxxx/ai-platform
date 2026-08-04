@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from "react";
 import {
   X,
   ShoppingBag,
-  Plus,
   RotateCw,
   Search,
   Tag,
@@ -13,12 +12,10 @@ import toast from "react-hot-toast";
 import { PanelHeader } from "../common/PanelHeader";
 import { MarketplacePanelSkeleton } from "../skeletons";
 import { ConfirmDialog } from "../common/ConfirmDialog";
-import { SkillFormSidebar } from "./SkillsPanel/SkillFormSidebar";
 import { useMarketplace } from "../../hooks/useMarketplace";
 import { useSkills } from "../../hooks/useSkills";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
-import type { SkillResponse, SkillCreate } from "../../types";
 import { SkillCard } from "./MarketplacePanel/SkillCard";
 import { SkillPreviewModal } from "./MarketplacePanel/SkillPreviewModal";
 import {
@@ -73,11 +70,8 @@ export function MarketplacePanel({
     fetchSkills,
     installSkill,
     updateSkill,
-    createAndPublish,
-    updateMarketplaceSkill,
     activateSkill,
     deleteSkill,
-    loadMarketplaceSkillForEdit,
     clearError,
     previewSkill,
     previewFiles,
@@ -105,9 +99,7 @@ export function MarketplacePanel({
     skills: userSkills,
     fetchSkills: fetchUserSkills,
     isLoading: userSkillsLoading,
-    getSkill,
   } = useSkills({ enabled: !effectiveGovernedUnavailable });
-  const marketplaceDirectWriteBacked = true;
   const catalogEffectivePermissions = useMemo(
     () => marketplaceEffectivePermissions,
     [marketplaceEffectivePermissions],
@@ -128,13 +120,9 @@ export function MarketplacePanel({
     hasEffectiveMarketplaceRead &&
     !effectiveGovernedUnavailable;
   const sharedMarketplaceAdminVisible =
-    marketplaceDirectWriteBacked &&
     isAiAdmin &&
     !effectiveGovernedUnavailable;
-  const canCreateInMarketplace =
-    sharedMarketplaceAdminVisible;
   const canAdmin = sharedMarketplaceAdminVisible;
-  void hasEffectiveMarketplaceAdmin;
 
   useEffect(() => {
     onCatalogStateChange?.({
@@ -176,11 +164,8 @@ export function MarketplacePanel({
   } | null>(null);
   const [installingSkill, setInstallingSkill] = useState<string | null>(null);
 
-  // Filter & edit state
-  const [showCreateModal, setShowCreateModal] = useState(false);
+  // Filter state
   const [isFilterOpen, setIsFilterOpen] = useState(false);
-  const [editingSkill, setEditingSkill] = useState<SkillResponse | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
   const [openMenuName, setOpenMenuName] = useState<string | null>(null);
 
   // Close all dropdowns when clicking outside
@@ -276,67 +261,6 @@ export function MarketplacePanel({
     setInstallConfirm(null);
   };
 
-  const handleEdit = async (skillName: string) => {
-    let fullSkill = await getSkill(skillName);
-    if (!fullSkill) {
-      fullSkill = await loadMarketplaceSkillForEdit(skillName);
-      if (!fullSkill) {
-        toast.error(t("marketplace.loadFailed"));
-        return;
-      }
-    }
-    setEditingSkill(fullSkill);
-    setIsCreating(false);
-  };
-
-  const handleCreate = () => {
-    setEditingSkill(null);
-    setIsCreating(true);
-    setShowCreateModal(true);
-  };
-
-  const handleSave = async (data: SkillCreate): Promise<boolean> => {
-    try {
-      let success = false;
-      if (isCreating) {
-        success = await createAndPublish({
-          skill_name: data.name,
-          description: data.description,
-          tags: data.tags,
-          version: "1.0.0",
-        });
-      } else if (editingSkill) {
-        success = await updateMarketplaceSkill(editingSkill.name, {
-          skill_name: editingSkill.name,
-          description: data.description,
-          tags: data.tags,
-          version: "1.0.0",
-        });
-      }
-      if (success) {
-        setEditingSkill(null);
-        setIsCreating(false);
-        setShowCreateModal(false);
-        await fetchSkills();
-        await fetchUserSkills();
-        toast.success(
-          isCreating
-            ? t("marketplace.publishSuccess", { name: data.name })
-            : t("marketplace.republishSuccess", { name: editingSkill?.name }),
-        );
-      }
-      return success;
-    } catch {
-      return false;
-    }
-  };
-
-  const handleFormCancel = () => {
-    setEditingSkill(null);
-    setIsCreating(false);
-    setShowCreateModal(false);
-  };
-
   const hasActiveFilters = selectedTags.length > 0 || searchQuery.length > 0;
 
   const filterMenu = tags.length > 0 && (
@@ -399,14 +323,6 @@ export function MarketplacePanel({
 
   const headerActions = (
     <>
-      {canCreateInMarketplace && (
-        <button onClick={handleCreate} className="btn-primary h-10">
-          <Plus size={16} />
-          <span className="hidden sm:inline">
-            {t("marketplace.createAndPublish")}
-          </span>
-        </button>
-      )}
       <button
         onClick={() => fetchSkills()}
         disabled={effectiveGovernedUnavailable}
@@ -531,9 +447,7 @@ export function MarketplacePanel({
                 : t("marketplace.noSkills")}
             </p>
             <p className={workbenchSurface.catalog.emptyDescription}>
-              {searchQuery || selectedTags.length > 0
-                ? t("marketplace.subtitle")
-                : t("marketplace.createHint")}
+              {t("marketplace.subtitle")}
             </p>
             {hasActiveFilters && (
               <button onClick={clearFilters} className="btn-secondary mt-4">
@@ -555,13 +469,11 @@ export function MarketplacePanel({
                 hasLocalManualConflict={localManualConflicts.has(
                   skill.skill_name,
                 )}
-                isOwner={skill.is_owner}
                 canManage={canManageSharedMarketplace({
                   isOwner: skill.is_owner,
                   hasMarketplaceAdminPermission:
-                    marketplaceDirectWriteBacked &&
                     !effectiveGovernedUnavailable &&
-                    canAdmin,
+                    canAdmin && hasEffectiveMarketplaceAdmin,
                   isAiAdmin,
                 })}
                 canInstall={canInstall}
@@ -573,7 +485,6 @@ export function MarketplacePanel({
                 onPreview={() => openPreview(skill)}
                 onToggleTag={toggleTag}
                 onOpenMenu={setOpenMenuName}
-                onEdit={handleEdit}
                 onActivate={handleActivate}
                 onDelete={handleAdminDelete}
               />
@@ -625,18 +536,6 @@ export function MarketplacePanel({
           onSetFileContent={setPreviewFileContent}
         />
       )}
-
-      {/* Create / Edit Sidebar */}
-      <SkillFormSidebar
-        showModal={showCreateModal || !!editingSkill}
-        isCreating={isCreating}
-        editingSkill={editingSkill}
-        isLoading={isLoading}
-        onSave={handleSave}
-        onCancel={handleFormCancel}
-        createTitle={t("marketplace.createTitle")}
-        subtitle={t("marketplace.createHint")}
-      />
 
       {/* Delete Confirmation Dialog */}
       <ConfirmDialog
