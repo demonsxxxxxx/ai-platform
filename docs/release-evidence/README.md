@@ -25,6 +25,11 @@ python tools/verify_release_evidence_runtime_acceptance.py --format json
 These commands are source checks. They do not deploy, rerun an acceptance probe,
 or make a gate current.
 
+Keep reviewed evidence machine-readable. Do not commit generated Markdown
+readiness or status summaries beside evidence JSON; render operator-readable
+output from the source check when it is needed. Human-authored Markdown in this
+directory is limited to durable contracts and provenance records.
+
 ## Interpretation
 
 Runtime-bound evidence must bind its `runtime_subject_commit_sha`, source
