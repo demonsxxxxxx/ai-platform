@@ -326,6 +326,13 @@ class _RegistrationResidueCleanupRunner(_CleanupRunner):
         return super().run(command, cwd=cwd, env=env)
 
 
+class _WorktreeListFailureCleanupRunner(_CleanupRunner):
+    def run(self, command: tuple[str, ...], *, cwd: Path, env: dict[str, str] | None = None) -> object:
+        if command == ("git", "worktree", "list", "--porcelain"):
+            return self.module._CommandResult(1, "", "list failed")
+        return super().run(command, cwd=cwd, env=env)
+
+
 class _DependencyCleanupRunner(_CleanupRunner):
     def __init__(self, module: ModuleType, dependencies: tuple[Path, ...], *, remove_returncode: int = 0) -> None:
         super().__init__(module, remove_returncode=remove_returncode)
@@ -707,6 +714,28 @@ def test_worktree_cleanup_nonzero_remove_fails_when_owned_path_remains(
     assert cleanup["worktrees"][0]["remove_returncode"] == 1
     assert cleanup["worktrees"][0]["registered_after"] is False
     assert cleanup["worktrees"][0]["path_exists_after"] is True
+
+
+def test_worktree_cleanup_fails_closed_when_post_cleanup_registration_check_fails(tmp_path: Path) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    head.mkdir(parents=True)
+    runner = _WorktreeListFailureCleanupRunner(module)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+
+    failure = readiness._cleanup_worktrees(result, temporary_root, (("head", head, True),))
+
+    assert failure is not None
+    assert failure.category == "infrastructure_failure"
+    assert failure.code == "worktree_cleanup_failed"
+    assert str(failure) == "git worktree list failed: list failed"
+    cleanup = result["stages"][-1]
+    assert cleanup["status"] == "failed"
+    assert cleanup["worktrees"][0]["registered_after"] is None
+    assert cleanup["worktrees"][0]["path_exists_after"] is False
+    assert cleanup["worktrees"][0]["worktree_list_error"] == "git worktree list failed: list failed"
 
 
 def test_primary_product_failure_is_preserved_when_cleanup_also_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
