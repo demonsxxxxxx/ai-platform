@@ -103,6 +103,14 @@ class _CompatibilityWireEvent:
     cursor_id: str | None = None
 
 
+@dataclass(frozen=True)
+class _CompatibilityFoldState:
+    """Public fold facts retained across durable pages of one stream."""
+
+    has_strict_public_execution: bool
+    seen_public_lifecycle_singletons: frozenset[str]
+
+
 CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
 
 @dataclass(frozen=True)
@@ -547,11 +555,34 @@ def _compatibility_events_for_run(
     include_terminal: bool = True,
 ) -> list[_CompatibilityWireEvent]:
     """Build the sole public terminal wire, ordered for live and history replay."""
+    compatibility_events, _ = _compatibility_events_for_run_page(
+        run,
+        run_events,
+        artifacts,
+        principal,
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+        user_messages=user_messages,
+        include_terminal=include_terminal,
+    )
+    return compatibility_events
+
+
+def _compatibility_events_for_run_page(
+    run: dict[str, Any],
+    run_events: list[dict[str, Any]],
+    artifacts: list[dict[str, Any]],
+    principal: AuthPrincipal,
+    *,
+    fold_state: _CompatibilityFoldState,
+    user_messages: list[dict[str, Any]] | None = None,
+    include_terminal: bool = True,
+) -> tuple[list[_CompatibilityWireEvent], _CompatibilityFoldState]:
+    """Fold one durable page while carrying only public compatibility facts forward."""
     run_id = str(run["id"])
     trace_id = str(run.get("trace_id") or standard_trace_id(run_id))
     compatibility_events: list[_CompatibilityWireEvent] = []
     status = _platform_status(str(run.get("status") or ""))
-    has_strict_public_execution = any(
+    has_strict_public_execution = fold_state.has_strict_public_execution or any(
         str(event.get("event_type") or "") in PUBLIC_EXECUTION_EVENT_TYPES
         and public_execution_event_from_row(run_id, event) is not None
         for event in run_events
@@ -570,7 +601,7 @@ def _compatibility_events_for_run(
         "capability_selected",
         "run_started",
     }
-    seen_public_lifecycle_singletons: set[str] = set()
+    seen_public_lifecycle_singletons = set(fold_state.seen_public_lifecycle_singletons)
 
     for message in user_messages or []:
         message_id = str(message.get("id") or "")
@@ -821,7 +852,10 @@ def _compatibility_events_for_run(
                 terminal=True,
             )
         )
-    return compatibility_events
+    return compatibility_events, _CompatibilityFoldState(
+        has_strict_public_execution=has_strict_public_execution,
+        seen_public_lifecycle_singletons=frozenset(seen_public_lifecycle_singletons),
+    )
 
 
 def _public_error_text(run: dict[str, Any], _principal: AuthPrincipal) -> str:
@@ -1380,6 +1414,39 @@ async def chat_session_stream(
         )
     if initial_run is None or initial_run.get("session_id") != session_id:
         raise HTTPException(status_code=404, detail="run_not_found")
+    fold_state = _CompatibilityFoldState(False, frozenset())
+    if last_event_id is not None and cursor.sequence:
+        # A reconnect has no connection-local fold state. Seed only public
+        # singleton/strict facts from its authorized durable prefix; emit none.
+        async with transaction() as conn:
+            seed_run = await repositories.get_authorized_run(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                run_id=run_id,
+            )
+            if seed_run is None or seed_run.get("session_id") != session_id:
+                raise HTTPException(status_code=404, detail="run_not_found")
+            seed_rows = await repositories.list_run_events(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+            )
+        prefix_rows = [
+            row
+            for row in seed_rows
+            if isinstance(row.get("sequence"), int)
+            and not isinstance(row.get("sequence"), bool)
+            and 0 < row["sequence"] <= cursor.sequence
+        ]
+        _, fold_state = _compatibility_events_for_run_page(
+            seed_run,
+            prefix_rows,
+            [],
+            principal,
+            fold_state=fold_state,
+            include_terminal=False,
+        )
 
     async def stream():
         metadata_emitted = False
@@ -1387,6 +1454,7 @@ async def chat_session_stream(
         last_cursor = cursor
         emitted_artifact_ids: set[str] = set()
         terminal_observed = False
+        stream_fold_state = fold_state
         max_heartbeats = max(int(get_settings().run_event_stream_max_heartbeats), 1)
         for _ in range(max_heartbeats):
             async with transaction() as conn:
@@ -1433,11 +1501,12 @@ async def chat_session_stream(
                 artifact for artifact in artifacts if f"{artifact.get('id')}:artifact" not in emitted_artifact_ids
             ]
             try:
-                compatibility_events = _compatibility_events_for_run(
+                compatibility_events, stream_fold_state = _compatibility_events_for_run_page(
                     run,
                     [dict(durable.row) for durable in page.durable_rows],
                     new_artifacts,
                     principal,
+                    fold_state=stream_fold_state,
                     include_terminal=False,
                 )
             except HTTPException as exc:

@@ -742,7 +742,9 @@ def test_lambchat_sse_stream_places_artifact_card_before_terminal_run_event(monk
             "error_message": None,
         }
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        if after_sequence is not None:
+            return []
         base = {
             "trace_id": "trace-run-a",
             "schema_version": "ai-platform.event-envelope.v1",

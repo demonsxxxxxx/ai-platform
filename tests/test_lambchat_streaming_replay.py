@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -52,6 +53,85 @@ def _delta(sequence: int, value: str) -> dict[str, object]:
         },
         "created_at": None,
     }
+
+
+def _run_started(sequence: int) -> dict[str, object]:
+    return {
+        "id": f"evt-{sequence}",
+        "trace_id": "trace-a",
+        "schema_version": "ai-platform.event-envelope.v1",
+        "sequence": sequence,
+        "event_type": "worker_started",
+        "stage": "worker",
+        "message": "Run started",
+        "severity": "info",
+        "visible_to_user": True,
+        "payload_json": {"visible_to_user": True},
+        "created_at": None,
+    }
+
+
+def _strict_execution(sequence: int) -> dict[str, object]:
+    return {
+        "id": f"evt-{sequence}",
+        "trace_id": "trace-a",
+        "schema_version": "ai-platform.public-execution-event.v1",
+        "sequence": sequence,
+        "event_type": "execution_step",
+        "stage": "execution",
+        "message": "",
+        "severity": "info",
+        "visible_to_user": True,
+        "payload_json": {
+            "step_id": "step-opaque-a",
+            "kind": "capability",
+            "stage": "execution",
+            "status": "running",
+            "title": "Authorized capability",
+            "summary": "Started",
+            "progress": {"current": 0, "total": 1},
+        },
+        "created_at": None,
+    }
+
+
+def _legacy_capability(sequence: int) -> dict[str, object]:
+    return {
+        "id": f"evt-{sequence}",
+        "trace_id": "trace-a",
+        "schema_version": "ai-platform.event-envelope.v1",
+        "sequence": sequence,
+        "event_type": "capability_invoking",
+        "stage": "execution",
+        "message": "Capability lifecycle update",
+        "severity": "info",
+        "visible_to_user": True,
+        "payload_json": {"capability": {"kind": "mcp", "name": "Tenant Search", "status": "invoking"}},
+        "created_at": None,
+    }
+
+
+def _durable_sse_records(body: str) -> list[tuple[str, str, dict[str, object]]]:
+    records = []
+    for frame in body.split("\n\n"):
+        lines = frame.splitlines()
+        event_id = next((line.removeprefix("id: ") for line in lines if line.startswith("id: ")), None)
+        event_type = next((line.removeprefix("event: ") for line in lines if line.startswith("event: ")), None)
+        payload = next((line.removeprefix("data: ") for line in lines if line.startswith("data: ")), None)
+        if event_id and event_type and payload:
+            records.append((event_id, event_type, json.loads(payload)))
+    return records
+
+
+def _expected_durable_records(rows: list[dict[str, object]]) -> list[tuple[str, str, dict[str, object]]]:
+    records = lambchat._compatibility_events_for_run(
+        _run("run-a", status="succeeded"), rows, [], _principal(), include_terminal=False
+    )
+    return [
+        (cursor_id, record.stream_event_type, record.stream_data)
+        for record in records
+        if (cursor_id := lambchat._durable_cursor_id("run-a", record.history_event)) is not None
+    ]
 
 
 @pytest.mark.asyncio
@@ -124,3 +204,79 @@ async def test_lambchat_invalid_or_cross_run_last_event_id_fails_before_event_re
         with pytest.raises(HTTPException, match="invalid_last_event_id") as exc_info:
             await lambchat.chat_session_stream("session-a", "run-a", last_event_id=value, principal=_principal())
         assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_lambchat_live_pages_match_full_history_singleton_and_strict_fold(monkeypatch):
+    first_page = [_run_started(1), _strict_execution(2)]
+    second_page = [_run_started(3), _legacy_capability(4)]
+    event_calls = []
+
+    async def get_run(_conn, *, tenant_id, user_id, run_id):
+        return _run(run_id, status="succeeded")
+
+    async def list_events(_conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        event_calls.append(after_sequence)
+        if after_sequence is None:
+            return first_page
+        if after_sequence == 2:
+            return second_page
+        return []
+
+    async def artifacts(*_args, **_kwargs):
+        return []
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(lambchat, "transaction", _transaction)
+    monkeypatch.setattr(lambchat.repositories, "get_authorized_run", get_run)
+    monkeypatch.setattr(lambchat.repositories, "list_run_events", list_events)
+    monkeypatch.setattr(lambchat.repositories, "list_run_artifacts", artifacts)
+    monkeypatch.setattr(lambchat, "get_settings", lambda: type("S", (), {"run_event_stream_max_heartbeats": 3})())
+    monkeypatch.setattr(lambchat.asyncio, "sleep", no_sleep)
+
+    response = await lambchat.chat_session_stream("session-a", "run-a", principal=_principal())
+    body = "".join([chunk async for chunk in response.body_iterator])
+
+    assert event_calls == [None, 2, 4]
+    assert _durable_sse_records(body) == _expected_durable_records(first_page + second_page)
+
+
+@pytest.mark.asyncio
+async def test_lambchat_reconnect_seeds_fold_before_projecting_later_page(monkeypatch):
+    first_page = [_run_started(1), _strict_execution(2)]
+    second_page = [_run_started(3), _legacy_capability(4)]
+    event_calls = []
+
+    async def get_run(_conn, *, tenant_id, user_id, run_id):
+        return _run(run_id, status="succeeded")
+
+    async def list_events(_conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        event_calls.append(after_sequence)
+        if after_sequence is None:
+            return first_page + second_page
+        if after_sequence == 2:
+            return second_page
+        return []
+
+    async def artifacts(*_args, **_kwargs):
+        return []
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(lambchat, "transaction", _transaction)
+    monkeypatch.setattr(lambchat.repositories, "get_authorized_run", get_run)
+    monkeypatch.setattr(lambchat.repositories, "list_run_events", list_events)
+    monkeypatch.setattr(lambchat.repositories, "list_run_artifacts", artifacts)
+    monkeypatch.setattr(lambchat, "get_settings", lambda: type("S", (), {"run_event_stream_max_heartbeats": 2})())
+    monkeypatch.setattr(lambchat.asyncio, "sleep", no_sleep)
+
+    response = await lambchat.chat_session_stream(
+        "session-a", "run-a", last_event_id="run-a:2", principal=_principal()
+    )
+    body = "".join([chunk async for chunk in response.body_iterator])
+
+    assert event_calls == [None, 2, 4]
+    assert _durable_sse_records(body) == []
