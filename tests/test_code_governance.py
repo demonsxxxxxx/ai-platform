@@ -102,6 +102,14 @@ def _python_lines(count: int, *, prefix: str = "value") -> str:
     return "".join(f"{prefix}_{index} = {index}\n" for index in range(count))
 
 
+def _candidate_binding(repo: Path, base: str, scope_head: str) -> dict[str, str]:
+    reader = code_governance._GitChangeReader(repo, code_governance._CommandRunner())
+    return {
+        "base_ref": base,
+        "scope_sha256": reader.exception_scope_sha256(base, scope_head),
+    }
+
+
 def test_small_non_python_change_passes(governance_repo: tuple[Path, str]) -> None:
     repo, base = governance_repo
     _write(repo, "frontend/web/src/session.ts", "export const session = true;\n")
@@ -318,6 +326,7 @@ def test_invalid_exception_schema_is_an_error(governance_repo: tuple[Path, str])
         json.dumps(
             {
                 "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+                "candidate": {"base_ref": "0" * 40, "scope_sha256": "0" * 64},
                 "expires_on": "2026-08-01",
                 "owner": "platform",
                 "reason": "bounded migration",
@@ -341,12 +350,14 @@ def test_valid_exact_exception_exempts_only_requested_violation(
     _write(repo, "app/billing_rules.py", _python_lines(3001))
     base = _commit(repo, "hot functional base")
     _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
+    scope_head = _commit(repo, "exception scope")
     _write(
         repo,
         code_governance.EXCEPTION_PATH,
         json.dumps(
             {
                 "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+                "candidate": _candidate_binding(repo, base, scope_head),
                 "expires_on": "2026-08-01",
                 "owner": "platform-governance",
                 "reason": "temporary hot-file migration",
@@ -369,12 +380,14 @@ def test_inherited_exception_cannot_authorize_a_later_candidate(
 ) -> None:
     repo, _initial = governance_repo
     _write(repo, "app/billing_rules.py", _python_lines(3001))
+    scope_head = _commit(repo, "exception scope")
     _write(
         repo,
         code_governance.EXCEPTION_PATH,
         json.dumps(
             {
                 "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+                "candidate": _candidate_binding(repo, _initial, scope_head),
                 "expires_on": "2026-08-01",
                 "owner": "platform-governance",
                 "reason": "candidate-bound hot-file migration",
@@ -386,9 +399,72 @@ def test_inherited_exception_cannot_authorize_a_later_candidate(
     _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
     head = _commit(repo, "later candidate inherits exception")
 
-    with pytest.raises(code_governance.GovernanceError, match="inherited exceptions are invalid") as caught:
+    with pytest.raises(code_governance.GovernanceError, match="candidate binding does not match") as caught:
         _evaluate(repo, base, head)
 
+    assert caught.value.code == "invalid_exception"
+
+
+def test_exception_cannot_authorize_scope_appended_under_the_same_base(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _initial = governance_repo
+    _write(repo, "app/billing_rules.py", _python_lines(3001))
+    base = _commit(repo, "hot functional base")
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
+    scope_head = _commit(repo, "authorized scope")
+    _write(
+        repo,
+        code_governance.EXCEPTION_PATH,
+        json.dumps(
+            {
+                "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+                "candidate": _candidate_binding(repo, base, scope_head),
+                "expires_on": "2026-08-01",
+                "owner": "platform-governance",
+                "reason": "candidate-bound hot-file migration",
+                "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
+            }
+        ),
+    )
+    authorized_head = _commit(repo, "authorize exact scope")
+    assert _evaluate(repo, base, authorized_head).status == "pass"
+
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\nLATER = True\n")
+    later_head = _commit(repo, "append later scope")
+
+    with pytest.raises(code_governance.GovernanceError, match="candidate binding does not match") as caught:
+        _evaluate(repo, base, later_head)
+
+    assert caught.value.code == "invalid_exception"
+
+
+def test_semantically_unchanged_exception_rewrite_cannot_renew_authority(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, initial = governance_repo
+    _write(repo, "app/billing_rules.py", _python_lines(3001))
+    base = _commit(repo, "hot functional base")
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
+    scope_head = _commit(repo, "authorized scope")
+    payload = {
+        "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+        "candidate": _candidate_binding(repo, base, scope_head),
+        "expires_on": "2026-08-01",
+        "owner": "platform-governance",
+        "reason": "candidate-bound hot-file migration",
+        "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
+    }
+    _write(repo, code_governance.EXCEPTION_PATH, json.dumps(payload))
+    inherited_base = _commit(repo, "authorize exact scope")
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\nLATER = True\n")
+    _write(repo, code_governance.EXCEPTION_PATH, json.dumps(payload, indent=2))
+    later_head = _commit(repo, "rewrite inherited exception")
+
+    with pytest.raises(code_governance.GovernanceError, match="candidate binding does not match") as caught:
+        _evaluate(repo, inherited_base, later_head)
+
+    assert initial != base
     assert caught.value.code == "invalid_exception"
 
 
