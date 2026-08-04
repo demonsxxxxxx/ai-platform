@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app import repositories, session_actions
@@ -48,6 +48,7 @@ from app.run_projection import (
     public_terminal_detail,
 )
 from app.settings import get_settings
+from app.streaming.authority import RunCursor, event_page, parse_last_event_id
 from app.tool_permission_projection import tool_permission_public_event_payload
 
 router = APIRouter()
@@ -99,6 +100,7 @@ class _CompatibilityWireEvent:
     stream_data: dict[str, object]
     history_event: dict[str, object]
     terminal: bool = False
+    cursor_id: str | None = None
 
 
 CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
@@ -293,37 +295,33 @@ def _strict_typed_chat_event_product(
     if not _chat_event_marked_visible(event) or not event_visible_to_principal(event, principal):
         return None
     run_id = str(run["id"])
-    generic_envelope = run_event_response(run_id, event, principal=principal)
     raw_payload = event.get("payload_json")
     if not isinstance(raw_payload, dict):
         return None
     if raw_event_type == "assistant_delta":
-        if (
-            event.get("stage") != "answer"
-            or event.get("visible_to_user") is not True
-            or event.get("severity") != "info"
-            or set(raw_payload) != {"delta", "source", "visible_to_user", "severity"}
-            or raw_payload.get("source") != CHAT_ASSISTANT_DELTA_SOURCE
-            or raw_payload.get("visible_to_user") is not True
-            or raw_payload.get("severity") != "info"
-            or not isinstance(raw_payload.get("delta"), str)
-        ):
+        sequence = event.get("sequence")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
             return None
-        content = public_chat_answer_text(run, raw_payload["delta"])
+        page = event_page(cursor=RunCursor(run_id=run_id, sequence=sequence - 1), rows=(event,))
+        if len(page.events) != 1:
+            return None
+        delta = page.events[0]
+        content = public_chat_answer_text(run, delta.delta)
         if not content:
             return None
         return _StrictChatEventProduct(
             kind="assistant_delta",
-            generic_envelope=generic_envelope,
+            generic_envelope={"event_id": delta.event_id, "sequence": delta.cursor.sequence},
             payload={
                 "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
                 "projection_kind": "assistant_delta",
-                "event_id": str(generic_envelope["event_id"]),
-                "sequence": int(generic_envelope["sequence"]),
+                "event_id": delta.event_id,
+                "sequence": delta.cursor.sequence,
                 "run_id": run_id,
                 "content": content,
             },
         )
+    generic_envelope = run_event_response(run_id, event, principal=principal)
     card_source = raw_payload.get("tool_permission_card")
     reconstructed = tool_permission_public_event_payload(
         run_id=run_id,
@@ -529,6 +527,16 @@ def _event_sequence_sort_key(event: dict[str, Any], position: int) -> tuple[int,
         return (2**63 - 1, position)
 
 
+def _durable_cursor_id(run_id: str, event: dict[str, Any]) -> str | None:
+    sequence = event.get("sequence")
+    if isinstance(sequence, bool) or not isinstance(sequence, int):
+        return None
+    try:
+        return RunCursor(run_id=run_id, sequence=sequence).event_id
+    except ValueError:
+        return None
+
+
 def _compatibility_events_for_run(
     run: dict[str, Any],
     run_events: list[dict[str, Any]],
@@ -536,6 +544,7 @@ def _compatibility_events_for_run(
     principal: AuthPrincipal,
     *,
     user_messages: list[dict[str, Any]] | None = None,
+    include_terminal: bool = True,
 ) -> list[_CompatibilityWireEvent]:
     """Build the sole public terminal wire, ordered for live and history replay."""
     run_id = str(run["id"])
@@ -654,11 +663,6 @@ def _compatibility_events_for_run(
         } & set(raw_payload):
             continue
         if raw_event_type == "assistant_delta":
-            # Successful terminal history converges to the canonical final
-            # snapshot. Failed/cancelled runs retain only canonical, sanitized
-            # answer deltas so useful partial output survives reconnect/reload.
-            if status == "succeeded":
-                continue
             delta = _assistant_delta_projection(run, event, principal)
             if delta is None:
                 continue
@@ -767,7 +771,7 @@ def _compatibility_events_for_run(
             )
         )
 
-    final_payload = _terminal_final_payload(run)
+    final_payload = _terminal_final_payload(run) if include_terminal else None
     if final_payload is not None:
         event_type, payload, severity = final_payload
         final_data = {"run_id": run_id, **payload}
@@ -793,7 +797,7 @@ def _compatibility_events_for_run(
             )
         )
 
-    if status in {"succeeded", "failed", "cancelled"}:
+    if include_terminal and status in {"succeeded", "failed", "cancelled"}:
         terminal_data = {"run_id": run_id, "status": status}
         compatibility_events.append(
             _CompatibilityWireEvent(
@@ -1356,8 +1360,17 @@ async def chat_status(
 async def chat_session_stream(
     session_id: str,
     run_id: str,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> StreamingResponse:
+    if not isinstance(last_event_id, str):
+        last_event_id = None
+    if last_event_id is not None:
+        cursor = parse_last_event_id(last_event_id, run_id=run_id)
+        if cursor is None:
+            raise HTTPException(status_code=400, detail="invalid_last_event_id")
+    else:
+        cursor = RunCursor(run_id=run_id, sequence=0)
     async with transaction() as conn:
         initial_run = await repositories.get_authorized_run(
             conn,
@@ -1371,7 +1384,9 @@ async def chat_session_stream(
     async def stream():
         metadata_emitted = False
         last_status = ""
-        seen_event_ids: set[str] = set()
+        last_cursor = cursor
+        emitted_artifact_ids: set[str] = set()
+        terminal_observed = False
         max_heartbeats = max(int(get_settings().run_event_stream_max_heartbeats), 1)
         for _ in range(max_heartbeats):
             async with transaction() as conn:
@@ -1385,11 +1400,19 @@ async def chat_session_stream(
                     run_events = []
                     artifacts = []
                 else:
-                    run_events = await repositories.list_run_events(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        run_id=run_id,
-                    )
+                    if last_cursor.sequence == 0 and last_event_id is None:
+                        run_events = await repositories.list_run_events(
+                            conn,
+                            tenant_id=principal.tenant_id,
+                            run_id=run_id,
+                        )
+                    else:
+                        run_events = await repositories.list_run_events(
+                            conn,
+                            tenant_id=principal.tenant_id,
+                            run_id=run_id,
+                            after_sequence=last_cursor.sequence,
+                        )
                     artifacts = await repositories.list_run_artifacts(
                         conn,
                         tenant_id=principal.tenant_id,
@@ -1403,33 +1426,47 @@ async def chat_session_stream(
                 yield _sse("metadata", {"session_id": session_id, "run_id": run_id})
                 metadata_emitted = True
             status = _platform_status(str(run["status"]))
+            previous_cursor = last_cursor
+            page = event_page(cursor=last_cursor, rows=run_events)
+            last_cursor = page.through_cursor
+            new_artifacts = [
+                artifact for artifact in artifacts if f"{artifact.get('id')}:artifact" not in emitted_artifact_ids
+            ]
             try:
                 compatibility_events = _compatibility_events_for_run(
                     run,
-                    run_events,
-                    artifacts,
+                    [dict(durable.row) for durable in page.durable_rows],
+                    new_artifacts,
                     principal,
+                    include_terminal=False,
                 )
             except HTTPException as exc:
                 yield _sse("error", {"error": str(exc.detail)})
                 yield _sse("done", {"status": "error"})
                 return
             for record in compatibility_events:
-                if record.id in seen_event_ids:
-                    continue
-                seen_event_ids.add(record.id)
+                if record.stream_event_type == "artifact_card":
+                    emitted_artifact_ids.add(record.id)
                 yield _sse(
                     record.stream_event_type,
                     record.stream_data,
-                    event_id=record.id,
+                    event_id=record.cursor_id or _durable_cursor_id(run_id, record.history_event),
                 )
-                if record.terminal:
-                    return
+            if status in {"succeeded", "failed", "cancelled"}:
+                if terminal_observed and last_cursor == previous_cursor:
+                    for record in _compatibility_events_for_run(run, [], [], principal):
+                        if record.terminal or record.stream_data.get("projection_kind") == "assistant_final":
+                            yield _sse(record.stream_event_type, record.stream_data)
+                        if record.terminal:
+                            return
+                terminal_observed = True
+            else:
+                terminal_observed = False
             if status != last_status and status in {"queued", "running"}:
                 yield _sse("queue_update", {"status": "processing" if status == "running" else "queued"})
                 last_status = status
             await asyncio.sleep(1)
         yield _sse("error", {"error": "stream_timeout"})
-        yield _sse("done", {"status": "timeout"}, event_id=f"{run_id}:done")
+        yield _sse("done", {"status": "timeout"})
 
     return StreamingResponse(stream(), media_type="text/event-stream")

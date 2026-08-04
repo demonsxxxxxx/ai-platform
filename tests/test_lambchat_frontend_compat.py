@@ -2540,11 +2540,11 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     assert "current_step" not in serialized
 
 
-def test_lambchat_success_history_omits_sealed_delta_when_terminal_answer_is_empty():
+def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer():
     from app.auth import AuthPrincipal
     from app.routes.lambchat_compat import _compatibility_events_for_run
 
-    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
+    canonical_public_text = "公开答案在终态前已持久化。"
     principal = AuthPrincipal(
         user_id="user-a",
         display_name="User A",
@@ -2575,7 +2575,7 @@ def test_lambchat_success_history_omits_sealed_delta_when_terminal_answer_is_emp
             "visible_to_user": True,
             "error_code": None,
             "payload_json": {
-                "delta": sealed_pre_capability_text,
+                "delta": canonical_public_text,
                 "source": "worker_answer_delta_v1",
                 "visible_to_user": True,
                 "severity": "info",
@@ -2591,12 +2591,19 @@ def test_lambchat_success_history_omits_sealed_delta_when_terminal_answer_is_emp
     assert terminal_answers == [
         {
             "projection_version": "ai-platform.chat-public-projection.v1",
+            "projection_kind": "assistant_delta",
+            "event_id": "evt-sealed",
+            "sequence": 1,
+            "run_id": "run-empty-terminal",
+            "content": canonical_public_text,
+        },
+        {
+            "projection_version": "ai-platform.chat-public-projection.v1",
             "projection_kind": "assistant_final",
             "run_id": "run-empty-terminal",
             "content": "任务完成",
         }
     ]
-    assert sealed_pre_capability_text not in str(history)
 
 
 def test_lambchat_sse_stream_cannot_read_cross_tenant_run_events(monkeypatch):
