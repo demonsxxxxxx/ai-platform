@@ -51,12 +51,27 @@ def test_projects_pure_tree_and_disables_normalized_label_collisions():
         [{"value": "2", "parentId": "1", "label": "QA", "children": [], "mobile": "secret"}],
         [{"value": "2", "parentId": "0", "label": "QA", "children": []}],
         [{"value": "2", "parentId": "1", "label": "QA\u0000", "children": []}],
+        [{"value": "2", "parentId": "1", "label": "QA\n", "children": []}],
+        [{"value": "2", "parentId": "1", "label": "\tQA", "children": []}],
+        [{"value": "2", "parentId": "1", "label": "\u0085QA", "children": []}],
+        [{"value": " 2", "parentId": "1", "label": "QA", "children": []}],
         [
             {"value": "2", "parentId": "1", "label": "QA", "children": []},
             {"value": "2", "parentId": "1", "label": "RD", "children": []},
         ],
     ],
-    ids=["not-list", "employee-id", "employee-metadata", "wrong-root", "control-label", "duplicate-id"],
+    ids=[
+        "not-list",
+        "employee-id",
+        "employee-metadata",
+        "wrong-root",
+        "nul-label",
+        "newline-label",
+        "tab-label",
+        "nel-label",
+        "padded-id",
+        "duplicate-id",
+    ],
 )
 def test_rejects_non_pure_or_untrusted_nodes(payload):
     with pytest.raises(DepartmentDirectoryError, match="department_directory_shape_invalid"):
@@ -95,8 +110,8 @@ def test_authority_selection_accepts_only_exact_selectable_directory_values():
         ]
     )
 
-    assert validate_distribution_department_authorities([" QA ", "QA"], directory) == ["QA"]
-    for invalid in (["UNKNOWN"], ["Research"], ["\u0000"]):
+    assert validate_distribution_department_authorities(["QA", "QA"], directory) == ["QA"]
+    for invalid in (["UNKNOWN"], ["Research"], ["\u0000"], [" QA"], ["QA\n"]):
         with pytest.raises(
             DepartmentDirectoryError,
             match="capability_distribution_department_authority_invalid",

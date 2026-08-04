@@ -34,7 +34,7 @@ class _ParsedNode:
 def _safe_numeric_id(value: object) -> str:
     if not isinstance(value, str):
         raise DepartmentDirectoryError("department_directory_shape_invalid")
-    candidate = value.strip()
+    candidate = value
     if not candidate or not candidate.isascii() or not candidate.isdecimal():
         raise DepartmentDirectoryError("department_directory_shape_invalid")
     return candidate
@@ -43,9 +43,10 @@ def _safe_numeric_id(value: object) -> str:
 def _safe_label(value: object) -> str:
     if not isinstance(value, str):
         raise DepartmentDirectoryError("department_directory_shape_invalid")
-    candidate = value.strip()
+    candidate = value
     if (
         not candidate
+        or candidate != candidate.strip()
         or len(candidate) > MAX_DIRECTORY_LABEL_LENGTH
         or any(unicodedata.category(character).startswith("C") for character in candidate)
     ):
