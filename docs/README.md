@@ -11,6 +11,8 @@ does not represent deployed runtime state.
   handoff.
 - `agent-rules/github-issue-pr-workflow.md` defines issue, PR, review, and
   closure evidence.
+- `architecture/runtime-authorities.md` maps each runtime capability to its
+  single business authority and defines the Harness replacement seam.
 
 ## Operations
 
