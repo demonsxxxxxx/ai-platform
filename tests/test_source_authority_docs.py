@@ -82,6 +82,7 @@ def test_release_evidence_index_is_a_contract_not_a_status_snapshot():
 
     assert "not a current-status" in index
     assert "docs/release-evidence/<gate>/<commit_sha>/<evidence_id>.json" in index
+    assert "Do not commit generated Markdown" in index
     assert "runtime_subject_commit_sha" in index
     assert "authorized runtime procedure" in index
     assert "current overall status" not in index
@@ -98,7 +99,15 @@ def test_historical_status_and_manual_release_docs_are_not_retained():
         "docs/frontend/ai-platform-frontend-migration.md",
         "docs/frontend/prd-closure-browser-smoke.md",
         "docs/frontend/prd-frontend-closure-matrix.md",
+        "docs/release-evidence/frontend-complete/backend-gap-summary.md",
     )
 
     for relative_path in removed_paths:
         assert not (ROOT / relative_path).exists()
+
+
+def test_release_evidence_keeps_concurrency_artifacts_machine_readable():
+    evidence_root = RELEASE_EVIDENCE_INDEX.parent / "foundation-runtime-concurrency"
+
+    assert list(evidence_root.rglob("*.json"))
+    assert not list(evidence_root.rglob("*.md"))
