@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -121,13 +122,40 @@ def _payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
-def _governance_exception(*, reason: str, includes_frontend: bool = False) -> str:
+def _governance_scope_sha256(repo: Path, base: str, head: str) -> str:
+    scope = _run(
+        repo,
+        "git",
+        "-c",
+        "core.quotepath=false",
+        "diff",
+        "--raw",
+        "--no-abbrev",
+        "-z",
+        "--no-renames",
+        base,
+        head,
+        "--",
+        ".",
+        f":(exclude){EXCEPTION_PATH}",
+    ).stdout
+    return hashlib.sha256(scope.encode("utf-8")).hexdigest()
+
+
+def _governance_exception(
+    *,
+    reason: str,
+    includes_frontend: bool = False,
+    base_ref: str = "0" * 40,
+    scope_sha256: str = "0" * 64,
+) -> str:
     violations: list[dict[str, str | None]] = [{"code": "functional_hot_file_growth", "path": "app/billing.py"}]
     if includes_frontend:
         violations.append({"code": "production_subsystem_count", "path": None})
     return json.dumps(
         {
-            "schema_version": "ai-platform.code-governance-exception.v1",
+            "schema_version": "ai-platform.code-governance-exception.v2",
+            "candidate": {"base_ref": base_ref, "scope_sha256": scope_sha256},
             "expires_on": "2099-01-01",
             "owner": "platform-governance",
             "reason": reason,
@@ -220,7 +248,22 @@ def _exception_transition(
     if exception_at_head:
         _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
         _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
-    head = _commit(repo, f"{operation} exception transition")
+    scope_head = _commit(repo, f"{operation} exception transition scope")
+    if exception_at_head:
+        _write(
+            repo,
+            EXCEPTION_PATH,
+            _governance_exception(
+                reason=f"{operation} exception",
+                includes_frontend=destination.startswith("frontend/web/")
+                or (operation == "rename" and source.startswith("frontend/web/")),
+                base_ref=base,
+                scope_sha256=_governance_scope_sha256(repo, base, scope_head),
+            ),
+        )
+        head = _commit(repo, f"bind {operation} exception transition")
+    else:
+        head = scope_head
     return base, head
 
 
@@ -1292,7 +1335,17 @@ def test_changed_code_governance_exception_runs_its_exact_bounded_suite(
     _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
     _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
     _write(repo, ".code-governance-exception.json", _governance_exception(reason="updated exception"))
-    head = _commit(repo, "change governance exception")
+    scope_head = _commit(repo, "change governance exception scope")
+    _write(
+        repo,
+        ".code-governance-exception.json",
+        _governance_exception(
+            reason="updated exception",
+            base_ref=base,
+            scope_sha256=_governance_scope_sha256(repo, base, scope_head),
+        ),
+    )
+    head = _commit(repo, "bind governance exception")
 
     result = _check(repo, base, head)
     payload = _payload(result)
@@ -1332,7 +1385,17 @@ def test_copied_code_governance_exception_remains_external(
     _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
     _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
     _write(repo, ".code-governance-exception.json", exception)
-    head = _commit(repo, "copy governance exception")
+    scope_head = _commit(repo, "copy governance exception scope")
+    _write(
+        repo,
+        ".code-governance-exception.json",
+        _governance_exception(
+            reason="copied exception",
+            base_ref=base,
+            scope_sha256=_governance_scope_sha256(repo, base, scope_head),
+        ),
+    )
+    head = _commit(repo, "bind copied governance exception")
 
     production_status = _git(
         repo,
@@ -1348,7 +1411,10 @@ def test_copied_code_governance_exception_remains_external(
     result = _check(repo, base, head)
     payload = _payload(result)
 
-    assert "C100\tsource-policy.json\t.code-governance-exception.json" in production_status
+    assert any(
+        line.startswith("C") and line.endswith("\tsource-policy.json\t.code-governance-exception.json")
+        for line in production_status.splitlines()
+    )
     assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
     assert payload["category"] == "external_check"
     assert payload["failure"]["code"] == "responsibility_suite_required"
@@ -1362,7 +1428,17 @@ def test_wrong_case_code_governance_suite_remains_external(tmp_path: Path) -> No
     _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
     _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
     _write(repo, ".code-governance-exception.json", _governance_exception(reason="wrong case suite"))
-    head = _commit(repo, "wrong case governance suite")
+    scope_head = _commit(repo, "wrong case governance scope")
+    _write(
+        repo,
+        ".code-governance-exception.json",
+        _governance_exception(
+            reason="wrong case suite",
+            base_ref=base,
+            scope_sha256=_governance_scope_sha256(repo, base, scope_head),
+        ),
+    )
+    head = _commit(repo, "bind wrong case governance suite")
 
     exact_case = _run(repo, "git", "cat-file", "-e", f"{head}:tests/test_code_governance.py", check=False)
     wrong_case = _run(repo, "git", "cat-file", "-e", f"{head}:tests/Test_code_governance.py", check=False)
@@ -1418,7 +1494,10 @@ def test_non_add_modify_exception_transitions_remain_external(
     result = _check(repo, base, head)
     payload = _payload(result)
 
-    assert f"{status}\t{source}\t{destination}" in production_status
+    assert any(
+        line.startswith(status[0]) and line.endswith(f"\t{source}\t{destination}")
+        for line in production_status.splitlines()
+    )
     assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
     assert payload["category"] == "external_check"
     assert payload["failure"]["code"] == "responsibility_suite_required"
