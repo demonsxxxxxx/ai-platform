@@ -4,6 +4,7 @@ import importlib
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from app.department_directory import (
     DepartmentDirectoryError,
@@ -11,6 +12,7 @@ from app.department_directory import (
     normalize_department_directory,
     validate_distribution_department_authorities,
 )
+from app.models import CapabilityDistributionAuthorityUpdateRequest
 
 
 def test_projects_pure_tree_and_disables_normalized_label_collisions():
@@ -117,6 +119,20 @@ def test_authority_selection_accepts_only_exact_selectable_directory_values():
             match="capability_distribution_department_authority_invalid",
         ):
             validate_distribution_department_authorities(invalid, directory)
+
+
+def test_authority_update_request_preserves_labels_for_route_proof_and_bounds_count():
+    request = CapabilityDistributionAuthorityUpdateRequest(
+        department_ids=["药品注册", " QA "],
+        allowed_roles=[" QA_REVIEWER ", "qa_reviewer"],
+    )
+
+    assert request.department_ids == ["药品注册", " QA "]
+    assert request.allowed_roles == ["qa_reviewer"]
+    with pytest.raises(ValidationError):
+        CapabilityDistributionAuthorityUpdateRequest(
+            department_ids=[f"department-{index}" for index in range(129)]
+        )
 
 
 @pytest.mark.asyncio
