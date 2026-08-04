@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import re
@@ -15,9 +16,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPORT_SCHEMA_VERSION = "ai-platform.code-governance-report.v1"
-EXCEPTION_SCHEMA_VERSION = "ai-platform.code-governance-exception.v1"
+EXCEPTION_SCHEMA_VERSION = "ai-platform.code-governance-exception.v2"
 EXCEPTION_PATH = ".code-governance-exception.json"
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 PRODUCTION_FILE_LIMIT = 12
 PRODUCTION_NET_LOC_LIMIT = 800
@@ -73,6 +75,14 @@ class _CommandRunner:
             errors="replace",
         )
         return _CommandResult(completed.returncode, completed.stdout, completed.stderr)
+
+    def run_bytes(self, command: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            list(command),
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -299,6 +309,30 @@ class _GitChangeReader:
         except json.JSONDecodeError as exc:
             raise GovernanceError("invalid_exception", f"{EXCEPTION_PATH} is not valid JSON: {exc.msg}") from exc
 
+    def exception_scope_sha256(self, base: str, head: str) -> str:
+        """Bind an exception to every non-exception tree change in the exact range."""
+
+        command = (
+            "git",
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--raw",
+            "--no-abbrev",
+            "-z",
+            "--no-renames",
+            base,
+            head,
+            "--",
+            ".",
+            f":(exclude){EXCEPTION_PATH}",
+        )
+        scope = self.runner.run_bytes(command, cwd=self.repo_root)
+        if scope.returncode != 0:
+            message = scope.stderr.decode("utf-8", errors="replace").strip()
+            raise GovernanceError("git_failed", message or "git diff failed")
+        return hashlib.sha256(scope.stdout).hexdigest()
+
     def _resolve_full_commit(self, value: str, label: str) -> str:
         if FULL_SHA.fullmatch(value) is None:
             raise GovernanceError("invalid_ref", f"{label} must be a full 40-hex commit id")
@@ -356,6 +390,11 @@ class CodeGovernanceEvaluator:
         exception_contract = self._git_reader.load_exception(git_range.head)
         if exception_contract is not None:
             _validate_exception_payload(exception_contract, self._today)
+            _validate_exception_candidate(
+                exception_contract["candidate"],
+                base_ref=git_range.base,
+                scope_sha256=self._git_reader.exception_scope_sha256(git_range.base, git_range.head),
+            )
         active, exempted, exception_summary = self._apply_exception(ordered, exception_contract)
         mode = _evaluation_mode(changes)
         return Evaluation(
@@ -534,6 +573,7 @@ class CodeGovernanceEvaluator:
             rendered = ", ".join(f"{code}:{path or '<global>'}" for code, path in unused)
             raise GovernanceError("invalid_exception", f"exception entries must match current violations exactly: {rendered}")
         summary = {
+            "candidate": payload["candidate"],
             "expires_on": payload["expires_on"],
             "owner": payload["owner"],
             "path": EXCEPTION_PATH,
@@ -679,7 +719,7 @@ def _policy_as_dict() -> dict[str, Any]:
 def _validate_exception_payload(payload: Any, today: date) -> None:
     if not isinstance(payload, dict):
         raise GovernanceError("invalid_exception", "exception payload must be a JSON object")
-    expected = {"schema_version", "expires_on", "owner", "reason", "violations"}
+    expected = {"schema_version", "candidate", "expires_on", "owner", "reason", "violations"}
     if set(payload) != expected:
         raise GovernanceError("invalid_exception", f"exception keys must be exactly: {', '.join(sorted(expected))}")
     if payload["schema_version"] != EXCEPTION_SCHEMA_VERSION:
@@ -699,6 +739,25 @@ def _validate_exception_payload(payload: Any, today: date) -> None:
         if key in seen:
             raise GovernanceError("invalid_exception", "exception violation entries must be unique")
         seen.add(key)
+
+
+def _validate_exception_candidate(candidate: Any, *, base_ref: str, scope_sha256: str) -> None:
+    if not isinstance(candidate, dict) or set(candidate) != {"base_ref", "scope_sha256"}:
+        raise GovernanceError(
+            "invalid_exception",
+            "candidate binding must contain exactly base_ref and scope_sha256",
+        )
+    candidate_base = candidate["base_ref"]
+    candidate_scope = candidate["scope_sha256"]
+    if not isinstance(candidate_base, str) or FULL_SHA.fullmatch(candidate_base) is None or candidate_base != candidate_base.lower():
+        raise GovernanceError("invalid_exception", "candidate base_ref must be a lowercase full 40-hex commit id")
+    if not isinstance(candidate_scope, str) or SHA256_HEX.fullmatch(candidate_scope) is None:
+        raise GovernanceError("invalid_exception", "candidate scope_sha256 must be a lowercase 64-hex digest")
+    if candidate_base != base_ref or candidate_scope != scope_sha256:
+        raise GovernanceError(
+            "invalid_exception",
+            "exception candidate binding does not match the evaluated base and non-exception patch",
+        )
 
 
 def _exception_expiry(value: Any) -> date:
