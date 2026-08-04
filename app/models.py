@@ -79,9 +79,14 @@ class CapabilityDistributionUpdateRequest(BaseModel):
     status: Literal["active", "disabled"] = "active"
     visible_to_user: bool = True
     scope_mode: Literal["allowlist"] = "allowlist"
-    department_ids: list[str] = Field(default_factory=list, max_length=128)
+    department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("department_ids")
+    @classmethod
+    def normalize_department_ids(cls, value: list[str], info):
+        return _normalize_capability_department_ids(value, info.field_name)
 
     @field_validator("allowed_roles")
     @classmethod

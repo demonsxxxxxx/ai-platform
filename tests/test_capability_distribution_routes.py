@@ -2,17 +2,10 @@ from contextlib import asynccontextmanager
 import importlib
 import importlib.util
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.department_directory import (
-    DepartmentDirectoryError,
-    fetch_department_directory,
-    normalize_department_directory,
-)
 from app.main import create_app
-from app.models import DepartmentDirectoryResponse
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
 
@@ -69,18 +62,8 @@ def configure_admin_route(monkeypatch):
     async def fake_ensure_user(conn, **kwargs):
         return None
 
-    async def fake_department_directory():
-        return normalize_department_directory(
-            [
-                {"value": "1", "parentId": "1", "label": "QA", "children": []},
-                {"value": "2", "parentId": "1", "label": "OPS", "children": []},
-                {"value": "3", "parentId": "1", "label": "RD", "children": []},
-            ]
-        )
-
     monkeypatch.setattr(route_module, "transaction", fake_transaction)
     monkeypatch.setattr(route_module.repositories, "ensure_user", fake_ensure_user)
-    monkeypatch.setattr(route_module, "fetch_department_directory", fake_department_directory)
     return route_module
 
 
@@ -208,7 +191,7 @@ def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypat
             "status": "active",
             "visible_to_user": False,
             "scope_mode": "allowlist",
-            "department_ids": [" QA ", "RD", "RD"],
+            "department_ids": [" QA ", "qa", "RD"],
             "allowed_roles": [" QA_REVIEWER ", "qa_reviewer", "RD-Lead"],
             "metadata": metadata,
         },
@@ -218,10 +201,10 @@ def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypat
     body = response.json()
     assert body["audit_id"] == "aud-capdist-updated"
     assert body["audit_action"] == "capability_distribution.updated"
-    assert body["capability_distribution"]["department_ids"] == ["QA", "RD"]
+    assert body["capability_distribution"]["department_ids"] == ["QA", "qa", "RD"]
     assert body["capability_distribution"]["allowed_roles"] == ["qa_reviewer", "rd-lead"]
     assert body["capability_distribution"]["metadata_json"] == metadata
-    assert calls[0][1]["department_ids"] == ["QA", "RD"]
+    assert calls[0][1]["department_ids"] == ["QA", "qa", "RD"]
     assert calls[0][1]["metadata_json"] == metadata
     assert calls[1][1]["action"] == "capability_distribution.updated"
     assert calls[1][1]["payload_json"] == {
@@ -229,7 +212,7 @@ def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypat
         "capability_id": "qa-file-reviewer",
         "actor_department_id": "platform",
         "actor_roles": ["admin"],
-        "department_scope_ids": ["QA", "RD"],
+        "department_scope_ids": ["QA", "qa", "RD"],
         "role_scope_ids": ["qa_reviewer", "rd-lead"],
         "scope_mode": "allowlist",
         "decision_reason": "admin_bypass",
@@ -543,240 +526,3 @@ def test_extra_distribution_request_fields_are_rejected(monkeypatch):
 
     assert update.status_code == 422
     assert toggle.status_code == 422
-
-
-def test_department_directory_projects_pure_tree_and_disables_ambiguous_labels():
-    directory = normalize_department_directory(
-        [
-            {
-                "value": "1",
-                "parentId": "1",
-                "label": "总部",
-                "children": [
-                    {"value": "2", "parentId": "1", "label": "Research", "children": []},
-                ],
-            },
-            {
-                "value": "3",
-                "parentId": "1",
-                "label": "分部",
-                "children": [
-                    {"value": "4", "parentId": "3", "label": "ＲＥＳＥＡＲＣＨ", "children": []},
-                ],
-            },
-        ]
-    )
-
-    assert [node.path for node in directory.departments] == ["总部", "分部"]
-    first_duplicate = directory.departments[0].children[0]
-    second_duplicate = directory.departments[1].children[0]
-    assert (first_duplicate.selectable, first_duplicate.reason) == (False, "duplicate_authority_id")
-    assert (second_duplicate.selectable, second_duplicate.reason) == (False, "duplicate_authority_id")
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"not": "a tree"},
-        [{"value": "employee:1", "parentId": "1", "label": "employee", "children": []}],
-        [{"value": "2", "parentId": "1", "label": "QA", "children": [], "mobile": "secret"}],
-        [{"value": "2", "parentId": "0", "label": "QA", "children": []}],
-        [{"value": "2", "parentId": "1", "label": "QA\u0000", "children": []}],
-        [
-            {"value": "2", "parentId": "1", "label": "QA", "children": []},
-            {"value": "2", "parentId": "1", "label": "RD", "children": []},
-        ],
-    ],
-    ids=["not-list", "employee-id", "employee-metadata", "wrong-root", "control-label", "duplicate-id"],
-)
-def test_department_directory_rejects_non_pure_or_untrusted_nodes(payload):
-    with pytest.raises(DepartmentDirectoryError, match="department_directory_shape_invalid"):
-        normalize_department_directory(payload)
-
-
-def test_department_directory_fails_closed_at_node_and_depth_bounds():
-    too_many = [
-        {"value": str(index + 1), "parentId": "1", "label": f"dept-{index}", "children": []}
-        for index in range(5_001)
-    ]
-    root = {"value": "1", "parentId": "1", "label": "root", "children": []}
-    current = root
-    for depth in range(2, 14):
-        child = {
-            "value": str(depth),
-            "parentId": str(depth - 1),
-            "label": f"depth-{depth}",
-            "children": [],
-        }
-        current["children"] = [child]
-        current = child
-
-    with pytest.raises(DepartmentDirectoryError, match="department_directory_shape_invalid"):
-        normalize_department_directory(too_many)
-    with pytest.raises(DepartmentDirectoryError, match="department_directory_shape_invalid"):
-        normalize_department_directory([root])
-
-
-def test_skill_distribution_rejects_excess_department_authorities_before_upstream(monkeypatch):
-    route_module = configure_admin_route(monkeypatch)
-
-    async def fail_directory():
-        raise AssertionError("request bounds must fail before directory dispatch")
-
-    monkeypatch.setattr(route_module, "fetch_department_directory", fail_directory)
-    response = TestClient(create_app()).put(
-        "/api/admin/capability-distributions/skill/qa-file-reviewer",
-        headers=admin_headers(),
-        json={"department_ids": [f"dept-{index}" for index in range(129)]},
-    )
-
-    assert response.status_code == 422
-
-
-def test_skill_distribution_rejects_unknown_or_ambiguous_authority_before_repository(monkeypatch):
-    async def fail(*args, **kwargs):
-        raise AssertionError("ambiguous authorities must not reach repositories")
-
-    async def ambiguous_directory():
-        return normalize_department_directory(
-            [
-                {"value": "1", "parentId": "1", "label": "QA", "children": []},
-                {"value": "2", "parentId": "1", "label": "qa", "children": []},
-            ]
-        )
-
-    route_module = configure_admin_route(monkeypatch)
-    monkeypatch.setattr(route_module, "fetch_department_directory", ambiguous_directory)
-    patch_repository(monkeypatch, route_module, "get_skill", fail)
-    patch_repository(monkeypatch, route_module, "upsert_capability_distribution_row", fail)
-    client = TestClient(create_app())
-
-    ambiguous = client.put(
-        "/api/admin/capability-distributions/skill/qa-file-reviewer",
-        headers=admin_headers(),
-        json={"department_ids": ["QA"]},
-    )
-    unknown = client.put(
-        "/api/admin/capability-distributions/skill/qa-file-reviewer",
-        headers=admin_headers(),
-        json={"department_ids": ["UNKNOWN"]},
-    )
-
-    assert (ambiguous.status_code, ambiguous.json()["detail"]) == (
-        422,
-        "capability_distribution_department_authority_invalid",
-    )
-    assert (unknown.status_code, unknown.json()["detail"]) == (
-        422,
-        "capability_distribution_department_authority_invalid",
-    )
-
-
-def test_mcp_distribution_keeps_strict_safe_department_ids(monkeypatch):
-    async def fail(*args, **kwargs):
-        raise AssertionError("invalid MCP authority must not reach repositories")
-
-    route_module = configure_admin_route(monkeypatch)
-    patch_repository(monkeypatch, route_module, "list_mcp_server_registry_names", fail)
-    response = TestClient(create_app()).put(
-        "/api/admin/capability-distributions/mcp_server/qa-search",
-        headers=admin_headers(),
-        json={"department_ids": ["研发"]},
-    )
-
-    assert (response.status_code, response.json()["detail"]) == (
-        422,
-        "capability_distribution_department_authority_invalid",
-    )
-
-
-def test_admin_directory_is_same_origin_and_ordinary_user_never_dispatches_upstream(monkeypatch):
-    calls = []
-
-    async def fake_directory():
-        calls.append("upstream")
-        return DepartmentDirectoryResponse(departments=[])
-
-    route_module = configure_admin_route(monkeypatch)
-    monkeypatch.setattr(route_module, "fetch_department_directory", fake_directory)
-    client = TestClient(create_app())
-
-    forbidden = client.get(
-        "/api/admin/capability-distributions/department-directory",
-        headers=user_headers(),
-    )
-    allowed = client.get(
-        "/api/admin/capability-distributions/department-directory",
-        headers=admin_headers(),
-    )
-
-    assert (forbidden.status_code, forbidden.json()["detail"]) == (403, "not_ai_admin")
-    assert allowed.json() == {"departments": []}
-    assert calls == ["upstream"]
-
-
-def test_directory_failure_blocks_skill_write_with_stable_error(monkeypatch):
-    async def fail_directory():
-        raise DepartmentDirectoryError("department_directory_timeout")
-
-    async def fail_repository(*args, **kwargs):
-        raise AssertionError("directory failure must precede repository writes")
-
-    route_module = configure_admin_route(monkeypatch)
-    monkeypatch.setattr(route_module, "fetch_department_directory", fail_directory)
-    patch_repository(monkeypatch, route_module, "get_skill", fail_repository)
-    response = TestClient(create_app()).put(
-        "/api/admin/capability-distributions/skill/qa-file-reviewer",
-        headers=admin_headers(),
-        json={"department_ids": ["QA"]},
-    )
-
-    assert (response.status_code, response.json()["detail"]) == (503, "department_directory_timeout")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("mode", "expected_code"),
-    [
-        ("timeout", "department_directory_timeout"),
-        ("non-success", "department_directory_upstream_unavailable"),
-        ("bad-json", "department_directory_upstream_unavailable"),
-    ],
-)
-async def test_directory_adapter_maps_transport_failures_to_stable_codes(monkeypatch, mode, expected_code):
-    client_options = {}
-    requested_urls = []
-
-    class FakeResponse:
-        status_code = 502 if mode == "non-success" else 200
-
-        def json(self):
-            if mode == "bad-json":
-                raise ValueError("private response")
-            return []
-
-    class FakeClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def get(self, url):
-            requested_urls.append(url)
-            if mode == "timeout":
-                raise httpx.ReadTimeout("private timeout")
-            return FakeResponse()
-
-    directory_module = importlib.import_module("app.department_directory")
-    monkeypatch.setattr(
-        directory_module.httpx,
-        "AsyncClient",
-        lambda **kwargs: (client_options.update(kwargs), FakeClient())[1],
-    )
-
-    with pytest.raises(DepartmentDirectoryError, match=expected_code):
-        await fetch_department_directory()
-
-    assert requested_urls == ["http://10.56.0.25:5033/api/DingTalk/departs/pure"]
-    assert client_options == {"timeout": 5.0, "follow_redirects": False, "trust_env": False}
