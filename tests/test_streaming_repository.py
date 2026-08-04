@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -167,15 +168,43 @@ async def test_terminal_lease_lookup_is_exactly_scoped_and_locked():
 
 
 @pytest.mark.asyncio
-async def test_list_run_events_keeps_unbounded_legacy_read_semantics():
+async def test_list_run_events_delegates_to_the_durable_cursor_reader_without_sql(monkeypatch):
     conn = _Connection()
+    observed = []
+    adapter_rows = {
+        0: (
+            MappingProxyType({"id": "evt-1", "sequence": 1, "event_type": "run_started"}),
+            MappingProxyType({"id": "evt-2", "sequence": 2, "event_type": "assistant_delta"}),
+        ),
+        7: (MappingProxyType({"id": "evt-8", "sequence": 8, "event_type": "assistant_delta"}),),
+    }
 
-    assert await repositories.list_run_events(conn, tenant_id="tenant-a", run_id="run-a") == []
+    async def read_rows(received_conn, *, tenant_id, cursor, limit):
+        observed.append((received_conn, tenant_id, cursor, limit))
+        return adapter_rows[cursor.sequence]
 
-    statement, params = conn.calls[-1]
-    assert "sequence > %s" not in statement
-    assert "limit %s" not in statement
-    assert params == ("tenant-a", "run-a")
+    monkeypatch.setattr(run_event_repository._ledger, "read_event_rows", read_rows)
+
+    unbounded = await repositories.list_run_events(conn, tenant_id="tenant-a", run_id="run-a")
+    incremental = await repositories.list_run_events(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        after_sequence=7,
+        limit=2,
+    )
+
+    assert observed == [
+        (conn, "tenant-a", RunCursor("run-a", 0), None),
+        (conn, "tenant-a", RunCursor("run-a", 7), 2),
+    ]
+    assert unbounded == [
+        {"id": "evt-1", "sequence": 1, "event_type": "run_started"},
+        {"id": "evt-2", "sequence": 2, "event_type": "assistant_delta"},
+    ]
+    assert incremental == [{"id": "evt-8", "sequence": 8, "event_type": "assistant_delta"}]
+    assert all(isinstance(row, dict) for row in [*unbounded, *incremental])
+    assert conn.calls == []
 
 
 def test_run_event_schema_declares_repairable_composite_ledger_authority():
