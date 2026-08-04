@@ -315,6 +315,17 @@ class _CleanupRunner:
         return self.module._CommandResult(0, "", "")
 
 
+class _RegistrationResidueCleanupRunner(_CleanupRunner):
+    def __init__(self, module: ModuleType, registered_path: Path) -> None:
+        super().__init__(module, remove_returncode=1)
+        self.registered_path = registered_path
+
+    def run(self, command: tuple[str, ...], *, cwd: Path, env: dict[str, str] | None = None) -> object:
+        if command == ("git", "worktree", "list", "--porcelain"):
+            return self.module._CommandResult(0, f"worktree {self.registered_path}\n", "")
+        return super().run(command, cwd=cwd, env=env)
+
+
 class _DependencyCleanupRunner(_CleanupRunner):
     def __init__(self, module: ModuleType, dependencies: tuple[Path, ...], *, remove_returncode: int = 0) -> None:
         super().__init__(module, remove_returncode=remove_returncode)
@@ -627,7 +638,7 @@ def test_worktree_cleanup_rejects_dependency_target_outside_generated_head(tmp_p
     assert result["stages"][-1]["status"] == "failed"
 
 
-def test_cleanup_only_failure_is_an_infrastructure_failure(tmp_path: Path) -> None:
+def test_worktree_cleanup_recovers_after_nonzero_remove_when_final_postconditions_are_absent(tmp_path: Path) -> None:
     module = _readiness_module()
     runner = _CleanupRunner(module, remove_returncode=1)
     readiness = module.PrePushReadiness(tmp_path, runner=runner)
@@ -638,10 +649,64 @@ def test_cleanup_only_failure_is_an_infrastructure_failure(tmp_path: Path) -> No
 
     failure = readiness._cleanup_worktrees(result, temporary_root, (("head", head, True),))
 
+    assert failure is None
+    cleanup = result["stages"][-1]
+    assert cleanup["status"] == "pass"
+    assert cleanup["worktrees"][0]["remove_returncode"] == 1
+    assert cleanup["worktrees"][0]["remove_diagnostic"] == "git worktree remove head failed: remove failed"
+    assert cleanup["worktrees"][0]["registered_after"] is False
+    assert cleanup["worktrees"][0]["path_exists_after"] is False
+
+
+def test_worktree_cleanup_nonzero_remove_fails_when_registration_remains(tmp_path: Path) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    head.mkdir(parents=True)
+    runner = _RegistrationResidueCleanupRunner(module, head)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+
+    failure = readiness._cleanup_worktrees(result, temporary_root, (("head", head, True),))
+
     assert failure is not None
     assert failure.category == "infrastructure_failure"
     assert failure.code == "worktree_cleanup_failed"
-    assert result["stages"][-1]["status"] == "failed"
+    cleanup = result["stages"][-1]
+    assert cleanup["worktrees"][0]["remove_returncode"] == 1
+    assert cleanup["worktrees"][0]["registered_after"] is True
+    assert cleanup["worktrees"][0]["path_exists_after"] is False
+
+
+def test_worktree_cleanup_nonzero_remove_fails_when_owned_path_remains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    head.mkdir(parents=True)
+    runner = _CleanupRunner(module, remove_returncode=1)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+    original_remove = module._remove_cleanup_tree
+
+    def retain_owned_root(path: Path) -> None:
+        if path != temporary_root:
+            original_remove(path)
+
+    monkeypatch.setattr(module, "_remove_cleanup_tree", retain_owned_root)
+    try:
+        failure = readiness._cleanup_worktrees(result, temporary_root, (("head", head, True),))
+    finally:
+        original_remove(temporary_root)
+
+    assert failure is not None
+    assert failure.category == "infrastructure_failure"
+    assert failure.code == "worktree_cleanup_failed"
+    cleanup = result["stages"][-1]
+    assert cleanup["worktrees"][0]["remove_returncode"] == 1
+    assert cleanup["worktrees"][0]["registered_after"] is False
+    assert cleanup["worktrees"][0]["path_exists_after"] is True
 
 
 def test_primary_product_failure_is_preserved_when_cleanup_also_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

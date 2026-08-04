@@ -839,7 +839,14 @@ class PrePushReadiness:
         for label, path, added in worktrees:
             if not added or path is None:
                 continue
-            record = {"label": label, "path": str(path), "registered_after": None, "remove_returncode": None}
+            record = {
+                "label": label,
+                "path": str(path),
+                "path_exists_after": None,
+                "registered_after": None,
+                "remove_diagnostic": None,
+                "remove_returncode": None,
+            }
             try:
                 if _lexical_path_key(path) in blocked_worktrees:
                     record["remove_skipped"] = "unsafe dependency ancestor remains"
@@ -848,11 +855,7 @@ class PrePushReadiness:
                     removed = self._run(_git_worktree_command("remove", "--force", str(path)), self._repo_root)
                     record["remove_returncode"] = removed.returncode
                     if removed.returncode != 0:
-                        failures.append(_command_failure(f"git worktree remove {label}", removed))
-                registered = self._worktree_registered(path)
-                record["registered_after"] = registered
-                if registered:
-                    failures.append(f"git worktree registration remains for {label}")
+                        record["remove_diagnostic"] = _command_failure(f"git worktree remove {label}", removed)
             except ReadinessError as error:
                 failures.append(str(error))
             records.append(record)
@@ -860,6 +863,20 @@ class PrePushReadiness:
             _remove_cleanup_tree(temporary_root)
         except OSError as error:
             failures.append(f"temporary worktree directory removal failed: {error}")
+        for record, (_, path, _) in zip(records, (item for item in worktrees if item[1] is not None and item[2]), strict=True):
+            assert path is not None
+            try:
+                registered = self._worktree_registered(path)
+                record["registered_after"] = registered
+                if registered:
+                    failures.append(f"git worktree registration remains for {record['label']}")
+            except ReadinessError as error:
+                record["worktree_list_error"] = str(error)
+                failures.append(str(error))
+            path_exists = _path_lexists(path)
+            record["path_exists_after"] = path_exists
+            if path_exists:
+                failures.append(f"git worktree path remains for {record['label']}")
         for record, (_, path) in zip(dependency_records, frontend_dependencies, strict=True):
             exists_after = _path_lexists(path)
             record["exists_after"] = exists_after
