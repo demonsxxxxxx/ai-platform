@@ -71,3 +71,18 @@ def test_retired_runtime_authority_settings_are_not_configurable():
     }
 
     assert retired_fields.isdisjoint(Settings.model_fields)
+
+
+def test_capacity_and_redis_pool_defaults_are_bounded_independently():
+    settings = Settings(_env_file=None)
+
+    assert settings.worker_concurrency == 10
+    assert settings.max_active_worker_runs == 10
+    assert settings.max_active_runs_per_user == 3
+    assert settings.redis_max_connections == 10
+    assert settings.database_pool_max_size == 10
+
+
+def test_redis_max_connections_rejects_non_positive_values():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, redis_max_connections=0)
