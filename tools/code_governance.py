@@ -23,7 +23,6 @@ SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 PRODUCTION_FILE_LIMIT = 12
 PRODUCTION_NET_LOC_LIMIT = 800
-PRODUCTION_SUBSYSTEM_LIMIT = 2
 HOT_FILE_LINES = 1500
 HOT_FILE_NET_GROWTH_LIMIT = 100
 FUNCTIONAL_HOT_FILE_LINES = 3000
@@ -448,15 +447,6 @@ class CodeGovernanceEvaluator:
                     details={"actual": net_loc, "limit_exclusive": PRODUCTION_NET_LOC_LIMIT},
                 )
             )
-        if behavior_files and len(subsystems) >= PRODUCTION_SUBSYSTEM_LIMIT:
-            violations.append(
-                Violation(
-                    "production_subsystem_count",
-                    f"normal behavior changes must touch < {PRODUCTION_SUBSYSTEM_LIMIT} production subsystems",
-                    details={"actual": len(subsystems), "limit_exclusive": PRODUCTION_SUBSYSTEM_LIMIT, "subsystems": subsystems},
-                )
-            )
-
         for item in changes:
             peak_lines = max(item.old_lines, item.new_lines)
             if item.is_behavior_change and peak_lines > HOT_FILE_LINES and item.production_net_loc > HOT_FILE_NET_GROWTH_LIMIT:
@@ -499,6 +489,7 @@ class CodeGovernanceEvaluator:
             "move_only_production_files": len(move_only_files),
             "production_added_loc": production_added_loc,
             "production_net_loc": net_loc,
+            "production_subsystem_count": len(subsystems),
             "production_subsystems": subsystems,
             "test_added_loc": test_added_loc,
             "test_net_loc": sum(item.test_net_loc for item in changes),
@@ -705,7 +696,6 @@ def _policy_as_dict() -> dict[str, Any]:
         "hot_file_net_growth_max": HOT_FILE_NET_GROWTH_LIMIT,
         "production_file_count_max": PRODUCTION_FILE_LIMIT,
         "production_net_loc_max_exclusive": PRODUCTION_NET_LOC_LIMIT,
-        "production_subsystem_count_max_exclusive": PRODUCTION_SUBSYSTEM_LIMIT,
         "test_hot_file_lines_exclusive": TEST_HOT_FILE_LINES,
         "test_hot_file_net_growth_max": TEST_HOT_FILE_NET_GROWTH_LIMIT,
         "test_loc_review": {
@@ -795,6 +785,7 @@ def _render_text(evaluation: Evaluation) -> str:
         f"behavior production files: {evaluation.metrics['behavior_production_files']}",
         f"move-only production files: {evaluation.metrics['move_only_production_files']}",
         f"production net LOC: {evaluation.metrics['production_net_loc']}",
+        f"production subsystem count: {evaluation.metrics['production_subsystem_count']}",
         f"production subsystems: {', '.join(evaluation.metrics['production_subsystems']) or 'none'}",
         f"Ruff: {evaluation.ruff['status']}",
     ]

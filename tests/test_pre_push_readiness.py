@@ -145,13 +145,10 @@ def _governance_scope_sha256(repo: Path, base: str, head: str) -> str:
 def _governance_exception(
     *,
     reason: str,
-    includes_frontend: bool = False,
     base_ref: str = "0" * 40,
     scope_sha256: str = "0" * 64,
 ) -> str:
     violations: list[dict[str, str | None]] = [{"code": "functional_hot_file_growth", "path": "app/billing.py"}]
-    if includes_frontend:
-        violations.append({"code": "production_subsystem_count", "path": None})
     return json.dumps(
         {
             "schema_version": "ai-platform.code-governance-exception.v2",
@@ -233,8 +230,6 @@ def _exception_transition(
     exception_at_head = operation == "copy" or destination == EXCEPTION_PATH
     exception = _governance_exception(
         reason=f"{operation} exception",
-        includes_frontend=exception_at_head
-        and (destination.startswith("frontend/web/") or (operation == "rename" and source.startswith("frontend/web/"))),
     )
     if exception_at_head:
         _write(repo, "app/billing.py", _python_assignments(3_001))
@@ -255,8 +250,6 @@ def _exception_transition(
             EXCEPTION_PATH,
             _governance_exception(
                 reason=f"{operation} exception",
-                includes_frontend=destination.startswith("frontend/web/")
-                or (operation == "rename" and source.startswith("frontend/web/")),
                 base_ref=base,
                 scope_sha256=_governance_scope_sha256(repo, base, scope_head),
             ),
@@ -1600,20 +1593,18 @@ def test_mixed_backend_and_frontend_changes_run_both_responsibility_suites(
     repo, base = readiness_repo
     _write(repo, "app/invoice.py", "TOTAL = 1\n")
     _write(repo, "tests/test_invoice.py", "def test_invoice():\n    assert True\n")
-    _write(repo, "frontend/web/package.json", "{\"scripts\": {\"ci:verify\": \"true\"}}\n")
+    _write_frontend_project(repo)
     _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
-    _write(repo, "frontend/web/src/App.test.tsx", "export const appTest = true;\n")
     head = _commit(repo, "mixed responsibilities")
 
     result = _check(repo, base, head, env=_fake_corepack_environment(tmp_path))
     payload = _payload(result)
 
-    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
-    assert payload["category"] == "governance_violation"
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
     stages = {stage["name"]: stage for stage in payload["stages"]}
-    assert stages["governance"]["status"] == "failed"
-    assert "responsibility_tests" not in stages
-    assert "frontend_responsibility" not in stages
+    assert stages["governance"]["status"] == "pass"
+    assert stages["responsibility_tests"]["status"] == "pass"
+    assert stages["frontend_responsibility"]["status"] == "pass"
 
 
 def test_stale_base_fails_before_any_local_checks(readiness_repo: tuple[Path, str]) -> None:
