@@ -1,0 +1,16 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "f473ce440b7deb0b38ff47a461dc842139cf9c5c",
+    "scope_sha256": "f3d126de9de126abd149240663806f5548d17ead47b241ac3b395be562869cb3"
+  },
+  "expires_on": "2026-08-19",
+  "owner": "docker-packaging-phase1-issue-752",
+  "reason": "Allow the reviewed uv.lock authority while the same candidate adds a durable exact-path lock classification.",
+  "violations": [
+    {
+      "code": "hot_file_growth",
+      "path": "uv.lock"
+    }
+  ]
+}
