@@ -65,9 +65,9 @@ def test_ruff_is_pinned_in_the_test_extra_without_enabling_broad_linting():
 
 def _frontend_ruff_requirement_resolver():
     workflow = FRONTEND_WORKFLOW.read_text(encoding="utf-8")
-    install_step = workflow.split("- name: Install Python test dependencies", 1)[
-        1
-    ].split("- name: Verify static frontend Python contracts", 1)[0]
+    install_step = workflow.split("- name: Install Python test dependencies", 1)[1].split(
+        "- name: Verify static frontend Python contracts", 1
+    )[0]
     install_script = install_step.split("@'\n", 1)[1].split("\n'@ | python -", 1)[0]
     resolver_source = textwrap.dedent(
         install_script.split('with open("pyproject.toml", "rb") as handle:', 1)[0]
@@ -81,22 +81,16 @@ def test_frontend_static_contracts_install_only_the_pinned_test_extra_ruff():
     import tomllib
 
     workflow = FRONTEND_WORKFLOW.read_text(encoding="utf-8")
-    install_step = workflow.split("- name: Install Python test dependencies", 1)[
-        1
-    ].split("- name: Verify static frontend Python contracts", 1)[0]
+    install_step = workflow.split("- name: Install Python test dependencies", 1)[1].split(
+        "- name: Verify static frontend Python contracts", 1
+    )[0]
 
     with PYPROJECT.open("rb") as handle:
         pyproject = tomllib.load(handle)
 
     test_dependencies = pyproject["project"]["optional-dependencies"]["test"]
-    assert (
-        'tomllib.load(handle)["project"]["optional-dependencies"]["test"]'
-        in install_step
-    )
-    assert (
-        "from packaging.requirements import InvalidRequirement, Requirement"
-        in install_step
-    )
+    assert 'tomllib.load(handle)["project"]["optional-dependencies"]["test"]' in install_step
+    assert "from packaging.requirements import InvalidRequirement, Requirement" in install_step
     assert "from packaging.utils import canonicalize_name" in install_step
     assert "for dependency in test_dependencies:" in install_step
     assert 'canonicalize_name(requirement.name) == "ruff"' in install_step
@@ -132,17 +126,11 @@ def test_frontend_ruff_requirement_resolver_normalizes_a_canonical_pin():
             "exact canonical version pin",
             id="marker",
         ),
-        pytest.param(
-            ["ruff[cli]==0.11.13"], "exact canonical version pin", id="extras"
-        ),
-        pytest.param(
-            ["ruff===0.11.13"], "exact canonical version pin", id="arbitrary-equals"
-        ),
+        pytest.param(["ruff[cli]==0.11.13"], "exact canonical version pin", id="extras"),
+        pytest.param(["ruff===0.11.13"], "exact canonical version pin", id="arbitrary-equals"),
         pytest.param(["ruff==0.11.*"], "exact canonical version pin", id="wildcard"),
         pytest.param(["ruff>=0.11.13"], "exact canonical version pin", id="range"),
-        pytest.param(
-            ["ruff==00.11.13"], "exact canonical version pin", id="noncanonical-version"
-        ),
+        pytest.param(["ruff==00.11.13"], "exact canonical version pin", id="noncanonical-version"),
     ],
 )
 def test_frontend_ruff_requirement_resolver_rejects_noncanonical_declarations(
@@ -295,9 +283,7 @@ def test_code_governance_rejects_credential_and_untrusted_ref_fallbacks():
 
 
 def test_python_safe_path_blocks_a_head_root_ruff_module(tmp_path: Path):
-    (tmp_path / "ruff.py").write_text(
-        'raise RuntimeError("head ruff.py was imported")\n', encoding="utf-8"
-    )
+    (tmp_path / "ruff.py").write_text('raise RuntimeError("head ruff.py was imported")\n', encoding="utf-8")
     environment = os.environ.copy()
     environment["PYTHONSAFEPATH"] = "1"
     environment.pop("PYTHONPATH", None)
@@ -321,9 +307,7 @@ def test_code_governance_uses_test_extra_and_propagates_pr_failures():
 
     install_start = workflow.index("- name: Install backend dependencies")
     governance_start = workflow.index("- name: Run code governance")
-    governance_step = workflow[
-        governance_start : workflow.index("- name: Run sandbox provider targeted tests")
-    ]
+    governance_step = workflow[governance_start : workflow.index("- name: Run sandbox provider targeted tests")]
 
     assert install_start < governance_start
     assert 'pyproject["project"]["optional-dependencies"]["test"]' in workflow
