@@ -30,18 +30,30 @@ def model_id_sha256(model: str) -> str:
     return base64.b32encode(hashlib.sha256(model.encode("utf-8")).digest()).decode("ascii").rstrip("=")
 
 
-def parse_broker_environment_evidence(items: Any) -> tuple[dict[str, str], bool]:
-    """Retain exact provider entries so duplicate or case-drifted secrets cannot hide."""
+def parse_broker_environment_evidence(
+    items: Any,
+    expected: Mapping[str, str],
+    opaque_keys: tuple[str, ...],
+) -> tuple[dict[str, str], bool]:
+    """Retain raw protected entries so duplicate or case-drifted values cannot hide."""
 
     env: dict[str, str] = {}
-    provider_env = []
+    fixed_keys = PROVIDER_CREDENTIAL_ENV_KEYS | {key.upper() for key in expected}
+    opaque_key_set = {key.upper() for key in opaque_keys}
+    fixed_env = []
+    opaque_env = []
     for item in items:
         key, separator, value = str(item).partition("=")
-        if key.upper() in PROVIDER_CREDENTIAL_ENV_KEYS:
-            provider_env.append((key, value if separator else ""))
+        normalized = key.upper()
+        if normalized in fixed_keys:
+            fixed_env.append((key, value if separator else ""))
+        if normalized in opaque_key_set:
+            opaque_env.append(key)
         if separator:
             env[key] = value
-    return env, sorted(provider_env) == sorted(EXPECTED_BROKER_CREDENTIAL_ENV)
+    fixed_expected = (*EXPECTED_BROKER_CREDENTIAL_ENV, *expected.items())
+    exact = sorted(fixed_env) == sorted(fixed_expected) and sorted(opaque_env) == sorted(opaque_keys)
+    return env, exact
 
 
 def consume_in_memory_model_route(

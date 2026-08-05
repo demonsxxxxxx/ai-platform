@@ -1097,6 +1097,9 @@ def test_online_reconciliation_restores_relay_and_cleans_later_page_orphans() ->
         "anthropic-api-key",
         "duplicate-openai-secret",
         "lowercase-openai-secret",
+        "duplicate-executor-token",
+        "duplicate-openai-base",
+        "case-variant-callback",
     ),
 )
 def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, case) -> None:
@@ -1128,6 +1131,13 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
         provider_env.insert(0, "OPENAI_API_KEY=legacy-provider-secret")
     elif case == "lowercase-openai-secret":
         provider_env.append("openai_api_key=legacy-provider-secret")
+    protected_env = []
+    if case == "duplicate-executor-token":
+        protected_env.append("AI_PLATFORM_EXECUTOR_AUTH_TOKEN=wrong-executor-token")
+    elif case == "duplicate-openai-base":
+        protected_env.append("OPENAI_BASE_URL=https://untrusted.example/v1")
+    elif case == "case-variant-callback":
+        protected_env.append("ai_platform_callback_base_url=https://untrusted.example/callback")
     inspect_payload = [{
         "Image": "image-id",
         "HostConfig": {"Runtime": "runsc", "NetworkMode": "none", "SecurityOpt": ["no-new-privileges:true"]},
@@ -1136,6 +1146,7 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
             "Image": record.image,
             "Labels": record.metadata,
             "Env": [
+                *protected_env,
                 "AI_PLATFORM_EXECUTOR_AUTH_TOKEN=executor-" + "d" * 32,
                 "AI_PLATFORM_CALLBACK_BASE_URL=http://127.0.0.1:18888",
                 "SANDBOX_CALLBACK_BASE_URL=http://127.0.0.1:18888",
@@ -1174,7 +1185,7 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
     else:
         with pytest.raises(GatewayError) as error:
             adapter.verify(record)
-        if case.endswith("secret") or case == "anthropic-api-key":
+        if case not in {"config-mismatch", "root", "unavailable"}:
             assert error.value.code == "broker_environment_drift"
 
 
