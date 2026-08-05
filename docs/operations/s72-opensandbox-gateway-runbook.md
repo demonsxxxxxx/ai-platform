@@ -28,12 +28,43 @@ Use the live scripts, with values obtained through the authorized host procedure
 sudo env \
   OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA=<fresh-main-commit> \
   OPENSANDBOX_GATEWAY_AUTHORITY_EVIDENCE_ID=<non-secret-fresh-evidence-id> \
+  OPENSANDBOX_GATEWAY_SERVICE_UID=<approved-exact-service-uid> \
   deploy/opensandbox/install-s72.sh /path/to/root-owned-clean-ai-platform-clone
 ```
 
 Do not replace this with a manual unit, copy, symlink, Git checkout, or service
 mutation. A mismatch, dirty source, stale local authority ref, unsafe ownership,
 or unavailable lock fails closed.
+
+### Exact gateway service identity
+
+Before preparing `gateway.env`, the authorized operator allocates one unused,
+approved numeric UID for the `opensandbox-gateway` service and retains that
+assignment in the host's normal identity-allocation authority. Supply the same
+value on every installation through `OPENSANDBOX_GATEWAY_SERVICE_UID`. It must be
+a canonical unsigned decimal in the non-root Linux UID range: no sign,
+whitespace, leading zero, or alternate representation is accepted. Do not guess
+the value or pre-create an account to discover it. Keep the numeric UID/GID
+reserved for this service after rollback as well: rollback retains gateway
+runtime data, so assigning that identity to another principal is unsafe.
+
+The installer deterministically uses that value for both the service UID and its
+dedicated primary-group GID. The UID and GID must not belong to another
+principal. If `opensandbox-gateway` already exists, its passwd and group entries
+must exactly match the approved UID/GID, `/nonexistent` home,
+`/usr/sbin/nologin` shell, and empty dedicated group membership. The installer
+fails closed instead of adopting a partially matching or shared identity.
+
+Set exactly one literal line in `/etc/opensandbox-gateway/gateway.env`:
+
+```text
+OPENSANDBOX_GATEWAY_ALLOWED_UID=<approved-exact-service-uid>
+```
+
+It must equal `OPENSANDBOX_GATEWAY_SERVICE_UID`. The installer reads this as
+text and never sources or evaluates the operator environment file; a missing,
+duplicate, malformed, or mismatched assignment blocks installation before any
+mutation.
 
 ## Configuration And Pinned CA
 
@@ -77,10 +108,14 @@ redacted, subject-bound remote evidence through that authorized procedure.
 
 `install-s72.sh` holds `/var/lib/opensandbox-gateway-deploy/install.lock` and
 creates a root-only snapshot of gateway units, configuration, workspace ACL,
-authority state, and the current release pointer before mutation. On an install
-failure it restores that snapshot; if restoration fails, it preserves the unique
-recovery snapshot and exits fail-closed for operator recovery. Do not delete or
-edit that snapshot to continue an installation.
+authority state, the current release pointer, and the exact pre-install gateway
+user/group identity before mutation. On an install failure it restores that
+snapshot. A pre-existing exact user or group is preserved. A user or group absent
+from the snapshot is removed only when the same snapshot records that this
+installer created the exact expected identity. Identity drift, UID/GID reuse,
+ambiguous markers, or an unsafe deletion preserves the unique recovery snapshot
+and exits fail-closed for operator recovery. Do not delete or edit that snapshot
+to continue an installation.
 
 Use the live rollback script only with a freshly resolved authority SHA and a
 new non-secret evidence ID:
@@ -96,7 +131,11 @@ Rollback verifies the root-owned snapshot manifest, confined release path,
 recorded release provenance, and that the rollback release remains an ancestor
 of the supplied fresh authority. It restores the prior units, configuration,
 ACL, authority state, enable/active state, and release pointer (or their prior
-absence), then rechecks local OpenSandbox health. It never changes ai-platform
+absence). It also restores the snapshot's account state: exact pre-existing
+principals remain, while only exact principals marked as created by that install
+are deleted in user-then-group order. The rollback command does not accept a new
+UID guess; the manifest-protected snapshot is its account authority. It then
+rechecks local OpenSandbox health. It never changes ai-platform
 provider configuration, deletes workspaces or SQLite runtime state, or replaces
 the separate 211 release/rollback authority. Suspected secret exposure requires
 the designated security response and downstream secret rotation before further

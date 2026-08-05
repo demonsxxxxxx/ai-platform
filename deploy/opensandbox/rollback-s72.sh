@@ -13,11 +13,76 @@ AUTHORITY_EVIDENCE_STATE=$DEPLOY_STATE/current-authority-evidence
 SYSTEMD_DIR=/etc/systemd/system
 CONFIG_DIR=/etc/opensandbox-gateway
 WORKSPACE_ROOT=/data/opensandbox/workspaces
+SERVICE_USER=opensandbox-gateway
+SERVICE_GROUP=opensandbox-gateway
+SERVICE_HOME=/nonexistent
+SERVICE_SHELL=/usr/sbin/nologin
 
 is_commit() {
   test "${#1}" -eq 40 || return 1
   case "$1" in *[!0-9a-f]*) return 1 ;; esac
 }
+
+is_service_uid() {
+  case "$1" in
+    ""|0|0[0-9]*|*[!0-9]*) return 1 ;;
+  esac
+  uid_length=${#1}
+  test "$uid_length" -le 10 || return 1
+  test "$uid_length" -lt 10 && return 0
+  test "$1" = 4294967294 || test "$1" \< 4294967294
+}
+
+gateway_user_entry() {
+  printf '%s:x:%s:%s::%s:%s' "$SERVICE_USER" "$1" "$1" "$SERVICE_HOME" "$SERVICE_SHELL"
+}
+
+gateway_group_entry() {
+  printf '%s:x:%s:' "$SERVICE_GROUP" "$1"
+}
+
+require_account_lookup_absent() (
+  database=$1
+  key=$2
+  if getent "$database" "$key" >/dev/null 2>&1; then
+    return 1
+  else
+    test "$?" -eq 2
+  fi
+)
+
+preflight_gateway_account_contract() (
+  gateway_uid=$1
+  is_service_uid "$gateway_uid" || return 1
+  expected_user=$(gateway_user_entry "$gateway_uid")
+  expected_group=$(gateway_group_entry "$gateway_uid")
+
+  if actual_group=$(getent group "$SERVICE_GROUP"); then
+    test "$actual_group" = "$expected_group" || return 1
+    test "$(getent group "$gateway_uid")" = "$expected_group" || return 1
+    group_present=1
+  else
+    lookup_status=$?
+    test "$lookup_status" -eq 2 || return 1
+    group_present=0
+    require_account_lookup_absent group "$gateway_uid" || return 1
+  fi
+
+  if actual_user=$(getent passwd "$SERVICE_USER"); then
+    test "$group_present" -eq 1 || return 1
+    test "$actual_user" = "$expected_user" || return 1
+    test "$(getent passwd "$gateway_uid")" = "$expected_user" || return 1
+  else
+    lookup_status=$?
+    test "$lookup_status" -eq 2 || return 1
+    require_account_lookup_absent passwd "$gateway_uid" || return 1
+  fi
+
+  passwd_entries=$(getent passwd) || return 1
+  unexpected_primary_gid=$(printf '%s\n' "$passwd_entries" | awk -F: -v gid="$gateway_uid" -v user="$SERVICE_USER" \
+    '$4 == gid && $1 != user { print; exit }') || return 1
+  test -z "$unexpected_primary_gid"
+)
 
 is_authority_evidence_id() {
   test -n "$1" && test "${#1}" -le 128 || return 1
@@ -93,6 +158,94 @@ require_marker_pair() {
   fi
 }
 
+preflight_gateway_account_snapshot() (
+  snapshot=$1
+  test -f "$snapshot/gateway-service-uid" && test ! -L "$snapshot/gateway-service-uid" || return 1
+  gateway_uid=$(cat "$snapshot/gateway-service-uid") || return 1
+  is_service_uid "$gateway_uid" || return 1
+  test "$(grep -Fxc "$gateway_uid" "$snapshot/gateway-service-uid")" -eq 1 || return 1
+  expected_user=$(gateway_user_entry "$gateway_uid")
+  expected_group=$(gateway_group_entry "$gateway_uid")
+
+  require_marker_pair "$snapshot/gateway-user.present" "$snapshot/gateway-user.absent" || return 1
+  if test -f "$snapshot/gateway-user.present"; then
+    test -f "$snapshot/gateway-user.entry" && test ! -e "$snapshot/gateway-user.created" || return 1
+    test "$(grep -Fxc "$expected_user" "$snapshot/gateway-user.entry")" -eq 1 || return 1
+  else
+    test ! -e "$snapshot/gateway-user.entry" || return 1
+    test ! -e "$snapshot/gateway-user.created" || \
+      test "$(grep -Fxc "$expected_user" "$snapshot/gateway-user.created")" -eq 1 || return 1
+  fi
+
+  require_marker_pair "$snapshot/gateway-group.present" "$snapshot/gateway-group.absent" || return 1
+  if test -f "$snapshot/gateway-group.present"; then
+    test -f "$snapshot/gateway-group.entry" && test ! -e "$snapshot/gateway-group.created" || return 1
+    test "$(grep -Fxc "$expected_group" "$snapshot/gateway-group.entry")" -eq 1 || return 1
+  else
+    test ! -e "$snapshot/gateway-group.entry" || return 1
+    test ! -e "$snapshot/gateway-group.created" || \
+      test "$(grep -Fxc "$expected_group" "$snapshot/gateway-group.created")" -eq 1 || return 1
+  fi
+)
+
+preflight_gateway_account_restore() (
+  snapshot=$1
+  preflight_gateway_account_snapshot "$snapshot" || return 1
+  gateway_uid=$(cat "$snapshot/gateway-service-uid") || return 1
+  preflight_gateway_account_contract "$gateway_uid" || return 1
+
+  if test -f "$snapshot/gateway-user.present"; then
+    test "$(getent passwd "$SERVICE_USER")" = "$(cat "$snapshot/gateway-user.entry")" || return 1
+  elif test -f "$snapshot/gateway-user.created"; then
+    test "$(getent passwd "$SERVICE_USER")" = "$(cat "$snapshot/gateway-user.created")" || return 1
+  else
+    require_account_lookup_absent passwd "$SERVICE_USER" || return 1
+    require_account_lookup_absent passwd "$gateway_uid" || return 1
+  fi
+
+  if test -f "$snapshot/gateway-group.present"; then
+    test "$(getent group "$SERVICE_GROUP")" = "$(cat "$snapshot/gateway-group.entry")" || return 1
+  elif test -f "$snapshot/gateway-group.created"; then
+    test "$(getent group "$SERVICE_GROUP")" = "$(cat "$snapshot/gateway-group.created")" || return 1
+  else
+    require_account_lookup_absent group "$SERVICE_GROUP" || return 1
+    require_account_lookup_absent group "$gateway_uid" || return 1
+  fi
+)
+
+verify_gateway_account_restored() (
+  snapshot=$1
+  preflight_gateway_account_snapshot "$snapshot" || return 1
+  gateway_uid=$(cat "$snapshot/gateway-service-uid") || return 1
+
+  if test -f "$snapshot/gateway-user.present"; then
+    test "$(getent passwd "$SERVICE_USER")" = "$(cat "$snapshot/gateway-user.entry")" || return 1
+    test "$(getent passwd "$gateway_uid")" = "$(cat "$snapshot/gateway-user.entry")" || return 1
+  else
+    require_account_lookup_absent passwd "$SERVICE_USER" || return 1
+    require_account_lookup_absent passwd "$gateway_uid" || return 1
+  fi
+  if test -f "$snapshot/gateway-group.present"; then
+    test "$(getent group "$SERVICE_GROUP")" = "$(cat "$snapshot/gateway-group.entry")" || return 1
+    test "$(getent group "$gateway_uid")" = "$(cat "$snapshot/gateway-group.entry")" || return 1
+  else
+    require_account_lookup_absent group "$SERVICE_GROUP" || return 1
+    require_account_lookup_absent group "$gateway_uid" || return 1
+  fi
+)
+
+restore_gateway_account_state() (
+  snapshot=$1
+  preflight_gateway_account_restore "$snapshot" || return 1
+  if test -f "$snapshot/gateway-user.absent" && test -f "$snapshot/gateway-user.created"; then
+    userdel "$SERVICE_USER" || return 1
+  fi
+  if test -f "$snapshot/gateway-group.absent" && test -f "$snapshot/gateway-group.created"; then
+    groupdel "$SERVICE_GROUP" || return 1
+  fi
+  verify_gateway_account_restored "$snapshot"
+)
+
 preflight_snapshot() {
   snapshot=$1
   require_root_tree "$snapshot" || return 1
@@ -106,6 +259,7 @@ preflight_snapshot() {
   require_marker_pair "$snapshot/config.present" "$snapshot/config.absent" || return 1
   test ! -f "$snapshot/config.present" || test -d "$snapshot/etc-opensandbox-gateway" || return 1
   test -f "$snapshot/workspaces.acl" || return 1
+  preflight_gateway_account_snapshot "$snapshot" || return 1
   require_marker_pair "$snapshot/authority-sha" "$snapshot/authority-sha.absent" || return 1
   require_marker_pair "$snapshot/authority-evidence" "$snapshot/authority-evidence.absent" || return 1
   require_marker_pair "$snapshot/current" "$snapshot/current.absent" || return 1
@@ -145,6 +299,7 @@ test "$(readlink -f "$SNAPSHOT")" = "$(readlink -f "$DEPLOY_STATE/snapshots")/$S
 require_root_tree "$SNAPSHOT"
 verify_manifest "$SNAPSHOT"
 preflight_snapshot "$SNAPSHOT"
+preflight_gateway_account_restore "$SNAPSHOT"
 
 PREVIOUS=
 if test -f "$SNAPSHOT/current"; then
@@ -197,6 +352,7 @@ if test -n "$PREVIOUS"; then
 else
   rm -f "$CURRENT_LINK"
 fi
+restore_gateway_account_state "$SNAPSHOT"
 systemctl is-active --quiet opensandbox.service
 ss -ltn | grep -q '127.0.0.1:8080'
 }
