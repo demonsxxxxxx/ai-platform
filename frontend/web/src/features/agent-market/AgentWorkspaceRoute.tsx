@@ -1,30 +1,70 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { ChatAppContent } from "../../components/layout/AppContent/ChatAppContent";
+import { AppShell } from "../../components/layout/AppContent/AppShell";
+import { SessionSidebar } from "../../components/panels/SessionSidebar";
+import type { SessionSidebarSessionSource } from "../../components/panels/SessionSidebar";
 import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useAuth";
 import { authApi } from "../../services/api";
 import { agentProfileApi } from "../../services/api/agentProfile";
-import type { AgentProfilePublicProjection } from "../../types";
+import { sessionApi } from "../../services/api/session";
+import type {
+  AgentConversationIdentity,
+  AgentProfilePublicProjection,
+} from "../../types/agentProfile";
 import { selectPublishedMarketProfile } from "./agentMarketSelection";
+import { useAgentConversationList } from "./useAgentConversationList";
 
 type WorkspacePhase = "loading" | "ready" | "unavailable" | "error";
+
+const EMPTY_WORKSPACE_SESSION_SOURCE: SessionSidebarSessionSource = {
+  sessions: [],
+  isLoading: false,
+  isLoadingMore: false,
+  hasMore: false,
+  loadMore: async () => {},
+  softRefresh: async () => {},
+  prependSession: () => {},
+  removeSession: () => {},
+  updateSession: () => {},
+};
 
 interface LoadedAgentWorkspace {
   agentId: string;
   revision: string;
   profile: AgentProfilePublicProjection;
-  sessionIds: ReadonlySet<string>;
+  startProfile: AgentProfilePublicProjection;
 }
 
-/** Recover one published revision before exposing the dedicated Agent workspace. */
+function historicalProfile(
+  identity: AgentConversationIdentity,
+): AgentProfilePublicProjection {
+  return {
+    agent_id: identity.agent_id,
+    expected_revision: identity.revision,
+    name: identity.name,
+    description: identity.description,
+    avatar_ref: identity.avatar_ref,
+    category: identity.category,
+  };
+}
+
+/** Recover one current or historical Agent revision before exposing canonical Chat. */
 export function AgentWorkspaceRoute() {
   const navigate = useNavigate();
-  const { agentId, revision } = useParams<{
+  const { agentId, revision, sessionId: routeSessionId } = useParams<{
     agentId?: string;
     revision?: string;
+    sessionId?: string;
   }>();
+  const parsedRevision = Number(revision);
+  const validRevision =
+    Number.isSafeInteger(parsedRevision) && parsedRevision > 0
+      ? parsedRevision
+      : undefined;
   const [phase, setPhase] = useState<WorkspacePhase>("loading");
+  const [profileRetry, setProfileRetry] = useState(0);
   const [loadedWorkspace, setLoadedWorkspace] =
     useState<LoadedAgentWorkspace | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -32,25 +72,62 @@ export function AgentWorkspaceRoute() {
     const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
     return saved !== null ? saved === "true" : false;
   });
+  const historyScopeAuthorized =
+    phase === "ready" &&
+    loadedWorkspace !== null &&
+    loadedWorkspace.agentId === agentId &&
+    loadedWorkspace.revision === revision;
+  const conversationList = useAgentConversationList(
+    historyScopeAuthorized ? agentId : undefined,
+    historyScopeAuthorized ? validRevision : undefined,
+  );
 
   useEffect(() => {
     let active = true;
     setPhase("loading");
     setLoadedWorkspace(null);
 
-    if (!agentId || !revision) {
+    if (!agentId || !revision || validRevision === undefined) {
       setPhase("unavailable");
       return () => {
         active = false;
       };
     }
 
-    void Promise.all([
-      agentProfileApi.getPublished(agentId),
-      agentProfileApi.listConversations(),
-    ])
-      .then(([currentProfile, conversations]) => {
+    const currentProfileRequest = agentProfileApi.getPublished(agentId);
+    const sessionRequest = routeSessionId
+      ? sessionApi.getAuthoritative(routeSessionId)
+      : Promise.resolve(null);
+    void Promise.all([currentProfileRequest, sessionRequest])
+      .then(([currentProfile, session]) => {
         if (!active) return;
+        if (currentProfile.agent_id !== agentId) {
+          setPhase("unavailable");
+          return;
+        }
+
+        if (session !== null) {
+          const identity = session.agent_conversation;
+          if (
+            session.session_id !== routeSessionId ||
+            session.agent_id !== agentId ||
+            !identity ||
+            identity.agent_id !== agentId ||
+            identity.revision !== validRevision
+          ) {
+            setPhase("unavailable");
+            return;
+          }
+          setLoadedWorkspace({
+            agentId,
+            revision,
+            profile: historicalProfile(identity),
+            startProfile: currentProfile,
+          });
+          setPhase("ready");
+          return;
+        }
+
         const exactProfile = selectPublishedMarketProfile(
           [currentProfile],
           agentId,
@@ -64,17 +141,7 @@ export function AgentWorkspaceRoute() {
           agentId,
           revision,
           profile: exactProfile,
-          sessionIds: new Set(
-            conversations
-              .filter(
-                (conversation) =>
-                  conversation.agent_conversation?.agent_id ===
-                    exactProfile.agent_id &&
-                  conversation.agent_conversation.revision ===
-                    exactProfile.expected_revision,
-              )
-              .map((conversation) => conversation.session_id),
-          ),
+          startProfile: currentProfile,
         });
         setPhase("ready");
       })
@@ -90,7 +157,7 @@ export function AgentWorkspaceRoute() {
     return () => {
       active = false;
     };
-  }, [agentId, revision]);
+  }, [agentId, profileRetry, revision, routeSessionId, validRevision]);
 
   useEffect(() => {
     if (phase === "unavailable") {
@@ -98,24 +165,19 @@ export function AgentWorkspaceRoute() {
     }
   }, [navigate, phase]);
 
-  const handleSetSidebarCollapsed = (collapsed: boolean) => {
+  const handleSetSidebarCollapsed = useCallback((collapsed: boolean) => {
     setSidebarCollapsed(collapsed);
     localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(collapsed));
     authApi.updateMetadata({ sidebarCollapsed: String(collapsed) }).catch(() => {});
-  };
+  }, []);
 
   // Route params can change before the passive fetch cleanup runs. Never let
-  // the previous URL's profile or Session allowlist reach canonical Chat.
+  // the previous URL's profile reach canonical Chat.
   const resolvedWorkspace =
     phase === "ready" &&
     loadedWorkspace !== null &&
     loadedWorkspace.agentId === agentId &&
-    loadedWorkspace.revision === revision &&
-    selectPublishedMarketProfile(
-      [loadedWorkspace.profile],
-      agentId,
-      revision,
-    ) === loadedWorkspace.profile
+    loadedWorkspace.revision === revision
       ? loadedWorkspace
       : null;
 
@@ -123,34 +185,78 @@ export function AgentWorkspaceRoute() {
     return (
       <ChatAppContent
         agentWorkspace={resolvedWorkspace.profile}
+        agentWorkspaceHistoryError={conversationList.error}
+        agentWorkspaceSessionSource={conversationList}
+        agentWorkspaceStartProfile={resolvedWorkspace.startProfile}
         mobileSidebarOpen={mobileSidebarOpen}
+        onAgentWorkspaceHistoryRetry={conversationList.refresh}
+        onAgentWorkspaceSessionCreated={() => void conversationList.refresh()}
         setMobileSidebarOpen={setMobileSidebarOpen}
         setSidebarCollapsed={handleSetSidebarCollapsed}
         sidebarCollapsed={sidebarCollapsed}
-        agentWorkspaceSessionIds={resolvedWorkspace.sessionIds}
-        onAgentWorkspaceSessionCreated={(sessionId) =>
-          setLoadedWorkspace((current) =>
-            current
-              ? {
-                  ...current,
-                  sessionIds: new Set(current.sessionIds).add(sessionId),
-                }
-              : null,
-          )
-        }
       />
     );
   }
 
+  const handleGenericSession = (sessionId: string) => {
+    setMobileSidebarOpen(false);
+    navigate(`/chat/${encodeURIComponent(sessionId)}`);
+  };
+  const handleGenericNewSession = () => {
+    setMobileSidebarOpen(false);
+    navigate("/chat");
+  };
+
   return (
-    <main
-      aria-live="polite"
-      className="flex min-h-screen items-center justify-center bg-[var(--theme-workbench-canvas)] px-4 text-sm text-[var(--theme-text-secondary)]"
-      data-agent-workspace-loading
+    <AppShell
+      activeTab="chat"
+      onNewSession={handleGenericNewSession}
+      setMobileSidebarOpen={setMobileSidebarOpen}
+      sidebar={
+        <SessionSidebar
+          currentSessionId={null}
+          isCollapsed={sidebarCollapsed}
+          mobileOpen={mobileSidebarOpen}
+          onMobileClose={() => setMobileSidebarOpen(false)}
+          onMobileOpen={() => setMobileSidebarOpen(true)}
+          onNewSession={handleGenericNewSession}
+          onSelectSession={handleGenericSession}
+          onToggleCollapsed={handleSetSidebarCollapsed}
+          sessionSource={EMPTY_WORKSPACE_SESSION_SOURCE}
+        />
+      }
     >
-      {phase === "error"
-        ? "暂时无法校验智能体工作区，请稍后返回市场重试。"
-        : "正在校验当前发布版本…"}
-    </main>
+      <main
+        aria-live="polite"
+        className="flex min-h-0 flex-1 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4 text-sm text-[var(--theme-text-secondary)]"
+        data-agent-workspace-loading
+      >
+        <div className="max-w-md text-center">
+          <p>
+            {phase === "error"
+              ? "暂时无法校验智能体工作区。"
+              : "正在校验当前智能体与会话权限…"}
+          </p>
+          {phase === "error" ? (
+            <div className="mt-4 flex justify-center gap-3">
+              <button
+                className="btn-primary"
+                onClick={() => setProfileRetry((current) => current + 1)}
+                type="button"
+              >
+                重新加载
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => navigate("/agent-market")}
+                type="button"
+              >
+                返回市场
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </main>
+    </AppShell>
   );
 }

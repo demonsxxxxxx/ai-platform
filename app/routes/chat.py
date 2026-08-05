@@ -23,6 +23,7 @@ from app.capability_distribution import (
     CapabilityAccessDecision,
     CapabilityAuthorizationDenial,
 )
+from app.chat_session_projection import session_response
 from app.context_builder import record_initial_context_snapshot
 from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
@@ -35,12 +36,10 @@ from app.intent_router import (
 from app.model_catalog import resolve_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
-    AgentConversationIdentity,
     ChatMessageResponse,
     ChatMessagesResponse,
     ChatSessionRequest,
     ChatSessionResponse,
-    ChatSessionsResponse,
     ChatStreamRequest,
     ChatStreamResponse,
     ChatSubmissionPreLedgerAbsenceResponse,
@@ -1122,33 +1121,6 @@ def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, o
     }
 
 
-def _session_response(row: dict[str, object]) -> ChatSessionResponse:
-    raw_agent_id = str(row["agent_id"])
-    profile_revision = row.get("admitted_agent_profile_revision")
-    profile_name = row.get("agent_profile_name")
-    agent_conversation = None
-    if isinstance(profile_revision, int) and profile_revision > 0 and isinstance(profile_name, str) and profile_name:
-        avatar_ref = str(row.get("agent_profile_avatar_ref") or "")
-        category = str(row.get("agent_profile_category") or "")
-        agent_conversation = AgentConversationIdentity(
-            agent_id=raw_agent_id,
-            revision=profile_revision,
-            name=profile_name,
-            description=str(row.get("agent_profile_description") or ""),
-            avatar_ref=avatar_ref if avatar_ref in {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"} else "builtin:agent",
-            category=category if category in {"general", "support", "writing", "research", "operations"} else "general",
-        )
-    return ChatSessionResponse(
-        session_id=str(row["id"]),
-        workspace_id=str(row["workspace_id"]),
-        agent_id=public_agent_id_for_projection(raw_agent_id) or raw_agent_id,
-        title=str(row.get("title") or ""),
-        agent_conversation=agent_conversation,
-        created_at=row.get("created_at"),
-        updated_at=row.get("updated_at"),
-    )
-
-
 def _message_metadata(row: dict[str, object], principal: AuthPrincipal) -> dict[str, Any]:
     metadata = row.get("metadata_json") or {}
     if not isinstance(metadata, dict):
@@ -1176,13 +1148,6 @@ async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -
     )
 
 
-@router.get("/chat/sessions", response_model=ChatSessionsResponse, response_model_exclude_none=True)
-async def list_sessions(principal: AuthPrincipal = Depends(require_principal)) -> ChatSessionsResponse:  # noqa: B008
-    async with transaction() as conn:
-        rows = await repositories.list_authorized_sessions(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
-    return ChatSessionsResponse(sessions=[_session_response(row) for row in rows])
-
-
 @router.get("/chat/sessions/{session_id}", response_model=ChatSessionResponse, response_model_exclude_none=True)
 async def get_session(
     session_id: str,
@@ -1199,7 +1164,7 @@ async def get_session(
         )
     if row is None:
         raise HTTPException(status_code=404, detail="session_not_found")
-    return _session_response(row)
+    return session_response(row)
 
 
 @router.post("/chat/sessions", response_model=ChatSessionResponse, response_model_exclude_none=True)
@@ -1221,7 +1186,7 @@ async def create_chat_session(
         )
         rows = await repositories.list_authorized_sessions(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
     row = next(item for item in rows if item["id"] == session_id)
-    return _session_response(row)
+    return session_response(row)
 
 
 @router.get("/chat/sessions/{session_id}/messages", response_model=ChatMessagesResponse)

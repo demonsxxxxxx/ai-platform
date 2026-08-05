@@ -14,6 +14,7 @@ await new Promise<void>((resolve) => setImmediate(resolve));
 
 const {
   AgentConversationIdentityBanner,
+  AgentWorkspaceWelcome,
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
   getChatToolAccess,
@@ -70,7 +71,7 @@ test("recovers an exact current Agent Conversation and keeps ordinary sessions g
   }
 });
 
-test("fails closed on revision drift and authoritative 403/404 recovery", async () => {
+test("keeps immutable revision history while current access remains authorized", async () => {
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetPublished = agentProfileApi.getPublished;
   sessionApi.getAuthoritative = async (sessionId) => {
@@ -98,9 +99,10 @@ test("fails closed on revision drift and authoritative 403/404 recovery", async 
   });
 
   try {
-    await assert.rejects(
-      recoverAgentConversationIdentity("session-stale"),
-      /agent_conversation_revision_mismatch/,
+    assert.deepEqual(
+      await recoverAgentConversationIdentity("session-stale"),
+      safeIdentity,
+      "a current N+1 publication must not rewrite or hide an owned revision N conversation",
     );
     await assert.rejects(
       recoverAgentConversationIdentity("session-denied"),
@@ -220,13 +222,41 @@ test("renders only safe Agent identity and locks MCP catalog controls", () => {
   assert.equal(exposeGenericChatControl("bound", retryMcpCatalog), undefined);
 });
 
-test("Agent workspace source filters the sidebar by server-authorized pinned session ids", () => {
+test("renders a productized Agent workspace welcome before creating a conversation", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(AgentWorkspaceWelcome, {
+      profile: {
+        ...safeWorkspace,
+        name: safeIdentity.name,
+        description: safeIdentity.description,
+        avatar_ref: safeIdentity.avatar_ref,
+        category: safeIdentity.category,
+      },
+      creating: false,
+      error: null,
+      historyError: null,
+      onStart: () => {},
+      onOpenDetail: () => {},
+    }),
+  );
+
+  assert.match(html, /data-agent-workspace-welcome/);
+  assert.match(html, /企业已发布/);
+  assert.match(html, /专属会话/);
+  assert.match(html, /企业受控能力/);
+  assert.match(html, /开始新对话/);
+  assert.doesNotMatch(html, /model_id|instructions|mcp_tool_ids|selected_skill/);
+});
+
+test("Agent workspace sidebar consumes the server-paginated session source", () => {
   const source = readFileSync(
     new URL("../ChatAppContent.tsx", import.meta.url),
     "utf8",
   );
 
-  assert.match(source, /agentWorkspaceSessionIds\?: ReadonlySet<string>/);
-  assert.match(source, /agentWorkspaceSessionIds\?\.has\(listedSession\.id\) \?\? false/);
+  assert.match(source, /agentWorkspaceSessionSource\?: SessionSidebarSessionSource/);
+  assert.match(source, /sessionSource=\{agentWorkspaceSessionSource\}/);
+  assert.match(source, /agentWorkspace && !agentWorkspaceSessionSource[\s\S]*\? \(\) => false/);
   assert.match(source, /onAgentWorkspaceSessionCreated\?\.\(session\.session_id\)/);
+  assert.match(source, /composerPlaceholder=\{[\s\S]*agentWorkspace\.name/);
 });

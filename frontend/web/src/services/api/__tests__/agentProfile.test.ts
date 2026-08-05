@@ -141,6 +141,8 @@ test("lists only server-authorized conversations with their immutable safe ident
             workspace_id: "default",
             agent_id: "agt_support",
             title: "支持助手",
+            created_at: "2026-07-29T00:00:00Z",
+            updated_at: "2026-07-30T00:00:00Z",
             agent_conversation: {
               agent_id: "agt_support",
               revision: 7,
@@ -152,35 +154,54 @@ test("lists only server-authorized conversations with their immutable safe ident
             },
           },
         ],
+        next_cursor: "cursor-page-2",
       }),
       { status: 200 },
     );
   }) as typeof fetch;
 
   try {
-    const sessions = await agentProfileApi.listConversations();
+    const page = await agentProfileApi.listConversations(
+      { agent_id: "agt_support", expected_revision: 7 },
+      { limit: 20 },
+    );
     assert.deepEqual(calls, [
-      { url: "/api/ai/chat/sessions", cache: "no-store" },
-    ]);
-    assert.deepEqual(sessions, [
       {
-        session_id: "session-agent",
-        workspace_id: "default",
-        agent_id: "agt_support",
-        title: "支持助手",
-        agent_conversation: {
-          agent_id: "agt_support",
-          revision: 7,
-          name: "支持助手",
-          description: "处理已授权的支持请求。",
-          avatar_ref: "builtin:assistant",
-          category: "support",
-        },
-        created_at: null,
-        updated_at: null,
+        url: "/api/ai/chat/sessions?agent_id=agt_support&revision=7&limit=20",
+        cache: "no-store",
       },
     ]);
-    assert.equal("model_id" in sessions[0]!.agent_conversation!, false);
+    assert.deepEqual(page, {
+      sessions: [
+        {
+          session_id: "session-agent",
+          workspace_id: "default",
+          agent_id: "agt_support",
+          title: "支持助手",
+          agent_conversation: {
+            agent_id: "agt_support",
+            revision: 7,
+            name: "支持助手",
+            description: "处理已授权的支持请求。",
+            avatar_ref: "builtin:assistant",
+            category: "support",
+          },
+          created_at: "2026-07-29T00:00:00Z",
+          updated_at: "2026-07-30T00:00:00Z",
+        },
+      ],
+      next_cursor: "cursor-page-2",
+    });
+    assert.equal("model_id" in page.sessions[0]!.agent_conversation!, false);
+
+    await agentProfileApi.listConversations(
+      { agent_id: "agt_support", expected_revision: 7 },
+      { cursor: "cursor+page/2=", limit: 50 },
+    );
+    assert.equal(
+      calls[1]?.url,
+      "/api/ai/chat/sessions?agent_id=agt_support&revision=7&limit=50&cursor=cursor%2Bpage%2F2%3D",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

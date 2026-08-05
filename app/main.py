@@ -11,6 +11,7 @@ from app.routes.admin_skills import router as admin_skills_router
 from app.routes.admin_tool_policies import router as admin_tool_policies_router
 from app.routes.auth import router as auth_router
 from app.routes.chat import router as chat_router
+from app.routes.chat_sessions import router as chat_sessions_router
 from app.routes.capability_distributions import router as capability_distributions_router
 from app.routes.context import router as context_router
 from app.routes.files import router as files_router
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/api/ai")
     app.include_router(auth_router, prefix="/api/ai")
     app.include_router(agent_profiles_router, prefix="/api/ai")
+    app.include_router(chat_sessions_router, prefix="/api/ai")
     app.include_router(chat_router, prefix="/api/ai")
     app.include_router(context_router, prefix="/api/ai")
     app.include_router(files_router, prefix="/api/ai")
@@ -77,5 +79,6 @@ def create_app() -> FastAPI:
     app.include_router(workbench_projections_router, prefix="/api")
     app.include_router(lambchat_compat_router, prefix="/api")
     app.include_router(mcp_router, prefix="/api")
+    app.include_router(chat_sessions_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
     return app

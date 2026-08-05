@@ -12,6 +12,7 @@ _authority = AgentProfileAuthority()
 
 __all__ = [
     "AgentProfileAdmission",
+    "get_public_profile",
     "list_admin_profiles",
     "list_public_profiles",
     "profile_public_projection",
@@ -51,6 +52,12 @@ async def list_public_profiles(conn, *, principal, query=None, category=None):
     """List public profiles through the authoritative module."""
 
     return await _authority.list_public(conn, principal=principal, query=query, category=category)
+
+
+async def get_public_profile(conn, *, principal, agent_id):
+    """Get one current public profile through the authoritative authorization path."""
+
+    return await _authority.get_public(conn, principal=principal, agent_id=agent_id)
 
 
 async def resolve_profile_for_admission(

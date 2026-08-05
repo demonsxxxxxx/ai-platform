@@ -11,7 +11,7 @@ from psycopg import sql as psycopg_sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
+from app import agent_conversation_repository, repositories
 from app import run_event_repository
 from app.repositories import (
     RepositoryConflictError,
@@ -12037,3 +12037,61 @@ async def test_get_admin_runtime_observability_summary_uses_run_totals_for_termi
     assert summary["latency_ms"] == {"avg": 250, "max": 300, "p50": 240, "p95": 295, "p99": 299}
     assert summary["token_counts"] == {"input": 10, "output": 20, "total": 30}
     assert summary["estimated_cost_minor"] == 7
+
+
+@pytest.mark.asyncio
+async def test_agent_conversation_history_query_is_principal_scoped_and_keyset_paginated():
+    class Cursor:
+        async def fetchall(self):
+            return [{"id": "ses_older"}]
+
+    class RecordingConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()).lower(), params))
+            return Cursor()
+
+    updated_at = datetime(2026, 8, 3, 1, tzinfo=timezone.utc)
+    created_at = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    conn = RecordingConnection()
+
+    rows = await agent_conversation_repository.list_authorized_agent_conversations(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        agent_id="agt_support",
+        revision=7,
+        cursor=(updated_at, created_at, "ses_boundary"),
+        limit=21,
+    )
+
+    assert rows == [{"id": "ses_older"}]
+    sql, params = conn.calls[-1]
+    assert "sessions.tenant_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "sessions.agent_id = %s" in sql
+    assert "sessions.admitted_agent_profile_revision = %s" in sql
+    assert "sessions.status = 'active'" in sql
+    assert "join agent_profile_revisions profile" in sql
+    assert "profile.content_hash = sessions.admitted_agent_profile_hash" in sql
+    assert "sessions.updated_at < %s" in sql
+    assert "sessions.id < %s" in sql
+    assert (
+        "order by sessions.updated_at desc, sessions.created_at desc, sessions.id desc"
+        in sql
+    )
+    assert params == (
+        "tenant-a",
+        "user-a",
+        "agt_support",
+        7,
+        updated_at,
+        updated_at,
+        created_at,
+        updated_at,
+        created_at,
+        "ses_boundary",
+        21,
+    )

@@ -1,0 +1,20 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "d3d7a55b7ed123d69cbfaa0e997068ef1ec8acc2",
+    "scope_sha256": "533489a1933b5152ab244724457822c2ec068441da8887e1f838b3f16c17727a"
+  },
+  "expires_on": "2026-08-18",
+  "owner": "agent-platform",
+  "reason": "Issue #754 is one atomic Agent Market contract slice: the server-authorized revision-pinned conversation API, dedicated history rail, and bound Chat UI must ship together to prevent mixed-version session behavior.",
+  "violations": [
+    {
+      "code": "production_file_count",
+      "path": null
+    },
+    {
+      "code": "production_subsystem_count",
+      "path": null
+    }
+  ]
+}
