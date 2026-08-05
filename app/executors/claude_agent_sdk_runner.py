@@ -78,6 +78,7 @@ _SDK_SELECTED_SKILL_NOT_INVOKED = "claude_agent_sdk_selected_skill_not_invoked"
 _SDK_SELECTED_SKILL_HOOK_FAILED = "claude_agent_sdk_selected_skill_hook_failed"
 _SDK_SELECTED_SKILL_NOT_AUTHORIZED = "claude_agent_sdk_selected_skill_not_authorized"
 _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
+_SDK_CANCELLED = "claude_agent_sdk_cancelled"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
 _MAX_REQUIRED_ANSWER_TEXT_CHARS = 4_096
@@ -101,6 +102,7 @@ _TURN_LIMIT_ERROR_PATTERN = re.compile(
     r"max(?:imum)?[_ -]?turns?(?:[_ -]?(?:exceeded|reached))?",
     re.IGNORECASE,
 )
+_SDK_SKILL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_session_messages",
     "read_context_file",
@@ -318,18 +320,23 @@ def _canonical_sdk_error(
     *,
     result_subtype: object = "",
     stop_reason: object = "",
+    terminal_reason: object = "",
     selected_skill_error: str | None = None,
     tool_admission_denials: int = 0,
 ) -> str:
     error_text = str(raw_error or "").strip()
     subtype = str(result_subtype or "").strip().casefold()
     stop = str(stop_reason or "").strip().casefold()
+    terminal = str(terminal_reason or "").strip().casefold()
     if (
         subtype in {"error_max_turns", "max_turns", "max_turns_exceeded"}
         or stop in {"max_turns", "max_turns_exceeded"}
+        or terminal in {"max_turns", "max_turns_exceeded"}
         or _TURN_LIMIT_ERROR_PATTERN.search(error_text)
     ):
         return _SDK_TURN_LIMIT_EXCEEDED
+    if terminal in {"aborted_streaming", "aborted_tools", "cancelled", "canceled"}:
+        return _SDK_CANCELLED
     if error_text == _SDK_TIMEOUT:
         return _SDK_TIMEOUT
     if error_text == _SDK_MISSING_STRUCTURED_TERMINAL:
@@ -1407,6 +1414,16 @@ async def run_claude_agent_sdk(
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
     configured_skills = skills if skills is not None else (_split_csv(settings.claude_agent_sdk_skills) or [skill_id])
+    if any(
+        not isinstance(name, str) or _SDK_SKILL_NAME_PATTERN.fullmatch(name) is None
+        for name in configured_skills
+    ):
+        error_code = _SDK_TOOL_ADMISSION_FAILED
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True,
+            error=error_code,
+            turn_diagnostics=turn_diagnostics(error_code),
+        )
     selected_sdk_skill = (
         skill_id
         if skill_id != "general-chat" and skill_id in configured_skills
@@ -2072,6 +2089,12 @@ async def run_claude_agent_sdk(
                     diagnostic_counters["tool_admission_denials"] += len(permission_denials)
                 result_session_id = message.session_id
                 usage = message.usage or message.model_usage or {}
+                sdk_terminal_reason = getattr(message, "terminal_reason", None)
+                resolved_terminal_reason = (
+                    str(sdk_terminal_reason).strip()
+                    if isinstance(sdk_terminal_reason, str) and sdk_terminal_reason.strip()
+                    else None
+                )
                 if message.is_error:
                     answer_stream_gate.finish(final_text="", release=False)
                     raw_error = (
@@ -2084,6 +2107,7 @@ async def run_claude_agent_sdk(
                         raw_error,
                         result_subtype=getattr(message, "subtype", ""),
                         stop_reason=getattr(message, "stop_reason", ""),
+                        terminal_reason=resolved_terminal_reason,
                         selected_skill_error=selected_skill_hook_error(),
                         tool_admission_denials=diagnostic_counters["tool_admission_denials"],
                     )
@@ -2093,15 +2117,42 @@ async def run_claude_agent_sdk(
                         session_id=result_session_id,
                         usage=usage,
                         error=error_code,
+                        terminal_reason=resolved_terminal_reason,
                         used_skills=list(used_skill_names),
                         used_skills_source="executor_hook" if used_skill_names else "",
                         turn_diagnostics=turn_diagnostics(error_code),
                         capability_evidence=list(capability_evidence),
                     )
+                abnormal_terminal_error = _canonical_sdk_error(
+                    "",
+                    terminal_reason=resolved_terminal_reason,
+                ) if resolved_terminal_reason in {
+                    "max_turns",
+                    "max_turns_exceeded",
+                    "aborted_streaming",
+                    "aborted_tools",
+                    "cancelled",
+                    "canceled",
+                } else None
+                if abnormal_terminal_error is not None:
+                    answer_stream_gate.finish(final_text="", release=False)
+                    return ClaudeAgentSdkRunResult(
+                        used_sdk=True,
+                        message="",
+                        session_id=result_session_id,
+                        usage=usage,
+                        error=abnormal_terminal_error,
+                        terminal_reason=resolved_terminal_reason,
+                        received_structured_terminal=False,
+                        used_skills=list(used_skill_names),
+                        used_skills_source="executor_hook" if used_skill_names else "",
+                        turn_diagnostics=turn_diagnostics(abnormal_terminal_error),
+                        capability_evidence=list(capability_evidence),
+                    )
                 received_structured_terminal = True
                 structured_result_text = str(message.result or "").strip()
                 stop_reason = getattr(message, "stop_reason", None)
-                terminal_reason = (
+                terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip() if isinstance(stop_reason, str) and stop_reason.strip() else None
                 )
                 break
