@@ -21,6 +21,7 @@ from app.capability_distribution import (
     is_valid_archive_actor,
     resolve_capability_access,
 )
+from app.context.file_continuity import compatible_reusable_file_ids, has_file_input_mode
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     AUDIT_EVENT_SCHEMA_VERSION,
@@ -1279,6 +1280,15 @@ async def list_session_context_files(
           from files
           join sessions on sessions.id = files.session_id and sessions.tenant_id = files.tenant_id
           join runs on runs.id = files.run_id and runs.tenant_id = files.tenant_id
+          join run_context_snapshots authorized_snapshot
+            on authorized_snapshot.id = runs.context_snapshot_id
+            and authorized_snapshot.tenant_id = runs.tenant_id
+            and authorized_snapshot.workspace_id = runs.workspace_id
+            and authorized_snapshot.user_id = runs.user_id
+            and authorized_snapshot.session_id = runs.session_id
+            and authorized_snapshot.run_id = runs.id
+            and authorized_snapshot.context_kind = 'executor'
+            and authorized_snapshot.included_file_ids ? files.id
           where files.tenant_id = %s
             and files.workspace_id = %s
             and files.user_id = %s
@@ -1289,6 +1299,8 @@ async def list_session_context_files(
             and runs.workspace_id = files.workspace_id
             and runs.user_id = files.user_id
             and runs.session_id = files.session_id
+            and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
+            and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
             and runs.session_generation is not null
             and runs.session_generation < (select session_generation from current_run)
           order by runs.session_generation desc, files.created_at desc, files.id desc
@@ -11429,6 +11441,7 @@ async def authorize_files_for_run(
     session_id: str,
     run_id: str,
     file_ids: list[str],
+    input_modes: list[object] | None = None,
 ) -> list[dict[str, Any]]:
     """Lock and validate run input files before any run creation side effect."""
 
@@ -11436,7 +11449,8 @@ async def authorize_files_for_run(
     for file_id in file_ids:
         cursor = await conn.execute(
             """
-            select id, tenant_id, workspace_id, user_id, session_id, run_id
+            select id, tenant_id, workspace_id, user_id, session_id, run_id,
+                   original_name, content_type, size_bytes, sha256
             from files
             where id = %s
             for update
@@ -11455,6 +11469,10 @@ async def authorize_files_for_run(
         if row["run_id"] and row["run_id"] != run_id:
             raise RepositoryConflictError("file_already_bound")
         rows.append(dict(row))
+    if input_modes is not None and has_file_input_mode(input_modes):
+        compatible_ids = compatible_reusable_file_ids(rows, input_modes=input_modes)
+        if len(compatible_ids) != len(rows):
+            raise RepositoryConflictError("file_required_for_skill")
     return rows
 
 

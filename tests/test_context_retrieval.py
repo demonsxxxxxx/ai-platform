@@ -299,7 +299,7 @@ async def test_artifact_tools_cannot_resolve_or_stage_an_uploaded_file_id(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_read_context_file_rejects_binary_xlsx_instead_of_utf8_decoding():
+async def test_read_context_file_rejects_invalid_binary_xlsx_instead_of_utf8_decoding():
     retrieval = ContextRetrieval(
         InMemoryContextRetrievalRepository(
             files=[
@@ -318,7 +318,7 @@ async def test_read_context_file_rejects_binary_xlsx_instead_of_utf8_decoding():
         )
     )
 
-    with pytest.raises(ContextRetrievalDenied, match="context_file_parser_required"):
+    with pytest.raises(ContextRetrievalDenied, match="context_file_parse_failed"):
         await retrieval.read_context_file(
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -397,7 +397,8 @@ async def test_stage_context_file_to_workspace_accepts_snapshot_authorized_prior
             return {
                 "file_id": "file-prior",
                 "run_id": "run-prior",
-                "original_name": "source.docx",
+                "original_name": "source.txt",
+                "content_type": "text/plain",
                 "size_bytes": 5,
                 "content": b"docx!",
             }
@@ -417,8 +418,8 @@ async def test_stage_context_file_to_workspace_accepts_snapshot_authorized_prior
         workspace_root=str(tmp_path),
     )
 
-    assert result["workspace_path"] == "context/file-prior/source.docx"
-    assert (tmp_path / "context" / "file-prior" / "source.docx").read_bytes() == b"docx!"
+    assert result["workspace_path"] == "context/file-prior/source.txt"
+    assert (tmp_path / "context" / "file-prior" / "source.txt").read_bytes() == b"docx!"
 
 
 @pytest.mark.asyncio
@@ -525,6 +526,7 @@ async def test_stage_context_file_to_workspace_uses_stable_file_prefix_to_avoid_
                     "run_id": "run-a",
                     "file_id": "file-a",
                     "original_name": "source.txt",
+                    "content_type": "text/plain",
                     "content": "alpha",
                 },
                 {
@@ -535,6 +537,7 @@ async def test_stage_context_file_to_workspace_uses_stable_file_prefix_to_avoid_
                     "run_id": "run-a",
                     "file_id": "file-b",
                     "original_name": "source.txt",
+                    "content_type": "text/plain",
                     "content": "bravo",
                 },
             ]
@@ -578,7 +581,8 @@ async def test_stage_context_file_to_workspace_normalizes_windows_path_separator
                     "session_id": "session-a",
                     "run_id": "run-a",
                     "file_id": "file-a",
-                    "original_name": "..\\..\\.claude\\settings.json",
+                    "original_name": "..\\..\\.claude\\settings.txt",
+                    "content_type": "text/plain",
                     "content": "safe staged content",
                 }
             ]
@@ -595,8 +599,8 @@ async def test_stage_context_file_to_workspace_normalizes_windows_path_separator
         workspace_root=str(tmp_path),
     )
 
-    assert result["workspace_path"] == "context/file-a/settings.json"
-    assert (tmp_path / "context" / "file-a" / "settings.json").read_text(encoding="utf-8") == "safe staged content"
+    assert result["workspace_path"] == "context/file-a/settings.txt"
+    assert (tmp_path / "context" / "file-a" / "settings.txt").read_text(encoding="utf-8") == "safe staged content"
     assert not (tmp_path / ".claude" / "settings.json").exists()
 
 
@@ -618,6 +622,7 @@ async def test_stage_context_file_to_workspace_rejects_symlinked_context_parent(
                     "run_id": "run-a",
                     "file_id": "file-a",
                     "original_name": "source.txt",
+                    "content_type": "text/plain",
                     "content": "must not escape workspace",
                 }
             ]
@@ -648,7 +653,7 @@ async def test_repository_context_retrieval_reads_file_through_scoped_repository
             "id": kwargs["file_id"],
             "original_name": "source.txt",
             "content_type": "text/plain",
-            "size_bytes": 64,
+            "size_bytes": 30,
             "storage_key": "tenants/tenant-a/private/source.txt",
         }
 
