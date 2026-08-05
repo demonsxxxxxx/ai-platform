@@ -14,6 +14,14 @@ FRONTEND_DOCKERFILE_PATH = Path("frontend/web/Dockerfile")
 FRONTEND_NGINX_TEMPLATE_PATH = Path("frontend/web/nginx.conf.template")
 FRONTEND_COMPOSE_RUNTIME_PATH = Path("deploy/ai-platform/docker-compose.yml")
 DIST_BUILD_PROVENANCE_FILENAME = "ai-platform-build-provenance.json"
+FRONTEND_NODE_BASE = (
+    "node:22.23.2-bookworm@"
+    "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
+)
+FRONTEND_NGINX_BASE = (
+    "nginx:1.27.5-alpine@"
+    "sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
+)
 CI_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "corepack pnpm run ci:verify",
@@ -45,8 +53,9 @@ WORKFLOW_COMMANDS = [
     "python tools/deploy_frontend_static.py --help",
     "python tools/frontend_packaged_runtime_smoke.py --format json",
     "docker build",
-    "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
+    '--build-arg AI_PLATFORM_BUILD_COMMIT="$IMAGE_SOURCE_COMMIT"',
     "--build-arg AI_PLATFORM_BUILD_DIRTY=false",
+    '--build-arg AI_PLATFORM_BUILD_REPOSITORY="$IMAGE_SOURCE_REPOSITORY"',
     "-f frontend/web/Dockerfile",
     "docker run --rm --entrypoint cat",
     "ai-platform-build-provenance.json",
@@ -76,6 +85,8 @@ PACKAGED_DELIVERY_FORBIDDEN_TERMS = [
 ]
 PACKAGED_DELIVERY_REQUIRED_TERMS = {
     FRONTEND_DOCKERFILE_PATH: {
+        "dockerfile_node_base_digest_required": f"FROM {FRONTEND_NODE_BASE} AS build",
+        "dockerfile_nginx_base_digest_required": f"FROM {FRONTEND_NGINX_BASE} AS runtime",
         "dockerfile_build_commit_arg_required": "ARG AI_PLATFORM_BUILD_COMMIT=unknown",
         "dockerfile_build_dirty_arg_required": "ARG AI_PLATFORM_BUILD_DIRTY=unknown",
         "dockerfile_build_commit_env_required": "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}",
@@ -109,7 +120,13 @@ FORMAL_FRONTEND_RUNTIME_REQUIRED_TERMS = {
 
 
 def _dockerfile_has_debian_build_stage(content: str) -> bool:
-    return re.search(r"(?im)^\s*FROM\s+node:22-bookworm\s+AS\s+build\s*$", content) is not None
+    return (
+        re.search(
+            rf"(?im)^\s*FROM\s+{re.escape(FRONTEND_NODE_BASE)}\s+AS\s+build\s*$",
+            content,
+        )
+        is not None
+    )
 
 
 def _sha256(path: Path) -> str:

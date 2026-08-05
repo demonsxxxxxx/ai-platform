@@ -40,12 +40,17 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "python tools/frontend_release_traceability.py --format json" in workflow
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in workflow
     assert "docker build" in workflow
-    assert "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}" in workflow
+    assert '--build-arg AI_PLATFORM_BUILD_COMMIT="$IMAGE_SOURCE_COMMIT"' in workflow
     assert "--build-arg AI_PLATFORM_BUILD_DIRTY=false" in workflow
+    assert '--build-arg AI_PLATFORM_BUILD_REPOSITORY="$IMAGE_SOURCE_REPOSITORY"' in workflow
     assert "-f frontend/web/Dockerfile" in workflow
     assert "docker run --rm --entrypoint cat" in workflow
     assert "ai-platform-build-provenance.json" in workflow
     assert "paths:" not in workflow.split("workflow_dispatch:", 1)[0]
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow
+    assert "persist-credentials: false" in workflow
+    assert 'labels["org.opencontainers.image.revision"]' in workflow
+    assert 'labels["ai-platform.source-repository"]' in workflow
 
     pytest_install_index = workflow.index("python -m pip install pytest pyyaml")
     deploy_test_index = workflow.index(PYTEST_COMMAND)

@@ -16,6 +16,8 @@ does not represent deployed runtime state.
 - `architecture/sandbox-runtime-control-layer.md` defines the Sandbox Runtime
   application authority, target lifecycle, ownership fences, provider port, and
   staged recovery model.
+- `architecture/docker-packaging.md` defines reproducible dependency and base-image
+  inputs plus the CI-only application image acceptance boundary.
 
 ## Operations
 

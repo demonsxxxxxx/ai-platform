@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
-BACKEND_DEPENDENCY_PATHS = frozenset({"pyproject.toml", "Dockerfile"})
+BACKEND_DEPENDENCY_PATHS = frozenset({"pyproject.toml", "uv.lock", "Dockerfile"})
 FRONTEND_DEPENDENCY_PATHS = frozenset(
     {
         "frontend/web/.npmrc",

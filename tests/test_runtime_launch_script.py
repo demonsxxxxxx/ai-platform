@@ -213,7 +213,11 @@ def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabli
 
     assert "ARG APT_MIRROR" in content
     assert "ARG APT_SECURITY_MIRROR" in content
-    assert content.count("FROM python:3.11-slim-bookworm") == 2
+    python_base = (
+        "python:3.13.14-slim-bookworm@"
+        "sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8"
+    )
+    assert content.count(f"FROM {python_base}") == 2
     assert "http://deb.debian.org/debian-security" in content
     assert "https://deb.debian.org/debian-security" in content
     assert "http://security.debian.org/debian-security" in content

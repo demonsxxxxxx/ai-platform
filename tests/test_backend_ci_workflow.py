@@ -25,6 +25,9 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "- main" in pull_request_block
     assert "paths:" not in pull_request_block
     assert "name: backend required" in workflow
+    assert "needs: [sandbox-provider, backend-image]" in workflow
+    assert "name: packaged backend image build" in workflow
+    assert "if: ${{ always() }}" in workflow
     assert "python -m compileall -q app tools scripts" in workflow
     assert "tests/test_b2_sandbox_readiness.py" in workflow
     assert "tests/test_backend_ci_workflow.py" in workflow
@@ -151,12 +154,11 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     assert "persist-credentials: false" in workflow
     assert "persist-credentials: true" not in workflow
     assert "pull_request_target:" not in workflow
-    assert "ref: ${{ github.event.pull_request.head.sha" not in workflow
 
     governance_step = workflow.split("- name: Run code governance", 1)[1].split(
         "- name: Checkout validated pull request head for existing checks", 1
     )[0]
-    install_start = workflow.index("- name: Install backend dependencies")
+    install_start = workflow.index("- name: Install trusted-base governance dependency")
     governance_start = workflow.index("- name: Run code governance")
     pre_governance = workflow[:governance_start]
     assert (
@@ -302,15 +304,18 @@ def test_python_safe_path_blocks_a_head_root_ruff_module(tmp_path: Path):
     assert "head ruff.py was imported" not in completed.stderr
 
 
-def test_code_governance_uses_test_extra_and_propagates_pr_failures():
+def test_code_governance_uses_exact_trusted_base_bootstrap_and_propagates_pr_failures():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    install_start = workflow.index("- name: Install backend dependencies")
+    install_start = workflow.index("- name: Install trusted-base governance dependency")
     governance_start = workflow.index("- name: Run code governance")
     governance_step = workflow[governance_start : workflow.index("- name: Run sandbox provider targeted tests")]
 
     assert install_start < governance_start
-    assert 'pyproject["project"]["optional-dependencies"]["test"]' in workflow
+    assert "python -m pip install ruff==0.11.13" in workflow
+    assert "python -m pip install --upgrade pip" not in workflow
+    assert "uv lock --check" in workflow
+    assert "uv sync --locked --extra test --no-install-project" in workflow
     assert "continue-on-error:" not in governance_step
     assert "|| true" not in governance_step
     assert "set +e" not in governance_step
@@ -326,10 +331,19 @@ def test_existing_pr_checks_switch_to_the_validated_head_after_governance():
         "- name: Checkout validated pull request head for existing checks"
     )
     compile_start = workflow.index("- name: Compile backend sources")
+    locked_install_start = workflow.index(
+        "- name: Install candidate dependencies from the lock authority"
+    )
     pytest_start = workflow.index("- name: Run sandbox provider targeted tests")
     head_checkout = workflow[head_checkout_start:pytest_start]
 
-    assert governance_start < head_checkout_start < compile_start < pytest_start
+    assert (
+        governance_start
+        < head_checkout_start
+        < locked_install_start
+        < compile_start
+        < pytest_start
+    )
     assert "if: github.event_name == 'pull_request'" in head_checkout
     assert (
         "VALIDATED_PR_HEAD_REF: ${{ github.event.pull_request.head.sha }}"
@@ -342,6 +356,29 @@ def test_existing_pr_checks_switch_to_the_validated_head_after_governance():
     )
     assert 'git checkout --detach "$VALIDATED_PR_HEAD_REF"' in head_checkout
     assert 'test "$(git rev-parse HEAD)" = "$VALIDATED_PR_HEAD_REF"' in head_checkout
+
+
+def test_backend_image_job_builds_every_candidate_and_checks_the_runtime_contract():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    image_job = workflow.split("  backend-image:", 1)[1].split("  required:", 1)[0]
+
+    assert "paths:" not in workflow
+    assert "if:" not in image_job
+    assert "needs: sandbox-provider" in image_job
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in image_job
+    assert "persist-credentials: false" in image_job
+    assert "docker build" in image_job
+    assert "-f Dockerfile" in image_job
+    assert "uv.lock" not in image_job  # The real Docker build proves lock consumption.
+    assert 'config["User"] == "10001:10001"' in image_job
+    assert 'config["Entrypoint"] == ["/app/docker-entrypoint.sh"]' in image_job
+    assert 'labels["org.opencontainers.image.revision"]' in image_job
+    assert 'labels["ai-platform.source-repository"]' in image_job
+    assert '--env IMAGE_SOURCE_COMMIT="$IMAGE_SOURCE_COMMIT"' in image_job
+    assert "import app.main, claude_agent_sdk" in image_job
+    assert "http://127.0.0.1:18020/api/ai/health" in image_job
+    assert "docker push" not in image_job
+    assert "docker compose" not in image_job.lower()
 
 
 def test_backend_required_contract_preserves_high_risk_design_triggers():
