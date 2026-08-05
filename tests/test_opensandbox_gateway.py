@@ -157,9 +157,7 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
         "SANDBOX_CALLBACK_BASE_URL": config.callback_upstream_base,
         "AI_PLATFORM_EXECUTOR_AUTH_TOKEN": "executor-" + "d" * 32,
         "OPENAI_BASE_URL": config.openai_upstream_base,
-        "OPENAI_API_KEY": "test-openai-secret",
         "ANTHROPIC_BASE_URL": config.anthropic_upstream_base,
-        "ANTHROPIC_AUTH_TOKEN": "test-anthropic-secret",
     }
     return {
         "image": {"image": IMAGE},
@@ -256,6 +254,10 @@ def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> No
     sent = json.loads(lifecycle.requests[0][2])
     assert sent["env"]["AI_PLATFORM_CALLBACK_BASE_URL"] == "http://127.0.0.1:18888"
     assert sent["env"]["OPENAI_BASE_URL"] == "http://127.0.0.1:18888/model/openai"
+    assert sent["env"]["OPENAI_API_KEY"] == "opensandbox-host-broker"
+    assert sent["env"]["ANTHROPIC_AUTH_TOKEN"] == "opensandbox-host-broker"
+    assert "test-openai-secret" not in repr(lifecycle.requests)
+    assert "test-anthropic-secret" not in repr(lifecycle.requests)
     assert "test-openai-secret" not in repr(runtime.evidence)
     attestation = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
     assert attestation.status == 200
@@ -374,6 +376,11 @@ def test_auth_size_path_redirect_and_tls_fail_closed() -> None:
         (lambda value: value.update(image="registry.example/executor:latest"), "immutable_image_mismatch"),
         (lambda value: value["volumes"][0].update(host={"path": "/etc"}), "host_path_not_scoped"),
         (lambda value: value["env"].update(HTTPS_PROXY="https://proxy.example"), "proxy_environment_not_allowed"),
+        (lambda value: value["env"].update(OPENAI_API_KEY="legacy-provider-secret"), "provider_credential_not_allowed"),
+        (
+            lambda value: value["env"].update(ANTHROPIC_AUTH_TOKEN="legacy-provider-secret"),
+            "provider_credential_not_allowed",
+        ),
         (lambda value: value.update(entrypoint=["sh"]), "entrypoint_mismatch"),
     ],
 )
