@@ -4115,36 +4115,22 @@ async def create_session(
 ) -> str:
     resolved_id = session_id or new_id("ses")
     await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
-    if session_id:
-        cursor = await conn.execute(
-            """
-            select id, tenant_id, workspace_id, user_id, agent_id,
-                   admitted_agent_profile_revision, admitted_agent_profile_hash
-            from sessions
-            where id = %s
-            """,
-            (session_id,),
-        )
-        row = await cursor.fetchone()
-        if row is not None:
-            if row["tenant_id"] != tenant_id or row["workspace_id"] != workspace_id or row["agent_id"] != agent_id:
-                raise RepositoryConflictError("session_scope_mismatch")
-            if row["user_id"] and user_id and row["user_id"] != user_id:
-                raise RepositoryConflictError("session_user_mismatch")
-            if (
-                row.get("admitted_agent_profile_revision") != admitted_agent_profile_revision
-                or row.get("admitted_agent_profile_hash") != admitted_agent_profile_hash
-            ):
-                raise RepositoryConflictError("session_agent_profile_mismatch")
-            return resolved_id
-    await conn.execute(
+    cursor = await conn.execute(
         """
         insert into sessions(
           id, tenant_id, workspace_id, user_id, agent_id, title,
           admitted_agent_profile_revision, admitted_agent_profile_hash
         )
         values (%s, %s, %s, %s, %s, %s, %s, %s)
-        on conflict (id) do nothing
+        on conflict (id) do update
+        set id = excluded.id
+        where sessions.tenant_id = excluded.tenant_id
+          and sessions.workspace_id = excluded.workspace_id
+          and sessions.user_id is not distinct from excluded.user_id
+          and sessions.agent_id = excluded.agent_id
+          and sessions.admitted_agent_profile_revision is not distinct from excluded.admitted_agent_profile_revision
+          and sessions.admitted_agent_profile_hash is not distinct from excluded.admitted_agent_profile_hash
+        returning sessions.id
         """,
         (
             resolved_id,
@@ -4157,6 +4143,9 @@ async def create_session(
             admitted_agent_profile_hash,
         ),
     )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryConflictError("session_scope_mismatch")
     return resolved_id
 
 

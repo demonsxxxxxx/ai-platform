@@ -1,17 +1,13 @@
 {
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
-    "base_ref": "d3d7a55b7ed123d69cbfaa0e997068ef1ec8acc2",
-    "scope_sha256": "533489a1933b5152ab244724457822c2ec068441da8887e1f838b3f16c17727a"
+    "base_ref": "b0e30f506e0ea989c1b2ae2d47b35ada5561d68a",
+    "scope_sha256": "3ea7ad0117fc3abe86ea891f11b5f0c23170db230baeaacd9e88252514f0b464"
   },
-  "expires_on": "2026-08-18",
+  "expires_on": "2026-08-19",
   "owner": "agent-platform",
-  "reason": "Issue #754 is one atomic Agent Market contract slice: the server-authorized revision-pinned conversation API, dedicated history rail, and bound Chat UI must ship together to prevent mixed-version session behavior.",
+  "reason": "Issue #818 is one atomic datastore safety slice: PostgreSQL session identity, Redis bounded runtime state, and deployment readiness must change together so Agent conversations cannot be admitted through a falsely healthy or inconsistent runtime.",
   "violations": [
-    {
-      "code": "production_file_count",
-      "path": null
-    },
     {
       "code": "production_subsystem_count",
       "path": null

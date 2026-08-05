@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     database_pool_max_waiting: int = Field(default=100)
     database_pool_close_timeout_seconds: float = Field(default=5.0)
     redis_url: str = Field(default="redis://localhost:63799/0")
+    datastore_readiness_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     queue_key_prefix: str = Field(default="ai-platform:runs")
 
     s3_endpoint_url: str = Field(default="http://localhost:9009")
@@ -76,6 +77,7 @@ class Settings(BaseSettings):
     queue_insight_scan_limit: int = Field(default=500)
     queue_lease_visibility_timeout_seconds: int = Field(default=900)
     queue_metadata_fallback_scan_limit: int = Field(default=500)
+    queue_dead_letter_max_entries: int = Field(default=1000, ge=1, le=100000)
     worker_heartbeat_ttl_seconds: float = Field(default=60.0)
     worker_maintenance_interval_seconds: float = Field(default=30.0)
     stale_run_reconciliation_seconds: int = Field(default=900, ge=60, le=86400)
