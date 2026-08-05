@@ -1080,6 +1080,64 @@ def _streaming_sdk(captured, events, *, on_before_result=None, result_text="term
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sdk_terminal_reason", "expected_error"),
+    [
+        ("max_turns", "claude_agent_sdk_turn_limit_exceeded"),
+        ("aborted_streaming", "claude_agent_sdk_cancelled"),
+        ("aborted_tools", "claude_agent_sdk_cancelled"),
+    ],
+)
+async def test_sdk_target_terminal_reason_fails_closed_for_non_success_outcomes(
+    monkeypatch,
+    tmp_path,
+    sdk_terminal_reason,
+    expected_error,
+):
+    captured = {}
+    sdk = _streaming_sdk(captured, [], result_text="must not be published")
+    sdk.ResultMessage.terminal_reason = sdk_terminal_reason
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    deltas = []
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        on_text=deltas.append,
+    )
+
+    assert result.error == expected_error
+    assert result.terminal_reason == sdk_terminal_reason
+    assert result.received_structured_terminal is False
+    assert result.message == ""
+    assert deltas == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hostile_name", ["qa-review,Skill(other)", " qa-review", "/qa-review", "qa\nreview"])
+async def test_sdk_rejects_hostile_skill_names_before_options_construction(
+    monkeypatch,
+    tmp_path,
+    hostile_name,
+):
+    captured = {}
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="review",
+        cwd=tmp_path,
+        skill_id=hostile_name,
+        skills=[hostile_name],
+    )
+
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert captured == {}
+
+
 def _sandbox_brokered_settings():
     return _settings()
 
@@ -1212,3 +1270,71 @@ async def test_governed_unfinished_stream_fails_closed_without_terminal_replay(m
     assert captured["include_partial_messages"] is True
     assert result.error == "claude_agent_sdk_tool_admission_failed"
     assert deltas == ["safe partial must "]
+
+
+@pytest.mark.asyncio
+async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_path):
+    started = asyncio.Event()
+    cleaned_up = asyncio.Event()
+
+    class AssistantMessage:
+        pass
+
+    class TextBlock:
+        pass
+
+    class StreamEvent:
+        pass
+
+    class ResultMessage:
+        pass
+
+    class HookMatcher:
+        def __init__(self, *, matcher, hooks):
+            self.matcher = matcher
+            self.hooks = hooks
+
+    class ClaudeAgentOptions:
+        def __init__(self, **_kwargs):
+            pass
+
+    async def query(*, prompt, options):
+        del options
+        _ = [item async for item in prompt]
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned_up.set()
+        if False:
+            yield ResultMessage()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        types.SimpleNamespace(
+            AssistantMessage=AssistantMessage,
+            ClaudeAgentOptions=ClaudeAgentOptions,
+            HookMatcher=HookMatcher,
+            ResultMessage=ResultMessage,
+            StreamEvent=StreamEvent,
+            TextBlock=TextBlock,
+            query=query,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    task = asyncio.create_task(
+        run_claude_agent_sdk(
+            prompt="cancel me",
+            cwd=tmp_path,
+            skill_id="general-chat",
+            execution_policy="worker_local_legacy",
+        )
+    )
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cleaned_up.is_set()
