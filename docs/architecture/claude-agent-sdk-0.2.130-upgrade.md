@@ -1,8 +1,8 @@
-# Claude Agent SDK 0.2.129 And Runtime Capacity Profile
+# Claude Agent SDK 0.2.130 And Runtime Capacity Profile
 
 ## Decision
 
-Pin `claude-agent-sdk==0.2.129`, set the process worker profile and global
+Pin `claude-agent-sdk==0.2.130`, set the process worker profile and global
 worker-run admission ceiling to 10, and bound each API or worker process to 10
 Redis connections through one shared client per event loop. The per-user active
 run limit remains 3 and the database pool maximum remains 10.
@@ -13,12 +13,14 @@ and 211 capacity acceptance remain external gates.
 
 ## Official Upgrade Evidence
 
-Before editing on 2026-08-04, the PyPI JSON API and the official Anthropic
-GitHub release both identified stable version `0.2.129`; the PyPI artifacts were
-not yanked and the GitHub release was neither draft nor prerelease. The upgrade
-starts from the repository's former exact pin, `0.2.87`.
+Before the first implementation edit on 2026-08-04, the PyPI JSON API and the
+official Anthropic GitHub release both identified stable version `0.2.129`.
+After merge-up and reauthorization on 2026-08-05, both official sources had
+advanced to stable version `0.2.130`; its six PyPI artifacts were not yanked and
+the GitHub release was neither draft nor prerelease. The upgrade starts from the
+repository's former exact pin, `0.2.87`.
 
-Official releases from `0.2.88` through `0.2.129` and the target tag source were
+Official releases from `0.2.88` through `0.2.130` and the target tag source were
 reviewed. Changes relevant to this adapter include AnyIO/Trio session storage,
 MCP dependency compatibility, `TaskUpdatedMessage`, subprocess cleanup during
 cancellation, NDJSON and malformed-content handling, resume/session argument
@@ -26,9 +28,13 @@ fixes, Windows command hardening, `ResultMessage.terminal_reason` and typed mode
 usage, background-task stdin lifetime, and strict Skill name/`allowedTools`
 validation in `0.2.129`.
 
+Version `0.2.130` changes only package metadata and the bundled Claude CLI from
+`2.1.221` to `2.1.222`; it does not change the Python SDK symbols or option
+types used by this adapter.
+
 ## Adapter API Difference Record
 
-| Surface | 0.2.129 contract | Platform handling |
+| Surface | 0.2.130 contract | Platform handling |
 | --- | --- | --- |
 | `query` | Keyword `prompt`, `options`, and optional `transport` remain available | The async iterator stays inside the runner adapter |
 | `ClaudeAgentOptions` | Existing model, system prompt, tools, hooks, session, limits, and stream fields remain available | Constructed only after platform admission and Skill-name validation |

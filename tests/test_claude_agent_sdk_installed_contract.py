@@ -4,14 +4,14 @@ from inspect import signature
 import pytest
 
 
-def test_installed_claude_agent_sdk_02129_contract(tmp_path):
+def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     installed_version = version("claude-agent-sdk")
-    if installed_version != "0.2.129":
+    if installed_version != "0.2.130":
         pytest.skip(f"isolated target SDK smoke required; installed={installed_version}")
 
     import claude_agent_sdk as sdk
 
-    assert installed_version == "0.2.129"
+    assert installed_version == "0.2.130"
     assert {"prompt", "options", "transport"}.issubset(signature(sdk.query).parameters)
     assert {"matcher", "hooks", "timeout"}.issubset(signature(sdk.HookMatcher).parameters)
 
