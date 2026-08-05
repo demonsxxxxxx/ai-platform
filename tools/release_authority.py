@@ -122,6 +122,15 @@ DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 1800
 CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
 MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 300
 MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 3600
+COMPOSE_CONFIG_PREFLIGHT_TIMEOUT_SECONDS = 15
+COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS = 32
+COMPOSE_CONFIG_PREFLIGHT_MAX_TOTAL_SECONDS = (
+    (COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS + 1)
+    * COMPOSE_CONFIG_PREFLIGHT_TIMEOUT_SECONDS
+)
+COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER = (
+    "release-authority-preflight.invalid/compose-config-only"
+)
 PROCESS_TREE_TERMINATION_GRACE_SECONDS = 1
 WINDOWS_CREATE_SUSPENDED = 0x00000004
 BUILD_PROGRESS_READ_CHUNK_BYTES = 16 * 1024
@@ -1390,6 +1399,7 @@ def _redacted_stderr_diagnostic(stderr: str | bytes | None) -> dict[str, Any]:
 
 def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
     """Return only bounded, non-secret facts needed to diagnose one failed stage."""
+    compose_evidence = getattr(exc, "safe_compose_config_evidence", {})
     if isinstance(exc, subprocess.TimeoutExpired):
         return {
             "failure_kind": "timeout",
@@ -1400,6 +1410,7 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
+            **compose_evidence,
             **{**getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})},
         }
     if isinstance(exc, subprocess.CalledProcessError):
@@ -1412,11 +1423,12 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
+            **compose_evidence,
             **{**getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})},
         }
     if isinstance(exc, OSError):
-        return {"failure_kind": "os-error", **({"errno": exc.errno} if isinstance(exc.errno, int) else {}), **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
-    return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
+        return {"failure_kind": "os-error", **({"errno": exc.errno} if isinstance(exc.errno, int) else {}), **compose_evidence, **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
+    return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **compose_evidence, **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
 
 
 def _stage(
@@ -1949,6 +1961,126 @@ def _docker_base(docker_cmd: str) -> list[str]:
     if not command or command[-1] != "docker":
         raise ReleaseAuthorityError("docker command must end with the docker executable")
     return command
+
+
+def _compose_command_with_environment(
+    docker: Sequence[str],
+    environment: Sequence[str],
+) -> list[str]:
+    """Place non-secret release overrides before Docker under direct or sudo execution."""
+    if list(docker[:2]) == ["sudo", "-n"]:
+        return ["sudo", "-n", "env", *environment, "docker"]
+    return ["env", *environment, *docker]
+
+
+def _required_compose_config_keys(selection: _ComposeSelection) -> tuple[str, ...]:
+    """Build a safe key-name allowlist; Docker Compose remains the semantic validator."""
+    required: set[str] = set()
+    pattern = re.compile(r"\$\{([A-Z][A-Z0-9_]{0,127}):\?[^}]*\}", re.ASCII)
+    try:
+        for path in selection.absolute_paths:
+            required.update(pattern.findall(path.read_text(encoding="utf-8")))
+    except (OSError, UnicodeError):
+        raise ReleaseAuthorityError(
+            "compose semantic configuration preflight failed: selected configuration is unreadable"
+        ) from None
+    if len(required) > COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS:
+        raise ReleaseAuthorityError(
+            "compose semantic configuration preflight failed: required-key contract exceeds the bounded limit"
+        )
+    return tuple(sorted(required))
+
+
+def _compose_config_preflight_error(
+    category: str,
+    *,
+    missing_keys: Sequence[str] = (),
+) -> ReleaseAuthorityError:
+    error = ReleaseAuthorityError("compose semantic configuration preflight failed")
+    evidence: dict[str, Any] = {"compose_config_error_category": category}
+    if missing_keys:
+        evidence["missing_required_keys"] = list(sorted(set(missing_keys)))
+    error.safe_compose_config_evidence = evidence
+    return error
+
+
+def _semantic_compose_config_preflight(
+    docker: Sequence[str],
+    selection: _ComposeSelection,
+    env_file: Path,
+    *,
+    commit: str,
+) -> None:
+    """Use Compose itself to inventory missing required keys without retaining raw output."""
+    required_keys = _required_compose_config_keys(selection)
+    missing_keys: list[str] = []
+    release_overrides = [
+        f"AI_PLATFORM_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/backend",
+        f"AI_PLATFORM_FRONTEND_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/frontend",
+        f"SANDBOX_EXECUTOR_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/sandbox-executor",
+        f"AI_PLATFORM_SOURCE_COMMIT={commit}",
+        f"AI_PLATFORM_BUILD_COMMIT={commit}",
+        "AI_PLATFORM_BUILD_DIRTY=false",
+    ]
+    compose_file_args = [
+        argument
+        for path in selection.absolute_paths
+        for argument in ("-f", str(path))
+    ]
+    for _ in range(COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS + 1):
+        missing_overrides = [
+            f"{key}={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}" for key in missing_keys
+        ]
+        command = [
+            *_compose_command_with_environment(
+                docker,
+                [*release_overrides, *missing_overrides],
+            ),
+            "compose",
+            "-p",
+            COMPOSE_PROJECT,
+            "--env-file",
+            str(env_file),
+            *compose_file_args,
+            "config",
+            "--quiet",
+        ]
+        result = _run(
+            command,
+            cwd=selection.absolute_paths[0].parent,
+            check=False,
+            timeout=COMPOSE_CONFIG_PREFLIGHT_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0:
+            if missing_keys:
+                raise _compose_config_preflight_error(
+                    "missing-required-config",
+                    missing_keys=missing_keys,
+                )
+            return
+        stderr = result.stderr
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        stderr = stderr if isinstance(stderr, str) else ""
+        lowered = stderr.lower()
+        if "required" not in lowered or not any(
+            marker in lowered for marker in ("missing", "value", "set ")
+        ):
+            raise _compose_config_preflight_error("invalid-config")
+        newly_missing = [
+            key
+            for key in required_keys
+            if key not in missing_keys
+            and re.search(
+                rf"(?<![A-Z0-9_]){re.escape(key)}(?![A-Z0-9_])",
+                stderr,
+                re.ASCII,
+            )
+        ]
+        if not newly_missing:
+            raise _compose_config_preflight_error("invalid-config")
+        missing_keys.extend(newly_missing)
+    raise _compose_config_preflight_error("required-key-limit-exceeded")
 
 
 def _docker_json(docker: list[str], *args: str) -> Any:
@@ -2663,6 +2795,19 @@ def deploy_clean_commit(
     selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
     repository = authoritative_repository(repo_root)
+    _stage(
+        events,
+        name="compose-config-preflight",
+        strategy=strategy,
+        action="validate",
+        operation=lambda: _semantic_compose_config_preflight(
+            docker,
+            selection,
+            compose_env_file,
+            commit=normalized,
+        ),
+        timeout_seconds=COMPOSE_CONFIG_PREFLIGHT_MAX_TOTAL_SECONDS,
+    )
     ownership = _preflight_managed_container_ownership(docker, selection, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id)
     refs = build_image_references(normalized)
     images: dict[str, dict[str, Any]] = {}
@@ -2820,10 +2965,7 @@ def deploy_clean_commit(
         f"AI_PLATFORM_BUILD_COMMIT={normalized}",
         "AI_PLATFORM_BUILD_DIRTY=false",
     ]
-    if docker[:2] == ["sudo", "-n"]:
-        compose_command = ["sudo", "-n", "env", *compose_environment, "docker"]
-    else:
-        compose_command = ["env", *compose_environment, *docker]
+    compose_command = _compose_command_with_environment(docker, compose_environment)
     compose_file_args = [argument for path in selection.absolute_paths for argument in ("-f", str(path))]
     _stage(
         events,

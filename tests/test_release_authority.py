@@ -183,10 +183,11 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
         + sum(default_timeout_slot_counts.values())
         * release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
         + 4 * release_authority.HTTP_PROBE_TIMEOUT_SECONDS
+        + release_authority.COMPOSE_CONFIG_PREFLIGHT_MAX_TOTAL_SECONDS
     )
     assert command_timeout_seconds >= aggregate_stage_maximum_seconds
     assert command_timeout_seconds - aggregate_stage_maximum_seconds >= (
-        2 * release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+        release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
     )
     assert kill_grace_seconds > 2 * release_authority.PROCESS_TREE_TERMINATION_GRACE_SECONDS
     assert durable_timeout_seconds >= (
@@ -236,6 +237,10 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "Do not retag the canonical current backend subject" in text
     assert "do not run `docker export`, `docker import`, `docker tag`, or Compose by hand" in contract_text
     assert "`authority_commit`" in text
+    assert "Secure provisioning and read-only Compose semantic preflight" in text
+    assert "config --quiet >/dev/null 2>/dev/null" in text
+    assert "missing-required-config" in text
+    assert "33 bounded Compose semantic parser attempts" in text
 
 
 def test_direct_release_authority_cli_no_bytecode_flag_leaves_no_sibling_bytecode(tmp_path):
@@ -559,6 +564,236 @@ def _write_provider_compose_files(repo_root: Path) -> tuple[Path, Path, Path]:
     opensandbox = sandbox.with_name("docker-compose.opensandbox.yml")
     opensandbox.write_text("services: {}\n", encoding="utf-8")
     return main, sandbox, opensandbox
+
+
+def _write_required_provider_compose_files(repo_root: Path) -> tuple[Path, Path]:
+    main, _, opensandbox = _write_provider_compose_files(repo_root)
+    main.write_text(
+        "services:\n"
+        "  api:\n"
+        "    image: ${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}\n"
+        "    environment:\n"
+        "      SOURCE: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}\n",
+        encoding="utf-8",
+    )
+    opensandbox.write_text(
+        "services:\n"
+        "  frontend:\n"
+        "    environment:\n"
+        "      BRIDGE: ${AI_PLATFORM_S72_BRIDGE_SERVER_NAME:?set AI_PLATFORM_S72_BRIDGE_SERVER_NAME}\n"
+        "      TOKEN: ${OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN:?set OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN}\n",
+        encoding="utf-8",
+    )
+    return main, opensandbox
+
+
+def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys():
+    required_pattern = re.compile(r"\$\{([A-Z][A-Z0-9_]*):\?", re.ASCII)
+    required = set(required_pattern.findall(COMPOSE.read_text(encoding="utf-8")))
+    required.update(required_pattern.findall(OPENSANDBOX_COMPOSE.read_text(encoding="utf-8")))
+    example_text = (ROOT / "deploy" / "ai-platform" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    declared = {
+        line.partition("=")[0]
+        for line in example_text.splitlines()
+        if line and not line.startswith("#") and "=" in line
+    }
+
+    assert required <= declared
+    assert {
+        "AI_PLATFORM_S72_BRIDGE_SERVER_NAME",
+        "AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP",
+        "AI_PLATFORM_S72_BRIDGE_TLS_CERT_FILE",
+        "AI_PLATFORM_S72_BRIDGE_TLS_KEY_FILE",
+    } <= declared
+    assert "REQUIRED_OPERATOR_PROVISIONED" in example_text
+    assert "BEGIN CERTIFICATE" not in example_text
+    assert "BEGIN PRIVATE KEY" not in example_text
+
+
+def test_compose_semantic_preflight_accepts_complete_config_with_exact_selection(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "a" * 40
+    main, opensandbox = _write_required_provider_compose_files(tmp_path)
+    env_file = tmp_path / ".env"
+    env_file.write_text("SAFE_TEST_FIXTURE=present\n", encoding="utf-8")
+    selection = release_authority.resolve_compose_files(
+        tmp_path,
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
+    )
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(release_authority, "_run", fake_run)
+
+    release_authority._semantic_compose_config_preflight(
+        ["sudo", "-n", "docker"],
+        selection,
+        env_file,
+        commit=commit,
+    )
+
+    assert len(commands) == 1
+    command = commands[0]
+    assert command[:3] == ["sudo", "-n", "env"]
+    assert command[command.index("compose") :] == [
+        "compose",
+        "-p",
+        "ai-platform-phaseb",
+        "--env-file",
+        str(env_file),
+        "-f",
+        str(main.resolve()),
+        "-f",
+        str(opensandbox.resolve()),
+        "config",
+        "--quiet",
+    ]
+    preflight_images = {
+        item.partition("=")[0]: item.partition("=")[2]
+        for item in command[: command.index("docker")]
+        if item.startswith(
+            ("AI_PLATFORM_IMAGE=", "AI_PLATFORM_FRONTEND_IMAGE=", "SANDBOX_EXECUTOR_IMAGE=")
+        )
+    }
+    assert preflight_images == {
+        "AI_PLATFORM_IMAGE": (
+            release_authority.COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER + "/backend"
+        ),
+        "AI_PLATFORM_FRONTEND_IMAGE": (
+            release_authority.COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER + "/frontend"
+        ),
+        "SANDBOX_EXECUTOR_IMAGE": (
+            release_authority.COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER
+            + "/sandbox-executor"
+        ),
+    }
+
+
+def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_raw_output(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "b" * 40
+    main, opensandbox = _write_required_provider_compose_files(tmp_path)
+    env_file = tmp_path / ".env"
+    env_file.write_text("SAFE_TEST_FIXTURE=present\n", encoding="utf-8")
+    commands: list[list[str]] = []
+    parser_attempt = 0
+    missing = (
+        "AI_PLATFORM_S72_BRIDGE_SERVER_NAME",
+        "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
+    )
+
+    monkeypatch.setattr(
+        release_authority,
+        "assert_clean_commit",
+        lambda repo, requested: commit,
+    )
+    monkeypatch.setattr(
+        release_authority,
+        "_git",
+        lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n",
+    )
+    monkeypatch.setattr(
+        release_authority,
+        "_image_record",
+        lambda *args, **kwargs: pytest.fail("image lookup must follow Compose preflight"),
+    )
+
+    def fake_run(command, **kwargs):
+        nonlocal parser_attempt
+        command = list(command)
+        commands.append(command)
+        assert "compose" in command and command[-2:] == ["config", "--quiet"]
+        if parser_attempt < len(missing):
+            key = missing[parser_attempt]
+            parser_attempt += 1
+            return subprocess.CompletedProcess(
+                command,
+                15,
+                stdout="resolved-secret-value-must-not-leak",
+                stderr=(
+                    f"required variable {key} is missing a value: "
+                    "actual-secret-value /private/certs/key.pem"
+                ),
+            )
+        parser_attempt += 1
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(release_authority, "_run", fake_run)
+
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^release stage failed: compose-config-preflight$",
+    ) as exc_info:
+        deploy_clean_commit(
+            tmp_path,
+            commit,
+            docker_cmd="docker",
+            env_file=env_file,
+            replace_known_manual_frontend=False,
+            compose_files=[COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
+        )
+
+    assert parser_attempt == 3
+    assert all(command[-2:] == ["config", "--quiet"] for command in commands)
+    assert all(str(main.resolve()) in command for command in commands)
+    assert all(str(opensandbox.resolve()) in command for command in commands)
+    assert not any(
+        action in command
+        for command in commands
+        for action in ("build", "up", "rm", "inspect", "tag")
+    )
+    event = exc_info.value.stage_events[-1]
+    assert event["stage"] == "compose-config-preflight"
+    assert event["compose_config_error_category"] == "missing-required-config"
+    assert event["missing_required_keys"] == sorted(missing)
+    serialized = json.dumps(event)
+    assert "actual-secret-value" not in serialized
+    assert "resolved-secret-value" not in serialized
+    assert "/private/certs" not in serialized
+    assert release_authority.COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER not in serialized
+
+
+def test_invalid_compose_preflight_error_is_fixed_and_redacted(monkeypatch, tmp_path):
+    main, _ = _write_compose_files(tmp_path)
+    env_file = tmp_path / ".env"
+    env_file.write_text("SAFE_TEST_FIXTURE=present\n", encoding="utf-8")
+    selection = release_authority.resolve_compose_files(tmp_path, [COMPOSE_RELATIVE_PATH])
+    monkeypatch.setattr(
+        release_authority,
+        "_run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            17,
+            stdout="private-rendered-config",
+            stderr="invalid compose near token=actual-secret /private/source.yml",
+        ),
+    )
+
+    with pytest.raises(ReleaseAuthorityError) as exc_info:
+        release_authority._semantic_compose_config_preflight(
+            ["docker"],
+            selection,
+            env_file,
+            commit="c" * 40,
+        )
+
+    assert str(exc_info.value) == "compose semantic configuration preflight failed"
+    assert exc_info.value.safe_compose_config_evidence == {
+        "compose_config_error_category": "invalid-config"
+    }
+    serialized = json.dumps(exc_info.value.safe_compose_config_evidence)
+    assert "actual-secret" not in serialized
+    assert "private" not in serialized
+    assert main.is_file()
 
 
 def _prepare_managed_release_layout(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -1071,7 +1306,11 @@ def test_managed_env_is_revalidated_before_any_container_or_compose_mutation(
         )
 
     assert env_metadata_reads == 2
-    assert not any("rm" in command or "compose" in command for command in commands)
+    assert sum(command[-2:] == ["config", "--quiet"] for command in commands) == 1
+    assert not any(
+        "rm" in command or "up" in command or "build" in command
+        for command in commands
+    )
 
 
 def test_ignored_worktree_file_is_not_clean_and_blocks_deploy_before_docker(
@@ -2463,7 +2702,8 @@ def test_deploy_rejects_executor_preflight_without_compose_mutation(monkeypatch,
         )
 
     assert not env_file.exists()
-    assert not any("compose" in command for command in commands)
+    assert sum(command[-2:] == ["config", "--quiet"] for command in commands) == 1
+    assert not any("up" in command or "build" in command for command in commands)
 
 
 def test_deploy_rejects_existing_commit_tag_with_wrong_provenance(monkeypatch, tmp_path):
@@ -2691,11 +2931,14 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
         replace_known_manual_frontend=False,
     )
 
-    compose = next(command for command in commands if "compose" in command)
+    preflight = next(command for command in commands if command[-2:] == ["config", "--quiet"])
+    compose = next(command for command in commands if "up" in command)
+    assert commands.index(preflight) < commands.index(compose)
     assert compose[:3] == ["sudo", "-n", "env"]
     assert f"AI_PLATFORM_IMAGE=ai-platform:{commit}" in compose
     assert f"AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:{commit}" in compose
     assert f"SANDBOX_EXECUTOR_IMAGE={SANDBOX_IMAGE_ID}" in compose
+    assert release_authority.COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER not in compose
     assert compose[compose.index("compose") :] == [
         "compose",
         "-p",
@@ -2777,7 +3020,7 @@ def test_deploy_preserves_exact_two_file_ownership_and_compose_command(monkeypat
 
     assert events[:3] == ["container:api", "container:worker", "container:frontend"]
     assert events[3].startswith("image:")
-    compose = next(command for command in commands if "compose" in command)
+    compose = next(command for command in commands if "up" in command)
     assert compose[compose.index("compose") :] == [
         "compose",
         "-p",
@@ -2894,7 +3137,7 @@ def test_deploy_accepts_exact_provider_overlay_transition_and_rollback(
 
     assert events[:3] == ["container:api", "container:worker", "container:frontend"]
     assert events[3].startswith("image:")
-    compose = next(command for command in commands if "compose" in command)
+    compose = next(command for command in commands if "up" in command)
     assert compose[compose.index("compose") :] == [
         "compose",
         "-p",
@@ -3280,7 +3523,8 @@ def test_deploy_rejects_provider_ownership_change_during_preflight_revalidation(
         )
 
     assert inspect_count == 6
-    assert not any("compose" in command for command in commands)
+    assert sum(command[-2:] == ["config", "--quiet"] for command in commands) == 1
+    assert not any("up" in command for command in commands)
 
 
 @pytest.mark.parametrize(
@@ -4977,7 +5221,8 @@ def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, t
         assert deployment["apt_mirrors"]["applied"] == {"status": "reused"}
 
     assert not any("build" in command for command, _ in commands)
-    assert sum("compose" in command for command, _ in commands) == 2
+    assert sum(command[-2:] == ["config", "--quiet"] for command, _ in commands) == 2
+    assert sum("up" in command for command, _ in commands) == 2
 
 
 def test_legacy_deploy_cli_dispatch_does_not_read_auto_strategy(monkeypatch, capsys, tmp_path):
