@@ -94,6 +94,24 @@ class CapabilityDistributionUpdateRequest(BaseModel):
         return _normalize_capability_roles(value, info.field_name)
 
 
+class CapabilityDistributionAuthorityUpdateRequest(BaseModel):
+    """Distribution update whose department labels require route-level directory proof."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["active", "disabled"] = "active"
+    visible_to_user: bool = True
+    scope_mode: Literal["allowlist"] = "allowlist"
+    department_ids: list[str] = Field(default_factory=list, max_length=128)
+    allowed_roles: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("allowed_roles")
+    @classmethod
+    def normalize_allowed_roles(cls, value: list[str], info):
+        return _normalize_capability_roles(value, info.field_name)
+
+
 class CapabilityDistributionToggleRequest(BaseModel):
     """Toggle request accepting the supported enablement aliases."""
 
@@ -129,6 +147,28 @@ class CapabilityDistributionWriteResponse(BaseModel):
     capability_distribution: CapabilityDistributionResponse
     audit_id: str
     audit_action: Literal["capability_distribution.updated", "capability_distribution.toggled"]
+
+
+class DepartmentDirectoryNodeResponse(BaseModel):
+    """Department-only node safe for an administrator ACL editor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    directory_id: str
+    authority_id: str
+    name: str
+    path: str
+    children: list["DepartmentDirectoryNodeResponse"] = Field(default_factory=list)
+    selectable: bool
+    reason: Literal["duplicate_authority_id"] | None = None
+
+
+class DepartmentDirectoryResponse(BaseModel):
+    """Admin-only company directory projection without employee identity fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    departments: list[DepartmentDirectoryNodeResponse] = Field(default_factory=list)
 
 
 class SelectedSkillRequest(BaseModel):
