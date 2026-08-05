@@ -1085,7 +1085,20 @@ def test_online_reconciliation_restores_relay_and_cleans_later_page_orphans() ->
     assert not any(sandbox_id.startswith("sandbox-orphan-") for sandbox_id in lifecycle.sandboxes)
 
 
-@pytest.mark.parametrize("case", ("success", "config-mismatch", "root", "unavailable"))
+@pytest.mark.parametrize(
+    "case",
+    (
+        "success",
+        "config-mismatch",
+        "root",
+        "unavailable",
+        "openai-secret",
+        "anthropic-secret",
+        "anthropic-api-key",
+        "duplicate-openai-secret",
+        "lowercase-openai-secret",
+    ),
+)
 def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, case) -> None:
     app, _, _, store = application()
     sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config())))["id"]
@@ -1101,6 +1114,20 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
     container_id = "a" * 64
     config_user = "0:0" if case == "root" else "1000:1000"
     live_user = "1001:1001" if case == "config-mismatch" else config_user
+    provider_env = [
+        "OPENAI_API_KEY=opensandbox-host-broker",
+        "ANTHROPIC_AUTH_TOKEN=opensandbox-host-broker",
+    ]
+    if case == "openai-secret":
+        provider_env[0] = "OPENAI_API_KEY=legacy-provider-secret"
+    elif case == "anthropic-secret":
+        provider_env[1] = "ANTHROPIC_AUTH_TOKEN=legacy-provider-secret"
+    elif case == "anthropic-api-key":
+        provider_env.append("ANTHROPIC_API_KEY=legacy-provider-secret")
+    elif case == "duplicate-openai-secret":
+        provider_env.insert(0, "OPENAI_API_KEY=legacy-provider-secret")
+    elif case == "lowercase-openai-secret":
+        provider_env.append("openai_api_key=legacy-provider-secret")
     inspect_payload = [{
         "Image": "image-id",
         "HostConfig": {"Runtime": "runsc", "NetworkMode": "none", "SecurityOpt": ["no-new-privileges:true"]},
@@ -1114,6 +1141,7 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
                 "SANDBOX_CALLBACK_BASE_URL=http://127.0.0.1:18888",
                 "OPENAI_BASE_URL=http://127.0.0.1:18888/model/openai",
                 "ANTHROPIC_BASE_URL=http://127.0.0.1:18888/model/anthropic",
+                *provider_env,
             ],
         },
         "State": {"Running": True},
@@ -1144,8 +1172,10 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
             "1000:1000", "1000", "1000", True
         )
     else:
-        with pytest.raises(GatewayError):
+        with pytest.raises(GatewayError) as error:
             adapter.verify(record)
+        if case.endswith("secret") or case == "anthropic-api-key":
+            assert error.value.code == "broker_environment_drift"
 
 
 def test_runtime_starts_relay_with_trusted_request_and_dispatch_budgets(monkeypatch) -> None:

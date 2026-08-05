@@ -35,6 +35,12 @@ ROUTE_HEADER = "OPEN-SANDBOX-ROUTE-TOKEN"
 MAX_BODY_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_METADATA_VALUE = 512
+BROKER_CREDENTIAL_SENTINEL = "opensandbox-host-broker"
+PROVIDER_CREDENTIAL_ENV_KEYS = frozenset({"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"})
+EXPECTED_BROKER_CREDENTIAL_ENV = (
+    ("OPENAI_API_KEY", BROKER_CREDENTIAL_SENTINEL),
+    ("ANTHROPIC_AUTH_TOKEN", BROKER_CREDENTIAL_SENTINEL),
+)
 SAFE_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/+\-=]{0,511}\Z")
 SCOPE_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@+\-]{0,127}\Z")
 SANDBOX_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -688,8 +694,7 @@ class GatewayApplication:
             raise GatewayError(400, "callback_boundary_mismatch")
         if env.get("OPENAI_BASE_URL") != self.config.openai_upstream_base or env.get("ANTHROPIC_BASE_URL") != self.config.anthropic_upstream_base:
             raise GatewayError(400, "model_boundary_mismatch")
-        provider_secret_keys = {"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}
-        if any(isinstance(key, str) and key.upper() in provider_secret_keys for key in env):
+        if any(isinstance(key, str) and key.upper() in PROVIDER_CREDENTIAL_ENV_KEYS for key in env):
             raise GatewayError(400, "provider_credential_not_allowed")
         model_id = env.get("DEFAULT_MODEL_ID")
         if not isinstance(model_id, str) or not model_id or len(model_id.encode("utf-8")) > 512:
@@ -704,8 +709,7 @@ class GatewayApplication:
         rewritten_env["SANDBOX_CALLBACK_BASE_URL"] = "http://127.0.0.1:18888"
         rewritten_env["OPENAI_BASE_URL"] = "http://127.0.0.1:18888/model/openai"
         rewritten_env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:18888/model/anthropic"
-        rewritten_env["OPENAI_API_KEY"] = "opensandbox-host-broker"
-        rewritten_env["ANTHROPIC_AUTH_TOKEN"] = "opensandbox-host-broker"
+        rewritten_env.update(EXPECTED_BROKER_CREDENTIAL_ENV)
         request_hash = hashlib.sha256(_canonical(payload)).hexdigest()
         return {
             "upstream": rewritten,

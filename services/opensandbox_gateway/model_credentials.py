@@ -12,7 +12,7 @@ import sqlite3
 from collections.abc import Mapping
 from typing import Any
 
-from .gateway import GatewayError, LeaseRecord
+from .gateway import EXPECTED_BROKER_CREDENTIAL_ENV, PROVIDER_CREDENTIAL_ENV_KEYS, GatewayError, LeaseRecord
 
 
 MODEL_ROUTE_TTL_SECONDS = 15.0
@@ -28,6 +28,20 @@ def model_id_sha256(model: str) -> str:
     """Encode the full SHA-256 digest within the provider's label length limit."""
 
     return base64.b32encode(hashlib.sha256(model.encode("utf-8")).digest()).decode("ascii").rstrip("=")
+
+
+def parse_broker_environment_evidence(items: Any) -> tuple[dict[str, str], bool]:
+    """Retain exact provider entries so duplicate or case-drifted secrets cannot hide."""
+
+    env: dict[str, str] = {}
+    provider_env = []
+    for item in items:
+        key, separator, value = str(item).partition("=")
+        if key.upper() in PROVIDER_CREDENTIAL_ENV_KEYS:
+            provider_env.append((key, value if separator else ""))
+        if separator:
+            env[key] = value
+    return env, sorted(provider_env) == sorted(EXPECTED_BROKER_CREDENTIAL_ENV)
 
 
 def consume_in_memory_model_route(

@@ -45,6 +45,7 @@ from .model_credentials import (
     consume_in_memory_model_route,
     consume_sqlite_model_route,
     initialize_sqlite_model_route_schema,
+    parse_broker_environment_evidence,
 )
 
 
@@ -695,11 +696,7 @@ class DockerRuntimeAdapter:
         state = info.get("State") or {}
         labels = config.get("Labels") or {}
         security = [str(value).lower() for value in host.get("SecurityOpt") or []]
-        env = {}
-        for item in config.get("Env") or []:
-            key, separator, value = str(item).partition("=")
-            if separator:
-                env[key] = value
+        env, provider_env_exact = parse_broker_environment_evidence(config.get("Env") or [])
         token = env.get("AI_PLATFORM_EXECUTOR_AUTH_TOKEN", "")
         token_hash = hmac.new(self.signing_key, token.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(token_hash, record.executor_token_hash):
@@ -710,7 +707,11 @@ class DockerRuntimeAdapter:
             "OPENAI_BASE_URL": "http://127.0.0.1:18888/model/openai",
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:18888/model/anthropic",
         }
-        if any(env.get(key) != value for key, value in expected_local.items()) or any(key.upper().endswith("_PROXY") for key in env):
+        if (
+            any(env.get(key) != value for key, value in expected_local.items())
+            or not provider_env_exact
+            or any(key.upper().endswith("_PROXY") for key in env)
+        ):
             raise GatewayError(409, "broker_environment_drift")
         mounts = tuple(
             sorted(
