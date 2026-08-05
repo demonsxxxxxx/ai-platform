@@ -27,6 +27,7 @@ from app.routes.skills_marketplace import router as skills_marketplace_router
 from app.routes.tool_permissions import router as tool_permissions_router
 from app.routes.workbench_projections import router as workbench_projections_router
 from app.db import close_pool
+from app.redis_client import close_redis_client
 from app.settings import get_settings
 
 
@@ -44,7 +45,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await close_pool()
+        try:
+            await close_redis_client()
+        finally:
+            await close_pool()
 
 
 def create_app() -> FastAPI:

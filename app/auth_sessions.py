@@ -10,8 +10,7 @@ import re
 import secrets
 from typing import Any, Mapping
 
-from redis.asyncio import Redis
-
+from app.redis_client import RedisClientHandle, get_redis_client
 from app.settings import get_settings
 
 
@@ -974,10 +973,10 @@ class AuthContextError(RuntimeError):
         self.status_code = status_code
 
 
-def get_redis() -> Redis:
-    """Return an isolated Redis client for one auth-context operation."""
+def get_redis() -> RedisClientHandle:
+    """Return an operation handle to the current loop's bounded Redis pool."""
 
-    return Redis.from_url(get_settings().redis_url, decode_responses=True)
+    return get_redis_client()
 
 
 def _settings_value(settings: Any, name: str, default: Any) -> Any:
