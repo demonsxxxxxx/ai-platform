@@ -42,9 +42,22 @@ export function resolveDepartmentSelection(
     byAuthorityId.set(option.authorityId, matches);
   }
 
+  const seenAuthorityIds = new Set<string>();
+  const duplicateAuthorityIds = new Set<string>();
+  for (const authorityId of authorityIds) {
+    if (seenAuthorityIds.has(authorityId)) duplicateAuthorityIds.add(authorityId);
+    seenAuthorityIds.add(authorityId);
+  }
+
   const resolved: DepartmentDirectoryOption[] = [];
   const unresolvedAuthorityIds: string[] = [];
   for (const authorityId of authorityIds) {
+    if (duplicateAuthorityIds.has(authorityId)) {
+      if (!unresolvedAuthorityIds.includes(authorityId)) {
+        unresolvedAuthorityIds.push(authorityId);
+      }
+      continue;
+    }
     const matches = byAuthorityId.get(authorityId) ?? [];
     if (matches.length === 1 && matches[0].selectable) {
       resolved.push(matches[0]);

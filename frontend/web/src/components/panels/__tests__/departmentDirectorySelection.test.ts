@@ -77,3 +77,11 @@ test("allows a fail-closed clear while directory authority is unavailable", () =
     authoritative: true,
   });
 });
+
+test("rejects duplicate selected authority IDs without rendering duplicate entries", () => {
+  assert.deepEqual(resolveDepartmentSelection(["研发", "研发"], directory), {
+    resolved: [],
+    unresolvedAuthorityIds: ["研发"],
+    authoritative: false,
+  });
+});
