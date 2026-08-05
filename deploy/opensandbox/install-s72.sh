@@ -310,7 +310,18 @@ validate_release() {
       test "$commit" = "$EXPECTED_AUTHORITY_SHA" || return 1
       test "$authority_evidence" = "$AUTHORITY_EVIDENCE_ID" || return 1
       ;;
-    rollback) git -C "$source_root" merge-base --is-ancestor "$commit" "$current_authority" ;;
+    rollback)
+      if test "${ROLLBACK_STRICT_VALIDATION:-0}" -eq 1; then
+        is_commit "$EXPECTED_AUTHORITY_SHA" || return 1
+        is_authority_evidence_id "$AUTHORITY_EVIDENCE_ID" || return 1
+        test "$authority_ref" = "$AUTHORITY_REF" || return 1
+        test "$current_authority" = "$EXPECTED_AUTHORITY_SHA" || return 1
+        git -C "$source_root" cat-file -e "$EXPECTED_AUTHORITY_SHA^{commit}" || return 1
+        git -C "$source_root" merge-base --is-ancestor "$commit" "$EXPECTED_AUTHORITY_SHA"
+      else
+        git -C "$source_root" merge-base --is-ancestor "$commit" "$current_authority"
+      fi
+      ;;
     *) return 1 ;;
   esac
 }
@@ -942,6 +953,111 @@ cleanup_install() {
   exit "$status"
 }
 
+require_snapshot_matches_current() {
+  snapshot=$1
+  current_commit=$2
+  if snapshot_account_is_managed "$snapshot"; then
+    test "$(cat "$snapshot/rollback-from")" = "$current_commit"
+  else
+    account_status=$?
+    test "$account_status" -eq 2
+  fi
+}
+
+rollback_main() {
+test "$(id -u)" -eq 0
+case "$AUTHORITY_REF" in ""|*[!A-Za-z0-9._/-]*|*..*) exit 1 ;; esac
+is_commit "$EXPECTED_AUTHORITY_SHA"
+is_authority_evidence_id "$AUTHORITY_EVIDENCE_ID"
+ROLLBACK_STRICT_VALIDATION=1
+test "$(stat -c %u:%g:%a "$DEPLOY_STATE")" = 0:0:700
+test -f "$ROLLBACK_POINTER" && test ! -L "$ROLLBACK_POINTER"
+test "$(stat -c %u:%g:%a "$ROLLBACK_POINTER")" = 0:0:600
+exec 9>"$DEPLOY_STATE/install.lock"
+flock -n 9
+test -L "$CURRENT_LINK"
+CURRENT_TARGET=$(readlink "$CURRENT_LINK")
+case "$CURRENT_TARGET" in releases/*) CURRENT_COMMIT=${CURRENT_TARGET#releases/} ;; *) exit 1 ;; esac
+validate_release "$CURRENT_COMMIT" rollback
+SNAPSHOT_ID=$(cat "$ROLLBACK_POINTER")
+case "$SNAPSHOT_ID" in .rollback.[A-Za-z0-9]*) ;; *) exit 1 ;; esac
+SNAPSHOT=$DEPLOY_STATE/snapshots/$SNAPSHOT_ID
+test "$(readlink -f "$SNAPSHOT")" = "$(readlink -f "$DEPLOY_STATE/snapshots")/$SNAPSHOT_ID"
+require_root_tree "$SNAPSHOT"
+verify_manifest "$SNAPSHOT"
+preflight_snapshot "$SNAPSHOT"
+preflight_gateway_account_restore "$SNAPSHOT"
+MANAGED_SNAPSHOT=0
+if snapshot_account_is_managed "$SNAPSHOT"; then
+  MANAGED_SNAPSHOT=1
+  GATEWAY_UID=$(cat "$SNAPSHOT/gateway-service-uid")
+  require_snapshot_matches_current "$SNAPSHOT" "$CURRENT_COMMIT"
+  quiesce_gateway_units
+else
+  test "$?" -eq 2
+fi
+
+PREVIOUS=
+if test -f "$SNAPSHOT/current"; then
+  PREVIOUS=$(cat "$SNAPSHOT/current")
+  previous_commit=${PREVIOUS#releases/}
+fi
+
+for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do
+  if test -f "$SNAPSHOT/$unit.present"; then
+    install -o root -g root -m 0644 "$SNAPSHOT/$unit" "$SYSTEMD_DIR/$unit"
+  else
+    rm -f "$SYSTEMD_DIR/$unit"
+  fi
+done
+if test -f "$SNAPSHOT/config.present"; then
+  rm -rf "$CONFIG_DIR"
+  cp -a "$SNAPSHOT/etc-opensandbox-gateway" "$CONFIG_DIR"
+  if test "$MANAGED_SNAPSHOT" -eq 1; then
+    verify_config_metadata "$CONFIG_DIR" "$SNAPSHOT/config.metadata"
+  fi
+else
+  rm -rf "$CONFIG_DIR"
+fi
+setfacl --restore="$SNAPSHOT/workspaces.acl"
+if test -f "$SNAPSHOT/authority-sha"; then
+  authority_sha=$(cat "$SNAPSHOT/authority-sha")
+  is_commit "$authority_sha"
+  install -o root -g root -m 0600 "$SNAPSHOT/authority-sha" "$AUTHORITY_SHA_STATE"
+  install -o root -g root -m 0600 "$SNAPSHOT/authority-evidence" "$AUTHORITY_EVIDENCE_STATE"
+elif test -f "$SNAPSHOT/authority-sha.absent"; then
+  rm -f "$AUTHORITY_SHA_STATE" "$AUTHORITY_EVIDENCE_STATE"
+else
+  exit 1
+fi
+systemctl daemon-reload
+if test "$MANAGED_SNAPSHOT" -eq 1; then
+  restore_gateway_account_state "$SNAPSHOT"
+else
+  for unit in opensandbox-gateway-helper.service opensandbox-gateway.service; do
+    if test -f "$SNAPSHOT/$unit.enabled"; then
+      systemctl enable "$unit" >/dev/null 2>&1
+    else
+      systemctl disable "$unit" >/dev/null 2>&1 || true
+    fi
+    systemctl stop "$unit" >/dev/null 2>&1 || true
+  done
+fi
+if test -n "$PREVIOUS"; then
+  ln -s "$PREVIOUS" "$CURRENT_LINK.next"
+  mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
+  test "$(readlink -f "$CURRENT_LINK")" = "$RELEASES/$previous_commit"
+  record_authority_state "$previous_commit" "$AUTHORITY_EVIDENCE_ID"
+else
+  rm -f "$CURRENT_LINK"
+fi
+if test "$MANAGED_SNAPSHOT" -eq 1; then
+  apply_snapshot_unit_states "$SNAPSHOT" "$GATEWAY_UID"
+fi
+systemctl is-active --quiet opensandbox.service
+ss -ltn | grep -q '127.0.0.1:8080'
+}
+
 install_main() {
 SOURCE_ROOT=${1:?usage: install-s72.sh /path/to/root-owned-clean-ai-platform-clone}
 test "$(id -u)" -eq 0
@@ -1053,5 +1169,14 @@ BACKUP=
 STAGE=
 trap - EXIT HUP INT TERM
 }
+
+if test "${OPENSANDBOX_GATEWAY_INSTALL_LIBRARY_ONLY:-0}" -eq 1; then
+  return 0 2>/dev/null || exit 0
+fi
+case "${OPENSANDBOX_GATEWAY_ACTION:-install}" in
+  install) ;;
+  rollback) rollback_main "$@"; exit $? ;;
+  *) exit 1 ;;
+esac
 
 install_main "$@"

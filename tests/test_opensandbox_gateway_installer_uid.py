@@ -52,6 +52,8 @@ def _run_function(
         newline="\n",
     )
     environment = os.environ.copy()
+    if source == ROLLBACK:
+        environment["SCRIPT"] = source.as_posix()
     if env:
         environment.update(env)
     return subprocess.run(
@@ -1024,11 +1026,13 @@ def test_installer_validates_uid_and_config_before_first_mutation() -> None:
     )
 
 
-def test_legacy_unit_config_acl_authority_and_pointer_rollback_contracts_remain() -> (
+def test_shared_engine_keeps_unit_config_acl_authority_and_pointer_rollback_contracts() -> (
     None
 ):
     installer = INSTALLER.read_text(encoding="utf-8")
     rollback = ROLLBACK.read_text(encoding="utf-8")
+    rollback_start = installer.index("rollback_main()")
+    rollback_body = installer[rollback_start : installer.index("install_main()")]
 
     assert (
         'install -o root -g root -m 0644 "$snapshot/$unit" "$SYSTEMD_DIR/$unit"'
@@ -1039,26 +1043,27 @@ def test_legacy_unit_config_acl_authority_and_pointer_rollback_contracts_remain(
         'install -o root -g root -m 0600 "$snapshot/authority-sha" "$AUTHORITY_SHA_STATE"'
         in installer
     )
+    assert '. "$INSTALLER_ENGINE"' in rollback
+    assert 'rollback_main "$@"' in rollback
     assert (
         'install -o root -g root -m 0644 "$SNAPSHOT/$unit" "$SYSTEMD_DIR/$unit"'
-        in rollback
+        in rollback_body
     )
-    assert 'setfacl --restore="$SNAPSHOT/workspaces.acl"' in rollback
+    assert 'setfacl --restore="$SNAPSHOT/workspaces.acl"' in rollback_body
     assert (
         'install -o root -g root -m 0600 "$SNAPSHOT/authority-sha" "$AUTHORITY_SHA_STATE"'
-        in rollback
+        in rollback_body
     )
-    for text in (installer, rollback):
-        assert 'rm -f "$AUTHORITY_SHA_STATE" "$AUTHORITY_EVIDENCE_STATE"' in text
+    assert 'rm -f "$AUTHORITY_SHA_STATE" "$AUTHORITY_EVIDENCE_STATE"' in rollback_body
     assert 'mv -Tf "$CURRENT_LINK.restore" "$CURRENT_LINK"' in installer
-    assert 'mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"' in rollback
-    restore_start = rollback.index("PREVIOUS=")
-    assert rollback.index(
+    assert 'mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"' in rollback_body
+    restore_start = rollback_body.index("PREVIOUS=")
+    assert rollback_body.index(
         'preflight_gateway_account_restore "$SNAPSHOT"'
-    ) < rollback.index(
+    ) < rollback_body.index(
         "for unit in opensandbox-gateway.service opensandbox-gateway-helper.service; do",
         restore_start,
     )
-    assert rollback.index('restore_gateway_account_state "$SNAPSHOT"') < rollback.index(
-        'mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"'
-    )
+    assert rollback_body.index(
+        'restore_gateway_account_state "$SNAPSHOT"'
+    ) < rollback_body.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
