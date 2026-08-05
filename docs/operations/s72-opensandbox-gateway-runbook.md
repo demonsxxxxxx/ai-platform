@@ -109,13 +109,26 @@ redacted, subject-bound remote evidence through that authorized procedure.
 `install-s72.sh` holds `/var/lib/opensandbox-gateway-deploy/install.lock` and
 creates a root-only snapshot of gateway units, configuration, workspace ACL,
 authority state, the current release pointer, and the exact pre-install gateway
-user/group identity before mutation. On an install failure it restores that
-snapshot. A pre-existing exact user or group is preserved. A user or group absent
-from the snapshot is removed only when the same snapshot records that this
-installer created the exact expected identity. Identity drift, UID/GID reuse,
-ambiguous markers, or an unsafe deletion preserves the unique recovery snapshot
-and exits fail-closed for operator recovery. Do not delete or edit that snapshot
-to continue an installation.
+user/group identity before mutation. The snapshot records numeric owner, group,
+and mode metadata for every configuration directory and regular file, including
+the policy, TLS material, and secrets. Its manifest is closed-world: its path set
+must exactly equal the snapshot's regular-file set, so an added, omitted,
+duplicate, malformed, or unsealed identity/creation marker invalidates the whole
+snapshot. On an install failure the installer restores both content and exact
+metadata before any prior gateway service can restart.
+
+A pre-existing exact user or group is preserved. A user or group absent from the
+snapshot is removed only when the same manifest-protected snapshot records that
+this installer created the exact expected identity. Before either deletion, the
+scripts stop both gateway units and prove them inactive, reject every remaining
+process with the target UID, recheck empty supplemental membership and exclusive
+primary-GID use, and reject a present service home or unsafe runtime-state
+ownership, mode, or symlink. The numeric UID/GID remains reserved because runtime
+state is retained. Account handling completes before the release pointer or
+prior service state is restored. Identity drift, UID/GID reuse, stop uncertainty,
+residual processes, unsafe state, or ambiguous markers preserves the unique
+recovery snapshot and exits fail-closed for operator recovery. Do not delete or
+edit that snapshot to continue an installation.
 
 Use the live rollback script only with a freshly resolved authority SHA and a
 new non-secret evidence ID:
@@ -129,13 +142,22 @@ sudo env \
 
 Rollback verifies the root-owned snapshot manifest, confined release path,
 recorded release provenance, and that the rollback release remains an ancestor
-of the supplied fresh authority. It restores the prior units, configuration,
+of the supplied fresh authority. A managed snapshot is bound to the exact release
+installed from it; a repeated or stale rollback whose current release no longer
+matches that binding fails before mutation. Historical snapshots without account
+authority may restore only an inactive root-owned prior state and never
+authorize account deletion.
+
+Rollback restores the prior units, configuration content and exact metadata,
 ACL, authority state, enable/active state, and release pointer (or their prior
-absence). It also restores the snapshot's account state: exact pre-existing
-principals remain, while only exact principals marked as created by that install
-are deleted in user-then-group order. The rollback command does not accept a new
-UID guess; the manifest-protected snapshot is its account authority. It then
-rechecks local OpenSandbox health. It never changes ai-platform
+absence). Before restarting an active prior unit, it revalidates the configuration
+contract and proves that the exact recorded service account can read every
+required directory and file. It then verifies both gateway units match the
+snapshot's active and enabled expectations. Exact pre-existing principals remain,
+while only exact principals marked as created by that install are deleted in
+user-then-group order under the deletion checks above. The rollback command does
+not accept a new UID guess; the manifest-protected snapshot is its account
+authority. It then rechecks local OpenSandbox health. It never changes ai-platform
 provider configuration, deletes workspaces or SQLite runtime state, or replaces
 the separate 211 release/rollback authority. Suspected secret exposure requires
 the designated security response and downstream secret rotation before further
