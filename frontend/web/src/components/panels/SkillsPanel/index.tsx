@@ -102,6 +102,7 @@ export function SkillsPanel({
         canImport={canImportSkills && !isGovernedUnavailable}
         canBatch={canBatchSkills && !isGovernedUnavailable}
         canDelete={canDeleteSkill && !isGovernedUnavailable}
+        adminRelease={actions.canAdminUploadSkills}
         governedUnavailable={isGovernedUnavailable}
         selectedNames={actions.selectedNames}
         onToggle={actions.handleToggle}

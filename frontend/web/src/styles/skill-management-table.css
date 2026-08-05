@@ -1,0 +1,183 @@
+.skill-management-table {
+  width: 100%;
+  overflow-x: auto;
+  border-block: 1px solid var(--theme-border);
+  background: var(--theme-workbench-panel);
+}
+
+.skill-management-table__head,
+.skill-management-table__row {
+  display: grid;
+  grid-template-columns:
+    minmax(14rem, 2.2fr)
+    minmax(7rem, 0.8fr)
+    minmax(7rem, 0.75fr)
+    minmax(11rem, 1.15fr)
+    minmax(6rem, 0.7fr)
+    minmax(9rem, auto);
+  min-width: 58rem;
+  align-items: center;
+  column-gap: 0.75rem;
+}
+
+.skill-management-table__head--selectable,
+.skill-management-table__row--selectable {
+  grid-template-columns:
+    2rem
+    minmax(14rem, 2.2fr)
+    minmax(7rem, 0.8fr)
+    minmax(7rem, 0.75fr)
+    minmax(11rem, 1.15fr)
+    minmax(6rem, 0.7fr)
+    minmax(9rem, auto);
+}
+
+.skill-management-table__head {
+  min-height: 2.4rem;
+  border-bottom: 1px solid var(--theme-border);
+  background: var(--theme-bg-sidebar);
+  padding: 0 0.75rem;
+  color: var(--theme-text-secondary);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.skill-management-table__row {
+  min-height: 4.8rem;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--theme-border) 72%, transparent);
+  padding: 0.65rem 0.75rem;
+  transition: background-color 0.15s ease;
+}
+
+.skill-management-table__row:last-child {
+  border-bottom: 0;
+}
+
+.skill-management-table__row:hover {
+  background: color-mix(
+    in srgb,
+    var(--theme-bg-sidebar) 66%,
+    var(--theme-workbench-panel)
+  );
+}
+
+.skill-management-table__identity,
+.skill-management-table__package {
+  min-width: 0;
+}
+
+.skill-management-table__select {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.skill-management-table__tag {
+  display: inline-flex;
+  max-width: 7rem;
+  flex: 0 1 auto;
+  overflow: hidden;
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  background: var(--theme-bg-sidebar);
+  padding: 0.12rem 0.38rem;
+  color: var(--theme-text-secondary);
+  font-size: 0.65rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-management-table__status {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--theme-text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+
+.skill-management-table__status > span {
+  width: 0.42rem;
+  height: 0.42rem;
+  flex: 0 0 auto;
+  border-radius: 9999px;
+  background: var(--theme-text-tertiary);
+}
+
+.skill-management-table__status--active {
+  color: var(--theme-success);
+}
+
+.skill-management-table__status--active > span {
+  background: var(--theme-success);
+}
+
+.skill-management-table__status--distribution {
+  color: var(--theme-info);
+}
+
+.skill-management-table__actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+.skill-management-table__actions .btn-icon {
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 2rem;
+}
+
+@media (max-width: 767px) {
+  .skill-management-table {
+    overflow: visible;
+  }
+
+  .skill-management-table__head {
+    display: none;
+  }
+
+  .skill-management-table__row,
+  .skill-management-table__row--selectable {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(8.5rem, 0.8fr);
+    min-width: 0;
+    gap: 0.65rem 1rem;
+    padding: 0.8rem 0.75rem;
+  }
+
+  .skill-management-table__row--selectable {
+    padding-left: 2.75rem;
+  }
+
+  .skill-management-table__select {
+    position: absolute;
+    top: 1rem;
+    left: 0.9rem;
+  }
+
+  .skill-management-table__identity {
+    grid-column: 1 / -1;
+  }
+
+  .skill-management-table__row [data-label]::before {
+    display: block;
+    margin-bottom: 0.18rem;
+    color: var(--theme-text-secondary);
+    content: attr(data-label);
+    font-size: 0.65rem;
+    font-weight: 600;
+  }
+
+  .skill-management-table__actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    padding-top: 0.15rem;
+  }
+}
