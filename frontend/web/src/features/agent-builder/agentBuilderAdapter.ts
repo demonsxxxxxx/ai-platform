@@ -29,16 +29,36 @@ export interface AgentBuilderEditor {
   status: AgentProfileAdminProjection["status"] | null;
   name: string;
   description: string;
+  welcomeMessage: string;
+  starterPrompts: string[];
+  capabilitySummary: string;
+  recommendedTasks: string[];
+  supportedInputTypes: Array<"text" | "file">;
+  supportedFileTypes: string[];
+  expectedOutputs: string[];
+  permissionsAndDataAccessNotice: string;
   instructions: string;
   modelId: string;
   selectedSkill: SelectedSkillRequest | null;
   selectedMcpToolIds: string[];
+  avatarRef: AgentProfileDraftRequest["avatar_ref"];
+  avatarAssetId: string | null;
+  category: AgentProfileDraftRequest["category"];
+  visibility: AgentProfileDraftRequest["visibility"];
+  allowedDepartmentIds: string[];
+  allowedRoles: string[];
+  allowedUserIds: string[];
   materializedProfile: AgentProfileAdminProjection | null;
 }
 
 export type AgentBuilderBlockCode =
   | "no_selection"
   | "name_required"
+  | "capability_summary_required"
+  | "recommended_task_required"
+  | "expected_output_required"
+  | "permissions_notice_required"
+  | "file_types_required"
   | "instructions_required"
   | "model_required"
   | "skill_required"
@@ -105,10 +125,25 @@ export function createUnsavedAgentEditor(): AgentBuilderEditor {
     status: null,
     name: "",
     description: "",
+    welcomeMessage: "",
+    starterPrompts: [],
+    capabilitySummary: "",
+    recommendedTasks: [],
+    supportedInputTypes: ["text"],
+    supportedFileTypes: [],
+    expectedOutputs: [],
+    permissionsAndDataAccessNotice: "",
     instructions: "",
     modelId: "",
     selectedSkill: null,
     selectedMcpToolIds: [],
+    avatarRef: "builtin:agent",
+    avatarAssetId: null,
+    category: "general",
+    visibility: "tenant",
+    allowedDepartmentIds: [],
+    allowedRoles: [],
+    allowedUserIds: [],
     materializedProfile: null,
   };
 }
@@ -123,14 +158,37 @@ export function hydrateAgentProfileEditor(
     status: profile.status,
     name: profile.name,
     description: profile.description,
+    welcomeMessage: profile.welcome_message,
+    starterPrompts: [...profile.starter_prompts],
+    capabilitySummary: profile.capability_summary,
+    recommendedTasks: [...profile.recommended_tasks],
+    supportedInputTypes: [...profile.supported_input_types],
+    supportedFileTypes: [...profile.supported_file_types],
+    expectedOutputs: [...profile.expected_outputs],
+    permissionsAndDataAccessNotice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
     modelId: profile.model_id,
     selectedSkill: { ...profile.selected_skill },
     selectedMcpToolIds: [...profile.mcp_tool_ids],
+    avatarRef: profile.avatar_ref,
+    avatarAssetId: profile.avatar_asset_id,
+    category: profile.category,
+    visibility: profile.visibility,
+    allowedDepartmentIds: [...profile.allowed_department_ids],
+    allowedRoles: [...profile.allowed_roles],
+    allowedUserIds: [...profile.allowed_user_ids],
     materializedProfile: {
       ...profile,
       selected_skill: { ...profile.selected_skill },
       mcp_tool_ids: [...profile.mcp_tool_ids],
+      starter_prompts: [...profile.starter_prompts],
+      recommended_tasks: [...profile.recommended_tasks],
+      supported_input_types: [...profile.supported_input_types],
+      supported_file_types: [...profile.supported_file_types],
+      expected_outputs: [...profile.expected_outputs],
+      allowed_department_ids: [...profile.allowed_department_ids],
+      allowed_roles: [...profile.allowed_roles],
+      allowed_user_ids: [...profile.allowed_user_ids],
     },
   };
 }
@@ -139,10 +197,25 @@ function editorDefinition(editor: AgentBuilderEditor) {
   return {
     name: editor.name.trim(),
     description: editor.description.trim(),
+    welcome_message: editor.welcomeMessage.trim(),
+    starter_prompts: editor.starterPrompts.map((item) => item.trim()).filter(Boolean),
+    capability_summary: editor.capabilitySummary.trim(),
+    recommended_tasks: editor.recommendedTasks.map((item) => item.trim()).filter(Boolean),
+    supported_input_types: editor.supportedInputTypes,
+    supported_file_types: editor.supportedFileTypes.map((item) => item.trim()).filter(Boolean),
+    expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
+    permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
     model_id: editor.modelId,
     selected_skill: editor.selectedSkill,
     mcp_tool_ids: editor.selectedMcpToolIds,
+    avatar_ref: editor.avatarRef,
+    avatar_asset_id: editor.avatarAssetId,
+    category: editor.category,
+    visibility: editor.visibility,
+    allowed_department_ids: editor.allowedDepartmentIds,
+    allowed_roles: editor.allowedRoles,
+    allowed_user_ids: editor.allowedUserIds,
   };
 }
 
@@ -150,10 +223,25 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
   return {
     name: profile.name,
     description: profile.description,
+    welcome_message: profile.welcome_message,
+    starter_prompts: profile.starter_prompts,
+    capability_summary: profile.capability_summary,
+    recommended_tasks: profile.recommended_tasks,
+    supported_input_types: profile.supported_input_types,
+    supported_file_types: profile.supported_file_types,
+    expected_outputs: profile.expected_outputs,
+    permissions_and_data_access_notice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
     model_id: profile.model_id,
     selected_skill: profile.selected_skill,
     mcp_tool_ids: profile.mcp_tool_ids,
+    avatar_ref: profile.avatar_ref,
+    avatar_asset_id: profile.avatar_asset_id,
+    category: profile.category,
+    visibility: profile.visibility,
+    allowed_department_ids: profile.allowed_department_ids,
+    allowed_roles: profile.allowed_roles,
+    allowed_user_ids: profile.allowed_user_ids,
   };
 }
 
@@ -172,10 +260,26 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
   return Boolean(
     editor.name.trim() ||
     editor.description.trim() ||
+    editor.welcomeMessage.trim() ||
+    editor.starterPrompts.length > 0 ||
+    editor.capabilitySummary.trim() ||
+    editor.recommendedTasks.length > 0 ||
+    editor.supportedInputTypes.length !== 1 ||
+    editor.supportedInputTypes[0] !== "text" ||
+    editor.supportedFileTypes.length > 0 ||
+    editor.expectedOutputs.length > 0 ||
+    editor.permissionsAndDataAccessNotice.trim() ||
     editor.instructions.trim() ||
     editor.modelId.trim() ||
     editor.selectedSkill ||
-    editor.selectedMcpToolIds.length > 0,
+    editor.selectedMcpToolIds.length > 0 ||
+    editor.avatarRef !== "builtin:agent" ||
+    editor.avatarAssetId !== null ||
+    editor.category !== "general" ||
+    editor.visibility !== "tenant" ||
+    editor.allowedDepartmentIds.length > 0 ||
+    editor.allowedRoles.length > 0 ||
+    editor.allowedUserIds.length > 0,
   );
 }
 
@@ -188,6 +292,22 @@ export function validateAgentProfileEditor(
     return { code: "profile_revision_missing" };
   }
   if (!editor.name.trim()) return { code: "name_required" };
+  if (!editor.capabilitySummary.trim()) return { code: "capability_summary_required" };
+  if (!editor.recommendedTasks.some((item) => item.trim())) {
+    return { code: "recommended_task_required" };
+  }
+  if (!editor.expectedOutputs.some((item) => item.trim())) {
+    return { code: "expected_output_required" };
+  }
+  if (!editor.permissionsAndDataAccessNotice.trim()) {
+    return { code: "permissions_notice_required" };
+  }
+  if (
+    editor.supportedInputTypes.includes("file") &&
+    !editor.supportedFileTypes.some((item) => item.trim())
+  ) {
+    return { code: "file_types_required" };
+  }
   if (!editor.instructions.trim()) return { code: "instructions_required" };
   if (!editor.modelId.trim()) return { code: "model_required" };
   if (!editor.selectedSkill) return { code: "skill_required" };
@@ -257,10 +377,25 @@ export function buildAgentProfileDraftRequest(
   return {
     name: editor.name.trim(),
     description: editor.description.trim(),
+    welcome_message: editor.welcomeMessage.trim(),
+    starter_prompts: editor.starterPrompts.map((item) => item.trim()).filter(Boolean),
+    capability_summary: editor.capabilitySummary.trim(),
+    recommended_tasks: editor.recommendedTasks.map((item) => item.trim()).filter(Boolean),
+    supported_input_types: [...editor.supportedInputTypes],
+    supported_file_types: editor.supportedFileTypes.map((item) => item.trim()).filter(Boolean),
+    expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
+    permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
     model_id: editor.modelId,
     selected_skill: { ...editor.selectedSkill },
     mcp_tool_ids: [...editor.selectedMcpToolIds],
+    avatar_ref: editor.avatarRef,
+    avatar_asset_id: editor.avatarAssetId,
+    category: editor.category,
+    visibility: editor.visibility,
+    allowed_department_ids: [...editor.allowedDepartmentIds],
+    allowed_roles: [...editor.allowedRoles],
+    allowed_user_ids: [...editor.allowedUserIds],
     expected_draft_revision: editor.agentId ? (editor.revision ?? 0) : 0,
   };
 }
@@ -272,6 +407,16 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
       return "请先选择或新建一个智能体。";
     case "name_required":
       return "缺少名称，请填写后再保存。";
+    case "capability_summary_required":
+      return "缺少面向使用者的能力摘要。";
+    case "recommended_task_required":
+      return "至少填写一项推荐任务。";
+    case "expected_output_required":
+      return "至少填写一项预期输出。";
+    case "permissions_notice_required":
+      return "缺少权限与数据访问说明。";
+    case "file_types_required":
+      return "支持文件输入时必须明确文件类型。";
     case "instructions_required":
       return "缺少系统说明，请填写后再保存。";
     case "model_required":

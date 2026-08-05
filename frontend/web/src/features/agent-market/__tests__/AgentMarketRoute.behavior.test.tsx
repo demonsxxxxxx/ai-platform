@@ -6,6 +6,18 @@ import React from "react";
 
 import type { AgentProfilePublicProjection } from "../../../types/agentProfile.ts";
 
+const enterpriseProfileFields = {
+  welcome_message: "欢迎使用企业专家。",
+  starter_prompts: ["帮我处理企业任务"] as string[],
+  capability_summary: "在授权范围内处理企业任务。",
+  recommended_tasks: ["企业任务处理"] as string[],
+  supported_input_types: ["text"] as Array<"text" | "file">,
+  supported_file_types: [] as string[],
+  expected_outputs: ["处理建议"] as string[],
+  permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
+  published_at: "2026-08-04T01:00:00Z",
+};
+
 register(new URL("./frontendAssetLoader.mjs", import.meta.url), import.meta.url);
 await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -488,6 +500,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
   const shellHarness = await prepareShellHarness();
   const profiles: Array<AgentProfilePublicProjection & Record<string, unknown>> = [
     {
+      ...enterpriseProfileFields,
       agent_id: "agt_support",
       expected_revision: 4,
       name: "支持助手",
@@ -496,6 +509,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       category: "support",
     },
     {
+      ...enterpriseProfileFields,
       agent_id: "agt_finance",
       expected_revision: 2,
       name: "财务助手",
@@ -536,7 +550,9 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       workspace_id: "default",
       agent_id: "agt_finance",
       title: "财务助手",
+      purpose: "conversation",
       agent_conversation: {
+        ...enterpriseProfileFields,
         agent_id: "agt_finance",
         revision: 2,
         name: "财务助手",
@@ -673,7 +689,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.match(container.textContent, /核对报销材料/);
     assert.match(container.textContent, /企业已发布/);
     assert.match(container.textContent, /版本 2/);
-    assert.match(container.textContent, /使用方式/);
+    assert.match(container.textContent, /推荐任务/);
     assert.doesNotMatch(
       container.textContent,
       /PRIVATE_PROMPT|private-model|private-mcp|private-skill|private-version/,
@@ -711,6 +727,7 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
   const { sessionApi } = await import("../../../services/api/session.ts");
   const shellHarness = await prepareShellHarness();
   const profile = {
+    ...enterpriseProfileFields,
     agent_id: "agt_support",
     expected_revision: 4,
     name: "支持助手",
@@ -735,7 +752,9 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
       workspace_id: "default",
       agent_id: profile.agent_id,
       title: profile.name,
+      purpose: "conversation",
       agent_conversation: {
+        ...enterpriseProfileFields,
         agent_id: profile.agent_id,
         revision: profile.expected_revision,
         name: profile.name,
@@ -750,7 +769,9 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
     workspace_id: "default",
     agent_id: profile.agent_id,
     title: profile.name,
+    purpose: "conversation",
     agent_conversation: {
+      ...enterpriseProfileFields,
       agent_id: profile.agent_id,
       revision: profile.expected_revision,
       name: profile.name,
@@ -797,7 +818,7 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
     assert.deepEqual(selections, []);
     assert.ok(container.querySelector("[data-agent-workspace-welcome]"));
     assert.match(container.textContent, /企业已发布/);
-    assert.match(container.textContent, /企业受控能力/);
+    assert.match(container.textContent, /权限与数据访问/);
     assert.equal(container.querySelector("textarea"), null);
 
     const start = container.querySelector("[data-agent-workspace-start]");
@@ -830,6 +851,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
   const { sessionApi } = await import("../../../services/api/session.ts");
   const shellHarness = await prepareShellHarness();
   const currentProfile = {
+    ...enterpriseProfileFields,
     agent_id: "agt_support",
     expected_revision: 5,
     name: "支持助手 V5",
@@ -838,6 +860,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
     category: "support",
   } as const;
   const historicalIdentity = {
+    ...enterpriseProfileFields,
     agent_id: "agt_support",
     revision: 4,
     name: "支持助手 V4",
@@ -861,6 +884,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
           workspace_id: "default",
           agent_id: "agt_support",
           title: "V4 历史会话",
+          purpose: "conversation",
           created_at: "2026-08-03T01:00:00Z",
           updated_at: "2026-08-04T01:00:00Z",
           agent_conversation: historicalIdentity,
@@ -878,6 +902,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
     workspace_id: "default",
     agent_id: "agt_support",
     title: "V4 历史会话",
+    purpose: "conversation",
     agent_conversation: historicalIdentity,
   });
   let currentPath = "";
@@ -940,6 +965,7 @@ test("a shared detail URL restores the exact current published revision", async 
   const shellHarness = await prepareShellHarness();
   const originalGetPublished = agentProfileApi.getPublished;
   agentProfileApi.getPublished = async () => ({
+    ...enterpriseProfileFields,
     agent_id: "agt_support",
     expected_revision: 4,
     name: "支持助手",
@@ -1005,6 +1031,7 @@ test("a stale detail revision fails closed back to the safe Marketplace", async 
   const shellHarness = await prepareShellHarness();
   const originalGetPublished = agentProfileApi.getPublished;
   agentProfileApi.getPublished = async () => ({
+    ...enterpriseProfileFields,
     agent_id: "agt_support",
     expected_revision: 5,
     name: "支持助手",
@@ -1072,6 +1099,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
   const { sessionApi } = await import("../../../services/api/session.ts");
   const shellHarness = await prepareShellHarness();
   const agentA = {
+    ...enterpriseProfileFields,
     agent_id: "agt_a",
     expected_revision: 1,
     name: "Agent A",
@@ -1080,6 +1108,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
     category: "support",
   } as const;
   const agentB = {
+    ...enterpriseProfileFields,
     agent_id: "agt_b",
     expected_revision: 2,
     name: "Agent B",
@@ -1121,9 +1150,11 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
           workspace_id: "default",
           agent_id: agent.agent_id,
           title: `${agent.name} sidebar session`,
+          purpose: "conversation",
           created_at: "2026-07-30T00:00:00Z",
           updated_at: "2026-07-30T00:00:00Z",
           agent_conversation: {
+            ...enterpriseProfileFields,
             agent_id: agent.agent_id,
             revision: agent.expected_revision,
             name: agent.name,
@@ -1179,7 +1210,9 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
       workspace_id: "default",
       agent_id: agent.agent_id,
       title: agent.name,
+      purpose: "conversation",
       agent_conversation: {
+        ...enterpriseProfileFields,
         agent_id: agent.agent_id,
         revision: agent.expected_revision,
         name: agent.name,
@@ -1322,7 +1355,9 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
       workspace_id: "default",
       agent_id: agentB.agent_id,
       title: agentB.name,
+      purpose: "conversation",
       agent_conversation: {
+        ...enterpriseProfileFields,
         agent_id: agentB.agent_id,
         revision: agentB.expected_revision,
         name: agentB.name,

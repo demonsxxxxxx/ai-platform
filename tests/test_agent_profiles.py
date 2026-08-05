@@ -11,6 +11,7 @@ from app.agent_profiles import (
     reject_profile_selector_conflicts,
     resolve_profile_for_admission,
 )
+from app.agent_apps.authority import _revision_hash
 from app.auth import AuthPrincipal
 from app.models import (
     AgentProfileAdminProjection,
@@ -83,7 +84,46 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "description": "Helps employees with approved support requests.",
         "avatar_ref": "builtin:agent",
         "category": "general",
+        "welcome_message": "",
+        "starter_prompts": [],
+        "capability_summary": "",
+        "recommended_tasks": [],
+        "supported_input_types": ["text"],
+        "supported_file_types": [],
+        "expected_outputs": [],
+        "permissions_and_data_access_notice": "",
+        "published_at": None,
     }
+    assert not {
+        "instructions",
+        "model_id",
+        "skill_id",
+        "skill_version",
+        "mcp_tool_ids",
+        "content_hash",
+    }.intersection(projection)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("welcome_message", "Welcome to the expert workspace."),
+        ("starter_prompts", ["Review this request"]),
+        ("capability_summary", "Reviews approved requests."),
+        ("recommended_tasks", ["Policy review"]),
+        ("supported_input_types", ["text", "file"]),
+        ("supported_file_types", ["application/pdf"]),
+        ("expected_outputs", ["Review memo"]),
+        ("permissions_and_data_access_notice", "Uses tenant-authorized files only."),
+        ("avatar_asset_id", "file-avatar-a"),
+    ],
+)
+def test_every_enterprise_profile_field_changes_the_immutable_revision_hash(field, value):
+    definition = AgentProfileDraftRequest.model_validate(profile_draft_payload("Private instruction"))
+
+    changed = definition.model_copy(update={field: value})
+
+    assert _revision_hash(changed) != _revision_hash(definition)
 
 
 def test_selected_profile_rejects_client_owned_capability_selectors():
@@ -184,9 +224,18 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                 "expected_revision": 4,
                 "name": "Support assistant",
                 "description": "Approved support helper.",
-                "avatar_ref": "builtin:agent",
-                "category": "general",
-            }
+                    "avatar_ref": "builtin:agent",
+                    "category": "general",
+                    "welcome_message": "",
+                    "starter_prompts": [],
+                    "capability_summary": "",
+                    "recommended_tasks": [],
+                    "supported_input_types": ["text"],
+                    "supported_file_types": [],
+                    "expected_outputs": [],
+                    "permissions_and_data_access_notice": "",
+                    "published_at": None,
+                }
         ]
     }
 

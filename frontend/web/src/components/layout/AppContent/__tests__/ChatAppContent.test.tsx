@@ -6,6 +6,8 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import type { AgentConversationIdentity } from "../../../../types/agentProfile.ts";
+
 register(
   new URL("../../../../features/agent-market/__tests__/frontendAssetLoader.mjs", import.meta.url),
   import.meta.url,
@@ -24,14 +26,23 @@ const {
 const { agentProfileApi } = await import("../../../../services/api/agentProfile.ts");
 const { sessionApi } = await import("../../../../services/api/session.ts");
 
-const safeIdentity = {
+const safeIdentity: AgentConversationIdentity = {
   agent_id: "agt_support",
   revision: 7,
   name: "支持助手",
   description: "处理已授权的支持请求。",
+  welcome_message: "欢迎使用支持助手。",
+  starter_prompts: ["帮我处理支持请求"],
+  capability_summary: "在授权范围内处理企业支持请求。",
+  recommended_tasks: ["支持请求分流"],
+  supported_input_types: ["text"],
+  supported_file_types: [],
+  expected_outputs: ["处理建议"],
+  permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant",
   category: "support",
-} as const;
+  published_at: "2026-08-04T01:00:00Z",
+};
 
 const safeWorkspace = {
   agent_id: safeIdentity.agent_id,
@@ -47,17 +58,14 @@ test("recovers an exact current Agent Conversation and keeps ordinary sessions g
     workspace_id: "default",
     agent_id: safeIdentity.agent_id,
     title: safeIdentity.name,
+    purpose: "conversation",
     agent_conversation: sessionId === "session-agent" ? safeIdentity : null,
   });
   agentProfileApi.getPublished = async () => {
     detailCalls += 1;
     return {
-      agent_id: safeIdentity.agent_id,
+      ...safeIdentity,
       expected_revision: safeIdentity.revision,
-      name: safeIdentity.name,
-      description: safeIdentity.description,
-      avatar_ref: safeIdentity.avatar_ref,
-      category: safeIdentity.category,
     };
   };
 
@@ -86,16 +94,13 @@ test("keeps immutable revision history while current access remains authorized",
       workspace_id: "default",
       agent_id: safeIdentity.agent_id,
       title: safeIdentity.name,
+      purpose: "conversation",
       agent_conversation: safeIdentity,
     };
   };
   agentProfileApi.getPublished = async () => ({
-    agent_id: safeIdentity.agent_id,
+    ...safeIdentity,
     expected_revision: safeIdentity.revision + 1,
-    name: safeIdentity.name,
-    description: safeIdentity.description,
-    avatar_ref: safeIdentity.avatar_ref,
-    category: safeIdentity.category,
   });
 
   try {
@@ -127,6 +132,7 @@ test("rejects authoritative Agent identity returned for a different Session", as
     workspace_id: "default",
     agent_id: safeIdentity.agent_id,
     title: safeIdentity.name,
+    purpose: "conversation",
     agent_conversation: sessionId === "session-requested-bound" ? safeIdentity : null,
   });
   agentProfileApi.getPublished = async () => {
@@ -226,24 +232,24 @@ test("renders a productized Agent workspace welcome before creating a conversati
   const html = renderToStaticMarkup(
     React.createElement(AgentWorkspaceWelcome, {
       profile: {
-        ...safeWorkspace,
-        name: safeIdentity.name,
-        description: safeIdentity.description,
-        avatar_ref: safeIdentity.avatar_ref,
-        category: safeIdentity.category,
+        ...safeIdentity,
+        expected_revision: safeIdentity.revision,
       },
       creating: false,
+      readOnly: false,
       error: null,
       historyError: null,
       onStart: () => {},
+      onStarterPrompt: () => {},
       onOpenDetail: () => {},
     }),
   );
 
   assert.match(html, /data-agent-workspace-welcome/);
   assert.match(html, /企业已发布/);
-  assert.match(html, /专属会话/);
-  assert.match(html, /企业受控能力/);
+  assert.match(html, /欢迎使用支持助手/);
+  assert.match(html, /权限与数据访问/);
+  assert.match(html, /帮我处理支持请求/);
   assert.match(html, /开始新对话/);
   assert.doesNotMatch(html, /model_id|instructions|mcp_tool_ids|selected_skill/);
 });

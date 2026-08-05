@@ -462,6 +462,15 @@ async def create_agent_profile_revision(
     allowed_roles: list[str] | None = None,
     allowed_user_ids: list[str] | None = None,
     withdrawn_from_revision: int | None = None,
+    welcome_message: str = "",
+    starter_prompts: list[str] | None = None,
+    capability_summary: str = "",
+    recommended_tasks: list[str] | None = None,
+    supported_input_types: list[str] | None = None,
+    supported_file_types: list[str] | None = None,
+    expected_outputs: list[str] | None = None,
+    permissions_and_data_access_notice: str = "",
+    avatar_asset_id: str | None = None,
 ) -> dict[str, Any]:
     """Append one revision under an optimistic fence and transaction advisory lock."""
 
@@ -490,16 +499,22 @@ async def create_agent_profile_revision(
           tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
           model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
           avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
-          allowed_user_ids, created_by, published_by, published_at,
+          allowed_user_ids, welcome_message, starter_prompts, capability_summary,
+          recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
+          permissions_and_data_access_notice, avatar_asset_id,
+          created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
         )
         values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
-                %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s,
-                case when %s::text is null then null else now() end, %s, %s)
+                %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
+                %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s,
+                %s, %s, %s, case when %s::text is null then null else now() end, %s, %s)
         returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
                   model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
                   avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
-                  allowed_user_ids,
+                  allowed_user_ids, welcome_message, starter_prompts, capability_summary,
+                  recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
+                  permissions_and_data_access_notice, avatar_asset_id,
                   created_at, published_at
         """,
         (
@@ -522,6 +537,15 @@ async def create_agent_profile_revision(
             dumps_json(allowed_department_ids or []),
             dumps_json(allowed_roles or []),
             dumps_json(allowed_user_ids or []),
+            welcome_message,
+            dumps_json(starter_prompts or []),
+            capability_summary,
+            dumps_json(recommended_tasks or []),
+            dumps_json(supported_input_types or ["text"]),
+            dumps_json(supported_file_types or []),
+            dumps_json(expected_outputs or []),
+            permissions_and_data_access_notice,
+            avatar_asset_id,
             created_by,
             published_by,
             published_by,
@@ -554,10 +578,16 @@ async def get_agent_profile_revision(
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
                agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.welcome_message, agent_profile_revisions.starter_prompts,
+               agent_profile_revisions.capability_summary, agent_profile_revisions.recommended_tasks,
+               agent_profile_revisions.supported_input_types, agent_profile_revisions.supported_file_types,
+               agent_profile_revisions.expected_outputs,
+               agent_profile_revisions.permissions_and_data_access_notice,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
-               agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
+               agent_profile_revisions.category,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
@@ -593,10 +623,16 @@ async def list_latest_agent_profile_revisions(
                agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
                agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.welcome_message, agent_profile_revisions.starter_prompts,
+               agent_profile_revisions.capability_summary, agent_profile_revisions.recommended_tasks,
+               agent_profile_revisions.supported_input_types, agent_profile_revisions.supported_file_types,
+               agent_profile_revisions.expected_outputs,
+               agent_profile_revisions.permissions_and_data_access_notice,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
-               agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
+               agent_profile_revisions.category,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
@@ -750,10 +786,16 @@ async def get_current_published_agent_profile(
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
                agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.welcome_message, agent_profile_revisions.starter_prompts,
+               agent_profile_revisions.capability_summary, agent_profile_revisions.recommended_tasks,
+               agent_profile_revisions.supported_input_types, agent_profile_revisions.supported_file_types,
+               agent_profile_revisions.expected_outputs,
+               agent_profile_revisions.permissions_and_data_access_notice,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
-               agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
+               agent_profile_revisions.category,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
@@ -797,10 +839,16 @@ async def get_bound_published_agent_profile(
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
                agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.welcome_message, agent_profile_revisions.starter_prompts,
+               agent_profile_revisions.capability_summary, agent_profile_revisions.recommended_tasks,
+               agent_profile_revisions.supported_input_types, agent_profile_revisions.supported_file_types,
+               agent_profile_revisions.expected_outputs,
+               agent_profile_revisions.permissions_and_data_access_notice,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
-               agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
+               agent_profile_revisions.category,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                current_revision.visibility as current_visibility,
@@ -861,10 +909,16 @@ async def list_current_published_agent_profiles(
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
                agent_profile_revisions.revision, agent_profile_revisions.revision_status as status,
                agent_profile_revisions.name, agent_profile_revisions.description,
+               agent_profile_revisions.welcome_message, agent_profile_revisions.starter_prompts,
+               agent_profile_revisions.capability_summary, agent_profile_revisions.recommended_tasks,
+               agent_profile_revisions.supported_input_types, agent_profile_revisions.supported_file_types,
+               agent_profile_revisions.expected_outputs,
+               agent_profile_revisions.permissions_and_data_access_notice,
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
-               agent_profile_revisions.avatar_ref, agent_profile_revisions.category,
+               agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
+               agent_profile_revisions.category,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
@@ -901,8 +955,11 @@ async def list_agent_profile_revision_history(
 
     cursor = await conn.execute(
         """
-        select tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
-               model_id, skill_id, skill_version, mcp_tool_ids, content_hash, avatar_ref,
+        select tenant_id, agent_id, revision, revision_status as status, name, description,
+               welcome_message, starter_prompts, capability_summary, recommended_tasks,
+               supported_input_types, supported_file_types, expected_outputs,
+               permissions_and_data_access_notice, instructions,
+               model_id, skill_id, skill_version, mcp_tool_ids, content_hash, avatar_ref, avatar_asset_id,
                category, visibility, allowed_department_ids, allowed_roles, allowed_user_ids,
                created_at, published_at
         from agent_profile_revisions
@@ -4112,6 +4169,7 @@ async def create_session(
     session_id: str | None = None,
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
+    purpose: str = "conversation",
 ) -> str:
     resolved_id = session_id or new_id("ses")
     await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
@@ -4119,9 +4177,9 @@ async def create_session(
         """
         insert into sessions(
           id, tenant_id, workspace_id, user_id, agent_id, title,
-          admitted_agent_profile_revision, admitted_agent_profile_hash
+          admitted_agent_profile_revision, admitted_agent_profile_hash, purpose
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         on conflict (id) do update
         set id = excluded.id
         where sessions.tenant_id = excluded.tenant_id
@@ -4130,6 +4188,7 @@ async def create_session(
           and sessions.agent_id = excluded.agent_id
           and sessions.admitted_agent_profile_revision is not distinct from excluded.admitted_agent_profile_revision
           and sessions.admitted_agent_profile_hash is not distinct from excluded.admitted_agent_profile_hash
+          and sessions.purpose = excluded.purpose
         returning sessions.id
         """,
         (
@@ -4141,6 +4200,7 @@ async def create_session(
             title,
             admitted_agent_profile_revision,
             admitted_agent_profile_hash,
+            purpose,
         ),
     )
     row = await cursor.fetchone()
@@ -11047,13 +11107,22 @@ async def list_authorized_sessions(
 ) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
-        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title,
+        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
+               profile.welcome_message as agent_profile_welcome_message,
+               profile.starter_prompts as agent_profile_starter_prompts,
+               profile.capability_summary as agent_profile_capability_summary,
+               profile.recommended_tasks as agent_profile_recommended_tasks,
+               profile.supported_input_types as agent_profile_supported_input_types,
+               profile.supported_file_types as agent_profile_supported_file_types,
+               profile.expected_outputs as agent_profile_expected_outputs,
+               profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
-               profile.category as agent_profile_category
+               profile.category as agent_profile_category,
+               profile.published_at as agent_profile_published_at
         from sessions
         left join agent_profile_revisions profile
           on profile.tenant_id = sessions.tenant_id
@@ -11080,13 +11149,22 @@ async def get_authorized_session_projection(
 
     cursor = await conn.execute(
         """
-        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title,
+        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
+               profile.welcome_message as agent_profile_welcome_message,
+               profile.starter_prompts as agent_profile_starter_prompts,
+               profile.capability_summary as agent_profile_capability_summary,
+               profile.recommended_tasks as agent_profile_recommended_tasks,
+               profile.supported_input_types as agent_profile_supported_input_types,
+               profile.supported_file_types as agent_profile_supported_file_types,
+               profile.expected_outputs as agent_profile_expected_outputs,
+               profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
-               profile.category as agent_profile_category
+               profile.category as agent_profile_category,
+               profile.published_at as agent_profile_published_at
         from sessions
         left join agent_profile_revisions profile
           on profile.tenant_id = sessions.tenant_id

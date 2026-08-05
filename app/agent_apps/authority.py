@@ -30,7 +30,16 @@ _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "built
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
 _VISIBILITIES = {"tenant", "restricted"}
 _PRESENCE_AWARE_PROFILE_FIELDS = (
+    "welcome_message",
+    "starter_prompts",
+    "capability_summary",
+    "recommended_tasks",
+    "supported_input_types",
+    "supported_file_types",
+    "expected_outputs",
+    "permissions_and_data_access_notice",
     "avatar_ref",
+    "avatar_asset_id",
     "category",
     "visibility",
     "allowed_department_ids",
@@ -122,8 +131,24 @@ def profile_public_projection(row: dict[str, Any]) -> dict[str, Any]:
         "expected_revision": int(row["revision"]),
         "name": str(row["name"]),
         "description": str(row.get("description") or ""),
+        "welcome_message": str(row.get("welcome_message") or ""),
+        "starter_prompts": _safe_string_list(row.get("starter_prompts")),
+        "capability_summary": str(row.get("capability_summary") or ""),
+        "recommended_tasks": _safe_string_list(row.get("recommended_tasks")),
+        "supported_input_types": [
+            value
+            for value in _safe_string_list(row.get("supported_input_types"))
+            if value in {"text", "file"}
+        ]
+        or ["text"],
+        "supported_file_types": _safe_string_list(row.get("supported_file_types")),
+        "expected_outputs": _safe_string_list(row.get("expected_outputs")),
+        "permissions_and_data_access_notice": str(
+            row.get("permissions_and_data_access_notice") or ""
+        ),
         "avatar_ref": _safe_avatar_ref(row.get("avatar_ref")),
         "category": _safe_category(row.get("category")),
+        "published_at": row.get("published_at"),
     }
 
 
@@ -136,8 +161,17 @@ def conversation_identity_projection(row: dict[str, Any]) -> AgentConversationId
         revision=public["expected_revision"],
         name=public["name"],
         description=public["description"],
+        welcome_message=public["welcome_message"],
+        starter_prompts=public["starter_prompts"],
+        capability_summary=public["capability_summary"],
+        recommended_tasks=public["recommended_tasks"],
+        supported_input_types=public["supported_input_types"],
+        supported_file_types=public["supported_file_types"],
+        expected_outputs=public["expected_outputs"],
+        permissions_and_data_access_notice=public["permissions_and_data_access_notice"],
         avatar_ref=public["avatar_ref"],
         category=public["category"],
+        published_at=public["published_at"],
     )
 
 
@@ -147,12 +181,21 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
     material = {
         "name": definition.name,
         "description": definition.description,
+        "welcome_message": definition.welcome_message,
+        "starter_prompts": definition.starter_prompts,
+        "capability_summary": definition.capability_summary,
+        "recommended_tasks": definition.recommended_tasks,
+        "supported_input_types": definition.supported_input_types,
+        "supported_file_types": definition.supported_file_types,
+        "expected_outputs": definition.expected_outputs,
+        "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
         "model_id": definition.model_id,
         "skill_id": definition.selected_skill.skill_id,
         "skill_version": definition.selected_skill.expected_version,
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
+        "avatar_asset_id": definition.avatar_asset_id,
         "category": definition.category,
         "visibility": definition.visibility,
         "allowed_department_ids": definition.allowed_department_ids,
@@ -167,6 +210,21 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
     return AgentProfileDraftRequest(
         name=str(row["name"]),
         description=str(row.get("description") or ""),
+        welcome_message=str(row.get("welcome_message") or ""),
+        starter_prompts=_safe_string_list(row.get("starter_prompts")),
+        capability_summary=str(row.get("capability_summary") or ""),
+        recommended_tasks=_safe_string_list(row.get("recommended_tasks")),
+        supported_input_types=[
+            value
+            for value in _safe_string_list(row.get("supported_input_types"))
+            if value in {"text", "file"}
+        ]
+        or ["text"],
+        supported_file_types=_safe_string_list(row.get("supported_file_types")),
+        expected_outputs=_safe_string_list(row.get("expected_outputs")),
+        permissions_and_data_access_notice=str(
+            row.get("permissions_and_data_access_notice") or ""
+        ),
         instructions=str(row["instructions"]),
         model_id=str(row["model_id"]),
         selected_skill=SelectedSkillRequest(
@@ -175,6 +233,7 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         ),
         mcp_tool_ids=_mcp_tool_ids(row),
         avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
+        avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         category=_safe_category(row.get("category")),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
@@ -221,6 +280,21 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
         status=str(row["status"]),
         name=str(row["name"]),
         description=str(row.get("description") or ""),
+        welcome_message=str(row.get("welcome_message") or ""),
+        starter_prompts=_safe_string_list(row.get("starter_prompts")),
+        capability_summary=str(row.get("capability_summary") or ""),
+        recommended_tasks=_safe_string_list(row.get("recommended_tasks")),
+        supported_input_types=[
+            value
+            for value in _safe_string_list(row.get("supported_input_types"))
+            if value in {"text", "file"}
+        ]
+        or ["text"],
+        supported_file_types=_safe_string_list(row.get("supported_file_types")),
+        expected_outputs=_safe_string_list(row.get("expected_outputs")),
+        permissions_and_data_access_notice=str(
+            row.get("permissions_and_data_access_notice") or ""
+        ),
         instructions=str(row["instructions"]),
         model_id=str(row["model_id"]),
         selected_skill=SelectedSkillRequest(
@@ -229,6 +303,7 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
         ),
         mcp_tool_ids=_mcp_tool_ids(row),
         avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
+        avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         category=_safe_category(row.get("category")),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
@@ -270,6 +345,20 @@ class AgentProfileAuthority:
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Revalidate current model, Skill, and MCP authorization for a definition."""
 
+        if definition.avatar_asset_id:
+            avatar_asset = await repositories.get_file(
+                conn,
+                tenant_id=principal.tenant_id,
+                file_id=definition.avatar_asset_id,
+            )
+            if (
+                avatar_asset is None
+                or str(avatar_asset.get("user_id") or "") != principal.user_id
+                or not str(avatar_asset.get("content_type") or "").startswith("image/")
+                or int(avatar_asset.get("size_bytes") or 0) <= 0
+                or int(avatar_asset.get("size_bytes") or 0) > 5 * 1024 * 1024
+            ):
+                raise HTTPException(status_code=400, detail="agent_profile_avatar_asset_invalid")
         try:
             model = resolve_model_selection(definition.model_id, get_settings())
         except ValueError as exc:
@@ -354,7 +443,16 @@ class AgentProfileAuthority:
             skill_id=definition.selected_skill.skill_id,
             skill_version=definition.selected_skill.expected_version,
             mcp_tool_ids=definition.mcp_tool_ids,
+            welcome_message=definition.welcome_message,
+            starter_prompts=definition.starter_prompts,
+            capability_summary=definition.capability_summary,
+            recommended_tasks=definition.recommended_tasks,
+            supported_input_types=definition.supported_input_types,
+            supported_file_types=definition.supported_file_types,
+            expected_outputs=definition.expected_outputs,
+            permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
+            avatar_asset_id=definition.avatar_asset_id,
             category=definition.category,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
@@ -422,7 +520,16 @@ class AgentProfileAuthority:
             skill_id=definition.selected_skill.skill_id,
             skill_version=definition.selected_skill.expected_version,
             mcp_tool_ids=definition.mcp_tool_ids,
+            welcome_message=definition.welcome_message,
+            starter_prompts=definition.starter_prompts,
+            capability_summary=definition.capability_summary,
+            recommended_tasks=definition.recommended_tasks,
+            supported_input_types=definition.supported_input_types,
+            supported_file_types=definition.supported_file_types,
+            expected_outputs=definition.expected_outputs,
+            permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
+            avatar_asset_id=definition.avatar_asset_id,
             category=definition.category,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
@@ -504,7 +611,16 @@ class AgentProfileAuthority:
             skill_id=definition.selected_skill.skill_id,
             skill_version=definition.selected_skill.expected_version,
             mcp_tool_ids=definition.mcp_tool_ids,
+            welcome_message=definition.welcome_message,
+            starter_prompts=definition.starter_prompts,
+            capability_summary=definition.capability_summary,
+            recommended_tasks=definition.recommended_tasks,
+            supported_input_types=definition.supported_input_types,
+            supported_file_types=definition.supported_file_types,
+            expected_outputs=definition.expected_outputs,
+            permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
             avatar_ref=definition.avatar_ref,
+            avatar_asset_id=definition.avatar_asset_id,
             category=definition.category,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
@@ -771,6 +887,8 @@ class AgentProfileAuthority:
                 "revision": revision,
                 "content_hash": content_hash,
                 "instructions": str(row["instructions"]),
+                "required_skill_id": str(row["skill_id"]),
+                "required_skill_version": str(row["skill_version"]),
             },
             public_identity=conversation_identity_projection(row),
         )
@@ -828,37 +946,56 @@ class AgentProfileAuthority:
         workspace_id: str,
         selection: SelectedAgentProfileRequest,
         title: str,
+        session_id: str | None = None,
+        purpose: str = "conversation",
     ) -> ChatSessionResponse:
         """Atomically bind a new conversation to one current published profile revision/hash."""
 
+        if purpose not in {"conversation", "builder_test"}:
+            raise HTTPException(status_code=400, detail="agent_conversation_purpose_invalid")
+        if purpose == "builder_test":
+            self._require_admin(principal)
         await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
         await self._ensure_principal_user(conn, principal=principal)
         admission = await self.resolve_for_admission(conn, principal=principal, selection=selection)
-        session_id = await repositories.create_session(
-            conn,
-            tenant_id=principal.tenant_id,
-            workspace_id=workspace_id,
-            user_id=principal.user_id,
-            agent_id=admission.agent_id,
-            title=title or admission.public_identity.name,
-            admitted_agent_profile_revision=admission.revision,
-            admitted_agent_profile_hash=admission.content_hash,
-        )
+        create_session_kwargs: dict[str, Any] = {
+            "tenant_id": principal.tenant_id,
+            "workspace_id": workspace_id,
+            "user_id": principal.user_id,
+            "agent_id": admission.agent_id,
+            "title": title or admission.public_identity.name,
+            "admitted_agent_profile_revision": admission.revision,
+            "admitted_agent_profile_hash": admission.content_hash,
+        }
+        if session_id is not None:
+            create_session_kwargs["session_id"] = session_id
+        if purpose != "conversation":
+            create_session_kwargs["purpose"] = purpose
+        session_id = await repositories.create_session(conn, **create_session_kwargs)
         await repositories.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
-            action="agent_conversation.created",
+            action=(
+                "agent_profile.test_conversation_created"
+                if purpose == "builder_test"
+                else "agent_conversation.created"
+            ),
             target_type="agent_profile",
             target_id=admission.agent_id,
             trace_id=standard_trace_id(session_id),
-            payload_json={"revision": admission.revision, "session_id": session_id},
+            payload_json={
+                "revision": admission.revision,
+                "session_id": session_id,
+                "purpose": purpose,
+            },
         )
         return ChatSessionResponse(
             session_id=session_id,
             workspace_id=workspace_id,
             agent_id=admission.agent_id,
             title=title or admission.public_identity.name,
+            purpose=purpose,
             agent_conversation=admission.public_identity,
         )
 

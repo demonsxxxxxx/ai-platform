@@ -22,6 +22,15 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "revision": 7,
         "name": "Support assistant",
         "description": "Approved support help.",
+        "welcome_message": "",
+        "starter_prompts": [],
+        "capability_summary": "",
+        "recommended_tasks": [],
+        "supported_input_types": ["text"],
+        "supported_file_types": [],
+        "expected_outputs": [],
+        "permissions_and_data_access_notice": "",
+        "published_at": None,
         "avatar_ref": "builtin:assistant",
         "category": "support",
         "visibility": "restricted",
@@ -45,6 +54,15 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "expected_revision": 7,
         "name": "Support assistant",
         "description": "Approved support help.",
+        "welcome_message": "",
+        "starter_prompts": [],
+        "capability_summary": "",
+        "recommended_tasks": [],
+        "supported_input_types": ["text"],
+        "supported_file_types": [],
+        "expected_outputs": [],
+        "permissions_and_data_access_notice": "",
+        "published_at": None,
         "avatar_ref": "builtin:assistant",
         "category": "support",
     }
@@ -632,17 +650,31 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
         "admitted_agent_profile_revision": 7,
         "admitted_agent_profile_hash": "a" * 64,
     }
-    assert observed["audit"]["payload_json"] == {"revision": 7, "session_id": "ses_profile"}
+    assert observed["audit"]["payload_json"] == {
+        "revision": 7,
+        "session_id": "ses_profile",
+        "purpose": "conversation",
+    }
     assert response.model_dump() == {
         "session_id": "ses_profile",
         "workspace_id": "default",
         "agent_id": "agt_support",
         "title": "Support assistant",
+        "purpose": "conversation",
         "agent_conversation": {
             "agent_id": "agt_support",
             "revision": 7,
             "name": "Support assistant",
             "description": "Approved support help.",
+            "welcome_message": "",
+            "starter_prompts": [],
+            "capability_summary": "",
+            "recommended_tasks": [],
+            "supported_input_types": ["text"],
+            "supported_file_types": [],
+            "expected_outputs": [],
+            "permissions_and_data_access_notice": "",
+            "published_at": None,
             "avatar_ref": "builtin:assistant",
             "category": "support",
         },
@@ -1217,9 +1249,9 @@ async def test_profile_authority_rejects_incompatible_client_selectors_after_pro
 
 
 def test_session_recovery_projects_only_safe_agent_conversation_identity():
-    from app.routes.chat import _session_response
+    from app.chat_session_projection import session_response
 
-    response = _session_response(
+    response = session_response(
         {
             "id": "ses_profile",
             "workspace_id": "default",
@@ -1243,6 +1275,15 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
         "revision": 7,
         "name": "Support assistant",
         "description": "Approved support help.",
+        "welcome_message": "",
+        "starter_prompts": [],
+        "capability_summary": "",
+        "recommended_tasks": [],
+        "supported_input_types": ["text"],
+        "supported_file_types": [],
+        "expected_outputs": [],
+        "permissions_and_data_access_notice": "",
+        "published_at": None,
         "avatar_ref": "builtin:assistant",
         "category": "support",
     }

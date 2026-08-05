@@ -33,6 +33,14 @@ export interface AgentConversationListOptions {
   limit?: number;
 }
 
+export interface AgentProfileTrialRunResponse {
+  session_id: string;
+  run_id: string;
+  status: "queued" | "accepted_pending_enqueue";
+  submission_id: string;
+  purpose: "builder_test";
+}
+
 /** Build the current-principal published catalog URL. */
 export function buildAgentProfileCatalogUrl(query: AgentProfileCatalogQuery = {}): string {
   const searchParams = new URLSearchParams();
@@ -130,6 +138,13 @@ export const agentProfileApi = {
     return authFetch(`${API_BASE}/api/ai/admin/agent-profiles`);
   },
 
+  listHistory(agentId: string): Promise<{ agent_profiles: AgentProfileAdminProjection[] }> {
+    return authFetch(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/history`,
+      { cache: "no-store" },
+    );
+  },
+
   saveDraft(
     draft: AgentProfileDraftRequest,
     agentId?: string,
@@ -151,6 +166,35 @@ export const agentProfileApi = {
       {
         method: "POST",
         body: JSON.stringify({ expected_revision: expectedRevision }),
+      },
+    );
+  },
+
+  unpublish(agentId: string, expectedRevision: number): Promise<AgentProfileMutationResponse> {
+    return authFetch(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/unpublish`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_revision: expectedRevision }),
+      },
+    );
+  },
+
+  runTest(
+    agentId: string,
+    expectedRevision: number,
+    message: string,
+    submissionId: string,
+  ): Promise<AgentProfileTrialRunResponse> {
+    return authFetch(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/test-runs`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_revision: expectedRevision,
+          message,
+          submission_id: submissionId,
+        }),
       },
     );
   },

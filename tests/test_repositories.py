@@ -343,7 +343,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                 return SingleRowCursor({"current_revision": 7})
             if "insert into agent_profile_revisions" in normalized:
                 return SingleRowCursor(
-                    {"published_at": None if params[21] is None else "database-timestamp"}
+                    {"published_at": None if params[30] is None else "database-timestamp"}
                 )
             return SingleRowCursor(None)
 
@@ -374,25 +374,32 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
           tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
           model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
           avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
-          allowed_user_ids, created_by, published_by, published_at,
+          allowed_user_ids, welcome_message, starter_prompts, capability_summary,
+          recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
+          permissions_and_data_access_notice, avatar_asset_id,
+          created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
         )
         values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
-                %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s,
-                case when %s::text is null then null else now() end, %s, %s)
+                %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
+                %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s,
+                %s, %s, %s, case when %s::text is null then null else now() end, %s, %s)
         returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
                   model_id, skill_id, skill_version, mcp_tool_ids, content_hash,
                   avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
-                  allowed_user_ids,
+                  allowed_user_ids, welcome_message, starter_prompts, capability_summary,
+                  recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
+                  permissions_and_data_access_notice, avatar_asset_id,
                   created_at, published_at
         """.split()
     )
-    assert len(params) == insert_sql.count("%s") == 24
+    assert len(params) == insert_sql.count("%s") == 33
     assert params == (
         "tenant-a", "agt_support", 8, expected_legacy_status, status,
         "Support assistant", "Approved support helper.",
         "Private instruction", "model-a", "general-chat", "version-a", '["mcp-a", "mcp-b"]',
         "a" * 64, "builtin:agent", "general", "tenant", "[]", "[]", "[]",
+        "", "[]", "", "[]", '["text"]', "[]", "[]", "", None,
         "creator-a", published_by, published_by, published_from_revision, None,
     )
     assert saved["published_at"] == expected_published_at
@@ -4782,7 +4789,9 @@ async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
         "Agent A",
         None,
         None,
+        "conversation",
     )
+    assert "sessions.purpose = excluded.purpose" in conn.sql
 
 
 @pytest.mark.asyncio

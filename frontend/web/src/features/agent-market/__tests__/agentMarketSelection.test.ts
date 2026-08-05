@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { AgentProfilePublicProjection } from "../../../types";
+
 import {
   buildAgentMarketDetailPath,
   buildAgentMarketWorkspacePath,
@@ -8,13 +10,22 @@ import {
   selectPublishedMarketProfile,
 } from "../agentMarketSelection";
 
-const profile = {
+const profile: AgentProfilePublicProjection = {
   agent_id: "agt_support",
   expected_revision: 4,
   name: "支持助手",
   description: "已发布的支持服务。",
+  welcome_message: "欢迎使用支持助手。",
+  starter_prompts: ["帮我处理支持请求"],
+  capability_summary: "在授权范围内处理企业支持请求。",
+  recommended_tasks: ["支持请求分流"],
+  supported_input_types: ["text"],
+  supported_file_types: [],
+  expected_outputs: ["处理建议"],
+  permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant" as const,
   category: "support" as const,
+  published_at: "2026-08-04T01:00:00Z",
 };
 
 test("market accepts only the exact published profile revision from its route", () => {
@@ -45,6 +56,7 @@ test("market search uses only current safe public name and description fields", 
   const profiles = [
     profile,
     {
+      ...profile,
       agent_id: "agt_finance",
       expected_revision: 2,
       name: "财务助手",

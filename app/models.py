@@ -1,3 +1,4 @@
+import re
 from typing import Any, ClassVar, Literal
 from uuid import UUID
 
@@ -48,6 +49,30 @@ def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> lis
         candidate = assert_safe_principal_user_id(value.strip(), field_name)
         if candidate not in normalized:
             normalized.append(candidate)
+    return normalized
+
+
+_SUPPORTED_FILE_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.+/-]{0,63}$")
+
+
+def _normalize_profile_display_items(
+    values: list[str],
+    field_name: str,
+    *,
+    item_limit: int,
+) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        candidate = value.strip()
+        if not candidate:
+            raise ValueError(f"{field_name} contains an empty item")
+        if len(candidate) > item_limit:
+            raise ValueError(f"{field_name} item exceeds {item_limit} characters")
+        if any(ord(char) < 32 for char in candidate):
+            raise ValueError(f"{field_name} contains control characters")
+        if candidate in normalized:
+            raise ValueError(f"{field_name} contains duplicates")
+        normalized.append(candidate)
     return normalized
 
 
@@ -206,17 +231,73 @@ class AgentProfileDraftRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=2_000)
+    welcome_message: str = Field(default="", max_length=4_000)
+    starter_prompts: list[str] = Field(default_factory=list, max_length=8)
+    capability_summary: str = Field(default="", max_length=4_000)
+    recommended_tasks: list[str] = Field(default_factory=list, max_length=12)
+    supported_input_types: list[Literal["text", "file"]] = Field(
+        default_factory=lambda: ["text"],
+        min_length=1,
+        max_length=2,
+    )
+    supported_file_types: list[str] = Field(default_factory=list, max_length=32)
+    expected_outputs: list[str] = Field(default_factory=list, max_length=16)
+    permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
     model_id: str
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_asset_id: str | None = None
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
     allowed_user_ids: list[str] = Field(default_factory=list)
     expected_draft_revision: int = Field(ge=0)
+
+    @field_validator("welcome_message", "capability_summary", "permissions_and_data_access_notice")
+    @classmethod
+    def normalize_profile_display_text(cls, value: str):
+        if "\x00" in value:
+            raise ValueError("profile display text contains a NUL character")
+        return value.strip()
+
+    @field_validator("starter_prompts")
+    @classmethod
+    def normalize_starter_prompts(cls, value: list[str], info):
+        return _normalize_profile_display_items(value, info.field_name, item_limit=500)
+
+    @field_validator("recommended_tasks", "expected_outputs")
+    @classmethod
+    def normalize_profile_display_lists(cls, value: list[str], info):
+        return _normalize_profile_display_items(value, info.field_name, item_limit=240)
+
+    @field_validator("supported_input_types")
+    @classmethod
+    def normalize_supported_input_types(cls, value: list[str]):
+        normalized = list(dict.fromkeys(value))
+        if "file" not in normalized:
+            return normalized
+        return [item for item in ("text", "file") if item in normalized]
+
+    @field_validator("supported_file_types")
+    @classmethod
+    def normalize_supported_file_types(cls, value: list[str]):
+        normalized: list[str] = []
+        for item in value:
+            candidate = item.strip().lower()
+            if not _SUPPORTED_FILE_TYPE_PATTERN.fullmatch(candidate):
+                raise ValueError("supported_file_types contains an invalid media type or extension")
+            if candidate in normalized:
+                raise ValueError("supported_file_types contains duplicates")
+            normalized.append(candidate)
+        return normalized
+
+    @field_validator("avatar_asset_id")
+    @classmethod
+    def validate_avatar_asset_id(cls, value: str | None):
+        return assert_safe_id(value, "avatar_asset_id") if value else None
 
     @field_validator("model_id")
     @classmethod
@@ -280,6 +361,51 @@ class AgentProfileDraftTestRequest(BaseModel):
         return assert_safe_id(value, "agent_id") if value is not None else None
 
 
+class AgentProfileTrialRunRequest(BaseModel):
+    """Idempotent Builder test submission against one current publication."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    message: str = Field(min_length=1, max_length=100_000)
+    submission_id: UUID
+    workspace_id: str = "default"
+    file_ids: list[str] = Field(default_factory=list, max_length=32)
+    user_timezone: str | None = Field(default=None, max_length=128)
+
+    @field_validator("workspace_id")
+    @classmethod
+    def validate_workspace_id(cls, value: str):
+        return assert_safe_id(value, "workspace_id")
+
+    @field_validator("file_ids")
+    @classmethod
+    def validate_file_ids(cls, value: list[str]):
+        normalized = [assert_safe_id(item, "file_ids") for item in value]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("file_ids contains duplicates")
+        return normalized
+
+
+class AgentAppRunRequest(BaseModel):
+    """Strict dedicated submission surface without client-owned capability selectors."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=100_000)
+    submission_id: UUID
+    file_ids: list[str] = Field(default_factory=list, max_length=32)
+    user_timezone: str | None = Field(default=None, max_length=128)
+
+    @field_validator("file_ids")
+    @classmethod
+    def validate_file_ids(cls, value: list[str]):
+        normalized = [assert_safe_id(item, "file_ids") for item in value]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("file_ids contains duplicates")
+        return normalized
+
+
 class AgentProfilePublicProjection(BaseModel):
     """Ordinary-user market projection without executable configuration."""
 
@@ -289,8 +415,17 @@ class AgentProfilePublicProjection(BaseModel):
     expected_revision: int
     name: str
     description: str = ""
+    welcome_message: str = ""
+    starter_prompts: list[str] = Field(default_factory=list)
+    capability_summary: str = ""
+    recommended_tasks: list[str] = Field(default_factory=list)
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
+    supported_file_types: list[str] = Field(default_factory=list)
+    expected_outputs: list[str] = Field(default_factory=list)
+    permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    published_at: Any | None = None
 
 
 class AgentProfileCatalogResponse(BaseModel):
@@ -311,11 +446,20 @@ class AgentProfileAdminProjection(BaseModel):
     status: Literal["draft", "published", "withdrawn"]
     name: str
     description: str = ""
+    welcome_message: str = ""
+    starter_prompts: list[str] = Field(default_factory=list)
+    capability_summary: str = ""
+    recommended_tasks: list[str] = Field(default_factory=list)
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
+    supported_file_types: list[str] = Field(default_factory=list)
+    expected_outputs: list[str] = Field(default_factory=list)
+    permissions_and_data_access_notice: str = ""
     instructions: str
     model_id: str
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_asset_id: str | None = None
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
@@ -384,8 +528,17 @@ class AgentConversationIdentity(BaseModel):
     revision: int = Field(ge=1)
     name: str
     description: str = ""
+    welcome_message: str = ""
+    starter_prompts: list[str] = Field(default_factory=list)
+    capability_summary: str = ""
+    recommended_tasks: list[str] = Field(default_factory=list)
+    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text"])
+    supported_file_types: list[str] = Field(default_factory=list)
+    expected_outputs: list[str] = Field(default_factory=list)
+    permissions_and_data_access_notice: str = ""
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    published_at: Any | None = None
 
 
 class CreateRunRequest(BaseModel):
@@ -791,13 +944,17 @@ class QueueRunPayload(BaseModel):
 
     @field_validator("agent_profile")
     @classmethod
-    def validate_private_agent_profile(cls, value: dict[str, Any] | None):
+    def validate_private_agent_profile(cls, value: dict[str, Any] | None, info):
         if value is None:
             return None
         agent_id = value.get("agent_id")
         revision = value.get("revision")
         content_hash = value.get("content_hash")
         instructions = value.get("instructions")
+        required_skill_id = str(value.get("required_skill_id") or info.data.get("skill_id") or "").strip()
+        required_skill_version = str(
+            value.get("required_skill_version") or info.data.get("skill_version") or ""
+        ).strip()
         if not isinstance(agent_id, str):
             raise ValueError("agent_profile_agent_id_invalid")
         if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
@@ -810,11 +967,20 @@ class QueueRunPayload(BaseModel):
             or len(instructions) > MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
         ):
             raise ValueError("agent_profile_instructions_invalid")
+        if not required_skill_id or required_skill_id != str(info.data.get("skill_id") or ""):
+            raise ValueError("agent_profile_required_skill_invalid")
+        if required_skill_version != str(info.data.get("skill_version") or ""):
+            raise ValueError("agent_profile_required_skill_version_invalid")
         return {
             "agent_id": assert_safe_id(agent_id, "agent_profile.agent_id"),
             "revision": revision,
             "content_hash": content_hash,
             "instructions": instructions,
+            "required_skill_id": assert_safe_id(
+                required_skill_id,
+                "agent_profile.required_skill_id",
+            ),
+            "required_skill_version": required_skill_version,
         }
 
     @field_validator("schema_version")
@@ -944,6 +1110,7 @@ class ChatSessionResponse(BaseModel):
     workspace_id: str
     agent_id: str
     title: str
+    purpose: Literal["conversation", "builder_test"] = "conversation"
     agent_conversation: AgentConversationIdentity | None = None
     created_at: Any | None = None
     updated_at: Any | None = None
@@ -1203,6 +1370,12 @@ class ChatStreamResponse(BaseModel):
     queue_insight: dict[str, Any] | None = None
     intent_decision: IntentDecisionResponse | None = None
     suggestions: list[CapabilitySuggestionResponse] = Field(default_factory=list)
+
+
+class AgentProfileTrialRunResponse(ChatStreamResponse):
+    """Builder test response that keeps the durable test purpose explicit."""
+
+    purpose: Literal["builder_test"] = "builder_test"
 
 
 class ChatSubmissionResponse(BaseModel):
