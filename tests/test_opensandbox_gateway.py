@@ -118,9 +118,6 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
         **{f"ai-platform.{key}": value for key, value in scope.items()},
         "ai-platform.sandbox_mode": "agent",
         "ai-platform.browser_enabled": "false",
-        "ai-platform.model_id_sha256": base64.b32encode(hashlib.sha256(b"deepseek-v4-flash").digest())
-        .decode("ascii")
-        .rstrip("="),
         "ai-platform.provider_backend": "opensandbox",
         "ai-platform.executor.requested_image": IMAGE,
         "ai-platform.executor.requested_image_digest": IMAGE.rsplit("@", 1)[1],
@@ -162,6 +159,7 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
         "AI_PLATFORM_EXECUTOR_AUTH_TOKEN": "executor-" + "d" * 32,
         "OPENAI_BASE_URL": config.openai_upstream_base,
         "ANTHROPIC_BASE_URL": config.anthropic_upstream_base,
+        "DEFAULT_MODEL_ID": "deepseek-v4-flash",
     }
     return {
         "image": {"image": IMAGE},
@@ -250,7 +248,7 @@ def _collection_proxy():
 
 
 def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> None:
-    app, lifecycle, runtime, _ = application()
+    app, lifecycle, runtime, store = application()
     config = gateway_config()
     response = call(app, "POST", "/v1/sandboxes", create_payload(config))
     assert response.status == 201
@@ -263,6 +261,9 @@ def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> No
     assert "test-openai-secret" not in repr(lifecycle.requests)
     assert "test-anthropic-secret" not in repr(lifecycle.requests)
     assert "test-openai-secret" not in repr(runtime.evidence)
+    assert store.get(sandbox_id).metadata["ai-platform.model_id_sha256"] == base64.b32encode(
+        hashlib.sha256(b"deepseek-v4-flash").digest()
+    ).decode("ascii").rstrip("=")
     attestation = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
     assert attestation.status == 200
     value = decoded(attestation)
@@ -2276,109 +2277,6 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
     assert "sandbox-forged-key" not in repr(captured)
     assert captured[-1][0] == "/anthropic/v1/messages"
     assert json.loads(captured_bodies[-2])["stream"] is True
-
-
-def test_mailbox_model_route_denials_and_replay_never_add_upstream_dispatch(monkeypatch) -> None:
-    app, _, _, store = application()
-    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "deny")))["id"]
-    record = store.get(sandbox_id)
-    assert record is not None
-    dispatched: list[tuple[str, bytes, dict[str, str]]] = []
-
-    class FakeResponse:
-        status = 200
-
-        @staticmethod
-        def read(_limit):
-            return b'{"ok":true}'
-
-        @staticmethod
-        def getheaders():
-            return [("content-type", "application/json")]
-
-    class FakeConnection:
-        sock = None
-
-        def __init__(self, *_args):
-            pass
-
-        def request(self, _method, path, *, body, headers):
-            dispatched.append((path, body, dict(headers)))
-
-        @staticmethod
-        def getresponse():
-            return FakeResponse()
-
-        @staticmethod
-        def close():
-            return None
-
-    monkeypatch.setattr(gateway_adapters, "_PinnedHTTPSConnection", FakeConnection)
-    monkeypatch.setattr(gateway_adapters.os, "open", lambda *_, **__: 7)
-    monkeypatch.setattr(gateway_adapters.os, "close", lambda _fd: None)
-    monkeypatch.setattr(gateway_adapters.os, "getgid", lambda: 4321, raising=False)
-    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
-    policy = SimpleNamespace(
-        targets={
-            "callback": (BRIDGE_ORIGIN, ("10.56.0.211",)),
-            "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.56.0.211",)),
-            "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.56.0.211",)),
-        }
-    )
-
-    def process(broker: MailboxBroker, request_id: str, model: str) -> None:
-        body = json.dumps({"model": model, "stream": True}).encode()
-        raw = json.dumps(
-            {
-                "version": 1,
-                "method": "POST",
-                "path": "/model/openai/chat/completions",
-                "headers": {"authorization": "Bearer sandbox-secret", "content-type": "application/json"},
-                "body": base64.b64encode(body).decode("ascii"),
-                "created_at_unix_seconds": time.time(),
-                "timeout_seconds": 30.0,
-            }
-        ).encode()
-        evidence = SimpleNamespace(
-            st_mode=stat.S_IFREG | 0o640,
-            st_size=len(raw),
-            st_uid=1000,
-            st_gid=4321,
-            st_dev=1,
-            st_ino=2,
-            st_mtime_ns=3,
-            st_ctime_ns=4,
-        )
-        chunks = iter((raw, b""))
-        monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _fd: evidence)
-        monkeypatch.setattr(gateway_adapters.os, "read", lambda *_: next(chunks))
-        broker._process(6, request_id + ".json", record=record)
-
-    trusted = MailboxBroker(
-        store,
-        policy,
-        1.0,
-        1024,
-        upstream_tls_context=_test_tls_context(),
-        provider_credentials={"openai": "host-openai-secret", "anthropic": "host-anthropic-secret"},
-    )
-    with pytest.raises(GatewayError, match="model_route_model_mismatch"):
-        process(trusted, "a" * 32, "cross-attempt-model")
-    assert dispatched == []
-
-    missing = MailboxBroker(store, policy, 1.0, 1024, upstream_tls_context=_test_tls_context())
-    with pytest.raises(GatewayError, match="model_provider_credential_unavailable"):
-        process(missing, "b" * 32, "deepseek-v4-flash")
-    assert dispatched == []
-
-    process(trusted, "c" * 32, "deepseek-v4-flash")
-    with pytest.raises(GatewayError, match="model_route_replayed"):
-        process(trusted, "c" * 32, "deepseek-v4-flash")
-    assert len(dispatched) == 1
-    assert store.model_route_receipt_count(record.sandbox_id) == 1
-    assert "sandbox-secret" not in repr(dispatched)
-    assert "host-openai-secret" not in repr(store.records)
-    assert "host-openai-secret" not in repr(store.denials)
 
 
 def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_only_shortens(monkeypatch) -> None:

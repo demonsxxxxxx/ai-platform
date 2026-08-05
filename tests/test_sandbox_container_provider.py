@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import hashlib
 import hmac
 import inspect
@@ -1664,9 +1663,6 @@ async def test_opensandbox_provider_admits_only_authenticated_runsc_external_egr
     assert "gateway-policy-subject-a" not in lease.labels["ai-platform.governed_egress.proof"]
     assert "ai-platform.external_egress.endpoint" not in lease.labels
     remote_metadata = FakeOpenSandbox.created[0]["metadata"]
-    assert remote_metadata["ai-platform.model_id_sha256"] == base64.b32encode(
-        hashlib.sha256(b"deepseek-v4-flash").digest()
-    ).decode("ascii").rstrip("=")
     assert remote_metadata["ai-platform.external_egress.endpoint_sha256"] != lease.labels[
         "ai-platform.external_egress.endpoint_sha256"
     ] == hashlib.sha256(b"http://opensandbox.local:8080").hexdigest()
@@ -1680,6 +1676,7 @@ async def test_opensandbox_provider_admits_only_authenticated_runsc_external_egr
     assert FakeOpenSandbox.created[0]["env"]["ANTHROPIC_BASE_URL"] == (
         "https://bridge.internal.example:18443/anthropic"
     )
+    assert FakeOpenSandbox.created[0]["env"]["DEFAULT_MODEL_ID"] == "deepseek-v4-flash"
     assert "OPENAI_API_KEY" not in FakeOpenSandbox.created[0]["env"]
     assert "ANTHROPIC_AUTH_TOKEN" not in FakeOpenSandbox.created[0]["env"]
     assert "test-newapi-token" not in repr(FakeOpenSandbox.created[0])

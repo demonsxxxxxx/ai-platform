@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from collections.abc import AsyncIterable
 import hashlib
 import hmac
@@ -993,7 +992,6 @@ def _executor_environment(
     workspace_container_path: str = "/workspace",
     native_tool_token: str = "",
     native_tool_socket: str = "",
-    include_provider_credentials: bool = True,
 ) -> dict[str, str]:
     environment = {
         "APP_MODULE": "app.runtime.sandbox.executor_app:create_executor_app",
@@ -1005,11 +1003,13 @@ def _executor_environment(
         "SANDBOX_CALLBACK_BASE_URL": egress_bases.callback_base_url,
         "AI_PLATFORM_EXECUTOR_AUTH_TOKEN": executor_auth_token,
         "OPENAI_BASE_URL": egress_bases.openai_base_url,
+        "OPENAI_API_KEY": _env_value(settings, "openai_api_key"),
         "OPENAI_MODEL": _env_value(settings, "openai_model", "deepseek-v4-flash"),
         "ANTHROPIC_BASE_URL": egress_bases.anthropic_base_url,
+        "ANTHROPIC_AUTH_TOKEN": _env_value(settings, "anthropic_auth_token"),
         "ANTHROPIC_MODEL": _env_value(settings, "anthropic_model", "deepseek-v4-flash"),
         "CLAUDE_AGENT_MODEL": _env_value(settings, "claude_agent_model", "deepseek-v4-flash"),
-        "DEFAULT_MODEL_ID": _env_value(settings, "default_model_id"),
+        "DEFAULT_MODEL_ID": request.model,
         "MODEL_CATALOG_JSON": _env_value(settings, "model_catalog_json"),
         "CLAUDE_AGENT_SDK_ENABLED": _env_bool(getattr(settings, "claude_agent_sdk_enabled", False)),
         "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS": _env_value(settings, "claude_agent_sdk_timeout_seconds", 120),
@@ -1037,9 +1037,6 @@ def _executor_environment(
             262144,
         ),
     }
-    if include_provider_credentials:
-        environment["OPENAI_API_KEY"] = _env_value(settings, "openai_api_key")
-        environment["ANTHROPIC_AUTH_TOKEN"] = _env_value(settings, "anthropic_auth_token")
     if native_tool_token and native_tool_socket:
         environment["AI_PLATFORM_NATIVE_TOOL_TOKEN"] = native_tool_token
         environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] = native_tool_socket
@@ -1688,7 +1685,7 @@ def _opensandbox_profile_labels(
     lease_identity: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, str]:
-    labels = _opensandbox_labels(
+    return _opensandbox_labels(
         settings,
         request,
         capability,
@@ -1696,10 +1693,6 @@ def _opensandbox_profile_labels(
         lease_identity=lease_identity,
         now=now,
     )
-    labels["ai-platform.model_id_sha256"] = base64.b32encode(
-        hashlib.sha256(request.model.encode("utf-8")).digest()
-    ).decode("ascii").rstrip("=")
-    return labels
 
 
 def _callback_policy_host(settings: Any) -> str:
@@ -4892,15 +4885,14 @@ class OpenSandboxContainerProvider:
                 ),
             )
 
-        executor_egress_bases = capability.executor_egress_bases()
         environment = _executor_environment(
             request,
             settings,
             executor_auth_token=executor_auth_token,
-            egress_bases=executor_egress_bases,
+            egress_bases=capability.executor_egress_bases(),
             workspace_container_path=workspace.workspace_container_path,
-            include_provider_credentials=False,
         )
+        environment = {key: value for key, value in environment.items() if key not in {"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"}}
         kwargs = {
             "image": _opensandbox_image(settings),
             "timeout": timedelta(seconds=max(int(getattr(settings, "opensandbox_timeout_seconds", 1800) or 1800), 1)),

@@ -7,6 +7,7 @@ can run behind the production HTTPS listener and the in-memory test adapter.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import ipaddress
@@ -63,7 +64,6 @@ ALLOWED_METADATA_KEYS = {
     "ai-platform.attempt_id",
     "ai-platform.sandbox_mode",
     "ai-platform.browser_enabled",
-    "ai-platform.model_id_sha256",
     "ai-platform.provider_backend",
     "ai-platform.executor.requested_image",
     "ai-platform.executor.requested_image_digest",
@@ -691,6 +691,10 @@ class GatewayApplication:
         provider_secret_keys = {"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}
         if any(isinstance(key, str) and key.upper() in provider_secret_keys for key in env):
             raise GatewayError(400, "provider_credential_not_allowed")
+        model_id = env.get("DEFAULT_MODEL_ID")
+        if not isinstance(model_id, str) or not model_id or len(model_id.encode("utf-8")) > 512:
+            raise GatewayError(400, "model_identity_invalid")
+        model_id_hash = base64.b32encode(hashlib.sha256(model_id.encode("utf-8")).digest()).decode("ascii").rstrip("=")
         if any(k.upper().endswith("_PROXY") for k in env):
             raise GatewayError(400, "proxy_environment_not_allowed")
         mounts, workspace = self._accept_volumes(payload.get("volumes"), scope, metadata)
@@ -706,7 +710,7 @@ class GatewayApplication:
         return {
             "upstream": rewritten,
             "scope": scope,
-            "metadata": dict(metadata),
+            "metadata": {**metadata, "ai-platform.model_id_sha256": model_id_hash},
             "image": image,
             "image_digest": match.group("digest"),
             "workspace_host_path": workspace,
