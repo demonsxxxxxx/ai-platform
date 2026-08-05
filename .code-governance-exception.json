@@ -1,0 +1,40 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "469fca884bb229f135a0b04fd5c0b20db6f2925a",
+    "scope_sha256": "906d7a22baaf43b05d0ac9b60d10c44e36ecad9975c344c31af88d59bbe1f13c"
+  },
+  "expires_on": "2026-08-19",
+  "owner": "agent-app-governance/#754",
+  "reason": "User-authorized single Agent App governance PR spans the immutable profile, admission, truthful execution projection, dedicated workspace, Builder lifecycle, and their hostile tests; the exception is bound to this exact audited candidate and expires after independent review.",
+  "violations": [
+    {
+      "code": "functional_hot_file_growth",
+      "path": "app/repositories.py"
+    },
+    {
+      "code": "functional_hot_file_growth",
+      "path": "app/worker.py"
+    },
+    {
+      "code": "hot_file_growth",
+      "path": "app/models.py"
+    },
+    {
+      "code": "hot_file_growth",
+      "path": "app/worker.py"
+    },
+    {
+      "code": "production_file_count",
+      "path": null
+    },
+    {
+      "code": "production_net_loc",
+      "path": null
+    },
+    {
+      "code": "test_hot_file_growth",
+      "path": "tests/test_worker.py"
+    }
+  ]
+}
