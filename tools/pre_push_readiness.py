@@ -44,6 +44,7 @@ TEMPORARY_ROOT_PREFIX = "apr-"
 WINDOWS_CONSERVATIVE_DIRECTORY_PATH_BUDGET = 240
 WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH = 163
 WINDOWS_DIRECTORY_PATH_HEADROOM = 16
+IS_WINDOWS = os.name == "nt"
 
 FAILURE_TAXONOMY = {
     "stale_base": "The supplied base is not an ancestor of head; merge the current base before push.",
@@ -331,10 +332,23 @@ class PrePushReadiness:
             raise ReadinessError("infrastructure_failure", "git_failed", _command_failure("git merge-base", ancestor))
 
     def _create_temporary_root(self) -> Path:
+        temporary_root: Path | None = None
         try:
-            temporary_root = Path(tempfile.mkdtemp(prefix=TEMPORARY_ROOT_PREFIX))
+            parent = _temporary_root_parent()
+            temporary_root = Path(tempfile.mkdtemp(prefix=TEMPORARY_ROOT_PREFIX, dir=parent))
+            if IS_WINDOWS:
+                _assert_windows_nonreparse_directory(temporary_root)
         except OSError as error:
-            raise ReadinessError("infrastructure_failure", "temporary_directory_failed", str(error)) from error
+            cleanup_error: OSError | None = None
+            if temporary_root is not None and _path_lexists(temporary_root):
+                try:
+                    _remove_cleanup_tree(temporary_root)
+                except OSError as removal_error:
+                    cleanup_error = removal_error
+            detail = str(error)
+            if cleanup_error is not None:
+                detail = f"{detail}; rejected temporary root cleanup failed: {cleanup_error}"
+            raise ReadinessError("infrastructure_failure", "temporary_directory_failed", detail) from error
         if _temporary_root_has_windows_headroom(temporary_root):
             return temporary_root
         try:
@@ -1002,6 +1016,24 @@ def _path_lexists(path: Path) -> bool:
 
 def _temporary_worktree_paths(temporary_root: Path) -> tuple[Path, Path]:
     return temporary_root / "base", temporary_root / "head"
+
+
+def _temporary_root_parent() -> Path:
+    if not IS_WINDOWS:
+        return Path(tempfile.gettempdir())
+    parent = Path.home()
+    _assert_windows_nonreparse_directory(parent)
+    return parent
+
+
+def _assert_windows_nonreparse_directory(path: Path) -> None:
+    try:
+        details = os.lstat(_windows_extended_path(path))
+    except OSError as error:
+        raise OSError(f"readiness temporary directory is unavailable: {path}") from error
+    if _is_link_or_reparse_point(details) or not stat.S_ISDIR(details.st_mode):
+        kind = "a reparse point" if _is_link_or_reparse_point(details) else "not a directory"
+        raise OSError(f"readiness temporary directory is {kind}: {path}")
 
 
 def _temporary_root_has_windows_headroom(temporary_root: Path) -> bool:
