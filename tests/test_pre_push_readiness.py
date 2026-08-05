@@ -427,21 +427,43 @@ def test_disposable_worktree_commands_enable_windows_long_path_handling(tmp_path
     ]
 
 
-def test_temporary_root_uses_short_owned_basename_with_windows_headroom(tmp_path: Path) -> None:
+def test_temporary_root_uses_verified_profile_instead_of_deep_windows_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _readiness_module()
     readiness = module.PrePushReadiness(tmp_path)
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    deep_temp = tmp_path.joinpath(*(["detached-worktree-depth"] * 10))
+    assert len(str(deep_temp)) + module.WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH > 240
+    created = profile / "apr-owned"
+    verified: list[Path] = []
+
+    def create_root(*, prefix: str, dir: str | Path) -> str:
+        assert prefix == module.TEMPORARY_ROOT_PREFIX
+        assert Path(dir) == profile
+        created.mkdir()
+        return str(created)
+
+    monkeypatch.setattr(module, "IS_WINDOWS", True)
+    monkeypatch.setattr(module.Path, "home", lambda: profile)
+    monkeypatch.setattr(module.tempfile, "gettempdir", lambda: str(deep_temp))
+    monkeypatch.setattr(module.tempfile, "mkdtemp", create_root)
+    monkeypatch.setattr(module, "_assert_windows_nonreparse_directory", verified.append)
+    monkeypatch.setattr(module, "_temporary_root_has_windows_headroom", lambda path: True)
     temporary_root = readiness._create_temporary_root()
     try:
         base, head = module._temporary_worktree_paths(temporary_root)
 
-        assert temporary_root.name.startswith(module.TEMPORARY_ROOT_PREFIX)
+        assert temporary_root == created
+        assert verified == [profile, created]
         assert base.parent == temporary_root
         assert head.parent == temporary_root
         assert base.name == "base"
         assert head.name == "head"
         assert module._temporary_root_has_windows_headroom(temporary_root)
         assert (
-            len(str(temporary_root))
+            len(str(Path("C:/Users/current-user/apr-owned")))
             + module.WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH
             + module.WINDOWS_DIRECTORY_PATH_HEADROOM
             <= module.WINDOWS_CONSERVATIVE_DIRECTORY_PATH_BUDGET
@@ -449,6 +471,29 @@ def test_temporary_root_uses_short_owned_basename_with_windows_headroom(tmp_path
     finally:
         if os.path.lexists(temporary_root):
             module._remove_cleanup_tree(temporary_root)
+
+
+def test_windows_temporary_root_rejects_a_reparse_profile_before_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _readiness_module()
+    profile = tmp_path / "reparse-profile"
+    created: list[Path] = []
+
+    monkeypatch.setattr(module, "IS_WINDOWS", True)
+    monkeypatch.setattr(module.Path, "home", lambda: profile)
+    monkeypatch.setattr(
+        module,
+        "_assert_windows_nonreparse_directory",
+        lambda path: (_ for _ in ()).throw(OSError("profile is a reparse point")),
+    )
+    monkeypatch.setattr(module.tempfile, "mkdtemp", lambda **kwargs: created.append(profile / "apr-never"))
+
+    with pytest.raises(module.ReadinessError) as raised:
+        module.PrePushReadiness(tmp_path)._create_temporary_root()
+
+    assert raised.value.code == "temporary_directory_failed"
+    assert created == []
 
 
 def test_temporary_root_over_budget_fails_and_cleans_only_the_owned_root(
@@ -462,10 +507,12 @@ def test_temporary_root_over_budget_fails_and_cleans_only_the_owned_root(
     sentinel.write_text("must survive temporary-root cleanup", encoding="utf-8")
     prefixes: list[str] = []
 
-    def create_over_budget_root(*, prefix: str) -> str:
+    def create_over_budget_root(*, prefix: str, dir: str | Path) -> str:
         prefixes.append(prefix)
+        assert Path(dir) == Path(tempfile.gettempdir())
         return str(temporary_root)
 
+    monkeypatch.setattr(module, "IS_WINDOWS", False)
     monkeypatch.setattr(module.tempfile, "mkdtemp", create_over_budget_root)
     try:
         with pytest.raises(module.ReadinessError) as raised:
