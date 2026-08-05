@@ -1,8 +1,8 @@
 {
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
-    "base_ref": "6a12fc88511dc7b8255b81b2bb04af5430751357",
-    "scope_sha256": "90cd2342a7549cf04b06dcb031fa857cc93dc534b0798d5a40f5193de9dfd762"
+    "base_ref": "b0e30f506e0ea989c1b2ae2d47b35ada5561d68a",
+    "scope_sha256": "3ea7ad0117fc3abe86ea891f11b5f0c23170db230baeaacd9e88252514f0b464"
   },
   "expires_on": "2026-08-19",
   "owner": "agent-platform",
