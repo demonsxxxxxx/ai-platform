@@ -464,16 +464,60 @@ def _backpressure_snapshot(
     return snapshot
 
 
-def _provider_cleanup_failed(cleanup_results: object) -> bool:
+def _provider_cleanup_failures(cleanup_results: object) -> list[dict[str, str]]:
     if not isinstance(cleanup_results, list):
-        return True
+        return [{"container_id": "unknown", "message": "Malformed provider cleanup result"}]
+    failures: list[dict[str, str]] = []
     for result in cleanup_results:
         if isinstance(result, dict):
-            return True
+            failures.append({"container_id": "unknown", "message": "Malformed provider cleanup result"})
+            continue
         status = getattr(result, "status", None)
         if status not in _SUCCESSFUL_PROVIDER_CLEANUP_STATUSES:
-            return True
-    return False
+            failures.append(
+                {
+                    "container_id": str(getattr(result, "container_id", None) or "unknown"),
+                    "message": "Provider orphan cleanup failed",
+                }
+            )
+    return failures
+
+
+async def _record_admin_orphan_cleanup_failure(
+    principal: AuthPrincipal,
+    failures: list[dict[str, str]],
+) -> None:
+    try:
+        async with transaction() as conn:
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action="sandbox.runtime.orphan_cleanup.failed",
+                target_type="sandbox_runtime",
+                target_id=principal.tenant_id,
+                payload_json={"failure_count": len(failures), "failures": failures},
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="sandbox_cleanup_audit_unavailable") from exc
+
+
+async def _cleanup_provider_orphans(provider: object, principal: AuthPrincipal) -> None:
+    cleanup = getattr(provider, "cleanup_orphan_containers", None)
+    if cleanup is None:
+        return
+    try:
+        cleanup_results = await cleanup({"tenant_id": principal.tenant_id}, reason="admin_runtime")
+    except Exception as exc:
+        await _record_admin_orphan_cleanup_failure(
+            principal,
+            [{"container_id": "unknown", "message": "Provider orphan cleanup raised an exception"}],
+        )
+        raise HTTPException(status_code=500, detail="sandbox_provider_cleanup_failed") from exc
+    failures = _provider_cleanup_failures(cleanup_results)
+    if failures:
+        await _record_admin_orphan_cleanup_failure(principal, failures)
+        raise HTTPException(status_code=500, detail="sandbox_provider_cleanup_failed")
 
 
 def _only_placeholder_cleanup_failures(exc: SandboxRuntimeCleanupError) -> bool:
@@ -568,14 +612,7 @@ async def admin_runtime_containers(
         raise HTTPException(status_code=403, detail="not_ai_admin")
 
     provider = create_container_provider()
-    cleanup_orphan_containers = getattr(provider, "cleanup_orphan_containers", None)
-    if cleanup_orphan_containers is not None:
-        try:
-            cleanup_results = await cleanup_orphan_containers({"tenant_id": principal.tenant_id}, reason="admin_runtime")
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail="sandbox_provider_cleanup_failed") from exc
-        if _provider_cleanup_failed(cleanup_results):
-            raise HTTPException(status_code=500, detail="sandbox_provider_cleanup_failed")
+    await _cleanup_provider_orphans(provider, principal)
     async with transaction() as conn:
         try:
             await cleanup_expired_sandbox_runtime_leases(
@@ -631,18 +668,8 @@ async def admin_runtime_overview(
         raise HTTPException(status_code=403, detail="not_ai_admin")
 
     provider = create_container_provider()
-    cleanup_orphan_containers = (
-        getattr(provider, "cleanup_orphan_containers", None)
-        if include_maintenance_cleanup
-        else None
-    )
-    if cleanup_orphan_containers is not None:
-        try:
-            cleanup_results = await cleanup_orphan_containers({"tenant_id": principal.tenant_id}, reason="admin_runtime")
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail="sandbox_provider_cleanup_failed") from exc
-        if _provider_cleanup_failed(cleanup_results):
-            raise HTTPException(status_code=500, detail="sandbox_provider_cleanup_failed")
+    if include_maintenance_cleanup:
+        await _cleanup_provider_orphans(provider, principal)
 
     async with transaction() as conn:
         if include_maintenance_cleanup:

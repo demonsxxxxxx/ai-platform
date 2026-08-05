@@ -1338,6 +1338,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
 
     create_kwargs = calls[0][1]
     assert create_kwargs["provider"] == "opensandbox"
+    assert create_kwargs["attempt_id"] == runtime_request.attempt_id
     assert create_kwargs["runtime_container_id"] == "osb-run-a"
     assert create_kwargs["runtime_container_name"] == "opensandbox-run-a"
     assert create_kwargs["runtime_executor_url"] == "http://opensandbox-executor.test"
@@ -2070,8 +2071,10 @@ async def test_runtime_execution_owner_stops_persistent_provider_before_confirmi
     await asyncio.wait_for(executing.wait(), timeout=0.5)
 
     stopped = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
+    stopped_again = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
 
     assert stopped.quiescent is True
+    assert stopped_again.quiescent is True
     assert calls == [
         ("record", "run-a"),
         ("stop", "cancel_requested"),

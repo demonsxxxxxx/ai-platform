@@ -16,9 +16,16 @@ ADMIN_PROOF_KEY = "admin-runtime-proof-key-with-enough-entropy-2026"
 
 @pytest.fixture(autouse=True)
 def signed_runtime_proof_key(monkeypatch):
+    async def ignore_orphan_cleanup_audit(principal, failures):
+        return None
+
     monkeypatch.setattr(
         "app.execution_boundary.get_settings",
         lambda: Settings(sandbox_egress_proof_signing_key=ADMIN_PROOF_KEY),
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runtime._record_admin_orphan_cleanup_failure",
+        ignore_orphan_cleanup_audit,
     )
 
 

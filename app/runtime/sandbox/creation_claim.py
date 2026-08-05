@@ -75,7 +75,7 @@ async def _has_active_exact_attempt_lease(connection: Any, scope: SandboxCreatio
             and user_id = %s
             and session_id = %s
             and run_id = %s
-            and lease_payload_json ->> 'attempt_id' = %s
+            and coalesce(attempt_id, lease_payload_json ->> 'attempt_id') = %s
             and status = 'active'
             and expires_at is not null
             and expires_at > clock_timestamp()

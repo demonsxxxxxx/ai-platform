@@ -58,6 +58,7 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
             where table_schema = %s
               and table_name = 'sandbox_leases'
               and column_name in (
+                'attempt_id',
                 'runtime_container_id',
                 'runtime_container_name',
                 'runtime_executor_url',
@@ -69,6 +70,7 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
             (schema_name,),
         )
         assert [row["column_name"] for row in await column_cursor.fetchall()] == [
+            "attempt_id",
             "runtime_container_id",
             "runtime_container_name",
             "runtime_executor_url",

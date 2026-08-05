@@ -64,23 +64,22 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
-        await repositories.append_event(
-            conn,
-            tenant_id=tenant_id,
-            run_id=callback.run_id,
-            event_type="executor_callback",
-            stage="executor",
-            message=f"Executor callback: {callback.status}",
-            payload={
-                "callback_status": callback.status,
-                "attempt_id": callback.attempt_id,
-                "callback_token_id": callback.callback_token_id,
-                "progress": callback.progress,
-                "sdk_session_id": callback.sdk_session_id,
-                "visible_to_user": False,
-            },
-        )
-        persisted_event_count = 1
+        event_batch: list[dict[str, Any]] = [
+            {
+                "event_type": "executor_callback",
+                "stage": "executor",
+                "message": f"Executor callback: {callback.status}",
+                "payload": {
+                    "callback_status": callback.status,
+                    "attempt_id": callback.attempt_id,
+                    "batch_id": callback.batch_id,
+                    "callback_token_id": callback.callback_token_id,
+                    "progress": callback.progress,
+                    "sdk_session_id": callback.sdk_session_id,
+                    "visible_to_user": False,
+                },
+            }
+        ]
         for event in events:
             executor_event = agent_event_to_executor_event(event)
             executor_event_type = str(executor_event["event_type"])
@@ -103,23 +102,38 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
                 not in {"assistant_delta", PUBLIC_AGENT_PROGRESS_EVENT_TYPE}
             ):
                 event_payload["source"] = "executor_callback"
-            await repositories.append_event(
+            event_batch.append(
+                {
+                    "event_type": executor_event_type,
+                    "stage": event_stage,
+                    "message": event_message,
+                    "payload": event_payload,
+                }
+            )
+        if callback.batch_id:
+            await repositories.append_event_batch(
                 conn,
                 tenant_id=tenant_id,
                 run_id=callback.run_id,
-                event_type=executor_event_type,
-                stage=event_stage,
-                message=event_message,
-                payload=event_payload,
+                attempt_id=callback.attempt_id,
+                batch_id=callback.batch_id,
+                events=event_batch,
             )
-            persisted_event_count += 1
+        else:
+            for event in event_batch:
+                await repositories.append_event(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    **event,
+                )
         await _require_current_runtime_attempt(
             conn,
             tenant_id=tenant_id,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
-    return {"accepted": True, "event_count": persisted_event_count}
+    return {"accepted": True, "event_count": len(event_batch)}
 
 
 async def _require_current_runtime_attempt(
@@ -139,7 +153,11 @@ async def _require_current_runtime_attempt(
         raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
     lease = leases[0]
     payload = lease.get("lease_payload_json") if isinstance(lease, dict) else None
-    if not isinstance(payload, dict) or str(payload.get("attempt_id") or "") != attempt_id:
+    persisted_attempt_id = str(lease.get("attempt_id") or "") if isinstance(lease, dict) else ""
+    payload_attempt_id = str(payload.get("attempt_id") or "") if isinstance(payload, dict) else ""
+    if (persisted_attempt_id or payload_attempt_id) != attempt_id or (
+        persisted_attempt_id and payload_attempt_id and persisted_attempt_id != payload_attempt_id
+    ):
         raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_mismatch")
     return lease
 
