@@ -41,10 +41,10 @@ and focused tests in one review.
 Pull requests and `main` run the stable `backend required` and `frontend required`
 checks. Those checks include real Docker builds. Backend acceptance verifies
 imports, HTTP startup, non-root identity, executable entrypoint, source markers,
-and existing OCI/release labels. Frontend acceptance verifies the built artifact
-and the same commit/label contract. The workflows have `contents: read` only and
-do not publish, deploy, read deployment configuration, or claim a registry or 211
-runtime subject.
+and existing OCI/release labels. Frontend acceptance verifies the built artifact,
+the same commit/label contract, and an HTTP health response from the temporary CI
+container. The workflows have `contents: read` only and do not publish, deploy,
+read deployment configuration, or claim a registry or 211 runtime subject.
 
 Rollback is an ordinary revert of the reviewed lock, Dockerfile, workflow, and
 version declaration changes. It does not retag, publish, deploy, or mutate the

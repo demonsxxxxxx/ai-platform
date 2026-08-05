@@ -142,6 +142,9 @@ jobs:
           image="ai-platform-backend:$IMAGE_SOURCE_COMMIT"
           inspect_file="$RUNNER_TEMP/backend-image-inspect.json"
           docker image inspect "$image" > "$inspect_file"
+          image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'packaged_backend_image_id=%s\n' "$image_id"
           IMAGE_INSPECT_FILE="$inspect_file" python - <<'PY'
           import json
           import os

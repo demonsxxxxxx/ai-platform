@@ -20,9 +20,20 @@ jobs:
   frontend:
     name: projection audit, lint, build, trace
     runs-on: windows-latest
+    env:
+      SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - name: Checkout
+      - name: Checkout exact source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact source checkout
+        shell: pwsh
+        run: |
+          if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { exit 1 }
+          if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { exit 1 }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -156,6 +167,9 @@ jobs:
         run: |
           docker run --rm --entrypoint cat "ai-platform-frontend:$IMAGE_SOURCE_COMMIT" /usr/share/nginx/html/ai-platform-build-provenance.json > frontend-build-provenance.json
           docker image inspect "ai-platform-frontend:$IMAGE_SOURCE_COMMIT" > frontend-image-inspect.json
+          image_id="$(docker image inspect --format '{{.Id}}' "ai-platform-frontend:$IMAGE_SOURCE_COMMIT")"
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'packaged_frontend_image_id=%s\n' "$image_id"
           python - <<'PY'
           import json
           import os
@@ -172,6 +186,22 @@ jobs:
           assert labels["ai-platform.build-dirty"] == "false"
           assert labels["ai-platform.release-role"] == "frontend"
           PY
+
+      - name: Verify frontend image startup
+        run: |
+          set -euo pipefail
+          image="ai-platform-frontend:$IMAGE_SOURCE_COMMIT"
+          container="ai-platform-frontend-ci"
+          cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run --detach --name "$container" --publish 127.0.0.1:18080:8080 "$image"
+          for attempt in $(seq 1 30); do
+            if test "$(curl --fail --silent --show-error http://127.0.0.1:18080/healthz)" = "ok"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
 
   required:
     name: frontend required

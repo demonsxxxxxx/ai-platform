@@ -47,10 +47,14 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "docker run --rm --entrypoint cat" in workflow
     assert "ai-platform-build-provenance.json" in workflow
     assert "paths:" not in workflow.split("workflow_dispatch:", 1)[0]
-    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow
-    assert "persist-credentials: false" in workflow
+    assert workflow.count("ref: ${{ github.event.pull_request.head.sha || github.sha }}") == 2
+    assert workflow.count("persist-credentials: false") == 2
+    assert "if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { exit 1 }" in workflow
     assert 'labels["org.opencontainers.image.revision"]' in workflow
     assert 'labels["ai-platform.source-repository"]' in workflow
+    assert "packaged_frontend_image_id=%s" in workflow
+    assert "docker run --detach --name" in workflow
+    assert "http://127.0.0.1:18080/healthz" in workflow
 
     pytest_install_index = workflow.index("python -m pip install pytest pyyaml")
     deploy_test_index = workflow.index(PYTEST_COMMAND)

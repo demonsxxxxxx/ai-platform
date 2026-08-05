@@ -111,7 +111,16 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
     frontend_image = frontend.split("  frontend-image:", 1)[1].split("  required:", 1)[
         0
     ]
+    assert backend.count("persist-credentials: false") == 2
+    assert frontend.count("persist-credentials: false") == 2
+    assert (
+        frontend.count("ref: ${{ github.event.pull_request.head.sha || github.sha }}")
+        == 2
+    )
     assert "if:" not in backend_image
     assert "if:" not in frontend_image
     assert "PIP_INDEX_URL" not in backend_image
     assert "PIP_TRUSTED_HOST" not in backend_image
+    assert "packaged_backend_image_id=%s" in backend_image
+    assert "packaged_frontend_image_id=%s" in frontend_image
+    assert "http://127.0.0.1:18080/healthz" in frontend_image
