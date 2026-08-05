@@ -12,6 +12,10 @@ test("Skill workbench separates runtime and tenant distribution without a public
     join(process.cwd(), "src/components/panels/SkillsPanel/SkillsList.tsx"),
     "utf8",
   );
+  const panel = readFileSync(
+    join(process.cwd(), "src/components/panels/SkillsPanel/index.tsx"),
+    "utf8",
+  );
 
   assert.match(table, /data-skill-management-table/);
   assert.match(table, /skills\.managementTable\.runtimeStatus/);
@@ -24,6 +28,11 @@ test("Skill workbench separates runtime and tenant distribution without a public
   assert.match(list, /adminRelease \? "btn-primary" : "btn-secondary"/);
   assert.match(list, /skills\.adminReleaseZipTitle/);
   assert.match(list, /canExport=\{canExport && !governedUnavailable\}/);
+  assert.match(panel, /const canExportSkills = canEditSkills;/);
+  assert.doesNotMatch(
+    panel,
+    /canExportSkills\s*=.*canAdminUploadSkills/,
+  );
   assert.doesNotMatch(list, /<SkillCard/);
 });
 
@@ -40,6 +49,10 @@ test("management rows expose stable icon actions and a read-only state", () => {
   assert.match(source, /skills\.managementTable\.deleteSkill/);
   assert.match(source, /!hasActions/);
   assert.match(source, /skills\.managementTable\.readOnly/);
+  assert.match(
+    source,
+    /data-label=\{t\("skills\.managementTable\.actions"\)\}/,
+  );
   assert.doesNotMatch(source, /[\u4e00-\u9fff]/);
   assert.match(source, /role="table"/);
   assert.match(source, /role="columnheader"/);

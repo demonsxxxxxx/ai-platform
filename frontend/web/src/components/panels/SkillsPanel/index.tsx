@@ -51,7 +51,7 @@ export function SkillsPanel({
     !isGovernedUnavailable &&
     (canDelete || effectivePermissions.has(Permission.SKILL_DELETE));
   const canEditSkills = skillFileWriteBacked && canWrite;
-  const canExportSkills = canEditSkills || actions.canAdminUploadSkills;
+  const canExportSkills = canEditSkills;
   const canImportSkills =
     skillImportBacked && (canWrite || actions.canAdminUploadSkills);
   const canBatchSkills =

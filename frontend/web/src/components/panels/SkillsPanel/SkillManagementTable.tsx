@@ -188,7 +188,11 @@ export function SkillManagementTable({
               {updatedDateLabel(skill.updated_at)}
             </div>
 
-            <div className="skill-management-table__actions" role="cell">
+            <div
+              className="skill-management-table__actions"
+              data-label={t("skills.managementTable.actions")}
+              role="cell"
+            >
               {canToggle ? (
                 <button
                   aria-label={t(
