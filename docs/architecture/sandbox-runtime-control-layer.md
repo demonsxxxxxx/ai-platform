@@ -55,7 +55,9 @@ generation, timestamps, and reconciliation ownership in one migration.
    through the previous payload field until they expire.
 3. Callback authority is the HMAC-bound `(run_id, attempt_id)` token plus exactly
    one current active lease. A callback batch is persisted through the durable
-   `(tenant_id, run_id, attempt_id, batch_id)` receipt.
+   `(tenant_id, run_id, attempt_id, batch_id)` receipt when the executor supplies
+   `batch_id`. Missing-batch compatibility requests remain a migration gap and
+   must be removed only after every deployed executor sends batch identities.
 4. A real-provider release takes the scoped lease row lock, calls provider stop,
    and marks released in that transaction. Concurrent release waits and then
    observes the terminal row instead of issuing a duplicate stop. Stop failure
@@ -96,8 +98,8 @@ The first slice closes immediately unsafe competing-writer paths:
 - require a complete verified runtime handle and first-class attempt when a real
   lease is persisted by `SandboxRuntime`;
 - stop a real provider before explicit release and keep failures recoverable;
-- persist failure outcomes for expiry compensation and on-demand admin orphan
-  cleanup;
+- persist failure outcomes for explicit release, user/admin cancellation,
+  expiry compensation, and on-demand admin orphan cleanup;
 - bind cleanup failures to their concrete lease and surface audit persistence
   outages explicitly instead of silently claiming a durable outcome;
 - use the existing event-batch receipt from executor callbacks;
