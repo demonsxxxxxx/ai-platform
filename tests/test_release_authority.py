@@ -593,9 +593,9 @@ def test_compose_semantic_preflight_accepts_complete_config_with_exact_selection
     selection = release_authority.resolve_compose_files(tmp_path, [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH])
     commands: list[list[str]] = []
     monkeypatch.setattr(release_authority, "_run", lambda command, **kwargs: commands.append(list(command)) or subprocess.CompletedProcess(command, 0, stdout="", stderr=""))
-    release_authority._semantic_compose_config_preflight(["sudo", "-n", "docker"], selection, env_file, commit=commit)
+    release_authority._semantic_compose_config_preflight(["sudo", "-n", "--", "docker"], selection, env_file, commit=commit)
     command = commands[0]
-    assert len(commands) == 1 and command[:3] == ["sudo", "-n", "env"]
+    assert len(commands) == 1 and command[:4] == ["sudo", "-n", "--", "env"]
     assert command[command.index("compose") :] == ["compose", "-p", "ai-platform-phaseb", "--env-file", str(env_file), "-f", str(main.resolve()), "-f", str(opensandbox.resolve()), "config", "--quiet"]
     for role, suffix in (("AI_PLATFORM_IMAGE", "backend"), ("AI_PLATFORM_FRONTEND_IMAGE", "frontend"), ("SANDBOX_EXECUTOR_IMAGE", "sandbox-executor")):
         assert f"{role}={release_authority.COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/{suffix}" in command

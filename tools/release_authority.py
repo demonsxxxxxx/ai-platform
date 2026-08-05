@@ -1915,7 +1915,7 @@ def _docker_base(docker_cmd: str) -> list[str]:
 
 
 def _compose_command_with_environment(docker: Sequence[str], environment: Sequence[str]) -> list[str]:
-    return ["sudo", "-n", "env", *environment, "docker"] if list(docker[:2]) == ["sudo", "-n"] else ["env", *environment, *docker]
+    return [*docker[:-1], "env", *environment, docker[-1]] if list(docker[:2]) == ["sudo", "-n"] else ["env", *environment, *docker]
 
 def _compose_config_preflight_error(category: str, missing_keys: Sequence[str] = ()) -> ReleaseAuthorityError:
     error = ReleaseAuthorityError("compose semantic configuration preflight failed")
