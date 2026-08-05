@@ -92,6 +92,34 @@ test("normalizes the exact bounded department directory projection", () => {
   ]);
 });
 
+test("counts supplementary-plane department labels by Unicode code point", () => {
+  const boundaryLabel = "𠀀".repeat(160);
+  const boundary = {
+    ...departmentNode,
+    authority_id: boundaryLabel,
+    name: boundaryLabel,
+    path: boundaryLabel,
+  };
+  assert.equal(
+    normalizeDepartmentDirectory({ departments: [boundary] })[0].name,
+    boundaryLabel,
+  );
+
+  const overlongLabel = `${boundaryLabel}𠀀`;
+  assert.throws(() =>
+    normalizeDepartmentDirectory({
+      departments: [
+        {
+          ...boundary,
+          authority_id: overlongLabel,
+          name: overlongLabel,
+          path: overlongLabel,
+        },
+      ],
+    }),
+  );
+});
+
 test("rejects hostile department keys, identifiers, labels, and integrity drift", () => {
   const hostile: unknown[] = [
     { ...directoryResponse(), source: "private-upstream" },

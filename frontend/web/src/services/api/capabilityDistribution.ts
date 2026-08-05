@@ -73,7 +73,7 @@ function isSafeDirectoryLabel(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length > 0 &&
-    value.length <= MAX_DEPARTMENT_DIRECTORY_LABEL_LENGTH &&
+    [...value].length <= MAX_DEPARTMENT_DIRECTORY_LABEL_LENGTH &&
     value === value.trim() &&
     !/\p{C}/u.test(value)
   );
