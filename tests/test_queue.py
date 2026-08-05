@@ -72,6 +72,7 @@ class FakeRedis:
         self.removed = []
         self.hset_calls = []
         self.hdel_calls = []
+        self.ltrim_calls = []
         self.lrange_calls = []
         self.eval_calls = []
         self.closed = False
@@ -160,6 +161,10 @@ class FakeRedis:
             target[:] = kept
         return before - len(target)
 
+    async def ltrim(self, key, start, end):
+        self.ltrim_calls.append((key, start, end))
+        return True
+
     async def hget(self, key, field):
         if key == queue.PROCESSING_META_KEY:
             return self.meta.get(field)
@@ -210,6 +215,8 @@ class FakeRedis:
             self.meta.pop(field, None)
         if key == queue.RETRY_META_KEY:
             self.retry.pop(field, None)
+        if key == queue.WORKER_HEARTBEAT_KEY:
+            self.workers.pop(field, None)
         if self._is_queued_meta_key(key):
             self.metadata_by_message_id.pop(field, None)
         if self._is_queued_run_index_key(key):
@@ -242,6 +249,17 @@ class FakeRedis:
 
     async def eval(self, script, numkeys, *keys_and_args):
         self.eval_calls.append((script, numkeys, keys_and_args))
+        if "prune-stale-worker-heartbeats" in script:
+            worker_heartbeat_key = keys_and_args[0]
+            compare_and_delete_args = keys_and_args[numkeys:]
+            removed = 0
+            for index in range(0, len(compare_and_delete_args), 2):
+                worker_id = compare_and_delete_args[index]
+                expected_heartbeat = compare_and_delete_args[index + 1]
+                if self.workers.get(worker_id) == expected_heartbeat:
+                    await self.hdel(worker_heartbeat_key, worker_id)
+                    removed += 1
+            return removed
         if "enqueue-run-with-metadata" in script:
             (
                 queued_key,
@@ -1554,6 +1572,7 @@ async def test_lease_run_dead_letters_invalid_payload(monkeypatch):
     assert fake.queued == []
     assert fake.pushed[0][0] == queue.DEAD_LETTER_KEY
     assert json.loads(fake.pushed[0][1])["error_code"] == "invalid_queue_payload"
+    assert fake.ltrim_calls == [(queue.DEAD_LETTER_KEY, -1000, -1)]
 
 
 @pytest.mark.asyncio
@@ -1746,6 +1765,7 @@ async def test_lease_run_dead_letters_invalid_payload_during_bounded_scan(monkey
     assert invalid not in fake.queued
     assert fake.pushed[0][0] == queue.DEAD_LETTER_KEY
     assert json.loads(fake.pushed[0][1])["error_code"] == "invalid_queue_payload"
+    assert fake.ltrim_calls == [(queue.DEAD_LETTER_KEY, -1000, -1)]
 
 
 @pytest.mark.asyncio
@@ -1871,6 +1891,7 @@ async def test_ack_and_fail_remove_from_processing(monkeypatch):
     assert (queue.PROCESSING_KEY, 1, other_raw) in fake.removed
     assert fake.pushed[0][0] == queue.DEAD_LETTER_KEY
     assert json.loads(fake.pushed[0][1])["attempts"] == 1
+    assert fake.ltrim_calls == [(queue.DEAD_LETTER_KEY, -1000, -1)]
 
 
 @pytest.mark.asyncio
@@ -2013,6 +2034,26 @@ async def test_get_queue_status_filters_stale_worker_heartbeats(monkeypatch):
     status = await queue.get_queue_status()
 
     assert status["workers"] == ["fresh"]
+    assert fake.workers == {"fresh": "100.0"}
+    assert (queue.WORKER_HEARTBEAT_KEY, "stale") in fake.hdel_calls
+    assert (queue.WORKER_HEARTBEAT_KEY, "bad") in fake.hdel_calls
+
+
+@pytest.mark.asyncio
+async def test_stale_worker_pruning_preserves_a_concurrently_refreshed_heartbeat():
+    fake = FakeRedis(workers={"worker-a": "119.0"})
+
+    active = await queue._prune_stale_worker_heartbeats(
+        fake,
+        queue.WORKER_HEARTBEAT_KEY,
+        {"worker-a": "10.0"},
+        now=120.0,
+        ttl_seconds=30.0,
+    )
+
+    assert active == {}
+    assert fake.workers == {"worker-a": "119.0"}
+    assert fake.hdel_calls == []
 
 
 @pytest.mark.asyncio
@@ -2230,6 +2271,7 @@ async def test_get_queue_insight_uses_only_fresh_worker_heartbeats(monkeypatch):
 
     assert insight["workers"]["active"] == 1
     assert insight["reason"] == "workers_busy"
+    assert fake.workers == {"fresh": "100.0"}
 
 
 @pytest.mark.asyncio
@@ -2684,6 +2726,7 @@ async def test_reclaimed_message_preserves_attempts_until_dead_letter(monkeypatc
     assert dead_letter["attempts"] == 2
     assert dead_letter["error_code"] == "lease_expired_max_attempts"
     assert (queue.RETRY_META_KEY, message_id) in fake.hdel_calls
+    assert fake.ltrim_calls == [(queue.DEAD_LETTER_KEY, -1000, -1)]
 
 
 @pytest.mark.asyncio

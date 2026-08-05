@@ -203,6 +203,7 @@ async def list_current_sandbox_runtime_leases_for_attempt(
         where tenant_id = %s
           and run_id = %s
           and lease_payload_json ->> 'attempt_id' = %s
+          and (attempt_id is null or attempt_id = lease_payload_json ->> 'attempt_id')
           and status = 'active'
           and expires_at is not null
           and expires_at > clock_timestamp()
@@ -231,6 +232,7 @@ async def list_terminal_sandbox_runtime_leases_for_attempt(
         where tenant_id = %s
           and run_id = %s
           and lease_payload_json ->> 'attempt_id' = %s
+          and (attempt_id is null or attempt_id = lease_payload_json ->> 'attempt_id')
           and status = 'released'
           and release_reason = %s
         order by released_at desc, id asc

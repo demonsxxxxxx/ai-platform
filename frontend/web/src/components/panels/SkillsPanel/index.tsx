@@ -51,6 +51,7 @@ export function SkillsPanel({
     !isGovernedUnavailable &&
     (canDelete || effectivePermissions.has(Permission.SKILL_DELETE));
   const canEditSkills = skillFileWriteBacked && canWrite;
+  const canExportSkills = canEditSkills;
   const canImportSkills =
     skillImportBacked && (canWrite || actions.canAdminUploadSkills);
   const canBatchSkills =
@@ -99,9 +100,11 @@ export function SkillsPanel({
         clearError={actions.clearError}
         canWrite={canWrite && !isGovernedUnavailable}
         canEdit={canEditSkills && !isGovernedUnavailable}
+        canExport={canExportSkills && !isGovernedUnavailable}
         canImport={canImportSkills && !isGovernedUnavailable}
         canBatch={canBatchSkills && !isGovernedUnavailable}
         canDelete={canDeleteSkill && !isGovernedUnavailable}
+        adminRelease={actions.canAdminUploadSkills}
         governedUnavailable={isGovernedUnavailable}
         selectedNames={actions.selectedNames}
         onToggle={actions.handleToggle}

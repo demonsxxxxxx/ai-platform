@@ -4115,36 +4115,22 @@ async def create_session(
 ) -> str:
     resolved_id = session_id or new_id("ses")
     await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
-    if session_id:
-        cursor = await conn.execute(
-            """
-            select id, tenant_id, workspace_id, user_id, agent_id,
-                   admitted_agent_profile_revision, admitted_agent_profile_hash
-            from sessions
-            where id = %s
-            """,
-            (session_id,),
-        )
-        row = await cursor.fetchone()
-        if row is not None:
-            if row["tenant_id"] != tenant_id or row["workspace_id"] != workspace_id or row["agent_id"] != agent_id:
-                raise RepositoryConflictError("session_scope_mismatch")
-            if row["user_id"] and user_id and row["user_id"] != user_id:
-                raise RepositoryConflictError("session_user_mismatch")
-            if (
-                row.get("admitted_agent_profile_revision") != admitted_agent_profile_revision
-                or row.get("admitted_agent_profile_hash") != admitted_agent_profile_hash
-            ):
-                raise RepositoryConflictError("session_agent_profile_mismatch")
-            return resolved_id
-    await conn.execute(
+    cursor = await conn.execute(
         """
         insert into sessions(
           id, tenant_id, workspace_id, user_id, agent_id, title,
           admitted_agent_profile_revision, admitted_agent_profile_hash
         )
         values (%s, %s, %s, %s, %s, %s, %s, %s)
-        on conflict (id) do nothing
+        on conflict (id) do update
+        set id = excluded.id
+        where sessions.tenant_id = excluded.tenant_id
+          and sessions.workspace_id = excluded.workspace_id
+          and sessions.user_id is not distinct from excluded.user_id
+          and sessions.agent_id = excluded.agent_id
+          and sessions.admitted_agent_profile_revision is not distinct from excluded.admitted_agent_profile_revision
+          and sessions.admitted_agent_profile_hash is not distinct from excluded.admitted_agent_profile_hash
+        returning sessions.id
         """,
         (
             resolved_id,
@@ -4157,6 +4143,9 @@ async def create_session(
             admitted_agent_profile_hash,
         ),
     )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryConflictError("session_scope_mismatch")
     return resolved_id
 
 
@@ -7070,6 +7059,7 @@ async def create_sandbox_lease(
     user_id: str,
     session_id: str,
     run_id: str,
+    attempt_id: str | None = None,
     trace_id: str,
     sandbox_mode: str,
     provider: str,
@@ -7084,25 +7074,22 @@ async def create_sandbox_lease(
     runtime_workspace_container_path: str | None = None,
 ) -> dict[str, Any]:
     lease_id = new_id("lease")
-    platform_runtime_container_id = runtime_container_id
-    platform_runtime_container_name = runtime_container_name
-    platform_runtime_executor_url = runtime_executor_url
-    platform_runtime_workspace_container_path = runtime_workspace_container_path
-    if provider == "fake" and not platform_runtime_container_id:
-        platform_runtime_container_id = f"exec-{run_id}"
-        platform_runtime_container_name = f"executor-{platform_runtime_container_id}"
-        platform_runtime_executor_url = "http://sandbox-runtime.invalid"
-        platform_runtime_workspace_container_path = "/workspace"
-    runtime_handle_verified = bool(
-        platform_runtime_container_id
-        and platform_runtime_container_name
-        and platform_runtime_executor_url
-        and platform_runtime_workspace_container_path
+    if provider == "fake" and not runtime_container_id:
+        runtime_container_id = f"exec-{run_id}"
+        runtime_container_name = f"executor-{runtime_container_id}"
+        runtime_executor_url = "http://sandbox-runtime.invalid"
+        runtime_workspace_container_path = "/workspace"
+    runtime_handle_verified = all(
+        (runtime_container_id, runtime_container_name, runtime_executor_url, runtime_workspace_container_path)
     )
+    if (attempt_id and lease_payload_json.get("attempt_id") != attempt_id) or (
+        provider in {"docker", "opensandbox"} and (not attempt_id or not runtime_handle_verified)
+    ):
+        raise ValueError("sandbox_runtime_handle_required")
     cursor = await conn.execute(
         """
         insert into sandbox_leases(
-          id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
+          id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id, trace_id,
           sandbox_mode, provider, browser_enabled, resource_limits_json,
           user_visible_payload_json, lease_payload_json,
           runtime_container_id, runtime_container_name, runtime_executor_url,
@@ -7110,7 +7097,7 @@ async def create_sandbox_lease(
           heartbeat_at, expires_at
         )
         values (
-          %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+          %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
           %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
           case when %s then now() else null end,
           now(), now() + (%s * interval '1 second')
@@ -7124,6 +7111,7 @@ async def create_sandbox_lease(
             user_id,
             session_id,
             run_id,
+            attempt_id,
             trace_id,
             sandbox_mode,
             provider,
@@ -7131,10 +7119,10 @@ async def create_sandbox_lease(
             dumps_json(resource_limits_json),
             dumps_json(user_visible_payload_json),
             dumps_json(lease_payload_json),
-            platform_runtime_container_id,
-            platform_runtime_container_name,
-            platform_runtime_executor_url,
-            platform_runtime_workspace_container_path,
+            runtime_container_id,
+            runtime_container_name,
+            runtime_executor_url,
+            runtime_workspace_container_path,
             runtime_handle_verified,
             int(ttl_seconds),
         ),
@@ -7147,6 +7135,7 @@ async def create_sandbox_lease(
         "user_id": user_id,
         "session_id": session_id,
         "run_id": run_id,
+        "attempt_id": attempt_id,
         "trace_id": trace_id,
         "sandbox_mode": sandbox_mode,
         "provider": provider,
@@ -7155,10 +7144,10 @@ async def create_sandbox_lease(
         "resource_limits_json": resource_limits_json,
         "user_visible_payload_json": user_visible_payload_json,
         "lease_payload_json": lease_payload_json,
-        "runtime_container_id": platform_runtime_container_id,
-        "runtime_container_name": platform_runtime_container_name,
-        "runtime_executor_url": platform_runtime_executor_url,
-        "runtime_workspace_container_path": platform_runtime_workspace_container_path,
+        "runtime_container_id": runtime_container_id,
+        "runtime_container_name": runtime_container_name,
+        "runtime_executor_url": runtime_executor_url,
+        "runtime_workspace_container_path": runtime_workspace_container_path,
         "runtime_handle_verified_at": "platform-verified" if runtime_handle_verified else None,
     }
 
@@ -7175,7 +7164,7 @@ async def get_sandbox_lease(
         """
         select *
         from sandbox_leases
-        where tenant_id = %s and user_id = %s and run_id = %s and id = %s
+        where tenant_id = %s and user_id = %s and run_id = %s and id = %s for update
         """,
         (tenant_id, user_id, run_id, lease_id),
     )

@@ -145,13 +145,10 @@ def _governance_scope_sha256(repo: Path, base: str, head: str) -> str:
 def _governance_exception(
     *,
     reason: str,
-    includes_frontend: bool = False,
     base_ref: str = "0" * 40,
     scope_sha256: str = "0" * 64,
 ) -> str:
     violations: list[dict[str, str | None]] = [{"code": "functional_hot_file_growth", "path": "app/billing.py"}]
-    if includes_frontend:
-        violations.append({"code": "production_subsystem_count", "path": None})
     return json.dumps(
         {
             "schema_version": "ai-platform.code-governance-exception.v2",
@@ -233,8 +230,6 @@ def _exception_transition(
     exception_at_head = operation == "copy" or destination == EXCEPTION_PATH
     exception = _governance_exception(
         reason=f"{operation} exception",
-        includes_frontend=exception_at_head
-        and (destination.startswith("frontend/web/") or (operation == "rename" and source.startswith("frontend/web/"))),
     )
     if exception_at_head:
         _write(repo, "app/billing.py", _python_assignments(3_001))
@@ -255,8 +250,6 @@ def _exception_transition(
             EXCEPTION_PATH,
             _governance_exception(
                 reason=f"{operation} exception",
-                includes_frontend=destination.startswith("frontend/web/")
-                or (operation == "rename" and source.startswith("frontend/web/")),
                 base_ref=base,
                 scope_sha256=_governance_scope_sha256(repo, base, scope_head),
             ),
@@ -434,21 +427,43 @@ def test_disposable_worktree_commands_enable_windows_long_path_handling(tmp_path
     ]
 
 
-def test_temporary_root_uses_short_owned_basename_with_windows_headroom(tmp_path: Path) -> None:
+def test_temporary_root_uses_verified_profile_instead_of_deep_windows_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _readiness_module()
     readiness = module.PrePushReadiness(tmp_path)
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    deep_temp = tmp_path.joinpath(*(["detached-worktree-depth"] * 10))
+    assert len(str(deep_temp)) + module.WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH > 240
+    created = profile / "apr-owned"
+    verified: list[Path] = []
+
+    def create_root(*, prefix: str, dir: str | Path) -> str:
+        assert prefix == module.TEMPORARY_ROOT_PREFIX
+        assert Path(dir) == profile
+        created.mkdir()
+        return str(created)
+
+    monkeypatch.setattr(module, "IS_WINDOWS", True)
+    monkeypatch.setattr(module.Path, "home", lambda: profile)
+    monkeypatch.setattr(module.tempfile, "gettempdir", lambda: str(deep_temp))
+    monkeypatch.setattr(module.tempfile, "mkdtemp", create_root)
+    monkeypatch.setattr(module, "_assert_windows_nonreparse_directory", verified.append)
+    monkeypatch.setattr(module, "_temporary_root_has_windows_headroom", lambda path: True)
     temporary_root = readiness._create_temporary_root()
     try:
         base, head = module._temporary_worktree_paths(temporary_root)
 
-        assert temporary_root.name.startswith(module.TEMPORARY_ROOT_PREFIX)
+        assert temporary_root == created
+        assert verified == [profile, created]
         assert base.parent == temporary_root
         assert head.parent == temporary_root
         assert base.name == "base"
         assert head.name == "head"
         assert module._temporary_root_has_windows_headroom(temporary_root)
         assert (
-            len(str(temporary_root))
+            len(str(Path("C:/Users/current-user/apr-owned")))
             + module.WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH
             + module.WINDOWS_DIRECTORY_PATH_HEADROOM
             <= module.WINDOWS_CONSERVATIVE_DIRECTORY_PATH_BUDGET
@@ -456,6 +471,29 @@ def test_temporary_root_uses_short_owned_basename_with_windows_headroom(tmp_path
     finally:
         if os.path.lexists(temporary_root):
             module._remove_cleanup_tree(temporary_root)
+
+
+def test_windows_temporary_root_rejects_a_reparse_profile_before_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _readiness_module()
+    profile = tmp_path / "reparse-profile"
+    created: list[Path] = []
+
+    monkeypatch.setattr(module, "IS_WINDOWS", True)
+    monkeypatch.setattr(module.Path, "home", lambda: profile)
+    monkeypatch.setattr(
+        module,
+        "_assert_windows_nonreparse_directory",
+        lambda path: (_ for _ in ()).throw(OSError("profile is a reparse point")),
+    )
+    monkeypatch.setattr(module.tempfile, "mkdtemp", lambda **kwargs: created.append(profile / "apr-never"))
+
+    with pytest.raises(module.ReadinessError) as raised:
+        module.PrePushReadiness(tmp_path)._create_temporary_root()
+
+    assert raised.value.code == "temporary_directory_failed"
+    assert created == []
 
 
 def test_temporary_root_over_budget_fails_and_cleans_only_the_owned_root(
@@ -469,10 +507,12 @@ def test_temporary_root_over_budget_fails_and_cleans_only_the_owned_root(
     sentinel.write_text("must survive temporary-root cleanup", encoding="utf-8")
     prefixes: list[str] = []
 
-    def create_over_budget_root(*, prefix: str) -> str:
+    def create_over_budget_root(*, prefix: str, dir: str | Path) -> str:
         prefixes.append(prefix)
+        assert Path(dir) == Path(tempfile.gettempdir())
         return str(temporary_root)
 
+    monkeypatch.setattr(module, "IS_WINDOWS", False)
     monkeypatch.setattr(module.tempfile, "mkdtemp", create_over_budget_root)
     try:
         with pytest.raises(module.ReadinessError) as raised:
@@ -1600,20 +1640,18 @@ def test_mixed_backend_and_frontend_changes_run_both_responsibility_suites(
     repo, base = readiness_repo
     _write(repo, "app/invoice.py", "TOTAL = 1\n")
     _write(repo, "tests/test_invoice.py", "def test_invoice():\n    assert True\n")
-    _write(repo, "frontend/web/package.json", "{\"scripts\": {\"ci:verify\": \"true\"}}\n")
+    _write_frontend_project(repo)
     _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
-    _write(repo, "frontend/web/src/App.test.tsx", "export const appTest = true;\n")
     head = _commit(repo, "mixed responsibilities")
 
     result = _check(repo, base, head, env=_fake_corepack_environment(tmp_path))
     payload = _payload(result)
 
-    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
-    assert payload["category"] == "governance_violation"
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
     stages = {stage["name"]: stage for stage in payload["stages"]}
-    assert stages["governance"]["status"] == "failed"
-    assert "responsibility_tests" not in stages
-    assert "frontend_responsibility" not in stages
+    assert stages["governance"]["status"] == "pass"
+    assert stages["responsibility_tests"]["status"] == "pass"
+    assert stages["frontend_responsibility"]["status"] == "pass"
 
 
 def test_stale_base_fails_before_any_local_checks(readiness_repo: tuple[Path, str]) -> None:

@@ -269,6 +269,7 @@ def test_schema_declares_platform_verified_sandbox_runtime_handle_columns():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
     for column in [
+        "attempt_id text",
         "runtime_container_id text",
         "runtime_container_name text",
         "runtime_executor_url text",
@@ -277,6 +278,9 @@ def test_schema_declares_platform_verified_sandbox_runtime_handle_columns():
     ]:
         assert column in schema
 
+    assert "alter table sandbox_leases add column if not exists attempt_id text" in schema
+    assert "create index if not exists idx_sandbox_leases_attempt" in schema
+    assert "on sandbox_leases(tenant_id, run_id, attempt_id, status)" in schema
     assert "alter table sandbox_leases add column if not exists runtime_container_id text" in schema
     assert "alter table sandbox_leases add column if not exists runtime_handle_verified_at timestamptz" in schema
 
@@ -465,3 +469,17 @@ def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependenc
     assert "do update set" not in skill_version_seed.split("insert into tenant_workbench_skills", 1)[0]
     assert "'[\"minimax-docx\"]'::jsonb" in schema
     assert "('default', 'minimax-docx'" not in schema
+
+
+def test_schema_indexes_principal_scoped_agent_conversation_history():
+    schema = " ".join(Path("app/schema.sql").read_text(encoding="utf-8").split()).lower()
+
+    assert "create index if not exists idx_sessions_agent_conversation_history" in schema
+    assert schema.index(
+        "alter table sessions add column if not exists admitted_agent_profile_revision"
+    ) < schema.index("create index if not exists idx_sessions_agent_conversation_history")
+    assert (
+        "on sessions( tenant_id, user_id, agent_id, admitted_agent_profile_revision, "
+        "updated_at desc, created_at desc, id desc )"
+    ) in schema
+    assert "where status = 'active' and admitted_agent_profile_revision is not null" in schema

@@ -551,7 +551,7 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   assert.match(marketplace, /workbenchSurface\.catalog\.toolbarShell/);
   assert.match(skillsList, /workbenchSurface\.catalog\.content/);
   assert.match(marketplace, /workbenchSurface\.catalog\.content/);
-  assert.match(skillsList, /workbenchSurface\.catalog\.cardGrid/);
+  assert.match(skillsList, /<SkillManagementTable/);
   assert.match(marketplace, /workbenchSurface\.catalog\.cardGrid/);
   assert.match(skillsList, /workbenchSurface\.catalog\.emptyState/);
   assert.match(marketplace, /workbenchSurface\.catalog\.emptyState/);

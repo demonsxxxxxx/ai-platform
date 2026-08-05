@@ -94,6 +94,24 @@ class CapabilityDistributionUpdateRequest(BaseModel):
         return _normalize_capability_roles(value, info.field_name)
 
 
+class CapabilityDistributionAuthorityUpdateRequest(BaseModel):
+    """Distribution update whose department labels require route-level directory proof."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["active", "disabled"] = "active"
+    visible_to_user: bool = True
+    scope_mode: Literal["allowlist"] = "allowlist"
+    department_ids: list[str] = Field(default_factory=list, max_length=128)
+    allowed_roles: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("allowed_roles")
+    @classmethod
+    def normalize_allowed_roles(cls, value: list[str], info):
+        return _normalize_capability_roles(value, info.field_name)
+
+
 class CapabilityDistributionToggleRequest(BaseModel):
     """Toggle request accepting the supported enablement aliases."""
 
@@ -941,6 +959,7 @@ class SessionRenameRequest(BaseModel):
 
 class ChatSessionsResponse(BaseModel):
     sessions: list[ChatSessionResponse]
+    next_cursor: str | None = None
 
 
 class ChatMessageResponse(BaseModel):

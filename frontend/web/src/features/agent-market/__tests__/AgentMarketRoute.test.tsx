@@ -11,10 +11,8 @@ test("market stays in the production shell and resolves durable detail URLs", ()
 
   assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\{\s*query,\s*category\s*\}\)/);
   assert.match(source, /agentProfileApi\s*\.\s*getPublished\(agentId\)/);
-  assert.match(source, /agentProfileApi\s*\.\s*createConversation\(\{/);
-  assert.match(source, /agent_id:\s*profile\.agent_id/);
-  assert.match(source, /expected_revision:\s*profile\.expected_revision/);
-  assert.match(source, /buildAgentMarketWorkspacePath\(profile, session\.session_id\)/);
+  assert.doesNotMatch(source, /agentProfileApi\s*\.\s*createConversation\(/);
+  assert.match(source, /navigate\(buildAgentMarketWorkspacePath\(profile\)\)/);
   assert.match(source, /AppShell/);
   assert.match(source, /SessionSidebar/);
   assert.match(source, /mobileSidebarOpen/);
@@ -24,7 +22,8 @@ test("market stays in the production shell and resolves durable detail URLs", ()
   assert.match(source, /data-agent-market-card/);
   assert.match(source, /data-agent-market-detail/);
   assert.match(source, /data-agent-market-start-chat/);
-  assert.match(source, /disabled/);
+  assert.match(source, /企业已发布/);
+  assert.match(source, /使用方式/);
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /buildAgentMarketDetailPath/);
   assert.match(source, /buildAgentMarketWorkspacePath/);

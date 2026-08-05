@@ -540,6 +540,17 @@ alter table runs add column if not exists principal_department_id text not null 
 alter table runs add column if not exists auth_source text;
 alter table sessions add column if not exists admitted_agent_profile_revision bigint;
 alter table sessions add column if not exists admitted_agent_profile_hash text;
+create index if not exists idx_sessions_agent_conversation_history
+  on sessions(
+    tenant_id,
+    user_id,
+    agent_id,
+    admitted_agent_profile_revision,
+    updated_at desc,
+    created_at desc,
+    id desc
+  )
+  where status = 'active' and admitted_agent_profile_revision is not null;
 alter table runs add column if not exists admitted_agent_profile_revision bigint;
 alter table runs add column if not exists admitted_agent_profile_hash text;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
@@ -1906,6 +1917,7 @@ create table if not exists sandbox_leases (
   user_id text not null references users(id),
   session_id text not null references sessions(id),
   run_id text not null references runs(id),
+  attempt_id text,
   trace_id text not null default '',
   sandbox_mode text not null,
   provider text not null default 'fake',
@@ -1932,13 +1944,18 @@ create index if not exists idx_sandbox_leases_run
 create index if not exists idx_sandbox_leases_status
   on sandbox_leases(tenant_id, status, expires_at);
 
+alter table sandbox_leases add column if not exists attempt_id text;
 alter table sandbox_leases add column if not exists runtime_container_id text;
 alter table sandbox_leases add column if not exists runtime_container_name text;
 alter table sandbox_leases add column if not exists runtime_executor_url text;
 alter table sandbox_leases add column if not exists runtime_workspace_container_path text;
 alter table sandbox_leases add column if not exists runtime_handle_verified_at timestamptz;
+create index if not exists idx_sandbox_leases_attempt
+  on sandbox_leases(tenant_id, run_id, attempt_id, status);
 
 -- Rollback for the additive runtime handle columns:
+-- drop index if exists idx_sandbox_leases_attempt;
+-- alter table sandbox_leases drop column if exists attempt_id;
 -- alter table sandbox_leases drop column if exists runtime_handle_verified_at;
 -- alter table sandbox_leases drop column if exists runtime_workspace_container_path;
 -- alter table sandbox_leases drop column if exists runtime_executor_url;

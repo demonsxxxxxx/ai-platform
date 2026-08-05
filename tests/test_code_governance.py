@@ -145,7 +145,9 @@ def test_small_non_python_change_passes(governance_repo: tuple[Path, str]) -> No
     }
 
 
-def test_size_and_subsystem_violations_are_reported(governance_repo: tuple[Path, str]) -> None:
+def test_size_violations_remain_fail_closed_across_multiple_subsystems(
+    governance_repo: tuple[Path, str],
+) -> None:
     repo, base = governance_repo
     for index in range(13):
         _write(repo, f"app/domain_{index}.json", "{\"enabled\": true}\n")
@@ -156,11 +158,35 @@ def test_size_and_subsystem_violations_are_reported(governance_repo: tuple[Path,
     evaluation = _evaluate(repo, base, head)
 
     assert evaluation.exit_code == 2
-    assert {
-        "production_file_count",
-        "production_net_loc",
-        "production_subsystem_count",
-    } <= _codes(evaluation)
+    assert {"production_file_count", "production_net_loc"} <= _codes(evaluation)
+    assert "production_subsystem_count" not in _codes(evaluation)
+    assert evaluation.metrics["production_subsystem_count"] == 3
+    assert evaluation.metrics["production_subsystems"] == ["app", "config", "deploy/ai-platform"]
+
+
+def test_multiple_production_subsystems_are_reported_without_blocking(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, base = governance_repo
+    _write(repo, "app/settings.py", "ENABLED = True\n")
+    _write(repo, "deploy/ai-platform/policy.json", "{\"enabled\": true}\n")
+    _write(repo, "frontend/web/src/services/client.ts", "export const enabled = true;\n")
+    head = _commit(repo, "coherent cross-subsystem change")
+
+    evaluation = _evaluate(repo, base, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.exit_code == 0
+    assert evaluation.metrics["production_subsystem_count"] == 3
+    assert evaluation.metrics["production_subsystems"] == [
+        "app",
+        "deploy/ai-platform",
+        "frontend/web/src/services",
+    ]
+    assert "production_subsystem_count_max_exclusive" not in _payload(evaluation)["policy"]
+    rendered = code_governance._render_text(evaluation)
+    assert "production subsystem count: 3" in rendered
+    assert "production subsystems: app, deploy/ai-platform, frontend/web/src/services" in rendered
 
 
 def test_pure_rename_is_separate_from_behavior_fix_and_delete_is_safe(

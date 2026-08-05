@@ -447,7 +447,7 @@ test("skills and marketplace use a catalog-first workbench layout", () => {
   assert.doesNotMatch(skillsHub, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.doesNotMatch(skillsHub, /composerEntry/);
   assert.match(skillsList, /data-skills-catalog-toolbar/);
-  assert.match(skillsList, /data-skills-catalog-grid/);
+  assert.match(skillsList, /<SkillManagementTable/);
   assert.match(marketplace, /data-marketplace-catalog-toolbar/);
   assert.match(marketplace, /data-marketplace-catalog-grid/);
   for (const [name, source] of [
@@ -531,7 +531,7 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   assert.match(skillBaseCard, /p-3\.5 sm:p-4/);
   assert.match(skillBaseCard, /bg-\[var\(--theme-workbench-panel\)\]/);
   assert.doesNotMatch(skillBaseCard, /text-base font-semibold/);
-  assert.match(skillsList, /workbenchSurface\.catalog\.cardGrid/);
+  assert.match(skillsList, /<SkillManagementTable/);
   assert.match(marketplace, /workbenchSurface\.catalog\.cardGrid/);
   assert.match(skillsList, /workbenchSurface\.catalog\.emptyState/);
   assert.match(marketplace, /workbenchSurface\.catalog\.emptyState/);

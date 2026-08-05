@@ -488,7 +488,7 @@ def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():
 
     api_text = compose_service_text(compose_text, "api")
     assert "healthcheck:" in api_text
-    assert "/api/ai/health" in api_text
+    assert "/api/ai/ready" in api_text
     assert "AI_PLATFORM_RUNTIME_COMMIT" in api_text
 
 

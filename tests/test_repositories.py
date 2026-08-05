@@ -11,7 +11,7 @@ from psycopg import sql as psycopg_sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
+from app import agent_conversation_repository, repositories
 from app import run_event_repository
 from app.repositories import (
     RepositoryConflictError,
@@ -4713,6 +4713,79 @@ async def test_create_session_validates_workspace_tenant_before_insert(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_create_session_conflict_is_atomic_and_requires_exact_binding(monkeypatch):
+    async def ensure_workspace_belongs_to_tenant(_conn, *, tenant_id, workspace_id):
+        assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
+
+    monkeypatch.setattr(
+        repositories,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+    )
+    conn = SingleRowConnection(None)
+
+    with pytest.raises(RepositoryConflictError, match="session_scope_mismatch"):
+        await repositories.create_session(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            agent_id="agent-a",
+            title="Agent A",
+            session_id="session-shared",
+            admitted_agent_profile_revision=3,
+            admitted_agent_profile_hash="profile-hash",
+        )
+
+    assert conn.sql.startswith("insert into sessions")
+    assert "on conflict (id) do update" in conn.sql
+    assert "sessions.tenant_id = excluded.tenant_id" in conn.sql
+    assert "sessions.workspace_id = excluded.workspace_id" in conn.sql
+    assert "sessions.user_id is not distinct from excluded.user_id" in conn.sql
+    assert "sessions.agent_id = excluded.agent_id" in conn.sql
+    assert "sessions.admitted_agent_profile_revision is not distinct from excluded.admitted_agent_profile_revision" in conn.sql
+    assert "sessions.admitted_agent_profile_hash is not distinct from excluded.admitted_agent_profile_hash" in conn.sql
+    assert "returning sessions.id" in conn.sql
+
+
+@pytest.mark.asyncio
+async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
+    async def ensure_workspace_belongs_to_tenant(_conn, *, tenant_id, workspace_id):
+        assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
+
+    monkeypatch.setattr(
+        repositories,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+    )
+    conn = SingleRowConnection({"id": "session-shared"})
+
+    session_id = await repositories.create_session(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id=None,
+        agent_id="agent-a",
+        title="Agent A",
+        session_id="session-shared",
+        admitted_agent_profile_revision=None,
+        admitted_agent_profile_hash=None,
+    )
+
+    assert session_id == "session-shared"
+    assert conn.params == (
+        "session-shared",
+        "tenant-a",
+        "workspace-a",
+        None,
+        "agent-a",
+        "Agent A",
+        None,
+        None,
+    )
+
+
+@pytest.mark.asyncio
 async def test_create_run_validates_workspace_tenant_before_insert(monkeypatch):
     calls = []
 
@@ -8860,6 +8933,70 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
 
 
 @pytest.mark.asyncio
+async def test_real_sandbox_lease_requires_attempt_and_complete_runtime_handle():
+    conn = RecordingConnection()
+    common = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "trace_id": "trace-a",
+        "sandbox_mode": "ephemeral",
+        "provider": "docker",
+        "browser_enabled": False,
+        "ttl_seconds": 600,
+        "resource_limits_json": {},
+        "user_visible_payload_json": {"workspace": "/workspace"},
+        "lease_payload_json": {"attempt_id": "attempt-a"},
+    }
+
+    with pytest.raises(ValueError, match="sandbox_runtime_handle_required"):
+        await create_sandbox_lease(conn, **common)
+    assert conn.calls == []
+
+    await create_sandbox_lease(
+        conn,
+        **common,
+        attempt_id="attempt-a",
+        runtime_container_id="container-a",
+        runtime_container_name="executor-container-a",
+        runtime_executor_url="http://executor.test",
+        runtime_workspace_container_path="/workspace",
+    )
+
+    create_sql, create_params = conn.calls[0]
+    assert "run_id, attempt_id, trace_id" in create_sql
+    assert "attempt-a" in create_params
+
+
+@pytest.mark.asyncio
+async def test_fake_sandbox_lease_rejects_disagreeing_attempt_binding():
+    conn = RecordingConnection()
+
+    with pytest.raises(ValueError, match="sandbox_runtime_handle_required"):
+        await create_sandbox_lease(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            trace_id="trace-a",
+            sandbox_mode="ephemeral",
+            provider="fake",
+            browser_enabled=False,
+            ttl_seconds=600,
+            resource_limits_json={},
+            user_visible_payload_json={"workspace": "/workspace"},
+            lease_payload_json={"attempt_id": "attempt-old"},
+        )
+
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
 async def test_cleanup_expired_sandbox_leases_releases_expired_non_runtime_leases_and_emits_events(monkeypatch):
     from app.repositories import cleanup_expired_sandbox_leases
 
@@ -12037,3 +12174,61 @@ async def test_get_admin_runtime_observability_summary_uses_run_totals_for_termi
     assert summary["latency_ms"] == {"avg": 250, "max": 300, "p50": 240, "p95": 295, "p99": 299}
     assert summary["token_counts"] == {"input": 10, "output": 20, "total": 30}
     assert summary["estimated_cost_minor"] == 7
+
+
+@pytest.mark.asyncio
+async def test_agent_conversation_history_query_is_principal_scoped_and_keyset_paginated():
+    class Cursor:
+        async def fetchall(self):
+            return [{"id": "ses_older"}]
+
+    class RecordingConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()).lower(), params))
+            return Cursor()
+
+    updated_at = datetime(2026, 8, 3, 1, tzinfo=timezone.utc)
+    created_at = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    conn = RecordingConnection()
+
+    rows = await agent_conversation_repository.list_authorized_agent_conversations(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        agent_id="agt_support",
+        revision=7,
+        cursor=(updated_at, created_at, "ses_boundary"),
+        limit=21,
+    )
+
+    assert rows == [{"id": "ses_older"}]
+    sql, params = conn.calls[-1]
+    assert "sessions.tenant_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "sessions.agent_id = %s" in sql
+    assert "sessions.admitted_agent_profile_revision = %s" in sql
+    assert "sessions.status = 'active'" in sql
+    assert "join agent_profile_revisions profile" in sql
+    assert "profile.content_hash = sessions.admitted_agent_profile_hash" in sql
+    assert "sessions.updated_at < %s" in sql
+    assert "sessions.id < %s" in sql
+    assert (
+        "order by sessions.updated_at desc, sessions.created_at desc, sessions.id desc"
+        in sql
+    )
+    assert params == (
+        "tenant-a",
+        "user-a",
+        "agt_support",
+        7,
+        updated_at,
+        updated_at,
+        created_at,
+        updated_at,
+        created_at,
+        "ses_boundary",
+        21,
+    )

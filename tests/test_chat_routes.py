@@ -35,7 +35,6 @@ from app.routes.chat import (
     create_chat_session,
     get_chat_submission,
     list_messages,
-    list_sessions,
     retry_chat_submission_admission,
 )
 from app.settings import Settings
@@ -1988,28 +1987,6 @@ def default_context_snapshot(monkeypatch):
     )
 
 
-@pytest.mark.asyncio
-async def test_list_sessions_returns_authorized_rows(monkeypatch):
-    async def fake_list_authorized_sessions(conn, *, tenant_id, user_id):
-        assert user_id == "user-a"
-        return [
-            {
-                "id": "ses_1",
-                "workspace_id": "default",
-                "agent_id": "document-review",
-                "title": "Doc Review",
-                "created_at": None,
-                "updated_at": None,
-            }
-        ]
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.list_authorized_sessions", fake_list_authorized_sessions)
-
-    response = await list_sessions(principal=principal())
-
-    assert response.sessions[0].session_id == "ses_1"
-    assert response.sessions[0].agent_id == "document-review"
 
 
 @pytest.mark.asyncio
