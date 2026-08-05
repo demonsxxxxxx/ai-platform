@@ -306,6 +306,37 @@ def test_hot_production_file_growth_at_limit_passes(governance_repo: tuple[Path,
     assert evaluation.status == "pass"
 
 
+@pytest.mark.parametrize("lock_path", ("uv.lock", "frontend/web/pnpm-lock.yaml"))
+def test_reviewed_dependency_locks_are_not_hot_production_files(
+    governance_repo: tuple[Path, str],
+    lock_path: str,
+) -> None:
+    repo, base = governance_repo
+    _write(repo, lock_path, "".join(f"locked-{index}\n" for index in range(1601)))
+    head = _commit(repo, "add reviewed dependency lock")
+
+    evaluation = _evaluate(repo, base, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.mode == "non_production_only"
+    assert evaluation.metrics["production_net_loc"] == 0
+    assert _payload(evaluation)["changes"][0]["role"] == "non_production"
+    assert _payload(evaluation)["policy"]["reviewed_dependency_lock_paths"] == [
+        "frontend/web/pnpm-lock.yaml",
+        "uv.lock",
+    ]
+
+
+def test_unlisted_lock_file_remains_governed(governance_repo: tuple[Path, str]) -> None:
+    repo, base = governance_repo
+    _write(repo, "config/dependencies.lock", "".join(f"locked-{index}\n" for index in range(1601)))
+    head = _commit(repo, "add unlisted dependency lock")
+
+    evaluation = _evaluate(repo, base, head)
+
+    assert _codes(evaluation) == {"hot_file_growth", "production_net_loc"}
+
+
 def test_production_net_loc_boundary_is_exclusive(governance_repo: tuple[Path, str]) -> None:
     repo, base = governance_repo
     _write(repo, "config/bulk.json", "".join(f"line-{index}\n" for index in range(800)))
