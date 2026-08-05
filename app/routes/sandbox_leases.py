@@ -8,6 +8,8 @@ from app.control_plane_contracts import sanitize_public_payload, standard_trace_
 from app.db import transaction
 from app.models import SandboxLeaseReleaseRequest, SandboxLeaseRenewRequest, SandboxLeaseRequest
 from app.repositories import RepositoryNotFoundError
+from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
+from app.runtime.sandbox.container_provider import create_container_provider
 
 router = APIRouter()
 
@@ -60,6 +62,8 @@ async def create_sandbox_lease(
     request: SandboxLeaseRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
+    if request.provider != "fake":
+        raise HTTPException(status_code=409, detail="sandbox_provider_managed_by_runtime")
     try:
         async with transaction() as conn:
             run = await repositories.get_authorized_run(
@@ -156,35 +160,67 @@ async def release_sandbox_lease(
     request: SandboxLeaseReleaseRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
-    async with transaction() as conn:
-        existing = await repositories.get_sandbox_lease(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            run_id=run_id,
-            lease_id=lease_id,
-        )
-        if existing is None:
-            raise HTTPException(status_code=404, detail="sandbox_lease_not_found")
-        row = await repositories.release_sandbox_lease(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            run_id=run_id,
-            lease_id=lease_id,
-            reason=request.reason,
-        )
-        if row is None:
-            raise HTTPException(status_code=409, detail="sandbox_lease_not_active")
-        trace_id = str(row.get("trace_id") or existing.get("trace_id") or standard_trace_id(run_id))
-        await repositories.append_event(
-            conn,
-            tenant_id=principal.tenant_id,
-            run_id=run_id,
-            trace_id=trace_id,
-            event_type="sandbox_lease_released",
-            stage="sandbox",
-            message="已释放 Sandbox 租约",
-            payload={"visible_to_user": True, "lease_id": lease_id, "reason": request.reason},
-        )
+    existing: dict[str, Any] | None = None
+    try:
+        async with transaction() as conn:
+            existing = await repositories.get_sandbox_lease(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                run_id=run_id,
+                lease_id=lease_id,
+            )
+            if existing is None:
+                raise HTTPException(status_code=404, detail="sandbox_lease_not_found")
+            existing_status = str(existing.get("status") or "")
+            if existing_status == "released":
+                return {"sandbox_lease": lease_response(existing)}
+            if existing_status != "active":
+                raise HTTPException(status_code=409, detail="sandbox_lease_not_active")
+
+            if str(existing.get("provider") or "fake") != "fake":
+                await stop_sandbox_leases(
+                    [existing],
+                    reason=request.reason,
+                    provider_factory=create_container_provider,
+                )
+            row = await repositories.release_sandbox_lease(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                run_id=run_id,
+                lease_id=lease_id,
+                reason=request.reason,
+            )
+            if row is None:
+                raise HTTPException(status_code=409, detail="sandbox_lease_not_active")
+            trace_id = str(row.get("trace_id") or existing.get("trace_id") or standard_trace_id(run_id))
+            await repositories.append_event(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                trace_id=trace_id,
+                event_type="sandbox_lease_released",
+                stage="sandbox",
+                message="已释放 Sandbox 租约",
+                payload={"visible_to_user": True, "lease_id": lease_id, "reason": request.reason},
+            )
+    except SandboxRuntimeCleanupError as exc:
+        try:
+            async with transaction() as conn:
+                await repositories.record_sandbox_runtime_cleanup_outcome(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=run_id,
+                    trace_id=existing.get("trace_id") if existing is not None else None,
+                    user_id=principal.user_id,
+                    requested_by_role="owner",
+                    reason=request.reason,
+                    status="failed",
+                    lease_ids=[str(existing.get("id") or lease_id)] if existing is not None else [lease_id],
+                    failures=exc.failures,
+                )
+        except Exception as audit_exc:
+            raise HTTPException(status_code=503, detail="sandbox_cleanup_audit_unavailable") from audit_exc
+        raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
     return {"sandbox_lease": lease_response(row)}

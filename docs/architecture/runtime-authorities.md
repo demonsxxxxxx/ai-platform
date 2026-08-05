@@ -17,7 +17,7 @@ behind an adapter.
 | Streaming | `app.streaming` event replay, cursor, heartbeat, and terminal contract | Chat and compatibility routes only translate the shared stream |
 | Context | Pinned platform context snapshot and governed memory selection | Engine adapters receive the snapshot; they do not rebuild platform context |
 | Files and artifacts | Platform file/artifact records and authenticated download contract | Sandbox staging and SDK upload helpers only transfer bytes for an authorized run |
-| OpenSandbox | Governed, attested OpenSandbox runtime contract | Provider translation is allowed; a trusted-direct production path is not |
+| Sandbox runtime | `SandboxRuntime` control authority and its durable run-attempt binding | Docker/OpenSandbox provider translation is allowed; provider SDK state is not a business lifecycle authority |
 
 ## Compatibility rule
 

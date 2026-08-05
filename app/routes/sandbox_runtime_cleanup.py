@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
@@ -23,10 +24,17 @@ ProviderFactory = Callable[[str | None], ContainerProvider]
 class SandboxRuntimeCleanupError(RuntimeError):
     """Raised when one or more active sandbox leases cannot be stopped."""
 
-    def __init__(self, failures: list[dict[str, str]], *, stopped_leases: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        failures: list[dict[str, str]],
+        *,
+        stopped_leases: list[dict[str, Any]] | None = None,
+        failed_leases: list[dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__("sandbox_runtime_cleanup_failed")
         self.failures = failures
         self.stopped_leases = stopped_leases or []
+        self.failed_leases = failed_leases or []
 
 
 def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
@@ -113,6 +121,7 @@ async def stop_sandbox_leases(
     """Stop runtime containers for active sandbox lease rows."""
     failures: list[dict[str, str]] = []
     stopped_leases: list[dict[str, Any]] = []
+    failed_leases: list[dict[str, Any]] = []
     for row in sandbox_leases or []:
         lease = _container_lease_from_row(row)
         if lease is None:
@@ -122,15 +131,33 @@ async def stop_sandbox_leases(
                     "message": f"Unsupported sandbox provider: {row.get('provider')}",
                 }
             )
+            failed_leases.append(row)
             continue
-        provider = provider_factory(lease.provider)
-        result = await provider.stop(lease, reason=reason)
+        try:
+            provider = provider_factory(lease.provider)
+            result = await provider.stop(lease, reason=reason)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            failures.append(
+                {
+                    "container_id": lease.container_id,
+                    "message": "Sandbox provider stop raised an exception",
+                }
+            )
+            failed_leases.append(row)
+            continue
         if result.status == "failed":
-            failures.append({"container_id": result.container_id, "message": result.message})
+            failures.append({"container_id": result.container_id, "message": "Sandbox provider stop failed"})
+            failed_leases.append(row)
             continue
         stopped_leases.append(row)
     if failures:
-        raise SandboxRuntimeCleanupError(failures, stopped_leases=stopped_leases)
+        raise SandboxRuntimeCleanupError(
+            failures,
+            stopped_leases=stopped_leases,
+            failed_leases=failed_leases,
+        )
     return stopped_leases
 
 
@@ -163,9 +190,31 @@ async def cleanup_expired_sandbox_runtime_leases(
             )
         return released
 
-    async def release_stopped_committed(stopped_leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        async with transaction() as release_conn:
-            return await release_stopped_with_conn(release_conn, stopped_leases)
+    async def compensate_failure_committed(exc: SandboxRuntimeCleanupError) -> None:
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        for lease, failure in zip(exc.failed_leases, exc.failures, strict=True):
+            key = (str(lease["tenant_id"]), str(lease["run_id"]))
+            subject = grouped.setdefault(
+                key,
+                {"lease_ids": [], "failures": [], "trace_id": lease.get("trace_id")},
+            )
+            subject["lease_ids"].append(str(lease["id"]))
+            subject["failures"].append(failure)
+        async with transaction() as compensation_conn:
+            if exc.stopped_leases:
+                await release_stopped_with_conn(compensation_conn, exc.stopped_leases)
+            for (failure_tenant_id, failure_run_id), subject in grouped.items():
+                await repositories.record_sandbox_runtime_cleanup_outcome(
+                    compensation_conn,
+                    tenant_id=failure_tenant_id,
+                    run_id=failure_run_id,
+                    trace_id=subject["trace_id"],
+                    requested_by_role="maintenance",
+                    reason=reason,
+                    status="failed",
+                    lease_ids=subject["lease_ids"],
+                    failures=subject["failures"],
+                )
 
     try:
         stopped_leases = await stop_sandbox_leases(
@@ -174,8 +223,7 @@ async def cleanup_expired_sandbox_runtime_leases(
             provider_factory=provider_factory,
         )
     except SandboxRuntimeCleanupError as exc:
-        if exc.stopped_leases:
-            await release_stopped_committed(exc.stopped_leases)
+        await compensate_failure_committed(exc)
         raise
     if not stopped_leases:
         return []

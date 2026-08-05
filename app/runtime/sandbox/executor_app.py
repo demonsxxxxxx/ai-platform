@@ -68,6 +68,19 @@ CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
 CallbackSender = Callable[[str, CallbackPayload, str], Awaitable[CallbackResult] | CallbackResult]
 
+
+class _CallbackBatchIdFactory:
+    """Allocate callback IDs that do not collide after an executor restart."""
+
+    def __init__(self, namespace: str | None = None) -> None:
+        self._namespace = namespace or uuid.uuid4().hex
+        self._sequence = 0
+
+    def next_id(self) -> str:
+        self._sequence += 1
+        return f"callback-{self._namespace}-{self._sequence}"
+
+
 class _PrivateExecutionFact(NamedTuple):
     """Private runner fact paired with an optional public capability event."""
 
@@ -1565,11 +1578,14 @@ def create_executor_app(
         marker_path = _write_runtime_marker(resolved_workspace_root, request)
         document_processing_latency_ms = _elapsed_ms(document_started_at)
         callback_errors: list[str] = []
+        callback_batch_ids = _CallbackBatchIdFactory()
+
         running_event = ExecutorCallbackEvent(
             session_id=request.session_id,
             run_id=request.run_id,
             attempt_id=request.attempt_id,
             callback_token_id=request.callback_token_id,
+            batch_id=callback_batch_ids.next_id(),
             status="running",
             progress=5,
             state_patch={"stage": "accepted"},
@@ -1734,6 +1750,7 @@ def create_executor_app(
                 run_id=request.run_id,
                 attempt_id=request.attempt_id,
                 callback_token_id=request.callback_token_id,
+                batch_id=callback_batch_ids.next_id(),
                 status="running",
                 progress=35 if event_type and event_type.startswith("tool_call") else 60 if event_type == "artifact_created" else 20,
                 state_patch={"stage": event_type or "execution_step"},
@@ -1921,6 +1938,7 @@ def create_executor_app(
             run_id=request.run_id,
             attempt_id=request.attempt_id,
             callback_token_id=request.callback_token_id,
+            batch_id=callback_batch_ids.next_id(),
             status="running",
             progress=99,
             state_patch=(

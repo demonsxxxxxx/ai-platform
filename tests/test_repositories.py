@@ -8933,6 +8933,70 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
 
 
 @pytest.mark.asyncio
+async def test_real_sandbox_lease_requires_attempt_and_complete_runtime_handle():
+    conn = RecordingConnection()
+    common = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "trace_id": "trace-a",
+        "sandbox_mode": "ephemeral",
+        "provider": "docker",
+        "browser_enabled": False,
+        "ttl_seconds": 600,
+        "resource_limits_json": {},
+        "user_visible_payload_json": {"workspace": "/workspace"},
+        "lease_payload_json": {"attempt_id": "attempt-a"},
+    }
+
+    with pytest.raises(ValueError, match="sandbox_runtime_handle_required"):
+        await create_sandbox_lease(conn, **common)
+    assert conn.calls == []
+
+    await create_sandbox_lease(
+        conn,
+        **common,
+        attempt_id="attempt-a",
+        runtime_container_id="container-a",
+        runtime_container_name="executor-container-a",
+        runtime_executor_url="http://executor.test",
+        runtime_workspace_container_path="/workspace",
+    )
+
+    create_sql, create_params = conn.calls[0]
+    assert "run_id, attempt_id, trace_id" in create_sql
+    assert "attempt-a" in create_params
+
+
+@pytest.mark.asyncio
+async def test_fake_sandbox_lease_rejects_disagreeing_attempt_binding():
+    conn = RecordingConnection()
+
+    with pytest.raises(ValueError, match="sandbox_runtime_handle_required"):
+        await create_sandbox_lease(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            trace_id="trace-a",
+            sandbox_mode="ephemeral",
+            provider="fake",
+            browser_enabled=False,
+            ttl_seconds=600,
+            resource_limits_json={},
+            user_visible_payload_json={"workspace": "/workspace"},
+            lease_payload_json={"attempt_id": "attempt-old"},
+        )
+
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
 async def test_cleanup_expired_sandbox_leases_releases_expired_non_runtime_leases_and_emits_events(monkeypatch):
     from app.repositories import cleanup_expired_sandbox_leases
 

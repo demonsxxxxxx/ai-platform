@@ -13,6 +13,9 @@ does not represent deployed runtime state.
   closure evidence.
 - `architecture/runtime-authorities.md` maps each runtime capability to its
   single business authority and defines the Harness replacement seam.
+- `architecture/sandbox-runtime-control-layer.md` defines the Sandbox Runtime
+  application authority, target lifecycle, ownership fences, provider port, and
+  staged recovery model.
 
 ## Operations
 

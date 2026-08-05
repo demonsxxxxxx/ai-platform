@@ -228,6 +228,110 @@ def test_release_sandbox_lease_records_release_event(monkeypatch):
     assert calls[1][1]["event_type"] == "sandbox_lease_released"
 
 
+def test_public_real_provider_release_stops_before_db_release(monkeypatch):
+    calls = []
+    transaction_count = 0
+    state = verified_runtime_lease_row()
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal transaction_count
+        transaction_count += 1
+        yield object()
+
+    class StopSucceededProvider:
+        async def stop(self, lease, *, reason):
+            calls.append(("stop", lease.provider, lease.container_id, reason))
+            return StopResult(
+                container_id=lease.container_id,
+                status="stopped",
+                message="stopped",
+            )
+
+    async def fake_get_sandbox_lease(conn, **kwargs):
+        return dict(state)
+
+    async def fake_release_sandbox_lease(conn, **kwargs):
+        calls.append(("release", kwargs["lease_id"], kwargs["reason"]))
+        state.update(status="released", release_reason=kwargs["reason"])
+        return dict(state)
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.sandbox_leases.transaction", tracked_transaction)
+    monkeypatch.setattr(
+        "app.routes.sandbox_leases.repositories.get_sandbox_lease",
+        fake_get_sandbox_lease,
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_leases.repositories.release_sandbox_lease",
+        fake_release_sandbox_lease,
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_leases.repositories.append_event",
+        fake_append_event,
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_leases.create_container_provider",
+        lambda provider_name=None: StopSucceededProvider(),
+    )
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runs/run-a/sandbox/leases/lease-a/release",
+        headers=headers(),
+        json={"reason": "cancelled"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sandbox_lease"]["status"] == "released"
+    assert transaction_count == 1
+    assert calls == [
+        ("stop", "docker", "exec-run-a", "cancelled"),
+        ("release", "lease-a", "cancelled"),
+        ("event", "sandbox_lease_released"),
+    ]
+
+
+def test_public_release_is_idempotent_after_release(monkeypatch):
+    released = verified_runtime_lease_row(status="released", release_reason="cancelled")
+
+    async def fake_get_sandbox_lease(conn, **kwargs):
+        return dict(released)
+
+    async def fail_release(*args, **kwargs):
+        raise AssertionError("released lease must not be mutated again")
+
+    def fail_provider_factory(*args, **kwargs):
+        raise AssertionError("released lease must not stop the provider again")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.sandbox_leases.repositories.get_sandbox_lease",
+        fake_get_sandbox_lease,
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_leases.repositories.release_sandbox_lease",
+        fail_release,
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_leases.create_container_provider",
+        fail_provider_factory,
+    )
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runs/run-a/sandbox/leases/lease-a/release",
+        headers=headers(),
+        json={"reason": "cancelled"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sandbox_lease"]["status"] == "released"
+
+
 def test_public_release_does_not_mark_real_provider_lease_released_without_confirmed_stop(monkeypatch):
     state = verified_runtime_lease_row()
     stop_calls = []
