@@ -1601,6 +1601,7 @@
       "readOnly": "읽기 전용",
       "runtimeStatus": "실행 상태",
       "selectSkill": "{{name}} 선택",
+      "skill": "스킬",
       "tags": "태그",
       "tenantDistribution": "테넌트 배포",
       "updatedAt": "업데이트 시간"

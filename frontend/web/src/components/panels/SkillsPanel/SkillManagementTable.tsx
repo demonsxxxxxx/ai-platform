@@ -66,7 +66,7 @@ export function SkillManagementTable({
         role="row"
       >
         {canBatch ? <span aria-hidden="true" /> : null}
-        <span role="columnheader">Skill</span>
+        <span role="columnheader">{t("skills.managementTable.skill")}</span>
         <span role="columnheader">{t("skills.managementTable.package")}</span>
         <span role="columnheader">{t("skills.managementTable.runtimeStatus")}</span>
         <span role="columnheader">{t("skills.managementTable.tenantDistribution")}</span>
@@ -94,7 +94,7 @@ export function SkillManagementTable({
 
             <div
               className="skill-management-table__identity"
-              data-label="Skill"
+              data-label={t("skills.managementTable.skill")}
               role="cell"
             >
               <div className="min-w-0">

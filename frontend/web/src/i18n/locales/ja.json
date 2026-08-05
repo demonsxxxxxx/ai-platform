@@ -1601,6 +1601,7 @@
       "readOnly": "読み取り専用",
       "runtimeStatus": "実行状態",
       "selectSkill": "{{name}}を選択",
+      "skill": "スキル",
       "tags": "タグ",
       "tenantDistribution": "テナント配布",
       "updatedAt": "更新日時"

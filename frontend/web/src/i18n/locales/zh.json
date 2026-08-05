@@ -1954,6 +1954,7 @@
       "readOnly": "只读",
       "runtimeStatus": "运行状态",
       "selectSkill": "选择 {{name}}",
+      "skill": "技能",
       "tags": "标签",
       "tenantDistribution": "租户分发",
       "updatedAt": "更新时间"

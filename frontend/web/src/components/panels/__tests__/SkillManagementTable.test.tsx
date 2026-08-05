@@ -62,6 +62,7 @@ test("management table translations stay complete across supported locales", () 
     "readOnly",
     "runtimeStatus",
     "selectSkill",
+    "skill",
     "tags",
     "tenantDistribution",
     "updatedAt",

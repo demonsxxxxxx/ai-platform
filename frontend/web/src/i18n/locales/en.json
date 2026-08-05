@@ -1953,6 +1953,7 @@
       "readOnly": "Read-only",
       "runtimeStatus": "Runtime status",
       "selectSkill": "Select {{name}}",
+      "skill": "Skill",
       "tags": "Tags",
       "tenantDistribution": "Tenant distribution",
       "updatedAt": "Updated at"

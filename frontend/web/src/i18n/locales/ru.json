@@ -1603,6 +1603,7 @@
       "readOnly": "Только чтение",
       "runtimeStatus": "Состояние выполнения",
       "selectSkill": "Выбрать {{name}}",
+      "skill": "Навык",
       "tags": "Теги",
       "tenantDistribution": "Распространение в тенанте",
       "updatedAt": "Обновлено"
