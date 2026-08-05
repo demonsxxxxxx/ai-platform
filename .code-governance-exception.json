@@ -11,6 +11,10 @@
     {
       "code": "hot_file_growth",
       "path": "uv.lock"
+    },
+    {
+      "code": "production_net_loc",
+      "path": null
     }
   ]
 }
