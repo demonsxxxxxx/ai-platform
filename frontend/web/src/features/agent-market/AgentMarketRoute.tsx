@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowLeft, Bot, FileText, Headphones, MessageCircle, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -171,117 +171,6 @@ function getErrorStatus(error: unknown): number | undefined {
     : undefined;
 }
 
-function conversationAdmissionError(error: unknown): string {
-  const status = getErrorStatus(error);
-  if (status === 403) {
-    return "当前账号无权使用该智能体，请返回市场选择其他智能体。";
-  }
-  if (status === 404 || status === 409) {
-    return "该智能体已不可用或发布版本已更新，请返回市场重新选择。";
-  }
-  return "暂时无法创建智能体对话，请稍后重试。";
-}
-
-function hasExactConversationIdentity(
-  profile: AgentProfilePublicProjection,
-  session: Awaited<ReturnType<typeof agentProfileApi.createConversation>>,
-): boolean {
-  const identity = session.agent_conversation;
-  const hasText = (value: unknown): value is string =>
-    typeof value === "string" && value.trim().length > 0;
-  return Boolean(
-    hasText(session.session_id) &&
-      hasText(session.workspace_id) &&
-      identity &&
-      session.agent_id === profile.agent_id &&
-      identity.agent_id === profile.agent_id &&
-      identity.revision === profile.expected_revision,
-  );
-}
-
-type ConversationAdmissionError = {
-  profileKey: string;
-  message: string;
-};
-
-/** One Market route owns at most one server-side conversation admission at a time. */
-function useAgentMarketConversationAdmission() {
-  const navigate = useNavigate();
-  const mountedRef = useRef(true);
-  const navigationGenerationRef = useRef(0);
-  const admissionSequenceRef = useRef(0);
-  const admissionOwnerRef = useRef<number | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [admissionError, setAdmissionError] = useState<ConversationAdmissionError | null>(null);
-
-  useLayoutEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      navigationGenerationRef.current += 1;
-    };
-  }, []);
-
-  const invalidateNavigation = useCallback(() => {
-    navigationGenerationRef.current += 1;
-    if (mountedRef.current) setAdmissionError(null);
-  }, []);
-
-  const requestConversation = useCallback(
-    async (profile: AgentProfilePublicProjection) => {
-      if (admissionOwnerRef.current !== null) return;
-
-      const admissionOwner = ++admissionSequenceRef.current;
-      const navigationGeneration = navigationGenerationRef.current;
-      const profileKey = `${profile.agent_id}:${profile.expected_revision}`;
-      let navigated = false;
-      admissionOwnerRef.current = admissionOwner;
-      setCreating(true);
-      setAdmissionError(null);
-
-      try {
-        const session = await agentProfileApi.createConversation({
-          agent_id: profile.agent_id,
-          expected_revision: profile.expected_revision,
-        });
-        if (
-          !mountedRef.current ||
-          navigationGeneration !== navigationGenerationRef.current
-        ) {
-          return;
-        }
-        if (!hasExactConversationIdentity(profile, session)) {
-          throw Object.assign(new Error("agent_conversation_identity_mismatch"), {
-            status: 409,
-          });
-        }
-        navigated = true;
-        navigate(buildAgentMarketWorkspacePath(profile, session.session_id));
-      } catch (error) {
-        if (
-          mountedRef.current &&
-          navigationGeneration === navigationGenerationRef.current
-        ) {
-          setAdmissionError({ profileKey, message: conversationAdmissionError(error) });
-        }
-      } finally {
-        if (admissionOwnerRef.current === admissionOwner) {
-          admissionOwnerRef.current = null;
-          if (mountedRef.current && !navigated) setCreating(false);
-        }
-      }
-    },
-    [navigate],
-  );
-
-  return {
-    admissionError,
-    creating,
-    invalidateNavigation,
-    requestConversation,
-  };
-}
-
 function usePublishedAgentDetail(
   detailKey: string,
   agentId: string | undefined,
@@ -342,14 +231,10 @@ function CatalogError({ error, refresh }: { error: string; refresh: () => void }
 
 function AgentMarketCard({
   profile,
-  admissionError,
-  creating,
   onOpenWorkspace,
   onOpenDetail,
 }: {
   profile: AgentProfilePublicProjection;
-  admissionError: string | null;
-  creating: boolean;
   onOpenWorkspace: (profile: AgentProfilePublicProjection) => void;
   onOpenDetail: (profile: AgentProfilePublicProjection) => void;
 }) {
@@ -362,7 +247,6 @@ function AgentMarketCard({
         data-agent-market-open-workspace
         aria-label={`进入 ${profile.name} 专属工作区`}
         className="group flex w-full flex-1 gap-4 p-5 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-primary)]"
-        disabled={creating}
         onClick={() => onOpenWorkspace(profile)}
         type="button"
       >
@@ -378,22 +262,11 @@ function AgentMarketCard({
             {profile.description || "该智能体已通过平台发布。"}
           </span>
           <span className="mt-auto inline-flex items-center gap-1.5 pt-4 text-sm font-medium text-[var(--theme-primary)]">
-            进入专属对话
+            打开智能体工作区
             <span aria-hidden="true">→</span>
           </span>
         </span>
       </button>
-      {(creating || admissionError) && (
-        <span
-          aria-live="polite"
-          className={`px-5 pb-3 text-sm ${
-            admissionError ? "text-red-700 dark:text-red-300" : "text-[var(--theme-text-secondary)]"
-          }`}
-          role="status"
-        >
-          {creating ? "正在创建智能体对话…" : admissionError}
-        </span>
-      )}
       <div className="flex justify-end border-t border-[var(--theme-border)] px-5 py-3">
         <button
           data-agent-market-open-detail
@@ -413,24 +286,14 @@ function AgentMarketCatalog({
   catalog,
   refresh,
   activeCategory,
-  creating,
-  admissionError,
-  requestConversation,
-  invalidateNavigation,
 }: {
   catalog: CatalogState;
   refresh: () => void;
   activeCategory: AgentProfileCategory | "all";
-  creating: boolean;
-  admissionError: ConversationAdmissionError | null;
-  requestConversation: (profile: AgentProfilePublicProjection) => Promise<void>;
-  invalidateNavigation: () => void;
 }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const searchQuery = searchParams.get("q") ?? "";
-  const selectionKey = `${searchQuery}\u0000${activeCategory}`;
-  const selectionKeyRef = useRef(selectionKey);
   const visibleProfiles = useMemo(
     () =>
       filterPublishedMarketProfiles(catalog.value, searchQuery).filter(
@@ -440,45 +303,36 @@ function AgentMarketCatalog({
     [activeCategory, catalog.value, searchQuery],
   );
 
-  useEffect(() => {
-    if (selectionKeyRef.current === selectionKey) return;
-    selectionKeyRef.current = selectionKey;
-    invalidateNavigation();
-  }, [invalidateNavigation, selectionKey]);
-
   const handleOpenWorkspace = useCallback(
     (profile: AgentProfilePublicProjection) => {
-      void requestConversation(profile);
+      navigate(buildAgentMarketWorkspacePath(profile));
     },
-    [requestConversation],
+    [navigate],
   );
 
   const handleCategory = useCallback(
     (category: AgentProfileCategory | "all") => {
-      invalidateNavigation();
       const next = new URLSearchParams(searchParams);
       if (category === "all") next.delete("category");
       else next.set("category", category);
       setSearchParams(next, { replace: true });
     },
-    [invalidateNavigation, searchParams, setSearchParams],
+    [searchParams, setSearchParams],
   );
 
   const handleSearch = useCallback(
     (query: string) => {
-      invalidateNavigation();
       const next = new URLSearchParams(searchParams);
       if (query) next.set("q", query);
       else next.delete("q");
       setSearchParams(next, { replace: true });
     },
-    [invalidateNavigation, searchParams, setSearchParams],
+    [searchParams, setSearchParams],
   );
 
   const handleRefresh = useCallback(() => {
-    invalidateNavigation();
     refresh();
-  }, [invalidateNavigation, refresh]);
+  }, [refresh]);
 
   return (
     <main data-agent-market className="min-h-0 flex-1 overflow-y-auto text-[var(--theme-text)]">
@@ -582,18 +436,10 @@ function AgentMarketCatalog({
                 <AgentMarketCard
                   key={`${profile.agent_id}:${profile.expected_revision}`}
                   profile={profile}
-                  admissionError={
-                    admissionError?.profileKey ===
-                    `${profile.agent_id}:${profile.expected_revision}`
-                      ? admissionError.message
-                      : null
-                  }
-                  creating={creating}
                   onOpenWorkspace={(selectedProfile) => {
                     void handleOpenWorkspace(selectedProfile);
                   }}
                   onOpenDetail={(selectedProfile) => {
-                    invalidateNavigation();
                     navigate(buildAgentMarketDetailPath(selectedProfile));
                   }}
                 />
@@ -608,26 +454,13 @@ function AgentMarketCatalog({
 
 function AgentMarketDetail({
   profile,
-  creating,
-  admissionError,
-  requestConversation,
-  invalidateNavigation,
 }: {
   profile: AgentProfilePublicProjection;
-  creating: boolean;
-  admissionError: ConversationAdmissionError | null;
-  requestConversation: (profile: AgentProfilePublicProjection) => Promise<void>;
-  invalidateNavigation: () => void;
 }) {
   const navigate = useNavigate();
-  const profileKey = `${profile.agent_id}:${profile.expected_revision}`;
-  const startError = admissionError?.profileKey === profileKey
-    ? admissionError.message
-    : null;
   const handleReturnToCatalog = useCallback(() => {
-    invalidateNavigation();
     navigate(APP_ROUTE_PATHS.agentMarket);
-  }, [invalidateNavigation, navigate]);
+  }, [navigate]);
 
   return (
     <main
@@ -649,9 +482,15 @@ function AgentMarketDetail({
           <div className="flex flex-col gap-6 sm:flex-row sm:items-start">
             <AgentIdentityAvatar profile={profile} large />
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-[var(--theme-primary)]">
-                {CATEGORY_LABELS[profile.category]} · 已发布智能体
-              </p>
+              <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--theme-primary)]">
+                <span>{CATEGORY_LABELS[profile.category]}</span>
+                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
+                  企业已发布
+                </span>
+                <span className="rounded-full bg-[var(--theme-bg-sidebar)] px-2.5 py-1 text-xs text-[var(--theme-text-secondary)]">
+                  版本 {profile.expected_revision}
+                </span>
+              </div>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{profile.name}</h1>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
                 {profile.description || "该智能体已通过平台发布。"}
@@ -660,29 +499,31 @@ function AgentMarketDetail({
           </div>
         </section>
 
+        <section className="grid gap-4 border-b border-[var(--theme-border)] py-7 sm:grid-cols-2">
+          <div className="rounded-lg border border-[var(--theme-border)] p-5">
+            <h2 className="text-sm font-semibold">适合处理</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+              {profile.description || "使用企业已发布的受控能力完成相关工作。"}
+            </p>
+          </div>
+          <div className="rounded-lg border border-[var(--theme-border)] p-5">
+            <h2 className="text-sm font-semibold">使用方式</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+              进入专属工作区后再创建会话。模型、Skills 与工具由平台统一配置。
+            </p>
+          </div>
+        </section>
+
         <div className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-center sm:justify-end">
-          <span
-            id="agent-market-conversation-status"
-            className={`text-sm ${
-              startError
-                ? "text-red-700 dark:text-red-300"
-                : "text-[var(--theme-text-secondary)]"
-            }`}
-            role="status"
-          >
-            {creating ? "正在创建智能体对话…" : startError}
-          </span>
           <button
             data-agent-market-start-chat
-            aria-describedby="agent-market-conversation-status"
-            aria-label={`与 ${profile.name} 开始对话`}
-            className="btn-primary inline-flex min-h-10 shrink-0 items-center justify-center gap-2 px-4 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={creating}
-            onClick={() => void requestConversation(profile)}
+            aria-label={`进入 ${profile.name} 专属工作区`}
+            className="btn-primary inline-flex min-h-10 shrink-0 items-center justify-center gap-2 px-4"
+            onClick={() => navigate(buildAgentMarketWorkspacePath(profile))}
             type="button"
           >
             <MessageCircle size={17} aria-hidden="true" />
-            开始对话
+            进入专属工作区
           </button>
         </div>
       </div>
@@ -719,38 +560,18 @@ export function AgentMarketRoute() {
     revision,
     isDetailRoute,
   );
-  const {
-    admissionError,
-    creating,
-    invalidateNavigation,
-    requestConversation,
-  } = useAgentMarketConversationAdmission();
-  const routeKey = isDetailRoute ? detailKey : catalogKey;
-  const routeKeyRef = useRef(routeKey);
-
-  useLayoutEffect(() => {
-    if (routeKeyRef.current === routeKey) return;
-    routeKeyRef.current = routeKey;
-    invalidateNavigation();
-  }, [invalidateNavigation, routeKey]);
-
   useEffect(() => {
     if (isDetailRoute && detail.phase === "unavailable") {
-      invalidateNavigation();
       navigate(APP_ROUTE_PATHS.agentMarket, { replace: true });
     }
-  }, [detail.phase, invalidateNavigation, isDetailRoute, navigate]);
+  }, [detail.phase, isDetailRoute, navigate]);
 
   if (!isDetailRoute) {
     return (
       <AgentMarketShell>
         <AgentMarketCatalog
           activeCategory={activeCategory}
-          admissionError={admissionError}
           catalog={catalog}
-          creating={creating}
-          invalidateNavigation={invalidateNavigation}
-          requestConversation={requestConversation}
           refresh={refreshCatalog}
         />
       </AgentMarketShell>
@@ -767,11 +588,7 @@ export function AgentMarketRoute() {
         </main>
       ) : detail.phase === "ready" && detail.value ? (
         <AgentMarketDetail
-          admissionError={admissionError}
-          creating={creating}
-          invalidateNavigation={invalidateNavigation}
           profile={detail.value}
-          requestConversation={requestConversation}
         />
       ) : (
         <main

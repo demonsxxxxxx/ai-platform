@@ -23,6 +23,16 @@ export interface AgentProfileCatalogQuery {
   category?: AgentProfileCategory;
 }
 
+export interface AgentConversationPage {
+  sessions: AgentConversationSessionProjection[];
+  next_cursor: string | null;
+}
+
+export interface AgentConversationListOptions {
+  cursor?: string;
+  limit?: number;
+}
+
 /** Build the current-principal published catalog URL. */
 export function buildAgentProfileCatalogUrl(query: AgentProfileCatalogQuery = {}): string {
   const searchParams = new URLSearchParams();
@@ -46,17 +56,39 @@ function projectCatalogResponse(value: unknown): AgentProfileCatalogResponse {
   return { agent_profiles: profiles.map(projectAgentProfilePublicProjection) };
 }
 
-function projectConversationListResponse(
-  value: unknown,
-): AgentConversationSessionProjection[] {
+function projectConversationListResponse(value: unknown): AgentConversationPage {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid_agent_conversation_catalog");
   }
-  const sessions = (value as { sessions?: unknown }).sessions;
+  const record = value as { sessions?: unknown; next_cursor?: unknown };
+  const sessions = record.sessions;
   if (!Array.isArray(sessions)) {
     throw new Error("invalid_agent_conversation_catalog");
   }
-  return sessions.map(projectAgentConversationSession);
+  if (
+    record.next_cursor !== undefined &&
+    record.next_cursor !== null &&
+    typeof record.next_cursor !== "string"
+  ) {
+    throw new Error("invalid_agent_conversation_catalog");
+  }
+  return {
+    sessions: sessions.map(projectAgentConversationSession),
+    next_cursor: typeof record.next_cursor === "string" ? record.next_cursor : null,
+  };
+}
+
+export function buildAgentConversationListUrl(
+  selection: SelectedAgentProfileRequest,
+  options: AgentConversationListOptions = {},
+): string {
+  const searchParams = new URLSearchParams({
+    agent_id: selection.agent_id,
+    revision: String(selection.expected_revision),
+    limit: String(options.limit ?? 20),
+  });
+  if (options.cursor) searchParams.set("cursor", options.cursor);
+  return `${API_BASE}/api/ai/chat/sessions?${searchParams.toString()}`;
 }
 
 export const agentProfileApi = {
@@ -70,10 +102,13 @@ export const agentProfileApi = {
     return projectAgentProfilePublicProjection(response);
   },
 
-  /** List only server-authorized conversations with their safe pinned identity. */
-  async listConversations(): Promise<AgentConversationSessionProjection[]> {
+  /** List one server-authorized Agent/revision history page. */
+  async listConversations(
+    selection: SelectedAgentProfileRequest,
+    options: AgentConversationListOptions = {},
+  ): Promise<AgentConversationPage> {
     const response = await authFetch<unknown>(
-      `${API_BASE}/api/ai/chat/sessions`,
+      buildAgentConversationListUrl(selection, options),
       { cache: "no-store" },
     );
     return projectConversationListResponse(response);

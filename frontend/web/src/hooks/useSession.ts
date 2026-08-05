@@ -41,7 +41,7 @@ export function reconcileSessionList(input: {
 
 // ─── Paginated active session list ──────────────────────────────────
 
-interface UseSessionListReturn {
+export interface UseSessionListReturn {
   sessions: BackendSession[];
   isLoading: boolean;
   isLoadingMore: boolean;
@@ -58,6 +58,7 @@ interface UseSessionListReturn {
 /** Lists active chat sessions with pagination, deduplication, and refresh helpers. */
 export function useSessionList(
   scrollRoot?: Element | null,
+  enabled = true,
 ): UseSessionListReturn {
   const [sessions, setSessions] = useState<BackendSession[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -121,11 +122,11 @@ export function useSessionList(
 
   // Infinite scroll
   useEffect(() => {
-    if (inView && hasMore && !isLoadingMore && !isLoading) {
+    if (enabled && inView && hasMore && !isLoadingMore && !isLoading) {
       fetchSessions(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inView, hasMore, isLoadingMore, isLoading]);
+  }, [enabled, inView, hasMore, isLoadingMore, isLoading]);
 
   // Fetch the active session projection on mount.
   useEffect(() => {
@@ -133,16 +134,18 @@ export function useSessionList(
     setSkip(0);
     setHasMore(false);
     loadedCountRef.current = PAGE_SIZE;
-    fetchSessions(true);
+    if (enabled) fetchSessions(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [enabled]);
 
   const refresh = useCallback(async () => {
+    if (!enabled) return;
     await fetchSessions(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [enabled]);
 
   const softRefresh = useCallback(async () => {
+    if (!enabled) return;
     try {
       const requestLimit = Math.min(
         100,
@@ -172,7 +175,7 @@ export function useSessionList(
     } catch {
       // silent — soft refresh is best-effort
     }
-  }, []);
+  }, [enabled]);
 
   const prependSession = useCallback((session: BackendSession) => {
     setSessions((prev) => {
