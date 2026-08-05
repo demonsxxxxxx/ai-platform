@@ -48,16 +48,24 @@ jobs:
       - name: Run code governance
         if: github.event_name == 'pull_request'
         env:
+          GOVERNANCE_PR_NUMBER: ${{ github.event.number }}
           GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}
           GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha }}
           GOVERNANCE_FETCH_TOKEN: ${{ github.token }}
           PYTHONSAFEPATH: "1"
         run: |
           set -euo pipefail
+          [[ "$GOVERNANCE_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
           [[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]
           [[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer $GOVERNANCE_FETCH_TOKEN" fetch --no-tags origin "$GOVERNANCE_HEAD_REF"
-          unset GOVERNANCE_FETCH_TOKEN
+          GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"
+          GOVERNANCE_FETCH_BASIC="$(printf 'x-access-token:%s' "$GOVERNANCE_FETCH_TOKEN" | base64 --wrap=0)"
+          echo "::add-mask::$GOVERNANCE_FETCH_BASIC"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $GOVERNANCE_FETCH_BASIC" fetch --no-tags origin "+refs/pull/$GOVERNANCE_PR_NUMBER/head:$GOVERNANCE_PULL_REF"
+          unset GOVERNANCE_FETCH_TOKEN GOVERNANCE_FETCH_BASIC
+          test "$(git rev-parse "$GOVERNANCE_PULL_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+          git cat-file -e "$GOVERNANCE_BASE_REF^{commit}"
+          git cat-file -e "$GOVERNANCE_HEAD_REF^{commit}"
           test "$(git rev-parse "$GOVERNANCE_BASE_REF^{commit}")" = "$GOVERNANCE_BASE_REF"
           test "$(git rev-parse "$GOVERNANCE_HEAD_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
           git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"
@@ -82,6 +90,7 @@ jobs:
           [[ "$VALIDATED_PR_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse "$VALIDATED_PR_HEAD_REF^{commit}")" = "$VALIDATED_PR_HEAD_REF"
           git checkout --detach "$VALIDATED_PR_HEAD_REF"
+          test "$(git rev-parse HEAD)" = "$VALIDATED_PR_HEAD_REF"
 
       - name: Compile backend sources
         run: python -m compileall -q app tools scripts
