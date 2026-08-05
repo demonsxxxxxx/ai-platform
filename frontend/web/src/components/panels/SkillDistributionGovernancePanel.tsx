@@ -2,40 +2,33 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw, Save, ShieldCheck } from "lucide-react";
 
 import { RoleSelector } from "../mcp/RoleSelector";
+import { DepartmentDirectorySelector } from "./DepartmentDirectorySelector";
+import { resolveDepartmentSelection } from "./departmentDirectorySelection";
 import {
   capabilityDistributionApi,
   type CapabilityDistribution,
   type CapabilityDistributionStatus,
   type CapabilityDistributionUpdate,
+  type DepartmentDirectoryNode,
 } from "../../services/api/capabilityDistribution";
 import { ApiRequestError } from "../../services/api/fetch";
 import { skillApi, type AdminSkillCatalogItem } from "../../services/api/skill";
 
-interface DistributionDraft extends CapabilityDistributionUpdate {
-  departmentInput: string;
-}
-
-function parseDepartmentIds(value: string): string[] {
-  return [
-    ...new Set(
-      value
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ),
-  ];
-}
-
-function createDraft(distribution?: CapabilityDistribution): DistributionDraft {
+function createDraft(
+  distribution?: CapabilityDistribution,
+): CapabilityDistributionUpdate {
   return {
     status: distribution?.status ?? "active",
     visibleToUser: distribution?.visibleToUser ?? true,
     scopeMode: "allowlist",
     departmentIds: distribution?.departmentIds ?? [],
-    departmentInput: distribution?.departmentIds.join(", ") ?? "",
     allowedRoles: distribution?.allowedRoles ?? [],
     metadata: distribution?.metadata ?? {},
   };
+}
+
+function safeDirectoryError(): string {
+  return "权威部门目录暂时不可用；可清除现有部门范围，但不能提交非空范围。";
 }
 
 function safeDistributionError(error: unknown): string {
@@ -62,7 +55,9 @@ export function SkillDistributionGovernancePanel() {
   const [skills, setSkills] = useState<AdminSkillCatalogItem[]>([]);
   const [distributions, setDistributions] = useState<CapabilityDistribution[]>([]);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<DistributionDraft | null>(null);
+  const [draft, setDraft] = useState<CapabilityDistributionUpdate | null>(null);
+  const [directory, setDirectory] = useState<DepartmentDirectoryNode[] | null>(null);
+  const [directoryError, setDirectoryError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -76,15 +71,28 @@ export function SkillDistributionGovernancePanel() {
   const selectedDistribution = selectedSkillId
     ? distributionBySkillId.get(selectedSkillId)
     : undefined;
+  const selectedSkill = selectedSkillId
+    ? skills.find((skill) => skill.skillId === selectedSkillId)
+    : undefined;
+  const departmentSelection = useMemo(
+    () => resolveDepartmentSelection(draft?.departmentIds ?? [], directory),
+    [directory, draft?.departmentIds],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
+    setDirectoryError(null);
     try {
-      const [nextSkills, nextDistributions] = await Promise.all([
-        skillApi.adminListSkills(),
-        capabilityDistributionApi.list("skill"),
+      const [catalogResult, directoryResult] = await Promise.allSettled([
+        Promise.all([
+          skillApi.adminListSkills(),
+          capabilityDistributionApi.list("skill"),
+        ]),
+        capabilityDistributionApi.departmentDirectory(),
       ]);
+      if (catalogResult.status === "rejected") throw catalogResult.reason;
+      const [nextSkills, nextDistributions] = catalogResult.value;
       setSkills(nextSkills);
       setDistributions(nextDistributions);
       setSelectedSkillId((current) =>
@@ -92,12 +100,19 @@ export function SkillDistributionGovernancePanel() {
           ? current
           : nextSkills[0]?.skillId ?? null,
       );
+      if (directoryResult.status === "fulfilled") {
+        setDirectory(directoryResult.value);
+      } else {
+        setDirectory(null);
+        setDirectoryError(safeDirectoryError());
+      }
     } catch (error) {
       setLoadError(safeDistributionError(error));
       setSkills([]);
       setDistributions([]);
       setSelectedSkillId(null);
       setDraft(null);
+      setDirectory(null);
     } finally {
       setLoading(false);
     }
@@ -119,12 +134,16 @@ export function SkillDistributionGovernancePanel() {
 
   const save = async () => {
     if (!selectedSkillId || !draft || saving) return;
+    if (!departmentSelection.authoritative) {
+      setSaveError("当前部门范围尚未通过权威目录确认，不能保存。");
+      return;
+    }
     setSaving(true);
     setSaveError(null);
     setSaved(false);
     const update: CapabilityDistributionUpdate = {
       ...draft,
-      departmentIds: parseDepartmentIds(draft.departmentInput),
+      departmentIds: [...draft.departmentIds],
       metadata: { ...draft.metadata },
     };
     try {
@@ -188,6 +207,17 @@ export function SkillDistributionGovernancePanel() {
         </div>
       ) : null}
 
+      {loading ? (
+        <div
+          className="mt-4 flex items-center gap-2 text-sm text-[var(--theme-text-secondary)]"
+          data-skill-distribution-loading
+          role="status"
+        >
+          <RefreshCw aria-hidden="true" className="animate-spin" size={15} />
+          正在加载 Skill 与权威部门目录
+        </div>
+      ) : null}
+
       {!loadError && !loading ? (
         <div className="mt-4 grid min-h-0 gap-4 lg:grid-cols-[minmax(14rem,0.8fr)_minmax(0,1.2fr)]">
           <div className="border-r border-[var(--theme-border)] pr-4">
@@ -231,6 +261,45 @@ export function SkillDistributionGovernancePanel() {
 
           {selectedSkillId && draft ? (
             <div className="min-w-0">
+              {selectedSkill ? (
+                <div
+                  className="skill-authority-rail mb-4"
+                  data-skill-authority-rail
+                >
+                  <div>
+                    <span>Admin release</span>
+                    <strong>
+                      {selectedSkill.currentVersion
+                        ? `stable ${selectedSkill.currentVersion}`
+                        : "尚无 stable 版本"}
+                    </strong>
+                    <small>
+                      {selectedSkill.latestVersion
+                        ? `最新 ${selectedSkill.latestVersion} · ${selectedSkill.latestVersionStatus}`
+                        : "尚无版本包"}
+                    </small>
+                  </div>
+                  <div>
+                    <span>租户 capability-distribution</span>
+                    <strong>
+                      {(selectedDistribution?.status ??
+                        selectedSkill.distributionStatus) === "active" &&
+                      (selectedDistribution?.visibleToUser ??
+                        selectedSkill.visibleToUser)
+                        ? "启用且可见"
+                        : (selectedDistribution?.status ??
+                              selectedSkill.distributionStatus) === "active"
+                          ? "启用但隐藏"
+                          : "已停用"}
+                    </strong>
+                    <small>
+                      {(selectedDistribution?.departmentIds.length ?? 0) > 0
+                        ? `${selectedDistribution?.departmentIds.length} 个部门范围`
+                        : "不限制部门"}
+                    </small>
+                  </div>
+                </div>
+              ) : null}
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="flex items-center gap-2.5 text-sm text-[var(--theme-text)]">
                   <input
@@ -272,25 +341,25 @@ export function SkillDistributionGovernancePanel() {
                 </label>
               </div>
 
-              <label className="es-field mt-4">
+              <div className="es-field mt-4">
                 <span className="es-label">允许部门</span>
-                <span className="es-hint">用逗号分隔部门标识；留空时由服务端按当前分发规则处理。</span>
-                <input
-                  className="enterprise-field-control es-input mt-1"
-                  data-skill-distribution-departments
+                <span className="es-hint">
+                  仅可选择服务端权威目录中的部门；留空表示不限制部门。
+                </span>
+                <DepartmentDirectorySelector
+                  directory={directory}
                   disabled={saving}
-                  onChange={(event) =>
+                  loadError={directoryError}
+                  onChange={(departmentIds) =>
                     setDraft((current) =>
                       current
-                        ? { ...current, departmentInput: event.target.value }
+                        ? { ...current, departmentIds }
                         : current,
                     )
                   }
-                  placeholder="例如：研发部, 财务部"
-                  type="text"
-                  value={draft.departmentInput}
+                  selectedAuthorityIds={draft.departmentIds}
                 />
-              </label>
+              </div>
 
               <div className="es-field mt-4">
                 <span className="es-label">允许角色</span>
@@ -310,7 +379,7 @@ export function SkillDistributionGovernancePanel() {
               <div className="mt-5 flex flex-wrap items-center gap-3">
                 <button
                   className="btn-primary inline-flex items-center gap-2 disabled:opacity-60"
-                  disabled={saving}
+                  disabled={saving || !departmentSelection.authoritative}
                   onClick={() => void save()}
                   type="button"
                 >
