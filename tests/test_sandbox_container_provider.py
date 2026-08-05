@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import hmac
 import inspect
@@ -1663,6 +1664,9 @@ async def test_opensandbox_provider_admits_only_authenticated_runsc_external_egr
     assert "gateway-policy-subject-a" not in lease.labels["ai-platform.governed_egress.proof"]
     assert "ai-platform.external_egress.endpoint" not in lease.labels
     remote_metadata = FakeOpenSandbox.created[0]["metadata"]
+    assert remote_metadata["ai-platform.model_id_sha256"] == base64.b32encode(
+        hashlib.sha256(b"deepseek-v4-flash").digest()
+    ).decode("ascii").rstrip("=")
     assert remote_metadata["ai-platform.external_egress.endpoint_sha256"] != lease.labels[
         "ai-platform.external_egress.endpoint_sha256"
     ] == hashlib.sha256(b"http://opensandbox.local:8080").hexdigest()

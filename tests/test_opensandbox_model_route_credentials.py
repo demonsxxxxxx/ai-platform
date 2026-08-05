@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import concurrent.futures
+import base64
+import hashlib
 from datetime import datetime, timezone
 
 import pytest
 
 from services.opensandbox_gateway.adapters import InMemoryStateStore, SQLiteStateStore
 from services.opensandbox_gateway.gateway import GatewayError, LeaseRecord
+from services.opensandbox_gateway.server import _model_provider_credentials
 
 
 def _record(*, sandbox_id: str = "sandbox-one", attempt_id: str = "attempt-one") -> LeaseRecord:
@@ -21,7 +24,11 @@ def _record(*, sandbox_id: str = "sandbox-one", attempt_id: str = "attempt-one")
     return LeaseRecord(
         sandbox_id=sandbox_id,
         scope=scope,
-        metadata={"ai-platform.model_id": "deepseek-v4-flash"},
+        metadata={
+            "ai-platform.model_id_sha256": base64.b32encode(
+                hashlib.sha256(b"deepseek-v4-flash").digest()
+            ).decode("ascii").rstrip("=")
+        },
         image="registry.example/executor@sha256:" + "1" * 64,
         image_digest="sha256:" + "1" * 64,
         workspace_host_path=f"/data/opensandbox/workspaces/{sandbox_id}",
@@ -69,7 +76,7 @@ def test_model_route_receipt_rejects_expiry_replay_and_binding_drift() -> None:
     with pytest.raises(GatewayError, match="model_route_replayed"):
         _consume(store, record)
     with pytest.raises(GatewayError, match="model_route_binding_mismatch"):
-        _consume(store, record, provider="openai")
+        _consume(store, record, provider="openai", path="/chat/completions")
     with pytest.raises(GatewayError, match="model_route_binding_mismatch"):
         _consume(store, record, path="/v1/messages/count_tokens")
     with pytest.raises(GatewayError, match="model_route_binding_mismatch"):
@@ -167,3 +174,21 @@ def test_model_route_rejects_inactive_or_cross_attempt_lease() -> None:
             request_limit=4,
         )
     assert store.model_route_receipt_count(active.sandbox_id) == 0
+
+
+def test_model_provider_credentials_are_file_only_and_legacy_config_fails_closed(tmp_path) -> None:
+    openai_path = tmp_path / "openai-api-key"
+    anthropic_path = tmp_path / "anthropic-auth-token"
+    openai_path.write_text("host-openai-secret\n", encoding="utf-8")
+    anthropic_path.write_text("host-anthropic-secret\n", encoding="utf-8")
+    env = {
+        "OPENSANDBOX_GATEWAY_OPENAI_API_KEY_FILE": str(openai_path),
+        "OPENSANDBOX_GATEWAY_ANTHROPIC_AUTH_TOKEN_FILE": str(anthropic_path),
+    }
+
+    assert _model_provider_credentials(env) == {
+        "openai": "host-openai-secret",
+        "anthropic": "host-anthropic-secret",
+    }
+    with pytest.raises(ValueError, match="OPENSANDBOX_GATEWAY_ANTHROPIC_AUTH_TOKEN_FILE"):
+        _model_provider_credentials({"OPENSANDBOX_GATEWAY_OPENAI_API_KEY_FILE": str(openai_path)})

@@ -63,6 +63,7 @@ ALLOWED_METADATA_KEYS = {
     "ai-platform.attempt_id",
     "ai-platform.sandbox_mode",
     "ai-platform.browser_enabled",
+    "ai-platform.model_id_sha256",
     "ai-platform.provider_backend",
     "ai-platform.executor.requested_image",
     "ai-platform.executor.requested_image_digest",
@@ -404,6 +405,21 @@ class StateStore(Protocol):
     def confirm_mailbox_outbound(self, sandbox_id: str, token: str) -> bool: ...
     def end_mailbox_outbound(self, sandbox_id: str, token: str) -> None: ...
     def transition_cleanup_pending(self, record: LeaseRecord, timeout_seconds: float) -> bool: ...
+    def consume_model_route(
+        self,
+        *,
+        sandbox_id: str,
+        request_id: str,
+        provider: str,
+        method: str,
+        path: str,
+        model: str,
+        created_at: float,
+        now: float,
+        ttl_seconds: float,
+        request_limit: int,
+        attempt_id: str | None = None,
+    ) -> None: ...
     def record_deny(self, subject: str, code: str) -> None: ...
     def deny_count(self, subject: str) -> int: ...
     def ready(self) -> bool: ...
@@ -672,6 +688,9 @@ class GatewayApplication:
             raise GatewayError(400, "callback_boundary_mismatch")
         if env.get("OPENAI_BASE_URL") != self.config.openai_upstream_base or env.get("ANTHROPIC_BASE_URL") != self.config.anthropic_upstream_base:
             raise GatewayError(400, "model_boundary_mismatch")
+        provider_secret_keys = {"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}
+        if any(isinstance(key, str) and key.upper() in provider_secret_keys for key in env):
+            raise GatewayError(400, "provider_credential_not_allowed")
         if any(k.upper().endswith("_PROXY") for k in env):
             raise GatewayError(400, "proxy_environment_not_allowed")
         mounts, workspace = self._accept_volumes(payload.get("volumes"), scope, metadata)
@@ -681,6 +700,8 @@ class GatewayApplication:
         rewritten_env["SANDBOX_CALLBACK_BASE_URL"] = "http://127.0.0.1:18888"
         rewritten_env["OPENAI_BASE_URL"] = "http://127.0.0.1:18888/model/openai"
         rewritten_env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:18888/model/anthropic"
+        rewritten_env["OPENAI_API_KEY"] = "opensandbox-host-broker"
+        rewritten_env["ANTHROPIC_AUTH_TOKEN"] = "opensandbox-host-broker"
         request_hash = hashlib.sha256(_canonical(payload)).hexdigest()
         return {
             "upstream": rewritten,

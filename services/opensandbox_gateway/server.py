@@ -11,7 +11,6 @@ import socket
 import ssl
 import stat
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Mapping
 
@@ -90,6 +89,7 @@ def run() -> None:
     """Run the authenticated HTTPS gateway and host mailbox worker."""
 
     config, state_path, policy_path, cert_path, key_path, upstream_ca_path, port = load_config()
+    provider_credentials = _model_provider_credentials(os.environ)
     _verify_certificate_ip_san(cert_path, config.public_authority)
     application, store = build_application(config, state_path)
     policy_value = json.loads(pathlib.Path(policy_path).read_text(encoding="utf-8"))
@@ -110,6 +110,7 @@ def run() -> None:
         config.workspace_root,
         config.dispatch_timeout_seconds,
         upstream_tls_context=upstream_tls_context,
+        provider_credentials=provider_credentials,
     )
     stop = threading.Event()
     worker = threading.Thread(target=_broker_loop, args=(broker, stop), name="opensandbox-mailbox-broker", daemon=True)
@@ -495,6 +496,15 @@ def _required(env: Mapping[str, str], name: str) -> str:
     if not value or "\x00" in value or len(value) > 4096:
         raise ValueError(f"missing or invalid setting: {name}")
     return value
+
+
+def _model_provider_credentials(env: Mapping[str, str]) -> dict[str, str]:
+    """Load provider secrets only inside the trusted host broker process."""
+
+    return {
+        "openai": _secret(env, "OPENSANDBOX_GATEWAY_OPENAI_API_KEY_FILE"),
+        "anthropic": _secret(env, "OPENSANDBOX_GATEWAY_ANTHROPIC_AUTH_TOKEN_FILE"),
+    }
 
 
 def _secret(env: Mapping[str, str], name: str) -> str:

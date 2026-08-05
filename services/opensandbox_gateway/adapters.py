@@ -41,6 +41,86 @@ from .gateway import (
 from .relay import PROXY_SOURCE, RELAY_SOURCE, STOP_RELAY_SOURCE
 
 
+MODEL_ROUTE_TTL_SECONDS = 15.0
+MODEL_ROUTE_REQUEST_LIMIT = 512
+_MODEL_ROUTE_PATHS = {
+    "openai": frozenset({"/chat/completions", "/responses"}),
+    "anthropic": frozenset({"/v1/messages", "/v1/messages/count_tokens"}),
+}
+
+
+def _model_route_binding(
+    record: LeaseRecord | None,
+    *,
+    sandbox_id: str,
+    request_id: str,
+    provider: str,
+    method: str,
+    path: str,
+    model: str,
+    created_at: float,
+    now: float,
+    ttl_seconds: float,
+    request_limit: int,
+    attempt_id: str | None,
+) -> tuple[str, str, str, str, str, str, str]:
+    if provider not in _MODEL_ROUTE_PATHS:
+        raise GatewayError(403, "model_route_provider_not_allowed")
+    if method != "POST":
+        raise GatewayError(403, "model_route_method_not_allowed")
+    if path not in _MODEL_ROUTE_PATHS[provider]:
+        raise GatewayError(403, "model_route_path_not_allowed")
+    if (
+        record is None
+        or record.state != "active"
+        or record.sandbox_id != sandbox_id
+        or not isinstance(model, str)
+        or not model
+        or len(model.encode("utf-8")) > 512
+    ):
+        raise GatewayError(403, "model_route_lease_inactive")
+    expected_attempt = record.scope.get("attempt_id", "")
+    if attempt_id is not None and not hmac.compare_digest(attempt_id, expected_attempt):
+        raise GatewayError(403, "model_route_attempt_mismatch")
+    if (
+        not re.fullmatch(r"[0-9a-f]{32}", request_id)
+        or not math.isfinite(created_at)
+        or not math.isfinite(now)
+        or created_at > now
+    ):
+        raise GatewayError(408, "model_route_expired")
+    if not 1 <= request_limit <= 4096:
+        raise GatewayError(500, "model_route_policy_invalid")
+    return (
+        sandbox_id,
+        _json_text(record.scope),
+        expected_attempt,
+        provider,
+        method,
+        path,
+        model,
+    )
+
+
+def _validate_model_route_admission(
+    record: LeaseRecord,
+    *,
+    model: str,
+    created_at: float,
+    now: float,
+    ttl_seconds: float,
+) -> None:
+    expected_model_hash = record.metadata.get("ai-platform.model_id_sha256", "")
+    model_hash = base64.b32encode(hashlib.sha256(model.encode("utf-8")).digest()).decode("ascii").rstrip("=")
+    if not re.fullmatch(r"[A-Z2-7]{52}", expected_model_hash) or not hmac.compare_digest(
+        model_hash,
+        expected_model_hash,
+    ):
+        raise GatewayError(403, "model_route_model_mismatch")
+    if not 1.0 <= ttl_seconds <= 60.0 or now - created_at > ttl_seconds:
+        raise GatewayError(408, "model_route_expired")
+
+
 _RUNTIME_IDENTITY_PROBE_SOURCE = r'''
 import json, os, pathlib, sys
 uid, gid = os.getuid(), os.getgid()
@@ -82,6 +162,7 @@ class InMemoryStateStore:
         self._lock = threading.RLock()
         self._outbound_condition = threading.Condition(self._lock)
         self._outbound_tokens: dict[str, set[str]] = {}
+        self._model_route_receipts: dict[str, tuple[str, str, str, str, str, str, str]] = {}
 
     def get(self, sandbox_id: str) -> LeaseRecord | None:
         with self._lock:
@@ -191,6 +272,57 @@ class InMemoryStateStore:
                 self._outbound_condition.wait(remaining)
             return True
 
+    def consume_model_route(
+        self,
+        *,
+        sandbox_id: str,
+        request_id: str,
+        provider: str,
+        method: str,
+        path: str,
+        model: str,
+        created_at: float,
+        now: float,
+        ttl_seconds: float,
+        request_limit: int,
+        attempt_id: str | None = None,
+    ) -> None:
+        with self._lock:
+            binding = _model_route_binding(
+                self.records.get(sandbox_id),
+                sandbox_id=sandbox_id,
+                request_id=request_id,
+                provider=provider,
+                method=method,
+                path=path,
+                model=model,
+                created_at=created_at,
+                now=now,
+                ttl_seconds=ttl_seconds,
+                request_limit=request_limit,
+                attempt_id=attempt_id,
+            )
+            existing = self._model_route_receipts.get(request_id)
+            if existing is not None:
+                code = "model_route_replayed" if existing == binding else "model_route_binding_mismatch"
+                raise GatewayError(409, code)
+            record = self.records[sandbox_id]
+            _validate_model_route_admission(
+                record,
+                model=model,
+                created_at=created_at,
+                now=now,
+                ttl_seconds=ttl_seconds,
+            )
+            count = sum(value[:3] == binding[:3] for value in self._model_route_receipts.values())
+            if count >= request_limit:
+                raise GatewayError(429, "model_route_limit_exceeded")
+            self._model_route_receipts[request_id] = binding
+
+    def model_route_receipt_count(self, sandbox_id: str) -> int:
+        with self._lock:
+            return sum(value[0] == sandbox_id for value in self._model_route_receipts.values())
+
     def record_deny(self, subject: str, code: str) -> None:
         with self._lock:
             self.denials.append((subject, code))
@@ -234,6 +366,19 @@ class SQLiteStateStore:
                     subject TEXT NOT NULL,
                     code TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS model_route_receipts (
+                    request_id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL,
+                    scope_json TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    consumed_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS model_route_receipts_attempt
+                    ON model_route_receipts(sandbox_id, attempt_id);
                 """
             )
 
@@ -448,6 +593,86 @@ class SQLiteStateStore:
                     return False
                 self._outbound_condition.wait(remaining)
             return True
+
+    def consume_model_route(
+        self,
+        *,
+        sandbox_id: str,
+        request_id: str,
+        provider: str,
+        method: str,
+        path: str,
+        model: str,
+        created_at: float,
+        now: float,
+        ttl_seconds: float,
+        request_limit: int,
+        attempt_id: str | None = None,
+    ) -> None:
+        with self._lock, self._connect() as db:
+            db.isolation_level = None
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                row = db.execute(
+                    "SELECT record_json FROM leases WHERE sandbox_id = ?",
+                    (sandbox_id,),
+                ).fetchone()
+                record = _record_from_json(row[0]) if row else None
+                binding = _model_route_binding(
+                    record,
+                    sandbox_id=sandbox_id,
+                    request_id=request_id,
+                    provider=provider,
+                    method=method,
+                    path=path,
+                    model=model,
+                    created_at=created_at,
+                    now=now,
+                    ttl_seconds=ttl_seconds,
+                    request_limit=request_limit,
+                    attempt_id=attempt_id,
+                )
+                existing = db.execute(
+                    "SELECT sandbox_id, scope_json, attempt_id, provider, method, path, model "
+                    "FROM model_route_receipts WHERE request_id = ?",
+                    (request_id,),
+                ).fetchone()
+                if existing is not None:
+                    code = "model_route_replayed" if tuple(existing) == binding else "model_route_binding_mismatch"
+                    raise GatewayError(409, code)
+                assert record is not None
+                _validate_model_route_admission(
+                    record,
+                    model=model,
+                    created_at=created_at,
+                    now=now,
+                    ttl_seconds=ttl_seconds,
+                )
+                count = db.execute(
+                    "SELECT COUNT(*) FROM model_route_receipts WHERE sandbox_id = ? AND attempt_id = ?",
+                    (sandbox_id, binding[2]),
+                ).fetchone()[0]
+                if int(count) >= request_limit:
+                    raise GatewayError(429, "model_route_limit_exceeded")
+                db.execute(
+                    "INSERT INTO model_route_receipts("
+                    "request_id, sandbox_id, scope_json, attempt_id, provider, method, path, model, consumed_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (request_id, *binding, now),
+                )
+                db.execute("COMMIT")
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
+    def model_route_receipt_count(self, sandbox_id: str) -> int:
+        with self._lock, self._connect() as db:
+            return int(
+                db.execute(
+                    "SELECT COUNT(*) FROM model_route_receipts WHERE sandbox_id = ?",
+                    (sandbox_id,),
+                ).fetchone()[0]
+            )
 
     def record_deny(self, subject: str, code: str) -> None:
         with self._lock, self._connect() as db:
@@ -940,6 +1165,7 @@ class MailboxBroker:
         dispatch_timeout_seconds: float | None = None,
         *,
         upstream_tls_context: ssl.SSLContext | None = None,
+        provider_credentials: Mapping[str, str] | None = None,
     ) -> None:
         if upstream_tls_context is not None and (
             not isinstance(upstream_tls_context, ssl.SSLContext)
@@ -957,6 +1183,13 @@ class MailboxBroker:
         )
         self.max_response_bytes = max_response_bytes
         self.workspace_root = workspace_root
+        credentials = dict(provider_credentials or {})
+        if credentials and (
+            set(credentials) != {"openai", "anthropic"}
+            or any(not value or "\x00" in value or len(value.encode("utf-8")) > 4096 for value in credentials.values())
+        ):
+            raise ValueError("broker provider credentials are invalid")
+        self._provider_credentials = credentials
         self._rotation = 0
 
     def poll_once(self) -> int:
@@ -1093,7 +1326,7 @@ class MailboxBroker:
                 response = self._error_response(429, "broker_backlog_exceeded")
             else:
                 try:
-                    response = self._process(claim_fd, claimed[0], claimed)
+                    response = self._process(claim_fd, claimed[0], claimed, record)
                 except DeadlineExceeded:
                     raise
                 except GatewayError as exc:
@@ -1161,6 +1394,7 @@ class MailboxBroker:
         request_fd: int,
         name: str,
         expected_identity: tuple[str, int, int, int, int] | None = None,
+        record: LeaseRecord | None = None,
     ) -> dict[str, Any]:
         try:
             descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=request_fd)
@@ -1234,6 +1468,43 @@ class MailboxBroker:
             or requested_timeout <= 0
         ):
             raise GatewayError(400, "broker_request_invalid")
+        if kind in {"openai", "anthropic"}:
+            if local.query:
+                raise GatewayError(403, "model_route_path_not_allowed")
+            credential = self._provider_credentials.get(kind, "")
+            if not credential:
+                raise GatewayError(503, "model_provider_credential_unavailable")
+            try:
+                model_payload = json.loads(body)
+                if not isinstance(model_payload, dict):
+                    raise TypeError("model request body must be an object")
+                model = model_payload["model"]
+                if not isinstance(model, str) or not model:
+                    raise TypeError("model request body must contain a model")
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                raise GatewayError(400, "model_route_body_invalid") from None
+            request_match = re.match(r"(?P<request_id>[0-9a-f]{32})\.json(?:\.[0-9a-f]{32}\.claim)?\Z", name)
+            if request_match is None or record is None:
+                raise GatewayError(403, "model_route_context_missing")
+            self.store.consume_model_route(
+                sandbox_id=record.sandbox_id,
+                request_id=request_match.group("request_id"),
+                provider=kind,
+                method=method,
+                path=suffix,
+                model=model,
+                created_at=created_at,
+                now=now,
+                ttl_seconds=MODEL_ROUTE_TTL_SECONDS,
+                request_limit=MODEL_ROUTE_REQUEST_LIMIT,
+                attempt_id=record.scope.get("attempt_id"),
+            )
+            outbound_headers.pop("authorization", None)
+            outbound_headers.pop("x-api-key", None)
+            if kind == "openai":
+                outbound_headers["authorization"] = f"Bearer {credential}"
+            else:
+                outbound_headers["x-api-key"] = credential
         remaining = created_at + min(requested_timeout, policy_timeout) - now
         deadline = operation_deadline(remaining)
         if self.upstream_tls_context is None:
