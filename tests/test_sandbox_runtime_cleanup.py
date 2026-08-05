@@ -16,6 +16,22 @@ TEST_PROOF_KEY = "cleanup-test-proof-key-with-enough-entropy-2026"
 TEST_PROOF_NOW = datetime(2026, 7, 14, 16, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def isolate_cleanup_compensation_persistence(monkeypatch):
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_record_cleanup_outcome(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.record_sandbox_runtime_cleanup_outcome",
+        fake_record_cleanup_outcome,
+    )
+
+
 class CleanupProofSettings:
     sandbox_egress_proof_signing_key = TEST_PROOF_KEY
     sandbox_egress_proof_key_id = "current"
@@ -558,7 +574,7 @@ async def test_production_opensandbox_cleanup_retains_db_lease_when_stop_is_unco
         assert remote_trace == ["connect", "get_info"]
         expected_failure = {
             "container_id": "osb-run-a",
-            "message": "OpenSandbox sandbox stop failed",
+            "message": "Sandbox provider stop failed",
         }
     assert exc_info.value.failures == [expected_failure]
     assert remote.kill_calls == 0
@@ -581,6 +597,9 @@ async def test_cleanup_expired_sandbox_runtime_leases_releases_only_stopped_leas
         calls.append(("release", tenant_id, reason, lease_ids, trace_id))
         return [stopped_row]
 
+    async def fake_record_cleanup_outcome(conn, **kwargs):
+        calls.append(("cleanup_outcome", kwargs))
+
     @asynccontextmanager
     async def fake_transaction():
         yield object()
@@ -600,6 +619,10 @@ async def test_cleanup_expired_sandbox_runtime_leases_releases_only_stopped_leas
         "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
         fake_release_stopped_sandbox_leases,
     )
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.record_sandbox_runtime_cleanup_outcome",
+        fake_record_cleanup_outcome,
+    )
     monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.transaction", fake_transaction)
 
     with pytest.raises(SandboxRuntimeCleanupError):
@@ -613,6 +636,24 @@ async def test_cleanup_expired_sandbox_runtime_leases_releases_only_stopped_leas
         ("stop", "run-stopped", "expired"),
         ("stop", "run-failed", "expired"),
         ("release", "tenant-a", "expired", ["lease-stopped"], None),
+        (
+            "cleanup_outcome",
+            {
+                "tenant_id": "tenant-a",
+                "run_id": "run-failed",
+                "trace_id": "trace-failed",
+                "requested_by_role": "maintenance",
+                "reason": "expired",
+                "status": "failed",
+                "lease_ids": ["lease-failed"],
+                "failures": [
+                    {
+                        "container_id": "exec-run-failed",
+                        "message": "Sandbox provider stop failed",
+                    }
+                ],
+            },
+        ),
     ]
 
 

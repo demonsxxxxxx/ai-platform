@@ -256,6 +256,7 @@ class SandboxRuntime:
                 user_id=lease.user_id,
                 session_id=lease.session_id,
                 run_id=lease.run_id,
+                attempt_id=request.attempt_id,
                 trace_id=request.trace_id,
                 sandbox_mode=lease.sandbox_mode,
                 provider=lease.provider,

@@ -5855,7 +5855,7 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
             "requested_by_role": "owner",
             "reason": "cancel_requested",
             "status": "failed",
-            "lease_ids": [],
+            "lease_ids": ["lease-run_active"],
             "failures": [{"container_id": "lease-run_active", "message": "Unsupported sandbox provider: fake"}],
         }
     ]
@@ -5928,6 +5928,7 @@ def test_cancel_run_surfaces_unsupported_sandbox_provider_without_db_release(mon
 def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_cleanup_failure(monkeypatch):
     calls = []
     release_calls = []
+    cleanup_outcomes = []
 
     async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
         return {
@@ -5943,12 +5944,20 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
         release_calls.append(kwargs)
         return []
 
+    async def fake_record_sandbox_runtime_cleanup_outcome(conn, **kwargs):
+        cleanup_outcomes.append(kwargs)
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        fake_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
     monkeypatch.setattr("app.routes.runs.create_container_provider", ProviderByName(calls), raising=False)
@@ -5967,6 +5976,8 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
             "trace_id": None,
         }
     ]
+    assert cleanup_outcomes[0]["status"] == "failed"
+    assert cleanup_outcomes[0]["lease_ids"] == ["lease-failed"]
 
 
 def test_cancel_queued_run_removes_queued_payload(monkeypatch):
@@ -6065,6 +6076,7 @@ def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeyp
 
 def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
     release_calls = []
+    cleanup_outcomes = []
 
     async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
         return {
@@ -6077,12 +6089,20 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
         release_calls.append(kwargs)
         return []
 
+    async def fake_record_sandbox_runtime_cleanup_outcome(conn, **kwargs):
+        cleanup_outcomes.append(kwargs)
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
     monkeypatch.setattr(
         "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        fake_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
     monkeypatch.setattr(
@@ -6097,6 +6117,47 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
     assert response.status_code == 502
     assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
     assert release_calls == []
+    assert cleanup_outcomes[0]["status"] == "failed"
+    assert cleanup_outcomes[0]["lease_ids"] == ["lease-run_active"]
+
+
+def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
+    async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id="target-user")],
+        }
+
+    async def fail_record_sandbox_runtime_cleanup_outcome(conn, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        fail_record_sandbox_runtime_cleanup_outcome,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runs.create_container_provider",
+        lambda provider_name=None: FailingSandboxProvider(),
+        raising=False,
+    )
+
+    response = TestClient(create_app(), raise_server_exceptions=False).post(
+        "/api/ai/admin/runs/run_active/cancel",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "sandbox_cleanup_persistence_unavailable"
 
 
 def test_admin_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_cleanup_failure(monkeypatch):
