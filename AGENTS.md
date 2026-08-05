@@ -35,6 +35,14 @@ This file applies to the current `ai-platform` repository root.
 Keep concrete issue numbers, owners, ordering, and current gate state in the
 roadmap or Controller Current rather than this durable entry file.
 
+## Documentation Authority
+
+- `docs/README.md` is the document index. It directs durable policy, operations,
+  and evidence ownership without becoming a project status board.
+- Historical runtime observations belong only in reviewed, redacted structured
+  evidence under `docs/release-evidence/`; they never establish current runtime
+  state without fresh verification.
+
 ## Delivery Workflow
 
 Use GitHub issues and pull requests as the default closure loop for goal-sized

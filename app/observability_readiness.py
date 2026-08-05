@@ -216,10 +216,6 @@ def build_observability_readiness(
                 default="fake",
                 allowed_values=_SANDBOX_PROVIDER_VALUES,
             ),
-            "multi_agent_dispatch_worker_enabled": _bool_setting(
-                resolved_settings,
-                "multi_agent_dispatch_worker_enabled",
-            ),
         },
         "domains": domains,
         "open_gaps": gaps,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -121,13 +122,37 @@ def _payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
-def _governance_exception(*, reason: str, includes_frontend: bool = False) -> str:
+def _governance_scope_sha256(repo: Path, base: str, head: str) -> str:
+    scope = _run(
+        repo,
+        "git",
+        "-c",
+        "core.quotepath=false",
+        "diff",
+        "--raw",
+        "--no-abbrev",
+        "-z",
+        "--no-renames",
+        base,
+        head,
+        "--",
+        ".",
+        f":(exclude){EXCEPTION_PATH}",
+    ).stdout
+    return hashlib.sha256(scope.encode("utf-8")).hexdigest()
+
+
+def _governance_exception(
+    *,
+    reason: str,
+    base_ref: str = "0" * 40,
+    scope_sha256: str = "0" * 64,
+) -> str:
     violations: list[dict[str, str | None]] = [{"code": "functional_hot_file_growth", "path": "app/billing.py"}]
-    if includes_frontend:
-        violations.append({"code": "production_subsystem_count", "path": None})
     return json.dumps(
         {
-            "schema_version": "ai-platform.code-governance-exception.v1",
+            "schema_version": "ai-platform.code-governance-exception.v2",
+            "candidate": {"base_ref": base_ref, "scope_sha256": scope_sha256},
             "expires_on": "2099-01-01",
             "owner": "platform-governance",
             "reason": reason,
@@ -205,8 +230,6 @@ def _exception_transition(
     exception_at_head = operation == "copy" or destination == EXCEPTION_PATH
     exception = _governance_exception(
         reason=f"{operation} exception",
-        includes_frontend=exception_at_head
-        and (destination.startswith("frontend/web/") or (operation == "rename" and source.startswith("frontend/web/"))),
     )
     if exception_at_head:
         _write(repo, "app/billing.py", _python_assignments(3_001))
@@ -220,7 +243,20 @@ def _exception_transition(
     if exception_at_head:
         _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
         _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
-    head = _commit(repo, f"{operation} exception transition")
+    scope_head = _commit(repo, f"{operation} exception transition scope")
+    if exception_at_head:
+        _write(
+            repo,
+            EXCEPTION_PATH,
+            _governance_exception(
+                reason=f"{operation} exception",
+                base_ref=base,
+                scope_sha256=_governance_scope_sha256(repo, base, scope_head),
+            ),
+        )
+        head = _commit(repo, f"bind {operation} exception transition")
+    else:
+        head = scope_head
     return base, head
 
 
@@ -315,6 +351,24 @@ class _CleanupRunner:
         return self.module._CommandResult(0, "", "")
 
 
+class _RegistrationResidueCleanupRunner(_CleanupRunner):
+    def __init__(self, module: ModuleType, registered_path: Path) -> None:
+        super().__init__(module, remove_returncode=1)
+        self.registered_path = registered_path
+
+    def run(self, command: tuple[str, ...], *, cwd: Path, env: dict[str, str] | None = None) -> object:
+        if command == ("git", "worktree", "list", "--porcelain"):
+            return self.module._CommandResult(0, f"worktree {self.registered_path}\n", "")
+        return super().run(command, cwd=cwd, env=env)
+
+
+class _WorktreeListFailureCleanupRunner(_CleanupRunner):
+    def run(self, command: tuple[str, ...], *, cwd: Path, env: dict[str, str] | None = None) -> object:
+        if command == ("git", "worktree", "list", "--porcelain"):
+            return self.module._CommandResult(1, "", "list failed")
+        return super().run(command, cwd=cwd, env=env)
+
+
 class _DependencyCleanupRunner(_CleanupRunner):
     def __init__(self, module: ModuleType, dependencies: tuple[Path, ...], *, remove_returncode: int = 0) -> None:
         super().__init__(module, remove_returncode=remove_returncode)
@@ -373,21 +427,43 @@ def test_disposable_worktree_commands_enable_windows_long_path_handling(tmp_path
     ]
 
 
-def test_temporary_root_uses_short_owned_basename_with_windows_headroom(tmp_path: Path) -> None:
+def test_temporary_root_uses_verified_profile_instead_of_deep_windows_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _readiness_module()
     readiness = module.PrePushReadiness(tmp_path)
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    deep_temp = tmp_path.joinpath(*(["detached-worktree-depth"] * 10))
+    assert len(str(deep_temp)) + module.WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH > 240
+    created = profile / "apr-owned"
+    verified: list[Path] = []
+
+    def create_root(*, prefix: str, dir: str | Path) -> str:
+        assert prefix == module.TEMPORARY_ROOT_PREFIX
+        assert Path(dir) == profile
+        created.mkdir()
+        return str(created)
+
+    monkeypatch.setattr(module, "IS_WINDOWS", True)
+    monkeypatch.setattr(module.Path, "home", lambda: profile)
+    monkeypatch.setattr(module.tempfile, "gettempdir", lambda: str(deep_temp))
+    monkeypatch.setattr(module.tempfile, "mkdtemp", create_root)
+    monkeypatch.setattr(module, "_assert_windows_nonreparse_directory", verified.append)
+    monkeypatch.setattr(module, "_temporary_root_has_windows_headroom", lambda path: True)
     temporary_root = readiness._create_temporary_root()
     try:
         base, head = module._temporary_worktree_paths(temporary_root)
 
-        assert temporary_root.name.startswith(module.TEMPORARY_ROOT_PREFIX)
+        assert temporary_root == created
+        assert verified == [profile, created]
         assert base.parent == temporary_root
         assert head.parent == temporary_root
         assert base.name == "base"
         assert head.name == "head"
         assert module._temporary_root_has_windows_headroom(temporary_root)
         assert (
-            len(str(temporary_root))
+            len(str(Path("C:/Users/current-user/apr-owned")))
             + module.WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH
             + module.WINDOWS_DIRECTORY_PATH_HEADROOM
             <= module.WINDOWS_CONSERVATIVE_DIRECTORY_PATH_BUDGET
@@ -395,6 +471,29 @@ def test_temporary_root_uses_short_owned_basename_with_windows_headroom(tmp_path
     finally:
         if os.path.lexists(temporary_root):
             module._remove_cleanup_tree(temporary_root)
+
+
+def test_windows_temporary_root_rejects_a_reparse_profile_before_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _readiness_module()
+    profile = tmp_path / "reparse-profile"
+    created: list[Path] = []
+
+    monkeypatch.setattr(module, "IS_WINDOWS", True)
+    monkeypatch.setattr(module.Path, "home", lambda: profile)
+    monkeypatch.setattr(
+        module,
+        "_assert_windows_nonreparse_directory",
+        lambda path: (_ for _ in ()).throw(OSError("profile is a reparse point")),
+    )
+    monkeypatch.setattr(module.tempfile, "mkdtemp", lambda **kwargs: created.append(profile / "apr-never"))
+
+    with pytest.raises(module.ReadinessError) as raised:
+        module.PrePushReadiness(tmp_path)._create_temporary_root()
+
+    assert raised.value.code == "temporary_directory_failed"
+    assert created == []
 
 
 def test_temporary_root_over_budget_fails_and_cleans_only_the_owned_root(
@@ -408,10 +507,12 @@ def test_temporary_root_over_budget_fails_and_cleans_only_the_owned_root(
     sentinel.write_text("must survive temporary-root cleanup", encoding="utf-8")
     prefixes: list[str] = []
 
-    def create_over_budget_root(*, prefix: str) -> str:
+    def create_over_budget_root(*, prefix: str, dir: str | Path) -> str:
         prefixes.append(prefix)
+        assert Path(dir) == Path(tempfile.gettempdir())
         return str(temporary_root)
 
+    monkeypatch.setattr(module, "IS_WINDOWS", False)
     monkeypatch.setattr(module.tempfile, "mkdtemp", create_over_budget_root)
     try:
         with pytest.raises(module.ReadinessError) as raised:
@@ -627,7 +728,7 @@ def test_worktree_cleanup_rejects_dependency_target_outside_generated_head(tmp_p
     assert result["stages"][-1]["status"] == "failed"
 
 
-def test_cleanup_only_failure_is_an_infrastructure_failure(tmp_path: Path) -> None:
+def test_worktree_cleanup_recovers_after_nonzero_remove_when_final_postconditions_are_absent(tmp_path: Path) -> None:
     module = _readiness_module()
     runner = _CleanupRunner(module, remove_returncode=1)
     readiness = module.PrePushReadiness(tmp_path, runner=runner)
@@ -638,10 +739,86 @@ def test_cleanup_only_failure_is_an_infrastructure_failure(tmp_path: Path) -> No
 
     failure = readiness._cleanup_worktrees(result, temporary_root, (("head", head, True),))
 
+    assert failure is None
+    cleanup = result["stages"][-1]
+    assert cleanup["status"] == "pass"
+    assert cleanup["worktrees"][0]["remove_returncode"] == 1
+    assert cleanup["worktrees"][0]["remove_diagnostic"] == "git worktree remove head failed: remove failed"
+    assert cleanup["worktrees"][0]["registered_after"] is False
+    assert cleanup["worktrees"][0]["path_exists_after"] is False
+
+
+def test_worktree_cleanup_nonzero_remove_fails_when_registration_remains(tmp_path: Path) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    head.mkdir(parents=True)
+    runner = _RegistrationResidueCleanupRunner(module, head)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+
+    failure = readiness._cleanup_worktrees(result, temporary_root, (("head", head, True),))
+
     assert failure is not None
     assert failure.category == "infrastructure_failure"
     assert failure.code == "worktree_cleanup_failed"
-    assert result["stages"][-1]["status"] == "failed"
+    cleanup = result["stages"][-1]
+    assert cleanup["worktrees"][0]["remove_returncode"] == 1
+    assert cleanup["worktrees"][0]["registered_after"] is True
+    assert cleanup["worktrees"][0]["path_exists_after"] is False
+
+
+def test_worktree_cleanup_nonzero_remove_fails_when_owned_path_remains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    head.mkdir(parents=True)
+    runner = _CleanupRunner(module, remove_returncode=1)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+    original_remove = module._remove_cleanup_tree
+
+    def retain_owned_root(path: Path) -> None:
+        if path != temporary_root:
+            original_remove(path)
+
+    monkeypatch.setattr(module, "_remove_cleanup_tree", retain_owned_root)
+    try:
+        failure = readiness._cleanup_worktrees(result, temporary_root, (("head", head, True),))
+    finally:
+        original_remove(temporary_root)
+
+    assert failure is not None
+    assert failure.category == "infrastructure_failure"
+    assert failure.code == "worktree_cleanup_failed"
+    cleanup = result["stages"][-1]
+    assert cleanup["worktrees"][0]["remove_returncode"] == 1
+    assert cleanup["worktrees"][0]["registered_after"] is False
+    assert cleanup["worktrees"][0]["path_exists_after"] is True
+
+
+def test_worktree_cleanup_fails_closed_when_post_cleanup_registration_check_fails(tmp_path: Path) -> None:
+    module = _readiness_module()
+    temporary_root = tmp_path / "temporary"
+    head = temporary_root / "head"
+    head.mkdir(parents=True)
+    runner = _WorktreeListFailureCleanupRunner(module)
+    readiness = module.PrePushReadiness(tmp_path, runner=runner)
+    result = module._new_result(None, None, None)
+
+    failure = readiness._cleanup_worktrees(result, temporary_root, (("head", head, True),))
+
+    assert failure is not None
+    assert failure.category == "infrastructure_failure"
+    assert failure.code == "worktree_cleanup_failed"
+    assert str(failure) == "git worktree list failed: list failed"
+    cleanup = result["stages"][-1]
+    assert cleanup["status"] == "failed"
+    assert cleanup["worktrees"][0]["registered_after"] is None
+    assert cleanup["worktrees"][0]["path_exists_after"] is False
+    assert cleanup["worktrees"][0]["worktree_list_error"] == "git worktree list failed: list failed"
 
 
 def test_primary_product_failure_is_preserved_when_cleanup_also_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1198,7 +1375,17 @@ def test_changed_code_governance_exception_runs_its_exact_bounded_suite(
     _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
     _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
     _write(repo, ".code-governance-exception.json", _governance_exception(reason="updated exception"))
-    head = _commit(repo, "change governance exception")
+    scope_head = _commit(repo, "change governance exception scope")
+    _write(
+        repo,
+        ".code-governance-exception.json",
+        _governance_exception(
+            reason="updated exception",
+            base_ref=base,
+            scope_sha256=_governance_scope_sha256(repo, base, scope_head),
+        ),
+    )
+    head = _commit(repo, "bind governance exception")
 
     result = _check(repo, base, head)
     payload = _payload(result)
@@ -1238,7 +1425,17 @@ def test_copied_code_governance_exception_remains_external(
     _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
     _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
     _write(repo, ".code-governance-exception.json", exception)
-    head = _commit(repo, "copy governance exception")
+    scope_head = _commit(repo, "copy governance exception scope")
+    _write(
+        repo,
+        ".code-governance-exception.json",
+        _governance_exception(
+            reason="copied exception",
+            base_ref=base,
+            scope_sha256=_governance_scope_sha256(repo, base, scope_head),
+        ),
+    )
+    head = _commit(repo, "bind copied governance exception")
 
     production_status = _git(
         repo,
@@ -1254,7 +1451,10 @@ def test_copied_code_governance_exception_remains_external(
     result = _check(repo, base, head)
     payload = _payload(result)
 
-    assert "C100\tsource-policy.json\t.code-governance-exception.json" in production_status
+    assert any(
+        line.startswith("C") and line.endswith("\tsource-policy.json\t.code-governance-exception.json")
+        for line in production_status.splitlines()
+    )
     assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
     assert payload["category"] == "external_check"
     assert payload["failure"]["code"] == "responsibility_suite_required"
@@ -1268,7 +1468,17 @@ def test_wrong_case_code_governance_suite_remains_external(tmp_path: Path) -> No
     _write(repo, "app/billing.py", _python_assignments(3_001) + "NEW_VALUE = 1\n")
     _write(repo, "tests/test_billing.py", "def test_billing():\n    assert True\n")
     _write(repo, ".code-governance-exception.json", _governance_exception(reason="wrong case suite"))
-    head = _commit(repo, "wrong case governance suite")
+    scope_head = _commit(repo, "wrong case governance scope")
+    _write(
+        repo,
+        ".code-governance-exception.json",
+        _governance_exception(
+            reason="wrong case suite",
+            base_ref=base,
+            scope_sha256=_governance_scope_sha256(repo, base, scope_head),
+        ),
+    )
+    head = _commit(repo, "bind wrong case governance suite")
 
     exact_case = _run(repo, "git", "cat-file", "-e", f"{head}:tests/test_code_governance.py", check=False)
     wrong_case = _run(repo, "git", "cat-file", "-e", f"{head}:tests/Test_code_governance.py", check=False)
@@ -1324,7 +1534,10 @@ def test_non_add_modify_exception_transitions_remain_external(
     result = _check(repo, base, head)
     payload = _payload(result)
 
-    assert f"{status}\t{source}\t{destination}" in production_status
+    assert any(
+        line.startswith(status[0]) and line.endswith(f"\t{source}\t{destination}")
+        for line in production_status.splitlines()
+    )
     assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
     assert payload["category"] == "external_check"
     assert payload["failure"]["code"] == "responsibility_suite_required"
@@ -1427,20 +1640,18 @@ def test_mixed_backend_and_frontend_changes_run_both_responsibility_suites(
     repo, base = readiness_repo
     _write(repo, "app/invoice.py", "TOTAL = 1\n")
     _write(repo, "tests/test_invoice.py", "def test_invoice():\n    assert True\n")
-    _write(repo, "frontend/web/package.json", "{\"scripts\": {\"ci:verify\": \"true\"}}\n")
+    _write_frontend_project(repo)
     _write(repo, "frontend/web/src/App.tsx", "export const App = () => null;\n")
-    _write(repo, "frontend/web/src/App.test.tsx", "export const appTest = true;\n")
     head = _commit(repo, "mixed responsibilities")
 
     result = _check(repo, base, head, env=_fake_corepack_environment(tmp_path))
     payload = _payload(result)
 
-    assert result.returncode == 2, json.dumps(payload, indent=2, sort_keys=True)
-    assert payload["category"] == "governance_violation"
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
     stages = {stage["name"]: stage for stage in payload["stages"]}
-    assert stages["governance"]["status"] == "failed"
-    assert "responsibility_tests" not in stages
-    assert "frontend_responsibility" not in stages
+    assert stages["governance"]["status"] == "pass"
+    assert stages["responsibility_tests"]["status"] == "pass"
+    assert stages["frontend_responsibility"]["status"] == "pass"
 
 
 def test_stale_base_fails_before_any_local_checks(readiness_repo: tuple[Path, str]) -> None:

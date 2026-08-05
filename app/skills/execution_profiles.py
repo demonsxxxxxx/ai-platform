@@ -21,8 +21,8 @@ SDK_RESTRICTED = "sdk_restricted"
 
 NATIVE_COMMAND_ISOLATION = "sibling-tool-sandbox-v1"
 CONTROLLED_COMMAND_ISOLATION = "minimal-environment-v1"
-OPEN_SANDBOX_TRUSTED_INTERNAL_SDK_EXECUTION_PROFILE = "opensandbox_trusted_internal"
-OPEN_SANDBOX_TRUSTED_INTERNAL_COMMAND_ISOLATION = "opensandbox-workspace-v1"
+OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE = "opensandbox_governed"
+OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION = "opensandbox-workspace-v1"
 
 _IMPLICIT_GENERAL_CHAT_SKILL_ID = "general-chat"
 _EXPLICIT_SKILL_BASH_IDENTITY = ("Bash",)
@@ -41,7 +41,7 @@ _NATIVE_UPLOADED_TOOL_IDENTITIES = (
     "Write",
     "Edit",
 )
-_TRUSTED_INTERNAL_SDK_SKILL_FILE_TOOLS = (
+_OPEN_SANDBOX_SDK_SKILL_FILE_TOOLS = (
     "Read",
     "Glob",
     "LS",
@@ -90,7 +90,7 @@ def sdk_skill_tool_admission_for_execution_profile(
     """Return the exact sandbox SDK tool admission for one selected Skill."""
 
     if (
-        execution_profile != OPEN_SANDBOX_TRUSTED_INTERNAL_SDK_EXECUTION_PROFILE
+        execution_profile != OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE
         or not isinstance(selected_skill_id, str)
         or not selected_skill_id
         or not isinstance(staged_skill_ids, list | tuple | set | frozenset)
@@ -102,8 +102,8 @@ def sdk_skill_tool_admission_for_execution_profile(
     if selected_skill_id not in staged or selected_skill_id not in authorized:
         return None
     return SdkSkillToolAdmission(
-        tool_names=_TRUSTED_INTERNAL_SDK_SKILL_FILE_TOOLS,
-        command_isolation=OPEN_SANDBOX_TRUSTED_INTERNAL_COMMAND_ISOLATION,
+        tool_names=_OPEN_SANDBOX_SDK_SKILL_FILE_TOOLS,
+        command_isolation=OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION,
     )
 
 

@@ -244,28 +244,6 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-class FakeDelegate:
-    async def submit_run(self, payload, event_sink=None):
-        return ExecutorResult(
-            status="succeeded",
-            adapter_version="runtime211-adapter/2",
-            executor_type="runtime211",
-            executor_version="runtime211-http",
-            capabilities={"artifacts": True, "streaming": False, "tools": False},
-            result={"message": "done"},
-            artifacts=[
-                ArtifactManifest(
-                    artifact_type="translated_docx",
-                    label="翻译 Word",
-                    content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    storage_key="tenants/default/runs/run_1/out.docx",
-                    size_bytes=10,
-                )
-            ],
-            executor_payload={"runtime_task_id": "task-1"},
-        )
-
-
 class FakeQueryResult:
     used_sdk = True
     message = "hello from sdk"
@@ -420,7 +398,7 @@ def _short_sandbox_workspace_root(tmp_path):
     return Path(".pytest-tmp") / short_id
 
 
-def settings(tmp_path, *, sdk_enabled=True, legacy_fallback=False):
+def settings(tmp_path, *, sdk_enabled=True):
     return type(
         "S",
         (),
@@ -433,7 +411,6 @@ def settings(tmp_path, *, sdk_enabled=True, legacy_fallback=False):
             "claude_agent_model": "deepseek-v4-flash",
             "platform_skills_root": str(tmp_path / "skills"),
             "skill_staging_subdir": ".claude/skills",
-            "enable_legacy_runtime211_fallback": legacy_fallback,
         },
     )()
 
@@ -823,7 +800,7 @@ def test_collect_workspace_artifacts_rejects_symlinked_output(monkeypatch, tmp_p
             return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
 
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     with pytest.raises(ValueError, match="symlink"):
         adapter._collect_workspace_artifacts(payload(), workspace)
@@ -847,7 +824,7 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
             return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
 
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     artifacts = adapter._collect_workspace_artifacts(
         payload(skill_id="ctd-32s73-stability-template-fill"),
@@ -885,7 +862,7 @@ def test_collect_workspace_artifacts_assigns_safe_mime_types_and_keeps_unknown_f
 
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
 
-    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(payload(), workspace)
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(payload(), workspace)
 
     assert [artifact.content_type for artifact in artifacts] == [
         "image/png",
@@ -936,7 +913,7 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailIfStored)
 
     with pytest.raises(ValueError, match=expected_error):
-        ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(payload(), workspace)
+        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(payload(), workspace)
 
 
 @pytest.mark.parametrize(
@@ -1017,7 +994,7 @@ def test_collect_workspace_artifacts_rejects_unusable_required_docx(monkeypatch,
 
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
 
-    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
         payload(skill_id=skill_id),
         workspace,
     )
@@ -1054,7 +1031,7 @@ def test_collect_workspace_artifacts_rejects_required_docx_zip_bounds_before_rea
     monkeypatch.setattr(claude_agent_worker, limit_name, limit_value)
     monkeypatch.setattr(zipfile.ZipFile, "read", fail_read)
 
-    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
         payload(skill_id=skill_id),
         workspace,
     )
@@ -1093,7 +1070,7 @@ def test_required_docx_rejects_duplicate_case_colliding_or_encrypted_part_before
         raise AssertionError("unsafe archive metadata must fail before archive.read")
 
     monkeypatch.setattr(zipfile.ZipFile, "read", fail_read)
-    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
         payload(skill_id="qa-file-reviewer"), workspace
     )
 
@@ -1119,7 +1096,7 @@ def test_collect_workspace_artifacts_accepts_usable_required_docx(monkeypatch, t
 
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
 
-    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
         payload(skill_id=skill_id),
         workspace,
     )
@@ -1162,7 +1139,7 @@ def test_required_docx_validates_xml_ncname_relationship_ids(monkeypatch, tmp_pa
             return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
 
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
         payload(skill_id="qa-file-reviewer"), workspace
     )
 
@@ -1202,7 +1179,7 @@ def test_required_docx_rejects_non_unique_or_ambiguous_root_relationships(monkey
             raise AssertionError("invalid relationship packages must not be stored")
 
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
         payload(skill_id="qa-file-reviewer"), workspace
     )
     assert artifacts == []
@@ -1215,7 +1192,7 @@ async def test_materialize_files_rejects_symlinked_workspace(monkeypatch, tmp_pa
     outside.mkdir()
     symlink_or_skip(outside, workspace)
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     with pytest.raises(ValueError, match="run workspace"):
         await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
@@ -1244,7 +1221,7 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
             "storage_key": "files/input.docx",
         }
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
@@ -1572,7 +1549,7 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -1614,7 +1591,7 @@ def test_file_skill_artifact_contract_is_owned_by_the_selected_capability():
 
 @pytest.mark.asyncio
 async def test_general_chat_treats_sdk_stop_sequence_as_normal_completion(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     async def sdk_stop_sequence(*args, **kwargs):
         return FakeSdkStopSequence()
@@ -1631,7 +1608,7 @@ async def test_general_chat_treats_sdk_stop_sequence_as_normal_completion(monkey
 
 @pytest.mark.asyncio
 async def test_general_chat_fails_closed_without_structured_sdk_terminal(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     async def sdk_missing_terminal(*args, **kwargs):
         return FakeSdkMissingStructuredTerminal()
@@ -1646,7 +1623,7 @@ async def test_general_chat_fails_closed_without_structured_sdk_terminal(monkeyp
 
 @pytest.mark.asyncio
 async def test_general_chat_keeps_real_sdk_errors_failed(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     async def sdk_runtime_error(*args, **kwargs):
         return FakeSdkRuntimeError()
@@ -1661,7 +1638,7 @@ async def test_general_chat_keeps_real_sdk_errors_failed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_general_chat_keeps_stop_sequence_exception_text_failed(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     async def sdk_exception(*args, **kwargs):
         return FakeSdkExceptionTextStopSequence()
@@ -1675,11 +1652,11 @@ async def test_general_chat_keeps_stop_sequence_exception_text_failed(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_legacy_delegate_is_not_used_even_when_flag_enabled(monkeypatch, tmp_path):
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+async def test_sdk_disabled_fails_closed_without_secondary_executor(monkeypatch, tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.get_settings",
-        lambda: settings(tmp_path, sdk_enabled=False, legacy_fallback=True),
+        lambda: settings(tmp_path, sdk_enabled=False),
     )
 
     result = await adapter.submit_run(sandbox_writing_payload())
@@ -1694,15 +1671,11 @@ async def test_legacy_delegate_is_not_used_even_when_flag_enabled(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_sdk_disabled_fails_without_legacy_delegate(monkeypatch, tmp_path):
-    class FailingDelegate:
-        async def submit_run(self, payload, event_sink=None):
-            raise AssertionError("runtime211 must not be used unless fallback is enabled")
-
-    adapter = ClaudeAgentWorkerAdapter(delegate=FailingDelegate())
+async def test_sdk_disabled_keeps_single_harness_boundary(monkeypatch, tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.get_settings",
-        lambda: settings(tmp_path, sdk_enabled=False, legacy_fallback=False),
+        lambda: settings(tmp_path, sdk_enabled=False),
     )
 
     result = await adapter.submit_run(
@@ -1767,7 +1740,7 @@ async def test_sandbox_skill_staging_matches_attempt_lease_and_isolates_retries(
                 timings={},
             )
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr("app.executors.claude_agent_worker.SandboxRuntime", LeaseCheckingSandboxRuntime)
     monkeypatch.setattr(adapter, "_materialize_files", materialize_attempt_file)
@@ -1830,7 +1803,7 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(
@@ -1912,7 +1885,7 @@ async def test_sandbox_selected_skill_without_hook_telemetry_fails_closed(monkey
     async def no_files(_payload, _workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     install_sandbox_runtime(
@@ -1958,7 +1931,7 @@ async def test_agent_run_threads_materialized_file_names_in_payload_order(monkey
         (workspace / "a.docx").write_bytes(b"a")
         return ["z.docx", "a.docx"]
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", materialize_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -2349,7 +2322,7 @@ async def test_agent_run_prefers_worker_context_pack_over_snapshot_reparse(monke
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -2464,7 +2437,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.SandboxRuntime",
@@ -2615,7 +2588,7 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
     invoked,
 ):
     current_settings, events = settings(tmp_path, sdk_enabled=True), []
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     async def no_files(payload, workspace):
         return []
@@ -2747,7 +2720,7 @@ async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatc
     tmp_path,
 ):
     current_settings = settings(tmp_path, sdk_enabled=True)
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     events = []
 
     async def no_files(payload, workspace):
@@ -2820,7 +2793,7 @@ async def test_single_run_writing_entrypoint_never_calls_worker_local_helpers(
     skill_id,
 ):
     current_settings = settings(tmp_path, sdk_enabled=True)
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     async def fail_local_helper(*args, **kwargs):
         raise AssertionError("ordinary writing entrypoint must not call worker-local execution helpers")
@@ -2849,7 +2822,7 @@ async def test_single_run_writing_entrypoint_never_calls_worker_local_helpers(
 
 @pytest.mark.asyncio
 async def test_unknown_claude_execution_tier_fails_before_any_execution_helper(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     async def fail_execution(*args, **kwargs):
         raise AssertionError("unknown Claude execution tier must fail before execution")
@@ -3266,7 +3239,7 @@ async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypa
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.SandboxRuntime",
@@ -3355,7 +3328,7 @@ async def test_general_chat_heavy_sandbox_request_carries_context_retrieval_scop
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.SandboxRuntime",
@@ -3439,7 +3412,7 @@ async def test_general_chat_heavy_sandbox_fails_when_runtime_reports_sdk_disable
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.SandboxRuntime",
@@ -3488,7 +3461,7 @@ async def test_agent_run_clears_stale_workspace_before_sdk(monkeypatch, tmp_path
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -3516,7 +3489,7 @@ async def test_qa_file_reviewer_manifest_records_available_dependency(monkeypatc
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     install_sandbox_runtime(monkeypatch)
@@ -3553,7 +3526,7 @@ async def test_agent_run_prefers_sdk_reported_used_skills_over_inference(monkeyp
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     install_sandbox_runtime(
@@ -3596,7 +3569,7 @@ async def test_agent_run_preserves_sdk_reported_used_skills_on_sdk_error(monkeyp
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     install_sandbox_runtime(
@@ -3650,7 +3623,7 @@ async def test_agent_run_stages_pinned_skill_snapshot_after_filesystem_drift(mon
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -3683,7 +3656,7 @@ async def test_agent_run_fails_closed_when_dependency_pin_is_missing(monkeypatch
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -3719,7 +3692,7 @@ async def test_agent_run_fails_closed_when_snapshotless_pin_hash_drifted(monkeyp
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -3755,7 +3728,7 @@ async def test_agent_run_fails_closed_when_snapshotless_pin_missing_hash(monkeyp
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
 
@@ -3803,7 +3776,7 @@ async def test_agent_run_rejects_tampered_pinned_skill_snapshot_hash(monkeypatch
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -3836,7 +3809,7 @@ async def test_agent_run_rejects_pinned_skill_snapshot_size_mismatch(monkeypatch
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -3867,7 +3840,7 @@ async def test_agent_run_rejects_pinned_skill_snapshot_file_over_worker_cap(monk
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -3888,14 +3861,10 @@ async def test_agent_run_rejects_pinned_skill_snapshot_file_over_worker_cap(monk
 async def test_general_chat_with_files_stays_on_sdk_path(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
 
-    class FailingDelegate:
-        async def submit_run(self, payload, event_sink=None):
-            raise AssertionError("general chat files must not delegate to runtime211")
-
     async def one_file(payload, workspace):
         return ["sample.docx"]
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FailingDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", one_file)
     runtime_requests = install_sandbox_runtime(
@@ -3972,7 +3941,7 @@ async def test_sandbox_required_general_chat_bridges_agent_event_to_keyword_work
                 timings={},
             )
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     monkeypatch.setattr(
@@ -4021,7 +3990,7 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     install_sandbox_runtime(
@@ -4135,7 +4104,7 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
         "app.executors.claude_agent_worker.SandboxRuntime",
         lambda *args, **kwargs: CancellingRuntime(),
     )
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     with pytest.raises(WorkerRunCancelled) as exc_info:
         await adapter.submit_run(
@@ -4163,7 +4132,7 @@ async def test_worker_passes_distinct_run_scoped_sdk_session_ids_to_sandbox(monk
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -4183,7 +4152,7 @@ async def test_worker_passes_distinct_run_scoped_sdk_session_ids_to_sandbox(monk
     )
     await adapter.submit_run(base_payload)
     await adapter.submit_run(second_payload)
-    restarted_adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    restarted_adapter = ClaudeAgentWorkerAdapter()
     await restarted_adapter.submit_run(base_payload)
 
     captured_session_ids = [request.sdk_session_id for request in runtime_requests]
@@ -4402,7 +4371,7 @@ async def test_worker_passes_scoped_context_retrieval_to_sdk_runner_for_manifest
     async def no_files(payload, workspace):
         return []
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
@@ -4499,7 +4468,7 @@ async def test_qa_file_reviewer_multi_agent_plan_emits_steps_and_runs_staged_sdk
     async def event_sink(**event):
         events.append(event)
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr(adapter, "_run_with_staged_skills", fake_run_with_staged_skills)
     qa_payload = payload(
         agent_id="qa-word-review",
@@ -4547,7 +4516,7 @@ async def test_qa_file_reviewer_multi_agent_plan_emits_steps_and_runs_staged_sdk
 
 @pytest.mark.asyncio
 async def test_multi_agent_product_entrypoint_fails_closed_before_feature_gated_helper(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
 
     async def fail_helper(*args, **kwargs):
         raise AssertionError("multi-agent product entrypoint must not enter the feature-gated helper")
@@ -4576,7 +4545,7 @@ async def test_multi_agent_file_skill_resume_reuses_completed_steps_without_reru
     async def event_sink(**event):
         events.append(event)
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_run_with_staged_skills", fail_staged_sdk)
     qa_payload = payload(
@@ -4668,7 +4637,7 @@ async def test_multi_agent_resume_validates_pinned_snapshot_before_reuse(monkeyp
     async def event_sink(**event):
         events.append(event)
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_run_with_staged_skills", fail_staged_sdk)
 
@@ -5404,7 +5373,7 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
         captured["public_skill_metadata"] = public_skill_metadata
         return FakeQueryResult()
 
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     workspace = tmp_path / "workspaces" / "default" / "run_1"
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -5955,12 +5924,12 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
 
 
 @pytest.mark.asyncio
-async def test_legacy_delegate_does_not_emit_fallback_marker_when_enabled(monkeypatch, tmp_path):
+async def test_sdk_disabled_does_not_emit_secondary_executor_marker(monkeypatch, tmp_path):
     events = []
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.get_settings",
-        lambda: settings(tmp_path, sdk_enabled=False, legacy_fallback=True),
+        lambda: settings(tmp_path, sdk_enabled=False),
     )
 
     async def event_sink(**event):

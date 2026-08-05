@@ -1,11 +1,11 @@
 import pytest
 
 from app.control_plane_contracts import sanitize_public_payload
-from app.executors.claude_stream_projection import TrustedInternalClaudeStreamProjector
+from app.executors.claude_stream_projection import ClaudeStreamProjector
 
 
 def _projector(**kwargs):
-    return TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload, **kwargs)
+    return ClaudeStreamProjector(sanitizer=sanitize_public_payload, **kwargs)
 
 
 def _start(index=0, content_type="text"):
@@ -80,13 +80,25 @@ def test_projector_permanently_disables_active_text_conflicts(conflict):
     assert projector.accept(_stop()) == ()
 
 
-def test_projector_ignores_non_text_without_an_active_text_block():
+def test_projector_tracks_and_closes_non_text_before_a_text_block():
     projector = _projector()
 
     assert projector.accept(_start(0, "thinking")) == ()
     assert projector.accept({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "private"}}) == ()
+    assert projector.accept(_stop(0)) == ()
+    assert projector.accept(_start(1)) == ()
+    assert projector.accept(_text_delta("safe answer", index=1)) == ("safe ",)
+    assert projector.accept(_stop(1)) == ("answer",)
     assert projector.disabled is False
-    assert projector.partial_emitted is False
+    assert projector.partial_emitted is True
+
+
+def test_projector_rejects_wrong_stop_for_ignored_non_text_block():
+    projector = _projector()
+
+    assert projector.accept(_start(2, "tool_use")) == ()
+    assert projector.accept(_stop(3)) == ()
+    assert projector.disabled is True
 
 
 def test_projector_rejects_text_delta_without_matching_start():

@@ -1,11 +1,8 @@
-import asyncio
-import json
 import re
 from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from fastapi.responses import StreamingResponse
 from pydantic import UUID4
 
 from app import repositories
@@ -238,10 +235,6 @@ async def _governed_skill_manifest_pins(
     return skill_manifests
 
 
-def _json_default(value: Any) -> str:
-    return value.isoformat() if hasattr(value, "isoformat") else str(value)
-
-
 def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_id: str) -> dict[str, Any]:
     return {
         **release_decision,
@@ -249,12 +242,6 @@ def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_i
         "skill_version": release_decision.get("selected_version"),
         "visible_to_user": False,
     }
-
-
-def sse(event: str, data: dict[str, object], event_id: str | None = None) -> str:
-    prefix = f"id: {event_id}\n" if event_id else ""
-    payload = json.dumps(data, ensure_ascii=False, default=_json_default)
-    return f"{prefix}event: {event}\ndata: {payload}\n\n"
 
 
 def _resume_manifest_public_depends_on(values: object, *, raw_terms: set[str]) -> list[str]:
@@ -1561,14 +1548,41 @@ async def cancel_run(
             provider_factory=create_container_provider,
         )
     except SandboxRuntimeCleanupError as exc:
-        stopped_lease_ids = [str(lease["id"]) for lease in exc.stopped_leases if lease.get("id")]
-        if exc.stopped_leases:
+        failed_lease_ids = [str(lease["id"]) for lease in exc.failed_leases if lease.get("id")]
+        try:
+            async with transaction() as conn:
+                if exc.stopped_leases:
+                    await _release_stopped_cancel_leases(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        reason="cancel_requested",
+                        leases=exc.stopped_leases,
+                        trace_id=result.get("trace_id"),
+                    )
+                await repositories.record_sandbox_runtime_cleanup_outcome(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=str(result["run_id"]),
+                    trace_id=result.get("trace_id"),
+                    user_id=principal.user_id,
+                    requested_by_role="owner",
+                    reason="cancel_requested",
+                    status="failed",
+                    lease_ids=failed_lease_ids,
+                    failures=exc.failures,
+                )
+        except Exception as persistence_exc:
+            raise HTTPException(status_code=503, detail="sandbox_cleanup_persistence_unavailable") from persistence_exc
+        raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
+    if stopped_sandbox_leases:
+        stopped_lease_ids = [str(lease["id"]) for lease in stopped_sandbox_leases if lease.get("id")]
+        try:
             async with transaction() as conn:
                 await _release_stopped_cancel_leases(
                     conn,
                     tenant_id=principal.tenant_id,
                     reason="cancel_requested",
-                    leases=exc.stopped_leases,
+                    leases=stopped_sandbox_leases,
                     trace_id=result.get("trace_id"),
                 )
                 await repositories.record_sandbox_runtime_cleanup_outcome(
@@ -1579,47 +1593,12 @@ async def cancel_run(
                     user_id=principal.user_id,
                     requested_by_role="owner",
                     reason="cancel_requested",
-                    status="failed",
+                    status="succeeded",
                     lease_ids=stopped_lease_ids,
-                    failures=exc.failures,
+                    failures=[],
                 )
-        else:
-            async with transaction() as conn:
-                await repositories.record_sandbox_runtime_cleanup_outcome(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=str(result["run_id"]),
-                    trace_id=result.get("trace_id"),
-                    user_id=principal.user_id,
-                    requested_by_role="owner",
-                    reason="cancel_requested",
-                    status="failed",
-                    lease_ids=[],
-                    failures=exc.failures,
-                )
-        raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
-    if stopped_sandbox_leases:
-        stopped_lease_ids = [str(lease["id"]) for lease in stopped_sandbox_leases if lease.get("id")]
-        async with transaction() as conn:
-            await _release_stopped_cancel_leases(
-                conn,
-                tenant_id=principal.tenant_id,
-                reason="cancel_requested",
-                leases=stopped_sandbox_leases,
-                trace_id=result.get("trace_id"),
-            )
-            await repositories.record_sandbox_runtime_cleanup_outcome(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=str(result["run_id"]),
-                trace_id=result.get("trace_id"),
-                user_id=principal.user_id,
-                requested_by_role="owner",
-                reason="cancel_requested",
-                status="succeeded",
-                lease_ids=stopped_lease_ids,
-                failures=[],
-            )
+        except Exception as persistence_exc:
+            raise HTTPException(status_code=503, detail="sandbox_cleanup_persistence_unavailable") from persistence_exc
     if queue_cleanup_failures:
         raise HTTPException(status_code=502, detail="queue_cleanup_failed") from queue_cleanup_failures[0]
     return RunControlResponse(run_id=result["run_id"], status=result["status"])
@@ -1882,102 +1861,3 @@ async def get_run_steps(
             raise HTTPException(status_code=404, detail="run_not_found")
         steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
     return {"run_id": run_id, "steps": run_step_responses(steps, principal=principal)}
-
-
-@router.get("/runs/{run_id}/events/stream")
-async def stream_run_events(
-    run_id: str,
-    after_sequence: int | None = None,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> StreamingResponse:
-    async with transaction() as conn:
-        initial_run = await repositories.get_authorized_run(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            run_id=run_id,
-        )
-        if initial_run is None:
-            raise HTTPException(status_code=404, detail="run_not_found")
-        run_contract_version(initial_run)
-        executor_result_schema_version(initial_run)
-
-    async def stream():
-        seen: set[str] = set()
-        last_sequence = after_sequence
-        heartbeat_index = 0
-        max_heartbeats = max(int(get_settings().run_event_stream_max_heartbeats), 1)
-        next_run: dict[str, Any] | None = initial_run
-
-        async def list_events(conn):
-            if last_sequence is None:
-                return await repositories.list_run_events(conn, tenant_id=principal.tenant_id, run_id=run_id)
-            return await repositories.list_run_events(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                after_sequence=last_sequence,
-            )
-
-        for _ in range(max_heartbeats):
-            if next_run is None:
-                async with transaction() as conn:
-                    run = await repositories.get_authorized_run(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        user_id=principal.user_id,
-                        run_id=run_id,
-                    )
-                    if run is None:
-                        yield sse("error", {"error": "run_not_found"})
-                        yield sse("done", {"status": "not_found"})
-                        return
-                    run_contract_version(run)
-                    executor_result_schema_version(run)
-                    rows = await list_events(conn)
-            else:
-                run = next_run
-                next_run = None
-                async with transaction() as conn:
-                    rows = await list_events(conn)
-            for row in rows:
-                event_id = str(row["id"])
-                if event_id in seen:
-                    continue
-                seen.add(event_id)
-                if not event_visible_to_principal(row, principal):
-                    continue
-                try:
-                    payload = run_event_response(run_id, row, principal=principal)
-                except HTTPException as exc:
-                    yield sse("error", {"error": str(exc.detail)})
-                    yield sse("done", {"status": "error"})
-                    return
-                last_sequence = max(int(payload.get("sequence") or 0), int(last_sequence or 0))
-                yield sse("run_event", payload, event_id=event_id)
-            status = str(run["status"])
-            if status in {"succeeded", "failed", "cancelled", "canceled"}:
-                yield sse("done", {"status": normalize_run_status(status)}, event_id=f"{run_id}:done")
-                return
-            heartbeat_index += 1
-            heartbeat_payload: dict[str, object] = {"run_id": run_id, "status": status}
-            if run.get("cancel_requested_at"):
-                heartbeat_payload["cancel_requested_at"] = run.get("cancel_requested_at")
-                heartbeat_payload["cancel_requested_by"] = run.get("cancel_requested_by")
-            if status == "queued":
-                queue_position = await get_run_queue_position(tenant_id=principal.tenant_id, run_id=run_id)
-                if queue_position is not None:
-                    heartbeat_payload["queue_position"] = queue_position
-            queue_insight = await queue_insight_for_status(status, principal.tenant_id, user_id=principal.user_id)
-            if queue_insight is not None:
-                heartbeat_payload["queue_insight"] = queue_insight
-            yield sse(
-                "heartbeat",
-                heartbeat_payload,
-                event_id=f"{run_id}:heartbeat:{heartbeat_index}",
-            )
-            await asyncio.sleep(1)
-        yield sse("error", {"error": "stream_timeout"})
-        yield sse("done", {"status": "timeout"}, event_id=f"{run_id}:done")
-
-    return StreamingResponse(stream(), media_type="text/event-stream")

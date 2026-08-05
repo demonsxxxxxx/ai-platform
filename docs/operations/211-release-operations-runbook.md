@@ -112,7 +112,54 @@ canonical path after normalization; an external file is rejected even if it has
 the same owner and mode. The canonical file must be an existing regular
 non-symlink owned by the managed-root owner with mode `0600`. The authority
 validates metadata before target materialization and again before Compose
-mutation; it never reads, copies, or prints contents.
+mutation. The Python authority never reads or copies the file contents. Its
+bounded Docker Compose preflight receives the file only as `--env-file`, suppresses
+resolved output and raw parser errors, and never records the values in evidence.
+
+### Secure provisioning and read-only Compose semantic preflight
+
+Before authorizing an expensive image build or deployment, the managed owner must
+securely provision every required key for the exact selected Compose files. Do not
+invent defaults for an authority, attestation, egress, runtime-subject, credential,
+or TLS-path input. The canonical release authority then runs Docker Compose's own
+semantic `config --quiet` parser before any container ownership inspection, image
+lookup/build/tag, manual-container removal, or `compose up`. Image references that
+do not exist until after a build are replaced only inside that read-only parser
+process with a fixed `.invalid` preflight placeholder; the convergence command is
+constructed separately from verified target image references.
+
+For the existing base plus OpenSandbox selection, an operator may perform this
+additional read-only check after secure provisioning and before granting the
+release mutation lease. It emits no resolved configuration or environment value;
+the raw parser error is deliberately discarded, and only the exit status is used.
+On failure, keep build/deploy authorization blocked and use release-authority's
+bounded key-name-only preflight diagnostic rather than printing or copying the
+managed environment file.
+
+```bash
+if ! sudo -n env \
+  AI_PLATFORM_IMAGE=release-authority-preflight.invalid/compose-config-only/backend \
+  AI_PLATFORM_FRONTEND_IMAGE=release-authority-preflight.invalid/compose-config-only/frontend \
+  SANDBOX_EXECUTOR_IMAGE=release-authority-preflight.invalid/compose-config-only/sandbox-executor \
+  AI_PLATFORM_SOURCE_COMMIT="$TARGET" \
+  AI_PLATFORM_BUILD_COMMIT="$TARGET" \
+  AI_PLATFORM_BUILD_DIRTY=false \
+  docker compose -p ai-platform-phaseb \
+  --env-file "$ROOT/deploy/ai-platform/.env" \
+  -f "$ROOT/releases/$TARGET/deploy/ai-platform/docker-compose.yml" \
+  -f "$ROOT/releases/$TARGET/deploy/ai-platform/docker-compose.opensandbox.yml" \
+  config --quiet >/dev/null 2>/dev/null; then
+  printf '%s\n' "Compose semantic preflight failed; build and deploy remain blocked" >&2
+  exit 1
+fi
+```
+
+The authority permits at most 32 distinct required keys and at most 33 parser
+attempts. Each parser attempt is capped at 15 seconds. When one or more required
+keys are absent, it reports only the fixed `missing-required-config` category and
+sorted key names. Invalid Compose, an unrecognized parser failure, or a larger
+required-key surface fails closed without returning raw stderr, commands, paths,
+or values.
 
 To roll back the mirror choice while keeping the same release authority, leave both
 mirror variables unset and rerun the canonical invocation: `MIRROR_ARGS` stays empty
@@ -184,8 +231,8 @@ the s72 egress policy; the s72 broker connects to the IP directly and uses the
 hostname only for SNI/hostname verification. Mount the full chain and private
 key read-only through the two Compose paths above. Do not place certificate or
 key bytes in the image, `.env`, Compose environment, logs, or Git. Provision
-only the non-secret issuing CA certificate to s72 at the app-scoped path in the
-s72 gateway runbook; do not install it in either host's system trust store.
+only the non-secret issuing CA certificate to s72 at its app-scoped path; do not
+install it in either host's system trust store.
 
 The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not
 publish `8443`, request bridge variables, or mount bridge certificates. The
@@ -405,23 +452,25 @@ The exact-main authority's conservative longest-path inventory is:
 - 1 for runtime-diff classification;
 - 22 for deploy preflights, target-image probes and verifications, sandbox-image
   revalidation, target revalidation, optional removal, and Compose convergence;
+- up to 33 Compose semantic preflight parser attempts at 15 seconds each;
 - 11 for the final full parity pass;
 - 45 seconds for bounded post-Compose final-parity convergence retries; and
 - 4 HTTP probes at 15 seconds each across current and final parity; and
 - 2 sequential canonical dependency builds at 1800 seconds each.
 
 That is 65 default subprocess slots, four HTTP slots, a bounded 45-second
-convergence window, and two canonical builds:
-`65 * 300 + 4 * 15 + 45 + 2 * 1800 = 23205` seconds. The 24000-second command
-deadline rounds this up with an additional 795 seconds for in-process filesystem
+convergence window, up to 33 bounded Compose semantic parser attempts, and two
+canonical builds:
+`65 * 300 + 4 * 15 + 45 + 33 * 15 + 2 * 1800 = 23700` seconds. The 24000-second command
+deadline rounds this up with an additional 300 seconds for in-process filesystem
 trust walks, scheduling, cleanup dispatch, and evidence serialization. It is a
 conservative finite outer bound, separate from—and never an expansion of—any
 per-operation timeout.
 
 The explicit flatten recovery adds up to ten bounded 300-second Docker slots
 (two stopped-container exports, import, validation, and cleanup) to that
-inventory: `23205 + 10 * 300 = 26205` seconds. Its documented 27000-second
-outer command budget leaves 795 seconds for the same in-process work. Configure
+inventory: `23700 + 10 * 300 = 26700` seconds. Its documented 27000-second
+outer command budget leaves 300 seconds for the same in-process work. Configure
 the enclosing durable runner with a 27330-second deadline for this exceptional
 command only.
 

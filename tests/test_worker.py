@@ -852,14 +852,15 @@ def default_cancel_not_requested(monkeypatch):
     monkeypatch.setattr("app.worker._PARENT_ROLLUP_RETRY_DELAY_SECONDS", 0, raising=False)
 
     async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        executor_type = "ragflow" if skill_id == "ragflow-knowledge-search" else "fake"
+        ragflow_skill = skill_id == "ragflow-knowledge-search"
+        executor_type = "claude-agent-worker" if ragflow_skill else "fake"
         return {
             "agent_id": agent_id,
             "agent_status": "active",
             "skill_id": skill_id,
             "skill_status": "active",
             "executor_type": executor_type,
-            "backing_mcp_tool_id": skill_id if executor_type == "ragflow" else None,
+            "backing_mcp_tool_id": skill_id if ragflow_skill else None,
         }
 
     async def get_capability_distribution_row(conn, *, tenant_id, capability_kind, capability_id):
@@ -1127,7 +1128,7 @@ def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeyp
         {
             key: value
             for key, value in base_payload(
-                executor_type="ragflow",
+                executor_type="claude-agent-worker",
                 input={"mode": "file", "mcp_tool_ids": ["corp-search"]},
             ).items()
             if key != "_queue_attempt_id"
@@ -1139,7 +1140,7 @@ def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeyp
         context_snapshot={},
     ) is False
     assert captured == {
-        "executor_type": "ragflow",
+        "executor_type": "claude-agent-worker",
         "execution_mode": "",
         "execution_tier": "",
         "mcp_requires_sandbox": True,
@@ -5586,83 +5587,6 @@ async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_worker_parks_top_level_multi_agent_parent_for_dispatcher_without_running_adapter(monkeypatch):
-    calls = []
-
-    class Settings:
-        multi_agent_dispatch_worker_enabled = True
-        claude_agent_sdk_enabled = False
-        claude_agent_model = "test-model"
-
-    class ShouldNotRunAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            raise AssertionError("parked multi-agent parent must not execute adapter steps")
-
-    locked_run = locked_run_from_payload(
-        base_payload(
-            file_ids=[],
-            agent_id="general-agent",
-            skill_id="general-chat",
-            input={
-                "message": "build feature",
-                "execution_mode": "multi_agent",
-                "multi_agent_steps": [{"step_key": "code", "depends_on": []}],
-            },
-            executor_type="fake",
-            skill_manifests=[primary_manifest("general-chat", "hash-general-chat")],
-        )
-    )
-    locked_run["trace_id"] = "trace-run-a"
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return locked_run
-
-    async def mark_parent_awaiting_dispatch(conn, *, tenant_id, run_id, worker_id):
-        calls.append(("park", tenant_id, run_id, worker_id))
-        return True
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload") or {}))
-        return "evt-a"
-
-    async def fail_create_sandbox_lease(*args, **kwargs):
-        raise AssertionError("parked multi-agent parent must not create runtime sandbox leases")
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.get_settings", lambda: Settings(), raising=False)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr(
-        "app.worker.repositories.mark_multi_agent_dispatch_parent_awaiting_dispatch",
-        mark_parent_awaiting_dispatch,
-        raising=False,
-    )
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
-
-    outcome = await process_run_payload(
-        base_payload(
-            file_ids=[],
-            agent_id="general-agent",
-            skill_id="general-chat",
-            input={"message": "build feature"},
-            executor_type="fake",
-            skill_manifests=[primary_manifest("general-chat", "hash-general-chat")],
-        ),
-        AdapterRegistry({"fake": ShouldNotRunAdapter()}),
-        worker_id="worker-a",
-    )
-
-    assert outcome.status == "skipped"
-    assert calls[0] == ("running", "tenant-a", "run-a")
-    assert ("park", "tenant-a", "run-a", "worker-a") in calls
-    parked_events = [item for item in calls if item[0] == "event" and item[1] == "multi_agent_dispatch_parent_parked"]
-    assert parked_events
-    assert parked_events[0][3]["visible_to_user"] is False
-    assert parked_events[0][3]["orchestration_state"] == "awaiting_dispatch"
-
-
-@pytest.mark.asyncio
 async def test_worker_stops_running_executor_after_cancel_requested_on_event_boundary(monkeypatch):
     calls = []
     cancel_checks = 0
@@ -6069,7 +5993,7 @@ async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_worker_blocks_direct_runtime211_queue_payload(monkeypatch):
+async def test_worker_routes_retired_runtime211_through_unknown_executor_guard(monkeypatch):
     calls = []
 
     class DirectRuntime211Adapter:
@@ -6099,17 +6023,13 @@ async def test_worker_blocks_direct_runtime211_queue_payload(monkeypatch):
     )
 
     assert outcome.status == "failed"
-    assert outcome.error_code == "legacy_runtime211_direct_executor_disabled"
+    assert outcome.error_code == "unknown_executor_type"
     assert ("running", "tenant-a", "run-a") in calls
     assert not any(item[0] == "adapter" for item in calls)
-    assert any(
-        item[0] == "fail" and item[1] == "legacy_runtime211_direct_executor_disabled"
-        for item in calls
-    )
-    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "legacy_runtime211_direct_executor_denied")
-    assert denied_event[1] == "legacy_runtime211_direct_executor_denied"
-    assert denied_event[2] == "policy"
-    assert denied_event[3]["visible_to_user"] is False
+    assert any(item[0] == "fail" and item[1] == "unknown_executor_type" for item in calls)
+    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "error")
+    assert denied_event[2] == "worker"
+    assert denied_event[3]["executor_type"] == "runtime211"
 
 
 @pytest.mark.asyncio
@@ -7188,315 +7108,17 @@ async def test_worker_follow_up_terminalization_reconciles_one_final_drain_only(
 
 
 @pytest.mark.asyncio
-async def test_worker_denies_read_only_ragflow_backing_mcp_before_completion_audit(monkeypatch):
-    audits = []
-    events = []
-    snapshots = []
-
-    class RagflowAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="ragflow-adapter/1",
-                executor_type="ragflow",
-                executor_version="ragflow-retrieval-http",
-                capabilities={"tools": True, "streaming": False},
-                result={"message": "answer"},
-                executor_payload={
-                    "dataset_ids": ["dataset-a"],
-                    "reference_ids": [
-                        {"index": 1, "dataset_id": "dataset-a", "document_id": "doc-a", "chunk_id": "chunk-a"}
-                    ],
-                },
-            )
-
-    class Registry:
-        def get(self, executor_type):
-            return RagflowAdapter()
-
-    async def fake_mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def fake_append_event(conn, **kwargs):
-        events.append(kwargs["event_type"])
-        return f"evt_{len(events)}"
-
-    async def fake_append_audit_log(conn, **kwargs):
-        audits.append(kwargs)
-        return f"aud_{len(audits)}"
-
-    async def fake_ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        return {
-            "id": tool_id,
-            "tool_id": tool_id,
-            "server_id": "tenant-search-server",
-            "allowed_tools": ["query"],
-            "status": "active",
-            "write_capable": False,
-            "risk_level": "low",
-        }
-
-    async def fake_complete_run(conn, **kwargs):
-        return True
-
-    async def fake_upsert_run_skill_snapshot(conn, **kwargs):
-        snapshots.append(kwargs)
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", fake_mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", fake_append_audit_log)
-    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", fake_ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr("app.worker.repositories.complete_run", fake_complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", fake_upsert_run_skill_snapshot)
-
-    outcome = await process_run_payload(
-        base_payload(
-            skill_id="ragflow-knowledge-search",
-            executor_type="ragflow",
-            skill_version="hash-ragflow",
-            skill_manifests=[primary_manifest("ragflow-knowledge-search", "hash-ragflow")],
-        ),
-        registry=Registry(),
-        worker_id="worker-ragflow",
-    )
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert "capability_not_authorized" in events
-    assert "mcp_tool_call_completed" not in events
-    assert not any(item["action"] == "mcp_tool_call_completed" for item in audits)
-    assert snapshots == []
-
-
-@pytest.mark.asyncio
-async def test_worker_does_not_publish_ragflow_completion_for_backing_mcp_denial(monkeypatch):
-    events = []
-    audits = []
-
-    class FailedRagflowAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            return ExecutorResult(
-                status="failed",
-                adapter_version="ragflow-adapter/1",
-                executor_type="ragflow",
-                executor_version="ragflow-retrieval-http",
-                capabilities={"tools": True, "streaming": False},
-                result={"message": "RAGFlow retrieval failed.", "error_code": "ragflow_api_error"},
-                executor_payload={"dataset_ids": ["dataset-a"]},
-            )
-
-    class Registry:
-        def get(self, executor_type):
-            return FailedRagflowAdapter()
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        return {"id": tool_id, "status": "active", "write_capable": False, "risk_level": "low"}
-
-    async def append_event(conn, **kwargs):
-        events.append(kwargs["event_type"])
-        return "evt-a"
-
-    async def append_audit_log(conn, **kwargs):
-        audits.append(kwargs["action"])
-        return "audit-a"
-
-    async def fail_run(conn, **kwargs):
-        return True
-
-    async def upsert_run_skill_snapshot(conn, **kwargs):
-        return None
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
-
-    outcome = await process_run_payload(
-        base_payload(skill_id="ragflow-knowledge-search", executor_type="ragflow"),
-        registry=Registry(),
-        worker_id="worker-ragflow",
-    )
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert "mcp_tool_call_completed" not in events
-    assert "mcp_tool_call_completed" not in audits
-
-
-@pytest.mark.asyncio
-async def test_worker_commits_ragflow_backing_mcp_denial_without_completion(monkeypatch):
-    committed = []
-
-    class TransactionConnection:
-        def __init__(self):
-            self.pending = []
-
-    @asynccontextmanager
-    async def transactional_connection():
-        conn = TransactionConnection()
-        try:
-            yield conn
-        except Exception:  # noqa: TRY203 - model transaction rollback before re-raising.
-            raise
-        else:
-            committed.extend(conn.pending)
-
-    class RagflowAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="ragflow-adapter/1",
-                executor_type="ragflow",
-                executor_version="ragflow-retrieval-http",
-                capabilities={"tools": True, "streaming": False},
-                result={"message": "answer"},
-                executor_payload={"dataset_ids": ["dataset-a"]},
-            )
-
-    class Registry:
-        def get(self, executor_type):
-            return RagflowAdapter()
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        return {"id": tool_id, "status": "active", "write_capable": False, "risk_level": "low"}
-
-    async def append_event(conn, **kwargs):
-        conn.pending.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    async def append_audit_log(conn, **kwargs):
-        conn.pending.append(("audit", kwargs["action"]))
-        return "audit-a"
-
-    async def append_message(conn, **kwargs):
-        conn.pending.append(("message", kwargs["role"]))
-        return "msg-a"
-
-    async def complete_run(conn, **kwargs):
-        return False
-
-    async def fail_run(conn, **kwargs):
-        conn.pending.append(("fail", kwargs["error_code"]))
-        return True
-
-    async def classify_success_commit_block(conn, *, tenant_id, run_id):
-        return "tool_permission_pending"
-
-    async def upsert_run_skill_snapshot(conn, **kwargs):
-        return None
-
-    monkeypatch.setattr("app.worker.transaction", transactional_connection)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
-
-    outcome = await process_run_payload(
-        base_payload(skill_id="ragflow-knowledge-search", executor_type="ragflow"),
-        registry=Registry(),
-        worker_id="worker-ragflow",
-    )
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert ("fail", "capability_not_authorized") in committed
-    assert ("event", "mcp_tool_call_completed") not in committed
-    assert ("audit", "mcp_tool_call_completed") not in committed
-
-
-@pytest.mark.asyncio
-async def test_worker_does_not_mark_denied_ragflow_backing_mcp_as_native_used(monkeypatch):
-    snapshots = []
-    failures = []
-
-    class FailedRagflowAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            return ExecutorResult(
-                status="failed",
-                adapter_version="ragflow-adapter/1",
-                executor_type="ragflow",
-                executor_version="ragflow-retrieval-http",
-                capabilities={"tools": True, "streaming": False},
-                result={"message": "RAGFlow retrieval failed.", "error_code": "ragflow_api_error"},
-                executor_payload={"dataset_ids": ["dataset-a"]},
-            )
-
-    class Registry:
-        def get(self, executor_type):
-            return FailedRagflowAdapter()
-
-    async def fake_mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def fake_ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        return {"id": tool_id, "status": "active", "write_capable": False, "risk_level": "low"}
-
-    async def fake_append_event(conn, **kwargs):
-        return "evt-a"
-
-    async def fake_append_audit_log(conn, **kwargs):
-        return "audit-a"
-
-    async def fake_fail_run(conn, **kwargs):
-        failures.append(kwargs)
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
-
-    async def fake_upsert_run_skill_snapshot(conn, **kwargs):
-        snapshots.append(kwargs)
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", fake_mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", fake_ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr("app.worker.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", fake_append_audit_log)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fake_fail_run)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", fake_upsert_run_skill_snapshot)
-
-    outcome = await process_run_payload(
-        base_payload(
-            skill_id="ragflow-knowledge-search",
-            executor_type="ragflow",
-            skill_version="hash-ragflow",
-            skill_manifests=[primary_manifest("ragflow-knowledge-search", "hash-ragflow")],
-        ),
-        registry=Registry(),
-        worker_id="worker-ragflow",
-    )
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert failures[0]["error_code"] == "capability_not_authorized"
-    assert snapshots == []
-
-
-@pytest.mark.asyncio
 async def test_worker_blocks_disabled_mcp_tool_before_dispatch(monkeypatch):
     calls = []
 
-    class RagflowAdapterMustNotRun:
+    class HarnessAdapterMustNotRun:
         async def submit_run(self, payload, event_sink=None):
             calls.append(("adapter", payload.run_id))
             raise AssertionError("disabled MCP tool must not reach adapter dispatch")
 
     class Registry:
         def get(self, executor_type):
-            return RagflowAdapterMustNotRun()
+            return HarnessAdapterMustNotRun()
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -7520,9 +7142,9 @@ async def test_worker_blocks_disabled_mcp_tool_before_dispatch(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
     outcome = await process_run_payload(
-        base_payload(skill_id="ragflow-knowledge-search", executor_type="ragflow"),
+        base_payload(skill_id="ragflow-knowledge-search", executor_type="claude-agent-worker"),
         registry=Registry(),
-        worker_id="worker-ragflow",
+        worker_id="worker-harness",
     )
 
     assert outcome.status == "failed"

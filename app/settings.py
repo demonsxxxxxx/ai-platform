@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     database_pool_max_waiting: int = Field(default=100)
     database_pool_close_timeout_seconds: float = Field(default=5.0)
     redis_url: str = Field(default="redis://localhost:63799/0")
+    datastore_readiness_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     queue_key_prefix: str = Field(default="ai-platform:runs")
 
     s3_endpoint_url: str = Field(default="http://localhost:9009")
@@ -25,7 +26,10 @@ class Settings(BaseSettings):
 
     sandbox_workspace_root: str = Field(default="/tmp/ai-platform-sandbox-workspaces")
     sandbox_container_provider: str = Field(default="fake")
-    sandbox_security_profile: Literal["governed", "trusted_internal"] = Field(default="governed")
+    # OpenSandbox has one production security contract. Keeping this as a
+    # single-value Literal makes stale trusted_internal deployment settings
+    # fail during process startup instead of silently selecting a weaker path.
+    sandbox_security_profile: Literal["governed"] = Field(default="governed")
     sandbox_executor_image: str = Field(default="ai-platform-executor:dev")
     sandbox_executor_browser_image: str = Field(default="")
     sandbox_executor_published_host: str = Field(default="127.0.0.1")
@@ -62,9 +66,6 @@ class Settings(BaseSettings):
     opensandbox_external_egress_callback_base_url: str = Field(default="")
     opensandbox_external_egress_openai_base_url: str = Field(default="")
     opensandbox_external_egress_anthropic_base_url: str = Field(default="")
-    opensandbox_trusted_internal_callback_base_url: str = Field(default="")
-    opensandbox_trusted_internal_openai_base_url: str = Field(default="")
-    opensandbox_trusted_internal_anthropic_base_url: str = Field(default="")
     opensandbox_executor_image_digest: str = Field(default="")
     sandbox_max_active_ephemeral_containers: int = Field(default=2)
     sandbox_max_active_persistent_containers: int = Field(default=1)
@@ -76,6 +77,7 @@ class Settings(BaseSettings):
     queue_insight_scan_limit: int = Field(default=500)
     queue_lease_visibility_timeout_seconds: int = Field(default=900)
     queue_metadata_fallback_scan_limit: int = Field(default=500)
+    queue_dead_letter_max_entries: int = Field(default=1000, ge=1, le=100000)
     worker_heartbeat_ttl_seconds: float = Field(default=60.0)
     worker_maintenance_interval_seconds: float = Field(default=30.0)
     stale_run_reconciliation_seconds: int = Field(default=900, ge=60, le=86400)
@@ -85,11 +87,6 @@ class Settings(BaseSettings):
     memory_retention_worker_cleanup_enabled: bool = Field(default=True)
     memory_retention_worker_cleanup_interval_seconds: float = Field(default=300.0)
     memory_retention_worker_cleanup_limit: int = Field(default=200)
-    multi_agent_dispatch_worker_enabled: bool = Field(default=False)
-    multi_agent_dispatch_worker_interval_seconds: float | str = Field(default=30.0)
-    multi_agent_dispatch_worker_limit: int | str = Field(default=1)
-    multi_agent_dispatch_worker_user_id: str = Field(default="system:multi-agent-dispatcher")
-    multi_agent_dispatch_lease_ttl_seconds: int = Field(default=900)
     run_event_stream_max_heartbeats: int = Field(default=3600)
     default_tenant_id: str = Field(default="default")
     default_workspace_id: str = Field(default="default")
@@ -137,22 +134,6 @@ class Settings(BaseSettings):
     platform_skills_root: str = Field(default="skills")
     skill_staging_subdir: str = Field(default=".claude/skills")
     public_skill_file_overlay_max_bytes: int = Field(default=262144)
-    enable_legacy_runtime211_fallback: bool = Field(default=False)
-
-    ragflow_api_url: str = Field(default="")
-    ragflow_api_key: str = Field(default="")
-    ragflow_default_dataset_id: str = Field(default="")
-    ragflow_timeout_seconds: float = Field(default=30.0)
-    ragflow_top_k: int = Field(default=3)
-    ragflow_similarity_threshold: float = Field(default=0.2)
-
-    @model_validator(mode="after")
-    def validate_sandbox_security_profile(self) -> "Settings":
-        """Restrict the internal-beta relaxation to the OpenSandbox provider."""
-
-        if self.sandbox_security_profile == "trusted_internal" and self.sandbox_container_provider != "opensandbox":
-            raise ValueError("trusted_internal sandbox security profile requires the OpenSandbox provider")
-        return self
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

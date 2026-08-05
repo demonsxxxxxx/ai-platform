@@ -10,7 +10,6 @@ import type {
   MarketplaceSkillFilesResponse,
   MarketplaceSkillFileResponse,
   MarketplaceInstallResponse,
-  MarketplaceCreateRequest,
   TagsResponse,
 } from "../../types";
 
@@ -150,32 +149,6 @@ export const marketplaceApi = {
       `${MARKETPLACE_API}/${encodeURIComponent(skillName)}/update`,
       {
         method: "POST",
-      },
-    );
-  },
-
-  /**
-   * Create and publish skill directly in marketplace
-   */
-  async createAndPublish(data: MarketplaceCreateRequest) {
-    return authFetch<MarketplaceSkillResponse>(`${MARKETPLACE_API}/`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    });
-  },
-
-  /**
-   * Update marketplace skill directly (creator only)
-   */
-  async updateMarketplaceSkill(
-    skillName: string,
-    data: MarketplaceCreateRequest,
-  ) {
-    return authFetch<MarketplaceSkillResponse>(
-      `${MARKETPLACE_API}/${encodeURIComponent(skillName)}`,
-      {
-        method: "PUT",
-        body: JSON.stringify(data),
       },
     );
   },

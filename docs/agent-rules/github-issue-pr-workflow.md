@@ -23,6 +23,8 @@ of expanding an unrelated product PR.
   infrastructure decisions that need durable explanation.
 - Record blockers and evidence on the issue or PR. Historical evidence cannot
   prove current readiness.
+- Do not create repository status pages, phase ledgers, or manual-release logs
+  for an active change. The issue or PR is the durable status record.
 
 ## Status Language
 
@@ -98,9 +100,10 @@ Stable invariants:
 - The finite Skill, MCP, schema, and release safety-suite map is frozen and
   remains additive. Frontend coverage continues through `ci:verify`, and changed
   shared fixtures still require an explicit bounded regression suite.
-- Governance reports production/test added LOC and their ratio as review evidence,
-  not a violation. Explain reuse or duplication when test additions exceed 300
-  lines or twice the production additions.
+- Governance reports production subsystems and their count, plus production/test
+  added LOC and their ratio, as review evidence rather than subsystem or test-size
+  violations. Explain reuse or duplication when test additions exceed 300 lines
+  or twice the production additions.
 - The introducing candidate cannot certify its own new readiness tool. The tool
   becomes authority only after independent fixed-SHA review and ordinary merge.
 

@@ -20,19 +20,26 @@ def test_b1_b5_context_runtime_readiness_verifies_bounded_context_runtime_contra
     assert set(readiness["checks"]) == set(REQUIRED_CHECKS)
     assert all(item["passed"] is True for item in readiness["checks"].values())
     assert readiness["checks"]["sdk_runner_wires_scoped_retrieval_tools"]["evidence"]["private_material_seeded"] is True
-    session_evidence = readiness["checks"]["session_context_authority_design_recorded"]["evidence"]
+    session_evidence = readiness["checks"]["session_context_authority_is_bounded"]["evidence"]
     assert session_evidence["run_scoped_id_stable"] is True
     assert session_evidence["different_runs_isolated"] is True
     assert session_evidence["in_process_transcript_state_absent"] is True
-    assert session_evidence["path"] == "docs/operations/b1-b5-context-runtime-follow-up.md"
-    assert session_evidence["recorded"] is True
-    assert all(session_evidence["required_terms_present"].values())
+    assert session_evidence["scope"] == "run"
+    assert session_evidence["fork_isolation"] is True
+    assert session_evidence["worker_process_memory_is_durable_authority"] is False
     assert readiness["non_expansion_invariants"] == {
         "does_not_touch_211": True,
         "does_not_close_b1_or_b5_gate": True,
         "long_term_cross_session_memory_enabled": False,
         "public_projection_only_for_ordinary_users": True,
     }
+
+
+def test_b1_b5_context_runtime_readiness_does_not_require_historical_docs(tmp_path):
+    readiness = build_b1_b5_context_runtime_readiness(repo_root=tmp_path)
+
+    assert readiness["ok"] is True
+    assert readiness["source"]["repo_root_name"] == tmp_path.name
 
 
 def test_b1_b5_context_runtime_readiness_detects_prompt_private_material_leak():

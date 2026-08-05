@@ -270,7 +270,7 @@ def write_b2_source_delta_review_evidence(
         "source_tree_dirty": False,
         "runtime_affecting_changes_since_runtime_subject": [],
         "runtime_neutral_paths": runtime_neutral_paths or [
-            "docs/operations/opensandbox-provider-phase-status.md",
+            "docs/README.md",
             (
                 "docs/release-evidence/b2-sandbox/"
                 "3120921c82de6ede30fbe8eadcb13f08caf56724/"
@@ -286,7 +286,7 @@ def write_b2_source_delta_review_evidence(
             "classification": "docs_release_evidence_and_tests_only",
             "result": [
                 f"M {path}" for path in (runtime_neutral_paths or [
-                    "docs/operations/opensandbox-provider-phase-status.md",
+                    "docs/README.md",
                     (
                         "docs/release-evidence/b2-sandbox/"
                         "3120921c82de6ede30fbe8eadcb13f08caf56724/"
@@ -783,6 +783,8 @@ def test_b2_runtime_delta_filter_treats_non_b2_readiness_and_evidence_as_neutral
         lambda _base, _source: [
             ".github/workflows/ai-platform-backend.yml",
             "app/foundation_alpha_readiness.py",
+            "docs/README.md",
+            "docs/agent-rules/new-contract.md",
             "docs/release-evidence/README.md",
             (
                 "docs/release-evidence/b1-memory-context/"

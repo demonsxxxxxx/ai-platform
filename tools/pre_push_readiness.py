@@ -44,6 +44,7 @@ TEMPORARY_ROOT_PREFIX = "apr-"
 WINDOWS_CONSERVATIVE_DIRECTORY_PATH_BUDGET = 240
 WINDOWS_LONGEST_SKILL_RELATIVE_SUFFIX_LENGTH = 163
 WINDOWS_DIRECTORY_PATH_HEADROOM = 16
+IS_WINDOWS = os.name == "nt"
 
 FAILURE_TAXONOMY = {
     "stale_base": "The supplied base is not an ancestor of head; merge the current base before push.",
@@ -331,10 +332,23 @@ class PrePushReadiness:
             raise ReadinessError("infrastructure_failure", "git_failed", _command_failure("git merge-base", ancestor))
 
     def _create_temporary_root(self) -> Path:
+        temporary_root: Path | None = None
         try:
-            temporary_root = Path(tempfile.mkdtemp(prefix=TEMPORARY_ROOT_PREFIX))
+            parent = _temporary_root_parent()
+            temporary_root = Path(tempfile.mkdtemp(prefix=TEMPORARY_ROOT_PREFIX, dir=parent))
+            if IS_WINDOWS:
+                _assert_windows_nonreparse_directory(temporary_root)
         except OSError as error:
-            raise ReadinessError("infrastructure_failure", "temporary_directory_failed", str(error)) from error
+            cleanup_error: OSError | None = None
+            if temporary_root is not None and _path_lexists(temporary_root):
+                try:
+                    _remove_cleanup_tree(temporary_root)
+                except OSError as removal_error:
+                    cleanup_error = removal_error
+            detail = str(error)
+            if cleanup_error is not None:
+                detail = f"{detail}; rejected temporary root cleanup failed: {cleanup_error}"
+            raise ReadinessError("infrastructure_failure", "temporary_directory_failed", detail) from error
         if _temporary_root_has_windows_headroom(temporary_root):
             return temporary_root
         try:
@@ -839,7 +853,14 @@ class PrePushReadiness:
         for label, path, added in worktrees:
             if not added or path is None:
                 continue
-            record = {"label": label, "path": str(path), "registered_after": None, "remove_returncode": None}
+            record = {
+                "label": label,
+                "path": str(path),
+                "path_exists_after": None,
+                "registered_after": None,
+                "remove_diagnostic": None,
+                "remove_returncode": None,
+            }
             try:
                 if _lexical_path_key(path) in blocked_worktrees:
                     record["remove_skipped"] = "unsafe dependency ancestor remains"
@@ -848,11 +869,7 @@ class PrePushReadiness:
                     removed = self._run(_git_worktree_command("remove", "--force", str(path)), self._repo_root)
                     record["remove_returncode"] = removed.returncode
                     if removed.returncode != 0:
-                        failures.append(_command_failure(f"git worktree remove {label}", removed))
-                registered = self._worktree_registered(path)
-                record["registered_after"] = registered
-                if registered:
-                    failures.append(f"git worktree registration remains for {label}")
+                        record["remove_diagnostic"] = _command_failure(f"git worktree remove {label}", removed)
             except ReadinessError as error:
                 failures.append(str(error))
             records.append(record)
@@ -860,6 +877,20 @@ class PrePushReadiness:
             _remove_cleanup_tree(temporary_root)
         except OSError as error:
             failures.append(f"temporary worktree directory removal failed: {error}")
+        for record, (_, path, _) in zip(records, (item for item in worktrees if item[1] is not None and item[2]), strict=True):
+            assert path is not None
+            try:
+                registered = self._worktree_registered(path)
+                record["registered_after"] = registered
+                if registered:
+                    failures.append(f"git worktree registration remains for {record['label']}")
+            except ReadinessError as error:
+                record["worktree_list_error"] = str(error)
+                failures.append(str(error))
+            path_exists = _path_lexists(path)
+            record["path_exists_after"] = path_exists
+            if path_exists:
+                failures.append(f"git worktree path remains for {record['label']}")
         for record, (_, path) in zip(dependency_records, frontend_dependencies, strict=True):
             exists_after = _path_lexists(path)
             record["exists_after"] = exists_after
@@ -985,6 +1016,24 @@ def _path_lexists(path: Path) -> bool:
 
 def _temporary_worktree_paths(temporary_root: Path) -> tuple[Path, Path]:
     return temporary_root / "base", temporary_root / "head"
+
+
+def _temporary_root_parent() -> Path:
+    if not IS_WINDOWS:
+        return Path(tempfile.gettempdir())
+    parent = Path.home()
+    _assert_windows_nonreparse_directory(parent)
+    return parent
+
+
+def _assert_windows_nonreparse_directory(path: Path) -> None:
+    try:
+        details = os.lstat(_windows_extended_path(path))
+    except OSError as error:
+        raise OSError(f"readiness temporary directory is unavailable: {path}") from error
+    if _is_link_or_reparse_point(details) or not stat.S_ISDIR(details.st_mode):
+        kind = "a reparse point" if _is_link_or_reparse_point(details) else "not a directory"
+        raise OSError(f"readiness temporary directory is {kind}: {path}")
 
 
 def _temporary_root_has_windows_headroom(temporary_root: Path) -> bool:

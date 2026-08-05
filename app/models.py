@@ -94,6 +94,24 @@ class CapabilityDistributionUpdateRequest(BaseModel):
         return _normalize_capability_roles(value, info.field_name)
 
 
+class CapabilityDistributionAuthorityUpdateRequest(BaseModel):
+    """Distribution update whose department labels require route-level directory proof."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["active", "disabled"] = "active"
+    visible_to_user: bool = True
+    scope_mode: Literal["allowlist"] = "allowlist"
+    department_ids: list[str] = Field(default_factory=list, max_length=128)
+    allowed_roles: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("allowed_roles")
+    @classmethod
+    def normalize_allowed_roles(cls, value: list[str], info):
+        return _normalize_capability_roles(value, info.field_name)
+
+
 class CapabilityDistributionToggleRequest(BaseModel):
     """Toggle request accepting the supported enablement aliases."""
 
@@ -129,6 +147,28 @@ class CapabilityDistributionWriteResponse(BaseModel):
     capability_distribution: CapabilityDistributionResponse
     audit_id: str
     audit_action: Literal["capability_distribution.updated", "capability_distribution.toggled"]
+
+
+class DepartmentDirectoryNodeResponse(BaseModel):
+    """Department-only node safe for an administrator ACL editor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    directory_id: str
+    authority_id: str
+    name: str
+    path: str
+    children: list["DepartmentDirectoryNodeResponse"] = Field(default_factory=list)
+    selectable: bool
+    reason: Literal["duplicate_authority_id"] | None = None
+
+
+class DepartmentDirectoryResponse(BaseModel):
+    """Admin-only company directory projection without employee identity fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    departments: list[DepartmentDirectoryNodeResponse] = Field(default_factory=list)
 
 
 class SelectedSkillRequest(BaseModel):
@@ -428,26 +468,6 @@ class RunControlOperationResponse(BaseModel):
     session_id: str | None = None
     status: str
     queue_admission: Literal["admitted", "pending", "settled", "unknown"] | None = None
-
-
-class AgentApp(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    app_id: str
-    name: str
-    mode: Literal["chat", "file", "chat_file"]
-    default_skill_id: str
-    allowed_input_types: list[str] = Field(default_factory=list)
-    output_types: list[str] = Field(default_factory=list)
-    status: Literal["active", "disabled"] = "active"
-
-
-class AgentAppProjection(AgentApp):
-    pass
-
-
-class AgentAppsResponse(BaseModel):
-    agent_apps: list[AgentAppProjection]
 
 
 class SkillDefinition(BaseModel):
@@ -939,6 +959,7 @@ class SessionRenameRequest(BaseModel):
 
 class ChatSessionsResponse(BaseModel):
     sessions: list[ChatSessionResponse]
+    next_cursor: str | None = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -1399,17 +1420,6 @@ class PublicSkillImportUploadResponse(BaseModel):
     created: list[PublicSkillImportCreatedItem] = Field(default_factory=list)
     errors: list[PublicSkillImportErrorItem] = Field(default_factory=list)
     skill_count: int
-
-
-class PublishToMarketplaceRequest(BaseModel):
-    """User-facing publish request accepted by the public Skills contract."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    skill_name: str | None = None
-    description: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    version: str | None = None
 
 
 class MarketplaceSkillResponse(BaseModel):

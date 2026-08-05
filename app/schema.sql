@@ -530,6 +530,7 @@ create table if not exists runs (
 create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at desc);
 create index if not exists idx_runs_session_created on runs(session_id, created_at desc);
 create index if not exists idx_runs_status on runs(status);
+create unique index if not exists uq_runs_tenant_id on runs(tenant_id, id);
 
 alter table runs add column if not exists trace_id text not null default '';
 alter table runs add column if not exists schema_version text not null default 'ai-platform.run.v1';
@@ -539,6 +540,17 @@ alter table runs add column if not exists principal_department_id text not null 
 alter table runs add column if not exists auth_source text;
 alter table sessions add column if not exists admitted_agent_profile_revision bigint;
 alter table sessions add column if not exists admitted_agent_profile_hash text;
+create index if not exists idx_sessions_agent_conversation_history
+  on sessions(
+    tenant_id,
+    user_id,
+    agent_id,
+    admitted_agent_profile_revision,
+    updated_at desc,
+    created_at desc,
+    id desc
+  )
+  where status = 'active' and admitted_agent_profile_revision is not null;
 alter table runs add column if not exists admitted_agent_profile_revision bigint;
 alter table runs add column if not exists admitted_agent_profile_hash text;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
@@ -1766,6 +1778,104 @@ alter table run_events add column if not exists estimated_cost_minor integer not
 
 create index if not exists idx_run_events_run_sequence on run_events(tenant_id, run_id, sequence);
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'fk_run_events_run_scope'
+      and conrelid = 'run_events'::regclass
+  ) then
+    alter table run_events
+      add constraint fk_run_events_run_scope
+      foreign key (tenant_id, run_id) references runs(tenant_id, id);
+  end if;
+end $$;
+
+create table if not exists run_event_cursors (
+  tenant_id text not null,
+  run_id text not null,
+  next_sequence bigint not null default 1 check (next_sequence > 0),
+  updated_at timestamptz not null default now(),
+  primary key (tenant_id, run_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+create table if not exists run_event_batches (
+  id text primary key,
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null, batch_id text not null,
+  event_ids_json jsonb not null default '[]'::jsonb,
+  first_sequence bigint, through_sequence bigint,
+  callback_received_at timestamptz not null default now(),
+  durable_committed_at timestamptz,
+  unique (tenant_id, run_id, attempt_id, batch_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+create table if not exists run_event_terminal_drains (
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  batch_id text not null,
+  primary key (tenant_id, run_id, attempt_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+do $$
+declare
+  unique_index_present boolean;
+  repair_needed boolean;
+begin
+  select exists (
+    select 1 from pg_index indexes
+    where indexes.indexrelid = to_regclass(format('%I.%I', current_schema(), 'uq_run_events_tenant_run_sequence'))
+      and indexes.indrelid = 'run_events'::regclass
+      and indexes.indisunique and indexes.indisvalid
+  ) into unique_index_present;
+  select not unique_index_present or exists (
+    select 1 from run_events group by tenant_id, run_id
+    having min(sequence) < 1 or count(*) <> count(distinct sequence)
+  ) into repair_needed;
+
+  if repair_needed then
+    lock table run_events in share row exclusive mode;
+    select exists (
+      select 1 from pg_index indexes
+      where indexes.indexrelid = to_regclass(format('%I.%I', current_schema(), 'uq_run_events_tenant_run_sequence'))
+        and indexes.indrelid = 'run_events'::regclass
+        and indexes.indisunique and indexes.indisvalid
+    ) into unique_index_present;
+    select not unique_index_present or exists (
+      select 1 from run_events group by tenant_id, run_id
+      having min(sequence) < 1 or count(*) <> count(distinct sequence)
+    ) into repair_needed;
+
+    if repair_needed then
+      if not unique_index_present then drop index if exists uq_run_events_tenant_run_sequence; end if;
+      with affected_groups as (
+        select tenant_id, run_id from run_events group by tenant_id, run_id
+        having min(sequence) < 1 or count(*) <> count(distinct sequence)
+      ), ranked as (
+        select events.id,
+               row_number() over (
+                 partition by events.tenant_id, events.run_id
+                 order by events.sequence asc, events.created_at asc, events.id asc
+               ) as replacement_sequence
+        from run_events events
+        join affected_groups using (tenant_id, run_id)
+      )
+      update run_events events set sequence = -ranked.replacement_sequence from ranked where events.id = ranked.id;
+
+      update run_events set sequence = -sequence where sequence < 0;
+    end if;
+  end if;
+end $$;
+
+create unique index if not exists uq_run_events_tenant_run_sequence on run_events(tenant_id, run_id, sequence);
+
+insert into run_event_cursors(tenant_id, run_id, next_sequence)
+select tenant_id, run_id, coalesce(max(sequence), 0) + 1 from run_events group by tenant_id, run_id
+on conflict (tenant_id, run_id) do update set next_sequence = excluded.next_sequence, updated_at = now()
+where run_event_cursors.next_sequence < excluded.next_sequence;
+
 create table if not exists run_tool_permission_requests (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -1807,6 +1917,7 @@ create table if not exists sandbox_leases (
   user_id text not null references users(id),
   session_id text not null references sessions(id),
   run_id text not null references runs(id),
+  attempt_id text,
   trace_id text not null default '',
   sandbox_mode text not null,
   provider text not null default 'fake',
@@ -1833,13 +1944,18 @@ create index if not exists idx_sandbox_leases_run
 create index if not exists idx_sandbox_leases_status
   on sandbox_leases(tenant_id, status, expires_at);
 
+alter table sandbox_leases add column if not exists attempt_id text;
 alter table sandbox_leases add column if not exists runtime_container_id text;
 alter table sandbox_leases add column if not exists runtime_container_name text;
 alter table sandbox_leases add column if not exists runtime_executor_url text;
 alter table sandbox_leases add column if not exists runtime_workspace_container_path text;
 alter table sandbox_leases add column if not exists runtime_handle_verified_at timestamptz;
+create index if not exists idx_sandbox_leases_attempt
+  on sandbox_leases(tenant_id, run_id, attempt_id, status);
 
 -- Rollback for the additive runtime handle columns:
+-- drop index if exists idx_sandbox_leases_attempt;
+-- alter table sandbox_leases drop column if exists attempt_id;
 -- alter table sandbox_leases drop column if exists runtime_handle_verified_at;
 -- alter table sandbox_leases drop column if exists runtime_workspace_container_path;
 -- alter table sandbox_leases drop column if exists runtime_executor_url;
@@ -1917,7 +2033,7 @@ values
   ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
   ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["translated_docx"]'::jsonb, 'claude-agent-worker'),
   ('general-chat', 'General Chat Agent', '0.1.0', 'General chat agent executed by Claude Agent worker.', '["chat"]'::jsonb, '["answer"]'::jsonb, 'claude-agent-worker'),
-  ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'ragflow')
+  ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations through the platform-managed MCP tool.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker')
 on conflict (id) do update set
   name = excluded.name,
   version = excluded.version,

@@ -122,6 +122,10 @@ DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 1800
 CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = DEFAULT_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
 MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 300
 MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS = 3600
+COMPOSE_CONFIG_PREFLIGHT_TIMEOUT_SECONDS = 15
+COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS = 32
+COMPOSE_CONFIG_PREFLIGHT_MAX_TOTAL_SECONDS = (COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS + 1) * COMPOSE_CONFIG_PREFLIGHT_TIMEOUT_SECONDS
+COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER = "release-authority-preflight.invalid/compose-config-only"
 PROCESS_TREE_TERMINATION_GRACE_SECONDS = 1
 WINDOWS_CREATE_SUSPENDED = 0x00000004
 BUILD_PROGRESS_READ_CHUNK_BYTES = 16 * 1024
@@ -1390,33 +1394,30 @@ def _redacted_stderr_diagnostic(stderr: str | bytes | None) -> dict[str, Any]:
 
 def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
     """Return only bounded, non-secret facts needed to diagnose one failed stage."""
+    shared = {
+        **getattr(exc, "safe_compose_config_evidence", {}),
+        **getattr(exc, "safe_backend_flatten_evidence", {}),
+        **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {}),
+    }
     if isinstance(exc, subprocess.TimeoutExpired):
         return {
             "failure_kind": "timeout",
             "timeout_seconds": exc.timeout,
-            **getattr(
-                exc,
-                "safe_stderr_diagnostic",
-                _redacted_stderr_diagnostic(exc.stderr),
-            ),
+            **getattr(exc, "safe_stderr_diagnostic", _redacted_stderr_diagnostic(exc.stderr)),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
-            **{**getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})},
+            **shared,
         }
     if isinstance(exc, subprocess.CalledProcessError):
         return {
             "failure_kind": "nonzero-exit",
             "exit_code": exc.returncode,
-            **getattr(
-                exc,
-                "safe_stderr_diagnostic",
-                _redacted_stderr_diagnostic(exc.stderr),
-            ),
+            **getattr(exc, "safe_stderr_diagnostic", _redacted_stderr_diagnostic(exc.stderr)),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
-            **{**getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})},
+            **shared,
         }
     if isinstance(exc, OSError):
-        return {"failure_kind": "os-error", **({"errno": exc.errno} if isinstance(exc.errno, int) else {}), **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
-    return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
+        return {"failure_kind": "os-error", **({"errno": exc.errno} if isinstance(exc.errno, int) else {}), **shared}
+    return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **shared}
 
 
 def _stage(
@@ -1668,50 +1669,22 @@ def resolve_compose_files(
         root = supplied_root.resolve(strict=True)
     except OSError as exc:
         raise ReleaseAuthorityError("release checkout path is invalid") from exc
-    if (
-        not root.is_dir()
-        or _is_link_or_junction(supplied_root)
-        or absolute_root != root
-    ):
+    if not root.is_dir() or _is_link_or_junction(supplied_root) or absolute_root != root:
         raise ReleaseAuthorityError("release checkout path is invalid")
-    values: Sequence[str | Path]
-    if compose_files is None:
-        values = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),)
-    else:
-        values = compose_files
+    values: Sequence[str | Path] = compose_files if compose_files is not None else (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),)
     if not values:
         raise ReleaseAuthorityError("compose file selection is invalid")
     relative_paths: list[str] = []
     absolute_paths: list[Path] = []
     identities: set[str] = set()
     for index, value in enumerate(values):
-        if isinstance(value, Path):
-            raw = value.as_posix()
-        elif isinstance(value, str):
-            raw = value
-        else:
+        if not isinstance(value, (str, Path)):
             raise ReleaseAuthorityError("compose file selection is invalid")
-        invalid_text = (
-            not raw
-            or raw != unicodedata.normalize("NFC", raw)
-            or "\\" in raw
-            or "," in raw
-            or any(
-                unicodedata.category(character) in WORKER_TMPDIR_UNICODE_CATEGORIES
-                for character in raw
-            )
-        )
+        raw = value.as_posix() if isinstance(value, Path) else value
+        invalid_text = not raw or raw != unicodedata.normalize("NFC", raw) or "\\" in raw or "," in raw or any(unicodedata.category(character) in WORKER_TMPDIR_UNICODE_CATEGORIES for character in raw)
         pure = PurePosixPath(raw)
         windows = PureWindowsPath(raw)
-        invalid_path = (
-            invalid_text
-            or pure.is_absolute()
-            or windows.is_absolute()
-            or bool(windows.drive)
-            or pure.as_posix() != raw
-            or raw.endswith("/")
-            or any(part in {"", ".", ".."} for part in pure.parts)
-        )
+        invalid_path = invalid_text or pure.is_absolute() or windows.is_absolute() or bool(windows.drive) or pure.as_posix() != raw or raw.endswith("/") or any(part in {"", ".", ".."} for part in pure.parts)
         if invalid_path:
             raise ReleaseAuthorityError("compose file selection is invalid")
         if index == 0 and raw != DEFAULT_COMPOSE_RELATIVE_PATH.as_posix():
@@ -1728,11 +1701,7 @@ def resolve_compose_files(
             resolved = candidate.resolve(strict=True)
         except OSError as exc:
             raise ReleaseAuthorityError("compose file must exist") from exc
-        if (
-            resolved != candidate
-            or not resolved.is_relative_to(root)
-            or not resolved.is_file()
-        ):
+        if resolved != candidate or not resolved.is_relative_to(root) or not resolved.is_file():
             raise ReleaseAuthorityError("compose file must be a regular checkout file")
         identity = os.path.normcase(str(resolved))
         if identity in identities or any(os.path.samefile(resolved, other) for other in absolute_paths):
@@ -1741,13 +1710,7 @@ def resolve_compose_files(
         relative_paths.append(raw)
         absolute_paths.append(resolved)
     working_dir = absolute_paths[0].parent.as_posix()
-    return _ComposeSelection(
-        checkout_root=root,
-        relative_paths=tuple(relative_paths),
-        absolute_paths=tuple(absolute_paths),
-        working_dir=working_dir,
-        config_files=",".join(path.as_posix() for path in absolute_paths),
-    )
+    return _ComposeSelection(root, tuple(relative_paths), tuple(absolute_paths), working_dir, ",".join(path.as_posix() for path in absolute_paths))
 
 
 def _normalized_release_root(release_root: Path) -> Path:
@@ -1949,6 +1912,42 @@ def _docker_base(docker_cmd: str) -> list[str]:
     if not command or command[-1] != "docker":
         raise ReleaseAuthorityError("docker command must end with the docker executable")
     return command
+
+
+def _compose_command_with_environment(docker: Sequence[str], environment: Sequence[str]) -> list[str]:
+    return [*docker[:-1], "env", *environment, docker[-1]] if list(docker[:2]) == ["sudo", "-n"] else ["env", *environment, *docker]
+
+def _compose_config_preflight_error(category: str, missing_keys: Sequence[str] = ()) -> ReleaseAuthorityError:
+    error = ReleaseAuthorityError("compose semantic configuration preflight failed")
+    error.safe_compose_config_evidence = {"compose_config_error_category": category, **({"missing_required_keys": list(sorted(set(missing_keys)))} if missing_keys else {})}
+    return error
+
+def _semantic_compose_config_preflight(docker: Sequence[str], selection: _ComposeSelection, env_file: Path, *, commit: str) -> None:
+    pattern = re.compile(r"\$\{([A-Z][A-Z0-9_]{0,127}):\?[^}]*\}", re.ASCII)
+    try:
+        required_keys = sorted({key for path in selection.absolute_paths for key in pattern.findall(path.read_text(encoding="utf-8"))})
+    except (OSError, UnicodeError):
+        raise _compose_config_preflight_error("unreadable-config") from None
+    if len(required_keys) > COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS:
+        raise _compose_config_preflight_error("required-key-limit-exceeded")
+    missing_keys: list[str] = []
+    release_overrides = [f"AI_PLATFORM_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/backend", f"AI_PLATFORM_FRONTEND_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/frontend", f"SANDBOX_EXECUTOR_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/sandbox-executor", f"AI_PLATFORM_SOURCE_COMMIT={commit}", f"AI_PLATFORM_BUILD_COMMIT={commit}", "AI_PLATFORM_BUILD_DIRTY=false"]
+    compose_file_args = [argument for path in selection.absolute_paths for argument in ("-f", str(path))]
+    for _ in range(COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS + 1):
+        command = [*_compose_command_with_environment(docker, [*release_overrides, *(f"{key}={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}" for key in missing_keys)]), "compose", "-p", COMPOSE_PROJECT, "--env-file", str(env_file), *compose_file_args, "config", "--quiet"]
+        result = _run(command, cwd=selection.absolute_paths[0].parent, check=False, timeout=COMPOSE_CONFIG_PREFLIGHT_TIMEOUT_SECONDS)
+        if result.returncode == 0:
+            if missing_keys:
+                raise _compose_config_preflight_error("missing-required-config", missing_keys)
+            return
+        stderr = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, bytes) else result.stderr if isinstance(result.stderr, str) else ""
+        if "required" not in stderr.lower() or not any(marker in stderr.lower() for marker in ("missing", "value", "set ")):
+            raise _compose_config_preflight_error("invalid-config")
+        newly_missing = [key for key in required_keys if key not in missing_keys and re.search(rf"(?<![A-Z0-9_]){re.escape(key)}(?![A-Z0-9_])", stderr, re.ASCII)]
+        if not newly_missing:
+            raise _compose_config_preflight_error("invalid-config")
+        missing_keys.extend(newly_missing)
+    raise _compose_config_preflight_error("required-key-limit-exceeded")
 
 
 def _docker_json(docker: list[str], *args: str) -> Any:
@@ -2663,6 +2662,7 @@ def deploy_clean_commit(
     selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
     repository = authoritative_repository(repo_root)
+    _stage(events, name="compose-config-preflight", strategy=strategy, action="validate", operation=lambda: _semantic_compose_config_preflight(docker, selection, compose_env_file, commit=normalized), timeout_seconds=COMPOSE_CONFIG_PREFLIGHT_MAX_TOTAL_SECONDS)
     ownership = _preflight_managed_container_ownership(docker, selection, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id)
     refs = build_image_references(normalized)
     images: dict[str, dict[str, Any]] = {}
@@ -2820,10 +2820,7 @@ def deploy_clean_commit(
         f"AI_PLATFORM_BUILD_COMMIT={normalized}",
         "AI_PLATFORM_BUILD_DIRTY=false",
     ]
-    if docker[:2] == ["sudo", "-n"]:
-        compose_command = ["sudo", "-n", "env", *compose_environment, "docker"]
-    else:
-        compose_command = ["env", *compose_environment, *docker]
+    compose_command = _compose_command_with_environment(docker, compose_environment)
     compose_file_args = [argument for path in selection.absolute_paths for argument in ("-f", str(path))]
     _stage(
         events,

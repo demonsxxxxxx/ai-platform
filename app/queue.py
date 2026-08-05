@@ -872,6 +872,20 @@ return cjson.encode({status = "failed"})
 """
 
 
+PRUNE_STALE_WORKER_HEARTBEATS_SCRIPT = """
+-- ai-platform:prune-stale-worker-heartbeats:v1
+local removed = 0
+for index = 1, #ARGV, 2 do
+  local worker_id = ARGV[index]
+  local expected_heartbeat = ARGV[index + 1]
+  if redis.call("hget", KEYS[1], worker_id) == expected_heartbeat then
+    removed = removed + redis.call("hdel", KEYS[1], worker_id)
+  end
+end
+return removed
+"""
+
+
 VERIFY_LEASE_OWNERSHIP_SCRIPT = """
 -- ai-platform:verify-run-lease-ownership:v1
 local metadata_json = redis.call("hget", KEYS[1], ARGV[1])
@@ -1070,6 +1084,15 @@ def _dead_letter_json(
         },
         ensure_ascii=False,
     )
+
+
+def _dead_letter_max_entries() -> int:
+    return max(int(getattr(get_settings(), "queue_dead_letter_max_entries", 1000)), 1)
+
+
+async def _trim_dead_letters(redis: Redis, keys: QueueKeys) -> None:
+    max_entries = _dead_letter_max_entries()
+    await redis.ltrim(keys.dead_letter, -max_entries, -1)
 
 
 async def enqueue_run_with_metadata(payload: dict[str, Any]) -> QueueAdmissionMetadata:
@@ -1369,7 +1392,9 @@ async def get_queue_status() -> dict[str, Any]:
         processing_meta = await redis.hgetall(keys.processing_meta)
         worker_heartbeats = await redis.hgetall(keys.worker_heartbeat)
         now = _now()
-        active_worker_heartbeats = _active_worker_heartbeats(
+        active_worker_heartbeats = await _prune_stale_worker_heartbeats(
+            redis,
+            keys.worker_heartbeat,
             worker_heartbeats,
             now=now,
             ttl_seconds=float(getattr(settings, "worker_heartbeat_ttl_seconds", 60.0)),
@@ -1549,6 +1574,35 @@ def _active_worker_heartbeats(
     return active
 
 
+async def _prune_stale_worker_heartbeats(
+    redis: Redis,
+    worker_heartbeat_key: str,
+    worker_heartbeats: dict[str, str],
+    *,
+    now: float,
+    ttl_seconds: float,
+) -> dict[str, str]:
+    active = _active_worker_heartbeats(
+        worker_heartbeats,
+        now=now,
+        ttl_seconds=ttl_seconds,
+    )
+    stale_worker_ids = sorted(worker_heartbeats.keys() - active.keys())
+    if stale_worker_ids:
+        compare_and_delete_args = [
+            value
+            for worker_id in stale_worker_ids
+            for value in (worker_id, worker_heartbeats[worker_id])
+        ]
+        await redis.eval(
+            PRUNE_STALE_WORKER_HEARTBEATS_SCRIPT,
+            1,
+            worker_heartbeat_key,
+            *compare_and_delete_args,
+        )
+    return active
+
+
 def _capacity_snapshot(*, processing: int, max_active_worker_runs: int) -> dict[str, Any]:
     if max_active_worker_runs <= 0:
         return {
@@ -1713,7 +1767,9 @@ async def get_queue_insight(
         processing_items = await redis.lrange(keys.processing, 0, -1)
         worker_heartbeats = await redis.hgetall(keys.worker_heartbeat)
         now = _now()
-        active_worker_heartbeats = _active_worker_heartbeats(
+        active_worker_heartbeats = await _prune_stale_worker_heartbeats(
+            redis,
+            keys.worker_heartbeat,
             worker_heartbeats,
             now=now,
             ttl_seconds=float(getattr(settings, "worker_heartbeat_ttl_seconds", 60.0)),
@@ -1987,7 +2043,10 @@ async def _dead_letter_expired_lease_with_fence(
             expected_owner_token,
         )
     )
-    return str(result.get("status") or "") == "dead_lettered"
+    dead_lettered = str(result.get("status") or "") == "dead_lettered"
+    if dead_lettered:
+        await _trim_dead_letters(redis, keys)
+    return dead_lettered
 
 
 async def _remove_message_id_from_run_index(
@@ -2071,6 +2130,7 @@ async def _dead_letter_invalid_queue_payload(
             worker_id=worker_id,
         ),
     )
+    await _trim_dead_letters(redis, keys)
     await redis.hdel(keys.retry_meta, message_id)
     await _delete_queued_metadata_for_message_id(redis, keys, message_id=message_id)
 
@@ -2104,7 +2164,10 @@ async def _dead_letter_invalid_queued_payload_atomic(
         _now(),
         error_message,
     )
-    return _decode_redis_script_result(result)
+    decoded = _decode_redis_script_result(result)
+    if str(decoded.get("status") or "") == "dead_lettered":
+        await _trim_dead_letters(redis, keys)
+    return decoded
 
 
 async def _lease_run_legacy(
@@ -2335,7 +2398,10 @@ async def fail_leased_run(
                 keys.reconciliation_fence_prefix,
             )
         )
-        return LeaseMutationOutcome(str(result.get("status") or "inconclusive"))
+        status = str(result.get("status") or "inconclusive")
+        if status == "failed":
+            await _trim_dead_letters(redis, keys)
+        return LeaseMutationOutcome(status)
     finally:
         await redis.aclose()
 

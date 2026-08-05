@@ -11,8 +11,8 @@ from psycopg import sql as psycopg_sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
-from app.models import QueueRunPayload
+from app import agent_conversation_repository, repositories
+from app import run_event_repository
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -42,20 +42,21 @@ from app.repositories import (
     get_tool_permission_request_by_id_for_tenant,
     get_tool_permission_request_for_tenant,
     get_run_identity,
-    list_multi_agent_dispatch_candidate_run_ids,
     list_tool_permission_inbox,
     list_tool_permission_inbox_for_tenant,
     list_run_events,
     list_run_artifacts,
     list_scoped_context_messages,
-    mark_multi_agent_dispatch_enqueue_failed,
-    mark_multi_agent_dispatch_parent_awaiting_dispatch,
     get_scoped_context_file,
     get_scoped_context_artifact,
     list_scoped_context_memory_records,
     renew_sandbox_lease,
     upsert_run_step,
 )
+
+
+async def _record_noop_event(*_args, **_kwargs):
+    return "evt-test"
 
 
 def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
@@ -1128,7 +1129,7 @@ async def test_resolve_agent_skill_uses_global_skill_lifecycle_and_canonical_bac
             "skill_status": "active",
             "skill_version": "0.1.0",
             "skill_version_status": "active",
-            "executor_type": "ragflow",
+            "executor_type": "claude-agent-worker",
             "backing_mcp_tool_id": "ragflow-knowledge-search",
             "input_modes": ["chat"],
         }
@@ -1432,7 +1433,7 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
 
 
 @pytest.mark.asyncio
-async def test_authorize_replay_run_capabilities_reauthorizes_pinned_historical_mcp(monkeypatch):
+async def test_authorize_replay_run_capabilities_reauthorizes_harness_pinned_mcp(monkeypatch):
     calls = []
 
     async def shared_authorizer(conn, **kwargs):
@@ -1460,7 +1461,7 @@ async def test_authorize_replay_run_capabilities_reauthorizes_pinned_historical_
         agent_id="general-agent",
         skill_id="knowledge-v1",
         pinned_version="hash-v1",
-        pinned_executor_type="ragflow",
+        pinned_executor_type="claude-agent-worker",
         skill_manifests=[
             {
                 "skill_id": "knowledge-v1",
@@ -1480,6 +1481,22 @@ async def test_authorize_replay_run_capabilities_reauthorizes_pinned_historical_
     )
 
     assert calls == [{"message": "search", "mcp_tool_ids": ["historical-search"]}]
+
+
+def test_historical_direct_ragflow_replay_fails_closed():
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        repositories.pinned_replay_mcp_tool_ids(
+            skill_id="knowledge-v1",
+            pinned_version="hash-v1",
+            pinned_executor_type="ragflow",
+            skill_manifests=[
+                {
+                    "skill_id": "knowledge-v1",
+                    "version": "hash-v1",
+                    "mcp_tool_ids": ["historical-search"],
+                }
+            ],
+        )
 
 
 def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
@@ -2634,14 +2651,14 @@ async def test_capability_distribution_authorization_allows_same_department_skil
 
 
 @pytest.mark.asyncio
-async def test_direct_ragflow_authorization_derives_canonical_backing_tool_without_explicit_selector(monkeypatch):
+async def test_harness_skill_authorization_derives_canonical_backing_tool_without_explicit_selector(monkeypatch):
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return {
             "skill_id": skill_id,
             "skill_status": "active",
-            "executor_type": "ragflow",
+            "executor_type": "claude-agent-worker",
             "backing_mcp_tool_id": "tenant-search",
         }
 
@@ -2693,12 +2710,15 @@ async def test_direct_ragflow_authorization_derives_canonical_backing_tool_witho
     "denial",
     ["backing_missing", "tool_missing", "hidden", "disabled", "department", "role", "parent_disabled"],
 )
-async def test_direct_ragflow_authorization_fails_closed_for_current_parent_and_tool_state(monkeypatch, denial):
+async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_current_parent_and_tool_state(
+    monkeypatch,
+    denial,
+):
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return {
             "skill_id": skill_id,
             "skill_status": "active",
-            "executor_type": "ragflow",
+            "executor_type": "claude-agent-worker",
             "backing_mcp_tool_id": None if denial == "backing_missing" else "tenant-search",
         }
 
@@ -2741,7 +2761,7 @@ async def test_direct_ragflow_authorization_fails_closed_for_current_parent_and_
             object(),
             tenant_id="tenant-a",
             agent_id="sop-assistant",
-            skill_id="knowledge-skill",
+            skill_id="ragflow-knowledge-search",
             normalized_input={},
             principal_department_id="qa",
             principal_roles=["qa_operator"],
@@ -2985,65 +3005,6 @@ def test_normalize_run_input_preserves_top_level_and_step_mcp_tool_scopes(redact
     )
     assert "mcp_tool_ids" not in step_only
     assert "mcpToolIds" not in step_only
-
-
-@pytest.mark.parametrize(
-    ("selected_step_key", "selected_tool_id", "sibling_tool_id"),
-    [
-        ("plan", "tool-plan", "tool-code"),
-        ("code", "tool-code", "tool-plan"),
-    ],
-)
-def test_multi_agent_child_and_queue_input_exclude_sibling_step_tools(
-    selected_step_key,
-    selected_tool_id,
-    sibling_tool_id,
-):
-    child_input = repositories._multi_agent_dispatch_child_execution_input(
-        {
-            "message": "run scoped tools",
-            "mcpToolIds": ["tool-global"],
-            "multi_agent_steps": [
-                {"step_key": "plan", "mcp_tool_ids": ["tool-plan"]},
-                {"step_key": "code", "mcpToolIds": ["tool-code"]},
-            ],
-        },
-        parent_run_id="run-parent",
-        dispatch_id=f"dispatch-{selected_step_key}",
-        step={
-            "id": f"step-{selected_step_key}",
-            "step_key": selected_step_key,
-            "role": f"{selected_step_key}-role",
-            "title": selected_step_key.title(),
-        },
-        depends_on=[],
-        resume_payload={},
-    )
-    queue_payload = QueueRunPayload(
-        tenant_id="tenant-a",
-        workspace_id="default",
-        user_id="user-a",
-        session_id="session-a",
-        run_id=f"run-child-{selected_step_key}",
-        agent_id="general-agent",
-        skill_id="general-chat",
-        input=child_input,
-        executor_type="claude-agent-worker",
-        skill_version="hash-primary",
-        release_decision={
-            "schema_version": "ai-platform.skill-release-decision.v1",
-            "policy_active": False,
-            "selected_version": "hash-primary",
-            "selected_track": "manifest_pin",
-        },
-        skill_manifests=[{"skill_id": "general-chat", "content_hash": "hash-primary"}],
-    )
-
-    assert child_input["mcp_tool_ids"] == ["tool-global"]
-    assert child_input["multi_agent_steps"][0]["mcp_tool_ids"] == [selected_tool_id]
-    assert sibling_tool_id not in json.dumps(child_input)
-    assert queue_payload.input == child_input
-    assert sibling_tool_id not in json.dumps(queue_payload.input)
 
 
 @pytest.mark.parametrize(
@@ -4288,7 +4249,7 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
 
 
 @pytest.mark.asyncio
-async def test_cancel_run_closes_non_terminal_run_steps():
+async def test_cancel_run_closes_non_terminal_run_steps(monkeypatch):
     class RecordingConnection:
         def __init__(self):
             self.calls = []
@@ -4319,6 +4280,7 @@ async def test_cancel_run_closes_non_terminal_run_steps():
             return FakeCursor()
 
     conn = RecordingConnection()
+    monkeypatch.setattr(repositories, "append_event", _record_noop_event)
 
     result = await cancel_run(
         conn,
@@ -4345,7 +4307,7 @@ async def test_cancel_run_closes_non_terminal_run_steps():
 
 
 @pytest.mark.asyncio
-async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_progress():
+async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_progress(monkeypatch):
     class RecordingConnection:
         def __init__(self):
             self.calls = []
@@ -4379,6 +4341,7 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
             return FakeCursor()
 
     conn = RecordingConnection()
+    monkeypatch.setattr(repositories, "append_event", _record_noop_event)
 
     result = await fail_run(
         conn,
@@ -4753,6 +4716,79 @@ async def test_create_session_validates_workspace_tenant_before_insert(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_create_session_conflict_is_atomic_and_requires_exact_binding(monkeypatch):
+    async def ensure_workspace_belongs_to_tenant(_conn, *, tenant_id, workspace_id):
+        assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
+
+    monkeypatch.setattr(
+        repositories,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+    )
+    conn = SingleRowConnection(None)
+
+    with pytest.raises(RepositoryConflictError, match="session_scope_mismatch"):
+        await repositories.create_session(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            agent_id="agent-a",
+            title="Agent A",
+            session_id="session-shared",
+            admitted_agent_profile_revision=3,
+            admitted_agent_profile_hash="profile-hash",
+        )
+
+    assert conn.sql.startswith("insert into sessions")
+    assert "on conflict (id) do update" in conn.sql
+    assert "sessions.tenant_id = excluded.tenant_id" in conn.sql
+    assert "sessions.workspace_id = excluded.workspace_id" in conn.sql
+    assert "sessions.user_id is not distinct from excluded.user_id" in conn.sql
+    assert "sessions.agent_id = excluded.agent_id" in conn.sql
+    assert "sessions.admitted_agent_profile_revision is not distinct from excluded.admitted_agent_profile_revision" in conn.sql
+    assert "sessions.admitted_agent_profile_hash is not distinct from excluded.admitted_agent_profile_hash" in conn.sql
+    assert "returning sessions.id" in conn.sql
+
+
+@pytest.mark.asyncio
+async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
+    async def ensure_workspace_belongs_to_tenant(_conn, *, tenant_id, workspace_id):
+        assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
+
+    monkeypatch.setattr(
+        repositories,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+    )
+    conn = SingleRowConnection({"id": "session-shared"})
+
+    session_id = await repositories.create_session(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id=None,
+        agent_id="agent-a",
+        title="Agent A",
+        session_id="session-shared",
+        admitted_agent_profile_revision=None,
+        admitted_agent_profile_hash=None,
+    )
+
+    assert session_id == "session-shared"
+    assert conn.params == (
+        "session-shared",
+        "tenant-a",
+        "workspace-a",
+        None,
+        "agent-a",
+        "Agent A",
+        None,
+        None,
+    )
+
+
+@pytest.mark.asyncio
 async def test_create_run_validates_workspace_tenant_before_insert(monkeypatch):
     calls = []
 
@@ -4910,8 +4946,18 @@ async def test_mark_run_running_requires_run_session_scope_to_match():
 
 
 @pytest.mark.asyncio
-async def test_append_event_persists_standard_envelope_columns():
+async def test_append_event_persists_standard_envelope_columns(monkeypatch):
     conn = RecordingConnection()
+    captured = []
+
+    async def append_one(_conn, *, tenant_id, run_id, event):
+        captured.append((tenant_id, run_id, event))
+        return run_event_repository._ledger.EventReceipt(
+            "evt-a",
+            run_event_repository._ledger.RunCursor(run_id, 1),
+        )
+
+    monkeypatch.setattr(run_event_repository._ledger, "append_event", append_one)
 
     await append_event(
         conn,
@@ -4925,21 +4971,20 @@ async def test_append_event_persists_standard_envelope_columns():
         latency_ms=12,
     )
 
-    sql, params = conn.calls[0]
-    assert "trace_id" in sql
-    assert "schema_version" in sql
-    assert "sequence" in sql
-    assert "coalesce(max(sequence), 0) + 1" in sql
-    assert "severity" in sql
-    assert "visible_to_user" in sql
-    assert "error_code" in sql
-    assert "latency_ms" in sql
-    assert "trace_a" in params
-    assert "ai-platform.event-envelope.v1" in params
-    assert "error" in params
-    assert False in params
-    assert "executor_failure" in params
-    assert 12 in params
+    assert captured == [
+        (
+            "tenant-a",
+            "run-a",
+            run_event_repository._ledger.LedgerEvent(
+                event_type="run_failed",
+                stage="worker",
+                message="Run failed",
+                payload={"severity": "error", "visible_to_user": False, "error_code": "executor_failure"},
+                trace_id="trace_a",
+                latency_ms=12,
+            ),
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -8891,6 +8936,70 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
 
 
 @pytest.mark.asyncio
+async def test_real_sandbox_lease_requires_attempt_and_complete_runtime_handle():
+    conn = RecordingConnection()
+    common = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "trace_id": "trace-a",
+        "sandbox_mode": "ephemeral",
+        "provider": "docker",
+        "browser_enabled": False,
+        "ttl_seconds": 600,
+        "resource_limits_json": {},
+        "user_visible_payload_json": {"workspace": "/workspace"},
+        "lease_payload_json": {"attempt_id": "attempt-a"},
+    }
+
+    with pytest.raises(ValueError, match="sandbox_runtime_handle_required"):
+        await create_sandbox_lease(conn, **common)
+    assert conn.calls == []
+
+    await create_sandbox_lease(
+        conn,
+        **common,
+        attempt_id="attempt-a",
+        runtime_container_id="container-a",
+        runtime_container_name="executor-container-a",
+        runtime_executor_url="http://executor.test",
+        runtime_workspace_container_path="/workspace",
+    )
+
+    create_sql, create_params = conn.calls[0]
+    assert "run_id, attempt_id, trace_id" in create_sql
+    assert "attempt-a" in create_params
+
+
+@pytest.mark.asyncio
+async def test_fake_sandbox_lease_rejects_disagreeing_attempt_binding():
+    conn = RecordingConnection()
+
+    with pytest.raises(ValueError, match="sandbox_runtime_handle_required"):
+        await create_sandbox_lease(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            trace_id="trace-a",
+            sandbox_mode="ephemeral",
+            provider="fake",
+            browser_enabled=False,
+            ttl_seconds=600,
+            resource_limits_json={},
+            user_visible_payload_json={"workspace": "/workspace"},
+            lease_payload_json={"attempt_id": "attempt-old"},
+        )
+
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
 async def test_cleanup_expired_sandbox_leases_releases_expired_non_runtime_leases_and_emits_events(monkeypatch):
     from app.repositories import cleanup_expired_sandbox_leases
 
@@ -9000,248 +9109,6 @@ async def test_cleanup_expired_sandbox_leases_global_scope_emits_events_for_each
     assert update_params == ("expired", None, None)
     assert [call[1]["tenant_id"] for call in calls[1:]] == ["tenant-a", "tenant-b"]
     assert [call[1]["payload"]["lease_id"] for call in calls[1:]] == ["lease-a", "lease-b"]
-
-
-@pytest.mark.asyncio
-async def test_cleanup_expired_multi_agent_dispatch_claims_reclaims_steps_and_writes_audit(monkeypatch):
-    calls = []
-
-    class ExpiredClaimCursor:
-        async def fetchall(self):
-            return [
-                {
-                    "id": "step-code",
-                    "tenant_id": "default",
-                    "run_id": "run-ready",
-                    "trace_id": "trace-ready",
-                    "step_key": "code",
-                    "payload_json": {
-                        "dispatch_id": "dispatch-code",
-                        "dispatch_state": "claimed",
-                        "dispatch_lease_expires_at": "2000-01-01T00:00:00+00:00",
-                    },
-                }
-            ]
-
-    class UpdateCursor:
-        async def fetchall(self):
-            return []
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append((normalized, params))
-            if normalized.startswith("select rs.id"):
-                return ExpiredClaimCursor()
-            if normalized.startswith("update run_steps"):
-                return UpdateCursor()
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fake_append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "aud-expired"
-
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-
-    cleaned = await repositories.cleanup_expired_multi_agent_dispatch_claims(
-        FakeConnection(),
-        tenant_id="default",
-        cleaned_by="admin-a",
-        limit=25,
-    )
-
-    assert cleaned == [
-        {
-            "step_id": "step-code",
-            "run_id": "run-ready",
-            "step_key": "code",
-            "dispatch_id": "dispatch-code",
-            "status": "pending",
-        }
-    ]
-    select_sql, select_params = calls[0]
-    assert "payload_json->>'dispatch_state' = 'claimed'" in select_sql
-    assert "payload_json->>'dispatch_lease_expires_at'" in select_sql
-    assert "::timestamptz" not in select_sql
-    assert "r.status in" not in select_sql
-    assert "skip locked" in select_sql
-    assert select_params[0] == "default"
-    assert select_params[-1] == 25
-    update_sql, update_params = calls[1]
-    assert "status = 'pending'" in update_sql
-    assert "started_at = null" in update_sql
-    assert "finished_at = null" in update_sql
-    assert "dispatch_state" in update_sql
-    assert update_params[1] == "default"
-    assert update_params[2] == "step-code"
-    assert calls[2] == (
-        "audit",
-        {
-            "tenant_id": "default",
-            "user_id": "admin-a",
-            "action": "run.multi_agent.dispatch.expire",
-            "target_type": "run_step",
-            "target_id": "step-code",
-            "trace_id": "trace-ready",
-            "payload_json": {
-                "run_id": "run-ready",
-                "step_key": "code",
-                "dispatch_id": "dispatch-code",
-                "result_status": "expired",
-            },
-        },
-    )
-
-
-@pytest.mark.asyncio
-async def test_cleanup_expired_multi_agent_dispatch_claims_skips_malformed_timestamp_without_audit(monkeypatch):
-    calls = []
-
-    class ExpiredClaimCursor:
-        async def fetchall(self):
-            return [
-                {
-                    "id": "step-code",
-                    "tenant_id": "default",
-                    "run_id": "run-ready",
-                    "trace_id": "trace-ready",
-                    "step_key": "code",
-                    "payload_json": {
-                        "dispatch_id": "dispatch-code",
-                        "dispatch_state": "claimed",
-                        "dispatch_lease_expires_at": "2026-99-99Tbad",
-                    },
-                }
-            ]
-
-    class UpdateCursor:
-        async def fetchall(self):
-            return []
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append((normalized, params))
-            if normalized.startswith("select rs.id"):
-                return ExpiredClaimCursor()
-            if normalized.startswith("update run_steps"):
-                return UpdateCursor()
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fail_append_audit_log(*args, **kwargs):
-        raise AssertionError("malformed lease timestamps must not write audit rows")
-
-    monkeypatch.setattr("app.repositories.append_audit_log", fail_append_audit_log)
-
-    cleaned = await repositories.cleanup_expired_multi_agent_dispatch_claims(
-        FakeConnection(),
-        tenant_id="default",
-        cleaned_by="admin-a",
-        limit=25,
-    )
-
-    assert cleaned == []
-    assert len(calls) == 1
-    select_sql, select_params = calls[0]
-    assert "::timestamptz" not in select_sql
-    assert "skip locked" in select_sql
-    assert select_params[0] == "default"
-    assert select_params[-1] == 25
-
-
-@pytest.mark.asyncio
-async def test_cleanup_expired_multi_agent_dispatch_claims_scans_past_unreclaimable_candidates(monkeypatch):
-    calls = []
-
-    class CandidateCursor:
-        def __init__(self, rows):
-            self.rows = rows
-
-        async def fetchall(self):
-            return self.rows
-
-    class UpdateCursor:
-        async def fetchall(self):
-            return []
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append((normalized, params))
-            if normalized.startswith("select rs.id"):
-                seen_ids = set(params[1])
-                first_batch = [
-                    {
-                        "id": "step-malformed",
-                        "tenant_id": "default",
-                        "run_id": "run-ready",
-                        "trace_id": "trace-ready",
-                        "step_key": "malformed",
-                        "payload_json": {
-                            "dispatch_id": "dispatch-malformed",
-                            "dispatch_state": "claimed",
-                            "dispatch_lease_expires_at": "2026-99-99Tbad",
-                        },
-                    },
-                    {
-                        "id": "step-future",
-                        "tenant_id": "default",
-                        "run_id": "run-ready",
-                        "trace_id": "trace-ready",
-                        "step_key": "future",
-                        "payload_json": {
-                            "dispatch_id": "dispatch-future",
-                            "dispatch_state": "claimed",
-                            "dispatch_lease_expires_at": "2999-01-01T00:00:00+00:00",
-                        },
-                    },
-                ]
-                second_batch = [
-                    {
-                        "id": "step-expired",
-                        "tenant_id": "default",
-                        "run_id": "run-ready",
-                        "trace_id": "trace-ready",
-                        "step_key": "expired",
-                        "payload_json": {
-                            "dispatch_id": "dispatch-expired",
-                            "dispatch_state": "claimed",
-                            "dispatch_lease_expires_at": "2000-01-01T00:00:00+00:00",
-                        },
-                    }
-                ]
-                rows = [row for row in first_batch + second_batch if row["id"] not in seen_ids]
-                return CandidateCursor(rows[: params[-1]])
-            if normalized.startswith("update run_steps"):
-                return UpdateCursor()
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fake_append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "aud-expired"
-
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-
-    cleaned = await repositories.cleanup_expired_multi_agent_dispatch_claims(
-        FakeConnection(),
-        tenant_id="default",
-        cleaned_by="admin-a",
-        limit=2,
-    )
-
-    assert cleaned == [
-        {
-            "step_id": "step-expired",
-            "run_id": "run-ready",
-            "step_key": "expired",
-            "dispatch_id": "dispatch-expired",
-            "status": "pending",
-        }
-    ]
-    select_calls = [call for call in calls if call[0].startswith("select rs.id")]
-    assert len(select_calls) == 2
-    assert select_calls[0][1][1] == []
-    assert select_calls[1][1][1] == ["step-malformed", "step-future"]
 
 
 @pytest.mark.asyncio
@@ -9371,135 +9238,6 @@ async def test_get_authorized_run_can_lock_row_for_retry_race_window():
     assert "join sessions on sessions.id = runs.session_id" in sql
     assert "sessions.status = 'active'" in sql
     assert params == ("tenant-a", "run-a", "user-a")
-
-
-@pytest.mark.asyncio
-async def test_list_multi_agent_dispatch_candidate_runs_filters_running_top_level_multi_agent():
-    class CandidateCursor:
-        async def fetchall(self):
-            return [{"id": "run-a"}, {"id": "run-b"}]
-
-    class CandidateConnection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            self.calls.append((" ".join(sql.split()), params))
-            return CandidateCursor()
-
-    conn = CandidateConnection()
-
-    result = await list_multi_agent_dispatch_candidate_run_ids(conn, tenant_id="tenant-a", limit=25)
-
-    assert result == ["run-a", "run-b"]
-    sql, params = conn.calls[0]
-    assert "where tenant_id = %s" in sql
-    assert "status = 'running'" in sql
-    assert "copied_from_run_id is null" in sql
-    assert "input_json#>>'{input,execution_mode}' = 'multi_agent'" in sql
-    assert "input_json->>'execution_mode' = 'multi_agent'" in sql
-    assert "input_json#>>'{multi_agent_dispatch,orchestration_state}' = 'awaiting_dispatch'" in sql
-    assert "input_json#>>'{input,multi_agent_dispatch,orchestration_state}'" not in sql
-    assert "updated_at" not in sql
-    assert "order by queued_at asc" in sql
-    assert "created_at asc" in sql
-    assert "id asc" in sql
-    assert "limit %s" in sql
-    assert params == ("tenant-a", 25)
-
-
-@pytest.mark.asyncio
-async def test_mark_multi_agent_dispatch_parent_awaiting_dispatch_sets_server_owned_marker():
-    conn = RecordingConnection()
-
-    await mark_multi_agent_dispatch_parent_awaiting_dispatch(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        worker_id="worker-a",
-    )
-
-    sql, params = conn.calls[0]
-    assert "update runs" in sql
-    assert "multi_agent_dispatch" in sql
-    assert "updated_at" not in sql
-    assert "where tenant_id = %s" in sql
-    assert "id = %s" in sql
-    payload = json.loads(params[0])
-    assert payload["orchestration_state"] == "awaiting_dispatch"
-    assert payload["source"] == "worker"
-    assert payload["worker_id"] == "worker-a"
-    assert params[1:3] == ("tenant-a", "run-a")
-
-
-@pytest.mark.asyncio
-async def test_mark_multi_agent_dispatch_parent_awaiting_dispatch_uses_top_level_server_marker_only():
-    conn = RecordingConnection()
-
-    await mark_multi_agent_dispatch_parent_awaiting_dispatch(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        worker_id="worker-a",
-    )
-
-    sql, params = conn.calls[0]
-    assert "'{multi_agent_dispatch}'" in sql
-    assert "'{input,multi_agent_dispatch}'" not in sql
-    assert sql.count("%s") == len(params)
-
-
-@pytest.mark.asyncio
-async def test_mark_multi_agent_dispatch_enqueue_failed_resets_parent_step_and_stages_child_terminalization():
-    class Cursor:
-        def __init__(self, row):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
-    class Connection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            self.calls.append((normalized, params))
-            if "update run_steps" in normalized:
-                return Cursor({"id": "step-code", "step_key": "code"})
-            if "update runs" in normalized:
-                return Cursor({"id": "run-child"})
-            return Cursor({"id": "evt-or-audit"})
-
-    conn = Connection()
-
-    result = await mark_multi_agent_dispatch_enqueue_failed(
-        conn,
-        tenant_id="tenant-a",
-        parent_run_id="run-parent",
-        parent_step_id="step-code",
-        dispatch_id="dispatch-code",
-        child_run_id="run-child",
-        reason="redis down",
-        triggered_by="system:multi-agent-dispatcher",
-    )
-
-    assert result["parent_step_id"] == "step-code"
-    assert result["child_run_id"] == "run-child"
-    step_sql, step_params = conn.calls[0]
-    child_sql, child_params = conn.calls[1]
-    assert "update run_steps" in step_sql
-    assert "status = 'pending'" in step_sql
-    assert "- 'dispatch_state'" in step_sql
-    assert "- 'dispatch_child_run_id'" in step_sql
-    assert "payload_json->>'dispatch_state' = 'handed_off'" in step_sql
-    assert step_params == ("tenant-a", "run-parent", "step-code", "dispatch-code", "run-child")
-    assert child_sql.startswith("select id from runs")
-    assert "copied_from_run_id = %s" in child_sql
-    assert "for update" in child_sql
-    assert child_params == ("tenant-a", "run-child", "run-parent")
-    assert any("set permission_terminalization_target" in sql for sql, _params in conn.calls)
-    assert not any("set status = 'failed'" in sql for sql, _params in conn.calls)
 
 
 @pytest.mark.asyncio
@@ -12478,3 +12216,61 @@ async def test_get_admin_runtime_observability_summary_uses_run_totals_for_termi
     assert summary["latency_ms"] == {"avg": 250, "max": 300, "p50": 240, "p95": 295, "p99": 299}
     assert summary["token_counts"] == {"input": 10, "output": 20, "total": 30}
     assert summary["estimated_cost_minor"] == 7
+
+
+@pytest.mark.asyncio
+async def test_agent_conversation_history_query_is_principal_scoped_and_keyset_paginated():
+    class Cursor:
+        async def fetchall(self):
+            return [{"id": "ses_older"}]
+
+    class RecordingConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()).lower(), params))
+            return Cursor()
+
+    updated_at = datetime(2026, 8, 3, 1, tzinfo=timezone.utc)
+    created_at = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    conn = RecordingConnection()
+
+    rows = await agent_conversation_repository.list_authorized_agent_conversations(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        agent_id="agt_support",
+        revision=7,
+        cursor=(updated_at, created_at, "ses_boundary"),
+        limit=21,
+    )
+
+    assert rows == [{"id": "ses_older"}]
+    sql, params = conn.calls[-1]
+    assert "sessions.tenant_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "sessions.agent_id = %s" in sql
+    assert "sessions.admitted_agent_profile_revision = %s" in sql
+    assert "sessions.status = 'active'" in sql
+    assert "join agent_profile_revisions profile" in sql
+    assert "profile.content_hash = sessions.admitted_agent_profile_hash" in sql
+    assert "sessions.updated_at < %s" in sql
+    assert "sessions.id < %s" in sql
+    assert (
+        "order by sessions.updated_at desc, sessions.created_at desc, sessions.id desc"
+        in sql
+    )
+    assert params == (
+        "tenant-a",
+        "user-a",
+        "agt_support",
+        7,
+        updated_at,
+        updated_at,
+        created_at,
+        updated_at,
+        created_at,
+        "ses_boundary",
+        21,
+    )

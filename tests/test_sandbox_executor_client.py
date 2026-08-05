@@ -60,6 +60,137 @@ def test_callback_running_new_message_maps_to_assistant_delta():
     assert events[0].payload["delta"] == "hello"
 
 
+def test_callback_batch_id_is_optional_safe_and_serialized():
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        batch_id="batch-a.1",
+        status="running",
+        progress=20,
+    )
+    missing = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="running",
+        progress=20,
+    )
+
+    assert callback.model_dump()["batch_id"] == "batch-a.1"
+    assert missing.batch_id is None
+    assert missing.model_dump()["batch_id"] is None
+    for hostile_batch_id in ("", "batch/id", "batch id", "x" * 129):
+        with pytest.raises(ValueError, match="batch_id"):
+            ExecutorCallbackEvent(
+                session_id="session-a",
+                run_id="run-a",
+                attempt_id="attempt-a",
+                callback_token_id="cbt_run-a",
+                batch_id=hostile_batch_id,
+                status="running",
+                progress=20,
+            )
+
+
+def test_callback_completed_new_message_preserves_final_assistant_delta():
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="completed",
+        progress=100,
+        new_message={"type": "assistant", "delta": "final answer"},
+    )
+
+    events = callback_event_to_run_events(callback)
+
+    assert [(event.type, event.message, event.payload) for event in events] == [
+        ("assistant_delta", "final answer", {"delta": "final answer"})
+    ]
+
+
+@pytest.mark.parametrize("value", ["", 7, True, [], {}, None])
+def test_callback_rejects_empty_or_non_string_explicit_delta(value):
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="completed",
+        progress=100,
+        new_message={"delta": value},
+    )
+
+    with pytest.raises(ValueError, match="executor_callback_new_message_delta_invalid"):
+        callback_event_to_run_events(callback)
+
+
+@pytest.mark.parametrize("value", ["", 7, True, [], {}, None])
+def test_callback_rejects_empty_or_non_string_text_fallback(value):
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="running",
+        progress=20,
+        new_message={"text": value},
+    )
+
+    with pytest.raises(ValueError, match="executor_callback_new_message_text_invalid"):
+        callback_event_to_run_events(callback)
+
+
+def test_callback_rejects_invalid_explicit_delta_without_falling_back_to_text():
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="completed",
+        progress=100,
+        new_message={"delta": 7, "text": "must not become a fallback"},
+    )
+
+    with pytest.raises(ValueError, match="executor_callback_new_message_delta_invalid"):
+        callback_event_to_run_events(callback)
+
+
+def test_callback_uses_valid_text_only_when_delta_is_absent():
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="completed",
+        progress=100,
+        new_message={"text": "text fallback"},
+    )
+
+    assert [(event.type, event.message, event.payload) for event in callback_event_to_run_events(callback)] == [
+        ("assistant_delta", "text fallback", {"delta": "text fallback"})
+    ]
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_callback_non_success_terminal_new_message_does_not_synthesize_delta(status):
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status=status,
+        progress=60,
+        new_message={"type": "assistant", "delta": "must not publish"},
+    )
+
+    assert callback_event_to_run_events(callback) == []
+
+
 def test_callback_current_step_maps_to_tool_call_delta():
     callback = ExecutorCallbackEvent(
         session_id="session-a",
@@ -77,6 +208,20 @@ def test_callback_current_step_maps_to_tool_call_delta():
     assert len(events) == 1
     assert events[0].type == "tool_call_delta"
     assert events[0].payload["current_step"] == "reading workspace"
+
+
+def test_callback_current_step_remains_running_only():
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="completed",
+        progress=100,
+        state_patch={"current_step": "must not become a terminal event"},
+    )
+
+    assert callback_event_to_run_events(callback) == []
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
@@ -131,6 +276,93 @@ def test_callback_typed_events_are_appended_after_compatibility_events():
     ]
     assert events[1].payload["checkpoint_id"] == "checkpoint-a"
     assert events[2].payload["subagent_id"] == "reviewer-1"
+
+
+def test_callback_collapses_only_one_exact_cross_representation_delta_mirror():
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="completed",
+        progress=100,
+        new_message={"delta": "answer"},
+        events=[
+            {"type": "assistant_delta", "message": "answer", "payload": {"delta": "answer"}},
+            {"type": "assistant_delta", "message": "answer", "payload": {"delta": "answer"}},
+            {"type": "checkpoint_created", "message": "checkpoint", "payload": {"checkpoint_id": "checkpoint-a"}},
+        ],
+    )
+
+    events = callback_event_to_run_events(callback)
+
+    assert [(event.type, event.message) for event in events] == [
+        ("assistant_delta", "answer"),
+        ("assistant_delta", "answer"),
+        ("checkpoint_created", "checkpoint"),
+    ]
+    assert events[0] is not callback.events[0]
+    assert events[1] is callback.events[1]
+
+
+@pytest.mark.parametrize(
+    "typed_event",
+    [
+        {"type": "assistant_delta", "message": "answer", "payload": {"delta": "answer with suffix"}},
+        {"type": "assistant_delta", "message": "answer with suffix", "payload": {"delta": "answer"}},
+        {
+            "type": "assistant_delta",
+            "message": "answer",
+            "payload": {"delta": "answer"},
+            "admin_only": True,
+        },
+    ],
+)
+def test_callback_does_not_collapse_non_exact_or_admin_only_delta_mirrors(typed_event):
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="running",
+        progress=50,
+        new_message={"delta": "answer"},
+        events=[typed_event],
+    )
+
+    events = callback_event_to_run_events(callback)
+
+    assert len(events) == 2
+    assert events[0].type == "assistant_delta"
+    assert events[1].type == "assistant_delta"
+    assert events[1].admin_only is bool(typed_event.get("admin_only", False))
+
+
+def test_callback_suppresses_executor_terminal_facts_without_reordering_surrounding_events():
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        callback_token_id="cbt_run-a",
+        status="completed",
+        progress=100,
+        new_message={"delta": "final"},
+        events=[
+            {"type": "checkpoint_created", "message": "before", "payload": {"checkpoint_id": "checkpoint-a"}},
+            {"type": "run_completed", "message": "not authoritative"},
+            {"type": "run_failed", "message": "not authoritative"},
+            {"type": "run_cancelled", "message": "not authoritative"},
+            {"type": "subagent_completed", "message": "after", "payload": {"subagent_id": "reviewer-a"}},
+        ],
+    )
+
+    events = callback_event_to_run_events(callback)
+
+    assert [(event.type, event.message) for event in events] == [
+        ("assistant_delta", "final"),
+        ("checkpoint_created", "before"),
+        ("subagent_completed", "after"),
+    ]
 
 
 @pytest.mark.asyncio

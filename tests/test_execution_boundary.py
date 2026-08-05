@@ -1,8 +1,6 @@
 import importlib
 import importlib.util
-from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import pytest
 
@@ -63,11 +61,11 @@ def test_non_parked_multi_agent_fails_closed(mcp_requires_sandbox):
     assert decision.local_sdk_allowed is False
 
 
-def test_non_claude_adapter_keeps_adapter_managed_execution():
+def test_injected_non_harness_test_adapter_keeps_adapter_managed_execution():
     module = _module()
 
     decision = module.decide_execution_boundary(
-        executor_type="ragflow",
+        executor_type="test-adapter",
         execution_mode="",
         execution_tier="sdk_only_writing",
         mcp_requires_sandbox=False,
@@ -94,11 +92,11 @@ def test_mcp_requirement_forces_real_sandbox_without_synthetic_execution_tier():
     assert decision.reason == "mcp_execution_requires_real_sandbox"
 
 
-def test_mcp_requirement_preserves_non_claude_worker_sandbox_override():
+def test_mcp_requirement_preserves_injected_test_adapter_sandbox_override():
     module = _module()
 
     decision = module.decide_execution_boundary(
-        executor_type="ragflow",
+        executor_type="test-adapter",
         execution_mode="",
         execution_tier="",
         mcp_requires_sandbox=True,
@@ -114,7 +112,7 @@ def test_invalid_mcp_requirement_fails_closed_without_local_execution():
     module = _module()
 
     decision = module.decide_execution_boundary(
-        executor_type="ragflow",
+        executor_type="test-adapter",
         execution_mode="",
         execution_tier="",
         mcp_requires_sandbox=None,
@@ -246,84 +244,6 @@ def _real_runtime_lease(module, *, signing_key=PROOF_KEY, key_id="current", **ov
     }
     row.update(overrides)
     return row
-
-
-def _trusted_internal_runtime_lease(module):
-    labels = {
-        "ai-platform.owner": "sandbox-runtime",
-        "ai-platform.tenant_id": "tenant-a",
-        "ai-platform.workspace_id": "workspace-a",
-        "ai-platform.user_id": "user-a",
-        "ai-platform.session_id": "session-a",
-        "ai-platform.run_id": "run-a",
-        "ai-platform.attempt_id": "qat-attempt-a",
-        "ai-platform.sandbox_mode": "ephemeral",
-        "ai-platform.browser_enabled": "false",
-        "ai-platform.provider_backend": "opensandbox",
-        "ai-platform.security_profile": "trusted_internal",
-    }
-    return {
-        "provider": "opensandbox",
-        "tenant_id": "tenant-a",
-        "workspace_id": "workspace-a",
-        "user_id": "user-a",
-        "session_id": "session-a",
-        "run_id": "run-a",
-        "sandbox_mode": "ephemeral",
-        "browser_enabled": False,
-        "runtime_container_id": "osb-run-a",
-        "runtime_container_name": "opensandbox-run-a-qat-attempt-a",
-        "runtime_executor_url": "http://osb-run-a.opensandbox.test:18000",
-        "runtime_workspace_container_path": "/workspace",
-        "lease_payload_json": {
-            "source": module.REAL_SANDBOX_EVIDENCE_SOURCE,
-            "evidence_class": module.REAL_SANDBOX_EVIDENCE_CLASS,
-            "security_profile": "trusted_internal",
-            "attempt_id": "qat-attempt-a",
-            "container_id": "osb-run-a",
-            "container_name": "opensandbox-run-a-qat-attempt-a",
-            "executor_url": "http://osb-run-a.opensandbox.test:18000",
-            "workspace_host_path": "/runtime/workspace",
-            "workspace_container_path": "/workspace",
-            "labels": labels,
-        },
-    }
-
-
-def test_trusted_internal_runtime_lease_requires_current_profile_and_exact_bindings(monkeypatch):
-    module = _module()
-    current = SimpleNamespace(sandbox_security_profile="trusted_internal")
-    monkeypatch.setattr(module, "get_settings", lambda: current)
-    real = _trusted_internal_runtime_lease(module)
-
-    assert module.is_accepted_runtime_lease(real) is True
-
-    mutations = []
-    for path, value in (
-        (("run_id",), "run-b"),
-        (("sandbox_mode",), "persistent"),
-        (("runtime_container_id",), "osb-other"),
-        (("lease_payload_json", "attempt_id"), "qat-attempt-b"),
-        (("lease_payload_json", "labels", "ai-platform.workspace_id"), "workspace-b"),
-        (("lease_payload_json", "labels", "ai-platform.security_profile"), "governed"),
-    ):
-        candidate = deepcopy(real)
-        target = candidate
-        for key in path[:-1]:
-            target = target[key]
-        target[path[-1]] = value
-        mutations.append(candidate)
-    for candidate in mutations:
-        assert module.is_accepted_runtime_lease(candidate) is False
-
-    with_governed_proof = deepcopy(real)
-    with_governed_proof["lease_payload_json"]["governed_egress_proof"] = {}
-    assert module.is_accepted_runtime_lease(with_governed_proof) is False
-    with_extra_label = deepcopy(real)
-    with_extra_label["lease_payload_json"]["labels"]["ai-platform.unreviewed"] = "unexpected"
-    assert module.is_accepted_runtime_lease(with_extra_label) is False
-    current.sandbox_security_profile = "governed"
-    assert module.is_accepted_runtime_lease(real) is False
 
 
 def test_real_runtime_lease_requires_canonical_signed_governed_egress_proof():

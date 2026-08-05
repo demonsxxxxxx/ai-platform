@@ -551,7 +551,7 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   assert.match(marketplace, /workbenchSurface\.catalog\.toolbarShell/);
   assert.match(skillsList, /workbenchSurface\.catalog\.content/);
   assert.match(marketplace, /workbenchSurface\.catalog\.content/);
-  assert.match(skillsList, /workbenchSurface\.catalog\.cardGrid/);
+  assert.match(skillsList, /<SkillManagementTable/);
   assert.match(marketplace, /workbenchSurface\.catalog\.cardGrid/);
   assert.match(skillsList, /workbenchSurface\.catalog\.emptyState/);
   assert.match(marketplace, /workbenchSurface\.catalog\.emptyState/);
@@ -591,12 +591,10 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
 
 test("skills marketplace action surfaces use semantic workbench state colors", () => {
   const batchActionBar = read("src/components/panels/SkillsPanel/BatchActionBar.tsx");
-  const publishDialog = read("src/components/panels/SkillsPanel/PublishDialog.tsx");
   const mcp = read("src/components/panels/MCPPanel.tsx");
 
   for (const [name, source] of new Map([
     ["BatchActionBar", batchActionBar],
-    ["PublishDialog", publishDialog],
     ["MCPPanel", mcp],
   ])) {
     assert.match(source, /var\(--theme-danger-soft\)/, name);
@@ -607,7 +605,6 @@ test("skills marketplace action surfaces use semantic workbench state colors", (
   }
 
   assert.match(batchActionBar, /bg-\[var\(--theme-workbench-panel\)\]/);
-  assert.match(publishDialog, /bg-\[var\(--theme-border-strong\)\]/);
 });
 
 test("reachable catalog pages delegate page backgrounds to workbench surface tokens", () => {

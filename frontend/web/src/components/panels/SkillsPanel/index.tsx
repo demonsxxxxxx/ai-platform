@@ -10,7 +10,6 @@ import { SkillFormSidebar } from "./SkillFormSidebar";
 import { ZipUploadModal } from "./ZipUploadModal";
 import { GithubImportModal } from "./GithubImportModal";
 import { BatchActionBar } from "./BatchActionBar";
-import { PublishDialog } from "./PublishDialog";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
 
 interface CatalogState {
@@ -36,7 +35,6 @@ export function SkillsPanel({
   const { hasAnyPermission } = useAuth();
 
   const canDelete = hasAnyPermission([Permission.SKILL_DELETE]);
-  const canPublishByAuth = hasAnyPermission([Permission.MARKETPLACE_PUBLISH]);
   const skillFileWriteBacked = true;
   const skillImportBacked = true;
   const skillBatchWriteBacked = true;
@@ -52,10 +50,8 @@ export function SkillsPanel({
   const canDeleteSkill =
     !isGovernedUnavailable &&
     (canDelete || effectivePermissions.has(Permission.SKILL_DELETE));
-  const canPublish =
-    !isGovernedUnavailable &&
-    (canPublishByAuth || effectivePermissions.has(Permission.MARKETPLACE_PUBLISH));
   const canEditSkills = skillFileWriteBacked && canWrite;
+  const canExportSkills = canEditSkills;
   const canImportSkills =
     skillImportBacked && (canWrite || actions.canAdminUploadSkills);
   const canBatchSkills =
@@ -104,30 +100,17 @@ export function SkillsPanel({
         clearError={actions.clearError}
         canWrite={canWrite && !isGovernedUnavailable}
         canEdit={canEditSkills && !isGovernedUnavailable}
+        canExport={canExportSkills && !isGovernedUnavailable}
         canImport={canImportSkills && !isGovernedUnavailable}
         canBatch={canBatchSkills && !isGovernedUnavailable}
         canDelete={canDeleteSkill && !isGovernedUnavailable}
-        canPublish={canPublish && !isGovernedUnavailable}
+        adminRelease={actions.canAdminUploadSkills}
         governedUnavailable={isGovernedUnavailable}
         selectedNames={actions.selectedNames}
         onToggle={actions.handleToggle}
         onEdit={actions.handleEdit}
         onDelete={actions.handleDelete}
         onExportZip={actions.handleExportZip}
-        onPublish={
-          canPublish && !isGovernedUnavailable
-            ? (s) => {
-                actions.setPublishConfirm({
-                  isOpen: true,
-                  localSkillName: s.name,
-                  marketplaceSkillName: s.published_marketplace_name || s.name,
-                  description: s.description || "",
-                  tagsInput: s.tags?.join(", ") || "",
-                  isPublished: s.is_published,
-                });
-              }
-            : undefined
-        }
         onSelectSkill={actions.handleSelectSkill}
         onSelectAll={actions.handleSelectAll}
         onGithubClick={actions.handleGithubClick}
@@ -210,12 +193,6 @@ export function SkillsPanel({
         onConfirm={actions.confirmDelete}
         onCancel={actions.cancelDelete}
         variant="danger"
-      />
-
-      <PublishDialog
-        publishConfirm={actions.publishConfirm}
-        setPublishConfirm={actions.setPublishConfirm}
-        onConfirm={actions.confirmPublish}
       />
     </div>
   );

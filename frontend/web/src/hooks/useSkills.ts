@@ -16,7 +16,6 @@ import type {
   SkillSource,
   UserSkill,
   UserSkillDetail,
-  PublishToMarketplaceRequest,
   BinaryFileInfo,
 } from "../types/skill";
 
@@ -125,7 +124,6 @@ export function useSkills(options?: {
   const [isUpdating, setIsUpdating] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [isPublishing, setIsPublishing] = useState(false);
 
   // 跟踪正在 toggle 中的 skill，防止 fetchSkills 覆盖乐观更新
   const pendingTogglesRef = useRef<Map<string, boolean>>(new Map());
@@ -802,31 +800,6 @@ export function useSkills(options?: {
     effectivePermissionsKnown,
   });
 
-  // Publish skill to marketplace
-  const publishToMarketplace = useCallback(
-    async (
-      name: string,
-      data?: PublishToMarketplaceRequest,
-    ): Promise<boolean> => {
-      if (!enabled) return false;
-      setIsPublishing(true);
-      setError(null);
-      try {
-        await skillApi.publishToMarketplace(name, data);
-        await fetchSkills();
-        return true;
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to publish skill",
-        );
-        return false;
-      } finally {
-        setIsPublishing(false);
-      }
-    },
-    [enabled, fetchSkills],
-  );
-
   // Initial load
   useEffect(() => {
     fetchSkills(listParams);
@@ -861,13 +834,11 @@ export function useSkills(options?: {
     adminPreviewZipSkills,
     previewGitHubSkills,
     installGitHubSkills,
-    publishToMarketplace,
     pendingSkillNames,
     isMutating,
     isUpdating,
     isDeleting,
     isUploading,
-    isPublishing,
     getEnabledSkillNames,
     getCategoryStats,
     enabledCount,

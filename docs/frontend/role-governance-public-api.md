@@ -75,6 +75,3 @@ authority for the `/roles` workbench and should not be used for new role
 governance UI. Frontend migration should consume `/api/role-governance/*` for
 role directory, department/workspace scope, request/approval workflow, and
 audit/rollback state.
-
-This backend slice is source/local contract evidence for issue 215. It does not
-claim merged-main 211 deployment, broader readiness, or issue closure.

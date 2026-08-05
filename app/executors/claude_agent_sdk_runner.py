@@ -25,7 +25,7 @@ from app.context.retrieval import (
     ContextRetrievalInputError,
 )
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
-from app.executors.claude_stream_projection import TrustedInternalClaudeStreamProjector
+from app.executors.claude_stream_projection import ClaudeStreamProjector
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.file_parser_contracts import ParsedAttachmentContext
 from app.public_context_keys import safe_public_context_pack_version
@@ -1412,10 +1412,9 @@ async def run_claude_agent_sdk(
         if skill_id != "general-chat" and skill_id in configured_skills
         else None
     )
-    trusted_internal_raw_streaming = (
+    sandbox_partial_streaming = (
         on_text is not None
         and execution_policy == "sandbox_brokered"
-        and str(getattr(settings, "sandbox_security_profile", "governed") or "") == "trusted_internal"
     )
     try:
         attachment_data_message = _attachment_context_data_message(attachment_contexts)
@@ -1973,7 +1972,7 @@ async def run_claude_agent_sdk(
         effort=str(getattr(settings, "claude_agent_sdk_effort", "xhigh") or "xhigh"),
         can_use_tool=can_use_tool,
         hooks=hooks,
-        include_partial_messages=trusted_internal_raw_streaming,
+        include_partial_messages=sandbox_partial_streaming,
         setting_sources=["project"],
     )
 
@@ -1984,7 +1983,11 @@ async def run_claude_agent_sdk(
     received_structured_terminal = False
     answer_text_limit = _MAX_REQUIRED_ANSWER_TEXT_CHARS
     projector_limits = {"trailing_chars": answer_text_limit, "max_pending_chars": answer_text_limit} if required_answer_gate else {}
-    stream_projector = TrustedInternalClaudeStreamProjector(sanitizer=sanitize_public_payload, **projector_limits) if trusted_internal_raw_streaming else None
+    stream_projector = (
+        ClaudeStreamProjector(sanitizer=sanitize_public_payload, **projector_limits)
+        if sandbox_partial_streaming
+        else None
+    )
 
     def capability_completion_error() -> str | None:
         """Validate every observed call and every explicit requirement together."""

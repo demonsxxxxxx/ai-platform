@@ -296,7 +296,6 @@ async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks
         _subject(server_id="other-server", tool_name="fetch", endpoint="https://other.private.example/mcp"),
     ]
     current_settings = _settings()
-    current_settings.sandbox_security_profile = "trusted_internal"
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
@@ -394,7 +393,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
         return True
 
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps, result_text=text))
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
     result = await run_claude_agent_sdk(
         prompt="search", cwd=tmp_path, skill_id="general-chat", execution_policy="sandbox_brokered",
         tool_policy_subjects=subjects, on_text=deltas.append,
@@ -440,7 +439,7 @@ async def test_sdk_projects_known_mcp_identity_before_hook_and_releases_call_tex
     )
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings",
-        _trusted_internal_settings,
+        _sandbox_brokered_settings,
     )
 
     result = await run_claude_agent_sdk(
@@ -495,7 +494,7 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch,
     )
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings",
-        _trusted_internal_settings,
+        _sandbox_brokered_settings,
     )
 
     result = await run_claude_agent_sdk(
@@ -589,7 +588,7 @@ async def test_sdk_selected_skill_streams_after_completed_evidence_before_termin
     )
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings",
-        _trusted_internal_settings,
+        _sandbox_brokered_settings,
     )
 
     result = await run_claude_agent_sdk(
@@ -645,7 +644,7 @@ async def test_sdk_selected_skill_omits_cumulative_terminal_text_without_post_ca
     )
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings",
-        _trusted_internal_settings,
+        _sandbox_brokered_settings,
     )
 
     result = await run_claude_agent_sdk(
@@ -702,7 +701,7 @@ async def test_sdk_selected_skill_discards_sealed_pre_capability_terminal_text(
     )
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings",
-        _trusted_internal_settings,
+        _sandbox_brokered_settings,
     )
 
     result = await run_claude_agent_sdk(
@@ -761,7 +760,7 @@ async def test_sdk_selected_skill_rejected_post_ack_seals_all_public_output(
         return False
 
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps, result_text=text))
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
     result = await run_claude_agent_sdk(
         prompt="review", cwd=tmp_path, skill_id="qa-review", skills=["qa-review"],
         execution_policy="sandbox_brokered", tool_policy_subjects=[_skill_subject()],
@@ -797,7 +796,7 @@ async def test_sdk_selected_skill_concurrent_rejection_prevents_inflight_commit(
         ("PostToolUse", success, "skill-call-success"), ("PostToolUse", rejected, "skill-call-rejected"),
     ]), ("hook", ("PostToolUse", success, "skill-call-success")), ("assistant", "sealed")]
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps, result_text="sealed"))
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
     result = await run_claude_agent_sdk(
         prompt="review", cwd=tmp_path, skill_id="qa-review", skills=["qa-review"],
         execution_policy="sandbox_brokered", tool_policy_subjects=[_skill_subject()], on_text=deltas.append,
@@ -1081,14 +1080,12 @@ def _streaming_sdk(captured, events, *, on_before_result=None, result_text="term
     )
 
 
-def _trusted_internal_settings():
-    settings = _settings()
-    settings.sandbox_security_profile = "trusted_internal"
-    return settings
+def _sandbox_brokered_settings():
+    return _settings()
 
 
 @pytest.mark.asyncio
-async def test_trusted_internal_streams_two_safe_raw_text_deltas_before_result_without_terminal_replay(
+async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_terminal_replay(
     monkeypatch, tmp_path
 ):
     captured = {}
@@ -1110,7 +1107,7 @@ async def test_trusted_internal_streams_two_safe_raw_text_deltas_before_result_w
             result_text=streamed_text,
         ),
     )
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
 
     result = await run_claude_agent_sdk(
         prompt="answer",
@@ -1128,7 +1125,49 @@ async def test_trusted_internal_streams_two_safe_raw_text_deltas_before_result_w
 
 
 @pytest.mark.asyncio
-async def test_trusted_internal_stream_duplicate_stop_never_replays_terminal_result(monkeypatch, tmp_path):
+async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(monkeypatch, tmp_path):
+    captured = {}
+    deltas = []
+    streamed_text = "Safe answer after tool use."
+    events = [
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "tool_use", "id": "tool-1", "name": "Skill"},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": '{"skill":"general-chat"}'},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": streamed_text}},
+        {"type": "content_block_stop", "index": 1},
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _streaming_sdk(captured, events, result_text=streamed_text),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert captured["include_partial_messages"] is True
+    assert result.error is None
+    assert "".join(deltas) == streamed_text
+    assert result.message == streamed_text
+
+
+@pytest.mark.asyncio
+async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(monkeypatch, tmp_path):
     captured = {}
     deltas = []
     events = [
@@ -1138,7 +1177,7 @@ async def test_trusted_internal_stream_duplicate_stop_never_replays_terminal_res
         {"type": "content_block_stop", "index": 0},
     ]
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events))
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _trusted_internal_settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
 
     await run_claude_agent_sdk(
         prompt="answer",
@@ -1152,17 +1191,17 @@ async def test_trusted_internal_stream_duplicate_stop_never_replays_terminal_res
 
 
 @pytest.mark.asyncio
-async def test_governed_stream_events_keep_final_only_behavior(monkeypatch, tmp_path):
+async def test_governed_unfinished_stream_fails_closed_without_terminal_replay(monkeypatch, tmp_path):
     captured = {}
     deltas = []
     events = [
         {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
-        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "must remain private"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "safe partial must finish"}},
     ]
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events))
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
 
-    await run_claude_agent_sdk(
+    result = await run_claude_agent_sdk(
         prompt="answer",
         cwd=tmp_path,
         skill_id="general-chat",
@@ -1170,5 +1209,6 @@ async def test_governed_stream_events_keep_final_only_behavior(monkeypatch, tmp_
         on_text=deltas.append,
     )
 
-    assert captured["include_partial_messages"] is False
-    assert deltas == ["terminal final"]
+    assert captured["include_partial_messages"] is True
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert deltas == ["safe partial must "]

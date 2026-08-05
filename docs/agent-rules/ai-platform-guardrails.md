@@ -103,3 +103,6 @@ evidence.
   `docs/operations/211-release-operations-runbook.md`.
 - Issue, PR, review, verification, status, and closure rules are defined only in
   `docs/agent-rules/github-issue-pr-workflow.md`.
+- Durable docs describe a contract or an executable procedure. Current status,
+  temporary phase plans, and release journals belong in the active GitHub record
+  or controller checkpoint, not repository Markdown.

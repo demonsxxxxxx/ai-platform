@@ -171,8 +171,8 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
         ]
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.agent_apps.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_apps.list_public_profiles", profiles)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
 
     response = TestClient(create_app()).get("/api/ai/agent-profiles", headers=ordinary_headers())
 
@@ -246,8 +246,8 @@ def test_profile_instruction_length_is_rejected_by_the_admin_api_before_runtime(
         )
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.agent_apps.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_apps.save_draft", save_profile)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles.save_draft", save_profile)
     client = TestClient(create_app())
     max_length_instructions = "界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
@@ -273,9 +273,9 @@ def test_agent_profile_mutation_routes_map_repository_conflicts_to_one_safe_stal
         raise RepositoryConflictError("database constraint detail must not be public")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.agent_apps.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_apps.save_draft", conflict)
-    monkeypatch.setattr("app.routes.agent_apps.publish_draft", conflict)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles.save_draft", conflict)
+    monkeypatch.setattr("app.routes.agent_profiles.publish_draft", conflict)
     client = TestClient(create_app())
 
     responses = [
@@ -320,8 +320,8 @@ def test_agent_conversation_creation_maps_repository_failures_to_safe_4xx(
         raise error
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.agent_apps.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_apps._authority.create_conversation", fail)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.create_conversation", fail)
 
     response = TestClient(create_app(), raise_server_exceptions=False).post(
         "/api/ai/agent-conversations",
