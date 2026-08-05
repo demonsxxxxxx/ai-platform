@@ -25,10 +25,10 @@ interface SkillManagementTableProps {
   skills: SkillResponse[];
 }
 
-function tenantDistributionLabel(skill: SkillResponse): string {
-  if (skill.marketplace_is_active) return "租户分发中";
-  if (skill.is_published) return "租户分发已停用";
-  return "未进入租户目录";
+function tenantDistributionKey(skill: SkillResponse): string {
+  if (skill.marketplace_is_active) return "skills.managementTable.distributed";
+  if (skill.is_published) return "skills.managementTable.distributionDisabled";
+  return "skills.managementTable.notInDirectory";
 }
 
 function updatedDateLabel(value?: string): string {
@@ -56,7 +56,7 @@ export function SkillManagementTable({
 
   return (
     <div
-      aria-label="Skill 管理列表"
+      aria-label={t("skills.managementTable.listLabel")}
       className="skill-management-table"
       data-skill-management-table
       role="table"
@@ -67,11 +67,11 @@ export function SkillManagementTable({
       >
         {canBatch ? <span aria-hidden="true" /> : null}
         <span role="columnheader">Skill</span>
-        <span role="columnheader">版本包</span>
-        <span role="columnheader">运行状态</span>
-        <span role="columnheader">租户分发</span>
-        <span role="columnheader">更新时间</span>
-        <span aria-label="操作" role="columnheader" />
+        <span role="columnheader">{t("skills.managementTable.package")}</span>
+        <span role="columnheader">{t("skills.managementTable.runtimeStatus")}</span>
+        <span role="columnheader">{t("skills.managementTable.tenantDistribution")}</span>
+        <span role="columnheader">{t("skills.managementTable.updatedAt")}</span>
+        <span aria-label={t("skills.managementTable.actions")} role="columnheader" />
       </div>
 
       <div role="rowgroup">
@@ -84,7 +84,7 @@ export function SkillManagementTable({
             {canBatch ? (
               <div className="skill-management-table__select" role="cell">
                 <input
-                  aria-label={`选择 ${skill.name}`}
+                  aria-label={t("skills.managementTable.selectSkill", { name: skill.name })}
                   checked={selectedNames.has(skill.name)}
                   onChange={() => onSelectSkill(skill.name)}
                   type="checkbox"
@@ -112,7 +112,7 @@ export function SkillManagementTable({
                 </p>
                 {skill.tags.length > 0 ? (
                   <div
-                    aria-label="标签"
+                    aria-label={t("skills.managementTable.tags")}
                     className="mt-1.5 flex max-w-full gap-1 overflow-hidden"
                   >
                     {skill.tags.slice(0, 2).map((tag) => (
@@ -136,7 +136,7 @@ export function SkillManagementTable({
 
             <div
               className="skill-management-table__package"
-              data-label="版本包"
+              data-label={t("skills.managementTable.package")}
               role="cell"
             >
               <span className="inline-flex items-center gap-1.5 font-mono text-xs text-[var(--theme-text)]">
@@ -144,25 +144,31 @@ export function SkillManagementTable({
                 {skill.expected_version || "-"}
               </span>
               <span className="mt-1 block text-[11px] text-[var(--theme-text-secondary)]">
-                {skill.file_count} 个文件
+                {t("skills.managementTable.fileCount", { count: skill.file_count })}
               </span>
             </div>
 
-            <div data-label="运行状态" role="cell">
+            <div data-label={t("skills.managementTable.runtimeStatus")} role="cell">
               <span
                 className={`skill-management-table__status ${skill.enabled ? "skill-management-table__status--active" : ""}`}
               >
                 <span aria-hidden="true" />
-                {skill.enabled ? "已启用" : "已停用"}
+                {skill.enabled
+                  ? t("skills.managementTable.enabled")
+                  : t("skills.managementTable.disabled")}
               </span>
             </div>
 
-            <div className="min-w-0" data-label="租户分发" role="cell">
+            <div
+              className="min-w-0"
+              data-label={t("skills.managementTable.tenantDistribution")}
+              role="cell"
+            >
               <span
                 className={`skill-management-table__status ${skill.marketplace_is_active ? "skill-management-table__status--distribution" : ""}`}
               >
                 <Store aria-hidden="true" size={13} />
-                {tenantDistributionLabel(skill)}
+                {t(tenantDistributionKey(skill))}
               </span>
               {skill.published_marketplace_name ? (
                 <span
@@ -176,7 +182,7 @@ export function SkillManagementTable({
 
             <div
               className="text-xs text-[var(--theme-text-secondary)]"
-              data-label="更新时间"
+              data-label={t("skills.managementTable.updatedAt")}
               role="cell"
             >
               {updatedDateLabel(skill.updated_at)}
@@ -185,10 +191,19 @@ export function SkillManagementTable({
             <div className="skill-management-table__actions" role="cell">
               {canToggle ? (
                 <button
-                  aria-label={skill.enabled ? `停用 ${skill.name}` : `启用 ${skill.name}`}
+                  aria-label={t(
+                    skill.enabled
+                      ? "skills.managementTable.disableSkill"
+                      : "skills.managementTable.enableSkill",
+                    { name: skill.name },
+                  )}
                   className="btn-icon"
                   onClick={() => onToggle(skill.name)}
-                  title={skill.enabled ? "停用" : "启用"}
+                  title={t(
+                    skill.enabled
+                      ? "skills.managementTable.disable"
+                      : "skills.managementTable.enable",
+                  )}
                   type="button"
                 >
                   <Power aria-hidden="true" size={16} />
@@ -196,10 +211,10 @@ export function SkillManagementTable({
               ) : null}
               {canEdit ? (
                 <button
-                  aria-label={`编辑 ${skill.name}`}
+                  aria-label={t("skills.managementTable.editSkill", { name: skill.name })}
                   className="btn-icon"
                   onClick={() => onEdit(skill)}
-                  title="编辑"
+                  title={t("skills.managementTable.edit")}
                   type="button"
                 >
                   <Pencil aria-hidden="true" size={16} />
@@ -207,10 +222,10 @@ export function SkillManagementTable({
               ) : null}
               {canExport ? (
                 <button
-                  aria-label={`导出 ${skill.name}`}
+                  aria-label={t("skills.managementTable.exportSkill", { name: skill.name })}
                   className="btn-icon"
                   onClick={() => onExportZip(skill.name)}
-                  title="导出 ZIP"
+                  title={t("skills.exportZip")}
                   type="button"
                 >
                   <Download aria-hidden="true" size={16} />
@@ -218,17 +233,19 @@ export function SkillManagementTable({
               ) : null}
               {canDelete ? (
                 <button
-                  aria-label={`删除 ${skill.name}`}
+                  aria-label={t("skills.managementTable.deleteSkill", { name: skill.name })}
                   className="btn-icon text-[var(--theme-danger)]"
                   onClick={() => onDelete(skill.name)}
-                  title="删除"
+                  title={t("skills.managementTable.delete")}
                   type="button"
                 >
                   <Trash2 aria-hidden="true" size={16} />
                 </button>
               ) : null}
               {!hasActions ? (
-                <span className="text-xs text-[var(--theme-text-secondary)]">只读</span>
+                <span className="text-xs text-[var(--theme-text-secondary)]">
+                  {t("skills.managementTable.readOnly")}
+                </span>
               ) : null}
             </div>
           </div>

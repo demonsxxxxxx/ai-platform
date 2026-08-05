@@ -14,15 +14,16 @@ test("Skill workbench separates runtime and tenant distribution without a public
   );
 
   assert.match(table, /data-skill-management-table/);
-  assert.match(table, /运行状态/);
-  assert.match(table, /租户分发中/);
-  assert.match(table, /租户分发已停用/);
+  assert.match(table, /skills\.managementTable\.runtimeStatus/);
+  assert.match(table, /skills\.managementTable\.distributed/);
+  assert.match(table, /skills\.managementTable\.distributionDisabled/);
   assert.match(table, /skill\.marketplace_is_active/);
   assert.match(table, /skill\.expected_version/);
   assert.doesNotMatch(table, /onPublish|publishToMarketplace|republish|unpublish/);
   assert.match(list, /<SkillManagementTable/);
   assert.match(list, /adminRelease \? "btn-primary" : "btn-secondary"/);
   assert.match(list, /skills\.adminReleaseZipTitle/);
+  assert.match(list, /canExport=\{canExport && !governedUnavailable\}/);
   assert.doesNotMatch(list, /<SkillCard/);
 });
 
@@ -32,13 +33,48 @@ test("management rows expose stable icon actions and a read-only state", () => {
     "utf8",
   );
 
-  assert.match(source, /aria-label=\{skill\.enabled \? `停用/);
-  assert.match(source, /: `启用/);
-  assert.match(source, /aria-label=\{`编辑/);
-  assert.match(source, /aria-label=\{`导出/);
-  assert.match(source, /aria-label=\{`删除/);
+  assert.match(source, /skills\.managementTable\.disableSkill/);
+  assert.match(source, /skills\.managementTable\.enableSkill/);
+  assert.match(source, /skills\.managementTable\.editSkill/);
+  assert.match(source, /skills\.managementTable\.exportSkill/);
+  assert.match(source, /skills\.managementTable\.deleteSkill/);
   assert.match(source, /!hasActions/);
-  assert.match(source, />只读</);
+  assert.match(source, /skills\.managementTable\.readOnly/);
+  assert.doesNotMatch(source, /[\u4e00-\u9fff]/);
   assert.match(source, /role="table"/);
   assert.match(source, /role="columnheader"/);
+});
+
+test("management table translations stay complete across supported locales", () => {
+  const requiredKeys = [
+    "actions",
+    "deleteSkill",
+    "disableSkill",
+    "distributed",
+    "distributionDisabled",
+    "editSkill",
+    "enableSkill",
+    "exportSkill",
+    "fileCount",
+    "listLabel",
+    "notInDirectory",
+    "package",
+    "readOnly",
+    "runtimeStatus",
+    "selectSkill",
+    "tags",
+    "tenantDistribution",
+    "updatedAt",
+  ];
+
+  for (const locale of ["en", "ja", "ko", "ru", "zh"]) {
+    const catalog = JSON.parse(
+      readFileSync(join(process.cwd(), `src/i18n/locales/${locale}.json`), "utf8"),
+    ) as { skills?: { managementTable?: Record<string, string> } };
+    const table = catalog.skills?.managementTable;
+    assert.ok(table, `${locale} management table translations must exist`);
+    requiredKeys.forEach((key) =>
+      assert.equal(typeof table[key], "string", `${locale}.${key}`),
+    );
+  }
 });

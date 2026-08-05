@@ -40,6 +40,7 @@ interface SkillsListProps {
   clearError: () => void;
   canWrite: boolean;
   canEdit: boolean;
+  canExport: boolean;
   canImport: boolean;
   canBatch: boolean;
   canDelete: boolean;
@@ -77,6 +78,7 @@ export function SkillsList({
   clearError,
   canWrite,
   canEdit,
+  canExport,
   canImport,
   canBatch,
   canDelete,
@@ -355,7 +357,7 @@ export function SkillsList({
             canBatch={canBatchSkills}
             canDelete={canDelete}
             canEdit={canEditSkills}
-            canExport={!governedUnavailable}
+            canExport={canExport && !governedUnavailable}
             canToggle={canToggleSkills}
             onDelete={onDelete}
             onEdit={onEdit}
