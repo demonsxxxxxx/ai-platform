@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Package,
@@ -8,13 +8,13 @@ import {
   Tag,
   ChevronDown,
   Github,
-  Archive,
+  Upload,
   X,
 } from "lucide-react";
 import { PanelHeader } from "../../common/PanelHeader";
 import { SkillsPanelSkeleton } from "../../skeletons";
 import { Pagination } from "../../common/Pagination";
-import { SkillCard } from "../../skill/SkillCard";
+import { SkillManagementTable } from "./SkillManagementTable";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
 import type { SkillResponse } from "../../../types";
 
@@ -40,9 +40,11 @@ interface SkillsListProps {
   clearError: () => void;
   canWrite: boolean;
   canEdit: boolean;
+  canExport: boolean;
   canImport: boolean;
   canBatch: boolean;
   canDelete: boolean;
+  adminRelease: boolean;
   selectedNames: Set<string>;
   onToggle: (name: string) => void;
   onEdit: (skill: SkillResponse) => void;
@@ -76,9 +78,11 @@ export function SkillsList({
   clearError,
   canWrite,
   canEdit,
+  canExport,
   canImport,
   canBatch,
   canDelete,
+  adminRelease,
   selectedNames,
   onToggle,
   onEdit,
@@ -91,6 +95,8 @@ export function SkillsList({
 }: SkillsListProps) {
   const { t } = useTranslation();
   const filterRef = useRef<HTMLDivElement>(null);
+  const filterTriggerRef = useRef<HTMLButtonElement>(null);
+  const filterMenuId = useId();
 
   // Close filter dropdown when clicking outside
   useEffect(() => {
@@ -102,6 +108,17 @@ export function SkillsList({
     };
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
+  }, [isFilterOpen, setIsFilterOpen]);
+
+  useEffect(() => {
+    if (!isFilterOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setIsFilterOpen(false);
+      filterTriggerRef.current?.focus();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
   }, [isFilterOpen, setIsFilterOpen]);
 
   if (isLoading) {
@@ -125,6 +142,9 @@ export function SkillsList({
   const filterMenu = availableTags.length > 0 && (
     <div className="relative shrink-0" ref={filterRef}>
       <button
+        aria-controls={filterMenuId}
+        aria-expanded={isFilterOpen}
+        aria-haspopup="true"
         type="button"
         onClick={() => setIsFilterOpen((prev) => !prev)}
         className={`btn-secondary h-10 px-3 ${
@@ -132,6 +152,7 @@ export function SkillsList({
             ? "border-[var(--theme-primary)] text-[var(--theme-text)]"
             : ""
         }`}
+        ref={filterTriggerRef}
       >
         <Tag size={16} />
         <span className="hidden sm:inline">{t("adminMarketplace.tags")}</span>
@@ -146,7 +167,12 @@ export function SkillsList({
         />
       </button>
       {isFilterOpen && (
-        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
+        <div
+          aria-label={t("adminMarketplace.tags")}
+          className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]"
+          id={filterMenuId}
+          role="group"
+        >
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]">
               {t("adminMarketplace.tags")}
@@ -202,9 +228,23 @@ export function SkillsList({
             <Github size={16} />
             <span className="hidden sm:inline">GitHub</span>
           </button>
-          <button onClick={onZipClick} className="btn-secondary h-10">
-            <Archive size={16} />
-            <span className="hidden sm:inline">ZIP</span>
+          <button
+            onClick={onZipClick}
+            className={`${adminRelease ? "btn-primary" : "btn-secondary"} h-10`}
+            title={
+              adminRelease
+                ? t("skills.adminReleaseZipSubtitle")
+                : t("skills.uploadZipTitle")
+            }
+          >
+            <Upload size={16} />
+            <span>
+              {t(
+                adminRelease
+                  ? "skills.adminReleaseZipTitle"
+                  : "skills.uploadZipTitle",
+              )}
+            </span>
           </button>
         </>
       )}
@@ -230,6 +270,7 @@ export function SkillsList({
                   className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
                 />
                 <input
+                  aria-label={t("skills.searchPlaceholder")}
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -272,8 +313,10 @@ export function SkillsList({
         <div className="mx-4 mt-4 flex items-center justify-between rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger)] ring-1 ring-[var(--theme-danger-ring)]">
           <span>{error}</span>
           <button
+            aria-label={t("common.close")}
             onClick={clearError}
             className="btn-icon hover:text-[var(--theme-danger)]"
+            type="button"
           >
             <X size={18} />
           </button>
@@ -310,28 +353,20 @@ export function SkillsList({
             )}
           </div>
         ) : (
-          <div
-            data-skills-catalog-grid
-            className={workbenchSurface.catalog.cardGrid}
-          >
-            {paginatedSkills.map((skill) => (
-              <SkillCard
-                key={skill.name}
-                skill={skill}
-                onToggle={onToggle}
-                onEdit={onEdit}
-                onDelete={onDelete}
-                onExportZip={governedUnavailable ? undefined : onExportZip}
-                canWrite={canToggleSkills}
-                canEdit={canEditSkills}
-                canDelete={canDelete}
-                isPublished={skill.is_published}
-                selected={selectedNames.has(skill.name)}
-                onSelect={canBatchSkills ? onSelectSkill : undefined}
-                selectionMode={canBatchSkills}
-              />
-            ))}
-          </div>
+          <SkillManagementTable
+            canBatch={canBatchSkills}
+            canDelete={canDelete}
+            canEdit={canEditSkills}
+            canExport={canExport && !governedUnavailable}
+            canToggle={canToggleSkills}
+            onDelete={onDelete}
+            onEdit={onEdit}
+            onExportZip={onExportZip}
+            onSelectSkill={onSelectSkill}
+            onToggle={onToggle}
+            selectedNames={selectedNames}
+            skills={paginatedSkills}
+          />
         )}
       </div>
 
