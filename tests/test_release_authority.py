@@ -5411,7 +5411,7 @@ def test_run_timeout_retains_only_classified_stderr_diagnostic():
                 "-c",
                 "import sys, time; print('failed to solve: no space left on device', file=sys.stderr, flush=True); time.sleep(60)",
             ],
-            timeout=0.1,
+            timeout=1.0,
         )
 
     assert exc_info.value.stderr is None
