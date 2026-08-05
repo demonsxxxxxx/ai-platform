@@ -2,7 +2,7 @@
  * Upload API - 文件上传
  */
 
-import type { FileCheckResult, UploadConfig, UploadResult } from "../../types";
+import type { UploadConfig, UploadResult } from "../../types";
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
 import { authenticatedRequest } from "./authenticatedRequest";
@@ -202,84 +202,6 @@ export const uploadApi = {
   },
 
   /**
-   * Check if file already exists by hash (for deduplication)
-   */
-  async checkFile(
-    hash: string,
-    size: number,
-    name: string,
-    mimeType: string,
-  ): Promise<FileCheckResult> {
-    const res = await authenticatedRequest(`${API_BASE}/api/upload/check`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      credentials: "include",
-      body: JSON.stringify({ hash, size, name, mime_type: mimeType }),
-    });
-    if (!res.ok) {
-      throw new Error(`Check failed: ${res.status}`);
-    }
-    const data = await res.json();
-    if (!data.exists) {
-      return { exists: false };
-    }
-    return {
-      ...data,
-      mimeType: data.mime_type || data.mimeType,
-    };
-  },
-
-  /**
-   * 上传头像
-   */
-  async uploadAvatar(file: File): Promise<UploadResult> {
-    const formData = new FormData();
-    formData.append("file", file);
-
-    const response = await authenticatedRequest(
-      `${API_BASE}/api/upload/avatar`,
-      {
-        method: "POST",
-        body: formData,
-        credentials: "include",
-      },
-    );
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(
-        errorData.detail || `Upload failed: ${response.statusText}`,
-      );
-    }
-
-    return response.json();
-  },
-
-  /**
-   * 删除头像
-   */
-  async deleteAvatar(): Promise<{ deleted: boolean }> {
-    const response = await authenticatedRequest(
-      `${API_BASE}/api/upload/avatar`,
-      {
-        method: "DELETE",
-        credentials: "include",
-      },
-    );
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(
-        errorData.detail || `Delete failed: ${response.statusText}`,
-      );
-    }
-
-    return response.json();
-  },
-
-  /**
    * 获取存储配置
    */
   async getConfig(): Promise<UploadConfig> {
@@ -302,19 +224,6 @@ export const uploadApi = {
       throw new Error(result.error || "Failed to get signed URL");
     }
     return result.url;
-  },
-
-  /**
-   * 批量获取 S3 签名 URL
-   */
-  async getSignedUrls(
-    keys: string[],
-    expires: number = 3600,
-  ): Promise<{ urls: SignedUrlItem[]; expires_in: number }> {
-    return authFetch(`${API_BASE}/api/upload/signed-urls`, {
-      method: "POST",
-      body: JSON.stringify({ keys, expires }),
-    });
   },
 
   /**

@@ -92,6 +92,25 @@ def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_m
     assert "parent_step_id" not in sanitized["nested"]
 
 
+def test_sanitize_user_control_input_removes_private_agent_profile_metadata():
+    sanitized = sanitize_user_control_input(
+        {
+            "message": "run",
+            "agent_profile": {
+                "instructions": "private administrator instruction",
+                "content_hash": "a" * 64,
+            },
+            "nested": {
+                "agent_profile": {
+                    "instructions": "another private instruction",
+                },
+            },
+        }
+    )
+
+    assert sanitized == {"message": "run", "nested": {}}
+
+
 def test_required_tool_public_detail_is_stable_and_never_exposes_private_identity():
     unavailable = required_tool_public_detail("unavailable")
     required = required_tool_public_detail("required")

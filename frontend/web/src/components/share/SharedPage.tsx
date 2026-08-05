@@ -43,7 +43,7 @@ import {
   THEME_STORAGE_KEY,
 } from "../../utils/themeDom";
 import { getModelIconUrl, isMonochromeIcon } from "../agent/modelIcon";
-import { ScrollButtons } from "../landing/components/ScrollButtons";
+import { ScrollButtons } from "./ScrollButtons";
 import { ShareUnavailableState } from "./ShareUnavailableState";
 
 // Theme management for shared page (independent of main app context)
@@ -426,14 +426,14 @@ export function SharedPage() {
   // Main content — editorial blog layout
   return (
     <div className="flex flex-col bg-[#faf9f7] dark:bg-[#0f0e0d] min-h-dvh font-sans">
-      {/* Top bar — matching landing page Navbar style */}
+      {/* Public shared-session top bar */}
       <header
         data-yields-sidebar
         className="fixed top-0 inset-x-0 z-50 bg-white/80 dark:bg-stone-950/80 border-b border-stone-100/60 dark:border-stone-800/40"
       >
         {/* Scroll progress bar */}
         <div
-          className="absolute bottom-0 left-0 h-[2px] landing-progress-bar"
+          className="share-scroll-progress"
           style={{ width: `${scrollProgress * 100}%` }}
         />
         <div className="max-w-6xl mx-auto px-4 sm:px-8 h-14 flex items-center justify-between">

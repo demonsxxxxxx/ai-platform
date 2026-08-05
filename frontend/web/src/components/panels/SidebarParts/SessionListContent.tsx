@@ -7,7 +7,6 @@ import {
   Server,
   Bot,
   Cpu,
-  FileStack,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -58,6 +57,11 @@ interface SessionListContentProps {
   sessionActions: SessionActions;
   isChatsCollapsed: boolean;
   onToggleChatsCollapsed: () => void;
+  agentWorkspace?: {
+    name: string;
+    description: string;
+  };
+  hideSessionDiscovery?: boolean;
 }
 
 export function SessionListContent({
@@ -77,6 +81,8 @@ export function SessionListContent({
   sessionActions,
   isChatsCollapsed,
   onToggleChatsCollapsed,
+  agentWorkspace,
+  hideSessionDiscovery = false,
 }: SessionListContentProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -107,16 +113,26 @@ export function SessionListContent({
       onClick: () => navigate("/apps"),
     },
     {
+      key: "agentMarket",
+      icon: Bot,
+      label: "智能体市场",
+      onClick: () => navigate("/agent-market"),
+    },
+    ...(isAiAdmin
+      ? [
+          {
+            key: "agentBuilder" as const,
+            icon: Bot,
+            label: "智能体管理",
+            onClick: () => navigate("/agent-builder"),
+          },
+        ]
+      : []),
+    {
       key: "skills",
       icon: Package,
       label: skillsNavigationLabel,
       onClick: () => navigate("/skills"),
-    },
-    {
-      key: "files",
-      icon: FileStack,
-      label: t("nav.files"),
-      onClick: () => navigate("/files"),
     },
   ];
   const governanceNavItems: Array<{
@@ -179,6 +195,25 @@ export function SessionListContent({
         </button>
       </div>
 
+      {agentWorkspace ? (
+        <section
+          data-agent-workspace-identity
+          className="mx-2 border-b border-[var(--theme-border)]/70 px-2 pb-3 pt-1"
+        >
+          <p className="text-xs font-medium text-[var(--theme-primary)]">
+            智能体工作区
+          </p>
+          <h2 className="mt-1 truncate text-sm font-semibold text-[var(--theme-text)]">
+            {agentWorkspace.name}
+          </h2>
+          {agentWorkspace.description ? (
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
+              {agentWorkspace.description}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       {/* Primary navigation */}
       <div
         data-workbench-primary-nav
@@ -196,21 +231,23 @@ export function SessionListContent({
             </kbd>
           </button>
 
-          <button
-            onClick={onOpenSearch}
-            className="sidebar-nav-btn group flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
-          >
-            <Search size={19} />
-            <span className="flex-1 text-left">
-              {t("sidebar.searchSessions")}
-            </span>
-            <kbd
-              className="hidden items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium opacity-0 transition-opacity group-hover:opacity-100 sm:inline-flex"
-              style={{ color: "var(--theme-text-tertiary)" }}
+          {!hideSessionDiscovery ? (
+            <button
+              onClick={onOpenSearch}
+              className="sidebar-nav-btn group flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
             >
-              ⌘K
-            </kbd>
-          </button>
+              <Search size={19} />
+              <span className="flex-1 text-left">
+                {t("sidebar.searchSessions")}
+              </span>
+              <kbd
+                className="hidden items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium opacity-0 transition-opacity group-hover:opacity-100 sm:inline-flex"
+                style={{ color: "var(--theme-text-tertiary)" }}
+              >
+                ⌘K
+              </kbd>
+            </button>
+          ) : null}
         </div>
 
         <div className="h-px bg-[var(--theme-border)]/70" />

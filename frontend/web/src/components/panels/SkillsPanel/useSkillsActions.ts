@@ -6,7 +6,6 @@ import { exportProjectZip } from "../../../utils/exportProjectZip";
 import { useAuth } from "../../../hooks/useAuth";
 import { useSkills } from "../../../hooks/useSkills";
 import type { AdminSkillCatalogItem } from "../../../services/api/skill";
-import { sanitizeSkillName } from "../../../utils/skillFilters";
 import { type SkillResponse, type SkillCreate } from "../../../types";
 import { isAiAdminUser } from "../capabilityAdmin";
 import {
@@ -68,7 +67,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     listError,
     getSkill,
     getFullSkill,
-    createSkill,
     updateSkill,
     deleteSkill,
     batchDeleteSkills,
@@ -83,7 +81,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     adminPreviewZipSkills,
     previewGitHubSkills,
     installGitHubSkills,
-    publishToMarketplace,
     clearError,
     fetchSkills,
   } = useSkills({ enabled, listParams });
@@ -120,7 +117,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
 
   // Form modal state
   const [editingSkill, setEditingSkill] = useState<SkillResponse | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
   const [showModal, setShowModal] = useState(false);
 
   // Batch selection state
@@ -131,17 +127,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [deleteConfirmData, setDeleteConfirmData] = useState<{
     name: string;
-  } | null>(null);
-
-  // Publish confirmation
-  const [publishConfirm, setPublishConfirm] = useState<{
-    isOpen: boolean;
-    localSkillName: string;
-    marketplaceSkillName: string;
-    description: string;
-    tagsInput: string;
-    isPublished: boolean;
-    error?: string;
   } | null>(null);
 
   // ZIP upload state
@@ -181,25 +166,16 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   const [githubExporting, setGithubExporting] = useState(false);
 
   // CRUD handlers
-  const handleCreate = () => {
-    setIsCreating(true);
-    setEditingSkill(null);
-    setShowModal(true);
-  };
-
   const handleEdit = async (skill: SkillResponse) => {
     const fullSkill = await getSkill(skill.name);
     setEditingSkill(fullSkill || skill);
-    setIsCreating(false);
     setShowModal(true);
   };
 
   const handleSave = async (data: SkillCreate): Promise<boolean> => {
     let success = false;
     try {
-      if (isCreating) {
-        success = await createSkill(data);
-      } else if (editingSkill) {
+      if (editingSkill) {
         // Use filePaths (lazy-load mode) when available, fallback to files keys
         const oldFiles = editingSkill.filePaths?.length
           ? editingSkill.filePaths
@@ -216,7 +192,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
       if (success) {
         setShowModal(false);
         setEditingSkill(null);
-        setIsCreating(false);
       }
     } catch {
       success = false;
@@ -227,7 +202,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   const handleCancel = () => {
     setShowModal(false);
     setEditingSkill(null);
-    setIsCreating(false);
   };
 
   const handleExportZip = async (name: string) => {
@@ -322,58 +296,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     } finally {
       setBatchLoading(false);
     }
-  };
-
-  // Publish handler
-  const confirmPublish = async () => {
-    if (!publishConfirm) return;
-    const { localSkillName, marketplaceSkillName, description } =
-      publishConfirm;
-
-    if (!marketplaceSkillName.trim()) {
-      setPublishConfirm({
-        ...publishConfirm,
-        error: t("skills.form.validation.nameRequired"),
-      });
-      return;
-    }
-    if (!description.trim()) {
-      setPublishConfirm({
-        ...publishConfirm,
-        error: t("skills.form.validation.descriptionRequired"),
-      });
-      return;
-    }
-
-    const normalizedTags = Array.from(
-      new Set(
-        publishConfirm.tagsInput
-          .split(",")
-          .map((tag) => tag.trim())
-          .filter(Boolean),
-      ),
-    );
-
-    const success = await publishToMarketplace(localSkillName, {
-      skill_name: sanitizeSkillName(marketplaceSkillName.trim()),
-      description: description.trim() || undefined,
-      tags: normalizedTags,
-    });
-
-    if (success) {
-      toast.success(
-        publishConfirm.isPublished
-          ? t("skills.republishSuccess")
-          : t("skills.publishSuccess"),
-      );
-      setPublishConfirm(null);
-      return;
-    }
-
-    setPublishConfirm({
-      ...publishConfirm,
-      error: t("skills.publishFailed") || "Publish failed",
-    });
   };
 
   // ZIP upload handlers
@@ -707,9 +629,7 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
 
     // Form modal
     editingSkill,
-    isCreating,
     showModal,
-    handleCreate,
     handleEdit,
     handleSave,
     handleCancel,
@@ -725,11 +645,6 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     deleteConfirmData,
     confirmDelete,
     cancelDelete,
-
-    // Publish
-    publishConfirm,
-    setPublishConfirm,
-    confirmPublish,
 
     // Batch
     selectedNames,

@@ -8,12 +8,9 @@ current `ai-platform` control plane.
 Use these sources together, in this order, before implementation work:
 
 1. Current user instruction in the active session.
-2. `docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md`.
-3. `docs/superpowers/specs/2026-06-11-ai-platform-tech-acceptance.md`.
-4. `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`.
-5. This guardrails file.
-6. Current code, tests, and fresh 211 runtime evidence.
-7. GitHub issues explicitly named by the active goal and confirmed current from
+2. This guardrails file.
+3. Current code, tests, and fresh 211 runtime evidence.
+4. GitHub issues explicitly named by the active goal and confirmed current from
    fresh GitHub state.
 
 If these sources disagree, stop broad implementation and narrow the work to
@@ -36,52 +33,8 @@ source-authority repair first.
   `ai-platform-minio`.
 
 Do not make product or implementation decisions from directories, ports, or
-services outside the current PRD, roadmap, current code, and current 211
-runtime evidence.
-
-## P0 Gate Order And Current Gate Sequence
-
-Current P0 work must move these gates toward closure:
-
-1. Memory / Context.
-2. MCP / Tool Permission.
-3. Event / Playback Contract.
-4. Sandbox Lease / Workspace.
-5. Agent Frontend V1 verification for the above public projections.
-
-Long Task / Platform Multi-Run Orchestration / SDK Subagent expansion must wait
-until these gates have current code, focused tests, review, and 211 smoke
+services outside these guardrails, current code, and current 211 runtime
 evidence.
-
-The current roadmap gate sequence is stricter than the old P0-only list:
-
-1. G0-G1 Source Authority / Security Baseline, including company AD/auth/session,
-   RBAC, tenant/workspace/user isolation, redaction, repo-local deploy
-   composition, and runtime label parity.
-2. G2-G4 Control Plane MVP contracts for session, run, file, artifact, skill,
-   tool, memory, event, and audit; executors consume platform payloads and do
-   not define platform schema.
-3. G5 Run Lifecycle / Worker Runtime V1, including queue, lease, heartbeat,
-   retry, dead-letter, cancel, resume, checkpoint, and idempotency.
-4. G6 Tool / Skill / Memory Governance, including allow/deny/ask policy,
-   retention, redaction, delete, dependency, and release-policy flows.
-5. G7 Sandbox / Resource Hardening, including Docker provider validation,
-   egress policy, runtime quota, orphan cleanup, and container security options.
-6. G8 Deferred Platform Multi-Run Gate remains a deferred parking-lot for
-   platform-owned parent/child multi-run orchestration. Historical evidence and
-   appendices may mention the old title "G8 Multi-Agent Controlled Beta"; do
-   not use that title for current status. SDK agent/subagent behavior stays
-   inside one governed platform run; the current evidence work is B3 SDK
-   subagent fanout capacity, not ordinary-user platform-level multi-run
-   exposure and not a beta route.
-7. G9 Observability / Quality / Ops, including Admin Runtime, cost/token/latency
-   metrics, error taxonomy, trace/audit export, and alerts.
-8. G10 Internal Beta / Department Rollout with explicit internal workflow owner.
-
-Compose one-command startup, packaged delivery, and public Docker convenience
-are later milestones. They must not displace intranet AD/auth/session,
-tenant-aware isolation, fair scheduling, operational visibility, or frontend
-source/version ownership as the current platform gates.
 
 ## Implementation Guardrails
 
@@ -91,6 +44,19 @@ source/version ownership as the current platform gates.
   sandbox, schema, shared contracts, platform multi-run / SDK subagent
   expansion, and frontend-backend auth/session contracts as high-verification
   areas.
+- Keep Agent/Harness orchestration behind the Engine adapter boundary. The
+  platform owns admission, authorization, context binding, queueing, sandbox
+  policy, persistence, and public projections; the selected Engine SDK owns
+  model/tool loops and any internal subagent coordination.
+- Platform-owned multi-run admission is retired. Client input containing
+  `execution_mode=multi_agent`, `multi_agent_steps`, or
+  `multi_agent_dispatch` must fail closed instead of creating platform child
+  runs. Generic run steps and SDK-originated semantic subagent events remain
+  valid public projection inputs and must not imply a platform dispatcher.
+- Engine-specific SDK types and callbacks must terminate inside the Engine
+  adapter. Routes, repositories, queue contracts, and public SSE contracts
+  must remain stable when replacing the current Claude Agent SDK adapter with
+  another Harness such as Pi.
 - Keep tenant/workspace/user boundaries explicit in queue, quota, worker
   maintenance, memory cleanup, dispatcher, and Admin operational projections.
 - Do not let AD/company auth stand in for per-tenant quota, fair scheduling, or
@@ -137,3 +103,6 @@ source/version ownership as the current platform gates.
   `docs/operations/211-release-operations-runbook.md`.
 - Issue, PR, review, verification, status, and closure rules are defined only in
   `docs/agent-rules/github-issue-pr-workflow.md`.
+- Durable docs describe a contract or an executable procedure. Current status,
+  temporary phase plans, and release journals belong in the active GitHub record
+  or controller checkpoint, not repository Markdown.

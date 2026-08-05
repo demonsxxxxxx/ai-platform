@@ -28,6 +28,8 @@ export interface ChatInputProps {
   isLoading: boolean;
   disabled?: boolean;
   canSend?: boolean;
+  /** Optional product-specific prompt for a locked composer surface. */
+  placeholder?: string;
   tools?: ToolState[];
   onToggleTool?: (toolName: string) => void;
   onToggleCategory?: (category: ToolCategory, enabled: boolean) => void;

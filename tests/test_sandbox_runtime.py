@@ -8,11 +8,14 @@ from types import SimpleNamespace
 import pytest
 
 from app.file_parser_contracts import build_attachment_preprocessing_contract
+from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import FakeContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, SandboxRuntimeRequest, StopResult
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime
+from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt_run-a") -> str:
@@ -53,6 +56,14 @@ def request(**overrides) -> SandboxRuntimeRequest:
     return SandboxRuntimeRequest(**values)
 
 
+def test_sandbox_system_prompt_uses_the_same_character_limit_as_profile_admission():
+    accepted = request(system_prompt="界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+
+    assert accepted.system_prompt == "界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+    with pytest.raises(ValueError):
+        request(system_prompt="界" * (MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS + 1))
+
+
 @pytest.mark.asyncio
 async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_executor(tmp_path, monkeypatch):
     sent = []
@@ -80,7 +91,10 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     )
 
     result = await runtime.submit(
-        request(materialized_file_names=["z.docx", "a.docx"]),
+        request(
+            materialized_file_names=["z.docx", "a.docx"],
+            system_prompt="Private profile instruction",
+        ),
         event_sink=events.append,
     )
 
@@ -125,6 +139,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "tool_policy_subjects": [],
         "input_files": ["file-a"],
         "materialized_file_names": ["z.docx", "a.docx"],
+        "system_prompt": "Private profile instruction",
     }
     assert [event.type for event in events] == ["runtime_container_started"]
     assert lease_calls[0][0] == "record"
@@ -132,6 +147,674 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert lease_calls[0][2].run_id == "run-a"
     assert lease_calls[1][0] == "release"
     assert lease_calls[1][2] == "dispatch_completed"
+
+
+@pytest.mark.asyncio
+async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and_before_stop(tmp_path, monkeypatch):
+    steps: list[str] = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class RecordingProvider(FakeContainerProvider):
+        async def create_or_reuse(self, runtime_request, workspace):
+            steps.append("create")
+            return await super().create_or_reuse(runtime_request, workspace)
+
+        async def stage_workspace(self, lease, runtime_request, workspace):
+            steps.append("stage")
+
+        async def validate_for_dispatch(self, lease, runtime_request, workspace):
+            steps.append("validate")
+
+        async def collect_workspace(self, lease, runtime_request, workspace):
+            steps.append("collect")
+
+        async def stop(self, lease, *, reason):
+            steps.append("stop")
+            return await super().stop(lease, reason=reason)
+
+    async def execute(*_args, **_kwargs):
+        steps.append("dispatch")
+        return {"status": "completed", "session_id": "session-a", "run_id": "run-a"}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path.parent / "r",
+        provider=RecordingProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: steps.append("record") or "lease-a",
+        release_lease=lambda *_args: steps.append("release"),
+    )
+
+    await runtime.submit(
+        request(
+            tenant_id="t",
+            workspace_id="w",
+            user_id="u",
+            session_id="s",
+            run_id="r",
+            attempt_id="a",
+        )
+    )
+
+    assert steps == ["create", "record", "stage", "validate", "dispatch", "collect", "stop", "release"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_phase", ["stage", "collect"])
+async def test_runtime_workspace_transfer_failure_is_terminal_and_cleans_up(tmp_path, monkeypatch, failure_phase):
+    calls: list[str] = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class FailingTransferProvider(FakeContainerProvider):
+        async def stage_workspace(self, lease, runtime_request, workspace):
+            calls.append("stage")
+            if failure_phase == "stage":
+                raise RuntimeError("stage failed")
+
+        async def collect_workspace(self, lease, runtime_request, workspace):
+            calls.append("collect")
+            if failure_phase == "collect":
+                raise RuntimeError("collect failed")
+
+        async def stop(self, lease, *, reason):
+            calls.append(reason)
+            return await super().stop(lease, reason=reason)
+
+    async def execute(*_args, **_kwargs):
+        calls.append("dispatch")
+        return {"status": "completed", "session_id": "s", "run_id": "r"}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path.parent / f"x-{failure_phase}",
+        provider=FailingTransferProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: calls.append("record") or "lease-a",
+        release_lease=lambda *_args: calls.append("release"),
+    )
+
+    with pytest.raises(RuntimeError, match=failure_phase):
+        await runtime.submit(
+            request(
+                tenant_id="t",
+                workspace_id="w",
+                user_id="u",
+                session_id="s",
+                run_id="r",
+                attempt_id=f"a-{failure_phase}",
+                sandbox_mode="persistent",
+            )
+        )
+
+    if failure_phase == "stage":
+        assert calls == ["record", "stage", "workspace_stage_failed", "release"]
+    else:
+        assert calls == ["record", "stage", "dispatch", "collect", "workspace_collect_failed", "release"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_opensandbox_workspace_stage_failure_stops_and_releases_once_without_residue(monkeypatch):
+    calls: list[str] = []
+    owned: set[str] = set()
+
+    class StubSettings:
+        sandbox_container_provider = "opensandbox"
+        sandbox_security_profile = "governed"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        opensandbox_domain = "10.56.1.72:8080"
+        opensandbox_protocol = "http"
+        opensandbox_api_key = "test-stock-opensandbox-key"
+        opensandbox_use_server_proxy = False
+        opensandbox_executor_image = "sha256:" + "a" * 64
+        opensandbox_executor_image_digest = "sha256:" + "a" * 64
+        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
+        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
+        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+
+    class TrustedOpenSandboxProvider(FakeContainerProvider):
+        async def create_or_reuse(self, runtime_request, workspace):
+            lease = await super().create_or_reuse(runtime_request, workspace)
+            lease.provider = "opensandbox"
+            lease.labels.update(
+                {
+                    "ai-platform.provider_backend": "opensandbox",
+                    "ai-platform.security_profile": "governed",
+                }
+            )
+            owned.add(lease.container_id)
+            return lease
+
+        async def stage_workspace(self, *_args):
+            calls.append("stage")
+            raise RuntimeError("workspace stage denied")
+
+        async def stop(self, lease, *, reason):
+            calls.append(reason)
+            owned.discard(lease.container_id)
+            return await super().stop(lease, reason=reason)
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=Path(".pytest-tmp") / "r675-runtime-stage",
+        provider=TrustedOpenSandboxProvider(executor_url="http://executor.test"),
+        execute_task=lambda *_args, **_kwargs: pytest.fail("stage failure must not dispatch"),
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: calls.append("record") or "lease-trusted-a",
+        release_lease=lambda *_args: calls.append("release"),
+    )
+
+    with pytest.raises(RuntimeError, match="workspace stage denied"):
+        await runtime.submit(request(attempt_id="trusted-stage-a", sandbox_mode="persistent"))
+
+    assert calls == ["record", "stage", "workspace_stage_failed", "release"]
+    assert owned == set()
+
+
+@pytest.mark.asyncio
+async def test_runtime_and_execution_owner_elect_one_stop_terminator(tmp_path, monkeypatch):
+    started = asyncio.Event()
+    stop_calls: list[str] = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class SlowStopProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason):
+            stop_calls.append(reason)
+            await asyncio.sleep(0.01)
+            return await super().stop(lease, reason=reason)
+
+    async def execute(*_args, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path.parent / "owner",
+        provider=SlowStopProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=lambda *_args: "lease-a",
+        release_lease=lambda *_args: None,
+    )
+    owner = RunExecutionOwner("r")
+    owner.start(
+        runtime.submit(
+            request(
+                tenant_id="t",
+                workspace_id="w",
+                user_id="u",
+                session_id="s",
+                run_id="r",
+                attempt_id="a-owner",
+                sandbox_mode="persistent",
+            ),
+            execution_owner=owner,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    first, second = await asyncio.gather(
+        owner.stop(reason="user_cancel", timeout_seconds=1.0),
+        owner.stop(reason="duplicate_cancel", timeout_seconds=1.0),
+    )
+
+    assert first.quiescent is True
+    assert second.quiescent is True
+    assert stop_calls == ["user_cancel"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_logs_only_safe_opensandbox_startup_evidence(tmp_path, monkeypatch, caplog):
+    from app.runtime.sandbox.providers.opensandbox.startup import OpenSandboxStartupEvidence, OpenSandboxStartupStage
+
+    class StubSettings:
+        sandbox_container_provider = "fake"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    raw_provider_message = "private endpoint https://secret.test path C:\\runtime\\secret token-private"
+    startup_error = container_provider.OpenSandboxStartupFailedError(
+        OpenSandboxStartupEvidence(
+            stage=OpenSandboxStartupStage.CREATE,
+            sdk_error_code="POOL_ACQUIRE_FAILED",
+            request_id="request-668",
+        )
+    )
+    startup_error.__cause__ = RuntimeError(raw_provider_message)
+
+    class StartupFailedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            raise startup_error
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StartupFailedProvider(),
+        execute_task=lambda *_args: pytest.fail("executor dispatch must not occur after startup failure"),
+        record_lease=lambda *_args: pytest.fail("lease must not be persisted after startup failure"),
+    )
+    events = []
+
+    with caplog.at_level("ERROR", logger="app.runtime.sandbox.runtime"):
+        with pytest.raises(container_provider.OpenSandboxStartupFailedError) as exc_info:
+            await runtime.submit(request(), event_sink=events.append)
+
+    assert exc_info.value is startup_error
+    assert events == []
+    record = caplog.records[-1]
+    assert record.getMessage() == "OpenSandbox startup failed"
+    assert {
+        "run_id": record.run_id,
+        "attempt_id": record.attempt_id,
+        "provider": record.provider,
+        "startup_stage": record.startup_stage,
+        "sdk_error_code": record.sdk_error_code,
+        "request_id": record.request_id,
+    } == {
+        "run_id": "run-a",
+        "attempt_id": "qat_test-runtime-attempt",
+        "provider": "opensandbox",
+        "startup_stage": "create",
+        "sdk_error_code": "POOL_ACQUIRE_FAILED",
+        "request_id": "request-668",
+    }
+    rendered = caplog.text
+    for prohibited in (raw_provider_message, "secret.test", "C:\\runtime\\secret", "token-private"):
+        assert prohibited not in rendered
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_one_private_safe_readiness_event_before_rethrow(tmp_path, monkeypatch):
+    from app.public_execution import public_execution_event_from_row
+
+    class StubSettings:
+        sandbox_container_provider = "docker"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    raw_exception = "private health failure at C:\\runtime\\secret with token-private"
+    evidence = ExecutorReadinessEvidence(
+        readiness_phase="health_probe",
+        container_state="exited",
+        exit_code=137,
+        oom_killed=True,
+        published_port_observed=True,
+        health_outcome="timeout",
+        elapsed_ms=321,
+    )
+
+    class ReadinessFailedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            raise container_provider.ExecutorHealthTimeoutError(
+                raw_exception,
+                readiness_evidence=evidence,
+            )
+
+    async def execute(*_args, **_kwargs):
+        raise AssertionError("executor dispatch must not occur after readiness failure")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    events = []
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=ReadinessFailedProvider(),
+        execute_task=execute,
+        record_lease=lambda *_args: (_ for _ in ()).throw(AssertionError("lease must not be persisted")),
+    )
+
+    with pytest.raises(container_provider.ExecutorHealthTimeoutError) as exc_info:
+        await runtime.submit(request(), event_sink=events.append)
+
+    assert exc_info.value.readiness_evidence is evidence
+    assert len(events) == 1
+    event = events[0]
+    assert event.type == "sandbox_executor_readiness_failed"
+    assert event.admin_only is True
+    assert event.message == "Sandbox executor readiness failed"
+    assert event.payload == {
+        "schema_version": "ai-platform.executor-readiness-evidence.v1",
+        "run_id": "run-a",
+        "attempt_id": "qat_test-runtime-attempt",
+        "readiness_phase": "health_probe",
+        "container_state": "exited",
+        "exit_code": 137,
+        "oom_killed": True,
+        "published_port_observed": True,
+        "health_outcome": "timeout",
+        "elapsed_ms": 321,
+    }
+    assert set(event.payload) == {
+        "schema_version",
+        "run_id",
+        "attempt_id",
+        "readiness_phase",
+        "container_state",
+        "exit_code",
+        "oom_killed",
+        "published_port_observed",
+        "health_outcome",
+        "elapsed_ms",
+    }
+    serialized = repr(event)
+    for prohibited in (
+        raw_exception,
+        "C:\\runtime\\secret",
+        "token-private",
+        "hello",
+        "stdout",
+        "stderr",
+        "command",
+        "args",
+        "image",
+        "endpoint",
+        "container_id",
+        "network_id",
+        "private labels",
+    ):
+        assert prohibited not in serialized
+    assert public_execution_event_from_row(
+        request().run_id,
+        {
+            "id": "event-private-readiness",
+            "sequence": 1,
+            "event_type": event.type,
+            "payload_json": event.payload,
+            "created_at": None,
+        },
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_logs_opensandbox_health_stage_without_expanding_readiness_event(tmp_path, monkeypatch, caplog):
+    from app.runtime.sandbox.providers.opensandbox.startup import OpenSandboxStartupEvidence, OpenSandboxStartupStage
+
+    class StubSettings:
+        sandbox_container_provider = "fake"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    readiness = ExecutorReadinessEvidence(
+        readiness_phase="health_probe",
+        container_state="unknown",
+        exit_code=None,
+        oom_killed=None,
+        published_port_observed=True,
+        health_outcome="unhealthy",
+        elapsed_ms=17,
+    )
+    startup_error = container_provider.ExecutorHealthTimeoutError(readiness_evidence=readiness)
+    startup_error.attach_opensandbox_startup_evidence(
+        OpenSandboxStartupEvidence(OpenSandboxStartupStage.HEALTH, None, "request_668-A")
+    )
+
+    class HealthFailedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            raise startup_error
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    events = []
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=HealthFailedProvider(),
+        execute_task=lambda *_args: pytest.fail("executor dispatch must not occur after readiness failure"),
+        record_lease=lambda *_args: pytest.fail("lease must not be persisted after readiness failure"),
+    )
+
+    with caplog.at_level("ERROR", logger="app.runtime.sandbox.runtime"):
+        with pytest.raises(container_provider.ExecutorHealthTimeoutError) as exc_info:
+            await runtime.submit(request(), event_sink=events.append)
+
+    assert exc_info.value is startup_error
+    record = caplog.records[-1]
+    assert (record.provider, record.startup_stage, record.sdk_error_code, record.request_id) == (
+        "opensandbox",
+        "health",
+        None,
+        "request_668-A",
+    )
+    assert len(events) == 1
+    assert set(events[0].payload) == {
+        "schema_version",
+        "run_id",
+        "attempt_id",
+        "readiness_phase",
+        "container_state",
+        "exit_code",
+        "oom_killed",
+        "published_port_observed",
+        "health_outcome",
+        "elapsed_ms",
+    }
+    assert "startup_stage" not in events[0].payload
+
+
+@pytest.mark.asyncio
+async def test_runtime_readiness_sink_failure_does_not_mask_original_error(tmp_path, monkeypatch):
+    class StubSettings:
+        sandbox_container_provider = "docker"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    evidence = ExecutorReadinessEvidence(
+        readiness_phase="publish_wait",
+        container_state="exited",
+        exit_code=23,
+        oom_killed=False,
+        published_port_observed=False,
+        health_outcome="not_attempted",
+        elapsed_ms=91,
+    )
+    readiness_cause = TimeoutError("private readiness cause")
+    readiness_error = container_provider.ExecutorHealthTimeoutError(
+        readiness_evidence=evidence,
+    )
+
+    class ReadinessFailedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            raise readiness_error from readiness_cause
+
+    attempted_events = []
+
+    def failing_sink(event):
+        attempted_events.append(event)
+        raise RuntimeError("private persistence unavailable")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=ReadinessFailedProvider(),
+        execute_task=lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+        record_lease=lambda *_args: (_ for _ in ()).throw(AssertionError("lease must not be persisted")),
+    )
+
+    with pytest.raises(container_provider.ExecutorHealthTimeoutError) as exc_info:
+        await runtime.submit(request(), event_sink=failing_sink)
+
+    assert exc_info.value is readiness_error
+    assert exc_info.value.readiness_evidence is evidence
+    assert exc_info.value.__cause__ is readiness_cause
+    assert [event.type for event in attempted_events] == ["sandbox_executor_readiness_failed"]
+
+
+@pytest.mark.asyncio
+async def test_readiness_emit_propagates_cancel(tmp_path, monkeypatch):
+    from app.worker import WorkerRunCancelled
+
+    class StubSettings:
+        sandbox_container_provider = "docker"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    evidence = ExecutorReadinessEvidence(
+        readiness_phase="health_probe",
+        container_state="running",
+        exit_code=None,
+        oom_killed=None,
+        published_port_observed=True,
+        health_outcome="timeout",
+        elapsed_ms=50,
+    )
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+
+    for index, cancellation in enumerate(
+        (asyncio.CancelledError("task cancelled"), WorkerRunCancelled("worker cancelled"))
+    ):
+        class ReadinessFailedProvider:
+            async def create_or_reuse(self, _request, _workspace):
+                raise container_provider.ExecutorHealthTimeoutError(readiness_evidence=evidence)
+
+        attempted_events = []
+
+        async def cancelling_sink(event):
+            attempted_events.append(event)
+            raise cancellation
+
+        runtime = SandboxRuntime(
+            workspace_root=tmp_path.parent / f"c{index}",
+            provider=ReadinessFailedProvider(),
+            execute_task=lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+            record_lease=lambda *_args: (_ for _ in ()).throw(AssertionError("lease must not be persisted")),
+        )
+
+        with pytest.raises(type(cancellation)) as exc_info:
+            await runtime.submit(
+                request(run_id=f"run-cancel-{index}"),
+                event_sink=cancelling_sink,
+            )
+
+        assert exc_info.value is cancellation
+        assert [event.type for event in attempted_events] == ["sandbox_executor_readiness_failed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("phase", "state", "exit_code", "oom_killed", "published", "outcome"),
+    [
+        ("publish_wait", "exited", 23, False, False, "not_attempted"),
+        ("health_probe", "running", None, None, True, "timeout"),
+    ],
+)
+@pytest.mark.parametrize("sink_fails", [False, True])
+async def test_readiness_cleanup_failure_keeps_precedence(
+    tmp_path,
+    monkeypatch,
+    phase,
+    state,
+    exit_code,
+    oom_killed,
+    published,
+    outcome,
+    sink_fails,
+):
+    class StubSettings:
+        sandbox_container_provider = "docker"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    evidence = ExecutorReadinessEvidence(
+        readiness_phase=phase,
+        container_state=state,
+        exit_code=exit_code,
+        oom_killed=oom_killed,
+        published_port_observed=published,
+        health_outcome=outcome,
+        elapsed_ms=73,
+    )
+    readiness_error = container_provider.ExecutorHealthTimeoutError(readiness_evidence=evidence)
+    cleanup_error = container_provider.ContainerCleanupFailedError(readiness_evidence=evidence)
+
+    class CleanupFailedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            raise cleanup_error from readiness_error
+
+    attempted_events = []
+
+    def event_sink(event):
+        attempted_events.append(event)
+        if sink_fails:
+            raise RuntimeError("private persistence unavailable")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path.parent / f"f{int(sink_fails)}{phase[0]}",
+        provider=CleanupFailedProvider(),
+        execute_task=lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+        record_lease=lambda *_args: (_ for _ in ()).throw(AssertionError("lease must not be persisted")),
+    )
+
+    with pytest.raises(container_provider.ContainerCleanupFailedError) as exc_info:
+        await runtime.submit(request(), event_sink=event_sink)
+
+    assert exc_info.value is cleanup_error
+    assert exc_info.value.__cause__ is readiness_error
+    assert exc_info.value.readiness_evidence is evidence
+    assert len(attempted_events) == 1
+    assert attempted_events[0].type == "sandbox_executor_readiness_failed"
+    assert attempted_events[0].payload == {
+        "schema_version": "ai-platform.executor-readiness-evidence.v1",
+        "run_id": "run-a",
+        "attempt_id": "qat_test-runtime-attempt",
+        "readiness_phase": phase,
+        "container_state": state,
+        "exit_code": exit_code,
+        "oom_killed": oom_killed,
+        "published_port_observed": published,
+        "health_outcome": outcome,
+        "elapsed_ms": 73,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_no_readiness_event_for_proof_or_untyped_cleanup(
+    tmp_path,
+    monkeypatch,
+    cleanup_fails,
+):
+    class StubSettings:
+        sandbox_container_provider = "docker"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    proof_error = container_provider.GovernedEgressAdmissionError()
+    provider_error = (
+        container_provider.ContainerCleanupFailedError() if cleanup_fails else proof_error
+    )
+
+    class ProofRejectedProvider:
+        async def create_or_reuse(self, _request, _workspace):
+            if cleanup_fails:
+                raise provider_error from proof_error
+            raise provider_error
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    events = []
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=ProofRejectedProvider(),
+        execute_task=lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+        record_lease=lambda *_args: (_ for _ in ()).throw(AssertionError("lease must not be persisted")),
+    )
+
+    with pytest.raises(type(provider_error)) as exc_info:
+        await runtime.submit(request(), event_sink=events.append)
+
+    assert exc_info.value is provider_error
+    if cleanup_fails:
+        assert exc_info.value.__cause__ is proof_error
+        assert exc_info.value.readiness_evidence is None
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -365,6 +1048,12 @@ async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tm
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
         async def validate_for_dispatch(self, lease, runtime_request, leased_workspace):
+            return None
+
+        async def stage_workspace(self, lease, runtime_request, leased_workspace):
+            return None
+
+        async def collect_workspace(self, lease, runtime_request, leased_workspace):
             return None
 
     async def execute(executor_url, task_request):
@@ -664,6 +1353,57 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
     assert "private-capability" not in repr(create_kwargs["lease_payload_json"])
     assert "registry.example" not in repr(create_kwargs["lease_payload_json"])
     assert calls[1] == ("release", "lease-created-a", "dispatch_completed")
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_retired_opensandbox_profile_before_persistence(tmp_path, monkeypatch):
+    runtime_request = request(sandbox_mode="ephemeral", browser_enabled=False)
+
+    class StubSettings:
+        sandbox_container_provider = "opensandbox"
+        sandbox_security_profile = "governed"
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    labels = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.tenant_id": runtime_request.tenant_id,
+        "ai-platform.workspace_id": runtime_request.workspace_id,
+        "ai-platform.user_id": runtime_request.user_id,
+        "ai-platform.session_id": runtime_request.session_id,
+        "ai-platform.run_id": runtime_request.run_id,
+        "ai-platform.attempt_id": runtime_request.attempt_id,
+        "ai-platform.sandbox_mode": runtime_request.sandbox_mode,
+        "ai-platform.browser_enabled": "false",
+        "ai-platform.provider_backend": "opensandbox",
+        "ai-platform.security_profile": "trusted_internal",
+        "ai-platform.executor.requested_image": "registry.example/ai-platform@sha256:" + "a" * 64,
+        "ai-platform.executor.requested_image_digest": "sha256:" + "a" * 64,
+    }
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(workspace_root=tmp_path, provider=FakeContainerProvider())
+    workspace = runtime.workspace_manager.prepare(runtime_request)
+    lease = ContainerLease(
+        container_id="osb-run-a",
+        container_name="opensandbox-run-a-qat_test-runtime-attempt",
+        provider="opensandbox",
+        executor_url="http://osb-run-a.opensandbox.test:18000",
+        executor_headers={"X-AI-Platform-Executor-Credential": "test-executor-key"},
+        tenant_id=runtime_request.tenant_id,
+        workspace_id=runtime_request.workspace_id,
+        user_id=runtime_request.user_id,
+        session_id=runtime_request.session_id,
+        run_id=runtime_request.run_id,
+        sandbox_mode=runtime_request.sandbox_mode,
+        browser_enabled=runtime_request.browser_enabled,
+        workspace_host_path=workspace.workspace_host_path,
+        workspace_container_path=workspace.workspace_container_path,
+        labels=labels,
+    )
+
+    with pytest.raises(ValueError, match="sandbox_security_profile_invalid"):
+        await runtime._record_runtime_lease(lease, runtime_request, workspace)
 
 
 @pytest.mark.asyncio
@@ -1111,7 +1851,14 @@ async def test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fail
 
 @pytest.mark.asyncio
 async def test_runtime_stops_live_container_when_lease_recording_fails(tmp_path):
-    provider = FakeContainerProvider(executor_url="http://executor.test")
+    created_requests = []
+
+    class RecordingProvider(FakeContainerProvider):
+        async def create_or_reuse(self, runtime_request, workspace):
+            created_requests.append(list(runtime_request.materialized_file_names))
+            return await super().create_or_reuse(runtime_request, workspace)
+
+    provider = RecordingProvider(executor_url="http://executor.test")
 
     async def execute(executor_url, task_request):
         raise AssertionError("executor must not run when lease recording fails")
@@ -1128,8 +1875,22 @@ async def test_runtime_stops_live_container_when_lease_recording_fails(tmp_path)
     )
 
     with pytest.raises(RuntimeError, match="db unavailable"):
-        await runtime.submit(request(sandbox_mode="persistent"))
+        await runtime.submit(
+            request(
+                sandbox_mode="persistent",
+                materialized_file_names=["controlled-workbook.xlsx", "controlled-report.pdf"],
+                tool_policy_subjects=[
+                    {
+                        "identity": "Skill",
+                        "registered": True,
+                        "declared": True,
+                        "allowed_skill_names": [f"controlled-file-skill-{index:03d}" for index in range(256)],
+                    }
+                ],
+            )
+        )
 
+    assert created_requests == [["controlled-workbook.xlsx", "controlled-report.pdf"]]
     assert await provider.list_runtime_containers({}) == []
 
 
@@ -1360,6 +2121,58 @@ async def test_runtime_execution_owner_does_not_release_lease_when_provider_stop
     assert stopped.quiescent is False
     assert calls == [("stop", "cancel_requested")]
     assert (await owner.stop(reason="test_cleanup", timeout_seconds=0.2)).quiescent is True
+    assert calls == [
+        ("stop", "cancel_requested"),
+        ("stop", "test_cleanup"),
+        ("release", "test_cleanup", "lease-a"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_execution_owner_retries_after_provider_stop_raises(tmp_path):
+    calls = []
+    executing = asyncio.Event()
+
+    class StopRaisesProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason: str):
+            calls.append(("stop", reason))
+            if len(calls) == 1:
+                raise RuntimeError("stop unavailable")
+            return await super().stop(lease, reason=reason)
+
+    async def execute(executor_url, task_request):
+        executing.set()
+        await asyncio.Event().wait()
+
+    async def record_lease(lease, request, workspace):
+        return {"id": "lease-a"}
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        calls.append(("release", reason, lease_record_id))
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StopRaisesProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=record_lease,
+        release_lease=release_lease,
+    )
+    owner = RunExecutionOwner("run-a")
+    owner.start(runtime.submit(request(sandbox_mode="persistent"), execution_owner=owner))
+    await asyncio.wait_for(executing.wait(), timeout=0.5)
+
+    failed = await owner.stop(reason="cancel_requested", timeout_seconds=0.2)
+
+    assert failed.status == "failed"
+    assert failed.quiescent is False
+    assert calls == [("stop", "cancel_requested")]
+    assert (await owner.stop(reason="test_cleanup", timeout_seconds=0.2)).quiescent is True
+    assert calls == [
+        ("stop", "cancel_requested"),
+        ("stop", "test_cleanup"),
+        ("release", "test_cleanup", "lease-a"),
+    ]
 
 
 @pytest.mark.asyncio

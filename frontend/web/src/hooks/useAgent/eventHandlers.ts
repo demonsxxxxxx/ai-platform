@@ -21,11 +21,17 @@ import type {
 } from "./types";
 import {
   isPublicExecutionEvent,
+  isAssistantTextProjection,
   isSequencedPublicChatEvent,
   PUBLIC_EXECUTION_EVENT_TYPES,
 } from "./types";
 import { clearAllLoadingStates } from "./messageParts";
 import { convertAttachments, processMessageEvent } from "./eventProcessor";
+import {
+  collapsePublicExecutionSteps,
+  type PublicStreamPresentation,
+  type PublicStreamPresentationOwner,
+} from "./publicStreamPresentation";
 import {
   terminalRunStatusFromEvent,
   type TerminalRunStatus,
@@ -55,6 +61,7 @@ export interface EventHandlerContext {
   ) => boolean;
   onRunStatusUnavailable?: (runId: string, messageId: string) => boolean;
   dismissQueueToast?: () => void;
+  publicStreamPresentation?: PublicStreamPresentation;
 }
 
 /** Durable, bounded public-event cursor for the active session/run stream. */
@@ -69,6 +76,20 @@ export interface StreamEventBinding {
   sessionId: string;
   runId: string;
   streamVersion: number;
+}
+
+function presentationOwner(
+  binding: StreamEventBinding | undefined,
+  messageId: string,
+): PublicStreamPresentationOwner | null {
+  return binding
+    ? {
+        sessionId: binding.sessionId,
+        runId: binding.runId,
+        assistantMessageId: messageId,
+        streamVersion: binding.streamVersion,
+      }
+    : null;
 }
 
 const MESSAGE_EVENTS = new Set<string>([
@@ -261,12 +282,12 @@ export function handleStreamEvent(
     }
   }
 
-  if (
-    terminalStatus &&
-    eventRunId &&
-    ctx.onRunTerminal?.(eventRunId, terminalStatus, messageId)
-  ) {
-    return true;
+  if (terminalStatus && eventRunId) {
+    const owner = presentationOwner(binding, messageId);
+    if (owner) ctx.publicStreamPresentation?.flush(owner);
+    if (ctx.onRunTerminal?.(eventRunId, terminalStatus, messageId)) {
+      return true;
+    }
   }
 
   const depth = data.depth || 0;
@@ -291,6 +312,8 @@ export function handleStreamEvent(
 
     case "user:cancel": {
       dismissQueueToast(ctx);
+      const owner = presentationOwner(binding, messageId);
+      if (owner) ctx.publicStreamPresentation?.flush(owner);
       handleError(data, messageId, ctx, true, { keepConnectionOpen: true });
       return true;
     }
@@ -298,17 +321,22 @@ export function handleStreamEvent(
     case "complete":
     case "done": {
       dismissQueueToast(ctx);
+      const owner = presentationOwner(binding, messageId);
+      if (owner) ctx.publicStreamPresentation?.flush(owner);
       ctx.setMessages((prev) =>
         prev.map((m) =>
           m.id === messageId
             ? {
                 ...m,
                 isStreaming: false,
-                parts: clearAllLoadingStates(m.parts || []),
+                parts: collapsePublicExecutionSteps(
+                  clearAllLoadingStates(m.parts || []),
+                ),
               }
             : m,
         ),
       );
+      ctx.publicStreamPresentation?.invalidate();
       ctx.setConnectionStatus("disconnected");
       // AI 回复完成，用户正在查看当前 session，立即标记为已读
       const activeSessionId = ctx.sessionIdRef.current;
@@ -366,13 +394,13 @@ export function handleStreamEvent(
     subagentStack.push({ agent_id: agentId, depth, message_id: messageId });
   }
 
-  ctx.setMessages((prev) =>
+  const commitMessageEvent = (committedData: EventData = data) => ctx.setMessages((prev) =>
     prev.map((m) => {
       if (m.id !== messageId) return m;
 
       const result = processMessageEvent(
         eventType,
-        data,
+        committedData,
         m.parts || [],
         m.content,
         m.toolCalls || [],
@@ -406,6 +434,64 @@ export function handleStreamEvent(
       return updated;
     }),
   );
+
+  const owner = presentationOwner(binding, messageId);
+  const assistantDelta =
+    eventType === "message:chunk" &&
+    isAssistantTextProjection(data) &&
+    data.projection_kind === "assistant_delta";
+  const assistantFinal =
+    eventType === "message:chunk" &&
+    isAssistantTextProjection(data) &&
+    data.projection_kind === "assistant_final";
+  const executionEventType =
+    eventType === "run_event" ? String(data.event_type || "") : eventType;
+  const executionPhase =
+    executionEventType === "execution_step"
+      ? "started"
+      : executionEventType === "execution_progress"
+        ? "progress"
+        : executionEventType === "execution_step_completed" ||
+            executionEventType === "execution_step_failed"
+          ? "terminal"
+          : null;
+
+  if (owner && assistantFinal) {
+    ctx.publicStreamPresentation?.flush(owner);
+  }
+  if (owner && eventType === "error") {
+    ctx.publicStreamPresentation?.flush(owner);
+  }
+  if (owner && assistantDelta && data.content) {
+    if (
+      ctx.publicStreamPresentation?.enqueueAssistantDelta(
+        owner,
+        data.content,
+        (content) => commitMessageEvent({ ...data, content }),
+      )
+    ) {
+      return true;
+    }
+  }
+  if (
+    owner &&
+    executionPhase &&
+    isPublicExecutionEvent(executionEventType, data) &&
+    typeof data.sequence === "number"
+  ) {
+    if (
+      ctx.publicStreamPresentation?.enqueueExecutionUpdate(owner, {
+        stepId: data.step_id,
+        sequence: data.sequence,
+        phase: executionPhase,
+        commit: () => commitMessageEvent(),
+      })
+    ) {
+      return true;
+    }
+  }
+
+  commitMessageEvent();
 
   // Pop subagent stack after agent:result
   if (eventType === "agent:result") {
@@ -545,14 +631,18 @@ function handleError(
           ...m,
           isStreaming: false,
           cancelled: true,
-          parts: appendCancelledPart(clearAllLoadingStates(m.parts || [])),
+          parts: appendCancelledPart(
+            collapsePublicExecutionSteps(clearAllLoadingStates(m.parts || [])),
+          ),
         };
       }
       return {
         ...m,
         content: i18n.t("chat.errorPrefix", { error: errorMsg }),
         isStreaming: false,
-        parts: clearAllLoadingStates(m.parts || []),
+        parts: collapsePublicExecutionSteps(
+          clearAllLoadingStates(m.parts || []),
+        ),
       };
     }),
   );

@@ -1730,8 +1730,6 @@ def test_upload_attachment_chat_reports_worker_runtime_evidence(monkeypatch):
     monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
 
     def fake_json_post(url: str, payload=None, headers=None, timeout: float = 15.0):
-        if url == "http://api.local/api/upload/check":
-            return 200, {"exists": False}
         if url == "http://api.local/api/chat/stream?agent_id=general-agent":
             return 200, {"run_id": "run_upload"}
         raise AssertionError(url)
@@ -1778,14 +1776,14 @@ def test_upload_attachment_chat_reports_worker_runtime_evidence(monkeypatch):
     assert gate.evidence["run"]["error_code"] == "claude_agent_sdk_disabled"
     assert gate.evidence["run"]["worker_events"][0]["worker_id"] == "worker-old"
     assert gate.evidence["run"]["worker_events"][0]["claude_agent_sdk_enabled"] is False
+    assert "upload_check_status" not in gate.evidence
+    assert "upload_check_payload" not in gate.evidence
 
 
 def test_upload_attachment_chat_accepts_worker_started_running_run(monkeypatch):
     monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
 
     def fake_json_post(url: str, payload=None, headers=None, timeout: float = 15.0):
-        if url == "http://api.local/api/upload/check":
-            return 200, {"exists": False}
         if url == "http://api.local/api/chat/stream?agent_id=general-agent":
             return 200, {"run_id": "run_upload"}
         raise AssertionError(url)
@@ -1835,8 +1833,6 @@ def test_upload_attachment_chat_accepts_worker_started_terminal_sdk_failure_with
     monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
 
     def fake_json_post(url: str, payload=None, headers=None, timeout: float = 15.0):
-        if url == "http://api.local/api/upload/check":
-            return 200, {"exists": False}
         if url == "http://api.local/api/chat/stream?agent_id=general-agent":
             return 200, {"run_id": "run_upload"}
         raise AssertionError(url)
@@ -1896,8 +1892,6 @@ def test_upload_attachment_chat_rejects_non_turn_limit_sdk_failure_with_context(
     monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
 
     def fake_json_post(url: str, payload=None, headers=None, timeout: float = 15.0):
-        if url == "http://api.local/api/upload/check":
-            return 200, {"exists": False}
         if url == "http://api.local/api/chat/stream?agent_id=general-agent":
             return 200, {"run_id": "run_upload"}
         raise AssertionError(url)
@@ -1952,8 +1946,6 @@ def test_upload_attachment_chat_rejects_success_without_worker_start(monkeypatch
     monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
 
     def fake_json_post(url: str, payload=None, headers=None, timeout: float = 15.0):
-        if url == "http://api.local/api/upload/check":
-            return 200, {"exists": False}
         if url == "http://api.local/api/chat/stream?agent_id=general-agent":
             return 200, {"run_id": "run_upload"}
         raise AssertionError(url)

@@ -1,13 +1,25 @@
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from app.control_plane_contracts import RUN_PAYLOAD_SCHEMA_VERSION
 from app.skills.release_policy import validate_release_decision_lock, validate_release_decision_payload
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 
-from app.validation import assert_safe_id, assert_safe_principal_user_id
+from app.validation import (
+    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
+    assert_safe_id,
+    assert_safe_principal_user_id,
+)
 
 
 def _normalize_capability_department_ids(values: list[str], field_name: str) -> list[str]:
@@ -23,6 +35,17 @@ def _normalize_capability_roles(values: list[str], field_name: str) -> list[str]
     normalized: list[str] = []
     for value in values:
         candidate = assert_safe_id(value.strip().casefold(), field_name)
+        if candidate not in normalized:
+            normalized.append(candidate)
+    return normalized
+
+
+def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> list[str]:
+    """Normalize explicit profile-user grants without weakening principal identity rules."""
+
+    normalized: list[str] = []
+    for value in values:
+        candidate = assert_safe_principal_user_id(value.strip(), field_name)
         if candidate not in normalized:
             normalized.append(candidate)
     return normalized
@@ -71,6 +94,24 @@ class CapabilityDistributionUpdateRequest(BaseModel):
         return _normalize_capability_roles(value, info.field_name)
 
 
+class CapabilityDistributionAuthorityUpdateRequest(BaseModel):
+    """Distribution update whose department labels require route-level directory proof."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["active", "disabled"] = "active"
+    visible_to_user: bool = True
+    scope_mode: Literal["allowlist"] = "allowlist"
+    department_ids: list[str] = Field(default_factory=list, max_length=128)
+    allowed_roles: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("allowed_roles")
+    @classmethod
+    def normalize_allowed_roles(cls, value: list[str], info):
+        return _normalize_capability_roles(value, info.field_name)
+
+
 class CapabilityDistributionToggleRequest(BaseModel):
     """Toggle request accepting the supported enablement aliases."""
 
@@ -108,6 +149,28 @@ class CapabilityDistributionWriteResponse(BaseModel):
     audit_action: Literal["capability_distribution.updated", "capability_distribution.toggled"]
 
 
+class DepartmentDirectoryNodeResponse(BaseModel):
+    """Department-only node safe for an administrator ACL editor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    directory_id: str
+    authority_id: str
+    name: str
+    path: str
+    children: list["DepartmentDirectoryNodeResponse"] = Field(default_factory=list)
+    selectable: bool
+    reason: Literal["duplicate_authority_id"] | None = None
+
+
+class DepartmentDirectoryResponse(BaseModel):
+    """Admin-only company directory projection without employee identity fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    departments: list[DepartmentDirectoryNodeResponse] = Field(default_factory=list)
+
+
 class SelectedSkillRequest(BaseModel):
     """Ordinary-user Skill selection locked to one projected package hash."""
 
@@ -120,6 +183,209 @@ class SelectedSkillRequest(BaseModel):
     @classmethod
     def validate_selection_identity(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
+
+
+class SelectedAgentProfileRequest(BaseModel):
+    """Client optimistic lock for one immutable published Agent Profile revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    expected_revision: int = Field(ge=1)
+
+    @field_validator("agent_id")
+    @classmethod
+    def validate_agent_id(cls, value: str):
+        return assert_safe_id(value, "agent_id")
+
+
+class AgentProfileDraftRequest(BaseModel):
+    """Admin definition whose field presence governs create-versus-update defaults."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2_000)
+    instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+    model_id: str
+    selected_skill: SelectedSkillRequest
+    mcp_tool_ids: list[str] = Field(default_factory=list)
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    visibility: Literal["tenant", "restricted"] = "tenant"
+    allowed_department_ids: list[str] = Field(default_factory=list)
+    allowed_roles: list[str] = Field(default_factory=list)
+    allowed_user_ids: list[str] = Field(default_factory=list)
+    expected_draft_revision: int = Field(ge=0)
+
+    @field_validator("model_id")
+    @classmethod
+    def validate_model_id(cls, value: str):
+        return assert_safe_id(value, "model_id")
+
+    @field_validator("mcp_tool_ids")
+    @classmethod
+    def validate_mcp_tool_ids(cls, value: list[str]):
+        normalized: list[str] = []
+        for item in value:
+            tool_id = assert_safe_id(item.strip(), "mcp_tool_ids")
+            if tool_id in normalized:
+                raise ValueError("mcp_tool_ids contains duplicates")
+            normalized.append(tool_id)
+        return normalized
+
+    @field_validator("allowed_department_ids")
+    @classmethod
+    def normalize_allowed_department_ids(cls, value: list[str], info):
+        return _normalize_capability_department_ids(value, info.field_name)
+
+    @field_validator("allowed_roles")
+    @classmethod
+    def normalize_allowed_roles(cls, value: list[str], info):
+        return _normalize_capability_roles(value, info.field_name)
+
+    @field_validator("allowed_user_ids")
+    @classmethod
+    def normalize_allowed_user_ids(cls, value: list[str], info):
+        return _normalize_agent_profile_user_ids(value, info.field_name)
+
+
+class AgentProfilePublishRequest(BaseModel):
+    """Admin optimistic lock for publishing one saved draft revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class AgentProfileUnpublishRequest(BaseModel):
+    """Admin optimistic lock for withdrawing the current published profile revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class AgentProfileDraftTestRequest(BaseModel):
+    """Validation-only preview of the effective unsaved Agent Profile definition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    definition: AgentProfileDraftRequest
+    agent_id: str | None = None
+
+    @field_validator("agent_id")
+    @classmethod
+    def validate_agent_id(cls, value: str | None):
+        return assert_safe_id(value, "agent_id") if value is not None else None
+
+
+class AgentProfilePublicProjection(BaseModel):
+    """Ordinary-user market projection without executable configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    expected_revision: int
+    name: str
+    description: str = ""
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+
+
+class AgentProfileCatalogResponse(BaseModel):
+    """Ordinary-user catalog response containing only safe profile cards."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_profiles: list[AgentProfilePublicProjection] = Field(default_factory=list)
+
+
+class AgentProfileAdminProjection(BaseModel):
+    """Admin-only revision projection, including server-owned instructions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    revision: int
+    status: Literal["draft", "published", "withdrawn"]
+    name: str
+    description: str = ""
+    instructions: str
+    model_id: str
+    selected_skill: SelectedSkillRequest
+    mcp_tool_ids: list[str] = Field(default_factory=list)
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    visibility: Literal["tenant", "restricted"] = "tenant"
+    allowed_department_ids: list[str] = Field(default_factory=list)
+    allowed_roles: list[str] = Field(default_factory=list)
+    allowed_user_ids: list[str] = Field(default_factory=list)
+    content_hash: str
+    created_at: Any | None = None
+    published_at: Any | None = None
+
+
+class AgentProfileAdminListResponse(BaseModel):
+    """Administrator response containing same-tenant profile revisions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_profiles: list[AgentProfileAdminProjection] = Field(default_factory=list)
+
+
+class AgentProfileMutationResponse(BaseModel):
+    """Administrator draft-save or publish result with its audit identity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_profile: AgentProfileAdminProjection
+    audit_id: str
+
+
+class AgentProfileHistoryResponse(BaseModel):
+    """Admin-only immutable revision history for one Agent Profile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_profiles: list[AgentProfileAdminProjection] = Field(default_factory=list)
+
+
+class AgentProfileValidationResponse(BaseModel):
+    """Safe result of validation-only draft preflight."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    valid: Literal[True] = True
+    audit_id: str
+
+
+class CreateAgentConversationRequest(BaseModel):
+    """Atomic admission request for one exact currently published Agent Profile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = "default"
+    selected_agent_profile: SelectedAgentProfileRequest
+    title: str = ""
+
+    @field_validator("workspace_id")
+    @classmethod
+    def validate_workspace_id(cls, value: str):
+        return assert_safe_id(value, "workspace_id")
+
+
+class AgentConversationIdentity(BaseModel):
+    """Only safe immutable Agent identity retained in public conversation recovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    revision: int = Field(ge=1)
+    name: str
+    description: str = ""
+    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
 
 
 class CreateRunRequest(BaseModel):
@@ -202,93 +468,6 @@ class RunControlOperationResponse(BaseModel):
     session_id: str | None = None
     status: str
     queue_admission: Literal["admitted", "pending", "settled", "unknown"] | None = None
-
-
-class MultiAgentDispatchClaimRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    step_key: str
-
-    @field_validator("step_key")
-    @classmethod
-    def validate_step_key(cls, value: str):
-        return assert_safe_id(value, "step_key")
-
-
-class MultiAgentDispatchClaimResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    contract_version: str
-    run_id: str
-    step_key: str
-    step_id: str
-    status: Literal["claimed"]
-    dispatch_id: str
-    event_id: str
-    audit_id: str
-    step: dict[str, Any]
-
-
-class MultiAgentDispatchHandoffResponse(BaseModel):
-    """Admin response for turning a claimed dispatch step into a queued child run."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    contract_version: str
-    parent_run_id: str
-    dispatch_id: str
-    step_key: str
-    step_id: str
-    status: Literal["queued"]
-    child_run_id: str
-    session_id: str
-    queue_position: int | None = None
-    queue_insight: dict[str, Any] | None = None
-    event_id: str
-    child_event_id: str
-    audit_id: str
-
-
-class MultiAgentDispatchTickResponse(BaseModel):
-    """Admin response for one bounded multi-agent dispatch tick."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    contract_version: str
-    parent_run_id: str
-    dispatch_id: str
-    step_key: str
-    step_id: str
-    status: Literal["queued"]
-    child_run_id: str
-    session_id: str
-    queue_position: int | None = None
-    queue_insight: dict[str, Any] | None = None
-    claim_event_id: str
-    claim_audit_id: str
-    handoff_event_id: str
-    child_event_id: str
-    handoff_audit_id: str
-
-
-class AgentApp(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    app_id: str
-    name: str
-    mode: Literal["chat", "file", "chat_file"]
-    default_skill_id: str
-    allowed_input_types: list[str] = Field(default_factory=list)
-    output_types: list[str] = Field(default_factory=list)
-    status: Literal["active", "disabled"] = "active"
-
-
-class AgentAppProjection(AgentApp):
-    pass
-
-
-class AgentAppsResponse(BaseModel):
-    agent_apps: list[AgentAppProjection]
 
 
 class SkillDefinition(BaseModel):
@@ -572,6 +751,7 @@ class QueueRunPayload(BaseModel):
     context_snapshot: dict[str, Any] = Field(default_factory=dict)
     model_id: str | None = None
     model_value: str | None = None
+    agent_profile: dict[str, Any] | None = None
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 
     @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "skill_id", "executor_type")
@@ -608,6 +788,34 @@ class QueueRunPayload(BaseModel):
     @classmethod
     def validate_release_decision(cls, value: dict[str, Any]):
         return validate_release_decision_payload(value)
+
+    @field_validator("agent_profile")
+    @classmethod
+    def validate_private_agent_profile(cls, value: dict[str, Any] | None):
+        if value is None:
+            return None
+        agent_id = value.get("agent_id")
+        revision = value.get("revision")
+        content_hash = value.get("content_hash")
+        instructions = value.get("instructions")
+        if not isinstance(agent_id, str):
+            raise ValueError("agent_profile_agent_id_invalid")
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            raise ValueError("agent_profile_revision_invalid")
+        if not isinstance(content_hash, str) or len(content_hash) != 64:
+            raise ValueError("agent_profile_hash_invalid")
+        if (
+            not isinstance(instructions, str)
+            or not instructions
+            or len(instructions) > MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+        ):
+            raise ValueError("agent_profile_instructions_invalid")
+        return {
+            "agent_id": assert_safe_id(agent_id, "agent_profile.agent_id"),
+            "revision": revision,
+            "content_hash": content_hash,
+            "instructions": instructions,
+        }
 
     @field_validator("schema_version")
     @classmethod
@@ -736,6 +944,7 @@ class ChatSessionResponse(BaseModel):
     workspace_id: str
     agent_id: str
     title: str
+    agent_conversation: AgentConversationIdentity | None = None
     created_at: Any | None = None
     updated_at: Any | None = None
 
@@ -750,6 +959,7 @@ class SessionRenameRequest(BaseModel):
 
 class ChatSessionsResponse(BaseModel):
     sessions: list[ChatSessionResponse]
+    next_cursor: str | None = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -769,11 +979,77 @@ class ChatMessagesResponse(BaseModel):
 class ChatStreamRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    _PROFILE_CAPABILITY_SELECTOR_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "agentid",
+            "agentids",
+            "agentoptions",
+            "agentprofile",
+            "agentprofilehash",
+            "agentprofileid",
+            "agentprofilerevision",
+            "admittedagentprofilehash",
+            "admittedagentprofilerevision",
+            "capabilityid",
+            "confirmedcapabilityid",
+            "contenthash",
+            "definitionhash",
+            "disabledmcptools",
+            "disabledskills",
+            "enabledmcptools",
+            "enabledskills",
+            "mcptool",
+            "mcptoolid",
+            "mcptoolids",
+            "mcptools",
+            "mcpserver",
+            "mcpserverid",
+            "mcpserverids",
+            "mcpservers",
+            "model",
+            "modelid",
+            "modelids",
+            "modelvalue",
+            "models",
+            "multiagentsteps",
+            "selectedmcptoolid",
+            "selectedmcptoolids",
+            "selectedmodel",
+            "selectedmodelid",
+            "selectedmodelids",
+            "selectedmodelvalue",
+            "selectedcapability",
+            "selectedcapabilityid",
+            "selectedskill",
+            "selectedskillid",
+            "selectedskillids",
+            "selectedtools",
+            "skill",
+            "skillid",
+            "skillids",
+            "skillversion",
+            "skills",
+            "executor",
+            "executortype",
+            "expectedrevision",
+            "instructions",
+            "prompt",
+            "revision",
+            "selectedagentprofile",
+            "toolids",
+            "tools",
+        }
+    )
+    _PROFILE_SELECTOR_NESTING_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"agentoptions", "input"}
+    )
+
     workspace_id: str = "default"
     session_id: str | None = None
     agent_id: str | None = None
     skill_id: str | None = None
     selected_skill: SelectedSkillRequest | None = None
+    selected_agent_profile: SelectedAgentProfileRequest | None = None
     message: str = Field(min_length=1)
     file_ids: list[str] = Field(default_factory=list)
     input: dict[str, Any] = Field(default_factory=dict)
@@ -787,6 +1063,101 @@ class ChatStreamRequest(BaseModel):
     user_timezone: str | None = None
     confirmed_capability_id: str | None = None
     submission_id: UUID | None = None
+    _submitted_profile_capability_selector_paths: tuple[str, ...] = PrivateAttr(
+        default_factory=tuple
+    )
+
+    @staticmethod
+    def _normalized_selector_key(value: object) -> str:
+        return "".join(character.casefold() for character in str(value) if character.isalnum())
+
+    @classmethod
+    def _collect_profile_capability_selector_paths(
+        cls,
+        value: object,
+        *,
+        prefix: str,
+        recurse_all: bool,
+    ) -> set[str]:
+        paths: set[str] = set()
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                paths.update(
+                    cls._collect_profile_capability_selector_paths(
+                        item,
+                        prefix=f"{prefix}[{index}]",
+                        recurse_all=recurse_all,
+                    )
+                )
+            return paths
+        if not isinstance(value, dict):
+            return paths
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            normalized_key = cls._normalized_selector_key(key)
+            path = f"{prefix}.{key}"
+            if normalized_key in cls._PROFILE_CAPABILITY_SELECTOR_KEYS:
+                paths.add(path)
+            if recurse_all or normalized_key in cls._PROFILE_SELECTOR_NESTING_KEYS:
+                paths.update(
+                    cls._collect_profile_capability_selector_paths(
+                        item,
+                        prefix=path,
+                        recurse_all=True,
+                    )
+                )
+        return paths
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def capture_profile_capability_selector_surface(cls, value: Any, handler):
+        """Retain ignored aliases needed to fail closed for profile-bound Chat."""
+
+        paths = (
+            cls._collect_profile_capability_selector_paths(
+                value,
+                prefix="$",
+                recurse_all=False,
+            )
+            if isinstance(value, dict)
+            else set()
+        )
+        request = handler(value)
+        request._submitted_profile_capability_selector_paths = tuple(sorted(paths))
+        return request
+
+    def profile_capability_selector_paths(self) -> tuple[str, ...]:
+        """Return the complete submitted model, Skill, Agent, and tool selector surface."""
+
+        paths = set(self._submitted_profile_capability_selector_paths)
+        dynamic = {
+            "agent_id": self.agent_id,
+            "skill_id": self.skill_id,
+            "selected_skill": self.selected_skill,
+            "selected_agent_profile": self.selected_agent_profile,
+            "disabled_skills": self.disabled_skills,
+            "enabled_skills": self.enabled_skills,
+            "disabled_mcp_tools": self.disabled_mcp_tools,
+            "selected_mcp_tool_ids": self.selected_mcp_tool_ids,
+            "confirmed_capability_id": self.confirmed_capability_id,
+            "agent_options": self.agent_options,
+            "input": self.input,
+        }
+        for field_name, field_value in dynamic.items():
+            if field_name not in self.model_fields_set:
+                continue
+            normalized_key = self._normalized_selector_key(field_name)
+            if normalized_key in self._PROFILE_CAPABILITY_SELECTOR_KEYS:
+                paths.add(f"$.{field_name}")
+            if normalized_key in self._PROFILE_SELECTOR_NESTING_KEYS:
+                paths.update(
+                    self._collect_profile_capability_selector_paths(
+                        field_value,
+                        prefix=f"$.{field_name}",
+                        recurse_all=True,
+                    )
+                )
+        return tuple(sorted(paths))
 
     @field_validator("workspace_id")
     @classmethod
@@ -838,7 +1209,14 @@ class ChatSubmissionResponse(BaseModel):
     """Principal-scoped durable resolution of one keyed chat submission."""
 
     submission_id: str
-    state: Literal["queued", "accepted_pending_enqueue", "enqueue_failed", "needs_confirmation", "rejected_before_persist"]
+    state: Literal[
+        "queued",
+        "accepted_pending_enqueue",
+        "admission_rejected",
+        "enqueue_failed",
+        "needs_confirmation",
+        "rejected_before_persist",
+    ]
     submission_disposition: Literal["rejected_before_persist"] | None = None
     rejection_code: str | None = None
     outcome: ChatStreamResponse | None = None
@@ -1042,17 +1420,6 @@ class PublicSkillImportUploadResponse(BaseModel):
     created: list[PublicSkillImportCreatedItem] = Field(default_factory=list)
     errors: list[PublicSkillImportErrorItem] = Field(default_factory=list)
     skill_count: int
-
-
-class PublishToMarketplaceRequest(BaseModel):
-    """User-facing publish request accepted by the public Skills contract."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    skill_name: str | None = None
-    description: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    version: str | None = None
 
 
 class MarketplaceSkillResponse(BaseModel):

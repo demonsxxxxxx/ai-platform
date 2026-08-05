@@ -15,8 +15,94 @@ import {
   type SSEConnectionContext,
   type SSEFetchEventSource,
 } from "../sseConnection.ts";
+import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
+import type { Message } from "../../../types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+test("flushes accepted public text before reconnect status can replay-deduplicate it", async () => {
+  let messages: Message[] = [
+    {
+      id: "assistant-flush",
+      role: "assistant" as const,
+      content: "A",
+      timestamp: new Date(),
+      isStreaming: true,
+      parts: [{ type: "text" as const, content: "A" }],
+    },
+  ];
+  const presentation = new PublicStreamPresentation({
+    now: () => 0,
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => undefined,
+    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeout: () => undefined,
+  });
+  const owner = {
+    sessionId: "session-flush",
+    runId: "run-flush",
+    assistantMessageId: "assistant-flush",
+    streamVersion: 4,
+  };
+  presentation.activate(owner);
+  presentation.enqueueAssistantDelta(owner, "B", (content) => {
+    messages = messages.map((message) =>
+      message.id === owner.assistantMessageId
+        ? {
+            ...message,
+            content: message.content + content,
+            parts: [{ type: "text" as const, content: message.content + content }],
+          }
+        : message,
+    );
+  });
+  let contentObservedByStatus = "";
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: owner.assistantMessageId },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: { current: messages },
+    sessionIdRef: { current: owner.sessionId },
+    currentRunIdRef: { current: owner.runId },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: owner.sessionId, runId: owner.runId, sequence: 8 },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: owner.streamVersion },
+    isReconnectFromHistoryRef: { current: false },
+    publicStreamPresentation: presentation,
+    setSessionId: () => undefined,
+    setMessages: (updater) => {
+      messages = typeof updater === "function" ? updater(messages) : updater;
+      context.messagesRef.current = messages;
+    },
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: () => true,
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+
+  await reconnectSSE(context, {
+    getStatus: async () => {
+      contentObservedByStatus = messages[0]?.content || "";
+      return {
+        session_id: owner.sessionId,
+        run_id: owner.runId,
+        status: "completed",
+      };
+    },
+  });
+
+  assert.equal(contentObservedByStatus, "AB");
+  assert.equal(messages[0]?.content, "AB");
+});
 
 function createTokenRefreshContext() {
   const connectionStates: string[] = [];
@@ -877,6 +963,118 @@ test("retries a current 401 once and aborts only its captured stream controller"
   assert.equal(context.abortControllerRef.current?.signal, signals[1]);
   assert.equal(context.isConnectingRef.current, false);
   assert.equal(connectionStates.at(-1), "disconnected");
+});
+
+test("flushes a paused accepted answer delta exactly once before a 401 refresh handoff", async () => {
+  let messages: Message[] = [
+    {
+      id: "assistant-refresh-flush",
+      role: "assistant",
+      content: "A",
+      timestamp: new Date(),
+      parts: [{ type: "text", content: "A" }],
+      isStreaming: true,
+    },
+  ];
+  let pendingFrame: FrameRequestCallback | null = null;
+  let commitCount = 0;
+  const owner = {
+    sessionId: "session-refresh-flush",
+    runId: "run-refresh-flush",
+    assistantMessageId: "assistant-refresh-flush",
+    streamVersion: 6,
+  };
+  const presentation = new PublicStreamPresentation({
+    now: () => 0,
+    requestAnimationFrame: (callback) => {
+      pendingFrame = callback;
+      return 1;
+    },
+    cancelAnimationFrame: () => {
+      pendingFrame = null;
+    },
+    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeout: () => undefined,
+  });
+  presentation.activate(owner);
+  assert.equal(
+    presentation.enqueueAssistantDelta(owner, "B", (content) => {
+      commitCount += 1;
+      messages = messages.map((message) =>
+        message.id === owner.assistantMessageId
+          ? {
+              ...message,
+              content: message.content + content,
+              parts: [{ type: "text", content: message.content + content }],
+            }
+          : message,
+      );
+    }),
+    true,
+  );
+  assert.notEqual(pendingFrame, null);
+
+  let contentObservedByRefreshedAttempt = "";
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: owner.assistantMessageId },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    messagesRef: { current: messages },
+    sessionIdRef: { current: owner.sessionId },
+    currentRunIdRef: { current: owner.runId },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: owner.sessionId, runId: owner.runId, sequence: 8 },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: owner.streamVersion },
+    publicStreamPresentation: presentation,
+    setSessionId: () => undefined,
+    setMessages: (updater: React.SetStateAction<Message[]>) => {
+      messages = typeof updater === "function" ? updater(messages) : updater;
+      context.messagesRef.current = messages;
+    },
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  } satisfies SSEConnectionContext;
+
+  await connectToSSE(
+    owner.sessionId,
+    owner.runId,
+    owner.assistantMessageId,
+    context,
+    false,
+    createAbortResolvingFetchEventSource([
+      { response: new Response(null, { status: 401 }) },
+      {
+        response: new Response(null, { status: 200 }),
+        onStart: () => {
+          contentObservedByRefreshedAttempt = messages[0]?.content || "";
+        },
+        afterOpen: async (init) => {
+          init.onmessage?.({
+            event: "complete",
+            data: JSON.stringify({ run_id: owner.runId, status: "succeeded" }),
+          } as never);
+          await init.onclose?.();
+        },
+      },
+    ]),
+    {
+      getValidAccessToken: async () => "access",
+      getRefreshToken: () => "refresh-marker",
+      refreshAccessToken: async () => "refreshed-access",
+    },
+  );
+
+  assert.equal(contentObservedByRefreshedAttempt, "AB");
+  assert.equal(messages[0]?.content, "AB");
+  assert.equal(commitCount, 1);
+  assert.equal(pendingFrame, null);
 });
 
 test("fails closed when the refreshed SSE retry is still unauthorized", async () => {

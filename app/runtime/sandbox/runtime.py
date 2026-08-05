@@ -1,6 +1,8 @@
 import asyncio
 import inspect
+import logging
 import time
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -16,9 +18,21 @@ from app.execution_boundary import (
 from app.executors.base import RunExecutionOwner
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import (
+    ContainerStartFailedError,
+    ContainerCleanupFailedError,
     ContainerProvider,
+    ExecutorHealthTimeoutError,
+    OpenSandboxContainerProvider,
+    OpenSandboxStartupFailedError,
+    SandboxRuntimeError,
     create_container_provider,
     executor_callback_target,
+)
+from app.runtime.sandbox.creation_claim import (
+    SandboxCreationClaim,
+    SandboxCreationClaimError,
+    SandboxCreationScope,
+    acquire_sandbox_creation_claim,
 )
 from app.runtime.sandbox.contracts import (
     ContainerLease,
@@ -34,6 +48,15 @@ from app.runtime.sandbox.callback_tokens import (
 )
 from app.runtime.sandbox.event_normalizer import container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.runtime.sandbox.readiness_evidence import (
+    ExecutorReadinessEvidence,
+    safe_readiness_evidence_payload,
+)
+from app.runtime.sandbox.opensandbox_policy import (
+    SANDBOX_SECURITY_PROFILE_GOVERNED,
+    SANDBOX_SECURITY_PROFILE_LABEL,
+)
+from app.skills.execution_profiles import OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.settings import get_settings
 
@@ -43,6 +66,9 @@ ExecuteTask = Callable[..., Awaitable[dict[str, Any]]]
 TokenResolver = Callable[[str], str]
 LeaseRecorder = Callable[[ContainerLease, SandboxRuntimeRequest, WorkspaceLease], Awaitable[Any] | Any]
 LeaseReleaser = Callable[..., Awaitable[Any] | Any]
+CreationClaimFactory = Callable[..., AbstractAsyncContextManager[SandboxCreationClaim]]
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -74,6 +100,7 @@ class SandboxRuntime:
         callback_token_resolver: TokenResolver | None = None,
         record_lease: LeaseRecorder | None = None,
         release_lease: LeaseReleaser | None = None,
+        creation_claim_factory: CreationClaimFactory = acquire_sandbox_creation_claim,
     ) -> None:
         self.settings = get_settings()
         self.workspace_manager = SandboxWorkspaceManager(root=workspace_root)
@@ -85,6 +112,7 @@ class SandboxRuntime:
         )
         self.record_lease = record_lease or self._record_runtime_lease
         self.release_lease = release_lease or self._release_runtime_lease
+        self.creation_claim_factory = creation_claim_factory
 
     async def _emit(self, sink: EventSink | None, event: AgentEvent) -> None:
         if sink is None:
@@ -157,6 +185,12 @@ class SandboxRuntime:
             raise ValueError("incomplete_runtime_handle")
         image_subject = str(lease.labels.get("ai-platform.executor.requested_image") or "").strip()
         image_digest = str(lease.labels.get("ai-platform.executor.requested_image_digest") or "").strip()
+        settings = get_settings()
+        lease_security_profile = str(
+            lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED
+        )
+        if lease_security_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
+            raise ValueError("sandbox_security_profile_invalid")
         authorized_skill_scope = governed_egress_authorized_skill_scope(
             skill_ids=request.skill_ids,
             mcp_tool_ids=request.mcp_tool_ids,
@@ -165,8 +199,8 @@ class SandboxRuntime:
         governed_egress_proof = governed_egress_proof_from_labels(
             lease.provider,
             lease.labels,
-            signing_key=getattr(get_settings(), "sandbox_egress_proof_signing_key", ""),
-            signing_key_id=getattr(get_settings(), "sandbox_egress_proof_key_id", "current"),
+            signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
+            signing_key_id=getattr(settings, "sandbox_egress_proof_key_id", "current"),
             expected_binding={
                 "tenant_id": lease.tenant_id,
                 "workspace_id": lease.workspace_id,
@@ -183,6 +217,17 @@ class SandboxRuntime:
         )
         if lease.provider in REAL_SANDBOX_PROVIDERS and governed_egress_proof is None:
             raise ValueError("governed_egress_proof_invalid")
+        persisted_labels = {
+            str(key): str(value)
+            for key, value in lease.labels.items()
+            if not str(key).startswith(
+                (
+                    "ai-platform.executor.",
+                    "ai-platform.external_egress.",
+                    "ai-platform.governed_egress.",
+                )
+            )
+        }
         lease_payload = {
             "source": "sandbox_runtime",
             "evidence_class": "runtime_lease_projection",
@@ -192,17 +237,7 @@ class SandboxRuntime:
             "executor_url": runtime_executor_url,
             "workspace_host_path": lease.workspace_host_path,
             "workspace_container_path": runtime_workspace_container_path,
-            "labels": {
-                str(key): str(value)
-                for key, value in lease.labels.items()
-                if not str(key).startswith(
-                    (
-                        "ai-platform.executor.",
-                        "ai-platform.external_egress.",
-                        "ai-platform.governed_egress.",
-                    )
-                )
-            },
+            "labels": persisted_labels,
         }
         if governed_egress_proof is not None:
             lease_payload["governed_egress_proof"] = governed_egress_proof
@@ -249,19 +284,6 @@ class SandboxRuntime:
                 reason=reason,
             )
 
-    async def _stop_and_release_recorded_lease(
-        self,
-        lease: ContainerLease,
-        *,
-        reason: str,
-        lease_record_id: str | None,
-    ) -> None:
-        """Confirm provider stop before releasing one recorded runtime lease."""
-        stop_result = await self.provider.stop(lease, reason=reason)
-        if stop_result.status == "failed":
-            raise SandboxRuntimeCleanupError(reason=reason, stop_result=stop_result)
-        await self._call_release_lease(lease, reason, lease_record_id)
-
     def _elapsed_ms(self, started_at: float) -> int:
         return max(int(round((time.monotonic() - started_at) * 1000)), 0)
 
@@ -280,6 +302,40 @@ class SandboxRuntime:
             CallbackTokenBinding(run_id=lease.run_id, attempt_id=attempt_id)
         )
 
+    @staticmethod
+    def _readiness_failure_event(
+        request: SandboxRuntimeRequest,
+        evidence: ExecutorReadinessEvidence,
+    ) -> AgentEvent:
+        return AgentEvent(
+            type="sandbox_executor_readiness_failed",
+            message="Sandbox executor readiness failed",
+            admin_only=True,
+            payload={
+                "schema_version": "ai-platform.executor-readiness-evidence.v1",
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+                **safe_readiness_evidence_payload(evidence),
+            },
+        )
+
+    @staticmethod
+    def _log_opensandbox_startup_evidence(
+        request: SandboxRuntimeRequest,
+        evidence: dict[str, str | None],
+    ) -> None:
+        _logger.error(
+            "OpenSandbox startup failed",
+            extra={
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+                "provider": evidence["provider"],
+                "startup_stage": evidence["startup_stage"],
+                "sdk_error_code": evidence["sdk_error_code"],
+                "request_id": evidence["request_id"],
+            },
+        )
+
     async def submit(
         self,
         request: SandboxRuntimeRequest,
@@ -291,36 +347,113 @@ class SandboxRuntime:
         trusted_callback_target = self._trusted_callback_target(configured_provider)
         workspace = self.workspace_manager.prepare(request)
         lease_started_at = time.monotonic()
-        lease = await self.provider.create_or_reuse(request, workspace)
+        lease_record_id: str | None = None
+
+        async def create_and_record_lease() -> ContainerLease:
+            nonlocal lease_record_id
+            lease = await self.provider.create_or_reuse(request, workspace)
+            try:
+                lease_record_id = await self._call_record_lease(lease, request, workspace)
+            except BaseException as exc:
+                stop_result = await self.provider.stop(lease, reason="lease_record_failed")
+                if stop_result.status == "failed":
+                    raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
+                raise
+            return lease
+
+        try:
+            if isinstance(self.provider, OpenSandboxContainerProvider) or getattr(self.provider, "provider_name", "") == "opensandbox":
+                claim_scope = SandboxCreationScope(
+                    provider="opensandbox",
+                    tenant_id=request.tenant_id,
+                    workspace_id=request.workspace_id,
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                    run_id=request.run_id,
+                    attempt_id=request.attempt_id,
+                )
+                timeout_seconds = max(
+                    float(getattr(self.settings, "sandbox_container_start_timeout_seconds", 30) or 30),
+                    0.001,
+                )
+                async with self.creation_claim_factory(claim_scope, timeout_seconds=timeout_seconds) as claim:
+                    if claim.active_lease_exists:
+                        raise ContainerStartFailedError("OpenSandbox exact-attempt lease is already active")
+                    lease = await create_and_record_lease()
+            else:
+                lease = await create_and_record_lease()
+        except SandboxCreationClaimError as exc:
+            raise ContainerStartFailedError("OpenSandbox creation claim is unavailable") from exc
+        except OpenSandboxStartupFailedError as exc:
+            self._log_opensandbox_startup_evidence(request, exc.private_evidence)
+            raise
+        except (ContainerCleanupFailedError, ExecutorHealthTimeoutError) as exc:
+            startup_evidence = exc.opensandbox_startup_evidence
+            if startup_evidence is not None:
+                self._log_opensandbox_startup_evidence(request, startup_evidence.private_payload())
+            evidence = exc.readiness_evidence
+            if isinstance(evidence, ExecutorReadinessEvidence):
+                try:
+                    await self._emit(event_sink, self._readiness_failure_event(request, evidence))
+                except Exception:
+                    pass
+            raise
+        except SandboxRuntimeError as exc:
+            startup_evidence = exc.opensandbox_startup_evidence
+            if startup_evidence is not None:
+                self._log_opensandbox_startup_evidence(request, startup_evidence.private_payload())
+            raise
         if lease.provider != configured_provider:
             trusted_callback_target = self._trusted_callback_target(lease.provider)
         lease_acquire_latency_ms = self._elapsed_ms(lease_started_at)
-        lease_record_id: str | None = None
-        try:
-            lease_record_id = await self._call_record_lease(lease, request, workspace)
-        except BaseException as exc:
-            stop_result = await self.provider.stop(lease, reason="lease_record_failed")
-            if stop_result.status == "failed":
-                raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
-            raise
         externally_stopped = False
+        terminal_stop_result: StopResult | None = None
+        terminal_stop_lock = asyncio.Lock()
         validation_started = False
         validation_succeeded = False
+        staging_started = False
+        staging_succeeded = False
+        collection_started = False
+        collection_succeeded = False
 
         async def stop_owned_runtime(reason: str) -> bool:
-            nonlocal externally_stopped
-            if externally_stopped:
+            """Elect exactly one stop/release owner across runtime cancellation paths."""
+
+            nonlocal externally_stopped, terminal_stop_result
+            async with terminal_stop_lock:
+                if externally_stopped:
+                    return True
+                try:
+                    terminal_stop_result = await self.provider.stop(lease, reason=reason)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    terminal_stop_result = StopResult(
+                        container_id=lease.container_id,
+                        status="failed",
+                        message="sandbox provider stop raised",
+                    )
+                if terminal_stop_result.status == "failed":
+                    return False
+                await self._call_release_lease(lease, reason, lease_record_id)
+                externally_stopped = True
                 return True
-            stop_result = await self.provider.stop(lease, reason=reason)
-            if stop_result.status == "failed":
-                return False
-            await self._call_release_lease(lease, reason, lease_record_id)
-            externally_stopped = True
-            return True
+
+        async def stop_and_release_owned(reason: str) -> None:
+            if await stop_owned_runtime(reason):
+                return
+            raise SandboxRuntimeCleanupError(
+                reason=reason,
+                stop_result=terminal_stop_result
+                or StopResult(container_id=lease.container_id, status="failed", message="sandbox stop failed"),
+            )
 
         if execution_owner is not None:
             execution_owner.register_stop(stop_owned_runtime)
         try:
+            staging_started = True
+            await self.provider.stage_workspace(lease, request, workspace)
+            staging_succeeded = True
             await self._emit(event_sink, container_started_event(lease))
 
             task_config = {
@@ -333,10 +466,15 @@ class SandboxRuntime:
                 "input_files": request.file_ids,
                 "materialized_file_names": request.materialized_file_names,
             }
+            if lease.provider == "opensandbox":
+                task_config["sdk_execution_profile"] = OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE
             if request.context_manifest:
                 task_config["context_manifest"] = dict(request.context_manifest)
             if request.context_retrieval_scope is not None:
                 task_config["context_retrieval_scope"] = request.context_retrieval_scope.model_dump()
+            if request.system_prompt:
+                # The executor treats this as server-owned configuration, never as user input.
+                task_config["system_prompt"] = request.system_prompt
 
             callback_token_id = self._lease_callback_token_id(lease, attempt_id=request.attempt_id)
             task_request = ExecutorTaskRequest(
@@ -359,10 +497,29 @@ class SandboxRuntime:
             dispatch_started_at = time.monotonic()
             response = await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
+            collection_started = True
+            await self.provider.collect_workspace(lease, request, workspace)
+            collection_succeeded = True
         except BaseException as exc:
             validation_rejected = validation_started and not validation_succeeded
-            if not externally_stopped and (request.sandbox_mode == "ephemeral" or validation_rejected):
+            staging_rejected = staging_started and not staging_succeeded
+            collection_rejected = collection_started and not collection_succeeded
+            if not externally_stopped and (
+                request.sandbox_mode == "ephemeral"
+                or validation_rejected
+                or staging_rejected
+                or collection_rejected
+            ):
                 reason = (
+                    "workspace_stage_cancelled"
+                    if staging_rejected and isinstance(exc, asyncio.CancelledError)
+                    else "workspace_stage_failed"
+                    if staging_rejected
+                    else "workspace_collect_cancelled"
+                    if collection_rejected and isinstance(exc, asyncio.CancelledError)
+                    else "workspace_collect_failed"
+                    if collection_rejected
+                    else
                     "dispatch_validation_cancelled"
                     if validation_rejected and isinstance(exc, asyncio.CancelledError)
                     else "dispatch_validation_failed"
@@ -372,7 +529,7 @@ class SandboxRuntime:
                     else "dispatch_failed"
                 )
                 try:
-                    await self._stop_and_release_recorded_lease(lease, reason=reason, lease_record_id=lease_record_id)
+                    await stop_and_release_owned(reason)
                 except SandboxRuntimeCleanupError as cleanup_exc:
                     raise cleanup_exc from exc
             raise
@@ -387,11 +544,7 @@ class SandboxRuntime:
                 if terminal_status in {"cancelled", "canceled"}
                 else "dispatch_completed"
             )
-            await self._stop_and_release_recorded_lease(
-                lease,
-                reason=release_reason,
-                lease_record_id=lease_record_id,
-            )
+            await stop_and_release_owned(release_reason)
             sandbox_cleanup_latency_ms = self._elapsed_ms(cleanup_started_at)
 
         return SandboxRuntimeResult(

@@ -19,6 +19,7 @@ import type {
   MessagePart,
   ConnectionStatus,
   MessageAttachment,
+  SelectedAgentProfileRequest,
   SelectedSkillRequest,
 } from "../types";
 import {
@@ -69,6 +70,11 @@ import {
 } from "./useAgent/runLifecycle";
 import { clearAllLoadingStates } from "./useAgent/messageParts";
 import {
+  collapsePublicExecutionSteps,
+  expandPublicExecutionSteps,
+  PublicStreamPresentation,
+} from "./useAgent/publicStreamPresentation";
+import {
   type AcceptedRunEventSequence,
   type EventHandlerContext,
 } from "./useAgent/eventHandlers";
@@ -82,6 +88,7 @@ import {
 } from "./useAgent/sseConnection";
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
 import {
+  safeDiagnosticCode,
   translateBackendError,
   translateChatAdmissionError,
 } from "../utils/backendErrors";
@@ -117,6 +124,32 @@ function isProvenPrePersistenceChatRejection(error: unknown): boolean {
     error.status < 500 &&
     error.submissionDisposition === "rejected_before_persist"
   );
+}
+
+type HistoryLoadFailurePhase =
+  | "session_projection"
+  | "identity_validation"
+  | "event_history"
+  | "feedback";
+
+/** Emit only fixed phase plus bounded status/code for history diagnostics. */
+function logHistoryLoadFailure(
+  phase: HistoryLoadFailurePhase,
+  error: unknown,
+  message = "[loadHistory] failed",
+): void {
+  const status =
+    error instanceof ApiRequestError &&
+    Number.isInteger(error.status) &&
+    error.status >= 100 &&
+    error.status <= 599
+      ? error.status
+      : null;
+  console.error(message, {
+    phase,
+    status,
+    code: safeDiagnosticCode(error) ?? null,
+  });
 }
 
 function formatChatSubmissionError(error: unknown): string {
@@ -683,6 +716,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   // Stream version to invalidate stale SSE events after clearMessages
   const streamVersionRef = useRef(0);
+  const publicStreamPresentationRef = useRef<PublicStreamPresentation | null>(
+    null,
+  );
+  if (publicStreamPresentationRef.current === null) {
+    publicStreamPresentationRef.current = new PublicStreamPresentation();
+  }
   // One owner covers concurrent online/visibility/history/transport recovery
   // for the same session/run/generation.
   const reconcileOwnerRef = useRef<ReconcileOwner | null>(null);
@@ -691,9 +730,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // Keep sessionId/runId in ref for closure access
   const sessionIdRef = useRef<string | null>(null);
   const sessionAgentIdRef = useRef(DEFAULT_CHAT_AGENT_ID);
+  const sessionAgentAuthorityRef = useRef<{
+    sessionId: string; profile: SelectedAgentProfileRequest | null;
+  } | null>(null);
   const currentRunIdRef = useRef<string | null>(null);
   const messagesRef = useRef<Message[]>([]);
-
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
@@ -841,6 +882,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       // skip reconciliation, reconnect, and transcript projection.
       historyLoadTokenRef.current += 1;
       sessionGenerationRef.current += 1;
+      sessionAgentAuthorityRef.current = null;
+      publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       clearReconcileOwners();
       clearReconnectTimeout(reconnectTimeoutRef);
@@ -896,6 +939,18 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return false;
       }
 
+      const presentationSessionId = sessionIdRef.current;
+      const presentationMessageId = streamingMessageIdRef.current || messageId;
+      const presentationStreamVersion = streamVersionRef.current;
+      if (presentationSessionId && presentationMessageId) {
+        publicStreamPresentationRef.current?.flush({
+          sessionId: presentationSessionId,
+          runId,
+          assistantMessageId: presentationMessageId,
+          streamVersion: presentationStreamVersion,
+        });
+      }
+      publicStreamPresentationRef.current?.invalidate();
       currentRunIdRef.current = null;
       clearReconcileOwners();
       streamVersionRef.current += 1;
@@ -971,12 +1026,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             return message;
           }
           matched = true;
-          const parts = clearAllLoadingStates(message.parts || []).filter(
+          const parts = collapsePublicExecutionSteps(
+            clearAllLoadingStates(message.parts || []).filter(
             (part) =>
               !(
                 part.type === "run_status" &&
                 terminalRunStatus(part.event_type) === outcome
               ),
+            ),
           );
           if (
             card &&
@@ -1166,10 +1223,19 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         setConnectionStatus(status as ConnectionStatus),
       setIsInitializingSandbox,
       setSandboxError,
-      onRunTerminal: finalizeTerminalRun,
+      // A terminal SSE frame proves only the run state. Rehydrate the exact
+      // run before collapsing its process so late persisted steps cannot be
+      // hidden behind an older running presentation.
+      onRunTerminal: (runId, status, messageId) => {
+        const activeSessionId = sessionIdRef.current;
+        if (!activeSessionId) return false;
+        void hydrateTerminalRun(activeSessionId, runId, status, messageId);
+        return true;
+      },
       onRunStatusUnavailable: finalizeRunStatusUnavailable,
+      publicStreamPresentation: publicStreamPresentationRef.current || undefined,
     }),
-    [options, finalizeTerminalRun, finalizeRunStatusUnavailable],
+    [options, finalizeRunStatusUnavailable, hydrateTerminalRun],
   );
 
   // Create SSE connection context
@@ -1256,6 +1322,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
       activePreAdmissionSubmissionRef.current = null;
+      publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       statusRetryCountRef.current = 0;
       acceptedRunEventSequenceRef.current = {
@@ -1320,8 +1387,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         mountedGenerationRef.current === mountedGeneration &&
         isCurrentHistoryLoad(historyLoadTokenRef, historyLoadToken);
       handoffActivePreAdmissionSubmission({ projectMessages: false });
+      sessionAgentAuthorityRef.current = null;
+      sessionIdRef.current = targetSessionId;
+      setSessionId(targetSessionId);
+      sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
+      setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
+      publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       clearReconcileOwners();
       isSendingRef.current = false;
@@ -1353,23 +1426,46 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       // Clear approvals before loading new session
       options?.onClearApprovals?.();
 
+      let historyFailurePhase: HistoryLoadFailurePhase = "session_projection";
       try {
         await markReadPromise;
         if (!isCurrentHistoryLoadRequest()) {
           return null;
         }
 
-        const sessionData = await sessionApi.get(targetSessionId);
+        const [sessionData, authoritativeSession] = await Promise.all([
+          sessionApi.get(targetSessionId),
+          sessionApi.getAuthoritative(targetSessionId),
+        ]);
         if (!isCurrentHistoryLoadRequest()) {
           return null;
         }
 
         if (sessionData) {
-          sessionIdRef.current = targetSessionId;
-          setSessionId(targetSessionId);
           const loadedAgentId = sessionData.agent_id || DEFAULT_CHAT_AGENT_ID;
+          const identity = authoritativeSession.agent_conversation;
+          const invalidAuthoritativeIdentity =
+            authoritativeSession.session_id !== targetSessionId ||
+            authoritativeSession.agent_id !== loadedAgentId ||
+            (identity !== null && identity.agent_id !== loadedAgentId);
+          historyFailurePhase = "identity_validation";
+          if (invalidAuthoritativeIdentity) {
+            throw Object.assign(new Error("agent_conversation_identity_mismatch"), {
+              code: "agent_conversation_identity_mismatch",
+            });
+          }
+          const recoveredProfile = identity
+            ? { agent_id: identity.agent_id, expected_revision: identity.revision }
+            : null;
           sessionAgentIdRef.current = loadedAgentId;
           setSessionAgentId(loadedAgentId);
+          // The authoritative projection is the only source for this binding.
+          // Later transcript enrichment may fail independently and must not
+          // erase a confirmed generic or Agent Conversation authority.
+          sessionAgentAuthorityRef.current = {
+            sessionId: targetSessionId,
+            profile: recoveredProfile,
+          };
 
           // 从 metadata 提取配置信息
           const sessionConfig = {
@@ -1390,6 +1486,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               undefined,
           };
 
+          historyFailurePhase = "event_history";
           // Event history determines the exact latest run before its status is
           // queried. Session metadata can be absent or stale in production.
           const eventsPromise = sessionApi.getEvents(
@@ -1399,8 +1496,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           const feedbackPromise = canReadFeedback
             ? feedbackApi
                 .list(0, 100, undefined, undefined, targetSessionId)
-                .catch(() => {
-                  console.warn("[loadHistory] Failed to load feedback");
+                .catch((error) => {
+                  logHistoryLoadFailure(
+                    "feedback",
+                    error,
+                    "[loadHistory] feedback failed",
+                  );
                   return null;
                 })
             : Promise.resolve(null);
@@ -1527,7 +1628,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               historyCurrentRunId,
               () => uuid(),
             );
-            reconstructedMessages = prepared.messages;
+            reconstructedMessages = prepared.messages.map((message) =>
+              message.id === prepared.streamingMessageId
+                ? {
+                    ...message,
+                    parts: expandPublicExecutionSteps(message.parts || []),
+                  }
+                : message,
+            );
             streamingMessageId = prepared.streamingMessageId;
           }
           messagesRef.current = reconstructedMessages;
@@ -1647,9 +1755,15 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
           return sessionConfig;
         }
-      } catch {
+      } catch (error) {
         if (isCurrentHistoryLoadRequest()) {
-          console.error("[loadHistory] Failed to load session");
+          const preservesConfirmedAuthority =
+            historyFailurePhase === "event_history" &&
+            sessionAgentAuthorityRef.current?.sessionId === targetSessionId;
+          if (!preservesConfirmedAuthority) {
+            sessionAgentAuthorityRef.current = null;
+          }
+          logHistoryLoadFailure(historyFailurePhase, error);
           setError(i18n.t("chat.requestFailed"));
         }
       } finally {
@@ -1758,6 +1872,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       agentOptions?: Record<string, boolean | string | number>,
       attachments?: MessageAttachment[],
       selectedSkill?: SelectedSkillRequest | null,
+      selectedAgentProfile?: SelectedAgentProfileRequest | null,
     ): Promise<SubmissionOutcome> => {
       if (!isMountedRef.current) return { status: "failed" };
       if (!content.trim()) return { status: "failed" };
@@ -1781,6 +1896,23 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         );
         return { status: "failed" };
       }
+      const requestSessionId = sessionIdRef.current;
+      const requestAgentId = sessionAgentIdRef.current;
+      const sessionAuthority = sessionAgentAuthorityRef.current;
+      const invalidSessionAuthority =
+        requestSessionId !== null &&
+        (sessionAuthority?.sessionId !== requestSessionId ||
+          (sessionAuthority.profile !== null &&
+            sessionAuthority.profile.agent_id !== requestAgentId));
+      if (invalidSessionAuthority) {
+        setError(i18n.t("chat.requestFailed"));
+        return { status: "failed" };
+      }
+      const selectedAgentProfileForRequest = requestSessionId
+        ? sessionAuthority?.profile ?? null
+        : selectedAgentProfile ?? null;
+      const isBoundAgentConversation =
+        requestSessionId !== null && selectedAgentProfileForRequest !== null;
       // A new user submission replaces the parent run before it can mutate
       // optimistic transcript state or issue its POST. This fences a pending
       // retry/resume owner from starting while the next chat admission is open.
@@ -1789,8 +1921,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const submissionToken = ++submissionTokenRef.current;
       const mountedGeneration = mountedGenerationRef.current;
       const requestSessionGeneration = sessionGenerationRef.current;
-      const requestSessionId = sessionIdRef.current;
-      const requestAgentId = sessionAgentIdRef.current;
+      publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       clearReconcileOwners();
       statusRetryCountRef.current = 0;
@@ -1881,14 +2012,20 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
         // Keep the legacy Skill blacklist while MCP uses an explicit
         // canonical selection with omitted/clear/select tri-state semantics.
-        const disabledSkills = options?.getDisabledSkills?.() || [];
-        const selectedMcpToolIds = options?.getDisabledMcpTools?.();
+        const disabledSkills = isBoundAgentConversation
+          ? undefined
+          : options?.getDisabledSkills?.() || [];
+        const selectedMcpToolIds = isBoundAgentConversation
+          ? undefined
+          : options?.getDisabledMcpTools?.();
 
         // Merge session-level agent options (e.g. model) with ChatInput values
-        const fullAgentOptions = {
-          ...options?.getAgentOptions?.(),
-          ...agentOptions,
-        };
+        const fullAgentOptions = isBoundAgentConversation
+          ? undefined
+          : {
+              ...options?.getAgentOptions?.(),
+              ...agentOptions,
+            };
 
         // Option getters are application extension seams. A getter can
         // synchronously publish an auth-incarnation event, so validate the
@@ -1918,10 +2055,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           attachments,
           disabledSkills,
           undefined,
-          selectedSkill,
+          isBoundAgentConversation ? undefined : selectedSkill,
           submissionId,
           requestAgentId,
           selectedMcpToolIds,
+          selectedAgentProfileForRequest,
         );
 
         if (!isCurrentRequestSession()) {
@@ -2020,6 +2158,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         if (!requestSessionId && newSessionId) {
           sessionIdRef.current = newSessionId;
           setSessionId(newSessionId);
+          if (selectedAgentProfileForRequest === null)
+            sessionAgentAuthorityRef.current = { sessionId: newSessionId, profile: null };
           const now = new Date().toISOString();
 
           // 构建完整的对话配置
@@ -2283,6 +2423,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     handoffActivePreAdmissionSubmission({ projectMessages: false });
     sessionGenerationRef.current += 1;
     submissionTokenRef.current += 1;
+    publicStreamPresentationRef.current?.invalidate();
     streamVersionRef.current += 1;
     isLoadingHistoryRef.current = false;
     isSendingRef.current = false;
@@ -2292,6 +2433,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     clearReconcileOwners();
     setMessages([]);
     setConfirmationRecovery(null);
+    sessionAgentAuthorityRef.current = null;
     setSessionId(null);
     sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);

@@ -120,9 +120,6 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
     class Settings:
         queue_lease_visibility_timeout_seconds = 12
 
-    async def dispatch_multi_agent_ready_steps_for_worker(settings):
-        calls.append(("dispatch", settings.queue_lease_visibility_timeout_seconds))
-
     async def progress_pending_tool_permission_terminalizations_for_worker(settings):
         calls.append(("permission_terminalization", settings.queue_lease_visibility_timeout_seconds))
         return [{"tenant_id": "tenant-a", "run_id": "run-a", "completed": False}]
@@ -135,10 +132,6 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
         calls.append(("reclaim", kwargs))
         return {"reclaimed": 0, "dead_lettered": 0}
 
-    monkeypatch.setattr(
-        "app.worker_main.dispatch_multi_agent_ready_steps_for_worker",
-        dispatch_multi_agent_ready_steps_for_worker,
-    )
     monkeypatch.setattr(
         "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
         progress_pending_tool_permission_terminalizations_for_worker,
@@ -155,47 +148,9 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
 
     assert calls == [
         ("permission_terminalization", 12),
-        ("dispatch", 12),
         ("reclaim", {"visibility_timeout_seconds": 12}),
         ("stale_run_reconciliation", 12),
     ]
-
-
-@pytest.mark.asyncio
-async def test_worker_maintenance_keeps_multi_agent_dispatch_deferred_before_candidate_scan(monkeypatch):
-    from app import multi_agent_dispatcher
-
-    class Settings:
-        queue_lease_visibility_timeout_seconds = 12
-        multi_agent_dispatch_worker_enabled = True
-        multi_agent_dispatch_worker_interval_seconds = 30.0
-        multi_agent_dispatch_worker_limit = 1
-        default_tenant_id = "default"
-
-    calls: list[tuple[str, object]] = []
-
-    def forbidden_transaction():
-        raise AssertionError("maintenance dispatch must not claim or write deferred work")
-
-    async def forbidden_candidates(*_args, **_kwargs):
-        raise AssertionError("maintenance dispatch must not scan deferred candidates")
-
-    async def reclaim_expired_leases(**kwargs):
-        calls.append(("reclaim", kwargs))
-        return {"reclaimed": 0, "dead_lettered": 0}
-
-    monkeypatch.setattr(multi_agent_dispatcher, "transaction", forbidden_transaction)
-    monkeypatch.setattr(
-        multi_agent_dispatcher.repositories,
-        "list_multi_agent_dispatch_candidate_run_ids",
-        forbidden_candidates,
-        raising=False,
-    )
-    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
-
-    await worker_main.run_worker_maintenance(Settings())
-
-    assert calls == [("reclaim", {"visibility_timeout_seconds": 12})]
 
 
 @pytest.mark.asyncio
@@ -2418,56 +2373,3 @@ async def test_run_once_does_not_reclaim_queue_when_sandbox_cleanup_fails(monkey
         await run_once(timeout_seconds=1, worker_id="worker-a")
 
     assert calls == [("sandbox_cleanup",)]
-
-
-@pytest.mark.asyncio
-async def test_run_once_dispatches_multi_agent_ready_steps_before_queue_lease(monkeypatch):
-    calls = []
-
-    class Settings:
-        max_active_worker_runs = 3
-        default_tenant_id = "default"
-        multi_agent_dispatch_worker_enabled = True
-
-    async def cleanup_expired_sandbox_leases():
-        calls.append(("sandbox_cleanup",))
-
-    async def cleanup_expired_memory_records_for_worker(settings=None):
-        calls.append(("memory_cleanup", settings))
-        return []
-
-    async def dispatch_multi_agent_ready_steps_for_worker(settings=None):
-        calls.append(("multi_agent_dispatch", settings))
-        return [{"run_id": "run-parent", "status": "queued"}]
-
-    async def reclaim_expired_leases(**_kwargs):
-        calls.append(("queue_reclaim",))
-
-    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
-        calls.append(("lease", worker_id, max_processing_runs))
-        return None
-
-    settings = Settings()
-    monkeypatch.setattr("app.worker_main.get_settings", lambda: settings)
-    monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_expired_sandbox_leases, raising=False)
-    monkeypatch.setattr(
-        "app.worker_main.cleanup_expired_memory_records_for_worker",
-        cleanup_expired_memory_records_for_worker,
-    )
-    monkeypatch.setattr(
-        "app.worker_main.dispatch_multi_agent_ready_steps_for_worker",
-        dispatch_multi_agent_ready_steps_for_worker,
-    )
-    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
-    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
-
-    outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
-
-    assert outcome.status == "idle"
-    assert calls == [
-        ("sandbox_cleanup",),
-        ("memory_cleanup", settings),
-        ("multi_agent_dispatch", settings),
-        ("queue_reclaim",),
-        ("lease", "worker-a", 3),
-    ]

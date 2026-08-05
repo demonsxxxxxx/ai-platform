@@ -9,11 +9,13 @@ def test_schema_declares_platform_fact_tables():
         "workspaces",
         "users",
         "agents",
+        "agent_profiles",
         "skills",
         "tenant_workbench_skills",
         "tenant_capability_distributions",
         "tenant_capability_distribution_backfills",
         "mcp_tools",
+        "mcp_tool_catalog_entries",
         "tool_policies",
         "sessions",
         "messages",
@@ -28,6 +30,17 @@ def test_schema_declares_platform_fact_tables():
         "audit_logs",
     ]:
         assert f"create table if not exists {table}" in schema
+
+
+def test_schema_declares_agent_profile_aggregate_and_immutable_withdrawal_history():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn'))" in schema
+    assert "fk_agent_profiles_current_publication" in schema
+    assert "published_hash text" in schema
+    assert "published_status text" in schema
+    assert "unique (tenant_id, agent_id, revision, content_hash, revision_status)" in schema
+    assert "withdrawn_from_revision bigint" in schema
 
 
 def test_schema_declares_capability_distribution_authority_constraints():
@@ -83,14 +96,34 @@ def test_schema_seeds_first_agent_apps():
 
 def test_schema_enables_read_only_ragflow_mcp_tool_poc():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
+    skill_seed = schema[schema.index("insert into skills"):schema.index("insert into skill_versions")]
     mcp_tool_seed = schema[schema.index("insert into mcp_tools"):schema.index("insert into agents")]
 
+    assert (
+        "'ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', "
+        "'Query company knowledge base with scoped citations through the platform-managed MCP tool.', "
+        "'[\"chat\"]'::jsonb, '[\"answer\", \"citations\"]'::jsonb, 'claude-agent-worker')"
+    ) in skill_seed
+    assert "'ragflow')" not in skill_seed
     assert "'ragflow-knowledge-search'" in mcp_tool_seed
     assert "'[\"ragflow_search\"]'::jsonb" in mcp_tool_seed
     assert "'active',\n    false,\n    'low'" in mcp_tool_seed
     assert "'disabled',\n    false,\n    'low'" not in mcp_tool_seed
     assert "insert into tool_policies" in mcp_tool_seed
     assert "('default', 'ragflow-knowledge-search', 'active', false, 'low', true" in mcp_tool_seed
+
+
+def test_schema_declares_generation_fenced_tenant_mcp_catalogs():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "catalog_generation bigint not null default 0" in schema
+    assert "catalog_sync_attempt bigint not null default 0" in schema
+    assert "catalog_sync_lease_expires_at timestamptz" in schema
+    assert "catalog_status text not null default 'legacy'" in schema
+    assert "create table if not exists mcp_tool_catalog_entries" in schema
+    assert "unique (tenant_id, server_name, remote_tool_name)" in schema
+    assert "foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name)" in schema
+    assert "check (status in ('active', 'disabled', 'stale', 'deleted'))" in schema
 
 
 def test_schema_seeds_internal_skill_dependencies_without_workbench_entry():
@@ -432,3 +465,17 @@ def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependenc
     assert "do update set" not in skill_version_seed.split("insert into tenant_workbench_skills", 1)[0]
     assert "'[\"minimax-docx\"]'::jsonb" in schema
     assert "('default', 'minimax-docx'" not in schema
+
+
+def test_schema_indexes_principal_scoped_agent_conversation_history():
+    schema = " ".join(Path("app/schema.sql").read_text(encoding="utf-8").split()).lower()
+
+    assert "create index if not exists idx_sessions_agent_conversation_history" in schema
+    assert schema.index(
+        "alter table sessions add column if not exists admitted_agent_profile_revision"
+    ) < schema.index("create index if not exists idx_sessions_agent_conversation_history")
+    assert (
+        "on sessions( tenant_id, user_id, agent_id, admitted_agent_profile_revision, "
+        "updated_at desc, created_at desc, id desc )"
+    ) in schema
+    assert "where status = 'active' and admitted_agent_profile_revision is not null" in schema

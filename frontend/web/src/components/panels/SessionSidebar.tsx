@@ -15,6 +15,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
+import { useInView } from "react-intersection-observer";
 import { sessionApi, type BackendSession } from "../../services/api";
 import { useAuth } from "../../hooks/useAuth";
 import { useSessionList } from "../../hooks/useSession";
@@ -48,6 +49,24 @@ interface SessionSidebarProps {
   onMobileClose?: () => void;
   isCollapsed?: boolean;
   onToggleCollapsed?: (collapsed: boolean) => void;
+  sessionFilter?: (session: BackendSession) => boolean;
+  sessionSource?: SessionSidebarSessionSource;
+  agentWorkspace?: {
+    name: string;
+    description: string;
+  };
+}
+
+export interface SessionSidebarSessionSource {
+  sessions: BackendSession[];
+  isLoading: boolean;
+  isLoadingMore: boolean;
+  hasMore: boolean;
+  loadMore: () => Promise<void>;
+  softRefresh: () => Promise<void>;
+  prependSession: (session: BackendSession) => void;
+  removeSession: (sessionId: string) => void;
+  updateSession: (session: BackendSession) => void;
 }
 
 export interface SessionSidebarHandle {
@@ -71,6 +90,9 @@ export const SessionSidebar = forwardRef<
     onMobileClose,
     isCollapsed: externalCollapsed,
     onToggleCollapsed,
+    sessionFilter,
+    sessionSource,
+    agentWorkspace,
   },
   ref,
 ) {
@@ -117,7 +139,33 @@ export const SessionSidebar = forwardRef<
 
   // ─── Hooks ──────────────────────────────────────────────────────
 
-  const sessionList = useSessionList(scrollEl);
+  const defaultSessionList = useSessionList(scrollEl, sessionSource === undefined);
+  const sessionList = sessionSource ?? defaultSessionList;
+  const { ref: agentLoadMoreRef, inView: agentLoadMoreVisible } = useInView({
+    threshold: 0.1,
+    root: scrollEl ?? undefined,
+  });
+  useEffect(() => {
+    if (
+      sessionSource &&
+      agentLoadMoreVisible &&
+      sessionSource.hasMore &&
+      !sessionSource.isLoading &&
+      !sessionSource.isLoadingMore
+    ) {
+      void sessionSource.loadMore();
+    }
+  }, [agentLoadMoreVisible, sessionSource]);
+  const visibleSessions = useMemo(
+    () =>
+      sessionSource
+        ? sessionSource.sessions
+        : sessionFilter
+        ? sessionList.sessions.filter(sessionFilter)
+        : sessionList.sessions,
+    [sessionFilter, sessionList.sessions, sessionSource],
+  );
+  const loadMoreRef = sessionSource ? agentLoadMoreRef : defaultSessionList.loadMoreRef;
 
   const handleSessionUnread = useCallback(
     (sid: string, count: number) => {
@@ -174,7 +222,10 @@ export const SessionSidebar = forwardRef<
   // ─── Effects ────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!currentSessionId) return;
+    // The dedicated Agent source already loads after server authorization and
+    // refreshes explicitly after create/delete/update. Avoid a second first-page
+    // request merely because the recovered route sets its current Session.
+    if (!currentSessionId || sessionSource) return;
     sessionList.softRefresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSessionId]);
@@ -282,17 +333,19 @@ export const SessionSidebar = forwardRef<
             onNewSession={onNewSession}
             onOpenSearch={() => setIsSearchOpen(true)}
             onSetScrollEl={setScrollEl}
-            sessions={sessionList.sessions}
+            sessions={visibleSessions}
             isLoading={sessionList.isLoading}
             hasMore={sessionList.hasMore}
             isLoadingMore={sessionList.isLoadingMore}
-            loadMoreRef={sessionList.loadMoreRef}
+            loadMoreRef={loadMoreRef}
             onUpdateSession={sessionList.updateSession}
             currentSessionId={currentSessionId}
             unreadBySession={unreadBySession}
             sessionActions={sessionActions}
             isChatsCollapsed={isChatsCollapsed}
             onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
+            agentWorkspace={agentWorkspace}
+            hideSessionDiscovery={agentWorkspace !== undefined}
           />
         ) : (
           <div className="flex-1" />
@@ -321,17 +374,19 @@ export const SessionSidebar = forwardRef<
               onNewSession={onNewSession}
               onOpenSearch={() => setIsSearchOpen(true)}
               onSetScrollEl={setScrollEl}
-              sessions={sessionList.sessions}
+              sessions={visibleSessions}
               isLoading={sessionList.isLoading}
               hasMore={sessionList.hasMore}
               isLoadingMore={sessionList.isLoadingMore}
-              loadMoreRef={sessionList.loadMoreRef}
+              loadMoreRef={loadMoreRef}
               onUpdateSession={sessionList.updateSession}
               currentSessionId={currentSessionId}
               unreadBySession={unreadBySession}
               sessionActions={sessionActions}
               isChatsCollapsed={isChatsCollapsed}
               onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
+              agentWorkspace={agentWorkspace}
+              hideSessionDiscovery={agentWorkspace !== undefined}
             />
           </div>
         ) : (
@@ -354,10 +409,12 @@ export const SessionSidebar = forwardRef<
                 setIsRecentChatsOpen(true);
               }}
               onOpenLaunchpad={() => navigate("/apps")}
+              onOpenAgentMarket={() => navigate("/agent-market")}
+              onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
               onOpenSkills={() => navigate("/skills")}
               onOpenMcp={() => navigate("/mcp")}
               onOpenModels={() => navigateWorkbenchItem("models")}
-              onOpenFiles={() => navigateWorkbenchItem("files")}
+              hideSessionDiscovery={agentWorkspace !== undefined}
               recentChatsBtnRef={desktopRecentChatsBtnRef}
             />
           </div>
@@ -390,15 +447,17 @@ export const SessionSidebar = forwardRef<
             setIsRecentChatsOpen(true);
           }}
           onOpenLaunchpad={() => navigate("/apps")}
+          onOpenAgentMarket={() => navigate("/agent-market")}
+          onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
           onOpenSkills={() => navigate("/skills")}
           onOpenMcp={() => navigate("/mcp")}
           onOpenModels={() => navigateWorkbenchItem("models")}
-          onOpenFiles={() => navigateWorkbenchItem("files")}
+          hideSessionDiscovery={agentWorkspace !== undefined}
           recentChatsBtnRef={mobileRecentChatsBtnRef}
         />
       </div>
 
-      {isSearchOpen && (
+      {isSearchOpen && !agentWorkspace && (
         <SearchDialog
           isOpen={isSearchOpen}
           onClose={() => setIsSearchOpen(false)}
@@ -420,7 +479,7 @@ export const SessionSidebar = forwardRef<
         variant="danger"
       />
 
-      <RecentChatsDialog
+      {!agentWorkspace ? <RecentChatsDialog
         isOpen={isRecentChatsOpen}
         onClose={() => setIsRecentChatsOpen(false)}
         onSelectSession={(id) => selectAndClose(id)}
@@ -430,7 +489,7 @@ export const SessionSidebar = forwardRef<
             ? mobileRecentChatsBtnRef.current
             : desktopRecentChatsBtnRef.current
         }
-      />
+      /> : null}
     </>
   );
 });

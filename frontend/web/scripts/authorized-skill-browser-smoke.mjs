@@ -208,6 +208,92 @@ function mockBootstrapSource() {
         marketplace_is_active: true,
       },
     ];
+    class MockUploadRequest {
+      constructor() {
+        this.method = "GET";
+        this.url = "";
+        this.withCredentials = false;
+        this.status = 0;
+        this.statusText = "";
+        this.responseText = "";
+        this.aborted = false;
+        this.listeners = new Map();
+        this.uploadListeners = new Map();
+        this.upload = {
+          onprogress: null,
+          addEventListener: (type, listener) => {
+            this.addListener(this.uploadListeners, type, listener);
+          },
+        };
+      }
+      addListener(target, type, listener) {
+        const listeners = target.get(type) || [];
+        listeners.push(listener);
+        target.set(type, listeners);
+      }
+      addEventListener(type, listener) {
+        this.addListener(this.listeners, type, listener);
+      }
+      emit(target, type, event) {
+        const propertyTarget = target === this.uploadListeners ? this.upload : this;
+        const propertyListener = propertyTarget["on" + type];
+        if (typeof propertyListener === "function") propertyListener.call(this, event);
+        for (const listener of target.get(type) || []) listener.call(this, event);
+      }
+      open(method, url) {
+        this.method = String(method || "GET").toUpperCase();
+        this.url = String(url);
+      }
+      setRequestHeader() {}
+      send(formData) {
+        const url = new URL(this.url, location.origin);
+        const candidate = formData instanceof FormData ? formData.get("file") : null;
+        const file = candidate instanceof File ? candidate : null;
+        state.requests.push({
+          path: url.pathname,
+          method: this.method,
+          credentials: this.withCredentials ? "include" : "same-origin",
+          body: {
+            name: file?.name || null,
+            size: file?.size ?? null,
+            type: file?.type || null,
+          },
+        });
+        if (url.pathname !== "/api/upload/file" || this.method !== "POST") {
+          queueMicrotask(() => {
+            if (this.aborted) return;
+            this.status = 404;
+            this.statusText = "Not Found";
+            this.responseText = JSON.stringify({ detail: "unexpected_mock_xhr" });
+            this.emit(this.listeners, "load", { target: this });
+          });
+          return;
+        }
+        const total = file?.size || 8;
+        queueMicrotask(() => {
+          if (this.aborted) return;
+          const progress = { lengthComputable: true, loaded: total, total };
+          this.emit(this.uploadListeners, "progress", progress);
+          this.status = 200;
+          this.statusText = "OK";
+          this.responseText = JSON.stringify({
+            key: "file-smoke-key",
+            url: "/api/ai/files/file-smoke-key",
+            name: "evidence.txt",
+            type: "document",
+            mimeType: "text/plain",
+            size: 8,
+          });
+          this.emit(this.listeners, "load", { target: this });
+        });
+      }
+      abort() {
+        if (this.aborted) return;
+        this.aborted = true;
+        this.emit(this.listeners, "abort", { target: this });
+      }
+    }
+    window.XMLHttpRequest = MockUploadRequest;
     window.fetch = async (input, init = {}) => {
       const rawUrl = typeof input === "string" ? input : input.url;
       const url = new URL(rawUrl, location.origin);
@@ -260,15 +346,6 @@ function mockBootstrapSource() {
       if (url.pathname === "/api/upload/config") return json({ uploadLimits: {
         image: 10, video: 50, audio: 50, document: 20, maxFiles: 10,
       }});
-      if (url.pathname === "/api/upload/check") return json({
-        exists: true,
-        key: "file-smoke-key",
-        name: body?.name || "evidence.txt",
-        type: "document",
-        mime_type: body?.mime_type || "text/plain",
-        size: body?.size || 8,
-        url: "/api/upload/file/file-smoke-key",
-      });
       if (url.pathname === "/api/chat/stream" && method === "POST") {
         if (state.submitMode === "stale") {
           state.staleReturned = true;
@@ -456,7 +533,7 @@ async function runViewport(name, viewport) {
 
     tempFile = await attachFile(client);
     await client.waitFor(
-      'document.body.innerText.includes("authorized-skill-") && !document.querySelector(\'[data-selected-skill-error="file_required_for_skill"]\')',
+      'document.body.innerText.includes("evidence.txt") && !document.querySelector(\'[data-selected-skill-error="file_required_for_skill"]\')',
       `${name}:file_attached`,
     );
     await client.evaluate('document.querySelector("form").requestSubmit()');
@@ -466,7 +543,7 @@ async function runViewport(name, viewport) {
     );
     const staleState = await client.evaluate(`(() => ({
       prompt: document.querySelector("textarea").value,
-      attachmentVisible: document.body.innerText.includes("authorized-skill-"),
+      attachmentVisible: document.body.innerText.includes("evidence.txt"),
       selectedReference: document.querySelector('[data-composer-chip-kind="skill"]')?.getAttribute("data-composer-chip-reference"),
       skillListReads: window.__authorizedSkillSmoke.skillListReads,
     }))()`);
@@ -500,7 +577,7 @@ async function runViewport(name, viewport) {
       const error = document.querySelector('[data-selected-skill-error="capability_not_authorized"]');
       return {
         prompt: document.querySelector("textarea").value,
-        attachmentVisible: document.body.innerText.includes("authorized-skill-"),
+        attachmentVisible: document.body.innerText.includes("evidence.txt"),
         selectedIdentityVisible: Boolean(document.querySelector('[data-composer-chip-kind="skill"]')),
         errorText: error?.textContent.trim() || "",
       };
@@ -558,8 +635,10 @@ async function runViewport(name, viewport) {
     const artifactScreenshot = await screenshot(client, `${name}-artifact-entry`);
     const requestEvidence = await client.evaluate(`(() => {
       const requests = window.__authorizedSkillSmoke.requests;
+      const uploads = requests.filter((item) => item.path === "/api/upload/file" && item.method === "POST");
       const submissions = requests.filter((item) => item.path === "/api/chat/stream" && item.method === "POST");
       return {
+        uploads,
         submissions,
         credentialViolations: requests
           .filter((item) => item.path.startsWith("/api/"))
@@ -613,9 +692,14 @@ async function main() {
   results.push(await runViewport("desktop", { width: 1440, height: 1100, mobile: false }));
   results.push(await runViewport("mobile", { width: 390, height: 844, mobile: true }));
   const ok = results.every((result) => {
+    const [upload] = result.requestEvidence.uploads;
     const [staleSubmission, deniedSubmission, acceptedSubmission] =
       result.requestEvidence.submissions;
     return (
+      upload?.credentials === "include" &&
+      upload?.body?.name?.startsWith("authorized-skill-") &&
+      upload?.body?.size === 8 &&
+      upload?.body?.type === "text/plain" &&
       result.staleState.prompt === "Review the attached evidence" &&
       result.pickerA11y.role === "dialog" &&
       result.pickerA11y.ariaModal === "true" &&

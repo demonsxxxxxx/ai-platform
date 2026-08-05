@@ -16,8 +16,6 @@ import type {
   SkillSource,
   UserSkill,
   UserSkillDetail,
-  SkillCreate,
-  PublishToMarketplaceRequest,
   BinaryFileInfo,
 } from "../types/skill";
 
@@ -123,11 +121,9 @@ export function useSkills(options?: {
   const [listError, setListError] = useState<string | null>(null);
 
   // Per-operation loading states for better UX
-  const [isCreating, setIsCreating] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [isPublishing, setIsPublishing] = useState(false);
 
   // 跟踪正在 toggle 中的 skill，防止 fetchSkills 覆盖乐观更新
   const pendingTogglesRef = useRef<Map<string, boolean>>(new Map());
@@ -339,26 +335,6 @@ export function useSkills(options?: {
       }
     },
     [enabled, skills],
-  );
-
-  // Create skill
-  const createSkill = useCallback(
-    async (data: SkillCreate): Promise<boolean> => {
-      if (!enabled) return false;
-      setIsCreating(true);
-      setError(null);
-      try {
-        await skillApi.create(data);
-        await fetchSkills();
-        return true;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to create skill");
-        return false;
-      } finally {
-        setIsCreating(false);
-      }
-    },
-    [enabled, fetchSkills],
   );
 
   // Update skill
@@ -824,31 +800,6 @@ export function useSkills(options?: {
     effectivePermissionsKnown,
   });
 
-  // Publish skill to marketplace
-  const publishToMarketplace = useCallback(
-    async (
-      name: string,
-      data?: PublishToMarketplaceRequest,
-    ): Promise<boolean> => {
-      if (!enabled) return false;
-      setIsPublishing(true);
-      setError(null);
-      try {
-        await skillApi.publishToMarketplace(name, data);
-        await fetchSkills();
-        return true;
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to publish skill",
-        );
-        return false;
-      } finally {
-        setIsPublishing(false);
-      }
-    },
-    [enabled, fetchSkills],
-  );
-
   // Initial load
   useEffect(() => {
     fetchSkills(listParams);
@@ -867,7 +818,6 @@ export function useSkills(options?: {
     fetchSkills,
     getSkill,
     getFullSkill,
-    createSkill,
     updateSkill,
     deleteSkill,
     batchDeleteSkills,
@@ -884,14 +834,11 @@ export function useSkills(options?: {
     adminPreviewZipSkills,
     previewGitHubSkills,
     installGitHubSkills,
-    publishToMarketplace,
     pendingSkillNames,
     isMutating,
-    isCreating,
     isUpdating,
     isDeleting,
     isUploading,
-    isPublishing,
     getEnabledSkillNames,
     getCategoryStats,
     enabledCount,

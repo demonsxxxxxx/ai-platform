@@ -2,11 +2,13 @@ import subprocess
 
 import pytest
 
-from app.context_retrieval import (
+from app.context.retrieval import (
     ContextRetrieval,
+    ContextRetrievalAuthority,
     ContextRetrievalDenied,
+    ContextRetrievalIdentity,
+    ContextRetrievalInputError,
     InMemoryContextRetrievalRepository,
-    RepositoryContextRetrievalRepository,
 )
 
 
@@ -127,6 +129,60 @@ def _retrieval() -> ContextRetrieval:
         ],
     )
     return ContextRetrieval(repo)
+
+
+@pytest.mark.asyncio
+async def test_authority_execute_owns_dispatch_bounds_and_scope():
+    retrieval = _retrieval()
+    identity = ContextRetrievalIdentity(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="general-agent",
+    )
+
+    result = await retrieval.execute(
+        "read_session_messages",
+        identity,
+        {"limit": 999, "offset": -10, "max_tokens": 5},
+    )
+
+    assert [item["message_id"] for item in result["items"]] == ["msg-1"]
+    with pytest.raises(ContextRetrievalInputError, match="context_retrieval_parameters_invalid"):
+        await retrieval.execute(
+            "read_session_messages",
+            identity,
+            {"tenant_id": "tenant-b", "limit": 1},
+        )
+    with pytest.raises(ContextRetrievalInputError, match="file_id_required"):
+        await retrieval.execute("read_context_file", identity, {})
+    with pytest.raises(ContextRetrievalInputError, match="context_retrieval_stage_delivery_required"):
+        await retrieval.execute(
+            "stage_context_file_to_workspace",
+            identity,
+            {"file_id": "file-a"},
+        )
+    with pytest.raises(ContextRetrievalDenied, match="context_scope_denied"):
+        await retrieval.execute(
+            "read_session_messages",
+            ContextRetrievalIdentity(
+                tenant_id="tenant-a",
+                workspace_id="workspace-a",
+                user_id="user-b",
+                session_id="session-a",
+                run_id="run-a",
+                agent_id="general-agent",
+            ),
+            {},
+        )
+
+
+def test_compatibility_module_reexports_owned_authority():
+    from app.context_retrieval import ContextRetrievalAuthority as CompatibilityAuthority
+
+    assert CompatibilityAuthority is ContextRetrievalAuthority
 
 
 @pytest.mark.asyncio
@@ -601,8 +657,8 @@ async def test_repository_context_retrieval_reads_file_through_scoped_repository
             calls.append(("storage", storage_key))
             return b"repository backed file content"
 
-    monkeypatch.setattr("app.context_retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
-    retrieval = ContextRetrieval(RepositoryContextRetrievalRepository(object(), storage=FakeStorage()))
+    monkeypatch.setattr("app.context.retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    retrieval = ContextRetrievalAuthority.for_connection(object(), FakeStorage())
 
     result = await retrieval.read_context_file(
         tenant_id="tenant-a",
@@ -636,6 +692,58 @@ async def test_repository_context_retrieval_reads_file_through_scoped_repository
 
 
 @pytest.mark.asyncio
+async def test_transaction_factory_is_owned_by_authority(monkeypatch):
+    calls = []
+    connection = object()
+
+    class Transaction:
+        async def __aenter__(self):
+            calls.append("enter")
+            return connection
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            calls.append("exit")
+
+    async def fake_list_messages(conn, **kwargs):
+        calls.append((conn, kwargs))
+        return [
+            {
+                "id": "msg-1",
+                "run_id": kwargs["run_id"],
+                "role": "user",
+                "content": "transaction scoped message",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.context.retrieval.repositories.list_scoped_context_messages",
+        fake_list_messages,
+    )
+    retrieval = ContextRetrievalAuthority.for_transaction(
+        Transaction,
+        object(),
+    )
+
+    result = await retrieval.execute(
+        "read_session_messages",
+        ContextRetrievalIdentity(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            agent_id="general-agent",
+        ),
+        {"limit": 1},
+    )
+
+    assert result["items"][0]["content"] == "transaction scoped message"
+    assert calls[0] == "enter"
+    assert calls[1][0] is connection
+    assert calls[2] == "exit"
+
+
+@pytest.mark.asyncio
 async def test_repository_stage_context_file_rejects_oversize_metadata_before_storage_read(monkeypatch, tmp_path):
     calls = []
 
@@ -654,8 +762,8 @@ async def test_repository_stage_context_file_rejects_oversize_metadata_before_st
             calls.append(("storage", storage_key))
             return b"x" * 4096
 
-    monkeypatch.setattr("app.context_retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
-    retrieval = ContextRetrieval(RepositoryContextRetrievalRepository(object(), storage=FakeStorage()))
+    monkeypatch.setattr("app.context.retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    retrieval = ContextRetrievalAuthority.for_connection(object(), FakeStorage())
 
     with pytest.raises(ContextRetrievalDenied, match="context_file_too_large"):
         await retrieval.stage_context_file_to_workspace(
@@ -703,8 +811,8 @@ async def test_repository_stage_context_file_requires_declared_size_before_stora
             calls.append(("storage", storage_key))
             return b"x" * 4096
 
-    monkeypatch.setattr("app.context_retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
-    retrieval = ContextRetrieval(RepositoryContextRetrievalRepository(object(), storage=FakeStorage()))
+    monkeypatch.setattr("app.context.retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    retrieval = ContextRetrievalAuthority.for_connection(object(), FakeStorage())
 
     with pytest.raises(ContextRetrievalDenied, match="context_file_size_required"):
         await retrieval.stage_context_file_to_workspace(
@@ -762,10 +870,10 @@ async def test_repository_context_retrieval_message_pagination_uses_limit_plus_o
         ]
 
     monkeypatch.setattr(
-        "app.context_retrieval.repositories.list_scoped_context_messages",
+        "app.context.retrieval.repositories.list_scoped_context_messages",
         fake_list_scoped_context_messages,
     )
-    retrieval = ContextRetrieval(RepositoryContextRetrievalRepository(object(), storage=object()))
+    retrieval = ContextRetrievalAuthority.for_connection(object(), object())
 
     result = await retrieval.read_session_messages(
         tenant_id="tenant-a",

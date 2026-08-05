@@ -21,6 +21,9 @@ GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS = 900
 GOVERNED_EGRESS_PROOF_MIN_SIGNING_KEY_BYTES = 32
 GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID = "current"
 GOVERNED_EGRESS_PROOF_MAX_PREVIOUS_KEYS = 4
+GOVERNED_EGRESS_SCOPE_INLINE_MAX_BYTES = 4096
+GOVERNED_EGRESS_SCOPE_MAX_BYTES = 64 * 1024
+_GOVERNED_EGRESS_SCOPE_DIGEST_PREFIX = "sha256:"
 _GOVERNED_EGRESS_PROOF_KEYS = frozenset(
     {
         "schema_version",
@@ -159,14 +162,16 @@ def _governed_egress_subject_digest(value: object) -> str:
 
 
 def _canonical_scope_subject(value: object) -> str:
-    """Canonicalize one authorized scope before it becomes an irreversible subject."""
+    """Bind one authorized scope inline or by digest without dropping policy facts."""
     try:
         encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     except (TypeError, ValueError) as exc:
         raise ValueError("governed_egress_scope_invalid") from exc
-    if not encoded or len(encoded) > 4096:
+    if not encoded or len(encoded) > GOVERNED_EGRESS_SCOPE_MAX_BYTES:
         raise ValueError("governed_egress_scope_invalid")
-    return encoded
+    if len(encoded) <= GOVERNED_EGRESS_SCOPE_INLINE_MAX_BYTES:
+        return encoded
+    return _GOVERNED_EGRESS_SCOPE_DIGEST_PREFIX + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def governed_egress_authorized_skill_scope(*, skill_ids: object, mcp_tool_ids: object) -> str:
@@ -493,12 +498,12 @@ def is_accepted_runtime_lease(
     now: datetime | None = None,
     verification_mode: str = "active",
 ) -> bool:
-    """Verify active admission or signed historical evidence for one lease.
+    """Verify active admission or historical evidence for one governed lease.
 
     ``active`` is the only mode for runtime admission and requires a proof that
-    has not expired. ``historical`` is limited to terminal audit projections:
-    it still requires exact shape, signature, and scope binding, but permits a
-    naturally expired proof without extending its runtime authority.
+    has not expired. ``historical`` is limited to terminal audit projections
+    and still requires signature validation. Retired trusted-direct leases are
+    cleanup-only and are never accepted as runtime evidence.
     """
     if verification_mode not in {"active", "historical"}:
         return False

@@ -54,6 +54,23 @@ test("updates the chat url when a new session is created from /chat", () => {
   );
 });
 
+test("updates a published Agent workspace URL without falling back to generic chat", () => {
+  assert.deepEqual(
+    getSessionRouteSyncAction({
+      activeTab: "chat",
+      pathname: "/agent-market/agt_support/4/chat",
+      sessionRouteBasePath: "/agent-market/agt_support/4/chat",
+      sessionId: "session-123",
+      urlSessionId: undefined,
+      externalNavigate: false,
+    }),
+    {
+      type: "replace-url",
+      path: "/agent-market/agt_support/4/chat/session-123",
+    },
+  );
+});
+
 test("loads the target session when external navigation lands on chat from an empty state", () => {
   assert.equal(
     shouldLoadSessionFromUrlChange({
@@ -78,6 +95,21 @@ test("does not trigger a second url-change load while the initial url sync is st
       isNewSession: false,
       isInternalNavigation: false,
       initialUrlSyncPending: true,
+    }),
+    false,
+  );
+});
+
+test("waits for the Agent workspace binding before loading a URL Session", () => {
+  assert.equal(
+    shouldLoadSessionFromUrlChange({
+      activeTab: "chat",
+      sessionId: null,
+      urlSessionId: "session-agent-a",
+      isLoading: false,
+      isNewSession: false,
+      isInternalNavigation: false,
+      historyLoadEnabled: false,
     }),
     false,
   );

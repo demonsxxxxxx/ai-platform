@@ -11,7 +11,6 @@ export type TabType =
   | "mcp"
   | "feedback"
   | "models"
-  | "files"
   | "notifications"
   | "memory";
 

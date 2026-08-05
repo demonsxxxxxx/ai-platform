@@ -1,0 +1,69 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import test from "node:test";
+
+const workbenchSource = readFileSync(
+  join(process.cwd(), "src/features/agent-builder/AgentBuilderWorkbench.tsx"),
+  "utf8",
+);
+const controllerSource = readFileSync(
+  join(process.cwd(), "src/features/agent-builder/agentBuilderController.ts"),
+  "utf8",
+);
+const adapterSource = readFileSync(
+  join(process.cwd(), "src/features/agent-builder/agentBuilderAdapter.ts"),
+  "utf8",
+);
+
+test("server list and mutations are owned by the feature-local controller", () => {
+  assert.match(controllerSource, /agentProfileApi/);
+  assert.match(controllerSource, /this\.api\.listAdmin\(\)/);
+  assert.match(controllerSource, /this\.api\.saveDraft\(/);
+  assert.match(controllerSource, /this\.api\.publish\(/);
+  assert.match(adapterSource, /expected_draft_revision/);
+  assert.match(workbenchSource, /controller\.loadProfiles\(\)/);
+  assert.match(workbenchSource, /controller\.saveActiveProfile\(currentCatalog\)/);
+  assert.match(workbenchSource, /controller\.publishActiveProfile\(currentCatalog\)/);
+});
+
+test("workbench has explicit admin, loading, error, empty, and New Agent surfaces", () => {
+  assert.match(workbenchSource, /data-agent-builder-access-denied/);
+  assert.match(workbenchSource, /正在加载智能体/);
+  assert.match(workbenchSource, /workbench\.listError/);
+  assert.match(workbenchSource, /当前没有服务端智能体/);
+  assert.match(workbenchSource, /新建智能体/);
+  assert.match(workbenchSource, /controller\.createNewAgent\(/);
+});
+
+test("publish stays fenced by a clean materialized draft with visible reasons", () => {
+  assert.match(workbenchSource, /getAgentProfileSaveBlock/);
+  assert.match(workbenchSource, /getAgentProfilePublishBlock/);
+  assert.match(workbenchSource, /data-agent-builder-save-reason/);
+  assert.match(workbenchSource, /data-agent-builder-publish-reason/);
+  assert.match(workbenchSource, /disabled=\{interactionBusy \|\| publishBlock !== null\}/);
+});
+
+test("destructive server reload fences every editor interaction", () => {
+  assert.match(
+    workbenchSource,
+    /interactionBusy = mutationBusy \|\| workbench\.destructiveReloadPending/,
+  );
+  assert.match(controllerSource, /this\.stateValue\.destructiveReloadPending/);
+});
+
+test("unsupported preview and fake lifecycle controls are absent", () => {
+  const featureProductionSource = [workbenchSource, controllerSource].join("\n");
+  assert.doesNotMatch(featureProductionSource, /local-draft-[12]/);
+  assert.doesNotMatch(featureProductionSource, /useAgent/);
+  assert.doesNotMatch(featureProductionSource, /预览消息|打开对话运行|对话交接/);
+  assert.doesNotMatch(featureProductionSource, /sessionApi|sendMessage|onHandoffReady/);
+  assert.doesNotMatch(featureProductionSource, /unpublish|deactivate|avatar|handoff/i);
+});
+
+test("safe errors never render arbitrary Error.message", () => {
+  assert.match(controllerSource, /error instanceof ApiRequestError/);
+  assert.match(controllerSource, /SAFE_ERROR_CODE/);
+  assert.doesNotMatch(controllerSource, /error\.message/);
+  assert.doesNotMatch(workbenchSource, /error instanceof Error \? error\.message/);
+});

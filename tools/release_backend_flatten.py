@@ -1,0 +1,791 @@
+"""Fail-closed, temporary flattening of a verified backend image for one rebuild."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import dataclass
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import stat
+import subprocess
+import tarfile
+import tempfile
+from typing import Any, BinaryIO, Callable, Iterator
+
+
+BACKEND_LAYER_FLATTEN_MIN_LAYERS = 96
+BACKEND_LAYER_FLATTEN_MAX_FLAT_LAYERS = 4
+_FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_UNSAFE_CONFIG_RE = re.compile(
+    r"(?:authorization|password|passwd|secret|token|api[_-]?key|credential|private[ _-]?key)",
+    re.IGNORECASE,
+)
+_RUNTIME_ENVIRONMENT_KEYS = (
+    "PATH",
+    "PYTHONDONTWRITEBYTECODE",
+    "PYTHONUNBUFFERED",
+    "PIP_DISABLE_PIP_VERSION_CHECK",
+    "APP_MODULE",
+    "APP_PORT",
+    "HOME",
+    "TMPDIR",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+)
+_REQUIRED_RUNTIME_ENVIRONMENT = {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1",
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+    "APP_MODULE": "app.main:create_app",
+    "APP_PORT": "8020",
+    "HOME": "/home/ai-platform",
+    "TMPDIR": "/home/ai-platform/tmp",
+    "XDG_CACHE_HOME": "/home/ai-platform/.cache",
+    "XDG_CONFIG_HOME": "/home/ai-platform/.config",
+    "XDG_DATA_HOME": "/home/ai-platform/.local/share",
+}
+_REQUIRED_LABELS = (
+    "ai-platform.source-commit",
+    "org.opencontainers.image.revision",
+    "ai-platform.source-repository",
+    "ai-platform.build-dirty",
+    "ai-platform.release-role",
+)
+_MAX_MARKER_BYTES = 128 * 1024
+_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
+
+
+def release_label_dockerfile_lines(role: str) -> str:
+    """Return all target-provenance labels required for one promoted image role."""
+    common = [
+        "LABEL org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
+        "LABEL ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",
+        "LABEL ai-platform.source-commit=$AI_PLATFORM_BUILD_COMMIT",
+        'LABEL ai-platform.build-dirty="$AI_PLATFORM_BUILD_DIRTY"',
+        "LABEL ai-platform.source-repository=$AI_PLATFORM_BUILD_REPOSITORY",
+        f"LABEL ai-platform.release-role={role}",
+    ]
+    if role == "backend":
+        common[1:1] = [
+            "LABEL ai-platform.runtime-subject=$AI_PLATFORM_BUILD_COMMIT",
+            "LABEL ai-platform.source_revision=$AI_PLATFORM_BUILD_COMMIT",
+            "LABEL ai-platform.source_commit=$AI_PLATFORM_BUILD_COMMIT",
+            "LABEL ai-platform.runtime_subject=$AI_PLATFORM_BUILD_COMMIT",
+            "LABEL ai-platform.source_tree_commit=$AI_PLATFORM_BUILD_COMMIT",
+        ]
+    return "\n".join(common)
+
+
+def backend_provenance_dockerfile_run() -> str:
+    """Return the backend embedded-source marker update used by source rebuilds and promotions."""
+    return '''RUN printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.ai-platform-source-revision \\
+    && printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.codex-source-revision \\
+    && printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.source-commit \\
+    && AI_PLATFORM_BUILD_COMMIT="$AI_PLATFORM_BUILD_COMMIT" AI_PLATFORM_BUILD_DIRTY="$AI_PLATFORM_BUILD_DIRTY" \\
+       python -c "import json, os; from pathlib import Path; commit = os.environ.get('AI_PLATFORM_BUILD_COMMIT', 'unknown').strip() or 'unknown'; dirty_text = os.environ.get('AI_PLATFORM_BUILD_DIRTY', 'unknown').strip().lower(); dirty = dirty_text != 'false'; dirty_paths = [] if not dirty else ['unknown_runtime_affecting_dirty_paths']; payload = dict(schema_version='ai-platform.source-snapshot.v1', source_tree_commit_sha=commit, runtime_subject_commit_sha=commit, source_tree_dirty=dirty, runtime_affecting_changes_since_runtime_subject=[], runtime_affecting_dirty_paths=dirty_paths, snapshot_source='dockerfile_build_args'); Path('/app/.ai-platform-source-snapshot.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\\n', encoding='utf-8')"'''
+
+
+def backend_runtime_dockerfile() -> str:
+    """Build source-only backend runtime from a verified image with no dependency installer command."""
+    labels = release_label_dockerfile_lines("backend")
+    marker = backend_provenance_dockerfile_run()
+    return f"""ARG BASE_IMAGE
+FROM ${{BASE_IMAGE}}
+ARG AI_PLATFORM_BUILD_COMMIT
+ARG AI_PLATFORM_BUILD_DIRTY
+ARG AI_PLATFORM_BUILD_REPOSITORY
+USER root
+RUN rm -rf /app/app /app/tools /app/scripts /app/skills /app/docs/release-evidence \\
+    && rm -f /app/docker-entrypoint.sh /app/.ai-platform-source-revision \\
+       /app/.codex-source-revision /app/.source-commit /app/.ai-platform-source-snapshot.json
+COPY app /app/app
+COPY tools /app/tools
+COPY scripts /app/scripts
+COPY skills /app/skills
+COPY docs/release-evidence /app/docs/release-evidence
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod -R a+rX /app && chmod 0755 /app/docker-entrypoint.sh
+{labels}
+{marker}
+USER 10001:10001
+"""
+
+
+def promotion_dockerfile(role: str) -> str:
+    """Build a provenance-only image from a verified local role image without dependency commands."""
+    labels = release_label_dockerfile_lines(role)
+    if role == "backend":
+        marker = backend_provenance_dockerfile_run()
+        user = "USER 10001:10001"
+    elif role == "frontend":
+        marker = (
+            'RUN sed -i "s/\\\"commit\\\": \\\"[^\\\"]*\\\"/\\\"commit\\\": '
+            '\\\"${AI_PLATFORM_BUILD_COMMIT}\\\"/" '
+            "/usr/share/nginx/html/ai-platform-build-provenance.json"
+        )
+        user = ""
+    else:
+        raise BackendFlattenError("release role is invalid")
+    return f"""ARG BASE_IMAGE
+FROM ${{BASE_IMAGE}}
+ARG AI_PLATFORM_BUILD_COMMIT
+ARG AI_PLATFORM_BUILD_DIRTY
+ARG AI_PLATFORM_BUILD_REPOSITORY
+USER root
+{labels}
+{marker}
+{user}
+"""
+
+
+class BackendFlattenError(RuntimeError):
+    """Raised when a temporary backend flatten operation cannot prove its invariants."""
+
+
+_BACKEND_FLATTEN_OPERATION_ERROR_CODES = {
+    "source_export": "backend_flatten_source_export_failed",
+    "source_archive_verify": "backend_flatten_source_archive_verify_failed",
+    "import": "backend_flatten_import_failed",
+    "flat_inspect": "backend_flatten_flat_inspect_failed",
+    "validation_export": "backend_flatten_validation_export_failed",
+    "flat_rootfs": "backend_flatten_flat_rootfs_failed",
+    "target_build": "backend_flatten_target_build_failed",
+    "cleanup": "backend_flatten_cleanup_failed",
+}
+
+
+@dataclass(frozen=True)
+class FlattenedBackendBase:
+    """One verified non-canonical image reference, valid only inside its context."""
+
+    reference: str
+    source_layer_count: int
+    flat_layer_count: int
+
+
+@dataclass(frozen=True)
+class _FlattenConfig:
+    environment: tuple[tuple[str, str], ...]
+    labels: tuple[tuple[str, str], ...]
+
+
+@dataclass
+class _TemporarySubjects:
+    source_container: str | None = None
+    validation_container: str | None = None
+    flat_reference: str | None = None
+
+
+@dataclass(frozen=True)
+class _ArchiveIdentity:
+    """Stable identity captured from the authority-owned archive file descriptor."""
+
+    st_dev: int
+    st_ino: int
+    st_uid: int | None
+
+
+@dataclass(frozen=True)
+class _VerifiedArchive:
+    """One exported archive bound to the identity verified before its next consumer."""
+
+    path: Path
+    identity: _ArchiveIdentity
+
+
+Runner = Callable[..., subprocess.CompletedProcess[Any]]
+
+
+def _annotate_backend_flatten_operation(exc: BaseException, operation: str) -> BaseException:
+    """Attach only fixed stage facts; callers never surface an archive path or command."""
+    error_code = _BACKEND_FLATTEN_OPERATION_ERROR_CODES[operation]
+    setattr(exc, "backend_flatten_operation", operation)
+    setattr(exc, "backend_flatten_error_code", error_code)
+    setattr(exc, "safe_backend_flatten_evidence", {"backend_flatten_operation": operation, "backend_flatten_error_code": error_code})
+    return exc
+
+
+def _operation_error(operation: str, cause: BaseException | None = None) -> BackendFlattenError:
+    error = BackendFlattenError(f"backend flatten {operation.replace('_', ' ')} failed")
+    if cause is not None:
+        for attribute in ("safe_stderr_diagnostic", "safe_build_progress_diagnostic"):
+            if hasattr(cause, attribute):
+                setattr(error, attribute, getattr(cause, attribute))
+    _annotate_backend_flatten_operation(error, operation)
+    return error
+
+
+def _run_flatten_operation(operation: str, callback: Callable[[], Any]) -> Any:
+    """Map a bounded operation to a fixed safe code while retaining timeout semantics."""
+    try:
+        return callback()
+    except Exception as exc:
+        _annotate_backend_flatten_operation(exc, operation)
+        raise
+
+
+def _safe_text(value: Any) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value or "\n" in value or "\r" in value:
+        raise BackendFlattenError("backend flatten source config is unsafe")
+    if _UNSAFE_CONFIG_RE.search(value):
+        raise BackendFlattenError("backend flatten source config is unsafe")
+    return value
+
+
+def _normalize_commit(value: str) -> str:
+    if not isinstance(value, str) or not _FULL_COMMIT_RE.fullmatch(value):
+        raise BackendFlattenError("backend flatten commit is invalid")
+    return value
+
+
+def validate_backend_layer_flatten_recovery_request(
+    *, enabled: bool, strategy: str, backend_action: str | None
+) -> None:
+    """Reject every recovery request except an explicit auto runtime rebuild."""
+    if not enabled:
+        return
+    if strategy != "auto":
+        raise BackendFlattenError("backend layer flatten recovery requires the auto strategy")
+    if backend_action != "runtime-rebuild":
+        raise BackendFlattenError(
+            "backend layer flatten recovery requires a backend runtime-rebuild plan action"
+        )
+
+
+def _image_payload(runner: Runner, docker: list[str], reference: str) -> dict[str, Any]:
+    try:
+        result = runner([*docker, "image", "inspect", reference])
+        payload = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        raise BackendFlattenError("backend flatten image inspection failed") from None
+    if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
+        raise BackendFlattenError("backend flatten image metadata is invalid")
+    return payload[0]
+
+
+def _layers(image: dict[str, Any], *, flat: bool) -> int:
+    rootfs = image.get("RootFS")
+    layers = rootfs.get("Layers") if isinstance(rootfs, dict) else None
+    if not isinstance(layers, list) or not all(isinstance(layer, str) and layer for layer in layers):
+        raise BackendFlattenError("backend flatten image layer metadata is invalid")
+    count = len(layers)
+    if flat:
+        if count < 1 or count > BACKEND_LAYER_FLATTEN_MAX_FLAT_LAYERS:
+            raise BackendFlattenError("backend flatten flat image layer count is invalid")
+    elif count < BACKEND_LAYER_FLATTEN_MIN_LAYERS:
+        raise BackendFlattenError("backend flatten source image does not meet the layer threshold")
+    return count
+
+
+def _environment_mapping(config: dict[str, Any]) -> dict[str, str]:
+    raw_environment = config.get("Env")
+    if not isinstance(raw_environment, list):
+        raise BackendFlattenError("backend flatten source config is invalid")
+    values: dict[str, str] = {}
+    for item in raw_environment:
+        item = _safe_text(item)
+        key, separator, value = item.partition("=")
+        if not separator or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or key in values:
+            raise BackendFlattenError("backend flatten source config is invalid")
+        _safe_text(key)
+        _safe_text(value)
+        values[key] = value
+    return values
+
+
+def _is_canonical_path(value: str) -> bool:
+    """Accept only non-empty colon-separated absolute path components."""
+    return bool(value) and all(
+        component.startswith("/")
+        and all(segment not in {"", ".", ".."} and _PATH_SEGMENT_RE.fullmatch(segment) for segment in component[1:].split("/"))
+        for component in value.split(":")
+    )
+
+
+def _validated_flatten_config(
+    image: dict[str, Any],
+    *,
+    commit: str,
+    repository: str,
+    flat: bool,
+) -> _FlattenConfig:
+    image_id = image.get("Id")
+    if not isinstance(image_id, str) or not _IMAGE_ID_RE.fullmatch(image_id):
+        raise BackendFlattenError("backend flatten image ID is invalid")
+    config = image.get("Config")
+    if not isinstance(config, dict):
+        raise BackendFlattenError("backend flatten image config is invalid")
+    if config.get("Volumes") not in (None, {}):
+        raise BackendFlattenError("backend flatten image config declares a mount")
+    if config.get("User") != "10001:10001":
+        raise BackendFlattenError("backend flatten flat image config is invalid" if flat else "backend flatten source config is invalid")
+    if config.get("WorkingDir") != "/app":
+        raise BackendFlattenError("backend flatten flat image config is invalid" if flat else "backend flatten source config is invalid")
+    if config.get("Entrypoint") != ["/app/docker-entrypoint.sh"] or config.get("Cmd") != ["uvicorn"]:
+        raise BackendFlattenError("backend flatten flat image config is invalid" if flat else "backend flatten source config is invalid")
+    exposed = config.get("ExposedPorts")
+    if not isinstance(exposed, dict) or set(exposed) != {"8020/tcp"}:
+        raise BackendFlattenError("backend flatten flat image config is invalid" if flat else "backend flatten source config is invalid")
+    environment = _environment_mapping(config)
+    expected_environment_keys = set(_RUNTIME_ENVIRONMENT_KEYS)
+    if (set(environment) != expected_environment_keys) if flat else (expected_environment_keys - set(environment)):
+        raise BackendFlattenError("backend flatten flat image config is invalid" if flat else "backend flatten source config is invalid")
+    for key, expected in _REQUIRED_RUNTIME_ENVIRONMENT.items():
+        if environment.get(key) != expected:
+            raise BackendFlattenError("backend flatten source config is invalid")
+    path_value = environment.get("PATH")
+    if path_value is None or not _is_canonical_path(path_value):
+        raise BackendFlattenError("backend flatten source config is invalid")
+    labels = config.get("Labels")
+    if not isinstance(labels, dict):
+        raise BackendFlattenError("backend flatten image provenance is invalid")
+    expected_labels = {
+        "ai-platform.source-commit": commit,
+        "org.opencontainers.image.revision": commit,
+        "ai-platform.source-repository": repository,
+        "ai-platform.build-dirty": "false",
+        "ai-platform.release-role": "backend",
+    }
+    for label, expected in expected_labels.items():
+        if labels.get(label) != expected:
+            raise BackendFlattenError("backend flatten image provenance is invalid")
+    for label, value in labels.items():
+        _safe_text(label)
+        _safe_text(value)
+    return _FlattenConfig(
+        environment=tuple((key, environment[key]) for key in _RUNTIME_ENVIRONMENT_KEYS),
+        labels=tuple((key, expected_labels[key]) for key in _REQUIRED_LABELS),
+    )
+
+
+def _import_changes(config: _FlattenConfig) -> list[str]:
+    changes = [
+        "--change",
+        "USER 10001:10001",
+        "--change",
+        "WORKDIR /app",
+        "--change",
+        'ENTRYPOINT ["/app/docker-entrypoint.sh"]',
+        "--change",
+        'CMD ["uvicorn"]',
+        "--change",
+        "EXPOSE 8020",
+    ]
+    for key, value in config.environment:
+        changes.extend(("--change", f"ENV {key}={value}"))
+    for key, value in config.labels:
+        changes.extend(("--change", f"LABEL {key}={value}"))
+    return changes
+
+
+def _assert_archive_metadata(
+    metadata: os.stat_result,
+    *,
+    identity: _ArchiveIdentity | None,
+    require_content: bool,
+) -> None:
+    """Require a regular, private, authority-owned archive with an unchanged identity."""
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise BackendFlattenError("backend flatten archive is unsafe")
+    if os.name == "posix":
+        if stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_uid != os.getuid():
+            raise BackendFlattenError("backend flatten archive is unsafe")
+    if identity is not None and (
+        metadata.st_dev != identity.st_dev
+        or metadata.st_ino != identity.st_ino
+        or (identity.st_uid is not None and metadata.st_uid != identity.st_uid)
+    ):
+        raise BackendFlattenError("backend flatten archive is unsafe")
+    if require_content and metadata.st_size <= 0:
+        raise BackendFlattenError("backend flatten archive is unsafe")
+
+
+def _create_archive_sink(directory: Path, name: str) -> tuple[Path, BinaryIO, _ArchiveIdentity]:
+    """Open one exclusive 0600 archive descriptor that Docker can stream directly into."""
+    archive = directory / name
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(archive, flags, 0o600)
+    try:
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+        else:
+            os.chmod(archive, 0o600)
+        metadata = os.fstat(descriptor)
+        _assert_archive_metadata(metadata, identity=None, require_content=False)
+        identity = _ArchiveIdentity(
+            st_dev=metadata.st_dev,
+            st_ino=metadata.st_ino,
+            st_uid=metadata.st_uid if os.name == "posix" else None,
+        )
+        return archive, os.fdopen(descriptor, "wb"), identity
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _assert_verified_archive_binding(archive: _VerifiedArchive, handle: BinaryIO) -> None:
+    """Recheck both the managed path and retained descriptor against one verified identity."""
+    _assert_archive_metadata(
+        archive.path.stat(follow_symlinks=False),
+        identity=archive.identity,
+        require_content=True,
+    )
+    _assert_archive_metadata(
+        os.fstat(handle.fileno()),
+        identity=archive.identity,
+        require_content=True,
+    )
+
+
+def _open_verified_archive(archive: _VerifiedArchive) -> BinaryIO:
+    """Open an O_NOFOLLOW read descriptor only after validating the exact managed path."""
+    descriptor: int | None = None
+    try:
+        _assert_archive_metadata(
+            archive.path.stat(follow_symlinks=False),
+            identity=archive.identity,
+            require_content=True,
+        )
+        descriptor = os.open(archive.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        _assert_archive_metadata(
+            os.fstat(descriptor),
+            identity=archive.identity,
+            require_content=True,
+        )
+        handle: BinaryIO = os.fdopen(descriptor, "rb")
+        descriptor = None
+        return handle
+    except OSError:
+        raise BackendFlattenError("backend flatten archive is unavailable") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _verify_archive(path: Path, identity: _ArchiveIdentity) -> _VerifiedArchive:
+    archive = _VerifiedArchive(path=path, identity=identity)
+    digest = hashlib.sha256()
+    try:
+        with _open_verified_archive(archive) as handle:
+            while True:
+                chunk = handle.read(128 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            _assert_verified_archive_binding(archive, handle)
+    except OSError:
+        raise BackendFlattenError("backend flatten archive is unavailable") from None
+    if not digest.hexdigest():
+        raise BackendFlattenError("backend flatten archive checksum failed")
+    return archive
+
+
+def _consume_verified_archive(archive: _VerifiedArchive, consumer: Callable[[Path], Any]) -> Any:
+    """Bind a path-based consumer to the archive's retained descriptor before and after use."""
+    with _open_verified_archive(archive) as handle:
+        try:
+            return consumer(archive.path)
+        finally:
+            _assert_verified_archive_binding(archive, handle)
+
+
+def _export_container_archive(
+    *,
+    docker: list[str],
+    container: str,
+    directory: Path,
+    name: str,
+    runner: Runner,
+    export_operation: str,
+    verification_operation: str,
+) -> _VerifiedArchive:
+    """Stream one stopped-container rootfs into the exact descriptor, then verify it."""
+    archive, sink, identity = _run_flatten_operation(
+        export_operation,
+        lambda: _create_archive_sink(directory, name),
+    )
+    try:
+        _run_flatten_operation(
+            export_operation,
+            lambda: runner(
+                [*docker, "container", "export", container],
+                text=False,
+                stdout_sink=sink,
+            ),
+        )
+        _run_flatten_operation(
+            verification_operation,
+            lambda: (sink.flush(), os.fsync(sink.fileno())),
+        )
+        return _run_flatten_operation(
+            verification_operation,
+            lambda: _verify_archive(archive, identity),
+        )
+    finally:
+        try:
+            sink.close()
+        except OSError:
+            pass
+
+
+def _member_content(archive: tarfile.TarFile, member: tarfile.TarInfo) -> str:
+    if member.size < 0 or member.size > _MAX_MARKER_BYTES:
+        raise BackendFlattenError("backend flatten marker validation failed")
+    handle = archive.extractfile(member)
+    if handle is None:
+        raise BackendFlattenError("backend flatten marker validation failed")
+    try:
+        return handle.read(_MAX_MARKER_BYTES + 1).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise BackendFlattenError("backend flatten marker validation failed") from None
+
+
+def _archive_members(archive: tarfile.TarFile) -> dict[str, tarfile.TarInfo]:
+    members: dict[str, tarfile.TarInfo] = {}
+    for member in archive.getmembers():
+        name = member.name.lstrip("./")
+        if not name or name.startswith("/") or ".." in Path(name).parts or name in members:
+            raise BackendFlattenError("backend flatten archive is unsafe")
+        members[name] = member
+    return members
+
+
+def _verify_flat_rootfs(archive_record: _VerifiedArchive, *, commit: str) -> None:
+    try:
+        with _open_verified_archive(archive_record) as handle:
+            with tarfile.open(fileobj=handle, mode="r:") as archive:
+                members = _archive_members(archive)
+                for marker in (
+                    "app/.ai-platform-source-revision",
+                    "app/.codex-source-revision",
+                    "app/.source-commit",
+                ):
+                    member = members.get(marker)
+                    if member is None or not member.isfile() or _member_content(archive, member) != f"{commit}\n":
+                        raise BackendFlattenError("backend flatten marker validation failed")
+                snapshot_member = members.get("app/.ai-platform-source-snapshot.json")
+                if snapshot_member is None or not snapshot_member.isfile():
+                    raise BackendFlattenError("backend flatten marker validation failed")
+                snapshot = json.loads(_member_content(archive, snapshot_member))
+                if not isinstance(snapshot, dict) or (
+                    snapshot.get("schema_version") != "ai-platform.source-snapshot.v1"
+                    or snapshot.get("source_tree_commit_sha") != commit
+                    or snapshot.get("runtime_subject_commit_sha") != commit
+                    or snapshot.get("source_tree_dirty") is not False
+                ):
+                    raise BackendFlattenError("backend flatten marker validation failed")
+                entrypoint = members.get("app/docker-entrypoint.sh")
+                if entrypoint is None or not entrypoint.isfile() or stat.S_IMODE(entrypoint.mode) != 0o755:
+                    raise BackendFlattenError("backend flatten entrypoint validation failed")
+                for executable in ("usr/local/bin/python", "usr/local/bin/uvicorn"):
+                    member = members.get(executable)
+                    if member is None or not (member.isfile() or member.issym() or member.islnk()):
+                        raise BackendFlattenError("backend flatten runtime executable validation failed")
+                    if member.isfile() and not (member.mode & stat.S_IXUSR):
+                        raise BackendFlattenError("backend flatten runtime executable validation failed")
+                passwd = members.get("etc/passwd")
+                group = members.get("etc/group")
+                if (
+                    passwd is None
+                    or group is None
+                    or not passwd.isfile()
+                    or not group.isfile()
+                    or "ai-platform:x:10001:10001:" not in _member_content(archive, passwd)
+                    or "ai-platform:x:10001:" not in _member_content(archive, group)
+                ):
+                    raise BackendFlattenError("backend flatten runtime identity validation failed")
+            _assert_verified_archive_binding(archive_record, handle)
+    except (OSError, tarfile.TarError, json.JSONDecodeError):
+        raise BackendFlattenError("backend flatten rootfs validation failed") from None
+
+
+def _cleanup(runner: Runner, docker: list[str], temporary: _TemporarySubjects) -> bool:
+    failed = False
+    for container in (temporary.validation_container, temporary.source_container):
+        if container is None:
+            continue
+        try:
+            result = runner([*docker, "container", "rm", "-f", container], check=False)
+            if result.returncode != 0:
+                failed = True
+        except (OSError, subprocess.SubprocessError):
+            failed = True
+    if temporary.flat_reference is not None:
+        try:
+            result = runner([*docker, "image", "rm", "-f", temporary.flat_reference], check=False)
+            if result.returncode != 0:
+                failed = True
+        except (OSError, subprocess.SubprocessError):
+            failed = True
+    return failed
+
+
+@contextmanager
+def flattened_backend_base(
+    *,
+    docker: list[str],
+    source_reference: str,
+    expected_commit: str,
+    expected_repository: str,
+    archive_root: Path,
+    runner: Runner,
+) -> Iterator[FlattenedBackendBase]:
+    """Yield one validated flat base and remove every temporary subject on exit.
+
+    The only container exports in this flow come from authority-created, stopped
+    containers without runtime environment or mounts. The current tag and running
+    containers are never inspected, retagged, or mutated.
+    """
+    commit = _normalize_commit(expected_commit)
+    repository = _safe_text(expected_repository)
+    if source_reference != f"ai-platform:{commit}":
+        raise BackendFlattenError("backend flatten source reference is not canonical")
+    root = Path(archive_root)
+    if not root.is_absolute() or not root.is_dir() or root.is_symlink():
+        raise BackendFlattenError("backend flatten managed archive root is invalid")
+    nonce = secrets.token_hex(12)
+    temporary = _TemporarySubjects(
+        source_container=f"ai-platform-flatten-source-{nonce}",
+        validation_container=f"ai-platform-flatten-validate-{nonce}",
+        flat_reference=f"ai-platform:flatten-base-{commit[:12]}-{nonce}",
+    )
+    primary_error: BaseException | None = None
+    try:
+        source_image, source_layers, config = _run_flatten_operation(
+            "source_export",
+            lambda: (
+                (image := _image_payload(runner, docker, source_reference)),
+                _layers(image, flat=False),
+                _validated_flatten_config(
+                    image,
+                    commit=commit,
+                    repository=repository,
+                    flat=False,
+                ),
+            ),
+        )
+        with tempfile.TemporaryDirectory(prefix="ai-platform-flatten-", dir=root) as directory_name:
+            directory = Path(directory_name)
+            _run_flatten_operation(
+                "source_export",
+                lambda: runner(
+                    [*docker, "container", "create", "--name", temporary.source_container, source_reference]
+                ),
+            )
+            source_archive = _export_container_archive(
+                docker=docker,
+                container=temporary.source_container,
+                directory=directory,
+                name="source-rootfs.tar",
+                runner=runner,
+                export_operation="source_export",
+                verification_operation="source_archive_verify",
+            )
+            _run_flatten_operation(
+                "import",
+                lambda: _consume_verified_archive(
+                    source_archive,
+                    lambda archive_path: runner(
+                        [
+                            *docker,
+                            "image",
+                            "import",
+                            *_import_changes(config),
+                            str(archive_path),
+                            temporary.flat_reference,
+                        ]
+                    ),
+                ),
+            )
+            flat_image, flat_layers = _run_flatten_operation(
+                "flat_inspect",
+                lambda: (
+                    (image := _image_payload(runner, docker, temporary.flat_reference)),
+                    _layers(image, flat=True),
+                ),
+            )
+            _run_flatten_operation(
+                "flat_inspect",
+                lambda: _validated_flatten_config(
+                    flat_image,
+                    commit=commit,
+                    repository=repository,
+                    flat=True,
+                ),
+            )
+            _run_flatten_operation(
+                "validation_export",
+                lambda: runner(
+                    [*docker, "container", "create", "--name", temporary.validation_container, temporary.flat_reference]
+                ),
+            )
+            validation_archive = _export_container_archive(
+                docker=docker,
+                container=temporary.validation_container,
+                directory=directory,
+                name="flat-rootfs.tar",
+                runner=runner,
+                export_operation="validation_export",
+                verification_operation="flat_rootfs",
+            )
+            _run_flatten_operation(
+                "flat_rootfs",
+                lambda: _verify_flat_rootfs(validation_archive, commit=commit),
+            )
+            yield FlattenedBackendBase(
+                reference=temporary.flat_reference,
+                source_layer_count=source_layers,
+                flat_layer_count=flat_layers,
+            )
+    except BackendFlattenError as exc:
+        primary_error = exc
+        raise
+    except subprocess.TimeoutExpired as exc:
+        primary_error = exc
+        raise
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+        operation = getattr(exc, "backend_flatten_operation", "source_export")
+        if not isinstance(operation, str) or operation not in _BACKEND_FLATTEN_OPERATION_ERROR_CODES:
+            operation = "source_export"
+        primary_error = _operation_error(operation, exc)
+        raise primary_error from None
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        cleanup_failed = _cleanup(runner, docker, temporary)
+        if cleanup_failed:
+            if primary_error is not None:
+                setattr(primary_error, "cleanup_status", "failed")
+            else:
+                cleanup_error = _operation_error("cleanup")
+                cleanup_error.cleanup_status = "failed"
+                raise cleanup_error
+
+
+def rebuild_from_flattened_backend(
+    *,
+    docker: list[str],
+    source_reference: str,
+    expected_commit: str,
+    expected_repository: str,
+    archive_root: Path,
+    runner: Runner,
+    target_build: Callable[[str], None],
+) -> None:
+    """Run one target build while its verified temporary flat base is available."""
+    with flattened_backend_base(
+        docker=docker,
+        source_reference=source_reference,
+        expected_commit=expected_commit,
+        expected_repository=expected_repository,
+        archive_root=archive_root,
+        runner=runner,
+    ) as flattened:
+        _run_flatten_operation("target_build", lambda: target_build(flattened.reference))

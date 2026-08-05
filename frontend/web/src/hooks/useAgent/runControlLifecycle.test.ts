@@ -90,7 +90,6 @@ async function refreshAfterCancel(playbackStatus: string) {
         events: [],
         artifacts: [],
         steps: [],
-        multi_agent: null,
       }),
     )) as typeof fetch;
   lifecycle.configure({
@@ -128,7 +127,6 @@ async function refreshReload(playbackStatus: string) {
         events: [],
         artifacts: [],
         steps: [],
-        multi_agent: null,
       }),
     )) as typeof fetch;
   lifecycle.configure({
@@ -229,7 +227,7 @@ test("RunControlLifecycle resolves a lost retry response and adopts the exact ch
   }
 });
 
-test("RunControlLifecycle replays only the same id after authoritative absence", async () => {
+test("RunControlLifecycle records a fresh operation before replay after authoritative absence", async () => {
   const storage = new MemoryStorage();
   const restoreStorage = installSessionStorage(storage);
   const lifecycle = new RunControlLifecycle();
@@ -267,7 +265,8 @@ test("RunControlLifecycle replays only the same id after authoritative absence",
   try {
     await lifecycle.resume();
     assert.equal(operationIds.length, 2);
-    assert.equal(operationIds[0], operationIds[1]);
+    assert.notEqual(operationIds[0], operationIds[1]);
+    assert.match(operationIds[1], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     assert.equal(lifecycle.getSnapshot().child?.runId, "run-resumed");
     assert.equal(storage.length, 0);
   } finally {
@@ -307,7 +306,6 @@ test("RunControlLifecycle reload resolves the persisted operation without inferr
         events: [],
         artifacts: [],
         steps: [],
-        multi_agent: null,
       }),
     )) as typeof fetch;
   first.configure({
@@ -358,7 +356,7 @@ test("RunControlLifecycle reload resolves the persisted operation without inferr
   }
 });
 
-test("RunControlLifecycle executes retry when sessionStorage is unavailable", async () => {
+test("RunControlLifecycle blocks retry when sessionStorage is unavailable", async () => {
   const restoreStorage = installSessionStorage(null as unknown as Storage);
   const lifecycle = new RunControlLifecycle();
   const originalRetry = sessionApi.retryRun;
@@ -383,16 +381,17 @@ test("RunControlLifecycle executes retry when sessionStorage is unavailable", as
 
   try {
     await lifecycle.retry();
-    assert.equal(operationIds.length, 1);
-    assert.equal(lifecycle.getSnapshot().child?.runId, "run-memory-fallback");
-    assert.notEqual(lifecycle.getSnapshot().phase, "rejected");
+    assert.equal(operationIds.length, 0);
+    assert.equal(lifecycle.getSnapshot().child, null);
+    assert.equal(lifecycle.getSnapshot().phase, "rejected");
+    assert.equal(lifecycle.getSnapshot().owner?.mutationStarted, true);
   } finally {
     sessionApi.retryRun = originalRetry;
     restoreStorage();
   }
 });
 
-test("RunControlLifecycle executes resume when sessionStorage throws", async () => {
+test("RunControlLifecycle blocks resume when sessionStorage throws", async () => {
   const throwingStorage = new MemoryStorage();
   throwingStorage.setItem = () => {
     throw new DOMException("blocked", "SecurityError");
@@ -421,15 +420,17 @@ test("RunControlLifecycle executes resume when sessionStorage throws", async () 
 
   try {
     await lifecycle.resume();
-    assert.equal(mutations, 1);
-    assert.equal(lifecycle.getSnapshot().child?.runId, "run-storage-throws");
+    assert.equal(mutations, 0);
+    assert.equal(lifecycle.getSnapshot().child, null);
+    assert.equal(lifecycle.getSnapshot().phase, "rejected");
+    assert.equal(lifecycle.getSnapshot().owner?.mutationStarted, true);
   } finally {
     sessionApi.resumeRun = originalResume;
     restoreStorage();
   }
 });
 
-test("RunControlLifecycle replays the same id when resolver finds a child pending queue admission", async () => {
+test("RunControlLifecycle does not replay when resolver reports pending queue admission", async () => {
   const storage = new MemoryStorage();
   const restoreStorage = installSessionStorage(storage);
   const lifecycle = new RunControlLifecycle();
@@ -468,9 +469,11 @@ test("RunControlLifecycle replays the same id when resolver finds a child pendin
 
   try {
     await lifecycle.retry();
-    assert.equal(mutationCount, 2);
-    assert.equal(operationIds[0], operationIds[1]);
-    assert.equal(lifecycle.getSnapshot().child?.runId, "run-queue-recovered");
+    assert.equal(mutationCount, 1);
+    assert.equal(operationIds.length, 1);
+    assert.equal(lifecycle.getSnapshot().child, null);
+    assert.equal(lifecycle.getSnapshot().phase, "unconfirmed");
+    assert.equal(storage.length, 1);
   } finally {
     sessionApi.retryRun = originalRetry;
     sessionApi.resolveRunControlOperation = originalResolve;

@@ -61,11 +61,11 @@ def test_non_parked_multi_agent_fails_closed(mcp_requires_sandbox):
     assert decision.local_sdk_allowed is False
 
 
-def test_non_claude_adapter_keeps_adapter_managed_execution():
+def test_injected_non_harness_test_adapter_keeps_adapter_managed_execution():
     module = _module()
 
     decision = module.decide_execution_boundary(
-        executor_type="ragflow",
+        executor_type="test-adapter",
         execution_mode="",
         execution_tier="sdk_only_writing",
         mcp_requires_sandbox=False,
@@ -92,11 +92,11 @@ def test_mcp_requirement_forces_real_sandbox_without_synthetic_execution_tier():
     assert decision.reason == "mcp_execution_requires_real_sandbox"
 
 
-def test_mcp_requirement_preserves_non_claude_worker_sandbox_override():
+def test_mcp_requirement_preserves_injected_test_adapter_sandbox_override():
     module = _module()
 
     decision = module.decide_execution_boundary(
-        executor_type="ragflow",
+        executor_type="test-adapter",
         execution_mode="",
         execution_tier="",
         mcp_requires_sandbox=True,
@@ -112,7 +112,7 @@ def test_invalid_mcp_requirement_fails_closed_without_local_execution():
     module = _module()
 
     decision = module.decide_execution_boundary(
-        executor_type="ragflow",
+        executor_type="test-adapter",
         execution_mode="",
         execution_tier="",
         mcp_requires_sandbox=None,
@@ -122,6 +122,74 @@ def test_invalid_mcp_requirement_fails_closed_without_local_execution():
     assert decision.fail_closed is True
     assert decision.local_sdk_allowed is False
     assert decision.reason == "invalid_mcp_sandbox_requirement"
+
+
+def test_governed_egress_native_tool_scope_hashes_authorized_large_policy_and_rejects_invalid_input():
+    module = _module()
+    authorized_policy = [
+        {
+            "identity": "Skill",
+            "registered": True,
+            "declared": True,
+            "allowed_skill_names": [f"controlled-file-skill-{index:03d}" for index in range(256)],
+        }
+    ]
+
+    scope = module.governed_egress_authorized_native_tool_scope(authorized_policy)
+    changed_scope = module.governed_egress_authorized_native_tool_scope(
+        [
+            {
+                **authorized_policy[0],
+                "allowed_skill_names": [*authorized_policy[0]["allowed_skill_names"], "additional-skill"],
+            }
+        ]
+    )
+
+    assert scope.startswith("sha256:")
+    assert len(scope) < 4096
+    assert changed_scope != scope
+    proof = module.build_governed_egress_proof(
+        signing_key=PROOF_KEY,
+        provider="docker",
+        runtime_subject="docker-internal-bridge",
+        policy_subject="network-id:network-name:internal",
+        callback_subject="http://api.sandbox.internal:8020",
+        denial_subject="network-id:internal-default-deny",
+        network_id="network-id",
+        network_name="ai-platform-sandbox-egress-internal-v1",
+        network_internal=True,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="qat-attempt-a",
+        image_subject="registry.test/executor@sha256:" + "a" * 64,
+        image_digest="sha256:" + "a" * 64,
+        authorized_skill_scope=module.governed_egress_authorized_skill_scope(
+            skill_ids=["general-chat"], mcp_tool_ids=[]
+        ),
+        authorized_native_tool_scope=scope,
+        lease_identity="docker:executor-exec-run-a:exec-run-a",
+    )
+    assert module.is_governed_egress_proof(
+        proof,
+        provider="docker",
+        signing_key=PROOF_KEY,
+        expected_binding={"authorized_native_tool_scope": scope},
+    ) is True
+    assert module.is_governed_egress_proof(
+        proof,
+        provider="docker",
+        signing_key=PROOF_KEY,
+        expected_binding={"authorized_native_tool_scope": changed_scope},
+    ) is False
+    with pytest.raises(ValueError, match="governed_egress_scope_invalid"):
+        module.governed_egress_authorized_native_tool_scope([{"identity": object()}])
+    with pytest.raises(ValueError, match="governed_egress_scope_invalid"):
+        module.governed_egress_authorized_native_tool_scope(
+            [{"identity": "Skill", "allowed_skill_names": ["x" * (65 * 1024)]}]
+        )
 
 
 def _real_runtime_lease(module, *, signing_key=PROOF_KEY, key_id="current", **overrides):

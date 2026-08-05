@@ -63,6 +63,21 @@ const AppContent = lazy(() =>
     default: m.AppContent,
   })),
 );
+const AgentBuilderRoute = lazy(() =>
+  import("./features/agent-builder/AgentBuilderRoute").then((m) => ({
+    default: m.AgentBuilderRoute,
+  })),
+);
+const AgentMarketRoute = lazy(() =>
+  import("./features/agent-market/AgentMarketRoute").then((m) => ({
+    default: m.AgentMarketRoute,
+  })),
+);
+const AgentWorkspaceRoute = lazy(() =>
+  import("./features/agent-market/AgentWorkspaceRoute").then((m) => ({
+    default: m.AgentWorkspaceRoute,
+  })),
+);
 const NotFoundPage = lazy(() =>
   import("./components/common/NotFoundPage").then((m) => ({
     default: m.NotFoundPage,
@@ -241,15 +256,6 @@ function ModelsPage() {
   return <AppContent key="models" activeTab="models" />;
 }
 
-function FilesPage() {
-  useSEO({
-    title: "seo.files.title",
-    description: "seo.files.description",
-    path: "/files",
-  });
-  return <AppContent key="files" activeTab="files" />;
-}
-
 function NotificationsPage() {
   useSEO({
     title: "seo.notifications.title",
@@ -370,6 +376,38 @@ function App() {
               }
             />
             <Route
+              path={APP_ROUTE_PATHS.agentBuilder}
+              element={
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
+                  <AgentBuilderRoute />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.agentMarket}
+              element={
+                <ProtectedRoute>
+                  <AgentMarketRoute />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.agentMarketWorkspace}
+              element={
+                <ProtectedRoute>
+                  <AgentWorkspaceRoute />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.agentMarketDetail}
+              element={
+                <ProtectedRoute>
+                  <AgentMarketRoute />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path={APP_ROUTE_PATHS.apps}
               element={
                 <ProtectedRoute>
@@ -438,14 +476,6 @@ function App() {
               element={
                 <ProtectedRoute requireAdmin redirectTo="/chat">
                   <ModelsPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path={APP_ROUTE_PATHS.files}
-              element={
-                <ProtectedRoute>
-                  <FilesPage />
                 </ProtectedRoute>
               }
             />

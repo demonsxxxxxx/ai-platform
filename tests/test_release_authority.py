@@ -8,6 +8,8 @@ import sys
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from urllib.request import BaseHandler, build_opener
 
 import pytest
 import yaml
@@ -37,6 +39,9 @@ WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
+USTC_APT_MIRRORS = release_authority._normalize_apt_mirror_pair(
+    "https://mirrors.ustc.edu.cn/debian", "https://mirrors.ustc.edu.cn/debian-security"
+)
 
 
 def test_repo_local_compose_is_the_only_frontend_owner_and_binds_one_commit():
@@ -141,7 +146,7 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
 
     assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
     assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
-    assert text.count(canonical_invocation) == 1
+    assert text.count(canonical_invocation) == 2
     assert "python3 tools/release_authority.py deploy-main-commit" not in text
     assert text.count("umask 077") == 1
     assert text.index("umask 077") < text.index(canonical_invocation)
@@ -227,6 +232,9 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "git -C \"$SOURCE\" clean" not in command
     assert "git -C \"$SOURCE\" reset" not in command
     assert "git -C \"$SOURCE\" stash" not in command
+    assert "--allow-backend-layer-flatten-recovery" in text
+    assert "Do not retag the canonical current backend subject" in text
+    assert "do not run `docker export`, `docker import`, `docker tag`, or Compose by hand" in contract_text
     assert "`authority_commit`" in text
 
 
@@ -236,6 +244,7 @@ def test_direct_release_authority_cli_no_bytecode_flag_leaves_no_sibling_bytecod
     isolated_tools.mkdir(parents=True)
     for filename in (
         "release_authority.py",
+        "release_backend_flatten.py",
         "release_parity_convergence.py",
         "release_plan.py",
     ):
@@ -276,6 +285,244 @@ def test_backend_and_frontend_images_publish_release_authority_labels():
     assert "ARG AI_PLATFORM_BUILD_REPOSITORY=unknown" in backend_stage
 
 
+def test_apt_mirror_pair_normalizes_https_endpoints_and_redacts_to_hostnames():
+    selection = release_authority._normalize_apt_mirror_pair(
+        "https://MIRRORS.USTC.EDU.CN/debian/",
+        "https://mirrors.ustc.edu.cn/debian-security/",
+    )
+
+    assert selection[:2] == ("https://mirrors.ustc.edu.cn/debian", "https://mirrors.ustc.edu.cn/debian-security")
+    assert selection[2:] == ("mirrors.ustc.edu.cn", "mirrors.ustc.edu.cn")
+    evidence = json.dumps(
+        {
+            "debian_hostname": selection[2],
+            "security_hostname": selection[3],
+        }
+    )
+    assert selection[0] not in evidence and selection[1] not in evidence
+    assert release_authority._normalize_apt_mirror_pair("", "")[0] is None
+
+
+def test_apt_mirror_pair_rejects_incomplete_or_unsafe_endpoints():
+    security = "https://mirror.example/debian-security"
+    invalid = [("https://mirror.example/debian", None), (None, security),
+        ("http://mirror.example/debian", security), ("https://user:pass@mirror.example/debian", security),
+        ("https://mirror.example/debian?token=secret", security), ("https://mirror.example/debian#fragment", security),
+        ("https://mirror.example/debian path", security), ("https://mirror.example/debian\tpath", security),
+        ("https://mirror.example/debian\x01path", security), ("https://mirror.example/debian/../private", security),
+        ("https://mirror.example/debian%2fprivate", security), ("https://[::1]/debian", security),
+        ("https://mirror.example:8443/debian", security),
+        ("https://foo.-bar.example/debian", security), ("https://foo-.bar.example/debian", security),
+        ("https://\u212a.example/debian", security)]
+    for apt_mirror, apt_security_mirror in invalid:
+        with pytest.raises(ReleaseAuthorityError):
+            release_authority._normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
+
+
+def _signed_inrelease(suite="oldstable", codename="bookworm", footer=True):
+    signature = b"-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG\n\nabc\n-----END PGP SIGNATURE-----\n"
+    return (
+        b"-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
+        + f"Origin: Debian\nSuite: {suite}\nCodename: {codename}\n".encode()
+        + (signature if footer else b"")
+    )
+
+
+def _padded_inrelease(total, suite="oldstable", codename="bookworm"):
+    body = _signed_inrelease(suite, codename)
+    signature = b"-----BEGIN PGP SIGNATURE-----\nVersion: GnuPG\n\nabc\n-----END PGP SIGNATURE-----\n"
+    padding = total - len(body)
+    return body[:-len(signature)] + (b"X" * (padding - 1) + b"\n" if padding else b"") + body[-len(signature):]
+
+
+def _synthetic_apt_response(url, status, headers, payload):
+    response = SimpleNamespace(
+        url=url,
+        status=status,
+        code=status,
+        msg="synthetic",
+        headers={**headers, **{key.lower(): value for key, value in headers.items()}},
+        read_limit=None,
+        closed=False,
+    )
+    response.geturl = lambda: url
+    response.info = lambda: response.headers
+    response.read = lambda limit=-1: setattr(response, "read_limit", limit) or payload[:limit]
+    response.close = lambda: setattr(response, "closed", True)
+    return response
+
+
+class _SyntheticAptTransport(BaseHandler):
+    handler_order = 0
+    def __init__(self, routes):
+        self.routes = routes
+        self.responses = []
+        self.requests = []
+
+    def _open(self, request):
+        self.requests.append(request)
+        route = self.routes[request.full_url]
+        if isinstance(route, BaseException):
+            raise route
+        response = _synthetic_apt_response(request.full_url, *route)
+        self.responses.append(response)
+        return response
+
+    http_open = https_open = _open
+
+
+def _patch_production_apt_transport(monkeypatch, routes):
+    transport = _SyntheticAptTransport(routes)
+    monkeypatch.setattr(release_authority, "build_opener", lambda handler: build_opener(handler, transport))
+    return transport
+
+
+def _apt_probe_url(host="mirror.example", security=False):
+    suffix = "debian-security/dists/bookworm-security" if security else "debian/dists/bookworm"
+    return f"https://{host}/{suffix}/InRelease"
+
+
+@pytest.mark.parametrize("status", [200, 206])
+def test_apt_mirror_probe_uses_bounded_get_and_accepts_complete_release_content(monkeypatch, status):
+    body = _padded_inrelease(151075) if status == 206 else _signed_inrelease()
+    headers = {"Content-Type": "application/octet-stream", "Content-Length": str(len(body))}
+    if status == 206:
+        headers["Content-Range"] = f"bytes 0-{len(body) - 1}/{len(body)}"
+    transport = _patch_production_apt_transport(
+        monkeypatch,
+        {_apt_probe_url(): (status, headers, body)},
+    )
+    release_authority._probe_apt_endpoint("https://mirror.example/debian", "mirror.example", "bookworm", security=False)
+    assert transport.requests[0].get_method() == "GET"
+    assert transport.requests[0].get_header("Range") == "bytes=0-262143"
+    assert transport.responses[0].read_limit == len(body) + 1
+    assert transport.responses[0].closed
+
+
+def _206_route(body, start=0, end=None, total=None, content_length=None):
+    end = len(body) - 1 if end is None else end
+    total = len(body) if total is None else total
+    headers = {"Content-Type": "application/octet-stream", "Content-Range": f"bytes {start}-{end}/{total}"}
+    if content_length is not None:
+        headers["Content-Length"] = str(content_length)
+    return 206, headers, body
+
+
+@pytest.mark.parametrize("route", [
+    (200, {}, _signed_inrelease()),
+    (200, {"Content-Type": "text/html", "Content-Length": "30"}, b"<html>Suite: bookworm</html>"),
+    (200, {"Content-Type": "text/plain", "Content-Length": "35"}, b"Suite: bookworm\nCodename: bookworm\n"),
+    (200, {"Content-Type": "text/plain", "Content-Length": "0"}, b""),
+    (200, {"Content-Type": "application/octet-stream", "Content-Length": str(release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1)}, b"x"),
+    (503, {"Content-Type": "text/plain", "Content-Length": str(len(_signed_inrelease()))}, _signed_inrelease()),
+    TimeoutError(),
+])
+def test_apt_mirror_probe_rejects_invalid_type_html_missing_signature_empty_oversized_status_and_timeout(monkeypatch, route):
+    transport = _patch_production_apt_transport(monkeypatch, {_apt_probe_url(): route})
+    with pytest.raises(ReleaseAuthorityError):
+        release_authority._probe_apt_endpoint("https://mirror.example/debian", "mirror.example", "bookworm", security=False)
+    if transport.responses:
+        assert transport.responses[0].closed
+
+
+@pytest.mark.parametrize("route", [
+    _206_route(_signed_inrelease(), end=65535, total=151075, content_length=65536),
+    _206_route(_signed_inrelease(), start=1, total=len(_signed_inrelease()), content_length=len(_signed_inrelease())),
+    _206_route(_signed_inrelease(), end=len(_signed_inrelease()) - 2, content_length=len(_signed_inrelease())),
+    _206_route(_signed_inrelease() + b"X", end=len(_signed_inrelease()) - 1, total=len(_signed_inrelease()), content_length=len(_signed_inrelease())),
+    _206_route(_signed_inrelease(), total=release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1, end=release_authority.APT_MIRROR_PROBE_MAX_BYTES, content_length=release_authority.APT_MIRROR_PROBE_MAX_BYTES + 1),
+    _206_route(_signed_inrelease(footer=False), content_length=len(_signed_inrelease(footer=False))),
+    _206_route(_signed_inrelease(suite="oldstable-security"), content_length=len(_signed_inrelease(suite="oldstable-security"))),
+    _206_route(_signed_inrelease(codename="trixie"), content_length=len(_signed_inrelease(codename="trixie"))),
+    _206_route(_signed_inrelease(suite="oldstable-security", codename="bookworm-security"), content_length=len(_signed_inrelease(suite="oldstable-security", codename="bookworm-security"))),
+    (200, {"Content-Type": "application/octet-stream", "Content-Length": str(len(_signed_inrelease()) - 1)}, _signed_inrelease()),
+])
+def test_apt_mirror_probe_rejects_incomplete_ranges_and_wrong_release_identity(monkeypatch, route):
+    transport = _patch_production_apt_transport(monkeypatch, {_apt_probe_url(): route})
+    with pytest.raises(ReleaseAuthorityError):
+        release_authority._probe_apt_endpoint("https://mirror.example/debian", "mirror.example", "bookworm", security=False)
+    assert transport.responses[0].closed
+
+
+def test_apt_mirror_probe_accepts_security_lifecycle_suite(monkeypatch):
+    body = _signed_inrelease(suite="oldstable-security", codename="bookworm-security")
+    transport = _patch_production_apt_transport(
+        monkeypatch,
+        {_apt_probe_url(security=True): _206_route(body, content_length=len(body))},
+    )
+    release_authority._probe_apt_endpoint("https://mirror.example/debian-security", "mirror.example", "bookworm", security=True)
+    assert transport.responses[0].closed
+
+
+def test_apt_mirror_probe_rejects_security_archive_suite(monkeypatch):
+    body = _signed_inrelease(suite="oldstable", codename="bookworm-security")
+    transport = _patch_production_apt_transport(
+        monkeypatch,
+        {_apt_probe_url(security=True): _206_route(body, content_length=len(body))},
+    )
+    with pytest.raises(ReleaseAuthorityError):
+        release_authority._probe_apt_endpoint("https://mirror.example/debian-security", "mirror.example", "bookworm", security=True)
+    assert transport.responses[0].closed
+
+
+@pytest.mark.parametrize("location", [
+    "http://mirror.example/debian/dists/bookworm/InRelease",
+    "https://unvalidated.example/debian/dists/bookworm/InRelease",
+])
+def test_apt_mirror_probe_rejects_unsafe_redirects_with_production_opener(monkeypatch, location):
+    transport = _patch_production_apt_transport(
+        monkeypatch,
+        {_apt_probe_url(): (302, {"Location": location}, b"")},
+    )
+    with pytest.raises(ReleaseAuthorityError):
+        release_authority._probe_apt_endpoint("https://mirror.example/debian", "mirror.example", "bookworm", security=False)
+    assert transport.responses[0].closed
+
+
+def test_apt_mirror_build_args_are_only_added_to_canonical_backend_build(monkeypatch, tmp_path):
+    commands: list[list[str]] = []
+    def fake_run(command, **kwargs):
+        commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+    common = {
+        "docker": ["docker"],
+        "repo_root": tmp_path,
+        "reference": "ai-platform:" + "a" * 40,
+        "commit": "a" * 40,
+        "repository": AUTHORITATIVE_REPOSITORY,
+        "mirror_selection": USTC_APT_MIRRORS,
+    }
+    release_authority._canonical_or_source_build(
+        **common,
+        role="backend",
+        source_only=False,
+    )
+    release_authority._canonical_or_source_build(
+        **common,
+        role="frontend",
+        source_only=False,
+    )
+    release_authority._canonical_or_source_build(
+        **common,
+        role="backend",
+        source_only=True,
+    )
+    release_authority._build_from_verified_role_image(
+        ["docker"],
+        repo_root=tmp_path,
+        reference="ai-platform:" + "a" * 40,
+        base_reference="ai-platform:" + "b" * 40,
+        commit="a" * 40,
+        repository=AUTHORITATIVE_REPOSITORY,
+        role="backend",
+        action="promote",
+    )
+
+    assert "APT_MIRROR=https://mirrors.ustc.edu.cn/debian" in commands[0]
+    assert "APT_SECURITY_MIRROR=https://mirrors.ustc.edu.cn/debian-security" in commands[0]
+    for command in commands[1:]:
+        assert not any(argument.startswith("APT_") for argument in command)
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args],
@@ -2093,15 +2340,17 @@ def test_deploy_reuses_valid_existing_commit_tag_without_rebuilding(monkeypatch,
 
     monkeypatch.setattr("tools.release_authority._run", fake_run)
 
-    deploy_clean_commit(
+    deployment = deploy_clean_commit(
         tmp_path,
         commit,
         docker_cmd="docker",
         env_file=tmp_path / ".env",
         replace_known_manual_frontend=False,
+        apt_mirrors=USTC_APT_MIRRORS,
     )
 
     assert build_commands == []
+    assert deployment["apt_mirrors"]["applied"] == {"status": "reused"}
 
 
 def test_sandbox_executor_preflight_requires_exact_clean_backend_image(monkeypatch):
@@ -3592,6 +3841,91 @@ def test_deploy_main_commit_keeps_target_provider_selection_for_final_parity(mon
     assert result["parity"]["verified"] is True
 
 
+@pytest.mark.parametrize(
+    ("current_overlay", "target_overlay"),
+    [
+        (SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+        (OPENSANDBOX_COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH),
+    ],
+    ids=["docker-to-opensandbox", "opensandbox-to-docker"],
+)
+def test_auto_flow_advances_after_same_checkout_provider_transition(
+    monkeypatch,
+    tmp_path,
+    current_overlay,
+    target_overlay,
+):
+    commit = "8" * 40
+    _, release_root, env_file = _prepare_managed_release_layout(monkeypatch, tmp_path)
+    checkout = release_root / commit
+    main, sandbox, opensandbox = _write_provider_compose_files(checkout)
+    overlays = {
+        SANDBOX_COMPOSE_RELATIVE_PATH: sandbox,
+        OPENSANDBOX_COMPOSE_RELATIVE_PATH: opensandbox,
+    }
+    current_config = _compose_config_value(main, overlays[current_overlay])
+    staged_events: list[dict] | None = None
+    deploy_calls: list[tuple[Path, str, tuple[str, ...]]] = []
+
+    def fake_container_inspect(docker, name):
+        role = name.removeprefix("ai-platform-")
+        payload = _owned_container_payload(role, main.parent, current_config)[0]
+        labels = payload["Config"]["Labels"]
+        labels["ai-platform.source-commit"] = commit
+        labels["ai-platform.source-dirty"] = "false"
+        return {"labels": labels}, payload
+
+    def fake_deploy(repo_root, requested, **kwargs):
+        nonlocal staged_events
+        deploy_calls.append((repo_root, requested, tuple(kwargs["compose_files"])))
+        staged_events = kwargs["stage_events"]
+        return {"commit": requested}
+
+    monkeypatch.setattr(
+        "tools.release_authority.materialize_main_checkout",
+        lambda root, requested: checkout,
+    )
+    monkeypatch.setattr("tools.release_authority.assert_managed_target_checkout", lambda *args: None)
+    monkeypatch.setattr("tools.release_authority._docker_base", lambda docker_cmd: ["docker"])
+    monkeypatch.setattr(
+        "tools.release_authority._container_inspect_record",
+        fake_container_inspect,
+    )
+    monkeypatch.setattr(
+        "tools.release_authority.collect_live_parity",
+        lambda *args, **kwargs: {"verified": True},
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._auto_release_plan",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr("tools.release_authority.deploy_clean_commit", fake_deploy)
+    monkeypatch.setattr(
+        "tools.release_authority.converge_final_parity",
+        lambda collect, **kwargs: collect(0.0),
+    )
+
+    result = release_authority._deploy_main_commit_after_authority(
+        release_root,
+        commit,
+        docker_cmd="docker",
+        env_file=env_file,
+        replace_known_manual_frontend=False,
+        compose_files=[COMPOSE_RELATIVE_PATH, target_overlay],
+        strategy="auto",
+    )
+
+    assert deploy_calls == [(checkout, commit, (COMPOSE_RELATIVE_PATH, target_overlay))]
+    assert staged_events is not None
+    assert [event["stage"] for event in staged_events] == [
+        "current-runtime-provenance",
+        "runtime-diff-classification",
+        "final-parity",
+    ]
+    assert all(event["status"] == "ok" for event in staged_events)
+    assert result["parity"] == {"verified": True}
+
+
 def test_deploy_main_commit_fails_closed_when_live_parity_does_not_verify(monkeypatch, tmp_path):
     commit = "c" * 40
     _, release_root, env_file = _prepare_managed_release_layout(monkeypatch, tmp_path)
@@ -3897,6 +4231,8 @@ def test_release_authority_cli_exposes_git_native_main_commit_deploy():
     assert "--commit" in help_text
     assert "--compose-file" in help_text
     assert "--strategy" in help_text
+    assert "--apt-mirror" in help_text
+    assert "--apt-security-mirror" in help_text
     assert "--canonical-build-timeout-seconds SECONDS" in help_text
     assert "default: 1800" in help_text
 
@@ -4016,6 +4352,7 @@ def test_auto_backend_source_only_uses_runtime_rebuild_without_dependency_comman
         auto_plan=plan,
         current_references=current_refs,
         canonical_dependency_build_timeout_seconds=2400,
+        apt_mirrors=USTC_APT_MIRRORS,
     )
 
     builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
@@ -4034,6 +4371,7 @@ def test_auto_backend_source_only_uses_runtime_rebuild_without_dependency_comman
         release_authority.RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS
         > release_authority.BACKEND_STAGE_TIMEOUT_SECONDS
     )
+    assert deployment["apt_mirrors"]["applied"] == {"status": "not-used"}
 
 
 def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_path):
@@ -4048,7 +4386,7 @@ def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_p
         release_authority.classify_runtime_changes(["pyproject.toml"]),
     )
 
-    deploy_clean_commit(
+    deployment = deploy_clean_commit(
         tmp_path,
         target,
         docker_cmd="docker",
@@ -4057,6 +4395,7 @@ def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_p
         strategy="auto",
         auto_plan=plan,
         current_references=current_refs,
+        apt_mirrors=USTC_APT_MIRRORS,
     )
 
     builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
@@ -4064,6 +4403,7 @@ def test_auto_dependency_change_builds_only_the_affected_role(monkeypatch, tmp_p
     assert all("frontend/web/Dockerfile" not in command for command, _ in builds)
     promoted_frontend = next(kwargs["input"] for command, kwargs in builds if "frontend" in command[command.index("-t") + 1])
     assert "ai-platform-build-provenance.json" in promoted_frontend
+    assert deployment["apt_mirrors"]["applied"] == {"status": "applied", "scope": "canonical-backend-dependency-build", "debian_hostname": "mirrors.ustc.edu.cn", "security_hostname": "mirrors.ustc.edu.cn"}
 
 
 def test_auto_no_runtime_change_promotes_roles_without_role_builds(monkeypatch, tmp_path):
@@ -4087,12 +4427,14 @@ def test_auto_no_runtime_change_promotes_roles_without_role_builds(monkeypatch, 
         strategy="auto",
         auto_plan=plan,
         current_references=current_refs,
+        apt_mirrors=USTC_APT_MIRRORS,
     )
 
     builds = [(command, kwargs) for command, kwargs in commands if "build" in command]
     assert all(command[command.index("-f") + 1] == "-" for command, _ in builds)
     assert {event["action"] for event in deployment["stages"] if event["stage"].endswith("-image")} == {"promote"}
     assert deployment["plan"]["no_runtime_change"] is True
+    assert deployment["apt_mirrors"]["applied"] == {"status": "not-used"}
 
 
 def test_auto_promote_rewrites_target_labels_and_embedded_markers():
@@ -4621,7 +4963,7 @@ def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, t
     )
 
     for _ in range(2):
-        deploy_clean_commit(
+        deployment = deploy_clean_commit(
             tmp_path,
             target,
             docker_cmd="docker",
@@ -4630,7 +4972,9 @@ def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, t
             strategy="auto",
             auto_plan=plan,
             current_references=references,
+            apt_mirrors=USTC_APT_MIRRORS,
         )
+        assert deployment["apt_mirrors"]["applied"] == {"status": "reused"}
 
     assert not any("build" in command for command, _ in commands)
     assert sum("compose" in command for command, _ in commands) == 2
@@ -4728,6 +5072,7 @@ def test_deploy_main_cli_forwards_default_canonical_build_timeout(monkeypatch, c
 
     assert release_authority.main() == 0
     assert observed["canonical_dependency_build_timeout_seconds"] == 1800
+    assert observed["allow_backend_layer_flatten_recovery"] is False
     assert json.loads(capsys.readouterr().out) == {"commit": "b" * 40}
 
 
@@ -5102,6 +5447,53 @@ def test_run_preserves_text_binary_environment_cwd_and_check_contract(tmp_path):
     assert exc_info.value.stderr == "failed-error\n"
 
 
+def test_run_streams_binary_stdout_to_authority_owned_sink_without_capturing_it(tmp_path):
+    archive = tmp_path / "export.tar"
+    payload = b"rootfs-stream-" * 4096
+
+    with archive.open("w+b") as sink:
+        result = release_authority._run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'rootfs-stream-' * 4096); sys.stderr.write('permission denied\\n')",
+            ],
+            text=False,
+            stdout_sink=sink,
+            timeout=2,
+        )
+        sink.flush()
+
+    assert result.returncode == 0
+    assert result.stdout is None
+    assert result.stderr is not None and result.stderr.rstrip(b"\r\n") == b"permission denied"
+    assert archive.read_bytes() == payload
+
+
+def test_run_rejects_stdout_sink_in_text_or_build_progress_modes_before_popen(tmp_path, monkeypatch):
+    archive = tmp_path / "export.tar"
+    popen_calls = 0
+
+    def fail_popen(*args, **kwargs):
+        nonlocal popen_calls
+        popen_calls += 1
+        pytest.fail("Popen must not run for incompatible stdout sink modes")
+
+    monkeypatch.setattr(subprocess, "Popen", fail_popen)
+    with archive.open("wb") as sink:
+        with pytest.raises(TypeError, match="stdout sink requires binary output"):
+            release_authority._run(["docker", "container", "export"], stdout_sink=sink)
+        with pytest.raises(TypeError, match="stdout sink requires binary output"):
+            release_authority._run(
+                ["docker", "container", "export"],
+                text=False,
+                stdout_sink=sink,
+                classify_build_progress=True,
+            )
+
+    assert popen_calls == 0
+
+
 @pytest.mark.parametrize("invalid_input", [b"bytes", bytearray(b"bytearray"), memoryview(b"memoryview")])
 def test_run_rejects_bytes_like_text_input_before_popen(monkeypatch, invalid_input):
     popen_calls = 0
@@ -5336,3 +5728,31 @@ def test_canonical_build_timeout_default_and_override_are_recorded_in_plan_and_s
         release_authority._plan_as_dict(plan)["canonical_dependency_build_timeout_seconds"]
         == release_authority.CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
     )
+
+
+def test_backend_flatten_cleanup_status_evidence_is_bounded():
+    error = release_authority.BackendFlattenError("C:/private-marker/backend-flatten")
+    error.cleanup_status = "failed"
+
+    evidence = release_authority._stage_failure_evidence(error)
+
+    assert evidence == {"failure_kind": "authority-error", "cleanup_status": "failed"}
+    assert "private-marker" not in json.dumps(evidence)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        subprocess.TimeoutExpired(["private-command"], 17),
+        subprocess.CalledProcessError(7, ["private-command"]),
+        OSError(5, "private-command"),
+        release_authority.BackendFlattenError("private-command"),
+    ],
+)
+def test_stage_failure_evidence_merges_cleanup_status_for_every_error_kind(error):
+    error.cleanup_status = "failed"
+
+    evidence = release_authority._stage_failure_evidence(error)
+
+    assert evidence["cleanup_status"] == "failed"
+    assert "private-command" not in json.dumps(evidence)

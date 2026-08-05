@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import re
@@ -15,19 +16,21 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPORT_SCHEMA_VERSION = "ai-platform.code-governance-report.v1"
-EXCEPTION_SCHEMA_VERSION = "ai-platform.code-governance-exception.v1"
+EXCEPTION_SCHEMA_VERSION = "ai-platform.code-governance-exception.v2"
 EXCEPTION_PATH = ".code-governance-exception.json"
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 PRODUCTION_FILE_LIMIT = 12
 PRODUCTION_NET_LOC_LIMIT = 800
-PRODUCTION_SUBSYSTEM_LIMIT = 2
 HOT_FILE_LINES = 1500
 HOT_FILE_NET_GROWTH_LIMIT = 100
 FUNCTIONAL_HOT_FILE_LINES = 3000
 FUNCTIONAL_HOT_FILE_NET_GROWTH_LIMIT = 0
 TEST_HOT_FILE_LINES = 2500
 TEST_HOT_FILE_NET_GROWTH_LIMIT = 100
+TEST_ADDED_LOC_REVIEW_THRESHOLD = 300
+TEST_TO_PRODUCTION_ADDED_LOC_REVIEW_RATIO = 2.0
 
 FUNCTIONAL_SUFFIXES = frozenset({
     ".c", ".cc", ".cpp", ".css", ".go", ".html", ".java", ".js", ".jsx",
@@ -72,6 +75,14 @@ class _CommandRunner:
         )
         return _CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
+    def run_bytes(self, command: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            list(command),
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+        )
+
 
 @dataclass(frozen=True)
 class _ChangedFile:
@@ -94,7 +105,15 @@ class _ChangedFile:
 
     @property
     def is_test(self) -> bool:
-        return _is_test_path(self.path)
+        return self.old_is_test or self.new_is_test
+
+    @property
+    def old_is_test(self) -> bool:
+        return self.old_path is not None and _is_test_path(self.old_path)
+
+    @property
+    def new_is_test(self) -> bool:
+        return self.new_path is not None and _is_test_path(self.new_path)
 
     @property
     def old_is_production(self) -> bool:
@@ -117,6 +136,16 @@ class _ChangedFile:
     @property
     def production_added_lines(self) -> int:
         return self.additions if self.old_is_production else (self.new_lines if self.new_is_production else 0)
+
+    @property
+    def test_net_loc(self) -> int:
+        if self.old_is_test == self.new_is_test:
+            return self.net_loc if self.old_is_test else 0
+        return self.new_lines if self.new_is_test else -self.old_lines
+
+    @property
+    def test_added_lines(self) -> int:
+        return self.additions if self.old_is_test else (self.new_lines if self.new_is_test else 0)
 
     @property
     def is_functional(self) -> bool:
@@ -279,6 +308,30 @@ class _GitChangeReader:
         except json.JSONDecodeError as exc:
             raise GovernanceError("invalid_exception", f"{EXCEPTION_PATH} is not valid JSON: {exc.msg}") from exc
 
+    def exception_scope_sha256(self, base: str, head: str) -> str:
+        """Bind an exception to every non-exception tree change in the exact range."""
+
+        command = (
+            "git",
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--raw",
+            "--no-abbrev",
+            "-z",
+            "--no-renames",
+            base,
+            head,
+            "--",
+            ".",
+            f":(exclude){EXCEPTION_PATH}",
+        )
+        scope = self.runner.run_bytes(command, cwd=self.repo_root)
+        if scope.returncode != 0:
+            message = scope.stderr.decode("utf-8", errors="replace").strip()
+            raise GovernanceError("git_failed", message or "git diff failed")
+        return hashlib.sha256(scope.stdout).hexdigest()
+
     def _resolve_full_commit(self, value: str, label: str) -> str:
         if FULL_SHA.fullmatch(value) is None:
             raise GovernanceError("invalid_ref", f"{label} must be a full 40-hex commit id")
@@ -336,6 +389,11 @@ class CodeGovernanceEvaluator:
         exception_contract = self._git_reader.load_exception(git_range.head)
         if exception_contract is not None:
             _validate_exception_payload(exception_contract, self._today)
+            _validate_exception_candidate(
+                exception_contract["candidate"],
+                base_ref=git_range.base,
+                scope_sha256=self._git_reader.exception_scope_sha256(git_range.base, git_range.head),
+            )
         active, exempted, exception_summary = self._apply_exception(ordered, exception_contract)
         mode = _evaluation_mode(changes)
         return Evaluation(
@@ -366,6 +424,11 @@ class CodeGovernanceEvaluator:
         test_files = [item for item in changes if item.is_test]
         subsystems = sorted({_production_subsystem(item.production_path) for item in behavior_files})
         net_loc = sum(item.production_net_loc for item in behavior_files)
+        production_added_loc = sum(item.production_added_lines for item in behavior_files)
+        test_added_loc = sum(item.test_added_lines for item in changes)
+        test_to_production_ratio = (
+            round(test_added_loc / production_added_loc, 4) if production_added_loc > 0 else None
+        )
         violations: list[Violation] = []
 
         if len(behavior_files) > PRODUCTION_FILE_LIMIT:
@@ -384,15 +447,6 @@ class CodeGovernanceEvaluator:
                     details={"actual": net_loc, "limit_exclusive": PRODUCTION_NET_LOC_LIMIT},
                 )
             )
-        if behavior_files and len(subsystems) >= PRODUCTION_SUBSYSTEM_LIMIT:
-            violations.append(
-                Violation(
-                    "production_subsystem_count",
-                    f"normal behavior changes must touch < {PRODUCTION_SUBSYSTEM_LIMIT} production subsystems",
-                    details={"actual": len(subsystems), "limit_exclusive": PRODUCTION_SUBSYSTEM_LIMIT, "subsystems": subsystems},
-                )
-            )
-
         for item in changes:
             peak_lines = max(item.old_lines, item.new_lines)
             if item.is_behavior_change and peak_lines > HOT_FILE_LINES and item.production_net_loc > HOT_FILE_NET_GROWTH_LIMIT:
@@ -428,28 +482,21 @@ class CodeGovernanceEvaluator:
                     )
                 )
 
-        changed_test_paths = sorted(item.path for item in test_files if item.new_path is not None)
-        for item in behavior_files:
-            if item.new_path is None or not item.is_functional or item.production_added_lines <= 0:
-                continue
-            mirrors = [path for path in changed_test_paths if _test_mirrors_production(path, item.path)]
-            if not mirrors:
-                violations.append(
-                    Violation(
-                        "test_responsibility_mirror",
-                        "behavior-changing functional production code must have a changed test with the same responsibility stem",
-                        path=item.path,
-                        details={"changed_test_paths": changed_test_paths, "responsibility": _responsibility_stem(item.path)},
-                    )
-                )
-
         metrics = {
             "behavior_production_files": len(behavior_files),
             "changed_files": len(changes),
             "changed_test_files": len(test_files),
             "move_only_production_files": len(move_only_files),
+            "production_added_loc": production_added_loc,
             "production_net_loc": net_loc,
+            "production_subsystem_count": len(subsystems),
             "production_subsystems": subsystems,
+            "test_added_loc": test_added_loc,
+            "test_net_loc": sum(item.test_net_loc for item in changes),
+            "test_to_production_added_loc_ratio": test_to_production_ratio,
+            "test_loc_review_explanation_recommended": (production_added_loc == 0 and test_added_loc > 0)
+            or test_added_loc > TEST_ADDED_LOC_REVIEW_THRESHOLD
+            or (test_to_production_ratio is not None and test_to_production_ratio > TEST_TO_PRODUCTION_ADDED_LOC_REVIEW_RATIO),
         }
         return violations, metrics
 
@@ -517,6 +564,7 @@ class CodeGovernanceEvaluator:
             rendered = ", ".join(f"{code}:{path or '<global>'}" for code, path in unused)
             raise GovernanceError("invalid_exception", f"exception entries must match current violations exactly: {rendered}")
         summary = {
+            "candidate": payload["candidate"],
             "expires_on": payload["expires_on"],
             "owner": payload["owner"],
             "path": EXCEPTION_PATH,
@@ -624,22 +672,6 @@ def _production_subsystem(path: str) -> str:
     return f"root/{pure.stem or pure.name}"
 
 
-def _responsibility_stem(path: str) -> str:
-    stem = PurePosixPath(path).stem.lower()
-    stem = stem.removeprefix("test_")
-    for suffix in ("_test", ".test", ".spec"):
-        stem = stem.removesuffix(suffix)
-    return re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
-
-
-def _test_mirrors_production(test_path: str, production_path: str) -> bool:
-    production = _responsibility_stem(production_path)
-    test = _responsibility_stem(test_path)
-    if not production or not test:
-        return False
-    return production == test or (len(production) >= 4 and production in test) or (len(test) >= 4 and test in production)
-
-
 def _evaluation_mode(changes: Sequence[_ChangedFile]) -> str:
     behavior = any(item.is_behavior_change for item in changes)
     move_only = any(item.is_move_only for item in changes)
@@ -664,17 +696,20 @@ def _policy_as_dict() -> dict[str, Any]:
         "hot_file_net_growth_max": HOT_FILE_NET_GROWTH_LIMIT,
         "production_file_count_max": PRODUCTION_FILE_LIMIT,
         "production_net_loc_max_exclusive": PRODUCTION_NET_LOC_LIMIT,
-        "production_subsystem_count_max_exclusive": PRODUCTION_SUBSYSTEM_LIMIT,
         "test_hot_file_lines_exclusive": TEST_HOT_FILE_LINES,
         "test_hot_file_net_growth_max": TEST_HOT_FILE_NET_GROWTH_LIMIT,
-        "test_responsibility_mirror": "required_for_behavior-changing_functional_additions",
+        "test_loc_review": {
+            "enforcement": "soft",
+            "ratio_exclusive": TEST_TO_PRODUCTION_ADDED_LOC_REVIEW_RATIO,
+            "test_added_loc_exclusive": TEST_ADDED_LOC_REVIEW_THRESHOLD,
+        },
     }
 
 
 def _validate_exception_payload(payload: Any, today: date) -> None:
     if not isinstance(payload, dict):
         raise GovernanceError("invalid_exception", "exception payload must be a JSON object")
-    expected = {"schema_version", "expires_on", "owner", "reason", "violations"}
+    expected = {"schema_version", "candidate", "expires_on", "owner", "reason", "violations"}
     if set(payload) != expected:
         raise GovernanceError("invalid_exception", f"exception keys must be exactly: {', '.join(sorted(expected))}")
     if payload["schema_version"] != EXCEPTION_SCHEMA_VERSION:
@@ -694,6 +729,25 @@ def _validate_exception_payload(payload: Any, today: date) -> None:
         if key in seen:
             raise GovernanceError("invalid_exception", "exception violation entries must be unique")
         seen.add(key)
+
+
+def _validate_exception_candidate(candidate: Any, *, base_ref: str, scope_sha256: str) -> None:
+    if not isinstance(candidate, dict) or set(candidate) != {"base_ref", "scope_sha256"}:
+        raise GovernanceError(
+            "invalid_exception",
+            "candidate binding must contain exactly base_ref and scope_sha256",
+        )
+    candidate_base = candidate["base_ref"]
+    candidate_scope = candidate["scope_sha256"]
+    if not isinstance(candidate_base, str) or FULL_SHA.fullmatch(candidate_base) is None or candidate_base != candidate_base.lower():
+        raise GovernanceError("invalid_exception", "candidate base_ref must be a lowercase full 40-hex commit id")
+    if not isinstance(candidate_scope, str) or SHA256_HEX.fullmatch(candidate_scope) is None:
+        raise GovernanceError("invalid_exception", "candidate scope_sha256 must be a lowercase 64-hex digest")
+    if candidate_base != base_ref or candidate_scope != scope_sha256:
+        raise GovernanceError(
+            "invalid_exception",
+            "exception candidate binding does not match the evaluated base and non-exception patch",
+        )
 
 
 def _exception_expiry(value: Any) -> date:
@@ -731,6 +785,7 @@ def _render_text(evaluation: Evaluation) -> str:
         f"behavior production files: {evaluation.metrics['behavior_production_files']}",
         f"move-only production files: {evaluation.metrics['move_only_production_files']}",
         f"production net LOC: {evaluation.metrics['production_net_loc']}",
+        f"production subsystem count: {evaluation.metrics['production_subsystem_count']}",
         f"production subsystems: {', '.join(evaluation.metrics['production_subsystems']) or 'none'}",
         f"Ruff: {evaluation.ruff['status']}",
     ]

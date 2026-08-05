@@ -12,7 +12,6 @@ const DEFAULT_ROUTES = [
   "/apps",
   "/skills",
   "/mcp",
-  "/files",
   "/settings",
   "/shared/smoke-denied",
 ];
@@ -43,7 +42,6 @@ const ROUTE_CONTENT_SELECTORS = new Map([
     "[data-skill-workbench-shell], [data-ordinary-skills-catalog], [data-frontend-governance-state]",
   ],
   ["/mcp", "[data-mcp-directory-shell], [data-ordinary-mcp-catalog]"],
-  ["/files", "[data-files-workbench-shell]"],
   ["/settings", '[data-workbench-projection-page="settings"], [data-workbench-projection-page]'],
   ["/shared/smoke-denied", '[data-shared-page], [data-frontend-governance-state="forbidden"]'],
 ]);

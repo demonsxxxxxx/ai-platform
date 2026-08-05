@@ -5626,7 +5626,6 @@ test("useAgent adopts a current retry child through one parent history load", as
         events: [],
         artifacts: [],
         steps: [],
-        multi_agent: null,
       }),
     )) as typeof fetch;
 
@@ -5791,7 +5790,7 @@ test("useAgent aborts a deferred run-control GET before unmount can publish it",
     assert.equal((playbackSignal as AbortSignal).aborted, true);
     resolvePlayback(
       new Response(
-        JSON.stringify({ run_id: "run-unmount-control", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+        JSON.stringify({ run_id: "run-unmount-control", timeline: [], events: [], artifacts: [], steps: [] }),
       ),
     );
     await Promise.resolve();
@@ -5866,7 +5865,7 @@ test("useAgent synchronously aborts a deferred run-control GET from the producti
 
     resolvePlayback(
       new Response(
-        JSON.stringify({ run_id: "run-auth-event-control", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+        JSON.stringify({ run_id: "run-auth-event-control", timeline: [], events: [], artifacts: [], steps: [] }),
       ),
     );
     await settle(harness.act);
@@ -6082,7 +6081,7 @@ test("useAgent fences the old owner before login's deferred principal GET resolv
   } finally {
     resolvePlayback?.(
       new Response(
-        JSON.stringify({ run_id: "run-login-order-control", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+        JSON.stringify({ run_id: "run-login-order-control", timeline: [], events: [], artifacts: [], steps: [] }),
       ),
     );
     authApi.login = originalAuthLogin;

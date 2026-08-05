@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
 ARG AI_PLATFORM_BUILD_REPOSITORY=unknown

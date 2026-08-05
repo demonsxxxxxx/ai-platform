@@ -15,6 +15,50 @@ and `ROOT` from the current 211 host mapping in
 `docs/agent-rules/ai-platform-guardrails.md`, the authoritative source for those
 host subjects.
 
+### Governed Debian mirror preflight and no-deploy probe
+
+The following is the explicit 211 operator example. The release authority accepts
+only this complete pair of HTTPS endpoints; it records only their normalized
+hostnames in safe release evidence. The product and Docker daemon do not hard-code
+this vendor choice.
+
+```sh
+set -eu
+: "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"
+export APT_MIRROR="https://mirrors.ustc.edu.cn/debian"
+export APT_SECURITY_MIRROR="https://mirrors.ustc.edu.cn/debian-security"
+: "${ROOT:?set ROOT to the guardrails-designated 211 managed release root}"
+: "${TARGET:?set TARGET to the exact fetched main commit}"
+python3 -B "$SOURCE/tools/release_authority.py" probe-apt-mirrors \
+  --apt-mirror "$APT_MIRROR" \
+  --apt-security-mirror "$APT_SECURITY_MIRROR" >/dev/null
+```
+
+The authority probe uses HTTPS GET with a bounded Range covering the complete
+InRelease (up to 256 KiB), then verifies Content-Range/Content-Length and the
+complete clear-signed PGP envelope. Release identity is the exact Codename;
+Suite accepts Debian lifecycle aliases stable, oldstable, or oldoldstable, with
+the matching `-security` suffix for the security endpoint. It rejects unsafe
+redirects, unknown or oversized/truncated responses, invalid content, timeouts,
+and non-2xx status.
+After the read-only endpoint checks, this bounded Docker probe exercises the canonical
+backend Dockerfile dependency layer only. It does not invoke Compose, recreate a
+service, or deploy an image; remove the temporary probe image after inspection.
+
+```sh
+PROBE_IMAGE="ai-platform:apt-mirror-probe-${TARGET}"
+sudo -n docker build \
+  --build-arg "AI_PLATFORM_BUILD_COMMIT=${TARGET}" \
+  --build-arg AI_PLATFORM_BUILD_DIRTY=false \
+  --build-arg AI_PLATFORM_BUILD_REPOSITORY=https://github.com/demonsxxxxxx/ai-platform.git \
+  --build-arg "APT_MIRROR=${APT_MIRROR}" \
+  --build-arg "APT_SECURITY_MIRROR=${APT_SECURITY_MIRROR}" \
+  -t "$PROBE_IMAGE" \
+  -f "$ROOT/releases/$TARGET/Dockerfile" \
+  "$ROOT/releases/$TARGET"
+sudo -n docker image rm "$PROBE_IMAGE"
+```
+
 ```bash
 set -eu
 : "${SOURCE:?set SOURCE to the guardrails-designated 211 coordination checkout}"
@@ -30,12 +74,20 @@ git -C "$SOURCE" checkout --detach "$TARGET"
 test "$(git -C "$SOURCE" rev-parse HEAD)" = "$TARGET"
 test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=all)"
 cd "$SOURCE"
+MIRROR_ARGS=()
+if test -n "${APT_MIRROR:-}" || test -n "${APT_SECURITY_MIRROR:-}"; then
+  : "${APT_MIRROR:?set APT_MIRROR to the reviewed HTTPS Debian archive endpoint}"
+  : "${APT_SECURITY_MIRROR:?set APT_SECURITY_MIRROR to the reviewed HTTPS Debian security endpoint}"
+  PYTHONPATH="$SOURCE/tools" python3 -B -c 'import os; from release_authority import _normalize_apt_mirror_pair; _normalize_apt_mirror_pair(os.environ["APT_MIRROR"], os.environ["APT_SECURITY_MIRROR"])'
+  MIRROR_ARGS=(--apt-mirror "$APT_MIRROR" --apt-security-mirror "$APT_SECURITY_MIRROR")
+fi
 timeout --signal=INT --kill-after=30s 24000s \
   python3 -B tools/release_authority.py deploy-main-commit \
   --release-root "$ROOT/releases" \
   --commit "$TARGET" \
   --strategy auto \
   --canonical-build-timeout-seconds 1800 \
+  "${MIRROR_ARGS[@]}" \
   --docker-cmd "sudo -n docker" \
   --compose-file deploy/ai-platform/docker-compose.yml \
   --compose-file deploy/ai-platform/docker-compose.sandbox.yml
@@ -61,6 +113,12 @@ the same owner and mode. The canonical file must be an existing regular
 non-symlink owned by the managed-root owner with mode `0600`. The authority
 validates metadata before target materialization and again before Compose
 mutation; it never reads, copies, or prints contents.
+
+To roll back the mirror choice while keeping the same release authority, leave both
+mirror variables unset and rerun the canonical invocation: `MIRROR_ARGS` stays empty
+and the CLI omits both mirror flags. Supplying only one option is invalid; omitting
+the pair preserves the upstream Debian endpoints. The mirror preflight/probe block
+above is only required when selecting a mirror pair.
 
 `$ROOT/releases/$TARGET` is the immutable target checkout and the only target
 build context. Its HEAD, tracked/staged/ordinary untracked state, ignored-file
@@ -126,8 +184,8 @@ the s72 egress policy; the s72 broker connects to the IP directly and uses the
 hostname only for SNI/hostname verification. Mount the full chain and private
 key read-only through the two Compose paths above. Do not place certificate or
 key bytes in the image, `.env`, Compose environment, logs, or Git. Provision
-only the non-secret issuing CA certificate to s72 at the app-scoped path in the
-s72 gateway runbook; do not install it in either host's system trust store.
+only the non-secret issuing CA certificate to s72 at its app-scoped path; do not
+install it in either host's system trust store.
 
 The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not
 publish `8443`, request bridge variables, or mount bridge certificates. The
@@ -259,10 +317,51 @@ Compose deployment:
   before it updates exact provenance, so deleted target files cannot survive.
 - Runtime-only images prepared from a Git archive or Windows snapshot must run
   `chmod +x /app/docker-entrypoint.sh` before container recreation.
-- If repeated runtime-only rebases fail with Docker `max depth exceeded`, stop
-  stacking layers. Flatten the current healthy container with `docker export`
-  and `docker import`, build once from that flat base, and re-run provenance,
-  health, and target-path verification.
+
+### Explicit backend-layer flatten recovery
+
+If, and only if, the normal auto backend runtime rebuild stops with Docker
+`max depth exceeded`, do not run `docker export`, `docker import`, `docker tag`,
+or Compose by hand. Do not retag the canonical current backend subject. After a
+fresh read-only readiness packet, use the normal exact-main preamble above and
+replace only its authority invocation with this sole recovery command:
+
+```bash
+cd "$SOURCE"
+timeout --signal=INT --kill-after=30s 27000s \
+  python3 -B tools/release_authority.py deploy-main-commit \
+  --release-root "$ROOT/releases" \
+  --commit "$TARGET" \
+  --strategy auto \
+  --allow-backend-layer-flatten-recovery \
+  --canonical-build-timeout-seconds 1800 \
+  --docker-cmd "sudo -n docker" \
+  --compose-file deploy/ai-platform/docker-compose.yml \
+  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
+```
+
+The flag is default-off. It is accepted only after the authority has completed
+strict current-runtime provenance and parity, and only when the resulting
+backend plan action is `runtime-rebuild`. It independently rechecks the
+canonical current backend image's clean provenance and requires at least 96
+RootFS layers. A lower-layer, missing, dirty, mismatched, or unsafe image fails
+closed; a canonical dependency build, frontend action, promotion, or an
+arbitrary build failure never activates recovery.
+
+For that one invocation the authority creates a unique stopped container from
+the verified current image without runtime environment, mounts, or Compose
+data; exports it to a mode-`0600` managed temporary archive; checks its digest;
+imports one unique non-canonical flat image; and rebuilds the target only from
+that validated temporary base. It restores only allowlisted image configuration
+(`10001:10001`, `/app`, entrypoint/CMD, required non-secret environment,
+`8020/tcp`, and clean provenance labels). It verifies the flat layer count,
+source markers, `0755` entrypoint, Python/Uvicorn executables, and the
+`10001:10001` runtime identity before the target build. The current tag/image
+and running containers remain untouched. All temporary containers, archives,
+and the flat reference are removed whether export, import, validation, target
+build, or final release fails. Terminal stage evidence contains only fixed
+stage/action/status/timing fields, never temporary names, commands, paths,
+archive contents, environment, or secrets.
 
 After successful `compose up -d --no-build`, `deploy-main-commit --strategy auto`
 uses a 45-second monotonic final-parity convergence window with a two-second
@@ -318,6 +417,13 @@ deadline rounds this up with an additional 795 seconds for in-process filesystem
 trust walks, scheduling, cleanup dispatch, and evidence serialization. It is a
 conservative finite outer bound, separate from—and never an expansion of—any
 per-operation timeout.
+
+The explicit flatten recovery adds up to ten bounded 300-second Docker slots
+(two stopped-container exports, import, validation, and cleanup) to that
+inventory: `23205 + 10 * 300 = 26205` seconds. Its documented 27000-second
+outer command budget leaves 795 seconds for the same in-process work. Configure
+the enclosing durable runner with a 27330-second deadline for this exceptional
+command only.
 
 Use exactly `timeout --signal=INT --kill-after=30s 24000s`. `INT`, rather than
 `TERM` or `KILL`, lets Python raise through the active `_run`, whose existing

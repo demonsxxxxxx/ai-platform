@@ -15,6 +15,7 @@ import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGo
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { isAiAdminUser } from "./capabilityAdmin";
 import { AvailableSkillsPanel } from "./AvailableSkillsPanel";
+import { SkillDistributionGovernancePanel } from "./SkillDistributionGovernancePanel";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
   skills: "/skills",
@@ -241,6 +242,7 @@ export function SkillsHubPanel() {
           )}
         </section>
       </div>
+      <SkillDistributionGovernancePanel />
     </div>
   );
 }

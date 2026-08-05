@@ -6,8 +6,13 @@ import type {
   SessionEventsResponse,
   RunSummary,
   MessageAttachment,
+  SelectedAgentProfileRequest,
   SelectedSkillRequest,
 } from "../../types";
+import {
+  projectAgentConversationSession,
+  type AgentConversationSessionProjection,
+} from "../../types/agentProfile";
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
 
@@ -192,6 +197,7 @@ export function buildSubmitChatBody({
   selectedMcpToolIds,
   userTimezone,
   selectedSkill,
+  selectedAgentProfile,
   submissionId,
 }: {
   message: string;
@@ -204,6 +210,7 @@ export function buildSubmitChatBody({
   selectedMcpToolIds?: string[];
   userTimezone?: string;
   selectedSkill?: SelectedSkillRequest | null;
+  selectedAgentProfile?: SelectedAgentProfileRequest | null;
   submissionId?: string;
 }): Record<string, unknown> {
   const body: Record<string, unknown> = {
@@ -226,6 +233,10 @@ export function buildSubmitChatBody({
 
   if (selectedSkill) {
     body.selected_skill = selectedSkill;
+  }
+
+  if (selectedAgentProfile) {
+    body.selected_agent_profile = selectedAgentProfile;
   }
 
   if (userTimezone) {
@@ -333,6 +344,11 @@ export function buildSessionListUrl(params?: {
   return `${API_BASE}/api/sessions${query ? `?${query}` : ""}`;
 }
 
+/** Build the canonical safe Session projection URL used for Agent recovery. */
+export function buildAuthoritativeChatSessionUrl(sessionId: string): string {
+  return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}`;
+}
+
 export const sessionApi = {
   /**
    * List all sessions with pagination
@@ -362,6 +378,15 @@ export const sessionApi = {
       }
       throw error;
     }
+  },
+
+  /** Recover server-owned Agent identity without changing the compatibility API. */
+  async getAuthoritative(sessionId: string): Promise<AgentConversationSessionProjection> {
+    const response = await authFetch<unknown>(
+      buildAuthoritativeChatSessionUrl(sessionId),
+      { cache: "no-store" },
+    );
+    return projectAgentConversationSession(response);
   },
 
   /**
@@ -537,6 +562,7 @@ export const sessionApi = {
     submissionId?: string,
     agentId?: string,
     selectedMcpToolIds?: string[],
+    selectedAgentProfile?: SelectedAgentProfileRequest | null,
   ): Promise<ChatStreamResponse> {
     const body = buildSubmitChatBody({
       message,
@@ -548,6 +574,7 @@ export const sessionApi = {
       selectedMcpToolIds,
       userTimezone: getBrowserTimezone(),
       selectedSkill,
+      selectedAgentProfile,
       submissionId,
     });
     return authFetch(buildSubmitChatUrl(agentId), {

@@ -114,7 +114,7 @@ export function ResetPassword() {
           </div>
           <button
             onClick={handleBackToLogin}
-            className="blog-btn-primary auth-primary-button min-h-12 w-full rounded-full py-3 text-sm font-medium transition-all"
+            className="auth-primary-button min-h-12 w-full rounded-full py-3 text-sm font-medium transition-all"
           >
             {t("auth.goToLogin")}
           </button>

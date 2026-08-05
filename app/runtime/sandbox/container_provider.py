@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterable
 import hashlib
 import hmac
 import inspect
@@ -15,7 +16,7 @@ import stat
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -55,12 +56,47 @@ from app.runtime.sandbox.executor_client import (
     prepare_executor_http_request,
 )
 from app.runtime.sandbox import governed_egress_diagnostics as egress_diagnostics
+from app.runtime.sandbox.filesystem_contract import encode_execd_mode
 from app.runtime.sandbox.opensandbox_attestation import build_opensandbox_attestation_probe
+from app.runtime.sandbox.providers.opensandbox.startup import (
+    OpenSandboxStartupEvidence,
+    OpenSandboxStartupEvidenceCarrier,
+    OpenSandboxStartupFailure,
+    OpenSandboxStartupOperations,
+    cleanup_new_sandbox_or_reconcile,
+    cleanup_started_sandbox,
+    identity_unavailable_cleanup_subject,
+    is_authoritative_not_found_error,
+    launch_opensandbox_startup,
+    reconcile_authoritative_identity_unavailable_cleanup,
+    resolve_executor_endpoint,
+    unhealthy_readiness_fields,
+)
+from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_metadata
+from app.runtime.sandbox.opensandbox_policy import (
+    SANDBOX_SECURITY_PROFILE_GOVERNED,
+    SANDBOX_SECURITY_PROFILE_LABEL,
+    ExecutorEgressBases as _ExecutorEgressBases,
+    OpenSandboxProfileConfigurationError,
+    governed_opensandbox_lease_labels,
+    governed_opensandbox_egress_bases,
+    opensandbox_container_name as _opensandbox_container_name,
+    opensandbox_status_from_info as _opensandbox_status_from_info,
+    requested_opensandbox_image,
+    runtime_scope_labels,
+)
+from app.runtime.sandbox.opensandbox_legacy_cleanup import (
+    SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL,
+    trusted_internal_cleanup_identity_is_authorized,
+    trusted_internal_orphan_cleanup_identity_is_authorized,
+    trusted_internal_orphan_cleanup_metadata_filter,
+)
+from app.runtime.sandbox import readiness_evidence
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
 
 
-class SandboxRuntimeError(RuntimeError):
+class SandboxRuntimeError(OpenSandboxStartupEvidenceCarrier, RuntimeError):
     def __init__(self, error_code: str, message: str) -> None:
         super().__init__(message)
         self.error_code = error_code
@@ -102,6 +138,13 @@ class ContainerStartFailedError(SandboxRuntimeError):
         super().__init__("container_start_failed", message)
 
 
+class OpenSandboxStartupFailedError(ContainerStartFailedError):
+    """Generic public startup failure with safe private OpenSandbox evidence."""
+    def __init__(self, evidence: OpenSandboxStartupEvidence, message: str = "OpenSandbox sandbox start failed") -> None:
+        super().__init__(message)
+        self.private_evidence = evidence.private_payload()
+
+
 class NativeToolAdmissionError(SandboxRuntimeError):
     """Raised when the isolated native-command sidecar cannot become ready."""
 
@@ -112,13 +155,15 @@ class NativeToolAdmissionError(SandboxRuntimeError):
 class ContainerCleanupFailedError(SandboxRuntimeError):
     """Raised when a rejected executor cannot be confirmed stopped and removed."""
 
-    def __init__(self, message: str = "Container cleanup failed") -> None:
+    def __init__(self, message: str = "Container cleanup failed", *, readiness_evidence: readiness_evidence.ExecutorReadinessEvidence | None = None, cleanup_subject: dict[str, str] | None = None) -> None:
         super().__init__("container_cleanup_failed", message)
+        self.readiness_evidence, self.cleanup_subject = readiness_evidence, cleanup_subject
 
 
 class ExecutorHealthTimeoutError(SandboxRuntimeError):
-    def __init__(self, message: str = "Executor health timeout") -> None:
+    def __init__(self, message: str = "Executor health timeout", *, readiness_evidence=None) -> None:
         super().__init__("executor_health_timeout", message)
+        self.readiness_evidence = readiness_evidence
 
 
 class ContainerProvider(Protocol):
@@ -136,6 +181,26 @@ class ContainerProvider(Protocol):
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
     ) -> None: ...
+
+    async def stage_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Stage the controller-owned attempt files before executor dispatch."""
+
+        ...
+
+    async def collect_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Collect provider-approved attempt outputs after executor dispatch."""
+
+        ...
 
     async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]: ...
 
@@ -230,6 +295,17 @@ def _published_executor_url_from_container(
     if host in {"", "0.0.0.0", "::"}:
         return None
     return f"http://{host}:{port_number}"
+
+
+def _docker_readiness_snapshot(
+    container: Any, endpoint: _ExecutorPublishedEndpoint | None = None
+) -> tuple[object, object, bool]:
+    try:
+        container.reload()
+        published = endpoint is None or bool(_published_executor_url_from_container(container, endpoint))
+        return container.attrs, container.status, published
+    except Exception:
+        return None, None, endpoint is None
 
 
 def _lease_from_request(
@@ -329,6 +405,8 @@ def _container_config_user(container: Any) -> str:
 
 
 def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> bool:
+    if lease.provider == "opensandbox":
+        return opensandbox_metadata.opensandbox_status_matches_lease(status.detail.get("labels"), lease.labels)
     if not (
         status.tenant_id == lease.tenant_id
         and status.workspace_id == lease.workspace_id
@@ -342,6 +420,9 @@ def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> boo
     labels = status.detail.get("labels")
     if not isinstance(labels, dict):
         labels = {}
+    expected_attempt_id = lease.labels.get("ai-platform.attempt_id")
+    if expected_attempt_id and str(labels.get("ai-platform.attempt_id") or "") != expected_attempt_id:
+        return False
     for key, expected in lease.labels.items():
         # Docker labels are immutable. The proof is sealed only after create
         # readback and is kept on the lease/durable projection.
@@ -354,6 +435,7 @@ def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> boo
             or str(key).startswith("ai-platform.governed_egress.")
             or str(key).startswith("ai-platform.skill_mount.")
             or str(key) == "ai-platform.runtime_subject"
+            or str(key) == SANDBOX_SECURITY_PROFILE_LABEL
         ) and str(labels.get(key) or "") != expected:
             return False
     return True
@@ -832,7 +914,6 @@ def _provider_lease_labels(labels: dict[str, str]) -> dict[str, str]:
         for key, value in labels.items()
         if (
             (not str(key).startswith("ai-platform.executor.") or str(key) in public_executor_labels)
-            and str(key) != "ai-platform.external_egress.endpoint_sha256"
         )
     }
 
@@ -863,93 +944,32 @@ def _trusted_callback_target(settings: Any, *, allow_host_gateway: bool = True):
 
 
 OPENSANDBOX_UPSTREAM_BRIDGE_VERSION = "v1"
-_OPENSANDBOX_BRIDGE_PATHS = {
-    "callback": "",
-    "openai": "/openai/v1",
-    "anthropic": "/anthropic",
-}
-_DNS_HOSTNAME = re.compile(
-    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
-)
 
 
-@dataclass(frozen=True)
-class _ExecutorEgressBases:
-    callback_base_url: str
-    openai_base_url: str
-    anthropic_base_url: str
+def _require_governed_security_profile(settings: Any) -> None:
+    """Reject stale callers that bypass the typed Settings boundary."""
 
-    def callback_target(self):
-        parsed = urlsplit(self.callback_base_url)
-        return build_trusted_callback_target(
-            self.callback_base_url,
-            extra_hosts=[parsed.hostname or ""],
-        )
-
-
-def _canonical_opensandbox_bridge_base(value: object, *, kind: str) -> str:
-    raw = str(value or "")
-    expected_path = _OPENSANDBOX_BRIDGE_PATHS[kind]
-    try:
-        parsed = urlsplit(raw)
-        port = parsed.port
-    except ValueError:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox upstream bridge base is invalid") from None
-    host = parsed.hostname or ""
-    if (
-        parsed.scheme != "https"
-        or not _DNS_HOSTNAME.fullmatch(host)
-        or host != host.lower()
-        or parsed.username
-        or parsed.password
-        or parsed.path != expected_path
-        or parsed.query
-        or parsed.fragment
-        or port is None
-        or not 1 <= port <= 65535
-        or parsed.netloc != f"{host}:{port}"
-        or host in {"api.sandbox.internal", "host.docker.internal"}
-    ):
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox upstream bridge base is invalid") from None
-    canonical = urlunsplit(("https", f"{host}:{port}", expected_path, "", ""))
-    if raw != canonical:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox upstream bridge base is invalid") from None
-    return canonical
+    profile = str(
+        getattr(settings, "sandbox_security_profile", SANDBOX_SECURITY_PROFILE_GOVERNED)
+        or SANDBOX_SECURITY_PROFILE_GOVERNED
+    )
+    if profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
+        raise OpenSandboxCapabilityAdmissionError("sandbox security profile is not governed")
 
 
 def _opensandbox_external_egress_bases(settings: Any) -> _ExecutorEgressBases:
-    bases = _ExecutorEgressBases(
-        callback_base_url=_canonical_opensandbox_bridge_base(
-            getattr(settings, "opensandbox_external_egress_callback_base_url", ""),
-            kind="callback",
-        ),
-        openai_base_url=_canonical_opensandbox_bridge_base(
-            getattr(settings, "opensandbox_external_egress_openai_base_url", ""),
-            kind="openai",
-        ),
-        anthropic_base_url=_canonical_opensandbox_bridge_base(
-            getattr(settings, "opensandbox_external_egress_anthropic_base_url", ""),
-            kind="anthropic",
-        ),
-    )
-    origins = {
-        (urlsplit(value).hostname, urlsplit(value).port)
-        for value in (
-            bases.callback_base_url,
-            bases.openai_base_url,
-            bases.anthropic_base_url,
-        )
-    }
-    if len(origins) != 1:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox upstream bridge origin drift detected") from None
-    return bases
+    try:
+        return governed_opensandbox_egress_bases(settings)
+    except OpenSandboxProfileConfigurationError as exc:
+        raise OpenSandboxCapabilityAdmissionError(str(exc)) from None
 
 
 def executor_callback_target(settings: Any, provider_name: str):
     """Resolve the provider-specific callback target through one validation path."""
 
-    if str(provider_name or "").strip().lower() == "opensandbox":
+    selected_provider = str(provider_name or "").strip().lower()
+    if selected_provider == "opensandbox":
+        _require_governed_security_profile(settings)
         return _opensandbox_external_egress_bases(settings).callback_target()
     return _trusted_callback_target(settings)
 
@@ -1047,29 +1067,20 @@ def _opensandbox_entrypoint(settings: Any) -> list[str]:
         raise ContainerStartFailedError("OpenSandbox executor entrypoint is invalid") from exc
 
 
-def _opensandbox_requested_image(settings: Any) -> tuple[str, str]:
+def _opensandbox_requested_image(
+    settings: Any,
+    *,
+    allow_local_image_id: bool = False,
+) -> tuple[str, str]:
     """Return the immutable image request and its digest, never an observed runtime subject."""
 
-    image = str(getattr(settings, "opensandbox_executor_image", "") or "")
-    if not image:
-        image = str(getattr(settings, "sandbox_executor_image", "") or "")
-    subject, separator, digest = image.partition("@")
-    last_path_segment = subject.rsplit("/", 1)[-1]
-    if (
-        not separator
-        or not subject
-        or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in subject)
-        or "@" in digest
-        or ":" in last_path_segment
-        or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
-    ):
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox executor image must be an immutable sha256 reference") from None
-    configured_digest = str(getattr(settings, "opensandbox_executor_image_digest", "") or "")
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", configured_digest):
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox configured executor digest is invalid") from None
-    if configured_digest != digest:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox configured executor digest does not match image reference") from None
-    return image, digest
+    try:
+        return requested_opensandbox_image(
+            settings,
+            allow_local_image_id=allow_local_image_id,
+        )
+    except OpenSandboxProfileConfigurationError as exc:
+        raise OpenSandboxCapabilityAdmissionError(str(exc)) from None
 
 
 def _opensandbox_image(settings: Any) -> str:
@@ -1631,18 +1642,7 @@ async def _admit_opensandbox_external_egress_capability(
     return _validate_opensandbox_external_egress_profile(profile, settings=settings, now=now)
 
 
-def _platform_metadata(request: SandboxRuntimeRequest) -> dict[str, str]:
-    return {
-        "ai-platform.owner": "sandbox-runtime",
-        "ai-platform.tenant_id": request.tenant_id,
-        "ai-platform.workspace_id": request.workspace_id,
-        "ai-platform.user_id": request.user_id,
-        "ai-platform.session_id": request.session_id,
-        "ai-platform.run_id": request.run_id,
-        "ai-platform.attempt_id": request.attempt_id,
-        "ai-platform.sandbox_mode": request.sandbox_mode,
-        "ai-platform.browser_enabled": "true" if request.browser_enabled else "false",
-    }
+_platform_metadata = runtime_scope_labels
 
 
 def _opensandbox_labels(
@@ -1654,41 +1654,8 @@ def _opensandbox_labels(
     lease_identity: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, str]:
-    labels = _platform_metadata(request)
-    labels["ai-platform.provider_backend"] = "opensandbox"
-    labels["ai-platform.executor.requested_image"] = capability.requested_image
-    labels["ai-platform.executor.requested_image_digest"] = capability.requested_image_digest
-    labels.update(_executor_identity_labels())
-    labels.update(
-        {
-            "ai-platform.external_egress.profile_version": "v1",
-            "ai-platform.external_egress.profile_id": capability.profile_id,
-            "ai-platform.external_egress.endpoint_sha256": hashlib.sha256(
-                capability.endpoint.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.runtime_identity": capability.runtime_identity,
-            "ai-platform.runtime_subject": capability.runtime_subject,
-            "ai-platform.external_egress.gateway_policy_subject": capability.gateway_policy_subject,
-            "ai-platform.external_egress.callback_boundary_subject": capability.callback_boundary_subject,
-            "ai-platform.external_egress.deny_audit_subject": capability.deny_audit_subject,
-            "ai-platform.external_egress.deny_counter_subject": capability.deny_counter_subject,
-            "ai-platform.external_egress.profile_requested_image": capability.requested_image,
-            "ai-platform.external_egress.profile_requested_image_digest": capability.requested_image_digest,
-            "ai-platform.external_egress.upstream_bridge_version": capability.upstream_bridge_version,
-            "ai-platform.external_egress.callback_base_sha256": hashlib.sha256(
-                capability.callback_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.openai_base_sha256": hashlib.sha256(
-                capability.openai_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.anthropic_base_sha256": hashlib.sha256(
-                capability.anthropic_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.profile_expires_at": capability.expires_at,
-        }
-    )
-    if lease_identity is not None:
-        labels[GOVERNED_EGRESS_PROOF_LABEL] = governed_egress_proof_label(
+    proof_label = (
+        governed_egress_proof_label(
             capability.governed_egress_proof(
                 signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
                 key_id=_governed_egress_proof_key_id(settings),
@@ -1697,8 +1664,35 @@ def _opensandbox_labels(
                 now=now,
             )
         )
-    labels.update(_skill_mount_labels(skill_mount))
-    return labels
+        if lease_identity is not None
+        else None
+    )
+    return governed_opensandbox_lease_labels(
+        request,
+        capability,
+        executor_identity_labels=_executor_identity_labels(),
+        skill_mount_labels=_skill_mount_labels(skill_mount),
+        governed_proof_label=proof_label,
+    )
+
+
+def _opensandbox_profile_labels(
+    settings: Any,
+    request: SandboxRuntimeRequest,
+    capability: OpenSandboxExternalEgressCapability,
+    skill_mount: _TrustedSkillMount | None,
+    *,
+    lease_identity: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, str]:
+    return _opensandbox_labels(
+        settings,
+        request,
+        capability,
+        skill_mount,
+        lease_identity=lease_identity,
+        now=now,
+    )
 
 
 def _callback_policy_host(settings: Any) -> str:
@@ -1735,31 +1729,14 @@ def _opensandbox_volumes(
     host_class: Any,
     volume_class: Any,
 ) -> list[Any]:
-    if getattr(settings, "opensandbox_workspace_mount_enabled", True) is not True:
-        if skill_mount is not None:
-            raise ContainerStartFailedError("OpenSandbox staged Skill mount requires workspace mounting")
-        return []
-    try:
-        volumes = [
-            volume_class(
-                name="ai-platform-workspace",
-                host=host_class(path=workspace.workspace_host_path),
-                mountPath=workspace.workspace_container_path,
-                readOnly=False,
-            )
-        ]
-        if skill_mount is not None:
-            volumes.append(
-                volume_class(
-                    name="ai-platform-claude-skills",
-                    host=host_class(path=str(skill_mount.host_path)),
-                    mountPath=skill_mount.container_path,
-                    readOnly=True,
-                )
-            )
-    except (TypeError, ValueError) as exc:
-        raise ContainerStartFailedError("OpenSandbox read-only staged Skill mount is unavailable") from exc
-    return volumes
+    """Remote OpenSandbox never receives a controller-local Host bind.
+
+    The parameters remain temporarily for SDK-create shape compatibility; workspace
+    transfer occurs only after the ready sandbox has a durable runtime lease.
+    """
+
+    del settings, workspace, skill_mount, host_class, volume_class
+    return []
 
 
 def _opensandbox_connection_config(settings: Any, connection_config_class: Any) -> Any:
@@ -1778,76 +1755,378 @@ def _opensandbox_sentinel_path(workspace: WorkspaceLease) -> str:
     return f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform-opensandbox-lease.json"
 
 
-def _opensandbox_status_from_state(state: object) -> str:
-    normalized = str(state or "unknown").strip().lower()
-    if normalized in {"running", "ready"}:
-        return "running"
-    if normalized in {"pending", "creating", "starting"}:
-        return "created"
-    if normalized in {"terminated", "killed", "deleted"}:
-        return "removed"
-    if normalized in {"failed", "error"}:
-        return "exited"
-    if normalized in {"paused", "suspended"}:
-        return "paused"
-    return normalized or "unknown"
+_OPENSANDBOX_STAGE_MAX_FILES = 512
+_OPENSANDBOX_STAGE_MAX_FILE_BYTES = 32 * 1024 * 1024
+_OPENSANDBOX_STAGE_MAX_TOTAL_BYTES = 128 * 1024 * 1024
+_OPENSANDBOX_STAGE_MAX_DIRECTORIES = 512
+_OPENSANDBOX_COLLECT_MAX_FILES = 128
+_OPENSANDBOX_COLLECT_MAX_FILE_BYTES = 64 * 1024 * 1024
+_OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+_OPENSANDBOX_COLLECT_MAX_DIRECTORIES = 256
 
 
-def _opensandbox_metadata_from_info(info: Any) -> dict[str, str]:
-    metadata = getattr(info, "metadata", None)
-    if metadata is None and isinstance(info, dict):
-        metadata = info.get("metadata")
-    return {str(key): str(value) for key, value in (metadata or {}).items()}
+@dataclass(frozen=True)
+class _WorkspaceFileSnapshot:
+    device: int
+    inode: int
+    mode: int
+    link_count: int
+    size: int
+    modified_ns: int
 
 
-def _opensandbox_id(info: Any) -> str:
-    value = getattr(info, "id", None)
-    if value is None and isinstance(info, dict):
-        value = info.get("id")
-    return str(value or "")
+@dataclass(frozen=True)
+class _WorkspaceDirectorySnapshot:
+    device: int
+    inode: int
+    mode: int
 
 
-def _opensandbox_state(info: Any) -> str:
-    status = getattr(info, "status", None)
-    if isinstance(info, dict):
-        status = info.get("status")
-    state = getattr(status, "state", None)
-    if state is None and isinstance(status, dict):
-        state = status.get("state")
-    if state is None:
-        state = getattr(info, "state", None)
-    return str(state or "unknown")
+@dataclass(frozen=True)
+class _OpenSandboxWorkspaceFile:
+    relative_path: str
+    source_path: Path
+    snapshot: _WorkspaceFileSnapshot
+    ancestor_directories: tuple[tuple[Path, _WorkspaceDirectorySnapshot], ...]
 
 
-def _opensandbox_status_from_info(info: Any) -> ContainerStatus | None:
-    metadata = _opensandbox_metadata_from_info(info)
-    if metadata.get("ai-platform.owner") != "sandbox-runtime":
-        return None
-    sandbox_mode = metadata.get("ai-platform.sandbox_mode")
-    if sandbox_mode not in {"ephemeral", "persistent"}:
-        sandbox_mode = None
-    sandbox_id = _opensandbox_id(info)
-    run_id = metadata.get("ai-platform.run_id")
-    attempt_id = metadata.get("ai-platform.attempt_id")
-    return ContainerStatus(
-        container_id=sandbox_id,
-        container_name=(
-            _opensandbox_container_name(run_id, attempt_id)
-            if run_id and attempt_id
-            else f"opensandbox-{sandbox_id}"
-        ),
-        provider="opensandbox",
-        status=_opensandbox_status_from_state(_opensandbox_state(info)),
-        tenant_id=metadata.get("ai-platform.tenant_id"),
-        workspace_id=metadata.get("ai-platform.workspace_id"),
-        user_id=metadata.get("ai-platform.user_id"),
-        session_id=metadata.get("ai-platform.session_id"),
-        run_id=run_id,
-        sandbox_mode=sandbox_mode,
-        browser_enabled=metadata.get("ai-platform.browser_enabled", "false").lower() == "true",
-        executor_url=None,
-        detail={"labels": metadata},
+def _safe_workspace_relative_path(value: str) -> str:
+    """Validate one controller-owned workspace-relative POSIX path."""
+
+    if not isinstance(value, str) or not value or "\x00" in value or "\\" in value:
+        raise ContainerStartFailedError("workspace transfer path is invalid")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ContainerStartFailedError("workspace transfer path is invalid")
+    normalized = path.as_posix()
+    if normalized != value:
+        raise ContainerStartFailedError("workspace transfer path is invalid")
+    return normalized
+
+
+def _workspace_file_snapshot(path: Path) -> _WorkspaceFileSnapshot:
+    try:
+        node = path.lstat()
+    except OSError as exc:
+        raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
+    if not stat.S_ISREG(node.st_mode) or stat.S_ISLNK(node.st_mode) or node.st_nlink != 1:
+        raise ContainerStartFailedError("workspace transfer source is invalid")
+    return _WorkspaceFileSnapshot(
+        device=int(node.st_dev),
+        inode=int(node.st_ino),
+        mode=int(node.st_mode),
+        link_count=int(node.st_nlink),
+        size=int(node.st_size),
+        modified_ns=int(node.st_mtime_ns),
     )
+
+
+def _assert_workspace_directory(path: Path) -> _WorkspaceDirectorySnapshot:
+    try:
+        node = path.lstat()
+    except OSError as exc:
+        raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
+    if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
+        raise ContainerStartFailedError("workspace transfer source is invalid")
+    return _WorkspaceDirectorySnapshot(
+        device=int(node.st_dev),
+        inode=int(node.st_ino),
+        mode=int(node.st_mode),
+    )
+
+
+def _directory_snapshot_from_stat(node: os.stat_result) -> _WorkspaceDirectorySnapshot:
+    if not stat.S_ISDIR(node.st_mode):
+        raise ContainerStartFailedError("workspace transfer source is invalid")
+    return _WorkspaceDirectorySnapshot(
+        device=int(node.st_dev),
+        inode=int(node.st_ino),
+        mode=int(node.st_mode),
+    )
+
+
+def _workspace_file_snapshot_from_stat(node: os.stat_result) -> _WorkspaceFileSnapshot:
+    if not stat.S_ISREG(node.st_mode) or node.st_nlink != 1:
+        raise ContainerStartFailedError("workspace transfer source is invalid")
+    return _WorkspaceFileSnapshot(
+        device=int(node.st_dev),
+        inode=int(node.st_ino),
+        mode=int(node.st_mode),
+        link_count=int(node.st_nlink),
+        size=int(node.st_size),
+        modified_ns=int(node.st_mtime_ns),
+    )
+
+
+def _secure_workspace_transfer_supported() -> bool:
+    return bool(
+        getattr(os, "O_DIRECTORY", None)
+        and getattr(os, "O_NOFOLLOW", None)
+        and os.open in os.supports_dir_fd
+        and os.rename in os.supports_dir_fd
+    )
+
+
+def _require_secure_workspace_transfer() -> None:
+    if not _secure_workspace_transfer_supported():
+        raise ContainerStartFailedError("OpenSandbox secure workspace transfer is unavailable on this controller")
+
+
+def _directory_open_flags() -> int:
+    return int(os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+
+
+def _file_open_flags() -> int:
+    return int(os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+
+
+def _open_workspace_directory_fd(
+    path: Path,
+    expected_snapshot: _WorkspaceDirectorySnapshot | None = None,
+) -> int:
+    _require_secure_workspace_transfer()
+    try:
+        descriptor = os.open(path, _directory_open_flags())
+    except OSError as exc:
+        raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
+    try:
+        snapshot = _directory_snapshot_from_stat(os.fstat(descriptor))
+        if expected_snapshot is not None and snapshot != expected_snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during read")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_workspace_relative_parent_fd(
+    root_descriptor: int,
+    relative_path: str,
+    *,
+    create: bool,
+) -> tuple[int, str]:
+    """Open a no-follow parent chain below a pinned workspace directory descriptor."""
+
+    parts = PurePosixPath(_safe_workspace_relative_path(relative_path)).parts
+    descriptor = os.dup(root_descriptor)
+    try:
+        for part in parts[:-1]:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise ContainerStartFailedError("workspace output destination is unavailable") from exc
+            try:
+                next_descriptor = os.open(part, _directory_open_flags(), dir_fd=descriptor)
+            except OSError as exc:
+                raise ContainerStartFailedError("workspace output destination is invalid") from exc
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor, parts[-1]
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_workspace_file_fd(entry: _OpenSandboxWorkspaceFile) -> int:
+    if not entry.ancestor_directories:
+        raise ContainerStartFailedError("workspace transfer source is invalid")
+    root, root_snapshot = entry.ancestor_directories[0]
+    descriptor = _open_workspace_directory_fd(root, root_snapshot)
+    current_path = root
+    expected_directories = dict(entry.ancestor_directories)
+    try:
+        for part in PurePosixPath(entry.relative_path).parts[:-1]:
+            current_path = current_path / part
+            expected = expected_directories.get(current_path)
+            if expected is None:
+                raise ContainerStartFailedError("workspace transfer source is invalid")
+            next_descriptor = os.open(part, _directory_open_flags(), dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+            if _directory_snapshot_from_stat(os.fstat(descriptor)) != expected:
+                raise ContainerStartFailedError("workspace transfer source changed during read")
+        try:
+            file_descriptor = os.open(
+                PurePosixPath(entry.relative_path).name,
+                _file_open_flags(),
+                dir_fd=descriptor,
+            )
+        except OSError as exc:
+            raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
+    finally:
+        os.close(descriptor)
+    try:
+        if _workspace_file_snapshot_from_stat(os.fstat(file_descriptor)) != entry.snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during read")
+        return file_descriptor
+    except BaseException:
+        os.close(file_descriptor)
+        raise
+
+
+def _stage_skills_required(request: SandboxRuntimeRequest) -> bool:
+    return _staged_skill_mount_required(request) or any(skill_id != "general-chat" for skill_id in request.skill_ids)
+
+
+def _build_opensandbox_workspace_manifest(
+    request: SandboxRuntimeRequest,
+    workspace: WorkspaceLease,
+) -> tuple[list[str], list[_OpenSandboxWorkspaceFile]]:
+    """Capture a bounded, no-follow manifest for remote workspace transfer."""
+
+    root = Path(workspace.workspace_host_path)
+    root_snapshot = _assert_workspace_directory(root)
+    try:
+        root.resolve(strict=True).relative_to(Path(workspace.host_root).resolve(strict=True))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ContainerStartFailedError("workspace transfer source escapes attempt root") from exc
+
+    directories = {"inputs", "outputs", "outputs/delivery", ".ai-platform"}
+    files: list[_OpenSandboxWorkspaceFile] = []
+    total_bytes = 0
+
+    def add_file(
+        path: Path,
+        relative_path: str,
+        ancestor_directories: tuple[tuple[Path, _WorkspaceDirectorySnapshot], ...],
+    ) -> None:
+        nonlocal total_bytes
+        snapshot = _workspace_file_snapshot(path)
+        if snapshot.size > _OPENSANDBOX_STAGE_MAX_FILE_BYTES:
+            raise ContainerStartFailedError("workspace transfer exceeds file byte limit")
+        total_bytes += snapshot.size
+        if total_bytes > _OPENSANDBOX_STAGE_MAX_TOTAL_BYTES:
+            raise ContainerStartFailedError("workspace transfer exceeds total byte limit")
+        if len(files) >= _OPENSANDBOX_STAGE_MAX_FILES:
+            raise ContainerStartFailedError("workspace transfer exceeds file count limit")
+        files.append(
+            _OpenSandboxWorkspaceFile(
+                relative_path=_safe_workspace_relative_path(relative_path),
+                source_path=path,
+                snapshot=snapshot,
+                ancestor_directories=ancestor_directories,
+            )
+        )
+
+    def walk(
+        directory: Path,
+        relative_root: str,
+        ancestor_directories: tuple[tuple[Path, _WorkspaceDirectorySnapshot], ...],
+    ) -> None:
+        directory_snapshot = _assert_workspace_directory(directory)
+        stable_ancestors = (*ancestor_directories, (directory, directory_snapshot))
+        try:
+            children = sorted(directory.iterdir(), key=lambda item: item.name)
+        except OSError as exc:
+            raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
+        if _assert_workspace_directory(directory) != directory_snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during manifest")
+        for child in children:
+            name = child.name
+            if not name or name in {".", ".."} or "\x00" in name or "/" in name or "\\" in name:
+                raise ContainerStartFailedError("workspace transfer path is invalid")
+            relative_path = name if not relative_root else f"{relative_root}/{name}"
+            try:
+                node = child.lstat()
+            except OSError as exc:
+                raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
+            if stat.S_ISLNK(node.st_mode):
+                raise ContainerStartFailedError("workspace transfer source is invalid")
+            if stat.S_ISDIR(node.st_mode):
+                directories.add(_safe_workspace_relative_path(relative_path))
+                if len(directories) > _OPENSANDBOX_STAGE_MAX_DIRECTORIES:
+                    raise ContainerStartFailedError("workspace transfer exceeds directory limit")
+                walk(child, relative_path, stable_ancestors)
+            elif stat.S_ISREG(node.st_mode):
+                add_file(child, relative_path, stable_ancestors)
+            else:
+                raise ContainerStartFailedError("workspace transfer source is invalid")
+        if _assert_workspace_directory(directory) != directory_snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during manifest")
+
+    # Root materialized files are direct workspace children.  Never transfer
+    # hidden/private run trees by incidental recursion.
+    try:
+        root_children = sorted(root.iterdir(), key=lambda item: item.name)
+    except OSError as exc:
+        raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
+    if _assert_workspace_directory(root) != root_snapshot:
+        raise ContainerStartFailedError("workspace transfer source changed during manifest")
+    named_source_directories = {"inputs", ".ai-platform"}
+    if _stage_skills_required(request):
+        named_source_directories.add(".claude")
+    for child in root_children:
+        try:
+            node = child.lstat()
+        except OSError as exc:
+            raise ContainerStartFailedError("workspace transfer source is unavailable") from exc
+        if stat.S_ISLNK(node.st_mode):
+            raise ContainerStartFailedError("workspace transfer source is invalid")
+        if stat.S_ISREG(node.st_mode):
+            add_file(child, child.name, ((root, root_snapshot),))
+            continue
+        if not stat.S_ISDIR(node.st_mode):
+            raise ContainerStartFailedError("workspace transfer source is invalid")
+        if child.name in named_source_directories:
+            if child.name == ".claude":
+                skills_root = child / "skills"
+                claude_snapshot = _assert_workspace_directory(child)
+                _assert_workspace_directory(skills_root)
+                directories.update({".claude", ".claude/skills"})
+                walk(
+                    skills_root,
+                    ".claude/skills",
+                    ((root, root_snapshot), (child, claude_snapshot)),
+                )
+            else:
+                directories.add(_safe_workspace_relative_path(child.name))
+                walk(child, child.name, ((root, root_snapshot),))
+    if _stage_skills_required(request) and not (root / ".claude" / "skills").is_dir():
+        raise ContainerStartFailedError("workspace transfer Skill source is unavailable")
+    if _assert_workspace_directory(root) != root_snapshot:
+        raise ContainerStartFailedError("workspace transfer source changed during manifest")
+    return sorted(directories, key=lambda item: (item.count("/"), item)), sorted(files, key=lambda item: item.relative_path)
+
+
+def _read_stable_workspace_file(entry: _OpenSandboxWorkspaceFile) -> bytes:
+    """Read via an anchored no-follow descriptor chain and prove it remained stable."""
+
+    for directory, snapshot in entry.ancestor_directories:
+        if _assert_workspace_directory(directory) != snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during read")
+    before = _workspace_file_snapshot(entry.source_path)
+    if before != entry.snapshot:
+        raise ContainerStartFailedError("workspace transfer source changed during read")
+    try:
+        descriptor = _open_workspace_file_fd(entry)
+        try:
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(descriptor, 64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _OPENSANDBOX_STAGE_MAX_FILE_BYTES:
+                    raise ContainerStartFailedError("workspace transfer exceeds file byte limit")
+                chunks.append(chunk)
+            if total != entry.snapshot.size or _workspace_file_snapshot_from_stat(os.fstat(descriptor)) != entry.snapshot:
+                raise ContainerStartFailedError("workspace transfer source changed during read")
+        finally:
+            os.close(descriptor)
+    except SandboxRuntimeError:
+        raise
+    except OSError as exc:
+        raise ContainerStartFailedError("workspace transfer source cannot be read") from exc
+    if _workspace_file_snapshot(entry.source_path) != entry.snapshot:
+        raise ContainerStartFailedError("workspace transfer source changed during read")
+    for directory, snapshot in entry.ancestor_directories:
+        if _assert_workspace_directory(directory) != snapshot:
+            raise ContainerStartFailedError("workspace transfer source changed during read")
+    return b"".join(chunks)
 
 
 _OPENSANDBOX_CONFIRMED_STOP_STATUSES = frozenset({"running", "created", "removed", "exited", "paused"})
@@ -1860,8 +2139,9 @@ def _opensandbox_cleanup_expected_binding(
     """Derive signed cleanup subjects only from complete authoritative remote metadata."""
 
     labels = status.detail.get("labels")
-    if not isinstance(labels, dict):
+    if not opensandbox_metadata.opensandbox_status_matches_lease(labels, lease.labels):
         return None
+    labels = lease.labels
     runtime_identity = str(labels.get("ai-platform.external_egress.runtime_identity") or "")
     runtime_subject = str(labels.get("ai-platform.runtime_subject") or "")
     gateway_policy_subject = str(labels.get("ai-platform.external_egress.gateway_policy_subject") or "")
@@ -1928,15 +2208,23 @@ def _opensandbox_cleanup_expected_binding(
     )
 
 
-def _opensandbox_cleanup_identity_is_signed(
+def _opensandbox_cleanup_identity_is_authorized(
     status: ContainerStatus,
     lease: ContainerLease,
     settings: Any,
     *,
     now: datetime,
 ) -> bool:
-    """Verify remote cleanup identity against the lease's signed historical proof."""
+    """Verify remote cleanup identity using the lease's profile-specific evidence."""
 
+    status_labels = status.detail.get("labels")
+    if not isinstance(status_labels, dict):
+        return False
+    lease_profile = str(lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED)
+    if lease_profile == SANDBOX_SECURITY_PROFILE_TRUSTED_INTERNAL:
+        return trusted_internal_cleanup_identity_is_authorized(status_labels, lease.labels)
+    if lease_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
+        return False
     encoded_proof = lease.labels.get(GOVERNED_EGRESS_PROOF_LABEL)
     if not isinstance(encoded_proof, str):
         return False
@@ -1969,26 +2257,6 @@ def _opensandbox_cleanup_identity_is_signed(
         expected_binding=expected_binding,
         now=now,
         require_fresh=False,
-    )
-
-
-def _opensandbox_matches_filters(metadata: dict[str, str], filters: dict[str, str]) -> bool:
-    return _matches_filters(
-        ContainerStatus(
-            container_id="",
-            container_name="",
-            provider="opensandbox",
-            status="unknown",
-            tenant_id=metadata.get("ai-platform.tenant_id"),
-            workspace_id=metadata.get("ai-platform.workspace_id"),
-            user_id=metadata.get("ai-platform.user_id"),
-            session_id=metadata.get("ai-platform.session_id"),
-            run_id=metadata.get("ai-platform.run_id"),
-            sandbox_mode=metadata.get("ai-platform.sandbox_mode") if metadata.get("ai-platform.sandbox_mode") in {"ephemeral", "persistent"} else None,
-            browser_enabled=metadata.get("ai-platform.browser_enabled", "false").lower() == "true",
-            detail={key.removeprefix("ai-platform."): value for key, value in metadata.items()},
-        ),
-        filters,
     )
 
 
@@ -2526,16 +2794,6 @@ def _is_not_found_error(exc: BaseException) -> bool:
     )
 
 
-def _is_authoritative_opensandbox_not_found_error(exc: BaseException) -> bool:
-    """Return true only for the OpenSandbox SDK's explicit HTTP 404 response."""
-
-    try:
-        from opensandbox.exceptions import SandboxApiException
-    except ImportError:
-        return False
-    return isinstance(exc, SandboxApiException) and getattr(exc, "status_code", None) == 404
-
-
 def default_executor_health_probe(
     executor_url: str,
     timeout_seconds: int,
@@ -2640,36 +2898,6 @@ def _call_executor_health_probe(
     return health_probe(executor_url, timeout_seconds)
 
 
-def _endpoint_headers(endpoint: Any) -> dict[str, str]:
-    headers = getattr(endpoint, "headers", None)
-    if headers is None and isinstance(endpoint, dict):
-        headers = endpoint.get("headers")
-    if not isinstance(headers, dict):
-        return {}
-    normalized: dict[str, str] = {}
-    for key, value in headers.items():
-        if key is None or value is None:
-            continue
-        header_name = str(key).strip()
-        header_value = str(value)
-        if header_name:
-            normalized[header_name] = header_value
-    return normalized
-
-
-def _opensandbox_executor_url(raw_url: str, settings: Any) -> str:
-    url = raw_url.strip().rstrip("/")
-    if not url:
-        return ""
-    if url.startswith("//"):
-        protocol = str(getattr(settings, "opensandbox_protocol", "http") or "http").strip() or "http"
-        return f"{protocol}:{url}"
-    if "://" not in url:
-        protocol = str(getattr(settings, "opensandbox_protocol", "http") or "http").strip() or "http"
-        return f"{protocol}://{url.lstrip('/')}"
-    return url
-
-
 def _stop_and_remove_container(container: Any) -> bool:
     stop_succeeded = not hasattr(container, "stop")
     if hasattr(container, "stop"):
@@ -2769,6 +2997,22 @@ class FakeContainerProvider:
     ) -> None:
         return None
 
+    async def stage_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        return None
+
+    async def collect_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        return None
+
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         removed = self._leases.pop(lease.container_id, None)
         if removed is None:
@@ -2854,7 +3098,7 @@ class DockerContainerProvider:
         raise ExecutorHealthTimeoutError()
 
     def _elapsed_ms(self, started_at: float) -> int:
-        return max(int(round((self._monotonic() - started_at) * 1000)), 0)
+        return readiness_evidence.bounded_elapsed_ms(started_at, self._monotonic())
 
     def _cleanup_container_or_track(self, container: Any, lease: ContainerLease) -> None:
         if _stop_and_remove_container(container):
@@ -3052,6 +3296,14 @@ class DockerContainerProvider:
             return
         self._leases[lease.container_id] = lease
         raise ContainerCleanupFailedError("runtime container pair cleanup could not be confirmed")
+
+    def _cleanup_runtime_pair_for_error(self, container: Any, native: Any, lease: ContainerLease, cause: BaseException, evidence: readiness_evidence.ExecutorReadinessEvidence | None = None) -> BaseException:
+        try:
+            self._cleanup_runtime_pair_or_track(container, native, lease)
+        except ContainerCleanupFailedError as cleanup_exc:
+            cleanup_exc.readiness_evidence = evidence
+            raise cleanup_exc from cause
+        return cause
 
     async def _native_tool_reuse_valid(
         self,
@@ -3704,10 +3956,7 @@ class DockerContainerProvider:
             )
             owned_resources.primary = container
         except CallbackTargetValidationError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise ContainerStartFailedError() from exc
         except ContainerCleanupFailedError:
             raise
@@ -3719,10 +3968,7 @@ class DockerContainerProvider:
             raise
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             if normalized_exc is not None:
                 raise normalized_exc from exc
             if isinstance(exc, SandboxRuntimeError):
@@ -3744,10 +3990,7 @@ class DockerContainerProvider:
                 container.start()
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             if isinstance(normalized_exc, DockerPermissionDeniedError):
                 raise normalized_exc from exc
             raise ContainerStartFailedError() from exc
@@ -3764,10 +4007,7 @@ class DockerContainerProvider:
             )
         except GovernedEgressAdmissionError as exc:
             egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.POST_CREATE_PROOF_SEAL)
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise
 
         callback_reachable = await asyncio.to_thread(
@@ -3784,6 +4024,7 @@ class DockerContainerProvider:
                 raise cleanup_exc
             raise GovernedEgressAdmissionError()
 
+        publish_wait_started_at = time.monotonic()
         try:
             executor_url = await self._wait_for_executor_url(
                 container,
@@ -3792,22 +4033,17 @@ class DockerContainerProvider:
             )
             bootstrap_lease.executor_url = executor_url
         except asyncio.CancelledError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise
         except ExecutorHealthTimeoutError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
-            raise
+            evidence = readiness_evidence.normalize_docker_readiness_evidence(
+                "publish_wait", *_docker_readiness_snapshot(container, endpoint),
+                "not_attempted", readiness_evidence.bounded_elapsed_ms(publish_wait_started_at, time.monotonic()),
+            )
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc, evidence)
+            raise ExecutorHealthTimeoutError(readiness_evidence=evidence) from exc
         except Exception as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             if isinstance(exc, ContainerStartFailedError):
                 raise
             raise ContainerStartFailedError() from exc
@@ -3827,21 +4063,21 @@ class DockerContainerProvider:
                 probe_headers,
             )
         except asyncio.CancelledError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise
         except Exception as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
-            raise ExecutorHealthTimeoutError() from exc
+            evidence = readiness_evidence.normalize_docker_readiness_evidence(
+                "health_probe", *_docker_readiness_snapshot(container),
+                readiness_evidence.health_failure_outcome(exc), self._elapsed_ms(healthcheck_started_at),
+            )
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc, evidence)
+            raise ExecutorHealthTimeoutError(readiness_evidence=evidence) from exc
         sandbox_healthcheck_latency_ms = self._elapsed_ms(healthcheck_started_at)
         if not healthy:
-            self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            raise ExecutorHealthTimeoutError()
+            evidence = readiness_evidence.normalize_docker_readiness_evidence(
+                "health_probe", *_docker_readiness_snapshot(container), "unhealthy", sandbox_healthcheck_latency_ms,
+            )
+            raise self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, ExecutorHealthTimeoutError(readiness_evidence=evidence), evidence)
         if _container_config_user(container) != workspace_user:
             self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             raise ContainerStartFailedError("executor Config.User mismatch")
@@ -3854,16 +4090,10 @@ class DockerContainerProvider:
             )
             _require_expected_executor_identity(identity)
         except asyncio.CancelledError as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise
         except Exception as exc:
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc from exc
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             if isinstance(exc, ContainerStartFailedError):
                 raise
             raise ContainerStartFailedError("executor identity unavailable") from exc
@@ -3987,6 +4217,26 @@ class DockerContainerProvider:
                 raise
             raise GovernedEgressAdmissionError() from None
 
+    async def stage_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Docker already owns the verified local workspace bind."""
+
+        return None
+
+    async def collect_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Docker writes directly to the controller-visible workspace bind."""
+
+        return None
+
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         primary_status = "not_found"
         primary_failed = False
@@ -4107,7 +4357,7 @@ def _load_opensandbox_symbols() -> dict[str, Any]:
     try:
         from opensandbox import Sandbox, SandboxManager
         from opensandbox.config import ConnectionConfig
-        from opensandbox.models.filesystem import WriteEntry
+        from opensandbox.models.filesystem import DirectoryListEntry, WriteEntry
         from opensandbox.models.sandboxes import Host, NetworkPolicy, NetworkRule, SandboxFilter, Volume
     except ImportError as exc:  # pragma: no cover - exercised through lazy dependency failure
         raise OpenSandboxUnavailableError() from exc
@@ -4116,6 +4366,7 @@ def _load_opensandbox_symbols() -> dict[str, Any]:
         "sandbox_manager_class": SandboxManager,
         "connection_config_class": ConnectionConfig,
         "file_class": WriteEntry,
+        "directory_entry_class": DirectoryListEntry,
         "host_class": Host,
         "volume_class": Volume,
         "network_policy_class": NetworkPolicy,
@@ -4128,12 +4379,6 @@ def _opensandbox_cache_key(run_id: str, attempt_id: str) -> tuple[str, str]:
     """Return the exact in-process identity of one OpenSandbox execution attempt."""
 
     return run_id, attempt_id
-
-
-def _opensandbox_container_name(run_id: str, attempt_id: str) -> str:
-    """Return the attestation-compatible local name for one exact attempt."""
-
-    return f"opensandbox-{run_id}-{attempt_id}"
 
 
 def _opensandbox_cache_key_for_lease(lease: ContainerLease) -> tuple[str, str] | None:
@@ -4153,6 +4398,7 @@ class OpenSandboxContainerProvider:
         sandbox_manager_class: Any | None = None,
         connection_config_class: Any | None = None,
         file_class: Any | None = None,
+        directory_entry_class: Any | None = None,
         host_class: Any | None = None,
         volume_class: Any | None = None,
         network_policy_class: Any | None = None,
@@ -4169,6 +4415,7 @@ class OpenSandboxContainerProvider:
         self._sandbox_manager_class = sandbox_manager_class
         self._connection_config_class = connection_config_class
         self._file_class = file_class
+        self._directory_entry_class = directory_entry_class
         self._host_class = host_class
         self._volume_class = volume_class
         self._network_policy_class = network_policy_class
@@ -4191,6 +4438,7 @@ class OpenSandboxContainerProvider:
         self._sandbox_manager_class = symbols["sandbox_manager_class"]
         self._connection_config_class = symbols["connection_config_class"]
         self._file_class = symbols["file_class"]
+        self._directory_entry_class = symbols["directory_entry_class"]
         self._host_class = symbols["host_class"]
         self._volume_class = symbols["volume_class"]
         self._network_policy_class = symbols["network_policy_class"]
@@ -4203,17 +4451,6 @@ class OpenSandboxContainerProvider:
 
     def _elapsed_ms(self, started_at: float) -> int:
         return max(int(round((self._monotonic() - started_at) * 1000)), 0)
-
-    async def _call_close(self, sandbox: Any) -> None:
-        close = getattr(sandbox, "close", None)
-        if close is not None:
-            await _maybe_await(close())
-
-    async def _call_kill(self, sandbox: Any) -> None:
-        kill = getattr(sandbox, "kill", None)
-        if kill is None:
-            raise ContainerStartFailedError("OpenSandbox sandbox stop failed")
-        await _maybe_await(kill())
 
     async def _connect(self, sandbox_id: str, connection_config: Any, *, skip_health_check: bool = False) -> Any:
         self._ensure_symbols()
@@ -4314,7 +4551,9 @@ class OpenSandboxContainerProvider:
             },
             sort_keys=True,
         )
-        await _maybe_await(sandbox.files.write_files([self._file_class(path=sentinel_path, data=payload)]))
+        await _maybe_await(
+            sandbox.files.write_files([self._file_class(path=sentinel_path, data=payload, mode=encode_execd_mode(0o600))])
+        )
         readback = await _maybe_await(sandbox.files.read_file(sentinel_path))
         if isinstance(readback, bytes):
             readback_text = readback.decode("utf-8")
@@ -4322,47 +4561,6 @@ class OpenSandboxContainerProvider:
             readback_text = str(readback)
         if readback_text != payload:
             raise ContainerStartFailedError("OpenSandbox file verification failed")
-        commands = getattr(sandbox, "commands", None)
-        if commands is None or not hasattr(commands, "run"):
-            raise ContainerStartFailedError("OpenSandbox command execution is unavailable")
-        result = await _maybe_await(commands.run(f"test -f {shlex.quote(sentinel_path)}"))
-        exit_code = getattr(result, "exit_code", None)
-        if exit_code is not None and int(exit_code) != 0:
-            raise ContainerStartFailedError("OpenSandbox command execution failed")
-
-    async def _executor_endpoint(self, sandbox: Any, settings: Any) -> tuple[str, dict[str, str]]:
-        endpoint = await _maybe_await(sandbox.get_endpoint(port=18000))
-        headers = _endpoint_headers(endpoint)
-        url = getattr(endpoint, "endpoint", None)
-        if url is None and isinstance(endpoint, dict):
-            url = endpoint.get("endpoint")
-        if not isinstance(url, str) or not url.strip():
-            raise ContainerStartFailedError("OpenSandbox executor endpoint unavailable")
-        return _opensandbox_executor_url(url, settings), headers
-
-    async def _cleanup_started_sandbox(
-        self,
-        sandbox: Any | None,
-        *,
-        propagate_authoritative_not_found: bool = False,
-    ) -> bool:
-        if sandbox is None:
-            return True
-        killed = False
-        not_found_error: BaseException | None = None
-        try:
-            await self._call_kill(sandbox)
-            killed = True
-        except Exception as exc:
-            if propagate_authoritative_not_found and _is_authoritative_opensandbox_not_found_error(exc):
-                not_found_error = exc
-        try:
-            await self._call_close(sandbox)
-        except Exception:
-            pass
-        if not_found_error is not None:
-            raise not_found_error
-        return killed
 
     def _track_cleanup_pending_sandbox(
         self,
@@ -4372,10 +4570,10 @@ class OpenSandboxContainerProvider:
         *,
         metadata: dict[str, str],
         executor_auth_token: str,
-    ) -> None:
+    ) -> dict[str, str] | None:
         sandbox_id = str(getattr(sandbox, "id", "") or "")
         if not sandbox_id:
-            return
+            return identity_unavailable_cleanup_subject(request.run_id, request.attempt_id)
         lease = ContainerLease(
             container_id=sandbox_id,
             container_name=_opensandbox_container_name(request.run_id, request.attempt_id),
@@ -4395,27 +4593,7 @@ class OpenSandboxContainerProvider:
         )
         self._sandboxes[sandbox_id] = sandbox
         self._leases[_opensandbox_cache_key(request.run_id, request.attempt_id)] = lease
-
-    async def _cleanup_new_sandbox_or_track(
-        self,
-        sandbox: Any | None,
-        request: SandboxRuntimeRequest,
-        workspace: WorkspaceLease,
-        *,
-        metadata: dict[str, str],
-        executor_auth_token: str,
-    ) -> None:
-        if await self._cleanup_started_sandbox(sandbox):
-            return
-        if sandbox is not None:
-            self._track_cleanup_pending_sandbox(
-                sandbox,
-                request,
-                workspace,
-                metadata=metadata,
-                executor_auth_token=executor_auth_token,
-            )
-        raise ContainerCleanupFailedError("sandbox cleanup could not be confirmed")
+        return None
 
     async def _cleanup_cached_lease_after_capability_rejection(self, request: SandboxRuntimeRequest) -> None:
         """Remove a tracked lease when its next admission profile has drifted or expired."""
@@ -4425,7 +4603,7 @@ class OpenSandboxContainerProvider:
         if cached is None:
             return
         sandbox = self._sandboxes.get(cached.container_id)
-        if sandbox is not None and not await self._cleanup_started_sandbox(sandbox):
+        if sandbox is not None and not await cleanup_started_sandbox(sandbox):
             raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed")
         self._sandboxes.pop(cached.container_id, None)
         self._leases.pop(cache_key, None)
@@ -4460,6 +4638,8 @@ class OpenSandboxContainerProvider:
         workspace: WorkspaceLease,
     ) -> ContainerLease:
         settings = get_settings()
+        cleanup_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
+        _require_governed_security_profile(settings)
         if not has_governed_egress_signing_key(getattr(settings, "sandbox_egress_proof_signing_key", "")):
             raise OpenSandboxCapabilityAdmissionError("OpenSandbox governed-egress proof key is unavailable") from None
         if self._authoritative_attestation_probe is None:
@@ -4476,13 +4656,20 @@ class OpenSandboxContainerProvider:
         except OpenSandboxCapabilityAdmissionError:
             await self._cleanup_cached_lease_after_capability_rejection(request)
             raise
-        skill_mount = _prepare_trusted_skill_mount(request, workspace)
-        cache_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
+        # Remote OpenSandbox has no controller filesystem identity.  Stage the
+        # controlled Skill tree only after this ready sandbox has a DB lease.
+        skill_mount = None
+        metadata = _opensandbox_profile_labels(settings, request, capability, skill_mount)
+        try:
+            provider_metadata = opensandbox_metadata.normalize_opensandbox_metadata(metadata)
+        except opensandbox_metadata.OpenSandboxMetadataError as exc:
+            raise ContainerStartFailedError("OpenSandbox metadata is invalid") from exc
+        cache_key = cleanup_key
         cached = self._leases.get(cache_key)
         if cached is not None and cached.container_id in self._sandboxes:
             sandbox = self._sandboxes[cached.container_id]
             if not _lease_matches_request_workspace(cached, request, workspace):
-                if not await self._cleanup_started_sandbox(sandbox):
+                if not await cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed")
                 self._sandboxes.pop(cached.container_id, None)
                 self._leases.pop(cache_key, None)
@@ -4496,9 +4683,9 @@ class OpenSandboxContainerProvider:
                     executor_url=cached.executor_url,
                 )
                 expected_lease.labels.update(
-                    _opensandbox_labels(settings, request, capability, skill_mount)
+                    provider_metadata
                 )
-                sealed_labels = _opensandbox_labels(
+                sealed_labels = _opensandbox_profile_labels(
                     settings,
                     request,
                     capability,
@@ -4545,16 +4732,17 @@ class OpenSandboxContainerProvider:
                     cached.container_id,
                     info,
                 )
-                if not _governed_egress_labels_match(
+                labels_match = _governed_egress_labels_match(
                     "opensandbox",
                     cached.labels,
                     sealed_labels,
                     getattr(settings, "sandbox_egress_proof_signing_key", ""),
                     signing_key_id=_governed_egress_proof_key_id(settings),
                     now=self._utcnow(),
-                ):
+                )
+                if not labels_match:
                     raise ContainerStartFailedError("cached sandbox metadata mismatch")
-                executor_url, endpoint_headers = await self._executor_endpoint(sandbox, settings)
+                executor_url, endpoint_headers = await resolve_executor_endpoint(sandbox, settings, error_factory=ContainerStartFailedError)
                 cached_auth_token = str(cached.executor_headers.get(EXECUTOR_AUTH_HEADER) or "")
                 if not cached_auth_token:
                     raise ContainerStartFailedError("executor identity credential unavailable")
@@ -4580,19 +4768,19 @@ class OpenSandboxContainerProvider:
                 _require_expected_executor_identity(identity)
                 _ensure_capability_still_valid(capability, now=self._utcnow())
             except asyncio.CancelledError as exc:
-                if not await self._cleanup_started_sandbox(sandbox):
+                if not await cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
                 self._leases.pop(cache_key, None)
                 raise
             except OpenSandboxCapabilityAdmissionError as exc:
-                if not await self._cleanup_started_sandbox(sandbox):
+                if not await cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
                 self._leases.pop(cache_key, None)
                 raise
             except Exception as exc:
-                if not await self._cleanup_started_sandbox(sandbox):
+                if not await cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
                 self._leases.pop(cache_key, None)
@@ -4605,40 +4793,104 @@ class OpenSandboxContainerProvider:
             try:
                 _ensure_capability_still_valid(capability, now=self._utcnow())
             except OpenSandboxCapabilityAdmissionError as exc:
-                if not await self._cleanup_started_sandbox(sandbox):
+                if not await cleanup_started_sandbox(sandbox):
                     raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
                 self._leases.pop(cache_key, None)
                 raise
             return cached
 
+        reconciled_identity_unavailable_cleanup = await reconcile_authoritative_identity_unavailable_cleanup(
+            self,
+            request=request,
+            workspace=workspace,
+            settings=settings,
+            metadata=provider_metadata,
+            cache_key=cache_key,
+            required=False,
+            cleanup_subject=identity_unavailable_cleanup_subject(request.run_id, request.attempt_id),
+            status_from_info=_opensandbox_status_from_info,
+            sealed_metadata_for_id=lambda sandbox_id: _opensandbox_profile_labels(
+                settings,
+                request,
+                capability,
+                skill_mount,
+                lease_identity=f"opensandbox:{_opensandbox_container_name(request.run_id, request.attempt_id)}:{sandbox_id}",
+                now=self._utcnow(),
+            ),
+            cleanup_error=lambda message, subject: ContainerCleanupFailedError(message, cleanup_subject=subject),
+        )
+
         # A restarted provider has no durable executor credential to safely
         # re-authenticate a remote OpenSandbox process.  Detect an exact owned
         # remote first and fail closed rather than creating a same-scope peer.
-        remote_statuses = await self._list_remote_statuses(
-            {
-                "tenant_id": request.tenant_id,
-                "workspace_id": request.workspace_id,
-                "user_id": request.user_id,
-                "session_id": request.session_id,
-                "run_id": request.run_id,
-                "attempt_id": request.attempt_id,
-            }
-        )
-        if remote_statuses:
-            if len(remote_statuses) != 1 or remote_statuses[0].status != "running":
-                raise ContainerStartFailedError("OpenSandbox remote lease recovery is unsafe")
-            raise ContainerStartFailedError("OpenSandbox remote lease requires its existing credential")
+        if not reconciled_identity_unavailable_cleanup:
+            remote_statuses = await self._list_remote_statuses(
+                {
+                    "tenant_id": request.tenant_id,
+                    "workspace_id": request.workspace_id,
+                    "user_id": request.user_id,
+                    "session_id": request.session_id,
+                    "run_id": request.run_id,
+                    "attempt_id": request.attempt_id,
+                }
+            )
+            if remote_statuses:
+                if len(remote_statuses) != 1 or remote_statuses[0].status != "running":
+                    raise ContainerStartFailedError("OpenSandbox remote lease recovery is unsafe")
+                raise ContainerStartFailedError("OpenSandbox remote lease requires its existing credential")
 
         started_at = self._monotonic()
         connection_config = self._connection_config(settings)
-        metadata = _opensandbox_labels(settings, request, capability, skill_mount)
         executor_auth_token = _generate_executor_auth_token()
+
+        async def cleanup_new(sandbox: Any | None, original_error: SandboxRuntimeError | None = None) -> None:
+            return await cleanup_new_sandbox_or_reconcile(
+                self,
+                sandbox=sandbox,
+                request=request,
+                workspace=workspace,
+                metadata=metadata,
+                executor_auth_token=executor_auth_token,
+                original_error=original_error,
+                reconcile_identity=lambda subject: reconcile_authoritative_identity_unavailable_cleanup(
+                    self,
+                    request=request,
+                    workspace=workspace,
+                    settings=settings,
+                    metadata=provider_metadata,
+                    cache_key=cache_key,
+                    required=True,
+                    cleanup_subject=subject,
+                    status_from_info=_opensandbox_status_from_info,
+                    sealed_metadata_for_id=lambda sandbox_id: _opensandbox_profile_labels(
+                        settings,
+                        request,
+                        capability,
+                        skill_mount,
+                        lease_identity=f"opensandbox:{_opensandbox_container_name(request.run_id, request.attempt_id)}:{sandbox_id}",
+                        now=self._utcnow(),
+                    ),
+                    cleanup_error=lambda message, cleanup_subject: ContainerCleanupFailedError(
+                        message,
+                        cleanup_subject=cleanup_subject,
+                    ),
+                ),
+                cleanup_error=lambda message, cleanup_subject, error: ContainerCleanupFailedError(
+                    message,
+                    readiness_evidence=(
+                        error.readiness_evidence if isinstance(error, ExecutorHealthTimeoutError) else None
+                    ),
+                    cleanup_subject=cleanup_subject,
+                ),
+            )
+
+        executor_egress_bases = capability.executor_egress_bases()
         environment = _executor_environment(
             request,
             settings,
             executor_auth_token=executor_auth_token,
-            egress_bases=capability.executor_egress_bases(),
+            egress_bases=executor_egress_bases,
             workspace_container_path=workspace.workspace_container_path,
         )
         kwargs = {
@@ -4648,9 +4900,13 @@ class OpenSandboxContainerProvider:
                 seconds=max(int(getattr(settings, "sandbox_container_start_timeout_seconds", 30) or 30), 1)
             ),
             "env": environment,
-            "metadata": metadata,
+            "metadata": provider_metadata,
             "resource": _opensandbox_resource_limits(request.resource_limits),
-            "network_policy": _opensandbox_network_policy(settings, self._network_policy_class, self._network_rule_class),
+            "network_policy": _opensandbox_network_policy(
+                settings,
+                self._network_policy_class,
+                self._network_rule_class,
+            ),
             "entrypoint": _opensandbox_entrypoint(settings),
             "volumes": _opensandbox_volumes(
                 settings,
@@ -4662,15 +4918,17 @@ class OpenSandboxContainerProvider:
             "connection_config": connection_config,
         }
         sandbox: Any | None = None
-        try:
+        async def create_sandbox() -> Any:
+            nonlocal sandbox
             sandbox = await _maybe_await(self._sandbox_class.create(**kwargs))
-            if getattr(settings, "opensandbox_startup_io_probe_enabled", True) is True:
-                await self._write_and_verify_sentinel(sandbox, request, workspace)
-            executor_url, executor_headers = await self._executor_endpoint(sandbox, settings)
-            sandbox_id = str(getattr(sandbox, "id", "") or "")
+            if not str(getattr(sandbox, "id", "") or ""):
+                raise ContainerStartFailedError("OpenSandbox sandbox start failed")
+            return sandbox
+        async def read_back_started_sandbox(started_sandbox: Any, executor_url: str) -> str:
+            sandbox_id = str(getattr(started_sandbox, "id", "") or "")
             if not sandbox_id:
                 raise ContainerStartFailedError("OpenSandbox sandbox start failed")
-            info = await _maybe_await(sandbox.get_info())
+            info = await _maybe_await(started_sandbox.get_info())
             remote_status = _opensandbox_status_from_info(info)
             expected_unsealed = _lease_from_request(
                 "opensandbox",
@@ -4678,7 +4936,7 @@ class OpenSandboxContainerProvider:
                 workspace,
                 executor_url=executor_url,
             )
-            expected_unsealed.labels.update(metadata)
+            expected_unsealed.labels.update(provider_metadata)
             if (
                 remote_status is None
                 or remote_status.container_id != sandbox_id
@@ -4691,58 +4949,77 @@ class OpenSandboxContainerProvider:
                 sandbox_id,
                 info,
             )
+            return sandbox_id
+
+        async def check_executor_health(executor_url: str, endpoint_headers: dict[str, str]) -> int:
             health_started_at = self._monotonic()
             healthy = await asyncio.to_thread(
                 _call_executor_health_probe,
                 self._health_probe,
                 executor_url,
                 int(getattr(settings, "sandbox_executor_health_timeout_seconds", 60) or 60),
-                executor_headers,
+                endpoint_headers,
             )
             sandbox_healthcheck_latency_ms = self._elapsed_ms(health_started_at)
             if not healthy:
-                raise ExecutorHealthTimeoutError()
+                raise ExecutorHealthTimeoutError(readiness_evidence=readiness_evidence.ExecutorReadinessEvidence(**unhealthy_readiness_fields(sandbox_healthcheck_latency_ms)))
+            return sandbox_healthcheck_latency_ms
+
+        async def verify_executor_identity(executor_url: str, endpoint_headers: dict[str, str]) -> None:
             identity = await asyncio.to_thread(
                 self._identity_probe,
                 executor_url,
                 int(getattr(settings, "sandbox_executor_health_timeout_seconds", 60) or 60),
-                _executor_auth_headers(executor_auth_token, executor_headers),
+                _executor_auth_headers(executor_auth_token, endpoint_headers),
             )
             _require_expected_executor_identity(identity)
             _ensure_capability_still_valid(capability, now=self._utcnow())
+
+        try:
+            startup_result = await launch_opensandbox_startup(
+                OpenSandboxStartupOperations(
+                    create=create_sandbox,
+                    resolve_endpoint=lambda started_sandbox: resolve_executor_endpoint(
+                        started_sandbox, settings, error_factory=ContainerStartFailedError
+                    ),
+                    readback=read_back_started_sandbox,
+                    health=check_executor_health,
+                    identity=verify_executor_identity,
+                ),
+                passthrough_error_types=(OpenSandboxCapabilityAdmissionError,),
+                typed_error_types=(SandboxRuntimeError,),
+                typed_error_evidence_attacher=lambda error, evidence: error.attach_opensandbox_startup_evidence(evidence)
+                if isinstance(error, SandboxRuntimeError)
+                else None,
+            )
+            sandbox = startup_result.sandbox
+            sandbox_id = startup_result.sandbox_id
+            executor_url = startup_result.executor_url
+            executor_headers = startup_result.executor_headers
+            sandbox_healthcheck_latency_ms = startup_result.healthcheck_latency_ms
         except asyncio.CancelledError as exc:
             try:
-                await self._cleanup_new_sandbox_or_track(
-                    sandbox,
-                    request,
-                    workspace,
-                    metadata=metadata,
-                    executor_auth_token=executor_auth_token,
-                )
+                await cleanup_new(sandbox)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
+        except OpenSandboxStartupFailure as exc:
+            sandbox = exc.sandbox
+            try:
+                await cleanup_new(sandbox)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
+            message = str(exc.cause) if isinstance(exc.cause, SandboxRuntimeError) else "OpenSandbox sandbox start failed"
+            raise OpenSandboxStartupFailedError(exc.evidence, message=message) from exc
         except SandboxRuntimeError as exc:
             try:
-                await self._cleanup_new_sandbox_or_track(
-                    sandbox,
-                    request,
-                    workspace,
-                    metadata=metadata,
-                    executor_auth_token=executor_auth_token,
-                )
+                await cleanup_new(sandbox, exc)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
         except Exception as exc:
             try:
-                await self._cleanup_new_sandbox_or_track(
-                    sandbox,
-                    request,
-                    workspace,
-                    metadata=metadata,
-                    executor_auth_token=executor_auth_token,
-                )
+                await cleanup_new(sandbox)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise ContainerStartFailedError("OpenSandbox sandbox start failed") from exc
@@ -4763,7 +5040,7 @@ class OpenSandboxContainerProvider:
             workspace_host_path=workspace.workspace_host_path,
             workspace_container_path=workspace.workspace_container_path,
             labels=_provider_lease_labels(
-                _opensandbox_labels(
+                _opensandbox_profile_labels(
                     settings,
                     request,
                     capability,
@@ -4782,13 +5059,7 @@ class OpenSandboxContainerProvider:
             _ensure_capability_still_valid(capability, now=self._utcnow())
         except OpenSandboxCapabilityAdmissionError as exc:
             try:
-                await self._cleanup_new_sandbox_or_track(
-                    sandbox,
-                    request,
-                    workspace,
-                    metadata=metadata,
-                    executor_auth_token=executor_auth_token,
-                )
+                await cleanup_new(sandbox)
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
@@ -4802,20 +5073,12 @@ class OpenSandboxContainerProvider:
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
     ) -> None:
-        """Fail closed unless a current authoritative OpenSandbox attestation remains valid."""
+        """Fail closed unless governed OpenSandbox evidence remains valid."""
         settings = get_settings()
+        _require_governed_security_profile(settings)
         if not _lease_matches_request_workspace(lease, request, workspace):
             raise OpenSandboxCapabilityAdmissionError("OpenSandbox dispatch scope mismatch")
-        if self._authoritative_attestation_probe is None:
-            raise OpenSandboxCapabilityAdmissionError(
-                "OpenSandbox governed egress is unsupported without authoritative topology attestation"
-            )
         try:
-            capability = await _admit_opensandbox_external_egress_capability(
-                settings=settings,
-                fetcher=self._capability_profile_fetcher,
-                now=self._utcnow(),
-            )
             sandbox = self._sandboxes.get(lease.container_id)
             if sandbox is None:
                 sandbox = await self._connect(
@@ -4824,6 +5087,15 @@ class OpenSandboxContainerProvider:
                     skip_health_check=True,
                 )
             info = await _maybe_await(sandbox.get_info())
+            if self._authoritative_attestation_probe is None:
+                raise OpenSandboxCapabilityAdmissionError(
+                    "OpenSandbox governed egress is unsupported without authoritative topology attestation"
+                )
+            capability = await _admit_opensandbox_external_egress_capability(
+                settings=settings,
+                fetcher=self._capability_profile_fetcher,
+                now=self._utcnow(),
+            )
             await self._require_authoritative_governed_attestation(
                 capability,
                 request,
@@ -4847,11 +5119,500 @@ class OpenSandboxContainerProvider:
                 is None
             ):
                 raise OpenSandboxCapabilityAdmissionError("OpenSandbox dispatch proof is stale")
-        except OpenSandboxCapabilityAdmissionError:
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
             stop_result = await self.stop(lease, reason="dispatch_attestation_failed")
             if stop_result.status == "failed":
-                raise ContainerCleanupFailedError("OpenSandbox dispatch cleanup could not be confirmed") from None
+                raise ContainerCleanupFailedError("OpenSandbox dispatch cleanup could not be confirmed") from exc
+            if isinstance(exc, SandboxRuntimeError):
+                raise
+            raise OpenSandboxCapabilityAdmissionError("OpenSandbox dispatch validation failed") from None
+
+    async def _workspace_transfer_sandbox(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> Any:
+        if not _lease_matches_request_workspace(lease, request, workspace):
+            raise ContainerStartFailedError("OpenSandbox workspace transfer scope mismatch")
+        sandbox = self._sandboxes.get(lease.container_id)
+        if sandbox is None:
+            sandbox = await self._connect(
+                lease.container_id,
+                self._connection_config(get_settings()),
+                skip_health_check=True,
+            )
+            self._sandboxes[lease.container_id] = sandbox
+        return sandbox
+
+    async def stage_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Synchronize the bounded attempt workspace after remote sandbox readiness."""
+
+        try:
+            _require_secure_workspace_transfer()
+            sandbox = await self._workspace_transfer_sandbox(lease, request, workspace)
+            filesystem = getattr(sandbox, "files", None)
+            if (
+                filesystem is None
+                or self._file_class is None
+                or not hasattr(filesystem, "create_directories")
+                or not hasattr(filesystem, "write_files")
+                or not hasattr(filesystem, "read_file")
+            ):
+                raise ContainerStartFailedError("OpenSandbox filesystem staging is unavailable")
+            directories, files = _build_opensandbox_workspace_manifest(request, workspace)
+            remote_root = workspace.workspace_container_path.rstrip("/")
+            remote_directories = [self._file_class(path=remote_root, data=None, mode=encode_execd_mode(0o700))] + [
+                self._file_class(path=f"{remote_root}/{relative_path}", data=None, mode=encode_execd_mode(0o700))
+                for relative_path in directories
+            ]
+            await _maybe_await(filesystem.create_directories(remote_directories))
+            for entry in files:
+                payload = _read_stable_workspace_file(entry)
+                mode = encode_execd_mode(0o700 if entry.snapshot.mode & stat.S_IXUSR else 0o600)
+                await _maybe_await(
+                    filesystem.write_files(
+                        [
+                            self._file_class(
+                                path=f"{remote_root}/{entry.relative_path}",
+                                data=payload,
+                                mode=mode,
+                            )
+                        ]
+                    )
+                )
+            await self._write_and_verify_sentinel(sandbox, request, workspace)
+        except asyncio.CancelledError:
             raise
+        except SandboxRuntimeError:
+            raise
+        except Exception as exc:
+            raise ContainerStartFailedError("OpenSandbox workspace staging failed") from exc
+
+    @staticmethod
+    def _filesystem_entry_value(entry: Any, name: str) -> Any:
+        if isinstance(entry, dict):
+            if name == "entry_type":
+                return entry.get("entry_type", entry.get("type"))
+            return entry.get(name)
+        if name == "entry_type":
+            return getattr(entry, "entry_type", getattr(entry, "type", None))
+        return getattr(entry, name, None)
+
+    def _remote_workspace_entry(
+        self,
+        entry: Any,
+        workspace: WorkspaceLease,
+    ) -> tuple[str, str, int]:
+        raw_path = self._filesystem_entry_value(entry, "path")
+        remote_root = workspace.workspace_container_path.rstrip("/")
+        if not isinstance(raw_path, str) or "\x00" in raw_path or not raw_path.startswith(f"{remote_root}/"):
+            raise ContainerStartFailedError("OpenSandbox workspace collection path is invalid")
+        relative_path = _safe_workspace_relative_path(raw_path[len(remote_root) + 1 :])
+        entry_type = str(self._filesystem_entry_value(entry, "entry_type") or "").lower()
+        if entry_type not in {"file", "directory"}:
+            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid")
+        try:
+            size = int(self._filesystem_entry_value(entry, "size"))
+        except (TypeError, ValueError) as exc:
+            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid") from exc
+        if size < 0:
+            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid")
+        return relative_path, entry_type, size
+
+    async def _list_remote_workspace_directory(
+        self,
+        filesystem: Any,
+        workspace: WorkspaceLease,
+        relative_directory: str,
+    ) -> list[tuple[str, str, int]]:
+        if self._directory_entry_class is None or not hasattr(filesystem, "list_directory"):
+            raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
+        remote_root = workspace.workspace_container_path.rstrip("/")
+        path = remote_root if not relative_directory else f"{remote_root}/{relative_directory}"
+        raw_entries = await _maybe_await(
+            filesystem.list_directory(self._directory_entry_class(path=path, depth=1))
+        )
+        if not isinstance(raw_entries, list):
+            raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+        if len(raw_entries) > _OPENSANDBOX_COLLECT_MAX_FILES + _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
+            raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
+        entries = [self._remote_workspace_entry(entry, workspace) for entry in raw_entries]
+        expected_parent = PurePosixPath(relative_directory)
+        for relative_path, _entry_type, _size in entries:
+            if PurePosixPath(relative_path).parent != expected_parent:
+                raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+        return entries
+
+    async def _remote_file_matches_listing(
+        self,
+        filesystem: Any,
+        remote_path: str,
+        expected_size: int,
+    ) -> bool:
+        if not hasattr(filesystem, "get_file_info"):
+            return False
+        details = await _maybe_await(filesystem.get_file_info([remote_path]))
+        entry = details.get(remote_path) if isinstance(details, dict) else None
+        if entry is None:
+            return False
+        entry_type = str(self._filesystem_entry_value(entry, "entry_type") or "").lower()
+        try:
+            size = int(self._filesystem_entry_value(entry, "size"))
+        except (TypeError, ValueError):
+            return False
+        return entry_type == "file" and size == expected_size
+
+    async def _stream_remote_workspace_file(
+        self,
+        filesystem: Any,
+        remote_path: str,
+        *,
+        destination: Any | None = None,
+    ) -> tuple[int, str]:
+        total = 0
+        digest = hashlib.sha256()
+        stream = await _maybe_await(filesystem.read_bytes_stream(remote_path, chunk_size=64 * 1024))
+        if not isinstance(stream, AsyncIterable):
+            raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+        async for chunk in stream:
+            if not isinstance(chunk, bytes):
+                raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+            total += len(chunk)
+            if total > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
+                raise ContainerStartFailedError("workspace artifacts exceed the per-file byte limit")
+            digest.update(chunk)
+            if destination is not None:
+                destination.write(chunk)
+        return total, digest.hexdigest()
+
+    async def _download_remote_workspace_file(
+        self,
+        filesystem: Any,
+        workspace: WorkspaceLease,
+        relative_path: str,
+        expected_size: int,
+        *,
+        destination_root: Path,
+    ) -> None:
+        if not hasattr(filesystem, "read_bytes_stream"):
+            raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
+        if expected_size > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
+            raise ContainerStartFailedError("workspace artifacts exceed the per-file byte limit")
+        remote_path = f"{workspace.workspace_container_path.rstrip('/')}/{relative_path}"
+        root_snapshot = _assert_workspace_directory(destination_root)
+        root_descriptor = _open_workspace_directory_fd(destination_root, root_snapshot)
+        parent_descriptor: int | None = None
+        temporary_name: str | None = None
+        try:
+            parent_descriptor, target_name = _open_workspace_relative_parent_fd(
+                root_descriptor,
+                relative_path,
+                create=True,
+            )
+            temporary_name = f".ai-platform-download-{secrets.token_hex(16)}"
+            try:
+                temporary_descriptor = os.open(
+                    temporary_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
+            except OSError as exc:
+                raise ContainerStartFailedError("workspace collection staging is unavailable") from exc
+            with os.fdopen(temporary_descriptor, "wb") as destination:
+                total, digest = await self._stream_remote_workspace_file(
+                    filesystem,
+                    remote_path,
+                    destination=destination,
+                )
+                destination.flush()
+                os.fsync(destination.fileno())
+            if total != expected_size or not await self._remote_file_matches_listing(
+                filesystem,
+                remote_path,
+                expected_size,
+            ):
+                raise ContainerStartFailedError("OpenSandbox workspace output changed during download")
+            verification_total, verification_digest = await self._stream_remote_workspace_file(filesystem, remote_path)
+            if (
+                verification_total != expected_size
+                or verification_digest != digest
+                or not await self._remote_file_matches_listing(filesystem, remote_path, expected_size)
+            ):
+                raise ContainerStartFailedError("OpenSandbox workspace output changed during download")
+            os.replace(temporary_name, target_name, src_dir_fd=parent_descriptor, dst_dir_fd=parent_descriptor)
+            temporary_name = None
+        except SandboxRuntimeError:
+            raise
+        except (OSError, TypeError, ValueError) as exc:
+            raise ContainerStartFailedError("OpenSandbox workspace collection failed") from exc
+        finally:
+            if temporary_name is not None and parent_descriptor is not None:
+                try:
+                    os.unlink(temporary_name, dir_fd=parent_descriptor)
+                except OSError:
+                    pass
+            if parent_descriptor is not None:
+                os.close(parent_descriptor)
+            os.close(root_descriptor)
+
+    @staticmethod
+    def _temporary_collection_root(workspace_root: Path) -> Path:
+        root_snapshot = _assert_workspace_directory(workspace_root)
+        root_descriptor = _open_workspace_directory_fd(workspace_root, root_snapshot)
+        try:
+            for _unused in range(3):
+                name = f".ai-platform-collect-{secrets.token_hex(16)}"
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=root_descriptor)
+                except FileExistsError:
+                    continue
+                except OSError as exc:
+                    raise ContainerStartFailedError("workspace collection staging is unavailable") from exc
+                return workspace_root / name
+            raise ContainerStartFailedError("workspace collection staging is unavailable")
+        finally:
+            os.close(root_descriptor)
+
+    @staticmethod
+    def _remove_temporary_collection_root(staging_root: Path) -> None:
+        if not staging_root.name.startswith(".ai-platform-collect-"):
+            raise ContainerStartFailedError("workspace collection staging cleanup failed")
+        parent_snapshot = _assert_workspace_directory(staging_root.parent)
+        parent_descriptor = _open_workspace_directory_fd(staging_root.parent, parent_snapshot)
+        try:
+            try:
+                descriptor = os.open(staging_root.name, _directory_open_flags(), dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                raise ContainerStartFailedError("workspace collection staging cleanup failed") from exc
+            try:
+                for _relative, directories, files, current_descriptor in os.fwalk(
+                    ".",
+                    topdown=False,
+                    follow_symlinks=False,
+                    dir_fd=descriptor,
+                ):
+                    for name in files:
+                        os.unlink(name, dir_fd=current_descriptor)
+                    for name in directories:
+                        try:
+                            os.rmdir(name, dir_fd=current_descriptor)
+                        except NotADirectoryError:
+                            os.unlink(name, dir_fd=current_descriptor)
+                os.rmdir(staging_root.name, dir_fd=parent_descriptor)
+            except OSError as exc:
+                raise ContainerStartFailedError("workspace collection staging cleanup failed") from exc
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(parent_descriptor)
+
+    def _publish_collected_workspace_files(
+        self,
+        staging_root: Path,
+        workspace_root: Path,
+        selected_files: list[tuple[str, int]],
+    ) -> None:
+        """Atomically publish a fully downloaded batch, restoring prior files on failure."""
+
+        staging_snapshot = _assert_workspace_directory(staging_root)
+        workspace_snapshot = _assert_workspace_directory(workspace_root)
+        staging_descriptor = _open_workspace_directory_fd(staging_root, staging_snapshot)
+        workspace_descriptor = _open_workspace_directory_fd(workspace_root, workspace_snapshot)
+        previous: list[tuple[str, bool, bool]] = []
+        try:
+            for relative_path, _expected_size in sorted(selected_files):
+                source_parent, source_name = _open_workspace_relative_parent_fd(
+                    staging_descriptor,
+                    relative_path,
+                    create=False,
+                )
+                target_parent, target_name = _open_workspace_relative_parent_fd(
+                    workspace_descriptor,
+                    relative_path,
+                    create=True,
+                )
+                try:
+                    source_node = os.stat(source_name, dir_fd=source_parent, follow_symlinks=False)
+                    if stat.S_ISLNK(source_node.st_mode) or not stat.S_ISREG(source_node.st_mode) or source_node.st_nlink != 1:
+                        raise ContainerStartFailedError("workspace collection staging is invalid")
+                    try:
+                        target_node = os.stat(target_name, dir_fd=target_parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        has_backup = False
+                    else:
+                        if (
+                            stat.S_ISLNK(target_node.st_mode)
+                            or not stat.S_ISREG(target_node.st_mode)
+                            or target_node.st_nlink != 1
+                        ):
+                            raise ContainerStartFailedError("workspace output destination is invalid")
+                        backup_parent, backup_name = _open_workspace_relative_parent_fd(
+                            staging_descriptor,
+                            f".rollback/{relative_path}",
+                            create=True,
+                        )
+                        try:
+                            os.replace(
+                                target_name,
+                                backup_name,
+                                src_dir_fd=target_parent,
+                                dst_dir_fd=backup_parent,
+                            )
+                        finally:
+                            os.close(backup_parent)
+                        has_backup = True
+                    previous.append((relative_path, has_backup, False))
+                    os.replace(source_name, target_name, src_dir_fd=source_parent, dst_dir_fd=target_parent)
+                    previous[-1] = (relative_path, has_backup, True)
+                finally:
+                    os.close(source_parent)
+                    os.close(target_parent)
+        except SandboxRuntimeError:
+            self._rollback_collected_workspace_files(previous, staging_descriptor, workspace_descriptor)
+            raise
+        except OSError as exc:
+            self._rollback_collected_workspace_files(previous, staging_descriptor, workspace_descriptor)
+            raise ContainerStartFailedError("workspace output publication failed") from exc
+        finally:
+            os.close(workspace_descriptor)
+            os.close(staging_descriptor)
+
+    @staticmethod
+    def _rollback_collected_workspace_files(
+        previous: list[tuple[str, bool, bool]],
+        staging_descriptor: int,
+        workspace_descriptor: int,
+    ) -> None:
+        rollback_failed = False
+        for relative_path, has_backup, published in reversed(previous):
+            target_parent: int | None = None
+            try:
+                target_parent, target_name = _open_workspace_relative_parent_fd(
+                    workspace_descriptor,
+                    relative_path,
+                    create=False,
+                )
+                if published:
+                    os.unlink(target_name, dir_fd=target_parent)
+                if has_backup:
+                    backup_parent, backup_name = _open_workspace_relative_parent_fd(
+                        staging_descriptor,
+                        f".rollback/{relative_path}",
+                        create=False,
+                    )
+                    try:
+                        os.replace(backup_name, target_name, src_dir_fd=backup_parent, dst_dir_fd=target_parent)
+                    finally:
+                        os.close(backup_parent)
+            except (OSError, SandboxRuntimeError):
+                rollback_failed = True
+            finally:
+                if target_parent is not None:
+                    os.close(target_parent)
+        if rollback_failed:
+            raise ContainerStartFailedError("workspace output rollback failed")
+
+    async def collect_workspace(
+        self,
+        lease: ContainerLease,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> None:
+        """Publish only bounded legacy and delivery outputs from remote OpenSandbox."""
+
+        staging_root: Path | None = None
+        try:
+            _require_secure_workspace_transfer()
+            sandbox = await self._workspace_transfer_sandbox(lease, request, workspace)
+            filesystem = getattr(sandbox, "files", None)
+            if filesystem is None:
+                raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
+            root_entries = await self._list_remote_workspace_directory(filesystem, workspace, "")
+            pending: list[tuple[str, bool, bool]] = []
+            seen_directories: set[str] = set()
+            for relative_path, entry_type, _size in root_entries:
+                if relative_path not in {"output", "outputs"}:
+                    continue
+                if entry_type != "directory":
+                    raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+                pending.append((relative_path, relative_path == "output", False))
+                seen_directories.add(relative_path)
+
+            selected_files: list[tuple[str, int]] = []
+            selected_file_paths: set[str] = set()
+            while pending:
+                relative_directory, legacy_output, delivery_output = pending.pop()
+                if len(seen_directories) > _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
+                    raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
+                for relative_path, entry_type, size in await self._list_remote_workspace_directory(
+                    filesystem,
+                    workspace,
+                    relative_directory,
+                ):
+                    name = PurePosixPath(relative_path).name
+                    if entry_type == "directory":
+                        if relative_path in seen_directories:
+                            raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
+                        if len(seen_directories) >= _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
+                            raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
+                        seen_directories.add(relative_path)
+                        pending.append(
+                            (
+                                relative_path,
+                                legacy_output,
+                                delivery_output or (not legacy_output and name == "delivery"),
+                            )
+                        )
+                        continue
+                    if legacy_output or delivery_output:
+                        if size > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
+                            raise ContainerStartFailedError("workspace artifacts exceed the per-file byte limit")
+                        if (
+                            relative_path in selected_file_paths
+                            or len(selected_files) >= _OPENSANDBOX_COLLECT_MAX_FILES
+                        ):
+                            raise ContainerStartFailedError("workspace artifacts exceed the file count limit")
+                        selected_file_paths.add(relative_path)
+                        selected_files.append((relative_path, size))
+            declared_total = sum(size for _relative_path, size in selected_files)
+            if declared_total > _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES:
+                raise ContainerStartFailedError("workspace artifacts exceed the total byte limit")
+            workspace_root = Path(workspace.workspace_host_path)
+            staging_root = self._temporary_collection_root(workspace_root)
+            downloaded_total = 0
+            for relative_path, expected_size in sorted(selected_files):
+                await self._download_remote_workspace_file(
+                    filesystem,
+                    workspace,
+                    relative_path,
+                    expected_size,
+                    destination_root=staging_root,
+                )
+                downloaded_total += expected_size
+                if downloaded_total > _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES:
+                    raise ContainerStartFailedError("workspace artifacts exceed the total byte limit")
+            self._publish_collected_workspace_files(staging_root, workspace_root, selected_files)
+        except asyncio.CancelledError:
+            raise
+        except SandboxRuntimeError:
+            raise
+        except Exception as exc:
+            raise ContainerStartFailedError("OpenSandbox workspace collection failed") from exc
+        finally:
+            if staging_root is not None:
+                self._remove_temporary_collection_root(staging_root)
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         settings = get_settings()
@@ -4875,6 +5636,7 @@ class OpenSandboxContainerProvider:
                 status="failed",
                 message="OpenSandbox sandbox stop failed",
             )
+        lease = self._leases.get(cache_key, lease)
         sandbox = self._sandboxes.get(lease.container_id)
         if sandbox is None:
             try:
@@ -4893,7 +5655,7 @@ class OpenSandboxContainerProvider:
                     skip_health_check=True,
                 )
             except Exception as exc:
-                if _is_authoritative_opensandbox_not_found_error(exc):
+                if is_authoritative_not_found_error(exc):
                     self._leases.pop(cache_key, None)
                     self._sandboxes.pop(lease.container_id, None)
                     return StopResult(container_id=lease.container_id, status="not_found", message=reason)
@@ -4915,8 +5677,10 @@ class OpenSandboxContainerProvider:
                 or status.provider != lease.provider
                 or not _status_matches_lease(status, lease)
                 or status.status not in _OPENSANDBOX_CONFIRMED_STOP_STATUSES
-                or not _status_has_expected_executor_identity_labels(status)
-                or not _opensandbox_cleanup_identity_is_signed(
+                or not opensandbox_metadata.opensandbox_metadata_matches(
+                    status.detail.get("labels", {}), _executor_identity_labels()
+                )
+                or not _opensandbox_cleanup_identity_is_authorized(
                     status,
                     lease,
                     settings,
@@ -4931,12 +5695,12 @@ class OpenSandboxContainerProvider:
                     message="OpenSandbox sandbox stop failed",
                 )
             try:
-                cleanup_confirmed = await self._cleanup_started_sandbox(
+                cleanup_confirmed = await cleanup_started_sandbox(
                     sandbox,
                     propagate_authoritative_not_found=True,
                 )
             except Exception as exc:
-                if _is_authoritative_opensandbox_not_found_error(exc):
+                if is_authoritative_not_found_error(exc):
                     self._leases.pop(cache_key, None)
                     self._sandboxes.pop(lease.container_id, None)
                     return StopResult(container_id=lease.container_id, status="not_found", message=reason)
@@ -4957,19 +5721,27 @@ class OpenSandboxContainerProvider:
         settings = get_settings()
         manager = await self._manager(self._connection_config(settings))
         try:
-            metadata_filter = {
+            raw_metadata_filter = {
                 f"ai-platform.{key}": value
                 for key, value in filters.items()
                 if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id", "sandbox_mode"}
             }
-            metadata_filter["ai-platform.owner"] = "sandbox-runtime"
+            raw_metadata_filter["ai-platform.owner"] = "sandbox-runtime"
+            try:
+                metadata_filter = opensandbox_metadata.normalize_opensandbox_metadata(raw_metadata_filter)
+            except opensandbox_metadata.OpenSandboxMetadataError as exc:
+                raise ContainerStartFailedError("OpenSandbox metadata is invalid") from exc
             infos = await self._list_all_sandbox_infos(manager, metadata_filter)
             statuses = [
                 status
                 for info in (infos or [])
                 if (status := _opensandbox_status_from_info(info)) is not None
             ]
-            return [status for status in statuses if _matches_filters(status, filters)]
+            return [
+                status
+                for status in statuses
+                if opensandbox_metadata.opensandbox_metadata_matches_filters(status.detail.get("labels", {}), filters)
+            ]
         finally:
             await self._close_manager(manager)
 
@@ -4984,22 +5756,20 @@ class OpenSandboxContainerProvider:
             raise ContainerStartFailedError("OpenSandbox inventory failed") from exc
 
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
-        if not all(isinstance(filters.get(key), str) and filters[key] for key in ("tenant_id", "attempt_id")):
-            raise ContainerCleanupFailedError("OpenSandbox cleanup requires exact tenant and attempt scope")
+        metadata_filter = trusted_internal_orphan_cleanup_metadata_filter(filters)
+        if metadata_filter is None:
+            return []
         settings = get_settings()
         manager = await self._manager(self._connection_config(settings))
         try:
-            metadata_filter = {
-                f"ai-platform.{key}": value
-                for key, value in filters.items()
-                if key in {"tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id", "sandbox_mode"}
-            }
-            metadata_filter["ai-platform.owner"] = "sandbox-runtime"
             infos = await self._list_all_sandbox_infos(manager, metadata_filter)
             results: list[StopResult] = []
             for info in infos or []:
                 status = _opensandbox_status_from_info(info)
-                if status is None or not _matches_filters(status, filters):
+                if status is None or not trusted_internal_orphan_cleanup_identity_is_authorized(
+                    status.detail.get("labels"),
+                    filters,
+                ):
                     continue
                 if status.status == "running":
                     continue
@@ -5030,7 +5800,9 @@ def reset_container_provider_cache() -> None:
 
 
 def create_container_provider(provider_name: str | None = None) -> ContainerProvider:
-    selected = provider_name or get_settings().sandbox_container_provider
+    settings = get_settings()
+    _require_governed_security_profile(settings)
+    selected = str(provider_name or settings.sandbox_container_provider or "").strip().lower()
     cached = _PROVIDER_CACHE.get(selected)
     if cached is not None:
         return cached
@@ -5044,7 +5816,7 @@ def create_container_provider(provider_name: str | None = None) -> ContainerProv
         return provider
     if selected == "opensandbox":
         provider = OpenSandboxContainerProvider(
-            authoritative_attestation_probe=build_opensandbox_attestation_probe(get_settings())
+            authoritative_attestation_probe=build_opensandbox_attestation_probe(settings)
         )
         _PROVIDER_CACHE[selected] = provider
         return provider

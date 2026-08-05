@@ -9,7 +9,6 @@ import {
   Tag,
   Archive,
   Sparkles,
-  Upload,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { SkillBaseCard } from "../common/SkillBaseCard";
@@ -23,7 +22,6 @@ interface SkillCardProps {
   onEdit: (skill: SkillResponse) => void;
   onDelete: (name: string) => void;
   onExportZip?: (name: string) => void;
-  onPublish?: (skill: SkillResponse) => void;
   canWrite?: boolean;
   canEdit?: boolean;
   canDelete?: boolean;
@@ -44,7 +42,6 @@ export function SkillCard({
   onEdit,
   onDelete,
   onExportZip,
-  onPublish,
   canWrite = true,
   canEdit = canWrite,
   canDelete = true,
@@ -57,11 +54,9 @@ export function SkillCard({
   const primaryTag = skill.tags[0];
   const CategoryIcon = primaryTag ? getCategoryIcon(primaryTag) : Sparkles;
   const sourceLabel = t(`skillSelector.sources.${skill.source}`, skill.source);
-  const canPublishSkill =
-    skill.source === "manual" && isPublished !== undefined && Boolean(onPublish);
   const canExportSkill = Boolean(onExportZip);
   const hasWriteActions =
-    canWrite || canEdit || canDelete || canPublishSkill || canExportSkill;
+    canWrite || canEdit || canDelete || canExportSkill;
 
   return (
     <SkillBaseCard
@@ -176,35 +171,6 @@ export function SkillCard({
                 aria-label={t("skills.card.edit")}
               >
                 <Edit3 size={13} />
-              </button>
-            )}
-
-            {canPublishSkill && onPublish && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onPublish(skill);
-                }}
-                className="scb__action-btn scb__action-btn--ghost"
-                title={
-                  isPublished
-                    ? t("skills.card.republish")
-                    : t("skills.card.publishToMarketplace")
-                }
-                aria-label={
-                  isPublished
-                    ? t("skills.card.republish")
-                    : t("skills.card.publishToMarketplace")
-                }
-              >
-                <Upload
-                  size={13}
-                  className={
-                    isPublished
-                      ? "text-green-600 dark:text-green-500"
-                      : undefined
-                  }
-                />
               </button>
             )}
 

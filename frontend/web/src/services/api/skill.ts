@@ -15,9 +15,6 @@ import type {
   UserSkill,
   SkillFileResponse,
   SkillToggleResponse,
-  SkillCreate,
-  MarketplaceSkillResponse,
-  PublishToMarketplaceRequest,
   SkillsResponse,
 } from "../../types/skill";
 
@@ -508,57 +505,6 @@ export const skillApi = {
   },
 
   /**
-   * Create skill - writes all files to /api/skills/{name}/files/{path}
-   * Files are written sequentially; on failure, already-written files are rolled back.
-   */
-  async create(data: SkillCreate): Promise<{ message: string }> {
-    // Build files dict from content (SKILL.md) or explicit files
-    const filesToWrite: Record<string, string> = {};
-
-    if (data.files && Object.keys(data.files).length > 0) {
-      // Use explicit files from form
-      Object.entries(data.files).forEach(([path, content]) => {
-        filesToWrite[path] = content;
-      });
-    } else {
-      // Fallback to content as SKILL.md
-      filesToWrite["SKILL.md"] = data.content;
-    }
-
-    // Write files sequentially for atomicity
-    const writtenPaths: string[] = [];
-    try {
-      for (const [filePath, content] of Object.entries(filesToWrite)) {
-        await authFetch(
-          `${SKILLS_API}/${encodeURIComponent(
-            data.name,
-          )}/files/${encodeURIComponent(filePath)}`,
-          {
-            method: "PUT",
-            body: JSON.stringify({ content }),
-          },
-        );
-        writtenPaths.push(filePath);
-      }
-    } catch (error) {
-      // Rollback: delete already-written files
-      await Promise.allSettled(
-        writtenPaths.map((filePath) =>
-          authFetch(
-            `${SKILLS_API}/${encodeURIComponent(
-              data.name,
-            )}/files/${encodeURIComponent(filePath)}`,
-            { method: "DELETE" },
-          ),
-        ),
-      );
-      throw error;
-    }
-
-    return { message: "Skill created" };
-  },
-
-  /**
    * Update skill metadata and content
    * Files are written/deleted sequentially to avoid partial failure leaving inconsistent state.
    */
@@ -805,19 +751,6 @@ export const skillApi = {
     return authFetch(`${SKILLS_API}/batch/toggle`, {
       method: "POST",
       body: JSON.stringify({ names, enabled }),
-    });
-  },
-
-  /**
-   * Publish skill to marketplace
-   */
-  async publishToMarketplace(
-    skillName: string,
-    data?: PublishToMarketplaceRequest,
-  ): Promise<MarketplaceSkillResponse> {
-    return authFetch(`${SKILLS_API}/${encodeURIComponent(skillName)}/publish`, {
-      method: "POST",
-      body: JSON.stringify(data || {}),
     });
   },
 };

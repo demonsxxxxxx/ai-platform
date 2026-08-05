@@ -40,11 +40,49 @@ test("librechat-ui is a pinned pure UI upstream module", () => {
 
   const source = read("src/librechat-ui/source.ts");
   assert.match(source, /https:\/\/github\.com\/danny-avila\/LibreChat/);
-  assert.match(source, /9e74cc0e57b395926122bd4062c1fcedc48ed465/);
+  assert.match(source, /21dc4a2ef490b86510e4b410fe8f78d52c1d9629/);
   assert.match(source, /MIT/);
+  assert.match(source, /Copyright \(c\) 2026 LibreChat/);
+  assert.match(source, /integrationMode:\s*"reference-derived"/);
+  assert.match(source, /referenceScope/);
+  assert.doesNotMatch(source, /vendoredScope/);
   assert.match(source, /client\/src\/components\/UnifiedSidebar/);
   assert.match(source, /client\/src\/components\/Chat\/Input/);
   assert.match(source, /client\/src\/components\/SidePanel/);
+});
+
+test("Agent Builder provenance identifies exact reference-derived source files", () => {
+  const source = read("src/librechat-ui/source.ts");
+  const notice = read("src/librechat-ui/NOTICE.md");
+  const releaseEvidence = read(
+    "../../docs/release-evidence/frontend-shell-parity/librechat-source.md",
+  );
+
+  for (const sourcePath of [
+    "SidePanel/Agents/AgentPanel.tsx",
+    "SidePanel/Agents/AgentConfig.tsx",
+    "SidePanel/Agents/Instructions.tsx",
+    "SidePanel/Agents/ModelPanel.tsx",
+    "SidePanel/Agents/AgentFooter.tsx",
+    "SidePanel/Agents/Tools/ToolsSection.tsx",
+    "SidePanel/Agents/Tools/SkillsDialog.tsx",
+    "SidePanel/Agents/Tools/ToolsMarketplaceDialog.tsx",
+    "SidePanel/Agents/Tools/ToolRow.tsx",
+    "SidePanel/Agents/Tools/ItemDialog/sections/McpSection.tsx",
+    "SidePanel/Agents/Tools/ItemDialog/sections/SkillSection.tsx",
+    "components/Agents/AgentCard.tsx",
+    "components/Agents/AgentGrid.tsx",
+    "components/Agents/AgentDetail.tsx",
+  ]) {
+    assert.match(source, new RegExp(sourcePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(releaseEvidence, new RegExp(sourcePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+
+  assert.match(notice, /reference-derived/);
+  assert.match(
+    releaseEvidence,
+    /not a claim that complete upstream\s+directories are vendored/,
+  );
 });
 
 test("librechat-ui exposes an ai-platform-owned adapter seam", () => {
@@ -100,7 +138,6 @@ test("active composer and state surfaces consume librechat-ui primitives", () =>
     ["src/components/chat/ChatInput.tsx", /LibreChatComposerFrame/],
     ["src/components/chat/ComposerChips.tsx", /LibreChatComposerChip/],
     ["src/components/chat/SlashCommandMenu.tsx", /LibreChatCommandMenu/],
-    ["src/components/chat/ComposerUnavailablePanel.tsx", /LibreChatStateSurface/],
     ["src/components/workbench/WorkbenchStateSurface.tsx", /LibreChatStateSurface/],
   ] as const) {
     const source = read(path);

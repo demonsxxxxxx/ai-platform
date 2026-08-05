@@ -24,11 +24,6 @@ const MemoryPanel = lazy(() =>
     default: m.MemoryPanel,
   })),
 );
-const RevealedFilesWorkbenchPanel = lazy(() =>
-  import("../../fileLibrary/RevealedFilesWorkbenchPanel").then((m) => ({
-    default: m.RevealedFilesWorkbenchPanel,
-  })),
-);
 const LaunchpadPanel = lazy(() =>
   import("../../launchpad").then((m) => ({
     default: m.LaunchpadPanel,
@@ -67,7 +62,6 @@ const panelMap: Record<
   mcp: MCPPanel,
   feedback: WorkbenchFeedbackProjectionPanel,
   models: ModelCatalogPanel,
-  files: RevealedFilesWorkbenchPanel,
   notifications: WorkbenchNotificationsProjectionPanel,
   memory: MemoryPanel,
 };

@@ -7,7 +7,6 @@ import {
   Server,
   Bot,
   Cpu,
-  FileStack,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
@@ -35,10 +34,12 @@ interface SidebarRailProps {
   onOpenSearch: () => void;
   onOpenRecentChats: () => void;
   onOpenLaunchpad: () => void;
+  onOpenAgentMarket: () => void;
+  onOpenAgentBuilder: () => void;
   onOpenSkills: () => void;
   onOpenMcp: () => void;
   onOpenModels: () => void;
-  onOpenFiles: () => void;
+  hideSessionDiscovery?: boolean;
   recentChatsBtnRef: React.RefObject<HTMLButtonElement | null>;
 }
 
@@ -51,10 +52,12 @@ export function SidebarRail({
   onOpenSearch,
   onOpenRecentChats,
   onOpenLaunchpad,
+  onOpenAgentMarket,
+  onOpenAgentBuilder,
   onOpenSkills,
   onOpenMcp,
   onOpenModels,
-  onOpenFiles,
+  hideSessionDiscovery = false,
   recentChatsBtnRef,
 }: SidebarRailProps) {
   const { t } = useTranslation();
@@ -136,15 +139,17 @@ export function SidebarRail({
         >
           <MessageSquarePlus size={20} />
         </LibreChatRailButton>
-        <LibreChatRailButton
-          type="button"
-          onClick={onOpenSearch}
-          className={railBtn}
-          title={t("sidebar.searchSessions")}
-          aria-label={t("sidebar.searchSessions")}
-        >
-          <Search size={20} />
-        </LibreChatRailButton>
+        {!hideSessionDiscovery ? (
+          <LibreChatRailButton
+            type="button"
+            onClick={onOpenSearch}
+            className={railBtn}
+            title={t("sidebar.searchSessions")}
+            aria-label={t("sidebar.searchSessions")}
+          >
+            <Search size={20} />
+          </LibreChatRailButton>
+        ) : null}
         <LibreChatRailButton
           type="button"
           onClick={onOpenLaunchpad}
@@ -157,6 +162,32 @@ export function SidebarRail({
         >
           <LayoutGrid size={20} />
         </LibreChatRailButton>
+        <LibreChatRailButton
+          type="button"
+          onClick={onOpenAgentMarket}
+          className={railBtn}
+          aria-current={isRailItemActive("agentMarket") ? "page" : undefined}
+          title="智能体市场"
+          aria-label="智能体市场"
+          itemKey="agentMarket"
+          active={isRailItemActive("agentMarket")}
+        >
+          <Bot size={20} />
+        </LibreChatRailButton>
+        {isAiAdmin ? (
+          <LibreChatRailButton
+            type="button"
+            onClick={onOpenAgentBuilder}
+            className={railBtn}
+            aria-current={isRailItemActive("agentBuilder") ? "page" : undefined}
+            title="智能体管理"
+            aria-label="智能体管理"
+            itemKey="agentBuilder"
+            active={isRailItemActive("agentBuilder")}
+          >
+            <Bot size={20} />
+          </LibreChatRailButton>
+        ) : null}
         <LibreChatRailButton
           type="button"
           onClick={onOpenSkills}
@@ -195,28 +226,18 @@ export function SidebarRail({
             <Cpu size={20} />
           </LibreChatRailButton>
         )}
-        <LibreChatRailButton
-          type="button"
-          onClick={onOpenFiles}
-          className={railBtn}
-          aria-current={isRailItemActive("files") ? "page" : undefined}
-          title={t("nav.files")}
-          aria-label={t("nav.files")}
-          itemKey="files"
-          active={isRailItemActive("files")}
-        >
-          <FileStack size={20} />
-        </LibreChatRailButton>
-        <LibreChatRailButton
-          type="button"
-          ref={recentChatsBtnRef}
-          onClick={onOpenRecentChats}
-          className={railBtn}
-          title={t("sidebar.recentChats")}
-          aria-label={t("sidebar.recentChats")}
-        >
-          <Clock size={20} />
-        </LibreChatRailButton>
+        {!hideSessionDiscovery ? (
+          <LibreChatRailButton
+            type="button"
+            ref={recentChatsBtnRef}
+            onClick={onOpenRecentChats}
+            className={railBtn}
+            title={t("sidebar.recentChats")}
+            aria-label={t("sidebar.recentChats")}
+          >
+            <Clock size={20} />
+          </LibreChatRailButton>
+        ) : null}
       </div>
     </nav>
   );

@@ -28,7 +28,6 @@ class _ReadinessSettings:
     sandbox_container_provider = "fake"
     llm_gateway_provider = "openai_compatible"
     model_gateway_request_concurrency_limit = 0
-    multi_agent_dispatch_worker_enabled = False
 
 
 def _domain(

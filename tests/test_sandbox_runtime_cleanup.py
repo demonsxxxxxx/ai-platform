@@ -246,6 +246,126 @@ async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_trusted_internal_cleanup_rebuilds_verified_scope_without_governed_proof(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
+
+    labels = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.tenant_id": "tenant-a",
+        "ai-platform.workspace_id": "workspace-a",
+        "ai-platform.user_id": "user-a",
+        "ai-platform.session_id": "session-a",
+        "ai-platform.run_id": "run-a",
+        "ai-platform.attempt_id": "attempt-a",
+        "ai-platform.sandbox_mode": "ephemeral",
+        "ai-platform.browser_enabled": "false",
+        "ai-platform.provider_backend": "opensandbox",
+        "ai-platform.security_profile": "trusted_internal",
+    }
+    row = expired_lease_row(
+        provider="opensandbox",
+        runtime_container_id="osb-run-a",
+        runtime_container_name="opensandbox-run-a",
+        runtime_executor_url="http://opensandbox-executor.test:18000",
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "container_id": "osb-run-a",
+            "container_name": "opensandbox-run-a",
+            "executor_url": "http://opensandbox-executor.test:18000",
+            "workspace_container_path": "/workspace",
+            "security_profile": "trusted_internal",
+            "labels": labels,
+        },
+    )
+    stopped = []
+
+    class FakeProvider:
+        async def stop(self, lease, *, reason):
+            stopped.append(lease)
+            return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+
+    async def list_expired(*_args, **_kwargs):
+        return [row]
+
+    async def release_stopped(*_args, **_kwargs):
+        return [row]
+
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        list_expired,
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        release_stopped,
+    )
+
+    cleaned = await cleanup_expired_sandbox_runtime_leases(
+        object(), tenant_id="tenant-a", provider_factory=lambda _provider: FakeProvider()
+    )
+
+    assert cleaned == [row]
+    assert stopped[0].labels == labels
+    assert GOVERNED_EGRESS_PROOF_LABEL not in stopped[0].labels
+
+
+@pytest.mark.asyncio
+async def test_trusted_internal_cleanup_rejects_cross_scope_persisted_payload(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
+
+    row = expired_lease_row(
+        provider="opensandbox",
+        runtime_container_id="osb-run-a",
+        runtime_container_name="opensandbox-run-a",
+        runtime_executor_url="http://opensandbox-executor.test:18000",
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "container_id": "osb-run-a",
+            "container_name": "opensandbox-run-a",
+            "executor_url": "http://opensandbox-executor.test:18000",
+            "workspace_container_path": "/workspace",
+            "security_profile": "trusted_internal",
+            "labels": {
+                "ai-platform.owner": "sandbox-runtime",
+                "ai-platform.tenant_id": "tenant-b",
+                "ai-platform.workspace_id": "workspace-a",
+                "ai-platform.user_id": "user-a",
+                "ai-platform.session_id": "session-a",
+                "ai-platform.run_id": "run-a",
+                "ai-platform.attempt_id": "attempt-a",
+                "ai-platform.sandbox_mode": "ephemeral",
+                "ai-platform.browser_enabled": "false",
+                "ai-platform.provider_backend": "opensandbox",
+                "ai-platform.security_profile": "trusted_internal",
+            },
+        },
+    )
+    releases = []
+
+    async def list_expired(*_args, **_kwargs):
+        return [row]
+
+    async def release_stopped(*_args, **kwargs):
+        releases.append(kwargs)
+        return [row]
+
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases", list_expired
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases", release_stopped
+    )
+
+    with pytest.raises(SandboxRuntimeCleanupError):
+        await cleanup_expired_sandbox_runtime_leases(
+            object(),
+            tenant_id="tenant-a",
+            provider_factory=lambda _provider: pytest.fail("cross-scope payload must not reach a provider"),
+        )
+
+    assert releases == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("attempt_id", (None, "", "../attempt-a"))
 async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(monkeypatch, attempt_id):
     from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases

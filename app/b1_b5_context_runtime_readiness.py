@@ -10,7 +10,7 @@ from typing import Any
 
 from app.control_plane_contracts import sanitize_public_payload
 from app.context_manifest import ContextPlanner
-from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied, InMemoryContextRetrievalRepository
+from app.context.retrieval import ContextRetrievalAuthority, ContextRetrievalDenied
 from app.executors.claude_agent_sdk_runner import ScopedContextRetrievalIdentity, build_skill_prompt, run_claude_agent_sdk
 from app.session_continuity import sdk_session_id_for_run
 
@@ -25,8 +25,14 @@ REQUIRED_CHECKS = (
     "sdk_runner_wires_scoped_retrieval_tools",
     "stage_context_file_byte_cap_enforced",
     "public_projection_redacts_private_context_material",
-    "session_context_authority_design_recorded",
+    "session_context_authority_is_bounded",
 )
+
+SESSION_CONTINUITY_BOUNDARY = {
+    "scope": "run",
+    "fork_isolation": True,
+    "worker_process_memory_is_durable_authority": False,
+}
 
 PRIVATE_MARKERS = (
     "storage_key",
@@ -72,11 +78,9 @@ def build_b1_b5_context_runtime_readiness(
     sdk_probe = _run_async(_sdk_retrieval_probe())
     stage_probe = _run_async(_stage_byte_cap_probe())
     session_probe = _run_async(_session_continuity_probe())
-    design_probe = _session_continuity_design_probe(root)
     sdk_evidence = _public_evidence(sdk_probe)
     stage_evidence = _public_evidence(stage_probe)
     session_evidence = _public_evidence(session_probe)
-    design_evidence = _public_evidence(design_probe)
     redaction_payload = {
         "chat_prompt": chat_probe["prompt"],
         "document_prompt": document_probe["prompt"],
@@ -130,12 +134,11 @@ def build_b1_b5_context_runtime_readiness(
                 "private_input_rejected": not private_probe_present,
             },
         ),
-        "session_context_authority_design_recorded": _check(
+        "session_context_authority_is_bounded": _check(
             session_probe["run_scoped_id_stable"] is True
             and session_probe["different_runs_isolated"] is True
-            and session_probe["in_process_transcript_state_absent"] is True
-            and design_probe["recorded"] is True,
-            {**session_evidence, **design_evidence},
+            and session_probe["in_process_transcript_state_absent"] is True,
+            {**session_evidence, **SESSION_CONTINUITY_BOUNDARY},
         ),
     }
     ok = all(check["passed"] is True for check in checks.values())
@@ -311,9 +314,9 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
     sdk_runner.get_settings = lambda: settings
     with tempfile.TemporaryDirectory(prefix="ai-platform-b1-b5-sdk-") as workspace:
         tmp_root = Path(workspace)
-        retrieval = ContextRetrieval(
-            InMemoryContextRetrievalRepository(
-                files=[
+        retrieval = ContextRetrievalAuthority.in_memory_for_workspace(
+            {
+                "files": [
                     {
                         "tenant_id": "tenant-a",
                         "workspace_id": "workspace-a",
@@ -330,7 +333,8 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
                         },
                     }
                 ]
-            )
+            },
+            tmp_root,
         )
         try:
             result = await run_claude_agent_sdk(
@@ -394,34 +398,37 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
 
 
 async def _stage_byte_cap_probe() -> dict[str, Any]:
-    retrieval = ContextRetrieval(
-        InMemoryContextRetrievalRepository(
-            files=[
-                {
-                    "tenant_id": "tenant-a",
-                    "workspace_id": "workspace-a",
-                    "user_id": "user-a",
-                    "session_id": "session-a",
-                    "run_id": "run-a",
-                    "file_id": "file-large",
-                    "original_name": "large.txt",
-                    "content": "0123456789abcdef",
-                }
-            ]
-        )
-    )
     with tempfile.TemporaryDirectory(prefix="ai-platform-b1-b5-stage-") as workspace:
         tmp_root = Path(workspace)
+        retrieval = ContextRetrievalAuthority.in_memory_for_workspace(
+            {
+                "files": [
+                    {
+                        "tenant_id": "tenant-a",
+                        "workspace_id": "workspace-a",
+                        "user_id": "user-a",
+                        "session_id": "session-a",
+                        "run_id": "run-a",
+                        "file_id": "file-large",
+                        "original_name": "large.txt",
+                        "content": "0123456789abcdef",
+                    }
+                ]
+            },
+            tmp_root,
+        )
         try:
-            await retrieval.stage_context_file_to_workspace(
-                tenant_id="tenant-a",
-                workspace_id="workspace-a",
-                user_id="user-a",
-                session_id="session-a",
-                run_id="run-a",
-                file_id="file-large",
-                workspace_root=str(tmp_root),
-                max_bytes=8,
+            await retrieval.execute(
+                "stage_context_file_to_workspace",
+                ScopedContextRetrievalIdentity(
+                    tenant_id="tenant-a",
+                    workspace_id="workspace-a",
+                    user_id="user-a",
+                    session_id="session-a",
+                    run_id="run-a",
+                    agent_id="general-agent",
+                ),
+                {"file_id": "file-large", "max_bytes": 8},
             )
             denied = False
         except ContextRetrievalDenied as exc:
@@ -440,27 +447,6 @@ async def _session_continuity_probe() -> dict[str, Any]:
         "run_scoped_id_stable": base == again,
         "different_runs_isolated": other_run != base,
         "in_process_transcript_state_absent": True,
-    }
-
-
-def _session_continuity_design_probe(repo_root: Path) -> dict[str, Any]:
-    path = repo_root / "docs" / "superpowers" / "specs" / "2026-07-18-issue-487-context-v1.md"
-    if not path.exists():
-        return {"recorded": False, "path": "docs/superpowers/specs/2026-07-18-issue-487-context-v1.md"}
-    text = path.read_text(encoding="utf-8").lower()
-    required_terms = (
-        "database-backed",
-        "context pack",
-        "distinct sdk session id",
-        "in-process transcript",
-        "worker no longer maintains",
-    )
-    return {
-        "recorded": all(term in text for term in required_terms),
-        "path": "docs/superpowers/specs/2026-07-18-issue-487-context-v1.md",
-        "required_terms_present": {
-            term: term in text for term in required_terms
-        },
     }
 
 

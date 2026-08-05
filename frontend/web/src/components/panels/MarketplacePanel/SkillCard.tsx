@@ -24,7 +24,6 @@ interface SkillCardProps {
   index: number;
   isInstalled: boolean;
   hasLocalManualConflict: boolean;
-  isOwner: boolean;
   canManage: boolean;
   canInstall: boolean;
   installingSkill: string | null;
@@ -35,7 +34,6 @@ interface SkillCardProps {
   onPreview: () => void;
   onToggleTag: (tag: string) => void;
   onOpenMenu: (skillName: string | null) => void;
-  onEdit: (skillName: string) => void;
   onActivate: (skillName: string, isActive: boolean) => void;
   onDelete: (skillName: string) => void;
 }
@@ -45,7 +43,6 @@ export function SkillCard({
   index,
   isInstalled,
   hasLocalManualConflict,
-  isOwner,
   canManage,
   canInstall,
   installingSkill,
@@ -56,7 +53,6 @@ export function SkillCard({
   onPreview,
   onToggleTag,
   onOpenMenu,
-  onEdit,
   onActivate,
   onDelete,
 }: SkillCardProps) {
@@ -240,18 +236,6 @@ export function SkillCard({
                 </button>
                 {openMenuName === skill.skill_name && (
                   <div className="absolute right-0 bottom-full mb-1 z-10 w-36 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] py-1 shadow-lg">
-                    {isOwner && (
-                      <button
-                        onClick={() => {
-                          onOpenMenu(null);
-                          onEdit(skill.skill_name);
-                        }}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-xs text-[var(--theme-text)] transition-colors hover:bg-[var(--theme-primary-light)]"
-                      >
-                        <Pencil size={12} />
-                        {t("common.edit")}
-                      </button>
-                    )}
                     <button
                       onClick={() => {
                         onOpenMenu(null);

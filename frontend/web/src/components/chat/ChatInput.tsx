@@ -68,6 +68,7 @@ export const ChatInput = memo(function ChatInput({
   isLoading,
   disabled,
   canSend = true,
+  placeholder,
   tools = [],
   onToggleTool,
   onToggleCategory,
@@ -366,7 +367,6 @@ export const ChatInput = memo(function ChatInput({
         thinking: "context",
         model: "model",
         file: "file",
-        context: "context",
       };
       const kind = selectionKindByPanel[command.panel];
       const label = command.query
@@ -843,7 +843,9 @@ export const ChatInput = memo(function ChatInput({
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 placeholder={
-                  canSend ? t("chat.placeholder") : t("chat.noPermission")
+                  canSend
+                    ? placeholder ?? t("chat.placeholder")
+                    : t("chat.noPermission")
                 }
                 disabled={disabled || !canSend}
                 rows={1}

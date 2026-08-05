@@ -1,11 +1,12 @@
-from app.executors.runtime211 import Runtime211RunPayload
+import asyncio
+
 from app.main import create_app
+from app.routes import health as health_routes
 from app.executors.base import RunPayload
-from app.models import AgentApp, CreateRunRequest, QueueRunPayload, SkillDefinition
+from app.models import CreateRunRequest, QueueRunPayload, SkillDefinition
 from app.control_plane_contracts import sanitize_public_payload
 from app.repositories import new_id
 from fastapi.testclient import TestClient
-import os
 
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
@@ -45,8 +46,10 @@ def test_app_registers_platform_routes():
     paths = set(app.openapi()["paths"])
 
     assert "/api/ai/health" in paths
+    assert "/api/ai/ready" in paths
     assert "/api/ai/admin/status" in paths
-    assert "/api/ai/agent-apps" in paths
+    assert "/api/ai/agent-apps" not in paths
+    assert "/api/ai/agent-profiles" in paths
     assert "/api/ai/files" in paths
     assert "/api/ai/runs" in paths
     assert "/api/ai/runs/{run_id}" in paths
@@ -75,27 +78,65 @@ def test_health_reports_dynamic_runtime_commit(monkeypatch):
     assert response.json() == {"status": "ok", "runtime_commit": commit}
 
 
-def test_runtime211_payload_keeps_platform_context():
-    payload = Runtime211RunPayload(
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        agent_id="qa-word-review",
-        skill_id="qa-file-reviewer",
-        file_ids=["file-a"],
-        input={"mode": "file"},
-        skill_version="hash-primary",
-        release_decision=release_decision("hash-primary"),
-        skill_manifests=[primary_manifest("qa-file-reviewer", "hash-primary")],
-    )
+def test_readiness_requires_postgresql_and_redis(monkeypatch):
+    commit = "8" * 40
 
-    assert payload.tenant_id == "tenant-a"
-    assert payload.session_id == "session-a"
-    assert payload.run_id == "run-a"
-    assert payload.skill_id == "qa-file-reviewer"
+    async def available():
+        return None
+
+    monkeypatch.setenv("AI_PLATFORM_RUNTIME_COMMIT", commit)
+    monkeypatch.setattr(health_routes, "_probe_postgresql", available)
+    monkeypatch.setattr(health_routes, "_probe_redis", available)
+
+    response = TestClient(create_app()).get("/api/ai/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "runtime_commit": commit,
+        "dependencies": {"postgresql": "ok", "redis": "ok"},
+    }
+
+
+def test_readiness_fails_closed_without_exposing_dependency_errors(monkeypatch):
+    async def postgresql_unavailable():
+        raise RuntimeError("secret database detail")
+
+    async def redis_available():
+        return None
+
+    monkeypatch.setattr(health_routes, "_probe_postgresql", postgresql_unavailable)
+    monkeypatch.setattr(health_routes, "_probe_redis", redis_available)
+
+    response = TestClient(create_app()).get("/api/ai/ready")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "not_ready"
+    assert response.json()["dependencies"] == {"postgresql": "unavailable", "redis": "ok"}
+    assert "secret database detail" not in response.text
+
+
+def test_readiness_times_out_each_dependency(monkeypatch):
+    class Settings:
+        datastore_readiness_timeout_seconds = 0.001
+
+    async def unavailable_before_timeout():
+        raise RuntimeError("down")
+
+    async def hangs():
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(health_routes, "get_settings", lambda: Settings())
+    monkeypatch.setattr(health_routes, "_probe_postgresql", unavailable_before_timeout)
+    monkeypatch.setattr(health_routes, "_probe_redis", hangs)
+
+    response = TestClient(create_app()).get("/api/ai/ready")
+
+    assert response.status_code == 503
+    assert response.json()["dependencies"] == {
+        "postgresql": "unavailable",
+        "redis": "unavailable",
+    }
 
 
 def test_run_request_rejects_unsafe_ids():
@@ -873,19 +914,6 @@ def test_run_payload_carries_skill_manifest_pins():
     assert payload.skill_manifests == [{"skill_id": "qa-file-reviewer", "content_hash": "hash-primary"}]
 
 
-def test_agent_app_contract_is_stable():
-    app = AgentApp(
-        app_id="translate",
-        name="翻译",
-        mode="chat_file",
-        default_skill_id="baoyu-translate",
-        allowed_input_types=["docx"],
-        output_types=["translated_docx"],
-    )
-    assert app.default_skill_id == "baoyu-translate"
-    assert app.mode == "chat_file"
-
-
 def test_skill_definition_contract_is_stable():
     skill = SkillDefinition(
         skill_id="baoyu-translate",
@@ -908,9 +936,12 @@ def test_default_registry_does_not_expose_runtime211_direct_executor():
         raise AssertionError("runtime211 must not be available as a default direct executor")
 
 
-def test_registry_includes_ragflow_executor():
+def test_default_registry_keeps_ragflow_behind_the_harness_mcp_boundary():
     from app.executors.registry import AdapterRegistry
 
-    adapter = AdapterRegistry().get("ragflow")
-
-    assert adapter.executor_type == "ragflow"
+    try:
+        AdapterRegistry().get("ragflow")
+    except KeyError as exc:
+        assert "ragflow" in str(exc)
+    else:
+        raise AssertionError("RAGFlow must be an MCP tool, not a second default executor")

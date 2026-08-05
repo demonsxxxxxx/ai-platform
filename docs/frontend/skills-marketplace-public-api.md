@@ -38,13 +38,12 @@ Backed routes:
 - `DELETE /api/skills/{skill_name}`
 - `POST /api/skills/batch/delete`
 - `POST /api/skills/batch/toggle`
-- `POST /api/skills/{skill_name}/publish`
 
 `GET /api/skills/` returns the frontend list contract with `skills`, `total`, `skip`, `limit`, `available_tags`, and `effective_permissions`. Catalog data is projected from public workbench skills, tenant availability, and the effective skill version snapshot.
 
 `PATCH /api/skills/{skill_name}/toggle` maps to tenant skill availability in `tenant_workbench_skills`; it does not invoke admin promote or rollback.
 
-`POST /api/skills/{skill_name}/publish` records a public publish request audit and returns the marketplace projection for the skill. It does not substitute for `/api/ai/admin/skills/{skill_id}/promote`.
+No public `/api/skills/{skill_name}/publish` route is backed. Global Skill release remains exclusively under the Admin review, materialization, promote, and rollback lifecycle at `/api/ai/admin/skills/*`.
 
 `POST /api/skills/batch/delete` and `POST /api/skills/batch/toggle` map to tenant skill availability and audit each affected skill. Batch delete disables tenant availability; it does not delete global built-in Skill packages or admin release records.
 
@@ -87,8 +86,6 @@ Backed routes:
 - `GET /api/marketplace/{skill_name}/files/{file_path}`
 - `POST /api/marketplace/{skill_name}/install`
 - `POST /api/marketplace/{skill_name}/update`
-- `POST /api/marketplace/`
-- `PUT /api/marketplace/{skill_name}`
 - `PATCH /api/marketplace/{skill_name}/activate`
 - `DELETE /api/marketplace/{skill_name}`
 
@@ -96,13 +93,22 @@ Marketplace list/detail/files are projected only from globally active public wor
 
 `install` and `update` enable the selected public skill in tenant availability and write audit evidence. They do not expose package upload, release promote, rollback, MCP lifecycle, or tool execution controls to ordinary users.
 
-Direct marketplace lifecycle routes are backed for authorized marketplace admins:
+Tenant Marketplace distribution lifecycle routes are backed for authorized marketplace admins:
 
-- `POST /api/marketplace/` and `PUT /api/marketplace/{skill_name}` materialize tenant-facing Skill metadata as an immutable `skill_versions` snapshot and point the tenant stable release policy at that snapshot. They do not mutate the global `skills` catalog row.
 - `PATCH /api/marketplace/{skill_name}/activate` accepts either `active` or the frontend-compatible `is_active` body field and updates tenant availability.
 - `DELETE /api/marketplace/{skill_name}` disables tenant Marketplace availability without deleting global Skill records.
 
-Package upload, rollback, and low-level release management remain under the admin release-management surface at `/api/ai/admin/skills/*`.
+The following compatibility routes are fail-closed and return
+`409 marketplace_direct_write_contract_not_backed` without reading or mutating
+the Skill catalog, version rows, release policy, or tenant distribution:
+
+- `POST /api/marketplace/`
+- `PUT /api/marketplace/{skill_name}`
+
+The Admin release-management surface under `/api/ai/admin/skills/*` is the only
+authority for immutable version upload, review, promote, rollout policy, and
+rollback. Marketplace routes remain projections and tenant-distribution
+controls; they cannot create an active version or redirect a release policy.
 
 ## MCP Routes
 

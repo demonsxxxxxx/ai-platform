@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Plus,
   Package,
   FolderOpen,
   Check,
@@ -41,20 +40,16 @@ interface SkillsListProps {
   clearError: () => void;
   canWrite: boolean;
   canEdit: boolean;
-  canCreate: boolean;
   canImport: boolean;
   canBatch: boolean;
   canDelete: boolean;
-  canPublish: boolean;
   selectedNames: Set<string>;
   onToggle: (name: string) => void;
   onEdit: (skill: SkillResponse) => void;
   onDelete: (name: string) => void;
   onExportZip: (name: string) => void;
-  onPublish: ((skill: SkillResponse) => void) | undefined;
   onSelectSkill: (name: string) => void;
   onSelectAll: () => void;
-  onCreate: () => void;
   onGithubClick: () => void;
   onZipClick: () => void;
 }
@@ -81,20 +76,16 @@ export function SkillsList({
   clearError,
   canWrite,
   canEdit,
-  canCreate,
   canImport,
   canBatch,
   canDelete,
-  canPublish,
   selectedNames,
   onToggle,
   onEdit,
   onDelete,
   onExportZip,
-  onPublish,
   onSelectSkill,
   onSelectAll,
-  onCreate,
   onGithubClick,
   onZipClick,
 }: SkillsListProps) {
@@ -127,11 +118,9 @@ export function SkillsList({
     searchQuery.trim().length > 0 || selectedTags.length > 0;
   const canToggleSkills = canWrite && !governedUnavailable;
   const canEditSkills = canEdit && !governedUnavailable;
-  const canCreateSkills = canCreate && !governedUnavailable;
   const canImportSkills = canImport && !governedUnavailable;
   const canBatchSkills = canBatch && !governedUnavailable;
-  const canManageSkills =
-    canBatchSkills || canImportSkills || canCreateSkills;
+  const canManageSkills = canBatchSkills || canImportSkills;
 
   const filterMenu = availableTags.length > 0 && (
     <div className="relative shrink-0" ref={filterRef}>
@@ -218,12 +207,6 @@ export function SkillsList({
             <span className="hidden sm:inline">ZIP</span>
           </button>
         </>
-      )}
-      {canCreateSkills && (
-        <button onClick={onCreate} className="btn-primary h-10">
-          <Plus size={16} />
-          <span className="hidden sm:inline">{t("skills.newSkill")}</span>
-        </button>
       )}
     </div>
   ) : undefined;
@@ -314,16 +297,8 @@ export function SkillsList({
             <p className={workbenchSurface.catalog.emptyDescription}>
               {governedUnavailable
                 ? t("skills.catalogUnavailable.description")
-                : hasActiveFilters
-                ? t("skills.subtitle")
-                : t("skills.createFirst")}
+                : t("skills.subtitle")}
             </p>
-            {!hasActiveFilters && canCreateSkills && (
-              <button onClick={onCreate} className="btn-primary mt-4">
-                <Plus size={16} />
-                <span>{t("skills.newSkill")}</span>
-              </button>
-            )}
             {hasActiveFilters && (
               <button
                 type="button"
@@ -347,9 +322,6 @@ export function SkillsList({
                 onEdit={onEdit}
                 onDelete={onDelete}
                 onExportZip={governedUnavailable ? undefined : onExportZip}
-                onPublish={
-                  canPublish ? (s: SkillResponse) => onPublish?.(s) : undefined
-                }
                 canWrite={canToggleSkills}
                 canEdit={canEditSkills}
                 canDelete={canDelete}

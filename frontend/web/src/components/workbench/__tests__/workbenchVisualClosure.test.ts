@@ -199,7 +199,7 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.match(shell, /aria-expanded=\{contextOpen\}/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(sidePanel, /workbenchSurface\.secondaryPanel/);
+  assert.match(sidePanel, /workbenchSurface\.compactPanel/);
   assert.match(chatInput, /LibreChatComposerFrame/);
   assert.match(composer, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
   assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
@@ -233,10 +233,6 @@ test("post-login projection panels share workbench surface tokens", () => {
   const panels = new Map([
     ["MCPPanel", read("src/components/panels/MCPPanel.tsx")],
     ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
-    [
-      "RevealedFilesWorkbenchPanel",
-      read("src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
-    ],
     ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
     ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
     [
@@ -277,27 +273,11 @@ test("workbench governance surfaces do not hard-code slate or stone palettes", (
       "GovernanceAvailabilityBadge",
       read("src/components/governance/GovernanceAvailabilityBadge.tsx"),
     ],
-    [
-      "GroupAvailabilityToggleRow",
-      read("src/components/governance/GroupAvailabilityToggleRow.tsx"),
-    ],
-  ]);
-  const governedSources = new Map([
-    ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
-    [
-      "RevealedFilesWorkbenchPanel",
-      read("src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
-    ],
   ]);
   const legacyPalette =
     /\b(?:bg|text|border|ring|divide)-(?:slate|stone)-|dark:(?:bg|text|border|ring|divide)-stone-/;
 
   for (const [name, source] of sharedSources) {
-    assert.doesNotMatch(source, legacyPalette, name);
-    assert.doesNotMatch(source, /bg-\[var\(--theme-bg-card\)\]/, name);
-  }
-
-  for (const [name, source] of governedSources) {
     assert.doesNotMatch(source, legacyPalette, name);
     assert.doesNotMatch(source, /bg-\[var\(--theme-bg-card\)\]/, name);
   }
@@ -611,12 +591,10 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
 
 test("skills marketplace action surfaces use semantic workbench state colors", () => {
   const batchActionBar = read("src/components/panels/SkillsPanel/BatchActionBar.tsx");
-  const publishDialog = read("src/components/panels/SkillsPanel/PublishDialog.tsx");
   const mcp = read("src/components/panels/MCPPanel.tsx");
 
   for (const [name, source] of new Map([
     ["BatchActionBar", batchActionBar],
-    ["PublishDialog", publishDialog],
     ["MCPPanel", mcp],
   ])) {
     assert.match(source, /var\(--theme-danger-soft\)/, name);
@@ -627,7 +605,6 @@ test("skills marketplace action surfaces use semantic workbench state colors", (
   }
 
   assert.match(batchActionBar, /bg-\[var\(--theme-workbench-panel\)\]/);
-  assert.match(publishDialog, /bg-\[var\(--theme-border-strong\)\]/);
 });
 
 test("reachable catalog pages delegate page backgrounds to workbench surface tokens", () => {
@@ -732,7 +709,6 @@ test("expanded app sidebar keeps company navigation and admin skills as first-le
   for (const route of [
     "/apps",
     "/skills",
-    "/files",
     "/models",
   ]) {
     assert.match(navigation, new RegExp(`"${route}"`), route);
@@ -827,10 +803,6 @@ test("post-login composer and selector surfaces use shared semantic workbench to
     ["LibreChatComposer", read("src/librechat-ui/Composer.tsx")],
     ["LibreChatCommandMenu", read("src/librechat-ui/CommandMenu.tsx")],
     ["LibreChatComposerChip", read("src/librechat-ui/Chips.tsx")],
-    [
-      "ComposerUnavailablePanel",
-      read("src/components/chat/ComposerUnavailablePanel.tsx"),
-    ],
     ["SkillSelector", read("src/components/selectors/SkillSelector.tsx")],
     ["ToolSelector", read("src/components/selectors/ToolSelector.tsx")],
   ]);
@@ -852,7 +824,6 @@ test("post-login composer and selector surfaces use shared semantic workbench to
 
   const commandMenu = sources.get("LibreChatCommandMenu")!;
   const chips = sources.get("LibreChatComposerChip")!;
-  const unavailablePanel = sources.get("ComposerUnavailablePanel")!;
   const toolSelector = sources.get("ToolSelector")!;
   const skillSelector = sources.get("SkillSelector")!;
 
@@ -860,8 +831,6 @@ test("post-login composer and selector surfaces use shared semantic workbench to
   assert.match(commandMenu, /bg-\[var\(--theme-workbench-panel\)\]/);
   assert.match(chips, /data-librechat-composer-chip/);
   assert.match(chips, /theme-warning-soft/);
-  assert.match(unavailablePanel, /data-composer-unavailable-panel/);
-  assert.match(unavailablePanel, /theme-warning-soft/);
   assert.match(toolSelector, /data-composer-mcp-selector/);
   assert.match(toolSelector, /theme-danger-soft/);
   assert.match(skillSelector, /data-composer-skill-selector/);

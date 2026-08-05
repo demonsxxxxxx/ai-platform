@@ -63,7 +63,6 @@ test("governed phase one write surfaces remain explicit fail-closed states", () 
     source("src/components/panels/MarketplacePanel.tsx"),
     source("src/components/panels/MCPPanel.tsx"),
     source("src/components/share/ShareUnavailableState.tsx"),
-    source("src/components/chat/ComposerUnavailablePanel.tsx"),
   ].join("\n");
 
   for (const surface of PHASE1_FAIL_CLOSED_SURFACES) {

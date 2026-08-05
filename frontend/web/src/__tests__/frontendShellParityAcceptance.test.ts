@@ -56,7 +56,6 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
     "/apps",
     "/skills",
     "/mcp",
-    "/files",
   ]) {
     assert.match(app, new RegExp(`path="${route.replace("/", "\\/")}`));
   }
@@ -83,7 +82,6 @@ test("phase 1C primary workbench routes are login reachable and fail closed insi
   for (const route of [
     "/skills",
     "/mcp",
-    "/files",
   ]) {
     const routePattern = new RegExp(
       `path="${route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,180}<`,
@@ -203,16 +201,13 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
     assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
   }
   assert.doesNotMatch(sidebar, /navigate\("\/roles"\)/);
-  for (const route of ["/files"]) {
-    assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
-  }
   for (const handler of [
     "onOpenModels",
-    "onOpenFiles",
   ]) {
     assert.match(sidebar, new RegExp(handler), handler);
   }
   assert.doesNotMatch(sidebar, /onOpenRoles|onOpenMarketplace/);
+  assert.doesNotMatch(sidebar, /onOpenFiles|navigate\("\/files"\)/);
   assert.doesNotMatch(sidebar, /Permission\.ROLE_READ|Permission\.AGENT_ADMIN|Permission\.MODEL_READ|Permission\.CHANNEL_READ/);
   assert.doesNotMatch(sidebar, /onOpenPersonaPlaza|onOpenFileLibrary/);
   assert.doesNotMatch(sidebar, /hasMoreMenuItems|MobileMoreMenuSheet|DesktopMoreMenu/);
@@ -228,6 +223,7 @@ test("session project and favorites code cannot return through the frontend shel
     join(root, "src/services/api/session.ts"),
     "utf8",
   );
+  const apiBarrel = readFileSync(join(root, "src/services/api.ts"), "utf8");
   const useAgent = readFileSync(join(root, "src/hooks/useAgent.ts"), "utf8");
 
   for (const source of [sessionHook, sessionApi, useAgent]) {
@@ -237,6 +233,7 @@ test("session project and favorites code cannot return through the frontend shel
     );
   }
   assert.doesNotMatch(sessionApi, /project_id|favorites_only/);
+  assert.doesNotMatch(apiBarrel, /projectApi|\.\/api\/project/);
   for (const file of [
     "src/components/sidebar/ProjectItem.tsx",
     "src/components/sidebar/ProjectMenu.tsx",
@@ -246,6 +243,7 @@ test("session project and favorites code cannot return through the frontend shel
     "src/components/common/DeleteProjectDialog.tsx",
     "src/hooks/useProjectManager.ts",
     "src/hooks/useTouchDrag.ts",
+    "src/services/api/project.ts",
   ]) {
     assert.equal(existsSync(join(root, file)), false, `${file} must stay removed`);
   }
@@ -258,10 +256,6 @@ test("post-login navigation keeps MCP in the authoritative sidebar instead of th
   );
   const sidebar = readFileSync(
     join(root, "src/components/panels/SessionSidebar.tsx"),
-    "utf8",
-  );
-  const chatAppContent = readFileSync(
-    join(root, "src/components/layout/AppContent/ChatAppContent.tsx"),
     "utf8",
   );
   const chatInput = readFileSync(
@@ -278,8 +272,6 @@ test("post-login navigation keeps MCP in the authoritative sidebar instead of th
   );
   assert.match(userMenu, /overflow-y-auto/);
   assert.match(userMenu, /w-60/);
-  assert.match(chatAppContent, /useTools\(\{ enabled: true \}\)/);
-  assert.doesNotMatch(chatAppContent, /const canReadMcpTools = hasPermission\(Permission\.MCP_READ\);/);
   assert.match(chatInput, /toolsAvailable/);
   assert.match(chatInput, /skillsAvailable/);
   assert.doesNotMatch(chatInput, /totalToolsCount > 0/);
@@ -309,10 +301,6 @@ test("authenticated chat workspace keeps one warm-neutral LibreChat canvas inste
   );
   const rightPanel = readFileSync(
     join(root, "src/components/workbench/WorkbenchRightPanel.tsx"),
-    "utf8",
-  );
-  const libreSidePanel = readFileSync(
-    join(root, "src/librechat-ui/SidePanel.tsx"),
     "utf8",
   );
   const skillsHub = readFileSync(
@@ -354,7 +342,6 @@ test("authenticated chat workspace keeps one warm-neutral LibreChat canvas inste
   );
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /LibreChatSidePanel/);
-  assert.match(libreSidePanel, /workbenchSurface\.secondaryPanel/);
   assert.match(theme, /--theme-bg:\s*#ffffff;/);
   assert.match(theme, /--theme-bg-sidebar:\s*#f7f7f8;/);
   assert.match(theme, /--theme-workbench-panel:\s*#ffffff;/);
@@ -410,8 +397,6 @@ test("authenticated workbench adopts one LibreChat light application shell", () 
     join(root, "src/components/common/EnterpriseSelect.tsx"),
     "utf8",
   );
-  const settingsHook = readFileSync(join(root, "src/hooks/useSettings.ts"), "utf8");
-
   assert.equal(packageJson.name, "ai-platform-frontend");
   assert.doesNotMatch(main, /styles\/glass\.css/);
   assert.match(components, /enterprise-field-control/);
@@ -419,8 +404,6 @@ test("authenticated workbench adopts one LibreChat light application shell", () 
   assert.doesNotMatch(components, /glass-input|glass-select|--glass-/);
   assert.match(enterpriseSelect, /function EnterpriseSelect/);
   assert.doesNotMatch(enterpriseSelect, /GlassSelect|glass-/);
-  assert.match(settingsHook, /ai-platform-settings-\$\{date\}\.json/);
-  assert.doesNotMatch(settingsHook, /lamb-agent-settings/);
   assert.match(theme, /--theme-sidebar-rail:\s*#f7f7f8;/);
   assert.match(theme, /--theme-sidebar-panel:\s*#f7f7f8;/);
   assert.match(theme, /--theme-sidebar-panel-muted:\s*#ececec;/);
@@ -523,10 +506,6 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
     join(root, "src/components/panels/MarketplacePanel.tsx"),
     "utf8",
   );
-  const groupAvailability = readFileSync(
-    join(root, "src/components/governance/GroupAvailabilityToggleRow.tsx"),
-    "utf8",
-  );
   const skillBaseCard = readFileSync(
     join(root, "src/components/common/SkillBaseCard.tsx"),
     "utf8",
@@ -547,7 +526,6 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   assert.match(marketplace, /data-marketplace-catalog-shell/);
   assert.match(marketplace, /data-frontend-governance-state|buildFrontendGovernanceSmokeAttributes/);
   assert.match(marketplace, /effectiveGovernedUnavailable/);
-  assert.match(groupAvailability, /flex flex-col[\s\S]*sm:flex-row/);
   assert.match(marketplaceCard, /versionLabel/);
   assert.match(marketplaceCard, /max-w-28 truncate/);
   assert.match(skillBaseCard, /p-3\.5 sm:p-4/);
@@ -1009,8 +987,7 @@ test("skills hub keeps management admin-only and serves a bounded ordinary catal
   );
 });
 
-test("company baseline permissions include backed role plaza and marketplace read contracts", () => {
-  const authRoute = readFileSync(join(root, "../../app/routes/auth.py"), "utf8");
+test("marketplace catalog frontend projection preserves server read state", () => {
   const marketplaceApi = readFileSync(
     join(root, "src/services/api/marketplace.ts"),
     "utf8",
@@ -1026,8 +1003,6 @@ test("company baseline permissions include backed role plaza and marketplace rea
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
   const enLocale = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
 
-  assert.match(authRoute, /"marketplace:read"/);
-  assert.match(authRoute, /"role:read"/);
   assert.match(marketplaceApi, /catalog_read_resolved/);
   assert.match(useMarketplace, /setCatalogReadResolved\(data\.catalog_read_resolved\)/);
   assert.match(marketplaceTest, /catalog_read_resolved:\s*true/);

@@ -26,7 +26,6 @@ export { authFetch } from "./api/fetch";
 
 // API modules
 export { authApi, buildOAuthLoginUrl } from "./api/auth";
-export { userApi } from "./api/user";
 export { roleApi } from "./api/role";
 export {
   DEFAULT_CHAT_AGENT_ID,
@@ -43,26 +42,13 @@ export {
   type SessionInputFile,
   type SessionInputFilesResponse,
 } from "./api/session";
-export { modelApi } from "./api/model";
 export { skillApi } from "./api/skill";
-export { settingsApi } from "./api/settings";
 export { workbenchApi } from "./api/workbench";
 export { mcpApi } from "./api/mcp";
-export { memoryApi } from "./api/memory";
 export { envvarApi } from "./api/envvar";
 export { uploadApi } from "./api/upload";
 export { versionApi } from "./api/version";
-export { healthApi } from "./api/health";
-export { projectApi } from "./api/project";
 export {
   type ToolPermissionHistoryResponse,
   type ToolPermissionHistoryView,
 } from "./api/toolPermission";
-export {
-  revealedFileApi,
-  type RevealedFileItem,
-  type RevealedFileListParams,
-  type RevealedFileGroupedListParams,
-  type RevealedFileGroupedListResponse,
-  type SessionGroupItem,
-} from "./api/revealedFile";

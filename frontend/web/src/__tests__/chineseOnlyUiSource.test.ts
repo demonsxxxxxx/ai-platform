@@ -20,7 +20,6 @@ test("product language controls are absent from authentication, landing, workben
     "components/auth/AuthPage.tsx",
     "components/auth/ForgotPassword.tsx",
     "components/auth/ResetPassword.tsx",
-    "components/landing/components/Navbar.tsx",
     "components/layout/AppContent/Header.tsx",
     "components/share/SharedPage.tsx",
   ]) {

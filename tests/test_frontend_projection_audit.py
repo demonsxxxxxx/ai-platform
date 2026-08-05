@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -6,32 +8,36 @@ import time
 from tools.frontend_projection_audit import (
     LEGACY_ROUTE_POLICY_MAP,
     SAFE_PUBLIC_ROUTE_PREFIXES,
+    _resolve_relative_module,
     build_frontend_projection_audit,
     render_frontend_projection_audit_markdown,
 )
 
 
 def test_frontend_projection_audit_reports_current_public_admin_boundary():
+    repo_root = Path(__file__).resolve().parents[1]
     audit = build_frontend_projection_audit()
 
+    assert not (repo_root / "frontend/web/src/services/api/model.ts").exists()
+    api_barrel = (repo_root / "frontend/web/src/services/api.ts").read_text(
+        encoding="utf-8"
+    )
+    assert 'from "./api/model"' not in api_barrel
+    assert "modelApi" not in api_barrel
     assert audit["schema_version"] == "ai-platform.frontend-projection-audit.v1"
     assert audit["frontend_path"] == "frontend/web"
     assert audit["status"] == "pass_with_policy_gaps"
     assert audit["ci_integration"]["ci_verify_includes_projection_audit"] is True
     violations = audit["forbidden_private_payload_terms"]["violations"]
-    assert violations
-    violation_terms = {item["term"] for item in violations}
-    assert "api_key" in violation_terms
+    assert violations == []
     active_violations = audit["active_browser_entry"]["forbidden_projection_terms"]["violations"]
     assert active_violations == []
     active_paths = set(audit["active_browser_entry"]["files"])
+    assert "frontend/web/src/services/api/modelPublic.ts" in active_paths
     assert "frontend/web/src/components/panels/channel/feishu/FeishuPanel.tsx" not in active_paths
     assert "frontend/web/src/components/panels/ModelPanel/ModelPanel.tsx" not in active_paths
     assert "frontend/web/src/components/profile/tabs/ProfileEnvVarsTab.tsx" not in active_paths
-    quarantined_paths = {
-        item["path"] for item in audit["quarantined_legacy_sources"]["violations"]
-    }
-    assert "frontend/web/src/services/api/model.ts" in quarantined_paths
+    assert audit["quarantined_legacy_sources"]["violations"] == []
     assert not any(
         item["path"] == "frontend/web/src/components/documents/documentUrlSafety.ts"
         for item in violations
@@ -109,7 +115,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "/api/notifications/admin" in all_safe_admin_routes
     assert "/api/admin/mcp" not in active_policy_routes
     assert "/api/mcp" not in active_policy_routes
-    assert "/api/env-vars" not in active_policy_routes
+    assert set(active_policy_routes) == {"/api/env-vars", "/api/roles"}
     assert "/api/agent/models" not in active_policy_routes
     assert "/api/github" not in active_policy_routes
     assert "/api/marketplace" not in active_policy_routes
@@ -122,18 +128,17 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"]: route
         for route in active_route_inventory["ordinary_user_reachable_legacy_route_policies"]
     }
-    assert ordinary_routes == {}
-    assert active_policy_routes["/api/admin/"]["active_browser_access"] == "permission_gated"
-    assert "CHANNEL_ADMIN" in active_policy_routes["/api/admin/"][
-        "non_ordinary_required_permissions"
-    ]
+    assert set(ordinary_routes) == set(active_policy_routes)
+    assert all(
+        route["active_browser_access"] == "ordinary_user_reachable"
+        for route in ordinary_routes.values()
+    )
     permission_gated_routes = {
         route["route_prefix"]: route
         for route in active_route_inventory["legacy_route_policies"]
         if route["active_browser_access"] == "permission_gated"
     }
-    assert set(permission_gated_routes) == set(active_policy_routes)
-    assert "/api/roles" not in permission_gated_routes
+    assert permission_gated_routes == {}
     policy_routes = {
         route["route_prefix"]: route
         for route in audit["route_inventory"]["legacy_route_policies"]
@@ -142,18 +147,19 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"]
         for route in audit["route_inventory"]["legacy_policy_required_routes"]
     }
-    assert policy_routes["/api/agent/models"]["ordinary_user_exposure"] == "fail_closed"
-    assert policy_routes["/api/agent/models"]["required_action"] == (
+    assert "/api/agent/models" not in policy_routes
+    assert LEGACY_ROUTE_POLICY_MAP["/api/agent/models"]["ordinary_user_exposure"] == "fail_closed"
+    assert LEGACY_ROUTE_POLICY_MAP["/api/agent/models"]["required_action"] == (
         "remap_to_ai_platform_admin_projection_or_hide"
     )
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
-    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in audit["open_gaps"]
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
-    assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in audit["open_gaps"]
+    assert "quarantined_legacy_sources_need_ai_platform_projection_remap" not in audit["open_gaps"]
     gap_details = {item["gap"]: item for item in audit["open_gap_details"]}
     legacy_detail = gap_details["legacy_routes_need_policy_enforcement_or_ai_platform_remap"]
     assert legacy_detail["count"] == len(audit["route_inventory"]["legacy_route_policies"])
-    assert {"G1", "G6", "G9"}.issubset(set(legacy_detail["governance_gates"]))
+    assert set(legacy_detail["governance_gates"]) == {"G1", "G6"}
     assert not any(route["route_prefix"] == "/api/mcp" for route in legacy_detail["routes"])
     assert not any(route["route_prefix"] == "/api/admin/mcp" for route in legacy_detail["routes"])
     active_detail = gap_details["active_legacy_routes_need_policy_enforcement_or_ai_platform_remap"]
@@ -161,12 +167,14 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert any(route["route_scope"] == "active_browser_entry" for route in active_detail["routes"])
     assert not any(route["route_prefix"] == "/api/mcp" for route in active_detail["routes"])
     assert not any(route["route_prefix"] == "/api/admin/mcp" for route in active_detail["routes"])
-    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in gap_details
-    quarantined_detail = gap_details["quarantined_legacy_sources_need_ai_platform_projection_remap"]
-    assert quarantined_detail["count"] == len(audit["quarantined_legacy_sources"]["violations"])
-    assert quarantined_detail["sample_violations"]
-    assert all("required_action" in item for item in quarantined_detail["sample_violations"])
-    assert all("term" not in item for item in quarantined_detail["sample_violations"])
+    ordinary_detail = gap_details[
+        "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap"
+    ]
+    assert {route["route_prefix"] for route in ordinary_detail["routes"]} == {
+        "/api/env-vars",
+        "/api/roles",
+    }
+    assert "quarantined_legacy_sources_need_ai_platform_projection_remap" not in gap_details
     serialized_gap_details = json.dumps(audit["open_gap_details"], ensure_ascii=False).lower()
     assert "storage_key" not in serialized_gap_details
     assert "executor_private_payload" not in serialized_gap_details
@@ -187,6 +195,101 @@ def test_frontend_projection_audit_returns_without_scan_timeout():
 
     assert audit["schema_version"] == "ai-platform.frontend-projection-audit.v1"
     assert time.perf_counter() - started < 25
+
+
+def test_frontend_projection_audit_uses_vite_order_across_hash_seeds(
+    tmp_path,
+):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text(
+        'import "./dual.tsx";\nimport "./directory";\n',
+        encoding="utf-8",
+    )
+    (source_root / "dual.tsx").write_text(
+        'import "./dual";\nexport const safeRoute = "/api/skills";\n',
+        encoding="utf-8",
+    )
+    (source_root / "dual.ts").write_text(
+        'export const legacyRoute = "/api/env-vars";\n',
+        encoding="utf-8",
+    )
+    directory = source_root / "directory"
+    directory.mkdir()
+    (directory / "index.js").write_text(
+        'export const vitePreferredRoute = "/api/github";\n',
+        encoding="utf-8",
+    )
+    (directory / "index.ts").write_text(
+        'export const lowerPriorityRoute = "/api/roles";\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _resolve_relative_module(source_root / "dual.tsx", "./dual") == (
+        source_root / "dual.ts"
+    ).resolve()
+    assert _resolve_relative_module(source_root / "main.tsx", "./directory") == (
+        directory / "index.js"
+    ).resolve()
+
+    repo_root = Path(__file__).resolve().parents[1]
+    probe = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from tools.frontend_projection_audit import build_frontend_projection_audit\n"
+        "audit = build_frontend_projection_audit(Path(sys.argv[1]))\n"
+        "print(json.dumps({\n"
+        "  'files': audit['active_browser_entry']['files'],\n"
+        "  'route_inventory': audit['active_browser_entry']['route_inventory'],\n"
+        "  'open_gaps': audit['open_gaps'],\n"
+        "}, sort_keys=True))\n"
+    )
+    results = []
+    for seed in ("0", "1", "2", "3", "42", "123"):
+        env = os.environ.copy()
+        env["PYTHONHASHSEED"] = seed
+        completed = subprocess.run(
+            [sys.executable, "-c", probe, str(tmp_path)],
+            cwd=repo_root,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results.append(json.loads(completed.stdout))
+
+    assert results == [results[0]] * len(results)
+    assert results[0]["files"] == [
+        "frontend/web/src/directory/index.js",
+        "frontend/web/src/dual.ts",
+        "frontend/web/src/dual.tsx",
+        "frontend/web/src/main.tsx",
+    ]
+    active_routes = results[0]["route_inventory"]
+    assert [
+        item["route_prefix"]
+        for item in active_routes["safe_public_projection_routes"]
+    ] == ["/api/github", "/api/skills"]
+    assert [
+        item["route_prefix"]
+        for item in active_routes["legacy_policy_required_routes"]
+    ] == ["/api/env-vars"]
+    assert results[0]["open_gaps"] == [
+        "legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+        "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+        "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+    ]
 
 
 def test_frontend_projection_audit_detects_private_payload_consumption(tmp_path):
@@ -1157,7 +1260,7 @@ def test_frontend_projection_audit_cli_outputs_json():
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.frontend-projection-audit.v1"
     assert payload["status"] == "pass_with_policy_gaps"
-    assert payload["forbidden_private_payload_terms"]["violations"]
+    assert payload["forbidden_private_payload_terms"]["violations"] == []
     assert payload["active_browser_entry"]["forbidden_projection_terms"]["violations"] == []
     assert "c:\\users" not in result.stdout.lower()
 

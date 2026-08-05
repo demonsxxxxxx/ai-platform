@@ -1,15 +1,13 @@
-import asyncio
-import json
 import re
 from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from fastapi.responses import StreamingResponse
 from pydantic import UUID4
 
 from app import repositories
-from app.auth import AuthPrincipal, is_ai_admin, normalize_roles, require_principal
+from app.agent_profiles import reauthorize_pinned_run_for_replay
+from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capabilities import get_capability
 from app.context_builder import record_initial_context_snapshot
 from app.context_manifest import public_context_manifest_projection
@@ -17,10 +15,6 @@ from app.db import transaction
 from app.models import (
     CreateRunRequest,
     CreateRunResponse,
-    MultiAgentDispatchClaimRequest,
-    MultiAgentDispatchClaimResponse,
-    MultiAgentDispatchHandoffResponse,
-    MultiAgentDispatchTickResponse,
     QueueRunPayload,
     RunControlMutationResponse,
     RunControlOperationResponse,
@@ -31,7 +25,6 @@ from app.product_events import initial_run_event_specs
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.control_plane_contracts import (
     HASH_LIKE_VALUE_PATTERN,
-    artifact_lineage_contract,
     sanitize_public_payload,
     sanitize_public_text,
     standard_trace_id,
@@ -42,6 +35,7 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     redact_raw_skill_references,
     sanitize_user_control_input,
+    strip_server_owned_control_metadata,
 )
 from app.queue import (
     QueueAdmissionMetadata,
@@ -56,9 +50,7 @@ from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.run_projection import (
     artifact_card,
     executor_result_schema_version,
-    multi_agent_snapshot_from_steps,
     normalize_run_status,
-    ordinary_nonterminal_run_result,
     progress_for_status,
     public_text_or_fallback,
     public_terminal_projection,
@@ -75,11 +67,13 @@ from app.run_provenance import (
     run_provenance_snapshot,
     safe_provenance_graph_id,
 )
-from app.run_control_readiness import (
-    dispatch_claim_candidate as _dispatch_claim_candidate,
-    dispatch_tick_candidate as _dispatch_tick_candidate,
-    run_control_readiness_snapshot,
+from app.run_admission_policy import (
+    PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+    contains_persisted_platform_multi_agent_control,
+    contains_platform_multi_agent_control,
 )
+from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
+from app.run_control_readiness import run_control_readiness_snapshot
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
@@ -99,9 +93,6 @@ from app.validation import assert_safe_principal_user_id
 router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
 RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
-MULTI_AGENT_DISPATCH_CLAIM_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-claim.v1"
-MULTI_AGENT_DISPATCH_HANDOFF_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-handoff.v1"
-MULTI_AGENT_DISPATCH_TICK_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-tick.v1"
 _CAPABILITY_REVOCATION_LIFECYCLE_ERRORS = {"agent_or_skill_not_found", "skill_inactive", "mcp_tool_disabled"}
 _MULTI_AGENT_DISPATCH_NOT_AVAILABLE = "multi_agent_dispatch_not_available"
 
@@ -112,7 +103,7 @@ def _raise_if_capability_revoked(exc: Exception) -> None:
 
 
 def _raise_multi_agent_dispatch_not_available() -> None:
-    """Reject deferred multi-agent admission before any claim or child mutation."""
+    """Keep the disabled worker dispatcher import-compatible until Phase 2."""
 
     raise HTTPException(status_code=409, detail=_MULTI_AGENT_DISPATCH_NOT_AVAILABLE)
 
@@ -168,17 +159,13 @@ async def _release_stopped_cancel_leases(
 async def _remove_cancelled_queue_payloads(
     *,
     tenant_id: str,
-    parent_run_id: str,
+    run_id: str,
     result: dict[str, Any],
 ) -> list[Exception]:
     failures: list[Exception] = []
-    run_ids: list[str] = []
     if result["status"] == "cancelled":
-        run_ids.append(parent_run_id)
-    run_ids.extend(str(child_run_id) for child_run_id in result.get("queued_child_run_ids") or [])
-    for queued_run_id in run_ids:
         try:
-            await remove_queued_run(tenant_id=tenant_id, run_id=queued_run_id)
+            await remove_queued_run(tenant_id=tenant_id, run_id=run_id)
         except Exception as exc:
             failures.append(exc)
     return failures
@@ -247,10 +234,6 @@ async def _governed_skill_manifest_pins(
     return skill_manifests
 
 
-def _json_default(value: Any) -> str:
-    return value.isoformat() if hasattr(value, "isoformat") else str(value)
-
-
 def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_id: str) -> dict[str, Any]:
     return {
         **release_decision,
@@ -258,12 +241,6 @@ def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_i
         "skill_version": release_decision.get("selected_version"),
         "visible_to_user": False,
     }
-
-
-def sse(event: str, data: dict[str, object], event_id: str | None = None) -> str:
-    prefix = f"id: {event_id}\n" if event_id else ""
-    payload = json.dumps(data, ensure_ascii=False, default=_json_default)
-    return f"{prefix}event: {event}\ndata: {payload}\n\n"
 
 
 def _resume_manifest_public_depends_on(values: object, *, raw_terms: set[str]) -> list[str]:
@@ -510,24 +487,6 @@ def next_sequence_from_rows(rows: list[dict[str, object]], fallback: int | None 
 
 
 def copy_recovery_plan(run: dict[str, Any], rows: list[dict[str, object]], *, include_raw_skill: bool = False) -> dict[str, object]:
-    source_input = run.get("input_json") or {}
-    execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
-    configured_steps = execution_input.get("multi_agent_steps") if isinstance(execution_input, dict) else []
-    configured_by_key = {
-        str(item.get("step_key") or item.get("stepKey")): item
-        for item in configured_steps or []
-        if isinstance(item, dict) and (item.get("step_key") or item.get("stepKey"))
-    }
-    source_rows = rows or [
-        {
-            "step_key": key,
-            "role": item.get("role") or "",
-            "title": item.get("title") or "",
-            "status": "pending",
-            "payload_json": {"depends_on": item.get("depends_on") or item.get("dependsOn") or []},
-        }
-        for key, item in configured_by_key.items()
-    ]
     status_labels = {
         "blocked": "阻塞",
         "cancelled": "已取消",
@@ -540,9 +499,8 @@ def copy_recovery_plan(run: dict[str, Any], rows: list[dict[str, object]], *, in
     planned_steps: list[dict[str, object]] = []
     reused = 0
     rerun = 0
-    for index, row in enumerate(source_rows, start=1):
+    for index, row in enumerate(rows, start=1):
         step_key = str(row.get("step_key") or row.get("stepKey") or f"step-{index}")
-        configured = configured_by_key.get(step_key, {})
         payload = row.get("payload_json") or row.get("payload") or {}
         if not isinstance(payload, dict):
             payload = {}
@@ -559,14 +517,11 @@ def copy_recovery_plan(run: dict[str, Any], rows: list[dict[str, object]], *, in
                 "step_key": step_key,
                 "role": recovery_label,
                 "title": (
-                    str(row.get("title") or configured.get("title") or step_key)
+                    str(row.get("title") or step_key)
                     if include_raw_skill
-                    else (public_text_or_fallback(row.get("title") or configured.get("title"), step_key) or "step")
+                    else (public_text_or_fallback(row.get("title"), step_key) or "step")
                 ),
-                "depends_on": payload.get("depends_on")
-                or configured.get("depends_on")
-                or configured.get("dependsOn")
-                or [],
+                "depends_on": payload.get("depends_on") or [],
             }
         )
     raw_skill_id = str(run.get("skill_id") or "")
@@ -641,99 +596,8 @@ async def _compensate_enqueue_failure(
         )
 
 
-def _resume_checkpoint_lineage(
-    completed_checkpoints: dict[object, object],
-    *,
-    step_key: str,
-    copied_from_run_id: object,
-) -> dict[str, str]:
-    checkpoint = completed_checkpoints.get(step_key)
-    if not isinstance(checkpoint, dict):
-        return {}
-    lineage = artifact_lineage_contract(
-        {
-            "checkpoint_id": checkpoint.get("checkpoint_id"),
-            "source_step_id": checkpoint.get("source_step_id"),
-        },
-        source_run_id=checkpoint.get("copied_from_run_id") or copied_from_run_id,
-    )
-    checkpoint_id = lineage.get("checkpoint_id")
-    source_step_id = lineage.get("source_step_id")
-    source_run_id = lineage.get("source_run_id")
-    if not checkpoint_id or not source_step_id:
-        return {}
-    result = {
-        "checkpoint_id": str(checkpoint_id),
-        "source_step_id": str(source_step_id),
-    }
-    if source_run_id:
-        result["copied_from_run_id"] = str(source_run_id)
-    return result
-
-
 def _strip_server_owned_control_metadata(input_payload: object, *, redact_public: bool = False) -> dict[str, Any]:
     return repositories.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
-
-
-async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_input: dict[str, Any], source: str) -> None:
-    steps = copied_input.get("multi_agent_steps")
-    if not isinstance(steps, list):
-        return
-    resume = copied_input.get("resume")
-    completed_outputs = resume.get("completed_step_outputs") if isinstance(resume, dict) else {}
-    if not isinstance(completed_outputs, dict):
-        completed_outputs = {}
-    completed_checkpoints = resume.get("completed_step_checkpoints") if isinstance(resume, dict) else {}
-    if not isinstance(completed_checkpoints, dict):
-        completed_checkpoints = {}
-    copied_from_run_id = resume.get("copied_from_run_id") if isinstance(resume, dict) else copied_input.get("copied_from_run_id")
-    for index, raw_step in enumerate(steps, start=1):
-        if not isinstance(raw_step, dict):
-            continue
-        step_key = str(raw_step.get("step_key") or raw_step.get("stepKey") or f"step-{index}")
-        step_output = completed_outputs.get(step_key)
-        reused = step_output is not None
-        payload_json = {
-            "role": raw_step.get("role") or "",
-            "step_key": step_key,
-            "step_index": index,
-            "depends_on": raw_step.get("depends_on") or raw_step.get("dependsOn") or [],
-            "skill_ids": raw_step.get("skill_ids") or raw_step.get("skillIds") or [],
-            "mcp_tool_ids": raw_step.get("mcp_tool_ids") or raw_step.get("mcpToolIds") or [],
-            "seeded_from": source,
-        }
-        if raw_step.get("sandbox_mode") is not None:
-            payload_json["sandbox_mode"] = raw_step.get("sandbox_mode")
-        if raw_step.get("browser_enabled") is not None:
-            payload_json["browser_enabled"] = raw_step.get("browser_enabled")
-        resource_limits = raw_step.get("resource_limits") or raw_step.get("resourceLimits")
-        if isinstance(resource_limits, dict):
-            payload_json["resource_limits"] = resource_limits
-        if reused:
-            checkpoint_lineage = _resume_checkpoint_lineage(
-                completed_checkpoints,
-                step_key=step_key,
-                copied_from_run_id=copied_from_run_id,
-            )
-            payload_json.update(
-                {
-                    "checkpoint_reuse_pending": True,
-                    "copied_from_run_id": copied_from_run_id,
-                    **checkpoint_lineage,
-                }
-            )
-        await repositories.upsert_run_step(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            step_key=step_key,
-            step_kind=str(raw_step.get("step_kind") or raw_step.get("stepKind") or "agent"),
-            status="pending",
-            title=str(raw_step.get("title") or step_key),
-            role=str(raw_step.get("role") or ""),
-            sequence=int(raw_step.get("sequence") or index),
-            payload_json=payload_json,
-        )
 
 
 def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | None:
@@ -744,53 +608,6 @@ def _run_execution_input(run: dict[str, Any]) -> dict[str, Any]:
     input_json = run.get("input_json") if isinstance(run.get("input_json"), dict) else {}
     execution_input = input_json.get("input") if isinstance(input_json.get("input"), dict) else input_json
     return execution_input if isinstance(execution_input, dict) else {}
-
-
-def _persisted_owner_principal(run: dict[str, Any], *, tenant_id: str) -> AuthPrincipal:
-    return AuthPrincipal(
-        user_id=str(run.get("user_id") or ""),
-        display_name=str(run.get("user_id") or ""),
-        tenant_id=tenant_id,
-        department_id=str(run.get("principal_department_id") or ""),
-        roles=normalize_roles(run.get("principal_roles") or []),
-        source=str(run.get("auth_source") or ""),
-    )
-
-
-async def _authorize_persisted_run_for_queue(
-    conn,
-    *,
-    tenant_id: str,
-    run_id: str,
-    run: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], AuthPrincipal]:
-    persisted_run = run or await repositories.get_run(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        for_update=True,
-    )
-    if persisted_run is None:
-        raise RepositoryNotFoundError("run_not_found")
-    owner_principal = _persisted_owner_principal(persisted_run, tenant_id=tenant_id)
-    execution_snapshot = repositories.copied_run_execution_snapshot(
-        persisted_run.get("input_json") if isinstance(persisted_run.get("input_json"), dict) else {}
-    )
-    await repositories.authorize_replay_run_capabilities(
-        conn,
-        tenant_id=tenant_id,
-        agent_id=str(persisted_run.get("agent_id") or ""),
-        skill_id=str(persisted_run.get("skill_id") or ""),
-        pinned_version=str(execution_snapshot.get("skill_version") or ""),
-        pinned_executor_type=str(execution_snapshot.get("executor_type") or ""),
-        skill_manifests=execution_snapshot.get("skill_manifests") or [],
-        normalized_input=_run_execution_input(persisted_run),
-        principal_department_id=owner_principal.department_id,
-        principal_roles=owner_principal.roles,
-        is_admin=is_ai_admin(owner_principal),
-        permissions=owner_principal.permissions,
-    )
-    return persisted_run, owner_principal
 
 
 async def prepare_copied_run_for_queue(
@@ -806,6 +623,8 @@ async def prepare_copied_run_for_queue(
     snapshot_auth_source = copied.get("auth_source") if queue_principal is not None else principal.source
     copied_snapshot = repositories.copied_run_execution_snapshot(copied)
     copied_input = copied_snapshot["input"]
+    if contains_persisted_platform_multi_agent_control(copied):
+        raise RepositoryConflictError(PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
     skill_manifests = copied_snapshot["skill_manifests"]
@@ -907,13 +726,6 @@ async def prepare_copied_run_for_queue(
         run_id=copied["run_id"],
         execution_snapshot=validated_snapshot,
     )
-    await seed_copied_run_steps(
-        conn,
-        tenant_id=effective_principal.tenant_id,
-        run_id=copied["run_id"],
-        copied_input=copied_input,
-        source=source,
-    )
     return queue_payload
 
 
@@ -943,6 +755,8 @@ async def create_run(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> CreateRunResponse:
     _validate_principal_user_id_for_route(principal)
+    if contains_platform_multi_agent_control(request.input):
+        raise HTTPException(status_code=400, detail=PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
     tenant_id = principal.tenant_id
     user_id = principal.user_id
     resolved_agent_id, resolved_skill_id = resolve_run_selector(request, principal)
@@ -1176,6 +990,11 @@ async def copy_run(
     try:
         async with transaction() as conn:
             await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
+            await reauthorize_pinned_run_for_replay(
+                conn,
+                principal=principal,
+                run_id=run_id,
+            )
             copied = await repositories.copy_run_as_new_task(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -1204,7 +1023,26 @@ async def copy_run(
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     try:
-        queue_position = await enqueue_run(queue_payload)
+        async with transaction() as conn:
+            await reauthorize_pinned_run_for_replay(
+                conn,
+                principal=principal,
+                run_id=str(copied["run_id"]),
+            )
+            queue_position = await enqueue_run(queue_payload)
+    except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="copy_run")
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+    except SkillVersionMaterializationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RepositoryNotFoundError as exc:
+        _raise_if_capability_revoked(exc)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RepositoryConflictError as exc:
+        _raise_if_capability_revoked(exc)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
@@ -1243,37 +1081,44 @@ async def _ensure_run_control_queue_admission(
     queue_payload: dict[str, Any],
     *,
     check_existing: bool,
+    principal: AuthPrincipal,
 ) -> QueueAdmissionMetadata:
     """Recover or idempotently admit one immutable committed control child."""
 
-    if check_existing:
-        try:
-            existing = await read_queue_admission(queue_payload)
-        except QueueAdmissionRejected as exc:
-            raise HTTPException(status_code=503, detail="queue_admission_recovery_failed") from exc
-        except Exception:
-            existing = None
-        if existing is not None:
-            return existing
-
-    try:
-        queue_position = await enqueue_run(queue_payload)
-        return QueueAdmissionMetadata(
-            queue_position=queue_position,
-            queue_admission_ordinal=0,
-            message_id="",
-            source="idempotent_enqueue",
+    async with transaction() as conn:
+        await reauthorize_pinned_run_for_replay(
+            conn,
+            principal=principal,
+            run_id=str(queue_payload["run_id"]),
         )
-    except Exception as enqueue_error:
+        if check_existing:
+            try:
+                existing = await read_queue_admission(queue_payload)
+            except QueueAdmissionRejected as exc:
+                raise HTTPException(status_code=503, detail="queue_admission_recovery_failed") from exc
+            except Exception:
+                existing = None
+            if existing is not None:
+                return existing
+
         try:
-            recovered = await read_queue_admission(queue_payload)
-        except Exception:
-            recovered = None
-        if recovered is not None:
-            return recovered
-        # The DB mapping and immutable queued child remain authoritative. A
-        # same-operation replay can safely retry the deterministic Redis admit.
-        raise HTTPException(status_code=503, detail="queue_admission_unconfirmed") from enqueue_error
+            queue_position = await enqueue_run(queue_payload)
+            return QueueAdmissionMetadata(
+                queue_position=queue_position,
+                queue_admission_ordinal=0,
+                message_id="",
+                source="idempotent_enqueue",
+            )
+        except Exception as enqueue_error:
+            try:
+                recovered = await read_queue_admission(queue_payload)
+            except Exception:
+                recovered = None
+            if recovered is not None:
+                return recovered
+            # The DB mapping and immutable queued child remain authoritative. A
+            # same-operation replay can safely retry the deterministic Redis admit.
+            raise HTTPException(status_code=503, detail="queue_admission_unconfirmed") from enqueue_error
 
 
 async def _run_control_queue_admission_state(
@@ -1301,6 +1146,7 @@ async def _mutate_run_control_child(
 ) -> RunControlMutationResponse:
     normalized_operation_id = str(operation_id)
     created = False
+    retired_control_rejected = False
     queue_payload: dict[str, Any] | None = None
     copied: dict[str, Any] | None = None
     try:
@@ -1323,11 +1169,27 @@ async def _mutate_run_control_child(
                 action=action,
                 operation_id=normalized_operation_id,
             )
+            if copied is not None:
+                retired_control_rejected = contains_persisted_platform_multi_agent_control(
+                    copied.get("input_json")
+                )
+                if retired_control_rejected:
+                    child_run_id = str(copied["run_id"])
+                    await terminalize_retired_platform_multi_agent_run(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        run_id=child_run_id,
+                    )
             if copied is None:
                 await enforce_user_active_run_limit(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
+                )
+                await reauthorize_pinned_run_for_replay(
+                    conn,
+                    principal=principal,
+                    run_id=run_id,
                 )
                 mutation = (
                     repositories.retry_run_as_new_task
@@ -1368,6 +1230,8 @@ async def _mutate_run_control_child(
     except RepositoryConflictError as exc:
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if retired_control_rejected:
+        raise HTTPException(status_code=409, detail=PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     status = str(copied.get("status") or "queued")
@@ -1375,10 +1239,23 @@ async def _mutate_run_control_child(
     if status == "queued":
         if queue_payload is None:
             queue_payload = _run_control_queue_payload(copied, principal=principal)
-        admission = await _ensure_run_control_queue_admission(
-            queue_payload,
-            check_existing=not created,
-        )
+        try:
+            admission = await _ensure_run_control_queue_admission(
+                queue_payload,
+                check_existing=not created,
+                principal=principal,
+            )
+        except repositories.RepositoryAuthorizationError as exc:
+            await _audit_capability_denial(principal, exc, source=f"{action}_run")
+            raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+        except SkillVersionMaterializationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RepositoryNotFoundError as exc:
+            _raise_if_capability_revoked(exc)
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RepositoryConflictError as exc:
+            _raise_if_capability_revoked(exc)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         queue_position = admission.queue_position
     return RunControlMutationResponse(
         source_run_id=run_id,
@@ -1544,229 +1421,6 @@ async def get_run_control_readiness(
     )
 
 
-@router.post(
-    "/runs/{run_id}/multi-agent/dispatch/claims",
-    response_model=MultiAgentDispatchClaimResponse,
-)
-async def claim_multi_agent_dispatch(
-    run_id: str,
-    request: MultiAgentDispatchClaimRequest,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> MultiAgentDispatchClaimResponse:
-    if not is_ai_admin(principal):
-        raise HTTPException(status_code=403, detail="admin_required")
-    _raise_multi_agent_dispatch_not_available()
-    try:
-        async with transaction() as conn:
-            run = await repositories.get_run(conn, tenant_id=principal.tenant_id, run_id=run_id, for_update=True)
-            if run is None:
-                raise HTTPException(status_code=404, detail="run_not_found")
-            steps = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
-            candidate = _dispatch_claim_candidate(
-                run=run,
-                steps=steps,
-                step_key=request.step_key,
-                principal=principal,
-            )
-            result = await repositories.claim_multi_agent_dispatch_step(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                claimed_by=principal.user_id,
-                trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
-                lease_ttl_seconds=int(get_settings().multi_agent_dispatch_lease_ttl_seconds),
-                **candidate,
-            )
-    except RepositoryConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return MultiAgentDispatchClaimResponse(
-        contract_version=MULTI_AGENT_DISPATCH_CLAIM_CONTRACT_VERSION,
-        run_id=run_id,
-        step_key=request.step_key,
-        step_id=str(result["step"]["id"]),
-        status="claimed",
-        dispatch_id=str(result["dispatch_id"]),
-        event_id=str(result["event_id"]),
-        audit_id=str(result["audit_id"]),
-        step=run_step_response(result["step"], principal=principal),
-    )
-
-
-@router.post(
-    "/runs/{run_id}/multi-agent/dispatch/claims/{dispatch_id}/handoff",
-    response_model=MultiAgentDispatchHandoffResponse,
-)
-async def handoff_multi_agent_dispatch(
-    run_id: str,
-    dispatch_id: str,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> MultiAgentDispatchHandoffResponse:
-    """Create one owner-scoped child run from an admin-claimed dispatch step."""
-
-    if not is_ai_admin(principal):
-        raise HTTPException(status_code=403, detail="admin_required")
-    _raise_multi_agent_dispatch_not_available()
-    conflict_detail: str | None = None
-    try:
-        async with transaction() as conn:
-            await _authorize_persisted_run_for_queue(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-            )
-            try:
-                copied = await repositories.create_multi_agent_dispatch_child_run(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    parent_run_id=run_id,
-                    dispatch_id=dispatch_id,
-                    handed_off_by=principal.user_id,
-                    active_run_admission_limit=int(get_settings().max_active_runs_per_user),
-                )
-            except RepositoryConflictError as exc:
-                conflict_detail = str(exc)
-            else:
-                owner_principal = AuthPrincipal(
-                    user_id=str(copied["user_id"]),
-                    display_name=str(copied.get("user_id") or ""),
-                    tenant_id=principal.tenant_id,
-                    department_id=str(copied.get("principal_department_id") or ""),
-                    roles=normalize_roles(copied.get("principal_roles") or []),
-                    source=str(copied.get("auth_source") or ""),
-                )
-                queue_payload = await prepare_copied_run_for_queue(
-                    conn,
-                    copied={**copied, "run_id": copied["child_run_id"]},
-                    principal=principal,
-                    queue_principal=owner_principal,
-                    source="multi_agent_dispatch_handoff",
-                    authorized_source_run_id=run_id,
-                )
-    except repositories.RepositoryAuthorizationError as exc:
-        await _audit_capability_denial(principal, exc, source="multi_agent_dispatch_handoff")
-        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
-    except SkillVersionMaterializationError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except RepositoryNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RepositoryConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if conflict_detail is not None:
-        raise HTTPException(status_code=409, detail=conflict_detail)
-    queue_position = await enqueue_run(queue_payload)
-    return MultiAgentDispatchHandoffResponse(
-        contract_version=MULTI_AGENT_DISPATCH_HANDOFF_CONTRACT_VERSION,
-        parent_run_id=run_id,
-        dispatch_id=dispatch_id,
-        step_key=str(copied["step_key"]),
-        step_id=str(copied["parent_step_id"]),
-        status="queued",
-        child_run_id=str(copied["child_run_id"]),
-        session_id=str(copied["session_id"]),
-        queue_position=queue_position,
-        queue_insight=await get_queue_insight(principal.tenant_id, include_user_breakdown=True),
-        event_id=str(copied["event_id"]),
-        child_event_id=str(copied["child_event_id"]),
-        audit_id=str(copied["audit_id"]),
-    )
-
-
-@router.post(
-    "/runs/{run_id}/multi-agent/dispatch/tick",
-    response_model=MultiAgentDispatchTickResponse,
-)
-async def tick_multi_agent_dispatch(
-    run_id: str,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> MultiAgentDispatchTickResponse:
-    """Claim, hand off, and enqueue one safe ready multi-agent step."""
-
-    if not is_ai_admin(principal):
-        raise HTTPException(status_code=403, detail="admin_required")
-    _raise_multi_agent_dispatch_not_available()
-    conflict_detail: str | None = None
-    try:
-        async with transaction() as conn:
-            run = await repositories.get_run(conn, tenant_id=principal.tenant_id, run_id=run_id, for_update=True)
-            if run is None:
-                raise HTTPException(status_code=404, detail="run_not_found")
-            await _authorize_persisted_run_for_queue(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                run=run,
-            )
-            steps = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
-            candidate = _dispatch_tick_candidate(run=run, steps=steps, principal=principal)
-            claimed_step_key = str(candidate["step_key"])
-            claim = await repositories.claim_multi_agent_dispatch_step(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                claimed_by=principal.user_id,
-                trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
-                lease_ttl_seconds=int(get_settings().multi_agent_dispatch_lease_ttl_seconds),
-                **candidate,
-            )
-            try:
-                copied = await repositories.create_multi_agent_dispatch_child_run(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    parent_run_id=run_id,
-                    dispatch_id=str(claim["dispatch_id"]),
-                    handed_off_by=principal.user_id,
-                    active_run_admission_limit=int(get_settings().max_active_runs_per_user),
-                )
-            except RepositoryConflictError as exc:
-                conflict_detail = str(exc)
-            else:
-                owner_principal = AuthPrincipal(
-                    user_id=str(copied["user_id"]),
-                    display_name=str(copied.get("user_id") or ""),
-                    tenant_id=principal.tenant_id,
-                    department_id=str(copied.get("principal_department_id") or ""),
-                    roles=normalize_roles(copied.get("principal_roles") or []),
-                    source=str(copied.get("auth_source") or ""),
-                )
-                queue_payload = await prepare_copied_run_for_queue(
-                    conn,
-                    copied={**copied, "run_id": copied["child_run_id"]},
-                    principal=principal,
-                    queue_principal=owner_principal,
-                    source="multi_agent_dispatch_tick",
-                    authorized_source_run_id=run_id,
-                )
-    except repositories.RepositoryAuthorizationError as exc:
-        await _audit_capability_denial(principal, exc, source="multi_agent_dispatch_tick")
-        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
-    except SkillVersionMaterializationError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except RepositoryNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RepositoryConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if conflict_detail is not None:
-        raise HTTPException(status_code=409, detail=conflict_detail)
-    queue_position = await enqueue_run(queue_payload)
-    return MultiAgentDispatchTickResponse(
-        contract_version=MULTI_AGENT_DISPATCH_TICK_CONTRACT_VERSION,
-        parent_run_id=run_id,
-        dispatch_id=str(claim["dispatch_id"]),
-        step_key=claimed_step_key,
-        step_id=str(claim["step"]["id"]),
-        status="queued",
-        child_run_id=str(copied["child_run_id"]),
-        session_id=str(copied["session_id"]),
-        queue_position=queue_position,
-        queue_insight=await get_queue_insight(principal.tenant_id, include_user_breakdown=True),
-        claim_event_id=str(claim["event_id"]),
-        claim_audit_id=str(claim["audit_id"]),
-        handoff_event_id=str(copied["event_id"]),
-        child_event_id=str(copied["child_event_id"]),
-        handoff_audit_id=str(copied["audit_id"]),
-    )
-
-
 @router.get("/runs/{run_id}/resume/manifest")
 async def get_run_resume_manifest(
     run_id: str,
@@ -1836,33 +1490,6 @@ async def cancel_run(
             user_id=principal.user_id,
             run_id=run_id,
         )
-        if result is not None:
-            propagation = await repositories.propagate_multi_agent_parent_cancel(
-                conn,
-                tenant_id=principal.tenant_id,
-                parent_run_id=run_id,
-                requested_by=principal.user_id,
-            )
-            if propagation.get("queued_child_run_ids"):
-                result["queued_child_run_ids"] = list(propagation["queued_child_run_ids"])
-            if propagation.get("child_run_ids"):
-                result["_permission_terminalization_child_run_ids"] = list(propagation["child_run_ids"])
-            if propagation.get("_permission_terminalization_child_progress"):
-                result["_permission_terminalization_child_progress"] = propagation[
-                    "_permission_terminalization_child_progress"
-                ]
-            if propagation.get("active_sandbox_leases"):
-                result["active_sandbox_leases"] = [
-                    *list(result.get("active_sandbox_leases") or []),
-                    *list(propagation["active_sandbox_leases"]),
-                ]
-            finalized_parent = await repositories.finalize_multi_agent_parent_run_if_ready(
-                conn,
-                tenant_id=principal.tenant_id,
-                parent_run_id=run_id,
-            )
-            if finalized_parent and finalized_parent.get("status"):
-                result["status"] = str(finalized_parent["status"])
     if result is not None:
         initial_progress = result.pop("_permission_terminalization_progress", None)
         if initial_progress is not None:
@@ -1890,37 +1517,11 @@ async def cancel_run(
             progress=progress,
             transaction_factory=transaction,
         )
-        child_progress_by_id = result.pop("_permission_terminalization_child_progress", {})
-        for child_run_id in result.pop("_permission_terminalization_child_run_ids", []):
-            child_run_id = str(child_run_id)
-            initial_child_progress = (
-                child_progress_by_id.get(child_run_id)
-                if isinstance(child_progress_by_id, dict)
-                else None
-            )
-            if initial_child_progress is not None:
-                await reconcile_terminalized_permission_run(
-                    tenant_id=principal.tenant_id,
-                    run_id=child_run_id,
-                    progress=initial_child_progress,
-                    transaction_factory=transaction,
-                )
-            child_progress = await drain_run_tool_permission_terminalization(
-                tenant_id=principal.tenant_id,
-                run_id=child_run_id,
-                transaction_factory=transaction,
-            )
-            await reconcile_terminalized_permission_run(
-                tenant_id=principal.tenant_id,
-                run_id=child_run_id,
-                progress=child_progress,
-                transaction_factory=transaction,
-            )
     if result is None:
         raise HTTPException(status_code=404, detail="active_run_not_found")
     queue_cleanup_failures = await _remove_cancelled_queue_payloads(
         tenant_id=principal.tenant_id,
-        parent_run_id=run_id,
+        run_id=run_id,
         result=result,
     )
     try:
@@ -2039,26 +1640,21 @@ async def get_run(
         public_terminal_projection(
             run_status,
             run.get("error_code"),
-            run_id=run_id,
-            step_rows=steps,
         )
         if not show_raw_skill
         else None
     )
     input_payload = run["input_json"] if isinstance(run["input_json"], dict) else {}
     if show_raw_skill:
-        input_payload = sanitize_public_payload(input_payload)
+        input_payload = sanitize_public_payload(strip_server_owned_control_metadata(input_payload))
         result_payload = sanitize_public_payload(result)
-        multi_agent_snapshot = multi_agent_snapshot_from_steps(run_id, steps, principal=principal)
-        if multi_agent_snapshot is not None:
-            result_payload["multi_agent"] = multi_agent_snapshot
     else:
         input_payload = sanitize_user_control_input(input_payload)
         result_payload = (
             dict(terminal_projection["result"])
             if terminal_projection is not None
             else (
-                ordinary_nonterminal_run_result(run_id=run_id, step_rows=steps)
+                {}
                 if normalize_run_status(run_status) in {"queued", "running"}
                 else sanitize_public_payload(redact_raw_skill_references(result))
             )
@@ -2069,6 +1665,7 @@ async def get_run(
     input_payload.pop("context_snapshot", None)
     if not isinstance(result_payload, dict):
         result_payload = {}
+    result_payload.pop("multi_agent", None)
     if terminal_projection is not None:
         error_code = terminal_projection["error_code"]
         error_message = str(terminal_projection["message"])
@@ -2176,7 +1773,6 @@ async def get_run_playback(
         "events": projected_events,
         "artifacts": artifact_cards,
         "steps": step_cards,
-        "multi_agent": multi_agent_snapshot_from_steps(run_id, steps, principal=principal),
         "context_ref": latest_context_ref,
         "context_window": latest_context_ref["context_window"],
     }
@@ -2256,111 +1852,3 @@ async def get_run_steps(
             raise HTTPException(status_code=404, detail="run_not_found")
         steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
     return {"run_id": run_id, "steps": run_step_responses(steps, principal=principal)}
-
-
-@router.get("/runs/{run_id}/events/stream")
-async def stream_run_events(
-    run_id: str,
-    after_sequence: int | None = None,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> StreamingResponse:
-    async with transaction() as conn:
-        initial_run = await repositories.get_authorized_run(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            run_id=run_id,
-        )
-        if initial_run is None:
-            raise HTTPException(status_code=404, detail="run_not_found")
-        run_contract_version(initial_run)
-        executor_result_schema_version(initial_run)
-
-    async def stream():
-        seen: set[str] = set()
-        last_sequence = after_sequence
-        last_snapshot_json: str | None = None
-        heartbeat_index = 0
-        max_heartbeats = max(int(get_settings().run_event_stream_max_heartbeats), 1)
-        next_run: dict[str, Any] | None = initial_run
-
-        async def list_events(conn):
-            if last_sequence is None:
-                return await repositories.list_run_events(conn, tenant_id=principal.tenant_id, run_id=run_id)
-            return await repositories.list_run_events(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                after_sequence=last_sequence,
-            )
-
-        for _ in range(max_heartbeats):
-            if next_run is None:
-                async with transaction() as conn:
-                    run = await repositories.get_authorized_run(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        user_id=principal.user_id,
-                        run_id=run_id,
-                    )
-                    if run is None:
-                        yield sse("error", {"error": "run_not_found"})
-                        yield sse("done", {"status": "not_found"})
-                        return
-                    run_contract_version(run)
-                    executor_result_schema_version(run)
-                    rows = await list_events(conn)
-                    step_rows = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
-            else:
-                run = next_run
-                next_run = None
-                async with transaction() as conn:
-                    rows = await list_events(conn)
-                    step_rows = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
-            for row in rows:
-                event_id = str(row["id"])
-                if event_id in seen:
-                    continue
-                seen.add(event_id)
-                if not event_visible_to_principal(row, principal):
-                    continue
-                try:
-                    payload = run_event_response(run_id, row, principal=principal)
-                except HTTPException as exc:
-                    yield sse("error", {"error": str(exc.detail)})
-                    yield sse("done", {"status": "error"})
-                    return
-                last_sequence = max(int(payload.get("sequence") or 0), int(last_sequence or 0))
-                yield sse("run_event", payload, event_id=event_id)
-            snapshot = multi_agent_snapshot_from_steps(run_id, step_rows, principal=principal)
-            if snapshot is not None:
-                snapshot_json = json.dumps(snapshot, ensure_ascii=False, default=_json_default, sort_keys=True)
-                if snapshot_json != last_snapshot_json:
-                    last_snapshot_json = snapshot_json
-                    yield sse("multi_agent_snapshot", snapshot, event_id=f"{run_id}:steps:{heartbeat_index + 1}")
-            status = str(run["status"])
-            if status in {"succeeded", "failed", "cancelled", "canceled"}:
-                yield sse("done", {"status": normalize_run_status(status)}, event_id=f"{run_id}:done")
-                return
-            heartbeat_index += 1
-            heartbeat_payload: dict[str, object] = {"run_id": run_id, "status": status}
-            if run.get("cancel_requested_at"):
-                heartbeat_payload["cancel_requested_at"] = run.get("cancel_requested_at")
-                heartbeat_payload["cancel_requested_by"] = run.get("cancel_requested_by")
-            if status == "queued":
-                queue_position = await get_run_queue_position(tenant_id=principal.tenant_id, run_id=run_id)
-                if queue_position is not None:
-                    heartbeat_payload["queue_position"] = queue_position
-            queue_insight = await queue_insight_for_status(status, principal.tenant_id, user_id=principal.user_id)
-            if queue_insight is not None:
-                heartbeat_payload["queue_insight"] = queue_insight
-            yield sse(
-                "heartbeat",
-                heartbeat_payload,
-                event_id=f"{run_id}:heartbeat:{heartbeat_index}",
-            )
-            await asyncio.sleep(1)
-        yield sse("error", {"error": "stream_timeout"})
-        yield sse("done", {"status": "timeout"}, event_id=f"{run_id}:done")
-
-    return StreamingResponse(stream(), media_type="text/event-stream")

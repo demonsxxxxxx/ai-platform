@@ -5,6 +5,7 @@ from pathlib import Path
 DEPLOY_DIR = Path("deploy/ai-platform")
 COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 SANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.sandbox.yml"
+OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
 TARGET_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
 STALE_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env"
@@ -178,10 +179,57 @@ def test_dockerfile_can_start_sandbox_executor_app():
     assert 'CMD ["uvicorn"]' in content
 
 
+def test_dockerfile_precreates_private_workspace_before_nonroot_executor():
+    content = Path("Dockerfile").read_text(encoding="utf-8")
+    workspace_instruction = "RUN install -d -o 10001 -g 10001 -m 0700 /workspace"
+
+    assert workspace_instruction in content
+    assert content.index(workspace_instruction) < content.index("USER 10001:10001")
+    dependency_layer = content[content.index("apt-get update") : content.index("COPY pyproject.toml")]
+    assert "/workspace" not in dependency_layer
+
+
 def test_dockerfile_installs_git_for_sdk_agent_worktrees():
     content = Path("Dockerfile").read_text(encoding="utf-8")
 
     assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git" in content
+
+
+def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabling_apt_security():
+    content = Path("Dockerfile").read_text(encoding="utf-8")
+
+    assert "ARG APT_MIRROR" in content
+    assert "ARG APT_SECURITY_MIRROR" in content
+    assert content.count("FROM python:3.11-slim-bookworm") == 2
+    assert "http://deb.debian.org/debian-security" in content
+    assert "https://deb.debian.org/debian-security" in content
+    assert "http://security.debian.org/debian-security" in content
+    assert "sed -i" not in content
+    assert "APT_MIRROR-security" not in content
+    assert "trusted=yes" not in content
+    assert "allow-unauthenticated" not in content
+    assert "apt-get update" in content
+    assert "apt-get install" in content
+    assert "PIP_TRUSTED_HOST" in content
+
+
+def test_runbook_documents_ustc_pair_preflight_no_deploy_probe_and_upstream_rollback():
+    text = Path("docs/operations/211-release-operations-runbook.md").read_text(encoding="utf-8")
+
+    assert 'https://mirrors.ustc.edu.cn/debian"' in text
+    assert 'https://mirrors.ustc.edu.cn/debian-security"' in text
+    assert "probe-apt-mirrors" in text
+    assert "--head" not in text
+    assert "HTTPS GET" in text
+    assert "does not invoke Compose" in text
+    assert "sudo -n docker build" in text
+    assert "--apt-mirror \"$APT_MIRROR\"" in text
+    assert "--apt-security-mirror \"$APT_SECURITY_MIRROR\"" in text
+    assert 'python3 -B "$SOURCE/tools/release_authority.py" probe-apt-mirrors' in text
+    assert 'MIRROR_ARGS=()' in text
+    assert 'if test -n "${APT_MIRROR:-}"' in text
+    assert "leave both" in text
+    assert "upstream Debian endpoints" in text
 
 
 def test_dockerfile_packages_release_evidence_for_runtime_readiness():
@@ -331,6 +379,49 @@ def test_compose_exposes_sandbox_runtime_configuration():
     assert "SANDBOX_CONTAINER_PROVIDER: docker" in sandbox_text
 
 
+def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
+    import yaml
+
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    overlay = yaml.safe_load(OPENSANDBOX_COMPOSE_FILE.read_text(encoding="utf-8"))
+    env_example = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+
+    for service_name in ("api", "worker"):
+        assert compose["services"][service_name]["environment"]["SANDBOX_SECURITY_PROFILE"] == "governed"
+        environment = overlay["services"][service_name]["environment"]
+        assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
+        assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
+        for required in (
+            "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
+            "SANDBOX_RUNTIME_SUBJECT",
+            "OPENSANDBOX_DOMAIN",
+            "OPENSANDBOX_PROTOCOL",
+            "OPENSANDBOX_API_KEY",
+            "OPENSANDBOX_ATTESTATION_PATH",
+            "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION",
+            "OPENSANDBOX_EXECUTOR_IMAGE",
+            "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
+            "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",
+            "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
+            "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT",
+            "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT",
+            "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL",
+            "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL",
+            "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL",
+        ):
+            assert environment[required].startswith("${")
+            assert ":?set " in environment[required]
+
+    frontend = overlay["services"]["frontend"]
+    assert frontend["environment"]["NGINX_ENVSUBST_TEMPLATE_DIR"] == "/etc/nginx/templates-opensandbox"
+    assert frontend["ports"] == ["${AI_PLATFORM_S72_BRIDGE_PORT:-18443}:8443"]
+    assert len(frontend["volumes"]) == 2
+    assert set(overlay["services"]) == {"api", "worker", "frontend"}
+    assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
+    assert "trusted_internal" not in env_example
+    assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
+
+
 def test_compose_does_not_mount_docker_socket_by_default():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     sandbox_text = SANDBOX_COMPOSE_FILE.read_text(encoding="utf-8")
@@ -384,7 +475,7 @@ def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():
 
     api_text = compose_service_text(compose_text, "api")
     assert "healthcheck:" in api_text
-    assert "/api/ai/health" in api_text
+    assert "/api/ai/ready" in api_text
     assert "AI_PLATFORM_RUNTIME_COMMIT" in api_text
 
 

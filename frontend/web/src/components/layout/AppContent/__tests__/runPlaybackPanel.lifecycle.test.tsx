@@ -280,7 +280,7 @@ test("mounted RunPlaybackPanel ignores an aborted stale owner read after run rep
 
     resolvePlayback(
       new Response(
-        JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+        JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }),
       ),
     );
     await React.act(async () => {
@@ -367,7 +367,7 @@ test("mounted RunPlaybackPanel rejects a late read after marker and role rotatio
     assert.equal((signal as AbortSignal).aborted, true);
     resolvePlayback(
       new Response(
-        JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+        JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }),
       ),
     );
     await React.act(async () => {

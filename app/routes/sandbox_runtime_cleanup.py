@@ -11,6 +11,7 @@ from app.execution_boundary import (
 from app.settings import get_settings
 from app.runtime.sandbox.container_provider import ContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease
+from app.runtime.sandbox.opensandbox_legacy_cleanup import trusted_internal_cleanup_labels_from_persisted_row
 from app.validation import assert_safe_id
 from app import repositories
 from app.db import transaction
@@ -50,33 +51,41 @@ def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
         lease_payload = row.get("lease_payload_json")
         if not isinstance(lease_payload, dict):
             lease_payload = row.get("lease_payload")
-        attempt_id = lease_payload.get("attempt_id") if isinstance(lease_payload, dict) else None
-        if not isinstance(attempt_id, str):
+        if not isinstance(lease_payload, dict):
             return None
-        proof = lease_payload.get("governed_egress_proof") if isinstance(lease_payload, dict) else None
-        try:
-            labels["ai-platform.attempt_id"] = assert_safe_id(attempt_id, "attempt_id")
-            labels[GOVERNED_EGRESS_PROOF_LABEL] = governed_egress_proof_label(proof)
-        except ValueError:
-            return None
-        settings = get_settings()
-        if not is_governed_egress_proof(
-            proof,
-            provider="opensandbox",
-            signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
-            signing_key_id=getattr(
-                settings,
-                "sandbox_egress_proof_key_id",
-                GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
-            ),
-            previous_signing_keys=governed_egress_previous_signing_keys(
-                getattr(settings, "sandbox_egress_proof_previous_keys_json", "")
-            ),
-            allow_previous_keys=True,
-            expected_binding={"attempt_id": attempt_id},
-            require_fresh=False,
-        ):
-            return None
+        if lease_payload.get("security_profile") == "trusted_internal":
+            rebuilt_labels = trusted_internal_cleanup_labels_from_persisted_row(row, lease_payload)
+            if rebuilt_labels is None:
+                return None
+            labels.update(rebuilt_labels)
+        else:
+            attempt_id = lease_payload.get("attempt_id")
+            if not isinstance(attempt_id, str):
+                return None
+            proof = lease_payload.get("governed_egress_proof")
+            try:
+                labels["ai-platform.attempt_id"] = assert_safe_id(attempt_id, "attempt_id")
+                labels[GOVERNED_EGRESS_PROOF_LABEL] = governed_egress_proof_label(proof)
+            except ValueError:
+                return None
+            settings = get_settings()
+            if not is_governed_egress_proof(
+                proof,
+                provider="opensandbox",
+                signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
+                signing_key_id=getattr(
+                    settings,
+                    "sandbox_egress_proof_key_id",
+                    GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
+                ),
+                previous_signing_keys=governed_egress_previous_signing_keys(
+                    getattr(settings, "sandbox_egress_proof_previous_keys_json", "")
+                ),
+                allow_previous_keys=True,
+                expected_binding={"attempt_id": attempt_id},
+                require_fresh=False,
+            ):
+                return None
     return ContainerLease(
         container_id=container_id,
         container_name=container_name,

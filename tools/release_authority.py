@@ -22,10 +22,19 @@ import threading
 import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Sequence
-from urllib.request import urlopen
+from typing import Any, BinaryIO, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 if __package__:
+    from .release_backend_flatten import (
+        BackendFlattenError,
+        backend_runtime_dockerfile as _backend_runtime_dockerfile,
+        promotion_dockerfile as _promotion_dockerfile,
+        rebuild_from_flattened_backend,
+        validate_backend_layer_flatten_recovery_request,
+    )
     from .release_parity_convergence import (
         COMPOSE_PROJECT,
         COMPATIBILITY_IMAGE_COMMIT_LABELS,
@@ -47,6 +56,13 @@ if __package__:
         is_runtime_neutral_backend_pyproject_change,
     )
 else:
+    from release_backend_flatten import (
+        BackendFlattenError,
+        backend_runtime_dockerfile as _backend_runtime_dockerfile,
+        promotion_dockerfile as _promotion_dockerfile,
+        rebuild_from_flattened_backend,
+        validate_backend_layer_flatten_recovery_request,
+    )
     from release_parity_convergence import (
         COMPOSE_PROJECT,
         COMPATIBILITY_IMAGE_COMMIT_LABELS,
@@ -97,6 +113,8 @@ AUTHORITATIVE_REPOSITORY_ALIASES = {
 SECRET_PATH_NAMES = {".env", ".env.local", ".env.production", ".env.development"}
 DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
 HTTP_PROBE_TIMEOUT_SECONDS = 15
+APT_MIRROR_PROBE_MAX_BYTES = 256 * 1024
+APT_CONTENT_RANGE_RE = re.compile(r"^bytes ([0-9]+)-([0-9]+)/([0-9]+)$", re.ASCII)
 BACKEND_STAGE_TIMEOUT_SECONDS = 90
 FRONTEND_STAGE_TIMEOUT_SECONDS = 180
 RUNTIME_REBUILD_STAGE_TIMEOUT_SECONDS = 300
@@ -114,7 +132,6 @@ BUILD_PROGRESS_MAX_STEP_ORDINAL = 9999
 BUILD_PROGRESS_MAX_TAIL_LINES = 512
 BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES = 4096
 
-
 class ReleaseAuthorityError(RuntimeError):
     """Raised when a release-authority invariant is not satisfied."""
 
@@ -131,16 +148,16 @@ class _ComposeSelection:
 @dataclass(frozen=True)
 class _ManagedContainerOwnership:
     """One preflight snapshot of existing release-authority container ownership."""
-
     compose_selection: _ComposeSelection | None
     compose_roles: tuple[str, ...]
     manual_frontend_id: str | None
 
 
+_AptMirrorSelection = tuple[str | None, str | None, str | None, str | None]
+_EMPTY_APT_MIRRORS: _AptMirrorSelection = (None, None, None, None)
 @dataclass
 class _BuildProgressStep:
     """Bounded allowlisted state retained for one observed BuildKit step."""
-
     ordinal: int
     total: int | None
     stage_kind: str
@@ -149,10 +166,8 @@ class _BuildProgressStep:
     last_progress_units: float | None = None
     advancing: bool = False
 
-
 class _BuildProgressClassifier:
     """Stream BuildKit stdout into fixed categories without retaining raw output."""
-
     _ANSI_ESCAPE_RE = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
     _HEADER_RE = re.compile(
         rb"^#(?P<ordinal>[1-9][0-9]{0,3})(?:\s+\[(?P<label>[^\]\r\n]{1,1024})\])?\s+",
@@ -178,7 +193,6 @@ class _BuildProgressClassifier:
         b"private key",
         b"credential",
     )
-
     def __init__(self) -> None:
         self.line_count = 0
         self._buffer = bytearray()
@@ -186,7 +200,6 @@ class _BuildProgressClassifier:
         self._unsafe = False
         self._latest_structural_step_unclassifiable = False
         self._steps: OrderedDict[int, _BuildProgressStep] = OrderedDict()
-
     def feed(self, chunk: str | bytes | None) -> None:
         """Consume one stdout chunk while bounding line memory and parsed state."""
         if not chunk:
@@ -205,7 +218,6 @@ class _BuildProgressClassifier:
                 else:
                     self._buffer.clear()
                     self._discarding_line = True
-
     def finish(self) -> None:
         """Finalize a trailing partial line after the process pipes have drained."""
         if self._buffer or self._discarding_line:
@@ -214,7 +226,6 @@ class _BuildProgressClassifier:
                 self._consume_line(bytes(self._buffer).rstrip(b"\r"))
         self._buffer.clear()
         self._discarding_line = False
-
     def summary(self) -> dict[str, Any]:
         """Return only fixed allowlist values and bounded numeric progress facts."""
         if self._unsafe or self._latest_structural_step_unclassifiable or not self._steps:
@@ -233,7 +244,6 @@ class _BuildProgressClassifier:
         if step.last_timestamp_seconds is not None:
             summary["last_progress_timestamp_seconds"] = step.last_timestamp_seconds
         return summary
-
     def _consume_line(self, line: bytes) -> None:
         cleaned = self._ANSI_ESCAPE_RE.sub(b"", line).strip()
         if not cleaned:
@@ -250,7 +260,6 @@ class _BuildProgressClassifier:
         header = self._HEADER_RE.match(cleaned)
         if header is not None:
             self._consume_header(header, cleaned[header.end() :].strip())
-
     def _consume_header(self, match: re.Match[bytes], instruction: bytes) -> None:
         ordinal = int(match.group("ordinal"))
         if ordinal > BUILD_PROGRESS_MAX_STEP_ORDINAL:
@@ -284,7 +293,6 @@ class _BuildProgressClassifier:
         self._steps.move_to_end(ordinal)
         while len(self._steps) > BUILD_PROGRESS_MAX_TRACKED_STEPS:
             self._steps.popitem(last=False)
-
     def _consume_progress(self, match: re.Match[bytes], payload: bytes) -> None:
         ordinal = int(match.group("ordinal"))
         step = self._steps.get(ordinal)
@@ -298,7 +306,6 @@ class _BuildProgressClassifier:
                 step.advancing = True
             step.last_progress_units = progress
         self._steps.move_to_end(ordinal)
-
     @staticmethod
     def _classify_stage(label: bytes | None) -> str:
         if label is None:
@@ -313,7 +320,6 @@ class _BuildProgressClassifier:
         if lowered == b"build":
             return "build"
         return "unknown"
-
     @staticmethod
     def _classify_instruction(instruction: bytes) -> str:
         normalized = b" ".join(instruction.lower().split())
@@ -353,7 +359,6 @@ class _BuildProgressClassifier:
                 return "run-frontend-verify"
             return "unknown"
         return "unknown"
-
     def _progress_units(self, payload: bytes) -> float | None:
         byte_progress = self._BYTE_PROGRESS_RE.search(payload)
         if byte_progress is not None:
@@ -367,12 +372,9 @@ class _BuildProgressClassifier:
             return min(float(count_progress.group("current")), 1_000_000_000_000.0)
         return None
 
-
 class _BoundedBuildProgressCapture:
     """Drain raw build stdout into a fixed-size in-memory window for later classification."""
-
     _STRUCTURAL_HEADER_RE = re.compile(rb"^#[1-9][0-9]{0,3}(?:\s+\[[^\]\r\n]{1,1024}\])?\s+")
-
     def __init__(self) -> None:
         self.line_count = 0
         self._buffer = bytearray()
@@ -383,7 +385,6 @@ class _BoundedBuildProgressCapture:
         self._scan_tail = b""
         self._headers: OrderedDict[int, bytes] = OrderedDict()
         self._tail: deque[bytes] = deque(maxlen=BUILD_PROGRESS_MAX_TAIL_LINES)
-
     def feed(self, chunk: bytes) -> None:
         """Capture one bytes chunk without decoding partial UTF-8 or growing without bound."""
         if not chunk:
@@ -413,7 +414,6 @@ class _BoundedBuildProgressCapture:
                     self._buffer.clear()
                     self._discarding_line = True
                     self._unsafe = True
-
     def finish(self) -> None:
         """Capture a trailing partial line only after the stdout reader has stopped."""
         if not self._utf8_invalid:
@@ -428,7 +428,6 @@ class _BoundedBuildProgressCapture:
         self._buffer.clear()
         self._discarding_line = False
         self._scan_tail = b""
-
     def classify(self) -> dict[str, Any]:
         """Classify only after process cleanup/drain, returning no captured raw text."""
         if self._unsafe:
@@ -441,7 +440,6 @@ class _BoundedBuildProgressCapture:
         classifier.finish()
         classifier.line_count = self.line_count
         return classifier.summary()
-
     def _capture_line(self, line: bytes) -> None:
         self._tail.append(line)
         match = self._STRUCTURAL_HEADER_RE.match(_BuildProgressClassifier._ANSI_ESCAPE_RE.sub(b"", line).strip())
@@ -456,16 +454,13 @@ class _BoundedBuildProgressCapture:
         while len(self._headers) > BUILD_PROGRESS_MAX_TRACKED_STEPS:
             self._headers.popitem(last=False)
 
-
 class _BoundedStderrDiagnosticCapture:
     """Scan stderr into fixed diagnostic phrases without retaining its raw output."""
-
     def __init__(self) -> None:
         self._has_data = False
         self._unsafe = False
         self._scan_tail = b""
         self._recognized: set[str] = set()
-
     def feed(self, chunk: bytes) -> None:
         """Scan a bounded overlap window so total stderr size never controls memory use."""
         if not chunk:
@@ -480,7 +475,6 @@ class _BoundedStderrDiagnosticCapture:
             if pattern.search(text):
                 self._recognized.add(summary)
         self._scan_tail = scan[-BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES:]
-
     def summary(self) -> dict[str, Any]:
         """Return the existing fixed stderr diagnostic schema."""
         if not self._has_data:
@@ -491,7 +485,6 @@ class _BoundedStderrDiagnosticCapture:
             if summary in self._recognized:
                 return {"stderr_status": "recognized", "stderr_summary": summary}
         return {"stderr_status": "redacted"}
-
 
 def _communicate_with_bounded_build_progress(
     process: subprocess.Popen[Any],
@@ -506,7 +499,6 @@ def _communicate_with_bounded_build_progress(
     assert process.stderr is not None
     stderr_capture = _BoundedStderrDiagnosticCapture()
     reader_errors: list[BaseException] = []
-
     def drain_stdout() -> None:
         try:
             while True:
@@ -516,7 +508,6 @@ def _communicate_with_bounded_build_progress(
                 capture.feed(chunk)
         except BaseException as exc:
             reader_errors.append(exc)
-
     def drain_stderr() -> None:
         try:
             while True:
@@ -526,7 +517,6 @@ def _communicate_with_bounded_build_progress(
                 stderr_capture.feed(chunk)
         except BaseException as exc:
             reader_errors.append(exc)
-
     stdout_reader = threading.Thread(target=drain_stdout, daemon=True)
     stderr_reader = threading.Thread(target=drain_stderr, daemon=True)
     stdout_reader.start()
@@ -608,7 +598,6 @@ def _communicate_with_bounded_build_progress(
         setattr(timeout_error, "safe_build_progress_diagnostic", safe_build_progress)
         raise timeout_error from None
     return ("" if text else b"", "" if text else b"", safe_build_progress, safe_stderr)
-
 def _create_owned_windows_job() -> int | None:
     """Create the Windows Job Object that will retain the complete child tree."""
     if os.name != "nt":
@@ -621,7 +610,6 @@ def _create_owned_windows_job() -> int | None:
     if not handle:
         raise OSError(ctypes.get_last_error(), "unable to create owned Windows Job Object")
     return int(handle)
-
 
 def _close_owned_windows_job(job_handle: int | None) -> None:
     """Release an owned Job Object without terminating successful descendants."""
@@ -636,7 +624,6 @@ def _close_owned_windows_job(job_handle: int | None) -> None:
     except Exception:
         pass
 
-
 def _assign_owned_windows_job(process: subprocess.Popen[Any], job_handle: int) -> None:
     """Assign a still-suspended child before it can create untracked descendants."""
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -646,7 +633,6 @@ def _assign_owned_windows_job(process: subprocess.Popen[Any], job_handle: int) -
     process_handle = int(getattr(process, "_handle"))
     if not assign_process(ctypes.c_void_p(job_handle), ctypes.c_void_p(process_handle)):
         raise OSError(ctypes.get_last_error(), "unable to assign subprocess to owned Windows Job Object")
-
 
 def _resume_owned_windows_process(process: subprocess.Popen[Any]) -> None:
     """Resume a Windows child only after Job Object assignment is complete."""
@@ -659,7 +645,6 @@ def _resume_owned_windows_process(process: subprocess.Popen[Any]) -> None:
     if status != 0:
         raise OSError(f"unable to resume owned Windows subprocess: NTSTATUS 0x{status & 0xFFFFFFFF:08x}")
 
-
 def _terminate_owned_windows_job(job_handle: int) -> bool:
     """Force every process assigned to one authority-owned Windows Job Object to exit."""
     try:
@@ -671,7 +656,6 @@ def _terminate_owned_windows_job(job_handle: int) -> bool:
     except Exception:
         return False
 
-
 def _owned_process_group_kwargs(*, umask: int = -1) -> dict[str, Any]:
     """Start each bounded subprocess in a group that this authority exclusively owns."""
     if os.name == "posix":
@@ -682,7 +666,6 @@ def _owned_process_group_kwargs(*, umask: int = -1) -> dict[str, Any]:
             | WINDOWS_CREATE_SUSPENDED,
         }
     return {}
-
 
 def _terminate_owned_process_tree(
     process: subprocess.Popen[Any],
@@ -720,16 +703,13 @@ def _terminate_owned_process_tree(
     except OSError:
         pass
 
-
 def _close_process_pipes(process: subprocess.Popen[Any]) -> None:
     """Close authority-owned pipes after bounded cleanup cannot drain them."""
     streams = [stream for stream in (process.stdin, process.stdout, process.stderr) if stream is not None]
-
     def close_stream(stream: Any) -> None:
         if os.name == "nt":
             try:
                 import msvcrt
-
                 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
                 cancel_io = kernel32.CancelIoEx
                 cancel_io.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -742,7 +722,6 @@ def _close_process_pipes(process: subprocess.Popen[Any]) -> None:
             stream.close()
         except (OSError, ValueError):
             pass
-
     if os.name == "nt":
         closers = [threading.Thread(target=close_stream, args=(stream,), daemon=True) for stream in streams]
         for closer in closers:
@@ -753,7 +732,6 @@ def _close_process_pipes(process: subprocess.Popen[Any]) -> None:
         return
     for stream in streams:
         close_stream(stream)
-
 
 def _terminate_and_drain_owned_process(
     process: subprocess.Popen[Any],
@@ -785,7 +763,6 @@ def _terminate_and_drain_owned_process(
             pass
         return (None, None)
 
-
 def _run(
     command: Sequence[str],
     *,
@@ -794,12 +771,13 @@ def _run(
     text: bool = True,
     env: dict[str, str] | None = None,
     timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
-    input: str | bytes | None = None,
-    classify_build_progress: bool = False,
-    umask: int = -1,
+    input: str | bytes | None = None, classify_build_progress: bool = False,
+    stdout_sink: BinaryIO | None = None, umask: int = -1,
 ) -> subprocess.CompletedProcess[Any]:
     if text and isinstance(input, (bytes, bytearray, memoryview)):
         raise TypeError("text mode input must be str, not bytes-like")
+    if stdout_sink is not None and (text or classify_build_progress or input is not None):
+        raise TypeError("stdout sink requires binary output without stdin or build progress classification")
     timeout = bounded_parity_attempt_timeout(timeout)
     arguments = list(command)
     windows_job_handle = _create_owned_windows_job()
@@ -811,7 +789,7 @@ def _run(
                 arguments,
                 cwd=cwd,
                 stdin=subprocess.PIPE if input is not None else None,
-                stdout=subprocess.PIPE,
+                stdout=stdout_sink if stdout_sink is not None else subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=text and not classify_build_progress,
                 env=env,
@@ -831,7 +809,6 @@ def _run(
                 except BaseException:
                     pass
             raise
-
         if classify_build_progress:
             if input is not None:
                 raise TypeError("build progress classification does not accept stdin")
@@ -880,7 +857,6 @@ def _run(
                 setattr(failure, "safe_stderr_diagnostic", safe_stderr_diagnostic)
                 raise failure
             return result
-
         try:
             stdout, stderr = process.communicate(input=input, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
@@ -913,16 +889,122 @@ def _run(
     finally:
         _close_owned_windows_job(windows_job_handle)
 
-
 def _git(repo_root: Path, *args: str, text: bool = True, umask: int = -1) -> str | bytes:
     return _run(["git", *args], cwd=repo_root, text=text, umask=umask).stdout
-
 
 def _normalize_commit(value: str) -> str:
     commit = value.strip().lower()
     if not FULL_COMMIT_RE.fullmatch(commit):
         raise ReleaseAuthorityError("release commit must be a full 40-character lowercase SHA")
     return commit
+
+def _normalize_apt_mirror_pair(
+    apt_mirror: str | None,
+    apt_security_mirror: str | None,
+) -> _AptMirrorSelection:
+    """Require a complete HTTPS mirror pair or preserve upstream Debian defaults."""
+    supplied = (apt_mirror not in (None, ""), apt_security_mirror not in (None, ""))
+    if supplied[0] != supplied[1]:
+        raise ReleaseAuthorityError(
+            "--apt-mirror and --apt-security-mirror must be supplied together"
+        )
+    if not any(supplied):
+        return _EMPTY_APT_MIRRORS
+    endpoints = []
+    for option_name, value in (("--apt-mirror", apt_mirror), ("--apt-security-mirror", apt_security_mirror)):
+        if not isinstance(value, str) or not value.isascii() or any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+            raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL")
+        try:
+            parsed = urlsplit(value)
+            port, hostname = parsed.port, parsed.hostname
+        except ValueError:
+            raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL") from None
+        path = parsed.path.rstrip("/")
+        host = hostname.lower() if hostname is not None and hostname.isascii() else ""
+        labels = host.split(".")
+        unsafe = (
+            parsed.scheme != "https" or parsed.username is not None or parsed.password is not None or "@" in parsed.netloc
+            or parsed.query or parsed.fragment or "?" in value or "#" in value or port is not None or ":" in parsed.netloc
+            or not 1 <= len(host) <= 253 or any(
+                not label or len(label) > 63 or label[0] == "-" or label[-1] == "-"
+                or re.fullmatch(r"[a-z0-9-]+", label, re.ASCII) is None
+                for label in labels
+            ) or not path.startswith("/")
+            or not re.fullmatch(r"[A-Za-z0-9._~/-]+", path) or "%" in parsed.path or "\\" in parsed.path or "//" in parsed.path
+            or any(segment in {".", ".."} for segment in path.split("/")[1:])
+        )
+        if unsafe:
+            raise ReleaseAuthorityError(f"{option_name} is not a safe HTTPS mirror URL")
+        endpoints.append((f"https://{host}{path}", host))
+    (debian_url, debian_hostname), (security_url, security_hostname) = endpoints
+    return debian_url, security_url, debian_hostname, security_hostname
+
+class _AptMirrorProbeRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, expected_hostname: str) -> None:
+        self._expected_hostname = expected_hostname
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        try:
+            parsed = urlsplit(newurl)
+        except (TypeError, ValueError):
+            raise ReleaseAuthorityError("APT mirror probe redirect is unsafe") from None
+        if not (isinstance(newurl, str) and newurl.isascii() and parsed.scheme == "https"
+                and parsed.hostname == self._expected_hostname and parsed.username is None and parsed.password is None
+                and not parsed.query and not parsed.fragment and parsed.port is None
+                and re.fullmatch(r"/[A-Za-z0-9._~/-]+", parsed.path) is not None and "%" not in parsed.path
+                and "\\" not in parsed.path and "//" not in parsed.path
+                and not any(segment in {".", ".."} for segment in parsed.path.split("/")[1:])
+                and not any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in newurl)):
+            if fp is not None:
+                fp.close()
+            raise ReleaseAuthorityError("APT mirror probe redirect is unsafe")
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+def _probe_apt_endpoint(endpoint: str, hostname: str, suite: str, security: bool) -> None:
+    suite_path, url = (f"{suite}-security" if security else suite, f"{endpoint}/dists/{f'{suite}-security' if security else suite}/InRelease")
+    request = Request(url, headers={"Range": f"bytes=0-{APT_MIRROR_PROBE_MAX_BYTES - 1}"}, method="GET")
+    response = None
+    try:
+        response = build_opener(_AptMirrorProbeRedirectHandler(hostname)).open(request, timeout=HTTP_PROBE_TIMEOUT_SECONDS)
+        status = getattr(response, "status", None) or response.getcode()
+        if status not in {200, 206}:
+            raise ReleaseAuthorityError("APT mirror probe returned an unexpected status")
+        if response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() not in {"text/plain", "application/octet-stream"}:
+            raise ReleaseAuthorityError("APT mirror probe returned an unsafe content type")
+        if re.fullmatch(r"[0-9]+", content_length := response.headers.get("Content-Length", ""), re.ASCII) is None:
+            raise ReleaseAuthorityError("APT mirror probe returned an unknown content length")
+        content_length = int(content_length)
+        range_match = APT_CONTENT_RANGE_RE.fullmatch(response.headers.get("Content-Range", "")) if status == 206 else None
+        range_values = tuple(int(value) for value in range_match.groups()) if range_match else ()
+        if status == 206 and (not range_values or range_values[0] != 0 or range_values[1] != range_values[2] - 1 or range_values[2] > APT_MIRROR_PROBE_MAX_BYTES or content_length != range_values[2]):
+            raise ReleaseAuthorityError("APT mirror probe returned an invalid or incomplete content range")
+        if status != 206 and (response.headers.get("Content-Range") is not None or content_length > APT_MIRROR_PROBE_MAX_BYTES):
+            raise ReleaseAuthorityError("APT mirror probe returned an unbounded response")
+        payload = response.read((range_values[2] if status == 206 else content_length) + 1)
+        if not payload or len(payload) != (range_values[2] if status == 206 else content_length):
+            raise ReleaseAuthorityError("APT mirror probe returned empty, truncated, or oversized content")
+        lines = payload.decode("utf-8").splitlines()
+        signature_start = lines.index("-----BEGIN PGP SIGNATURE-----")
+        fields = {key: [line.removeprefix(f"{key}: ") for line in lines[3:signature_start] if line.startswith(f"{key}: ")] for key in ("Codename", "Origin", "Suite")}
+        if (lines[0] != "-----BEGIN PGP SIGNED MESSAGE-----" or lines[-1] != "-----END PGP SIGNATURE-----" or [lines.count(marker) for marker in ("-----BEGIN PGP SIGNED MESSAGE-----", "-----BEGIN PGP SIGNATURE-----", "-----END PGP SIGNATURE-----")] != [1, 1, 1]
+                or signature_start <= 2 or lines[2] != "" or lines[1] not in {"Hash: SHA1", "Hash: SHA224", "Hash: SHA256", "Hash: SHA384", "Hash: SHA512"}
+                or any(len(fields.get(key, ())) != 1 for key in ("Codename", "Origin", "Suite")) or fields["Origin"] != ["Debian"] or fields["Codename"] != [suite_path]
+                or fields["Suite"][0] not in ({"stable-security", "oldstable-security", "oldoldstable-security"} if security else {"stable", "oldstable", "oldoldstable"})):
+            raise ReleaseAuthorityError("APT mirror probe returned unexpected content")
+    except (HTTPError, URLError, TimeoutError, OSError, TypeError, ValueError) as exc:
+        if isinstance(exc, HTTPError):
+            exc.close()
+        raise ReleaseAuthorityError("APT mirror probe request or response failed") from None
+    finally:
+        if response is not None:
+            response.close()
+
+def _probe_apt_mirrors(apt_mirror: str, apt_security_mirror: str) -> dict[str, Any]:
+    selection = _normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
+    if selection[0] is None:
+        raise ReleaseAuthorityError("APT mirror probe requires a complete mirror pair")
+    _probe_apt_endpoint(selection[0], selection[2], "bookworm", security=False)
+    _probe_apt_endpoint(selection[1], selection[3], "bookworm", security=True)
+    return {"verified": True, "apt_mirrors": {"requested": {"status": "validated", "debian_hostname": selection[2], "security_hostname": selection[3]}, "applied": {"status": "not-proven"}}}
 
 
 def _validate_canonical_dependency_build_timeout(value: int) -> int:
@@ -1083,7 +1165,6 @@ def assert_managed_target_pre_fetch_trust(
     )
     managed_owner, _ = _target_owner_mode(managed_root)
     _validate_target_owner_mode(normalized_release_root, managed_owner)
-
     pending = [checkout]
     while pending:
         current = pending.pop()
@@ -1137,10 +1218,8 @@ def assert_managed_target_checkout(
     )
     normalized = assert_clean_commit(checkout, normalized)
     managed_owner, _ = _target_owner_mode(managed_root)
-
     for path in (normalized_release_root, checkout):
         _validate_target_owner_mode(path, managed_owner)
-
     tracked_entries = _git_tracked_entries(checkout, normalized)
     for git_mode, relative_path in tracked_entries:
         if git_mode == "120000":
@@ -1321,6 +1400,7 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
+            **{**getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})},
         }
     if isinstance(exc, subprocess.CalledProcessError):
         return {
@@ -1332,15 +1412,11 @@ def _stage_failure_evidence(exc: BaseException) -> dict[str, Any]:
                 _redacted_stderr_diagnostic(exc.stderr),
             ),
             **getattr(exc, "safe_build_progress_diagnostic", {}),
+            **{**getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})},
         }
     if isinstance(exc, OSError):
-        evidence: dict[str, Any] = {"failure_kind": "os-error"}
-        if isinstance(exc.errno, int):
-            evidence["errno"] = exc.errno
-        return evidence
-    evidence = {"failure_kind": "authority-error"}
-    evidence.update(convergence_failure_evidence(exc))
-    return evidence
+        return {"failure_kind": "os-error", **({"errno": exc.errno} if isinstance(exc.errno, int) else {}), **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
+    return {"failure_kind": "authority-error", **convergence_failure_evidence(exc), **getattr(exc, "safe_backend_flatten_evidence", {}), **({"cleanup_status": "failed"} if getattr(exc, "cleanup_status", None) == "failed" else {})}
 
 
 def _stage(
@@ -1357,7 +1433,7 @@ def _stage(
     stage_error: ReleaseAuthorityError | None = None
     try:
         value = operation()
-    except (OSError, subprocess.SubprocessError, ReleaseAuthorityError) as exc:
+    except (OSError, subprocess.SubprocessError, ReleaseAuthorityError, BackendFlattenError) as exc:
         event = {
             "stage": name,
             "strategy": strategy,
@@ -1539,7 +1615,6 @@ def resolve_managed_env_file(release_root: Path, env_file: Path | None) -> Path:
                 "the canonical <managed-root>/deploy/ai-platform/.env path; use that managed "
                 "file before requesting the release lease"
             )
-
     if _is_link_or_junction(candidate):
         raise ReleaseAuthorityError(
             "managed-env-file-safety gate failed: the environment file must be a regular "
@@ -1566,7 +1641,6 @@ def resolve_managed_env_file(release_root: Path, env_file: Path | None) -> Path:
             "non-link file with no linked parent; have the managed owner provision it before "
             "requesting the release lease"
         )
-
     managed_owner, _ = _posix_owner_mode(managed_root)
     env_owner, env_mode = _posix_owner_mode(candidate)
     if env_owner != managed_owner:
@@ -1600,7 +1674,6 @@ def resolve_compose_files(
         or absolute_root != root
     ):
         raise ReleaseAuthorityError("release checkout path is invalid")
-
     values: Sequence[str | Path]
     if compose_files is None:
         values = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),)
@@ -1608,7 +1681,6 @@ def resolve_compose_files(
         values = compose_files
     if not values:
         raise ReleaseAuthorityError("compose file selection is invalid")
-
     relative_paths: list[str] = []
     absolute_paths: list[Path] = []
     identities: set[str] = set()
@@ -1646,7 +1718,6 @@ def resolve_compose_files(
             raise ReleaseAuthorityError("canonical main compose file must be first")
         if raw in relative_paths:
             raise ReleaseAuthorityError("duplicate compose file is forbidden")
-
         candidate = root.joinpath(*pure.parts)
         current = root
         for part in pure.parts:
@@ -1669,7 +1740,6 @@ def resolve_compose_files(
         identities.add(identity)
         relative_paths.append(raw)
         absolute_paths.append(resolved)
-
     working_dir = absolute_paths[0].parent.as_posix()
     return _ComposeSelection(
         checkout_root=root,
@@ -1791,7 +1861,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     destination = output_root / f"{timestamp}-{head}"
     destination.mkdir(parents=True, exist_ok=False)
-
     status = str(_git(repo_root, "status", "--short", "--branch", "--untracked-files=all"))
     status_bytes = status.encode("utf-8")
     tracked_patch = bytes(_git(repo_root, "diff", "--binary", text=False))
@@ -1799,7 +1868,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
     modified = set(_git_paths(repo_root, "diff", "--name-only"))
     staged = set(_git_paths(repo_root, "diff", "--cached", "--name-only"))
     untracked = set(_git_paths(repo_root, "ls-files", "--others", "--exclude-standard"))
-
     inventory: list[dict[str, Any]] = []
     for relative_path in sorted(modified | staged | untracked):
         path = repo_root / relative_path
@@ -1818,7 +1886,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
             "sha256": _sha256_path(path) if path.is_file() and not secret else None,
         }
         inventory.append(record)
-
     inventory_path = destination / "inventory.json"
     inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     artifacts = {
@@ -1830,7 +1897,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
             "sha256": _sha256_path(inventory_path),
         },
     }
-
     tar_path = destination / "untracked.tar"
     with tarfile.open(tar_path, "w") as archive:
         for relative_path in sorted(untracked):
@@ -1838,7 +1904,6 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
             if path.is_file() and not _is_secret_path(relative_path):
                 archive.add(path, arcname=relative_path, recursive=False)
     artifacts["untracked.tar"] = {"size": tar_path.stat().st_size, "sha256": _sha256_path(tar_path)}
-
     manifest = {
         "schema_version": PRESERVATION_SCHEMA_VERSION,
         "captured_at": datetime.now(timezone.utc).isoformat(),
@@ -1929,94 +1994,21 @@ def _existing_release_image(
     return image
 
 
-def _release_label_dockerfile_lines(role: str) -> str:
-    """Return all target-provenance labels required for one promoted image role."""
-    common = [
-        "LABEL org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
-        "LABEL ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",
-        "LABEL ai-platform.source-commit=$AI_PLATFORM_BUILD_COMMIT",
-        'LABEL ai-platform.build-dirty="$AI_PLATFORM_BUILD_DIRTY"',
-        "LABEL ai-platform.source-repository=$AI_PLATFORM_BUILD_REPOSITORY",
-        f"LABEL ai-platform.release-role={role}",
-    ]
-    if role == "backend":
-        common[1:1] = [
-            "LABEL ai-platform.runtime-subject=$AI_PLATFORM_BUILD_COMMIT",
-            "LABEL ai-platform.source_revision=$AI_PLATFORM_BUILD_COMMIT",
-            "LABEL ai-platform.source_commit=$AI_PLATFORM_BUILD_COMMIT",
-            "LABEL ai-platform.runtime_subject=$AI_PLATFORM_BUILD_COMMIT",
-            "LABEL ai-platform.source_tree_commit=$AI_PLATFORM_BUILD_COMMIT",
-        ]
-    return "\n".join(common)
-
-
-def _backend_provenance_dockerfile_run() -> str:
-    """Return the backend embedded-source marker update used by source rebuilds and promotions."""
-    return '''RUN printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.ai-platform-source-revision \\
-    && printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.codex-source-revision \\
-    && printf '%s\\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.source-commit \\
-    && AI_PLATFORM_BUILD_COMMIT="$AI_PLATFORM_BUILD_COMMIT" AI_PLATFORM_BUILD_DIRTY="$AI_PLATFORM_BUILD_DIRTY" \\
-       python -c "import json, os; from pathlib import Path; commit = os.environ.get('AI_PLATFORM_BUILD_COMMIT', 'unknown').strip() or 'unknown'; dirty_text = os.environ.get('AI_PLATFORM_BUILD_DIRTY', 'unknown').strip().lower(); dirty = dirty_text != 'false'; dirty_paths = [] if not dirty else ['unknown_runtime_affecting_dirty_paths']; payload = dict(schema_version='ai-platform.source-snapshot.v1', source_tree_commit_sha=commit, runtime_subject_commit_sha=commit, source_tree_dirty=dirty, runtime_affecting_changes_since_runtime_subject=[], runtime_affecting_dirty_paths=dirty_paths, snapshot_source='dockerfile_build_args'); Path('/app/.ai-platform-source-snapshot.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\\n', encoding='utf-8')"'''
-
-
-def _promotion_dockerfile(role: str) -> str:
-    """Build a provenance-only image from a verified local role image without dependency commands."""
-    labels = _release_label_dockerfile_lines(role)
-    if role == "backend":
-        marker = _backend_provenance_dockerfile_run()
-        user = "USER 10001:10001"
-    elif role == "frontend":
-        marker = (
-            'RUN sed -i "s/\\\"commit\\\": \\\"[^\\\"]*\\\"/\\\"commit\\\": '
-            '\\\"${AI_PLATFORM_BUILD_COMMIT}\\\"/" '
-            "/usr/share/nginx/html/ai-platform-build-provenance.json"
-        )
-        user = ""
-    else:
-        raise ReleaseAuthorityError("release role is invalid")
-    return f"""ARG BASE_IMAGE
-FROM ${{BASE_IMAGE}}
-ARG AI_PLATFORM_BUILD_COMMIT
-ARG AI_PLATFORM_BUILD_DIRTY
-ARG AI_PLATFORM_BUILD_REPOSITORY
-USER root
-{labels}
-{marker}
-{user}
-"""
-
-
-def _backend_runtime_dockerfile() -> str:
-    """Build source-only backend runtime from a verified image with no dependency installer command."""
-    labels = _release_label_dockerfile_lines("backend")
-    marker = _backend_provenance_dockerfile_run()
-    return f"""ARG BASE_IMAGE
-FROM ${{BASE_IMAGE}}
-ARG AI_PLATFORM_BUILD_COMMIT
-ARG AI_PLATFORM_BUILD_DIRTY
-ARG AI_PLATFORM_BUILD_REPOSITORY
-USER root
-RUN rm -rf /app/app /app/tools /app/scripts /app/skills /app/docs/release-evidence \\
-    && rm -f /app/docker-entrypoint.sh /app/.ai-platform-source-revision \\
-       /app/.codex-source-revision /app/.source-commit /app/.ai-platform-source-snapshot.json
-COPY app /app/app
-COPY tools /app/tools
-COPY scripts /app/scripts
-COPY skills /app/skills
-COPY docs/release-evidence /app/docs/release-evidence
-COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod -R a+rX /app && chmod 0755 /app/docker-entrypoint.sh
-{labels}
-{marker}
-USER 10001:10001
-"""
-
-
-def _build_args(commit: str, repository: str) -> list[str]:
+def _build_args(
+    commit: str,
+    repository: str,
+    *,
+    mirror_selection: _AptMirrorSelection | None = None,
+) -> list[str]:
+    """Build provenance args and optional validated backend APT mirror args."""
     return [
         "--build-arg", f"AI_PLATFORM_BUILD_COMMIT={commit}",
         "--build-arg", "AI_PLATFORM_BUILD_DIRTY=false",
         "--build-arg", f"AI_PLATFORM_BUILD_REPOSITORY={repository}",
+        *([
+            "--build-arg", f"APT_MIRROR={mirror_selection[0]}",
+            "--build-arg", f"APT_SECURITY_MIRROR={mirror_selection[1]}",
+        ] if mirror_selection is not None and mirror_selection[0] is not None else []),
     ]
 
 
@@ -2047,10 +2039,14 @@ def _canonical_or_source_build(
     repository: str,
     role: str,
     source_only: bool,
+    mirror_selection: _AptMirrorSelection | None = None,
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
 ) -> None:
     dockerfile = "Dockerfile" if role == "backend" else "frontend/web/Dockerfile"
-    command = [*docker, "build", *_build_args(commit, repository), "-t", reference]
+    mirror_selection = mirror_selection if role == "backend" and not source_only else None
+    command = [
+        *docker, "build", *_build_args(commit, repository, mirror_selection=mirror_selection), "-t", reference,
+    ]
     if source_only:
         command.extend(["--target", "runtime"])
     command.extend(["-f", dockerfile, "."])
@@ -2058,13 +2054,7 @@ def _canonical_or_source_build(
         command,
         cwd=repo_root,
         classify_build_progress=not source_only,
-        timeout=_role_timeout(
-            role,
-            canonical_dependency=not source_only,
-            canonical_dependency_build_timeout_seconds=(
-                canonical_dependency_build_timeout_seconds
-            ),
-        ),
+        timeout=_role_timeout(role, canonical_dependency=not source_only, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds),
     )
 
 
@@ -2166,7 +2156,6 @@ def _compose_ownership_selection(
         return None
     if working_dir == target.working_dir and config_files == target.config_files:
         return target
-
     observed_files = config_files.split(",")
     if not observed_files or any(not value for value in observed_files):
         return None
@@ -2185,15 +2174,13 @@ def _compose_ownership_selection(
         ):
             return None
         observed_paths.append(path)
-
     observed_main = observed_paths[0]
     observed_root = observed_main
     for _ in DEFAULT_COMPOSE_RELATIVE_PATH.parts:
         observed_root = observed_root.parent
     release_root = target.checkout_root.parent
     if (
-        observed_root == target.checkout_root
-        or observed_root.parent != release_root
+        observed_root.parent != release_root
         or not FULL_COMMIT_RE.fullmatch(target.checkout_root.name)
         or not RELEASE_DIRECTORY_RE.fullmatch(observed_root.name)
     ):
@@ -2390,7 +2377,6 @@ def _worker_heartbeat_path(inspected: dict[str, Any]) -> str:
         not isinstance(entry, str) for entry in environment
     ):
         raise ReleaseAuthorityError(invalid)
-
     entries = [
         entry
         for entry in environment
@@ -2632,7 +2618,6 @@ def _auto_release_plan(
     )
     return build_auto_release_plan(current_commit, target_commit, changes)
 
-
 def deploy_clean_commit(
     repo_root: Path,
     commit: str,
@@ -2649,17 +2634,23 @@ def deploy_clean_commit(
     stage_events: list[dict[str, Any]] | None = None,
     managed_release_root: Path | None = None,
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+    apt_mirrors: _AptMirrorSelection | None = None,
+    allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Build immutable images and recreate the repo-local compose release."""
     if strategy not in {"canonical", "auto"}:
         raise ReleaseAuthorityError("release strategy is invalid")
     if strategy == "auto" and (auto_plan is None or current_references is None):
         raise ReleaseAuthorityError("auto release plan is required")
-    canonical_dependency_build_timeout_seconds = (
-        _validate_canonical_dependency_build_timeout(
-            canonical_dependency_build_timeout_seconds
-        )
-    )
+    if allow_backend_layer_flatten_recovery:
+        if auto_plan is None:
+            raise ReleaseAuthorityError("backend layer flatten recovery requires an auto release plan")
+        validate_backend_layer_flatten_recovery_request(enabled=True, strategy=strategy, backend_action=next((item.action for item in auto_plan.roles if item.role == "backend"), None))
+        if managed_release_root is None:
+            raise ReleaseAuthorityError("backend layer flatten recovery requires a managed release root")
+    canonical_dependency_build_timeout_seconds = _validate_canonical_dependency_build_timeout(canonical_dependency_build_timeout_seconds)
+    apt_mirror_selection = apt_mirrors or _EMPTY_APT_MIRRORS
+    apt_mirror_status = "not-requested" if apt_mirror_selection[0] is None else "not-used"
     events = stage_events if stage_events is not None else []
     if managed_release_root is not None:
         compose_env_file = resolve_managed_env_file(managed_release_root, Path(env_file))
@@ -2672,24 +2663,14 @@ def deploy_clean_commit(
     selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
     repository = authoritative_repository(repo_root)
-    ownership = _preflight_managed_container_ownership(
-        docker,
-        selection,
-        replace_known_manual_frontend=replace_known_manual_frontend,
-        expected_manual_frontend_image=expected_manual_frontend_image,
-        expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-    )
+    ownership = _preflight_managed_container_ownership(docker, selection, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id)
     refs = build_image_references(normalized)
     images: dict[str, dict[str, Any]] = {}
     for role, reference in refs.items():
         image_lookup_started = time.monotonic()
-        image = _existing_release_image(
-            docker,
-            reference,
-            commit=normalized,
-            repository=repository,
-            role=role,
-        )
+        image = _existing_release_image(docker, reference, commit=normalized, repository=repository, role=role)
+        if role == "backend" and image is not None and apt_mirror_status != "not-requested":
+            apt_mirror_status = "reused"
         if image is not None and strategy == "auto":
             events.append(
                 {
@@ -2707,6 +2688,8 @@ def deploy_clean_commit(
                 else RolePlan(role, "dependency", "canonical-build", ())
             )
             if item.action == "canonical-build":
+                if role == "backend" and apt_mirror_selection[0] is not None:
+                    apt_mirror_status = "applied"
                 _stage(
                     events,
                     name=f"{role}-image",
@@ -2720,6 +2703,7 @@ def deploy_clean_commit(
                         repository=repository,
                         role=role,
                         source_only=False,
+                        mirror_selection=apt_mirror_selection if role == "backend" else None,
                         canonical_dependency_build_timeout_seconds=(
                             canonical_dependency_build_timeout_seconds
                         ),
@@ -2747,31 +2731,51 @@ def deploy_clean_commit(
                 base_reference = current_references.get(role)
                 if not base_reference:
                     raise ReleaseAuthorityError("verified current role image is unavailable")
-                base_image = _existing_release_image(
-                    docker,
-                    base_reference,
-                    commit=auto_plan.current_commit if auto_plan is not None else normalized,
-                    repository=repository,
-                    role=role,
-                )
+                base_image = _existing_release_image(docker, base_reference, commit=auto_plan.current_commit if auto_plan is not None else normalized, repository=repository, role=role)
                 if base_image is None:
                     raise ReleaseAuthorityError("verified current role image is unavailable")
-                _stage(
-                    events,
-                    name=f"{role}-image",
-                    strategy=strategy,
-                    action=item.action,
-                    operation=lambda: _build_from_verified_role_image(
-                        docker,
-                        repo_root=repo_root,
-                        reference=reference,
-                        base_reference=base_reference,
-                        commit=normalized,
-                        repository=repository,
-                        role=role,
+                if allow_backend_layer_flatten_recovery and role == "backend" and item.action == "runtime-rebuild":
+                    _stage(
+                        events,
+                        name="backend-layer-flatten-recovery",
+                        strategy=strategy,
+                        action="flatten-recovery",
+                        operation=lambda: rebuild_from_flattened_backend(
+                            docker=docker,
+                            source_reference=base_reference,
+                            expected_commit=auto_plan.current_commit if auto_plan is not None else normalized,
+                            expected_repository=repository,
+                            archive_root=managed_release_root,
+                            runner=_run,
+                            target_build=lambda flat_reference: _build_from_verified_role_image(
+                                docker,
+                                repo_root=repo_root,
+                                reference=reference,
+                                base_reference=flat_reference,
+                                commit=normalized,
+                                repository=repository,
+                                role="backend",
+                                action="runtime-rebuild",
+                            ),
+                        ),
+                    )
+                else:
+                    _stage(
+                        events,
+                        name=f"{role}-image",
+                        strategy=strategy,
                         action=item.action,
-                    ),
-                )
+                        operation=lambda: _build_from_verified_role_image(
+                            docker,
+                            repo_root=repo_root,
+                            reference=reference,
+                            base_reference=base_reference,
+                            commit=normalized,
+                            repository=repository,
+                            role=role,
+                            action=item.action,
+                        ),
+                    )
             elif item.action == "reuse":
                 raise ReleaseAuthorityError("verified target role image is unavailable")
             else:
@@ -2785,14 +2789,7 @@ def deploy_clean_commit(
             )
             _validate_release_image(image, commit=normalized, repository=repository, role=role)
         images[role] = image
-
-    images["backend"] = _require_sandbox_executor_image(
-        docker,
-        refs["backend"],
-        commit=normalized,
-        repository=repository,
-    )
-
+    images["backend"] = _require_sandbox_executor_image(docker, refs["backend"], commit=normalized, repository=repository)
     if managed_release_root is not None:
         assert_managed_target_checkout(repo_root, normalized, managed_release_root)
     else:
@@ -2800,13 +2797,7 @@ def deploy_clean_commit(
     revalidated = resolve_compose_files(repo_root, selection.relative_paths)
     if revalidated != selection:
         raise ReleaseAuthorityError("compose file selection changed during release preflight")
-    revalidated_ownership = _preflight_managed_container_ownership(
-        docker,
-        selection,
-        replace_known_manual_frontend=replace_known_manual_frontend,
-        expected_manual_frontend_image=expected_manual_frontend_image,
-        expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-    )
+    revalidated_ownership = _preflight_managed_container_ownership(docker, selection, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id)
     if revalidated_ownership != ownership:
         raise ReleaseAuthorityError("managed container ownership changed during release preflight")
     if managed_release_root is not None:
@@ -2821,7 +2812,6 @@ def deploy_clean_commit(
                 [*docker, "container", "rm", "-f", ownership.manual_frontend_id]
             ),
         )
-
     compose_environment = [
         f"AI_PLATFORM_IMAGE={refs['backend']}",
         f"AI_PLATFORM_FRONTEND_IMAGE={refs['frontend']}",
@@ -2834,11 +2824,7 @@ def deploy_clean_commit(
         compose_command = ["sudo", "-n", "env", *compose_environment, "docker"]
     else:
         compose_command = ["env", *compose_environment, *docker]
-    compose_file_args = [
-        argument
-        for path in selection.absolute_paths
-        for argument in ("-f", str(path))
-    ]
+    compose_file_args = [argument for path in selection.absolute_paths for argument in ("-f", str(path))]
     _stage(
         events,
         name="compose-recreate",
@@ -2868,6 +2854,18 @@ def deploy_clean_commit(
         "compose_files": [str(path) for path in selection.absolute_paths],
         "strategy": strategy,
         "stages": events,
+        "apt_mirrors": {
+            "requested": {
+                "status": "requested" if apt_mirror_selection[0] is not None else "not-requested",
+                "debian_hostname": apt_mirror_selection[2],
+                "security_hostname": apt_mirror_selection[3],
+            },
+            "applied": (
+                {"status": "applied", "scope": "canonical-backend-dependency-build", "debian_hostname": apt_mirror_selection[2], "security_hostname": apt_mirror_selection[3]}
+                if apt_mirror_status == "applied"
+                else {"status": apt_mirror_status}
+            ),
+        },
     }
     if auto_plan is not None:
         result["plan"] = _plan_as_dict(
@@ -2892,37 +2890,31 @@ def deploy_main_commit(
     strategy: str = "canonical",
     coordination_source: Path | None = None,
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+    apt_mirror: str | None = None,
+    apt_security_mirror: str | None = None,
+    allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Deploy and verify an exact fetched main commit from an isolated checkout."""
     if strategy not in {"canonical", "auto"}:
         raise ReleaseAuthorityError("release strategy is invalid")
+    if allow_backend_layer_flatten_recovery and strategy != "auto":
+        raise ReleaseAuthorityError("backend layer flatten recovery requires the auto strategy")
     canonical_dependency_build_timeout_seconds = _validate_canonical_dependency_build_timeout(
         canonical_dependency_build_timeout_seconds
     )
+    apt_mirrors = _normalize_apt_mirror_pair(apt_mirror, apt_security_mirror)
     normalized = _normalize_commit(commit)
     authority_commit: str | None = None
     if coordination_source is not None:
         assert_clean_coordination_source(coordination_source, normalized)
         authority_commit = normalized
     try:
-        result = _deploy_main_commit_after_authority(
-            release_root,
-            normalized,
-            docker_cmd=docker_cmd,
-            env_file=env_file,
-            replace_known_manual_frontend=replace_known_manual_frontend,
-            expected_manual_frontend_image=expected_manual_frontend_image,
-            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-            compose_files=compose_files,
-            strategy=strategy,
-            canonical_dependency_build_timeout_seconds=(
-                canonical_dependency_build_timeout_seconds
-            ),
-        )
-    except ReleaseAuthorityError as exc:
+        result = _deploy_main_commit_after_authority(release_root, normalized, docker_cmd=docker_cmd, env_file=env_file, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id, compose_files=compose_files, strategy=strategy, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds, apt_mirrors=apt_mirrors, allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery)
+    except (ReleaseAuthorityError, BackendFlattenError) as exc:
+        error = ReleaseAuthorityError("backend layer flatten recovery failed") if isinstance(exc, BackendFlattenError) else exc
         if authority_commit is not None:
-            exc.authority_commit = authority_commit
-        raise
+            error.authority_commit = authority_commit
+        raise error from None
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         if authority_commit is not None:
             exc.authority_commit = authority_commit
@@ -2944,25 +2936,14 @@ def _deploy_main_commit_after_authority(
     compose_files: Sequence[str | Path] | None = None,
     strategy: str = "canonical",
     canonical_dependency_build_timeout_seconds: int = CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
+    apt_mirrors: _AptMirrorSelection | None = None,
+    allow_backend_layer_flatten_recovery: bool = False,
 ) -> dict[str, Any]:
     """Execute target materialization and deployment after authority provenance is proven."""
     managed_env_file = resolve_managed_env_file(release_root, env_file)
     checkout = materialize_main_checkout(release_root, normalized)
     if strategy == "canonical":
-        deployment = deploy_clean_commit(
-            checkout,
-            normalized,
-            docker_cmd=docker_cmd,
-            env_file=managed_env_file,
-            replace_known_manual_frontend=replace_known_manual_frontend,
-            expected_manual_frontend_image=expected_manual_frontend_image,
-            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-            compose_files=compose_files,
-            managed_release_root=release_root,
-            canonical_dependency_build_timeout_seconds=(
-                canonical_dependency_build_timeout_seconds
-            ),
-        )
+        deployment = deploy_clean_commit(checkout, normalized, docker_cmd=docker_cmd, env_file=managed_env_file, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id, compose_files=compose_files, managed_release_root=release_root, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds, apt_mirrors=apt_mirrors)
         parity = collect_live_parity(
             checkout,
             normalized,
@@ -2996,25 +2977,13 @@ def _deploy_main_commit_after_authority(
             action="plan",
             operation=lambda: _auto_release_plan(checkout, normalized, current["commit"]),
         )
-        deployment = deploy_clean_commit(
-            checkout,
-            normalized,
-            docker_cmd=docker_cmd,
-            env_file=managed_env_file,
-            replace_known_manual_frontend=replace_known_manual_frontend,
-            expected_manual_frontend_image=expected_manual_frontend_image,
-            expected_manual_frontend_image_id=expected_manual_frontend_image_id,
-            compose_files=compose_files,
-            strategy=strategy,
-            auto_plan=plan,
-            current_references=current["references"],
-            stage_events=events,
-            managed_release_root=release_root,
-            canonical_dependency_build_timeout_seconds=(
-                canonical_dependency_build_timeout_seconds
-            ),
-        )
-
+        if allow_backend_layer_flatten_recovery:
+            validate_backend_layer_flatten_recovery_request(
+                enabled=True,
+                strategy=strategy,
+                backend_action=next((item.action for item in plan.roles if item.role == "backend"), None),
+            )
+        deployment = deploy_clean_commit(checkout, normalized, docker_cmd=docker_cmd, env_file=managed_env_file, replace_known_manual_frontend=replace_known_manual_frontend, expected_manual_frontend_image=expected_manual_frontend_image, expected_manual_frontend_image_id=expected_manual_frontend_image_id, compose_files=compose_files, strategy=strategy, auto_plan=plan, current_references=current["references"], stage_events=events, managed_release_root=release_root, canonical_dependency_build_timeout_seconds=canonical_dependency_build_timeout_seconds, apt_mirrors=apt_mirrors, allow_backend_layer_flatten_recovery=allow_backend_layer_flatten_recovery)
         def collect_final_parity(_: float) -> dict[str, Any]:
             return collect_live_parity(
                 checkout,
@@ -3022,7 +2991,6 @@ def _deploy_main_commit_after_authority(
                 docker_cmd=docker_cmd,
                 compose_files=compose_files,
             )
-
         parity = _stage(
             events,
             name="final-parity",
@@ -3055,11 +3023,9 @@ def main() -> int:
     """Run the release-authority preservation, deployment, or verification command."""
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-
     preserve = subparsers.add_parser("preserve-dirty", help="Preserve dirty source without cleaning it")
     preserve.add_argument("--repo-root", type=Path, required=True)
     preserve.add_argument("--output-root", type=Path, required=True)
-
     deploy = subparsers.add_parser("deploy", help="Build and deploy one clean commit")
     deploy.add_argument("--repo-root", type=Path, required=True)
     deploy.add_argument("--commit", required=True)
@@ -3087,7 +3053,6 @@ def main() -> int:
         metavar="REPO_RELATIVE_PATH",
         help="Ordered repo-relative Compose file; repeat for overlays",
     )
-
     deploy_main = subparsers.add_parser(
         "deploy-main-commit",
         help="Fetch, deploy, and verify one exact main commit",
@@ -3119,10 +3084,26 @@ def main() -> int:
         ),
     )
     deploy_main.add_argument(
+        "--apt-mirror",
+        help="Optional HTTPS Debian archive mirror; requires --apt-security-mirror",
+    )
+    deploy_main.add_argument(
+        "--apt-security-mirror",
+        help="Optional HTTPS Debian security mirror; requires --apt-mirror",
+    )
+    deploy_main.add_argument(
         "--strategy",
         choices=("auto", "canonical"),
         default="auto",
         help="Role-specific release strategy; auto reuses verified current provenance",
+    )
+    deploy_main.add_argument(
+        "--allow-backend-layer-flatten-recovery",
+        action="store_true",
+        help=(
+            "Explicitly allow one temporary verified backend flat base only for an "
+            "auto backend runtime-rebuild plan"
+        ),
     )
     deploy_main.add_argument(
         "--compose-file",
@@ -3131,7 +3112,9 @@ def main() -> int:
         metavar="REPO_RELATIVE_PATH",
         help="Ordered repo-relative Compose file; repeat for overlays",
     )
-
+    probe = subparsers.add_parser("probe-apt-mirrors", help="Boundedly probe one validated Debian mirror pair")
+    probe.add_argument("--apt-mirror", required=True)
+    probe.add_argument("--apt-security-mirror", required=True)
     verify = subparsers.add_parser("verify", help="Verify source/image/runtime commit parity")
     verify.add_argument("--repo-root", type=Path, required=True)
     verify.add_argument("--commit", required=True)
@@ -3144,7 +3127,6 @@ def main() -> int:
         metavar="REPO_RELATIVE_PATH",
         help="Ordered repo-relative Compose file; repeat for overlays",
     )
-
     args = parser.parse_args()
     try:
         if args.command == "preserve-dirty":
@@ -3183,9 +3165,16 @@ def main() -> int:
                     canonical_dependency_build_timeout_seconds=(
                         args.canonical_build_timeout_seconds
                     ),
+                    apt_mirror=args.apt_mirror,
+                    apt_security_mirror=args.apt_security_mirror,
+                    allow_backend_layer_flatten_recovery=(
+                        args.allow_backend_layer_flatten_recovery
+                    ),
                 ),
                 None,
             )
+        elif args.command == "probe-apt-mirrors":
+            _write_json(_probe_apt_mirrors(args.apt_mirror, args.apt_security_mirror), None)
         else:
             report = collect_live_parity(
                 args.repo_root,

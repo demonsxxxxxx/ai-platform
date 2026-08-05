@@ -1,20 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import {
   canAccessWorkbenchItem,
   canAccessWorkbenchPath,
   type WorkbenchAccessKey,
-} from "../workbenchAccessPolicy.ts";
+} from "../workbenchAccessPolicy";
 
 const ordinaryUser = { is_admin: false };
 const adminUser = { is_admin: true };
 
 const ordinaryItems: WorkbenchAccessKey[] = [
   "chat",
+  "agentMarket",
+  "agentBuilder",
   "apps",
   "skills",
   "mcp",
-  "files",
   "notifications",
   "memory",
 ];
@@ -51,5 +53,6 @@ test("admin identity is fail closed unless the signed projection is explicitly t
 test("path policy covers nested management URLs and leaves public unknown paths alone", () => {
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/users"), false);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/mcp"), true);
+  assert.equal(canAccessWorkbenchPath(ordinaryUser, "/agent-builder"), true);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/shared/example"), true);
 });

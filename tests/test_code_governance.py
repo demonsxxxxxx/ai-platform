@@ -32,6 +32,16 @@ def _run(repo: Path, *arguments: str, check: bool = True) -> subprocess.Complete
     )
 
 
+def _run_bytes(repo: Path, *arguments: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        list(arguments),
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        input=input_bytes,
+    )
+
+
 def _git(repo: Path, *arguments: str) -> str:
     return _run(repo, "git", *arguments).stdout.strip()
 
@@ -102,6 +112,21 @@ def _python_lines(count: int, *, prefix: str = "value") -> str:
     return "".join(f"{prefix}_{index} = {index}\n" for index in range(count))
 
 
+def _candidate_binding(repo: Path, base: str, scope_head: str) -> dict[str, str]:
+    reader = code_governance._GitChangeReader(repo, code_governance._CommandRunner())
+    return {
+        "base_ref": base,
+        "scope_sha256": reader.exception_scope_sha256(base, scope_head),
+    }
+
+
+def _commit_raw_path(repo: Path, base: str, path: bytes) -> str:
+    blob = _run_bytes(repo, "git", "hash-object", "-w", "--stdin", input_bytes=b"same content\n").stdout.strip()
+    tree_input = b"100644 blob " + blob + b"\t" + path + b"\0"
+    tree = _run_bytes(repo, "git", "mktree", "-z", input_bytes=tree_input).stdout.decode("ascii").strip()
+    return _git(repo, "commit-tree", tree, "-p", base, "-m", "raw path candidate")
+
+
 def test_small_non_python_change_passes(governance_repo: tuple[Path, str]) -> None:
     repo, base = governance_repo
     _write(repo, "frontend/web/src/session.ts", "export const session = true;\n")
@@ -120,7 +145,9 @@ def test_small_non_python_change_passes(governance_repo: tuple[Path, str]) -> No
     }
 
 
-def test_size_and_subsystem_violations_are_reported(governance_repo: tuple[Path, str]) -> None:
+def test_size_violations_remain_fail_closed_across_multiple_subsystems(
+    governance_repo: tuple[Path, str],
+) -> None:
     repo, base = governance_repo
     for index in range(13):
         _write(repo, f"app/domain_{index}.json", "{\"enabled\": true}\n")
@@ -131,11 +158,35 @@ def test_size_and_subsystem_violations_are_reported(governance_repo: tuple[Path,
     evaluation = _evaluate(repo, base, head)
 
     assert evaluation.exit_code == 2
-    assert {
-        "production_file_count",
-        "production_net_loc",
-        "production_subsystem_count",
-    } <= _codes(evaluation)
+    assert {"production_file_count", "production_net_loc"} <= _codes(evaluation)
+    assert "production_subsystem_count" not in _codes(evaluation)
+    assert evaluation.metrics["production_subsystem_count"] == 3
+    assert evaluation.metrics["production_subsystems"] == ["app", "config", "deploy/ai-platform"]
+
+
+def test_multiple_production_subsystems_are_reported_without_blocking(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, base = governance_repo
+    _write(repo, "app/settings.py", "ENABLED = True\n")
+    _write(repo, "deploy/ai-platform/policy.json", "{\"enabled\": true}\n")
+    _write(repo, "frontend/web/src/services/client.ts", "export const enabled = true;\n")
+    head = _commit(repo, "coherent cross-subsystem change")
+
+    evaluation = _evaluate(repo, base, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.exit_code == 0
+    assert evaluation.metrics["production_subsystem_count"] == 3
+    assert evaluation.metrics["production_subsystems"] == [
+        "app",
+        "deploy/ai-platform",
+        "frontend/web/src/services",
+    ]
+    assert "production_subsystem_count_max_exclusive" not in _payload(evaluation)["policy"]
+    rendered = code_governance._render_text(evaluation)
+    assert "production subsystem count: 3" in rendered
+    assert "production subsystems: app, deploy/ai-platform, frontend/web/src/services" in rendered
 
 
 def test_pure_rename_is_separate_from_behavior_fix_and_delete_is_safe(
@@ -160,11 +211,10 @@ def test_pure_rename_is_separate_from_behavior_fix_and_delete_is_safe(
 
     assert delete_evaluation.status == "pass"
     assert delete_evaluation.metrics["production_net_loc"] < 0
-    assert "test_responsibility_mirror" not in _codes(delete_evaluation)
     assert initial != source
 
 
-def test_test_to_production_rename_is_behavior_change_and_requires_mirror(
+def test_test_to_production_rename_is_behavior_change_with_soft_loc_metrics(
     governance_repo: tuple[Path, str],
 ) -> None:
     repo, _initial = governance_repo
@@ -176,17 +226,19 @@ def test_test_to_production_rename_is_behavior_change_and_requires_mirror(
 
     evaluation = _evaluate(repo, base, head)
 
-    assert evaluation.exit_code == 2
+    assert evaluation.exit_code == 0
     assert evaluation.mode == "behavior_fix"
     assert evaluation.metrics["behavior_production_files"] == 1
     assert evaluation.metrics["move_only_production_files"] == 0
     assert evaluation.metrics["production_net_loc"] == 1
+    assert evaluation.metrics["production_added_loc"] == 1
+    assert evaluation.metrics["test_net_loc"] == -1
+    assert evaluation.metrics["test_to_production_added_loc_ratio"] == 0.0
     assert evaluation.metrics["production_subsystems"] == ["app"]
     assert _payload(evaluation)["changes"][0]["role"] == "behavior_production"
-    assert _codes(evaluation) == {"test_responsibility_mirror"}
 
 
-def test_production_to_test_rename_counts_production_exit_without_mirror(
+def test_production_to_test_rename_counts_production_exit_and_test_entry(
     governance_repo: tuple[Path, str],
 ) -> None:
     repo, _initial = governance_repo
@@ -203,9 +255,12 @@ def test_production_to_test_rename_counts_production_exit_without_mirror(
     assert evaluation.metrics["behavior_production_files"] == 1
     assert evaluation.metrics["move_only_production_files"] == 0
     assert evaluation.metrics["production_net_loc"] == -1
+    assert evaluation.metrics["test_added_loc"] == 1
+    assert evaluation.metrics["test_net_loc"] == 1
+    assert evaluation.metrics["test_to_production_added_loc_ratio"] is None
+    assert evaluation.metrics["test_loc_review_explanation_recommended"] is True
     assert evaluation.metrics["production_subsystems"] == ["app"]
     assert _payload(evaluation)["changes"][0]["role"] == "behavior_production"
-    assert "test_responsibility_mirror" not in _codes(evaluation)
 
 
 def test_hot_functional_file_cannot_grow(governance_repo: tuple[Path, str]) -> None:
@@ -287,17 +342,22 @@ def test_test_hot_file_growth_at_limit_passes(governance_repo: tuple[Path, str])
     assert evaluation.status == "pass"
 
 
-def test_behavior_change_requires_responsibility_mirror(governance_repo: tuple[Path, str]) -> None:
+def test_behavior_change_reports_test_loc_ratio_as_a_soft_review_signal(
+    governance_repo: tuple[Path, str],
+) -> None:
     repo, base = governance_repo
     _write(repo, "app/billing_rules.py", "RATE = 2\n")
-    _write(repo, "tests/test_unrelated.py", "def test_unrelated():\n    assert True\n")
-    head = _commit(repo, "missing mirror")
+    _write(repo, "tests/test_cross_layer.py", "def test_behavior():\n    result = 2\n    assert result == 2\n")
+    head = _commit(repo, "cross-layer behavior regression")
 
     evaluation = _evaluate(repo, base, head)
 
-    mirror = next(item for item in evaluation.violations if item.code == "test_responsibility_mirror")
-    assert mirror.path == "app/billing_rules.py"
-    assert mirror.details["responsibility"] == "billing_rules"
+    assert evaluation.status == "pass"
+    assert evaluation.metrics["production_added_loc"] == 1
+    assert evaluation.metrics["test_added_loc"] == 3
+    assert evaluation.metrics["test_to_production_added_loc_ratio"] == 3.0
+    assert evaluation.metrics["test_loc_review_explanation_recommended"] is True
+    assert _payload(evaluation)["policy"]["test_loc_review"]["enforcement"] == "soft"
 
 
 def test_invalid_exception_schema_is_an_error(governance_repo: tuple[Path, str]) -> None:
@@ -309,10 +369,11 @@ def test_invalid_exception_schema_is_an_error(governance_repo: tuple[Path, str])
         json.dumps(
             {
                 "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+                "candidate": {"base_ref": "0" * 40, "scope_sha256": "0" * 64},
                 "expires_on": "2026-08-01",
                 "owner": "platform",
                 "reason": "bounded migration",
-                "violations": [{"code": "test_responsibility_mirror", "path": "app/billing_rules.py"}],
+                "violations": [{"code": "production_net_loc", "path": None}],
                 "unexpected": True,
             }
         ),
@@ -328,18 +389,22 @@ def test_invalid_exception_schema_is_an_error(governance_repo: tuple[Path, str])
 def test_valid_exact_exception_exempts_only_requested_violation(
     governance_repo: tuple[Path, str],
 ) -> None:
-    repo, base = governance_repo
-    _write(repo, "app/billing_rules.py", "RATE = 2\n")
+    repo, _initial = governance_repo
+    _write(repo, "app/billing_rules.py", _python_lines(3001))
+    base = _commit(repo, "hot functional base")
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
+    scope_head = _commit(repo, "exception scope")
     _write(
         repo,
         code_governance.EXCEPTION_PATH,
         json.dumps(
             {
                 "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+                "candidate": _candidate_binding(repo, base, scope_head),
                 "expires_on": "2026-08-01",
                 "owner": "platform-governance",
-                "reason": "temporary responsibility migration",
-                "violations": [{"code": "test_responsibility_mirror", "path": "app/billing_rules.py"}],
+                "reason": "temporary hot-file migration",
+                "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
             }
         ),
     )
@@ -349,8 +414,112 @@ def test_valid_exact_exception_exempts_only_requested_violation(
 
     assert evaluation.status == "pass"
     assert evaluation.exit_code == 0
-    assert [item.code for item in evaluation.exempted_violations] == ["test_responsibility_mirror"]
+    assert [item.code for item in evaluation.exempted_violations] == ["functional_hot_file_growth"]
     assert evaluation.exception["status"] == "applied"
+
+
+def test_inherited_exception_cannot_authorize_a_later_candidate(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _initial = governance_repo
+    _write(repo, "app/billing_rules.py", _python_lines(3001))
+    scope_head = _commit(repo, "exception scope")
+    _write(
+        repo,
+        code_governance.EXCEPTION_PATH,
+        json.dumps(
+            {
+                "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+                "candidate": _candidate_binding(repo, _initial, scope_head),
+                "expires_on": "2026-08-01",
+                "owner": "platform-governance",
+                "reason": "candidate-bound hot-file migration",
+                "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
+            }
+        ),
+    )
+    base = _commit(repo, "exception-bearing base")
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
+    head = _commit(repo, "later candidate inherits exception")
+
+    with pytest.raises(code_governance.GovernanceError, match="candidate binding does not match") as caught:
+        _evaluate(repo, base, head)
+
+    assert caught.value.code == "invalid_exception"
+
+
+def test_exception_cannot_authorize_scope_appended_under_the_same_base(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _initial = governance_repo
+    _write(repo, "app/billing_rules.py", _python_lines(3001))
+    base = _commit(repo, "hot functional base")
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
+    scope_head = _commit(repo, "authorized scope")
+    _write(
+        repo,
+        code_governance.EXCEPTION_PATH,
+        json.dumps(
+            {
+                "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+                "candidate": _candidate_binding(repo, base, scope_head),
+                "expires_on": "2026-08-01",
+                "owner": "platform-governance",
+                "reason": "candidate-bound hot-file migration",
+                "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
+            }
+        ),
+    )
+    authorized_head = _commit(repo, "authorize exact scope")
+    assert _evaluate(repo, base, authorized_head).status == "pass"
+
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\nLATER = True\n")
+    later_head = _commit(repo, "append later scope")
+
+    with pytest.raises(code_governance.GovernanceError, match="candidate binding does not match") as caught:
+        _evaluate(repo, base, later_head)
+
+    assert caught.value.code == "invalid_exception"
+
+
+def test_semantically_unchanged_exception_rewrite_cannot_renew_authority(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, initial = governance_repo
+    _write(repo, "app/billing_rules.py", _python_lines(3001))
+    base = _commit(repo, "hot functional base")
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
+    scope_head = _commit(repo, "authorized scope")
+    payload = {
+        "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
+        "candidate": _candidate_binding(repo, base, scope_head),
+        "expires_on": "2026-08-01",
+        "owner": "platform-governance",
+        "reason": "candidate-bound hot-file migration",
+        "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
+    }
+    _write(repo, code_governance.EXCEPTION_PATH, json.dumps(payload))
+    inherited_base = _commit(repo, "authorize exact scope")
+    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\nLATER = True\n")
+    _write(repo, code_governance.EXCEPTION_PATH, json.dumps(payload, indent=2))
+    later_head = _commit(repo, "rewrite inherited exception")
+
+    with pytest.raises(code_governance.GovernanceError, match="candidate binding does not match") as caught:
+        _evaluate(repo, inherited_base, later_head)
+
+    assert initial != base
+    assert caught.value.code == "invalid_exception"
+
+
+def test_candidate_scope_hash_preserves_non_utf8_git_path_bytes(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, base = governance_repo
+    first_head = _commit_raw_path(repo, base, b"raw-\xff.py")
+    second_head = _commit_raw_path(repo, base, b"raw-\xfe.py")
+    reader = code_governance._GitChangeReader(repo, code_governance._CommandRunner())
+
+    assert reader.exception_scope_sha256(base, first_head) != reader.exception_scope_sha256(base, second_head)
 
 
 def test_missing_ruff_fails_closed_and_command_is_deterministic(
@@ -481,7 +650,7 @@ def test_cli_exit_codes_are_zero_two_and_three(
         ) == 0
     assert json.loads(stdout.getvalue())["status"] == "pass"
 
-    _write(repo, "app/no_mirror.py", "VALUE = 1\n")
+    _write(repo, "app/new_module.py", "VALUE = 1\n")
     violating_head = _commit(repo, "violation")
     monkeypatch.setattr(code_governance.importlib.util, "find_spec", lambda name: None)
     stdout = io.StringIO()

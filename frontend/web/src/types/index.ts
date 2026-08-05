@@ -64,16 +64,21 @@ export type {
   SkillCreate,
   MarketplaceSkillResponse,
   MarketplaceListResponse,
-  MarketplaceCreateRequest,
   MarketplaceSkillFilesResponse,
   MarketplaceSkillFileResponse,
   MarketplaceInstallResponse,
   MarketplaceUpdateResponse,
   TagsResponse,
-  PublishToMarketplaceRequest,
 } from "./skill";
 
 export type { AgentOption } from "./agentOptions";
+export type {
+  AgentProfileAdminProjection,
+  AgentProfileDraftRequest,
+  AgentProfileMutationResponse,
+  AgentProfilePublicProjection,
+  SelectedAgentProfileRequest,
+} from "./agentProfile";
 
 // ============================================
 // Session Types
@@ -165,10 +170,8 @@ export type {
 export type {
   FileCategory,
   MessageAttachment,
-  UploadState,
   UploadConfig,
   UploadResult,
-  FileCheckResult,
 } from "./upload";
 
 // ============================================
