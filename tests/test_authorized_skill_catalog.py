@@ -26,7 +26,6 @@ from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAu
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.skills import catalog
 from app.skills.catalog import (
-    AVAILABLE,
     AuthorizedSkillCatalogBinding,
     AuthorizedSkillCatalogError,
     load_runtime_authorized_skill_catalog,
