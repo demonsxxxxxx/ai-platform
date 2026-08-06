@@ -306,46 +306,43 @@ def test_hot_production_file_growth_at_limit_passes(governance_repo: tuple[Path,
     assert evaluation.status == "pass"
 
 
-@pytest.mark.parametrize("lock_path", ("uv.lock", "frontend/web/pnpm-lock.yaml"))
-def test_reviewed_dependency_locks_are_not_hot_production_files(
-    governance_repo: tuple[Path, str],
-    lock_path: str,
-) -> None:
-    repo, base = governance_repo
-    _write(repo, lock_path, "".join(f"locked-{index}\n" for index in range(1601)))
-    head = _commit(repo, "add reviewed dependency lock")
-
-    evaluation = _evaluate(repo, base, head)
-
-    assert evaluation.status == "pass"
-    assert evaluation.mode == "non_production_only"
-    assert evaluation.metrics["production_net_loc"] == 0
-    assert _payload(evaluation)["changes"][0]["role"] == "non_production"
-    assert _payload(evaluation)["policy"]["reviewed_dependency_lock_paths"] == [
-        "frontend/web/pnpm-lock.yaml",
-        "uv.lock",
-    ]
+def _load_governance_authority(repo: Path, commit: str, destination: Path) -> Any:
+    source = _run(repo, "git", "show", f"{commit}:tools/code_governance.py").stdout
+    destination.write_text(source, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("trusted_code_governance", destination)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def test_repository_exception_matches_the_current_candidate_policy() -> None:
+def _evaluate_without_exception(module: Any, repo: Path, base: str, head: str) -> Any:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(module._GitChangeReader, "load_exception", lambda _self, _head: None)
+        monkeypatch.setattr(module.importlib.util, "find_spec", lambda _name: object())
+        return module.CodeGovernanceEvaluator(
+            repo,
+            runner=_RuffPassingRunner(),
+            today=date(2026, 7, 25),
+        ).evaluate(base, head)
+
+
+def test_repository_exception_matches_trusted_base_and_candidate_policy(tmp_path: Path) -> None:
     base = _git(REPO_ROOT, "rev-parse", "origin/main")
     head = _git(REPO_ROOT, "rev-parse", "HEAD")
+    trusted = _load_governance_authority(REPO_ROOT, base, tmp_path / "code_governance.py")
 
-    evaluation = _evaluate(REPO_ROOT, base, head)
+    trusted_evaluation = _evaluate_without_exception(trusted, REPO_ROOT, base, head)
+    candidate_evaluation = _evaluate_without_exception(code_governance, REPO_ROOT, base, head)
+    applied_evaluation = _evaluate(REPO_ROOT, base, head)
+    expected = {("hot_file_growth", "uv.lock"), ("production_net_loc", None)}
 
-    assert evaluation.status == "pass"
-    assert evaluation.exempted_violations == ()
-    assert evaluation.exception["status"] == "absent"
-
-
-def test_unlisted_lock_file_remains_governed(governance_repo: tuple[Path, str]) -> None:
-    repo, base = governance_repo
-    _write(repo, "config/dependencies.lock", "".join(f"locked-{index}\n" for index in range(1601)))
-    head = _commit(repo, "add unlisted dependency lock")
-
-    evaluation = _evaluate(repo, base, head)
-
-    assert _codes(evaluation) == {"hot_file_growth", "production_net_loc"}
+    assert {(item.code, item.path) for item in trusted_evaluation.violations} == expected
+    assert {(item.code, item.path) for item in candidate_evaluation.violations} == expected
+    assert {(item.code, item.path) for item in applied_evaluation.exempted_violations} == expected
+    assert applied_evaluation.status == "pass"
+    assert applied_evaluation.exception["status"] == "applied"
 
 
 def test_production_net_loc_boundary_is_exclusive(governance_repo: tuple[Path, str]) -> None:

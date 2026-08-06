@@ -40,10 +40,6 @@ DOCUMENTATION_SUFFIXES = frozenset({
     ".bmp", ".gif", ".jpeg", ".jpg", ".md", ".pdf", ".png", ".rst",
     ".svg", ".txt", ".webp",
 })
-REVIEWED_DEPENDENCY_LOCK_PATHS = frozenset({
-    "frontend/web/pnpm-lock.yaml",
-    "uv.lock",
-})
 NON_EXEMPTIBLE_CODES = {"ruff_failed", "ruff_unavailable"}
 
 
@@ -639,7 +635,7 @@ def _is_test_path(path: str) -> bool:
 
 def _is_production_path(path: str) -> bool:
     pure = PurePosixPath(path)
-    if path == EXCEPTION_PATH or path in REVIEWED_DEPENDENCY_LOCK_PATHS or _is_test_path(path):
+    if path == EXCEPTION_PATH or _is_test_path(path):
         return False
     if pure.parts and pure.parts[0].lower() in {"assets", "docs"}:
         return False
@@ -700,7 +696,6 @@ def _policy_as_dict() -> dict[str, Any]:
         "hot_file_net_growth_max": HOT_FILE_NET_GROWTH_LIMIT,
         "production_file_count_max": PRODUCTION_FILE_LIMIT,
         "production_net_loc_max_exclusive": PRODUCTION_NET_LOC_LIMIT,
-        "reviewed_dependency_lock_paths": sorted(REVIEWED_DEPENDENCY_LOCK_PATHS),
         "test_hot_file_lines_exclusive": TEST_HOT_FILE_LINES,
         "test_hot_file_net_growth_max": TEST_HOT_FILE_NET_GROWTH_LIMIT,
         "test_loc_review": {
