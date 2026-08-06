@@ -31,6 +31,8 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "python -m compileall -q app tools scripts" in workflow
     assert "tests/test_b2_sandbox_readiness.py" in workflow
     assert "tests/test_backend_ci_workflow.py" in workflow
+    assert "tests/test_packaging_publish_workflow.py" in workflow
+    assert "tests/test_release_image_manifest.py" in workflow
     assert "tests/test_governance_readiness.py" in workflow
     assert "tests/test_release_authority.py" in workflow
     assert "tests/test_contract.py" in workflow

@@ -22,7 +22,8 @@ does not represent deployed runtime state.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
 - `architecture/docker-packaging.md` defines reproducible dependency authority,
-  immutable image bases, and CI image acceptance without registry or runtime authority.
+  immutable image bases, CI image acceptance, and digest-bound GHCR supply-chain
+  publication without deployment or runtime authority.
 
 The repository-root `../CONTEXT.md` defines the compressed Agent App ubiquitous
 language used by source, product, and acceptance contracts.

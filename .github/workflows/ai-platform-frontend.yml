@@ -24,7 +24,7 @@ jobs:
       SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Checkout exact source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -36,12 +36,12 @@ jobs:
           if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { exit 1 }
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.FRONTEND_PYTHON_VERSION }}
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.FRONTEND_NODE_VERSION }}
 
@@ -121,7 +121,7 @@ jobs:
           }
 
       - name: Verify static frontend Python contracts
-        run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py tests/test_release_authority.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp
+        run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py tests/test_packaging_publish_workflow.py tests/test_release_image_manifest.py tests/test_release_authority.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp
 
       - name: Verify static frontend deploy helper
         run: python tools/deploy_frontend_static.py --help
@@ -145,7 +145,7 @@ jobs:
       IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
     steps:
       - name: Checkout exact image source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
