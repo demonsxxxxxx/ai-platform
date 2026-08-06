@@ -1334,11 +1334,12 @@ async def test_current_principal_resolution_releases_preflight_transaction_befor
         calls.append("current_principal_http")
         return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
 
-    monkeypatch.setattr("app.worker.transaction", recording_transaction)
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
-    monkeypatch.setattr("app.worker.resolve_current_principal", resolve_current_principal)
-
-    principal = await worker_module._resolve_current_principal_before_dispatch(payload)
+    principal = await worker_module._resolve_current_principal_before_dispatch(
+        payload,
+        transaction_factory=recording_transaction,
+        run_loader=get_run,
+        principal_resolver=resolve_current_principal,
+    )
 
     assert principal is not None
     assert principal.user_id == "user-a"

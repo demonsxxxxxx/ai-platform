@@ -541,11 +541,12 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
             source="company-user-info-current",
         )
 
+    principal = await current_principal(user_id="user-a", tenant_id="tenant-a")
     authorization = await _reauthorize_worker_capabilities(
         object(),
         payload=payload,
         run_identity=run_identity,
-        current_principal_resolver=current_principal,
+        current_principal=principal,
     )
 
     assert authorization.denial is None
