@@ -3,7 +3,6 @@ import hashlib
 import json
 import re
 import time as _time
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import partial as _partial
@@ -43,7 +42,6 @@ from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
-    PrincipalAuthorityDenied,
     resolve_current_principal,
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
@@ -70,6 +68,12 @@ from app.tool_permission_lifecycle import (
 )
 from app.tool_policy import evaluate_tool_policy
 from app.validation import assert_safe_id
+from app.worker_principal_authority import (
+    _identity_mismatch_fields,
+    _locked_run_identity,
+    _payload_identity,
+    _resolve_current_principal_before_dispatch,
+)
 
 
 class _WorkerClock:
@@ -1044,36 +1048,6 @@ def _dependency_ids_from_manifest(item: dict[str, Any]) -> list[str]:
     return [str(value) for value in raw]
 
 
-RUN_IDENTITY_FIELDS = ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "agent_id", "skill_id")
-
-
-def _payload_identity(payload: QueueRunPayload) -> dict[str, str]:
-    return {
-        "tenant_id": payload.tenant_id,
-        "workspace_id": payload.workspace_id,
-        "user_id": payload.user_id,
-        "session_id": payload.session_id,
-        "run_id": payload.run_id,
-        "agent_id": payload.agent_id,
-        "skill_id": payload.skill_id,
-    }
-
-
-def _locked_run_identity(payload: QueueRunPayload, locked_run: object) -> dict[str, str]:
-    if not isinstance(locked_run, dict):
-        return _payload_identity(payload)
-    identity: dict[str, str] = {}
-    for field in RUN_IDENTITY_FIELDS:
-        value = locked_run.get("id") if field == "run_id" else locked_run.get(field)
-        identity[field] = str(value) if value else ""
-    return identity
-
-
-def _identity_mismatch_fields(payload: QueueRunPayload, identity: dict[str, str]) -> list[str]:
-    payload_identity = _payload_identity(payload)
-    return [field for field in RUN_IDENTITY_FIELDS if str(payload_identity[field]) != str(identity[field])]
-
-
 LOCKED_RUN_SNAPSHOT_FIELDS = (
     "file_ids",
     "input",
@@ -1308,16 +1282,11 @@ async def _reauthorize_worker_capabilities(
     payload: QueueRunPayload,
     run_identity: dict[str, str],
     attempt_id: str = "",
-    current_principal_resolver: Callable[..., Awaitable[AuthPrincipal]] | None = None,
+    current_principal: AuthPrincipal | None = None,
 ) -> _WorkerCapabilityAuthorization:
     decisions: list[_WorkerCapabilityDecision] = []
-    resolver = current_principal_resolver or resolve_current_principal
-    try:
-        principal = await resolver(
-            user_id=run_identity["user_id"],
-            tenant_id=run_identity["tenant_id"],
-        )
-    except PrincipalAuthorityDenied:
+    principal = current_principal
+    if principal is None:
         principal = AuthPrincipal(
             user_id=run_identity["user_id"],
             display_name=run_identity["user_id"],
@@ -2087,6 +2056,12 @@ async def process_run_payload(
     capability_authorization: _WorkerCapabilityAuthorization | None = None
     admin_bypass_audits: tuple[_WorkerAdminBypassAudit, ...] = ()
     try:
+        current_principal = await _resolve_current_principal_before_dispatch(
+            payload,
+            transaction_factory=transaction,
+            run_loader=repositories.get_run,
+            principal_resolver=resolve_current_principal,
+        )
         async with transaction() as conn:
             locked = await repositories.mark_run_running(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
             if not locked:
@@ -2209,6 +2184,7 @@ async def process_run_payload(
                 payload=payload,
                 run_identity=run_identity,
                 attempt_id=attempt_id,
+                current_principal=current_principal,
             )
             admin_bypass_audits = _worker_admin_bypass_audits(
                 authorization=capability_authorization,
