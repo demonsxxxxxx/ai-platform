@@ -306,6 +306,45 @@ def test_hot_production_file_growth_at_limit_passes(governance_repo: tuple[Path,
     assert evaluation.status == "pass"
 
 
+def _load_governance_authority(repo: Path, commit: str, destination: Path) -> Any:
+    source = _run(repo, "git", "show", f"{commit}:tools/code_governance.py").stdout
+    destination.write_text(source, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("trusted_code_governance", destination)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _evaluate_without_exception(module: Any, repo: Path, base: str, head: str) -> Any:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(module._GitChangeReader, "load_exception", lambda _self, _head: None)
+        monkeypatch.setattr(module.importlib.util, "find_spec", lambda _name: object())
+        return module.CodeGovernanceEvaluator(
+            repo,
+            runner=_RuffPassingRunner(),
+            today=date(2026, 7, 25),
+        ).evaluate(base, head)
+
+
+def test_repository_exception_matches_trusted_base_and_candidate_policy(tmp_path: Path) -> None:
+    base = _git(REPO_ROOT, "rev-parse", "origin/main")
+    head = _git(REPO_ROOT, "rev-parse", "HEAD")
+    trusted = _load_governance_authority(REPO_ROOT, base, tmp_path / "code_governance.py")
+
+    trusted_evaluation = _evaluate_without_exception(trusted, REPO_ROOT, base, head)
+    candidate_evaluation = _evaluate_without_exception(code_governance, REPO_ROOT, base, head)
+    applied_evaluation = _evaluate(REPO_ROOT, base, head)
+    expected = {("hot_file_growth", "uv.lock"), ("production_net_loc", None)}
+
+    assert {(item.code, item.path) for item in trusted_evaluation.violations} == expected
+    assert {(item.code, item.path) for item in candidate_evaluation.violations} == expected
+    assert {(item.code, item.path) for item in applied_evaluation.exempted_violations} == expected
+    assert applied_evaluation.status == "pass"
+    assert applied_evaluation.exception["status"] == "applied"
+
+
 def test_production_net_loc_boundary_is_exclusive(governance_repo: tuple[Path, str]) -> None:
     repo, base = governance_repo
     _write(repo, "config/bulk.json", "".join(f"line-{index}\n" for index in range(800)))

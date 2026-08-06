@@ -1,40 +1,20 @@
 {
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
-    "base_ref": "5d5a0c537baa0af2d9c47cb8d010a713c5240dc6",
-    "scope_sha256": "dc638b22d4dc0a685ff0d6e38a841b043567062bbf8be87672f33beb4fe23eb2"
+    "base_ref": "e7b86136c02aa7d68d2c5b4e12a7d57faa6052a9",
+    "scope_sha256": "b73b672bde710571ca58a46aae860e724648d3a9ecd231668e11730c13510761"
   },
-  "expires_on": "2026-08-19",
-  "owner": "agent-app-governance/#754",
-  "reason": "User-authorized single Agent App governance PR spans the immutable profile, admission, truthful execution projection, dedicated workspace, Builder lifecycle, and their hostile tests; the exception is bound to this exact audited candidate and expires after independent review.",
+  "expires_on": "2026-08-20",
+  "owner": "docker-packaging-phase1-issue-752",
+  "reason": "Allow the exact Phase 1 packaging uv.lock growth under the trusted-base governance policy.",
   "violations": [
     {
-      "code": "functional_hot_file_growth",
-      "path": "app/repositories.py"
-    },
-    {
-      "code": "functional_hot_file_growth",
-      "path": "app/worker.py"
-    },
-    {
       "code": "hot_file_growth",
-      "path": "app/models.py"
-    },
-    {
-      "code": "hot_file_growth",
-      "path": "app/worker.py"
-    },
-    {
-      "code": "production_file_count",
-      "path": null
+      "path": "uv.lock"
     },
     {
       "code": "production_net_loc",
       "path": null
-    },
-    {
-      "code": "test_hot_file_growth",
-      "path": "tests/test_worker.py"
     }
   ]
 }

@@ -101,3 +101,14 @@ def test_existing_backend_and_frontend_paths_keep_their_role_actions():
 
     assert (plan.roles[0].change_kind, plan.roles[0].action) == ("dependency", "canonical-build")
     assert (plan.roles[1].change_kind, plan.roles[1].action) == ("source", "source-build")
+
+
+def test_python_lock_change_requires_a_canonical_backend_build():
+    changes = classify_runtime_changes(["uv.lock"])
+    plan = build_auto_release_plan("1" * 40, "2" * 40, changes)
+
+    assert changes.backend_dependency == ("uv.lock",)
+    assert (plan.roles[0].change_kind, plan.roles[0].action) == (
+        "dependency",
+        "canonical-build",
+    )

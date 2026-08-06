@@ -1,4 +1,4 @@
-FROM python:3.11-slim-bookworm AS source-markers
+FROM python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8 AS source-markers
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
@@ -12,11 +12,17 @@ RUN printf '%s\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.ai-platform-source-revisio
        AI_PLATFORM_BUILD_DIRTY="$AI_PLATFORM_BUILD_DIRTY" \
        python -c "import json, os; from pathlib import Path; commit = os.environ.get('AI_PLATFORM_BUILD_COMMIT', 'unknown').strip() or 'unknown'; dirty_text = os.environ.get('AI_PLATFORM_BUILD_DIRTY', 'unknown').strip().lower(); dirty = dirty_text != 'false'; dirty_paths = [] if not dirty else ['unknown_runtime_affecting_dirty_paths']; payload = dict(schema_version='ai-platform.source-snapshot.v1', source_tree_commit_sha=commit, runtime_subject_commit_sha=commit, source_tree_dirty=dirty, runtime_affecting_changes_since_runtime_subject=[], runtime_affecting_dirty_paths=dirty_paths, snapshot_source='dockerfile_build_args'); Path('/app/.ai-platform-source-snapshot.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')"
 
-FROM python:3.11-slim-bookworm AS runtime
+FROM ghcr.io/astral-sh/uv:0.12.1@sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded AS uv
+
+FROM python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8 AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
+ENV UV_PYTHON_DOWNLOADS=never
+ENV PATH="/app/.venv/bin:$PATH"
 
 ARG PIP_INDEX_URL
 ARG PIP_TRUSTED_HOST
@@ -37,12 +43,11 @@ RUN APT_MIRROR="$APT_MIRROR" APT_SECURITY_MIRROR="$APT_SECURITY_MIRROR" python -
        /home/ai-platform/.config \
        /home/ai-platform/.local/share
 
-COPY pyproject.toml /app/pyproject.toml
-RUN if [ -n "$PIP_INDEX_URL" ]; then pip config set global.index-url "$PIP_INDEX_URL"; fi \
-    && if [ -n "$PIP_TRUSTED_HOST" ]; then pip config set global.trusted-host "$PIP_TRUSTED_HOST"; fi \
-    && python -c "import tomllib; from pathlib import Path; payload = tomllib.loads(Path('/app/pyproject.toml').read_text(encoding='utf-8')); print('\n'.join(payload['project']['dependencies']))" > /tmp/ai-platform-requirements.txt \
-    && pip install --no-cache-dir -r /tmp/ai-platform-requirements.txt \
-    && rm -f /tmp/ai-platform-requirements.txt
+COPY --from=uv /uv /uvx /bin/
+COPY pyproject.toml uv.lock /app/
+RUN if [ -n "$PIP_INDEX_URL" ]; then export UV_DEFAULT_INDEX="$PIP_INDEX_URL"; fi \
+    && if [ -n "$PIP_TRUSTED_HOST" ]; then export UV_INSECURE_HOST="$PIP_TRUSTED_HOST"; fi \
+    && uv sync --locked --no-dev --no-install-project
 
 COPY app /app/app
 COPY tools /app/tools

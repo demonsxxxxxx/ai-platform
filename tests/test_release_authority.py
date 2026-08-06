@@ -284,7 +284,11 @@ def test_backend_and_frontend_images_publish_release_authority_labels():
         assert "LABEL ai-platform.source-repository=$AI_PLATFORM_BUILD_REPOSITORY" in dockerfile
         assert f"LABEL ai-platform.release-role={role}" in dockerfile
 
-    backend_stage = backend.split("FROM python:3.11-slim", 1)[1]
+    backend_stage = backend.split(
+        "FROM python:3.13.14-slim-bookworm@"
+        "sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8 AS runtime",
+        1,
+    )[1]
     assert "ARG AI_PLATFORM_BUILD_COMMIT=unknown" in backend_stage
     assert "ARG AI_PLATFORM_BUILD_DIRTY=unknown" in backend_stage
     assert "ARG AI_PLATFORM_BUILD_REPOSITORY=unknown" in backend_stage
@@ -4332,8 +4336,8 @@ def test_dockerfiles_install_dependencies_before_source_and_provenance_layers():
     backend = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     frontend = (ROOT / "frontend" / "web" / "Dockerfile").read_text(encoding="utf-8")
 
-    assert backend.index("COPY pyproject.toml") < backend.index("pip install --no-cache-dir -r")
-    assert backend.index("pip install --no-cache-dir -r") < backend.index("COPY app /app/app")
+    assert backend.index("COPY pyproject.toml uv.lock") < backend.index("uv sync --locked")
+    assert backend.index("uv sync --locked") < backend.index("COPY app /app/app")
     assert backend.index("COPY app /app/app") < backend.index("LABEL ai-platform.source-commit")
     assert frontend.index("pnpm install --frozen-lockfile") < frontend.index("COPY frontend/web/src")
     assert frontend.index("COPY frontend/web/src") < frontend.index("corepack pnpm run ci:verify")
