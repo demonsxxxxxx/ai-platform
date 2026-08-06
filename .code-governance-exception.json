@@ -1,0 +1,20 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "5d5a0c537baa0af2d9c47cb8d010a713c5240dc6",
+    "scope_sha256": "40c90e940ea6fa6f0689caa31b8e9c8db77854327e3cfd3f0e78617eb5ccc8e1"
+  },
+  "expires_on": "2026-08-20",
+  "owner": "docker-packaging-phase1-issue-752",
+  "reason": "Allow the exact Phase 1 packaging uv.lock growth under the trusted-base governance policy.",
+  "violations": [
+    {
+      "code": "hot_file_growth",
+      "path": "uv.lock"
+    },
+    {
+      "code": "production_net_loc",
+      "path": null
+    }
+  ]
+}
