@@ -20,6 +20,7 @@ const {
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
   getChatToolAccess,
+  getOrCreateAgentConversationOperationId,
   isExactAgentWorkspaceBinding,
   recoverAgentConversationIdentity,
 } = await import("../ChatAppContent.tsx");
@@ -235,6 +236,30 @@ test("an Agent workspace becomes send-ready only after its exact bound Session i
     true,
     "the exact admitted Agent Session enables the canonical composer path",
   );
+});
+
+test("persists one Agent Conversation operation identity across a response-loss retry", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+  };
+  const createId = () => "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+
+  const first = getOrCreateAgentConversationOperationId({
+    agentId: safeIdentity.agent_id,
+    revision: safeIdentity.revision,
+    storage,
+    createId,
+  });
+  const replay = getOrCreateAgentConversationOperationId({
+    agentId: safeIdentity.agent_id,
+    revision: safeIdentity.revision,
+    storage,
+    createId: () => "6ed64d27-bbdb-486b-9b2c-1ece2cad1ee1",
+  });
+
+  assert.equal(first, replay);
 });
 
 test("renders only safe Agent identity and locks MCP catalog controls", () => {

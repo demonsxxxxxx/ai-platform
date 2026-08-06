@@ -6,11 +6,13 @@ import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from fastapi import HTTPException
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
+from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
 from app.model_catalog import resolve_model_selection
 from app.models import (
@@ -948,6 +950,7 @@ class AgentProfileAuthority:
         title: str,
         session_id: str | None = None,
         purpose: str = "conversation",
+        operation_id: UUID | None = None,
     ) -> ChatSessionResponse:
         """Atomically bind a new conversation to one current published profile revision/hash."""
 
@@ -955,8 +958,30 @@ class AgentProfileAuthority:
             raise HTTPException(status_code=400, detail="agent_conversation_purpose_invalid")
         if purpose == "builder_test":
             self._require_admin(principal)
+        if operation_id is not None and (purpose != "conversation" or session_id is not None):
+            raise HTTPException(status_code=400, detail="agent_conversation_operation_invalid")
         await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
         await self._ensure_principal_user(conn, principal=principal)
+        if operation_id is not None:
+            session_id = f"ses_agent_{operation_id.hex}"
+            existing = await repositories.get_authorized_session_projection(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+            )
+            if existing is not None:
+                response = session_response(existing)
+                if (
+                    str(existing.get("workspace_id") or "") != workspace_id
+                    or str(existing.get("agent_id") or "") != selection.agent_id
+                    or response.agent_conversation is None
+                    or response.agent_conversation.revision != selection.expected_revision
+                    or response.purpose != purpose
+                    or (title and response.title != title)
+                ):
+                    raise repositories.RepositoryConflictError("agent_conversation_operation_conflict")
+                return response
         admission = await self.resolve_for_admission(conn, principal=principal, selection=selection)
         create_session_kwargs: dict[str, Any] = {
             "tenant_id": principal.tenant_id,
@@ -969,27 +994,34 @@ class AgentProfileAuthority:
         }
         if session_id is not None:
             create_session_kwargs["session_id"] = session_id
+            create_session_kwargs["return_created"] = True
         if purpose != "conversation":
             create_session_kwargs["purpose"] = purpose
-        session_id = await repositories.create_session(conn, **create_session_kwargs)
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            action=(
-                "agent_profile.test_conversation_created"
-                if purpose == "builder_test"
-                else "agent_conversation.created"
-            ),
-            target_type="agent_profile",
-            target_id=admission.agent_id,
-            trace_id=standard_trace_id(session_id),
-            payload_json={
-                "revision": admission.revision,
-                "session_id": session_id,
-                "purpose": purpose,
-            },
-        )
+        created = True
+        created_session = await repositories.create_session(conn, **create_session_kwargs)
+        if session_id is not None:
+            session_id, created = created_session
+        else:
+            session_id = created_session
+        if created:
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action=(
+                    "agent_profile.test_conversation_created"
+                    if purpose == "builder_test"
+                    else "agent_conversation.created"
+                ),
+                target_type="agent_profile",
+                target_id=admission.agent_id,
+                trace_id=standard_trace_id(session_id),
+                payload_json={
+                    "revision": admission.revision,
+                    "session_id": session_id,
+                    "purpose": purpose,
+                },
+            )
         return ChatSessionResponse(
             session_id=session_id,
             workspace_id=workspace_id,

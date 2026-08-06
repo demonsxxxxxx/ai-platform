@@ -142,6 +142,7 @@ async def create_agent_conversation(
                 workspace_id=request.workspace_id,
                 selection=request.selected_agent_profile,
                 title=request.title,
+                operation_id=request.operation_id,
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_not_available") from exc

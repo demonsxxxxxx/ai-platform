@@ -122,14 +122,17 @@ export const agentProfileApi = {
     return projectConversationListResponse(response);
   },
 
-  async createConversation(selection: SelectedAgentProfileRequest): Promise<AgentConversationSessionProjection> {
+  async createConversation(
+    selection: SelectedAgentProfileRequest,
+    operationId: string,
+  ): Promise<AgentConversationSessionProjection> {
     const selected_agent_profile = {
       agent_id: selection.agent_id,
       expected_revision: selection.expected_revision,
     };
     const response = await authFetch<unknown>(`${API_BASE}/api/ai/agent-conversations`, {
       method: "POST",
-      body: JSON.stringify({ selected_agent_profile }),
+      body: JSON.stringify({ selected_agent_profile, operation_id: operationId }),
     });
     return projectAgentConversationSession(response);
   },

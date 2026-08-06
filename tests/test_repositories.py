@@ -4795,6 +4795,37 @@ async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_session_reports_whether_an_exact_operation_created_the_row(monkeypatch):
+    async def ensure_workspace_belongs_to_tenant(_conn, *, tenant_id, workspace_id):
+        assert (tenant_id, workspace_id) == ("tenant-a", "workspace-a")
+
+    monkeypatch.setattr(
+        repositories,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+    )
+    conn = SingleRowConnection({"id": "ses_agent_operation", "created": False})
+
+    result = await repositories.create_session(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        agent_id="agent-a",
+        title="Agent A",
+        session_id="ses_agent_operation",
+        admitted_agent_profile_revision=3,
+        admitted_agent_profile_hash="profile-hash",
+        return_created=True,
+    )
+
+    assert result == ("ses_agent_operation", False)
+    assert "on conflict (id) do update" in conn.sql
+    assert "sessions.title = excluded.title" in conn.sql
+    assert "(xmax = 0) as created" in conn.sql
+
+
+@pytest.mark.asyncio
 async def test_create_run_validates_workspace_tenant_before_insert(monkeypatch):
     calls = []
 

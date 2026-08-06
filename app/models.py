@@ -511,6 +511,7 @@ class CreateAgentConversationRequest(BaseModel):
 
     workspace_id: str = "default"
     selected_agent_profile: SelectedAgentProfileRequest
+    operation_id: UUID
     title: str = ""
 
     @field_validator("workspace_id")

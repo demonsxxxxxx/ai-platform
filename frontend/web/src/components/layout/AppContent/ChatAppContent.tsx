@@ -54,6 +54,7 @@ import { RunPlaybackPanel } from "./RunPlaybackPanel";
 import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistentToolPanelState";
 import { agentProfileApi } from "../../../services/api/agentProfile";
 import { sessionApi } from "../../../services/api/session";
+import { uuid } from "../../../utils/uuid";
 import type {
   AgentConversationIdentity,
   AgentProfileAvatarRef,
@@ -75,6 +76,54 @@ function conversationState(
   identity: AgentConversationIdentity | null = null,
 ): AgentConversationRecoveryState {
   return { phase, targetSessionId, identity };
+}
+
+const AGENT_CONVERSATION_OPERATION_STORAGE_PREFIX = "agent-conversation-operation:";
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function agentConversationOperationStorageKey(agentId: string, revision: number): string {
+  return `${AGENT_CONVERSATION_OPERATION_STORAGE_PREFIX}${agentId}:${revision}`;
+}
+
+function browserSessionStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Keep a caller operation stable across response-loss retries and reloads. */
+export function getOrCreateAgentConversationOperationId({
+  agentId,
+  revision,
+  storage,
+  createId,
+}: {
+  agentId: string;
+  revision: number;
+  storage: Pick<Storage, "getItem" | "setItem"> | null;
+  createId: () => string;
+}): string {
+  const key = agentConversationOperationStorageKey(agentId, revision);
+  const existing = storage?.getItem(key) ?? null;
+  if (existing && UUID_V4_PATTERN.test(existing)) return existing;
+  const operationId = createId();
+  storage?.setItem(key, operationId);
+  return operationId;
+}
+
+export function clearAgentConversationOperationId({
+  agentId,
+  revision,
+  storage,
+}: {
+  agentId: string;
+  revision: number;
+  storage: Pick<Storage, "removeItem"> | null;
+}): void {
+  storage?.removeItem(agentConversationOperationStorageKey(agentId, revision));
 }
 
 const AGENT_CATEGORY_LABELS: Record<AgentProfileCategory, string> = {
@@ -1058,11 +1107,17 @@ export function ChatAppContent({
       }
       setAgentWorkspaceCreating(true);
       setAgentWorkspaceError(null);
+      const operationId = getOrCreateAgentConversationOperationId({
+        agentId: startProfile.agent_id,
+        revision: startProfile.expected_revision,
+        storage: browserSessionStorage(),
+        createId: uuid,
+      });
       void agentProfileApi
         .createConversation({
           agent_id: startProfile.agent_id,
           expected_revision: startProfile.expected_revision,
-        })
+        }, operationId)
         .then((session) => {
           const identity = session.agent_conversation;
           if (
@@ -1074,6 +1129,11 @@ export function ChatAppContent({
           ) {
             throw new Error("agent_workspace_identity_mismatch");
           }
+          clearAgentConversationOperationId({
+            agentId: startProfile.agent_id,
+            revision: startProfile.expected_revision,
+            storage: browserSessionStorage(),
+          });
           clearMessages();
           onAgentWorkspaceSessionCreated?.(session.session_id);
           navigate(

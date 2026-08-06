@@ -4170,7 +4170,8 @@ async def create_session(
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
     purpose: str = "conversation",
-) -> str:
+    return_created: bool = False,
+) -> str | tuple[str, bool]:
     resolved_id = session_id or new_id("ses")
     await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
     cursor = await conn.execute(
@@ -4186,10 +4187,11 @@ async def create_session(
           and sessions.workspace_id = excluded.workspace_id
           and sessions.user_id is not distinct from excluded.user_id
           and sessions.agent_id = excluded.agent_id
+          and sessions.title = excluded.title
           and sessions.admitted_agent_profile_revision is not distinct from excluded.admitted_agent_profile_revision
           and sessions.admitted_agent_profile_hash is not distinct from excluded.admitted_agent_profile_hash
           and sessions.purpose = excluded.purpose
-        returning sessions.id
+        returning sessions.id, (xmax = 0) as created
         """,
         (
             resolved_id,
@@ -4206,6 +4208,8 @@ async def create_session(
     row = await cursor.fetchone()
     if row is None:
         raise RepositoryConflictError("session_scope_mismatch")
+    if return_created:
+        return resolved_id, bool(row.get("created"))
     return resolved_id
 
 

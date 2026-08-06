@@ -1,3 +1,5 @@
+from uuid import UUID
+
 import pytest
 from fastapi import HTTPException
 
@@ -682,6 +684,108 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
         "updated_at": None,
     }
     assert "private instruction" not in str(response.model_dump())
+
+
+@pytest.mark.asyncio
+async def test_agent_conversation_operation_replay_returns_one_pinned_session_without_second_audit(monkeypatch):
+    from app import repositories
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import SelectedAgentProfileRequest
+
+    state: dict[str, object] = {"published": True, "existing": None}
+    calls: dict[str, int] = {"create": 0, "audit": 0, "admission": 0}
+    operation_id = UUID("33333333-3333-4333-8333-333333333333")
+    session_id = f"ses_agent_{operation_id.hex}"
+
+    async def get_current(*_args, **_kwargs):
+        calls["admission"] += 1
+        return _profile_row() if state["published"] else None
+
+    async def get_session(*_args, **_kwargs):
+        return state["existing"]
+
+    async def validate(*_args, **_kwargs):
+        return ({"skill_id": "general-chat", "skill_version": "version-a"}, {"id": "model-a", "value": "model-a"})
+
+    async def create_session(*_args, **kwargs):
+        calls["create"] += 1
+        assert kwargs["session_id"] == session_id
+        assert kwargs["return_created"] is True
+        state["existing"] = {
+            "id": session_id,
+            "workspace_id": "default",
+            "agent_id": "agt_support",
+            "title": "Support assistant",
+            "purpose": "conversation",
+            "admitted_agent_profile_revision": 7,
+            "admitted_agent_profile_hash": "a" * 64,
+            "agent_profile_name": "Support assistant",
+            "agent_profile_description": "Approved support help.",
+            "agent_profile_welcome_message": "",
+            "agent_profile_starter_prompts": [],
+            "agent_profile_capability_summary": "",
+            "agent_profile_recommended_tasks": [],
+            "agent_profile_supported_input_types": ["text"],
+            "agent_profile_supported_file_types": [],
+            "agent_profile_expected_outputs": [],
+            "agent_profile_permissions_and_data_access_notice": "",
+            "agent_profile_avatar_ref": "builtin:assistant",
+            "agent_profile_category": "support",
+            "agent_profile_published_at": None,
+        }
+        return session_id, True
+
+    async def audit(*_args, **_kwargs):
+        calls["audit"] += 1
+        return "aud_conversation"
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_session_projection", get_session)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.create_session", create_session)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    selection = SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7)
+
+    first = await authority.create_conversation(
+        object(),
+        principal=_principal(),
+        workspace_id="default",
+        selection=selection,
+        title="",
+        operation_id=operation_id,
+    )
+    state["published"] = False
+    replay = await authority.create_conversation(
+        object(),
+        principal=_principal(),
+        workspace_id="default",
+        selection=selection,
+        title="",
+        operation_id=operation_id,
+    )
+
+    assert first.session_id == replay.session_id == session_id
+    assert replay.agent_conversation is not None
+    assert replay.agent_conversation.revision == 7
+    assert calls == {"create": 1, "audit": 1, "admission": 1}
+
+    with pytest.raises(repositories.RepositoryConflictError, match="agent_conversation_operation_conflict"):
+        await authority.create_conversation(
+            object(),
+            principal=_principal(),
+            workspace_id="default",
+            selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=8),
+            title="",
+            operation_id=operation_id,
+        )
+
+    assert calls == {"create": 1, "audit": 1, "admission": 1}
 
 
 @pytest.mark.asyncio

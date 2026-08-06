@@ -16,6 +16,7 @@ from app.auth import AuthPrincipal
 from app.models import (
     AgentProfileAdminProjection,
     AgentProfileDraftRequest,
+    ChatSessionResponse,
     ChatStreamRequest,
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
@@ -381,6 +382,7 @@ def test_agent_conversation_creation_maps_repository_failures_to_safe_4xx(
                 "agent_id": "agt_support",
                 "expected_revision": 4,
             },
+            "operation_id": "11111111-1111-4111-8111-111111111111",
         },
     )
 
@@ -388,6 +390,46 @@ def test_agent_conversation_creation_maps_repository_failures_to_safe_4xx(
         expected_status,
         expected_detail,
     )
+
+
+def test_agent_conversation_creation_binds_one_stable_operation_identity(monkeypatch):
+    observed: list[dict[str, object]] = []
+
+    async def create_conversation(_conn, **kwargs):
+        observed.append(kwargs)
+        return ChatSessionResponse(
+            session_id="ses_agent_33333333333343338333333333333333",
+            workspace_id="workspace-a",
+            agent_id="agt_support",
+            title="Support assistant",
+            purpose="conversation",
+            agent_conversation=None,
+        )
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles._authority.create_conversation",
+        create_conversation,
+    )
+    body = {
+        "workspace_id": "workspace-a",
+        "selected_agent_profile": {
+            "agent_id": "agt_support",
+            "expected_revision": 4,
+        },
+        "operation_id": "33333333-3333-4333-8333-333333333333",
+    }
+    client = TestClient(create_app())
+
+    first = client.post("/api/ai/agent-conversations", headers=ordinary_headers(), json=body)
+    second = client.post("/api/ai/agent-conversations", headers=ordinary_headers(), json=body)
+
+    assert first.status_code == second.status_code == 200
+    assert [call["operation_id"].hex for call in observed] == [
+        "33333333333343338333333333333333",
+        "33333333333343338333333333333333",
+    ]
 
 
 async def test_agent_profile_repository_list_is_tenant_scoped():
