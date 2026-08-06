@@ -19,6 +19,8 @@ does not represent deployed runtime state.
 - `adr/0001-agent-app-revision-authorization-lifecycle.md` records the Agent App
   decision to pin conversations, reauthorize every run, and retain withdrawn
   history as read-only.
+- `architecture/opensandbox-ephemeral-model-credentials.md` defines the
+  attempt-bound model-route admission and trusted provider-secret boundary.
 
 The repository-root `../CONTEXT.md` defines the compressed Agent App ubiquitous
 language used by source, product, and acceptance contracts.

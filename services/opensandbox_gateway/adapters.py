@@ -39,6 +39,14 @@ from .gateway import (
     _validate_upstream_bridge_bases,
 )
 from .relay import PROXY_SOURCE, RELAY_SOURCE, STOP_RELAY_SOURCE
+from .model_credentials import (
+    ModelRouteBinding,
+    authorize_model_request,
+    consume_in_memory_model_route,
+    consume_sqlite_model_route,
+    initialize_sqlite_model_route_schema,
+    parse_broker_environment_evidence,
+)
 
 
 _RUNTIME_IDENTITY_PROBE_SOURCE = r'''
@@ -82,6 +90,7 @@ class InMemoryStateStore:
         self._lock = threading.RLock()
         self._outbound_condition = threading.Condition(self._lock)
         self._outbound_tokens: dict[str, set[str]] = {}
+        self._model_route_receipts: dict[str, ModelRouteBinding] = {}
 
     def get(self, sandbox_id: str) -> LeaseRecord | None:
         with self._lock:
@@ -191,6 +200,38 @@ class InMemoryStateStore:
                 self._outbound_condition.wait(remaining)
             return True
 
+    def consume_model_route(
+        self,
+        *,
+        sandbox_id: str,
+        request_id: str,
+        provider: str,
+        method: str,
+        path: str,
+        model: str,
+        created_at: float,
+        now: float,
+        ttl_seconds: float,
+        request_limit: int,
+        attempt_id: str | None = None,
+    ) -> None:
+        with self._lock:
+            consume_in_memory_model_route(
+                self.records,
+                self._model_route_receipts,
+                sandbox_id=sandbox_id,
+                request_id=request_id,
+                provider=provider,
+                method=method,
+                path=path,
+                model=model,
+                created_at=created_at,
+                now=now,
+                ttl_seconds=ttl_seconds,
+                request_limit=request_limit,
+                attempt_id=attempt_id,
+            )
+
     def record_deny(self, subject: str, code: str) -> None:
         with self._lock:
             self.denials.append((subject, code))
@@ -236,6 +277,7 @@ class SQLiteStateStore:
                 );
                 """
             )
+            initialize_sqlite_model_route_schema(db)
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=2.0)
@@ -449,6 +491,37 @@ class SQLiteStateStore:
                 self._outbound_condition.wait(remaining)
             return True
 
+    def consume_model_route(
+        self,
+        *,
+        sandbox_id: str,
+        request_id: str,
+        provider: str,
+        method: str,
+        path: str,
+        model: str,
+        created_at: float,
+        now: float,
+        ttl_seconds: float,
+        request_limit: int,
+        attempt_id: str | None = None,
+    ) -> None:
+        with self._lock, self._connect() as db:
+            consume_sqlite_model_route(
+                db,
+                sandbox_id=sandbox_id,
+                request_id=request_id,
+                provider=provider,
+                method=method,
+                path=path,
+                model=model,
+                created_at=created_at,
+                now=now,
+                ttl_seconds=ttl_seconds,
+                request_limit=request_limit,
+                attempt_id=attempt_id,
+            )
+
     def record_deny(self, subject: str, code: str) -> None:
         with self._lock, self._connect() as db:
             db.execute("INSERT INTO denials(occurred_at, subject, code) VALUES (?, ?, ?)", (int(time.time()), subject, code))
@@ -623,22 +696,22 @@ class DockerRuntimeAdapter:
         state = info.get("State") or {}
         labels = config.get("Labels") or {}
         security = [str(value).lower() for value in host.get("SecurityOpt") or []]
-        env = {}
-        for item in config.get("Env") or []:
-            key, separator, value = str(item).partition("=")
-            if separator:
-                env[key] = value
-        token = env.get("AI_PLATFORM_EXECUTOR_AUTH_TOKEN", "")
-        token_hash = hmac.new(self.signing_key, token.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(token_hash, record.executor_token_hash):
-            raise GatewayError(409, "executor_credential_drift")
         expected_local = {
             "AI_PLATFORM_CALLBACK_BASE_URL": "http://127.0.0.1:18888",
             "SANDBOX_CALLBACK_BASE_URL": "http://127.0.0.1:18888",
             "OPENAI_BASE_URL": "http://127.0.0.1:18888/model/openai",
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:18888/model/anthropic",
         }
-        if any(env.get(key) != value for key, value in expected_local.items()) or any(key.upper().endswith("_PROXY") for key in env):
+        env, protected_env_exact = parse_broker_environment_evidence(
+            config.get("Env") or [],
+            expected_local,
+            ("AI_PLATFORM_EXECUTOR_AUTH_TOKEN",),
+        )
+        token = env.get("AI_PLATFORM_EXECUTOR_AUTH_TOKEN", "")
+        token_hash = hmac.new(self.signing_key, token.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(token_hash, record.executor_token_hash):
+            raise GatewayError(409, "executor_credential_drift")
+        if not protected_env_exact or any(key.upper().endswith("_PROXY") for key in env):
             raise GatewayError(409, "broker_environment_drift")
         mounts = tuple(
             sorted(
@@ -940,6 +1013,7 @@ class MailboxBroker:
         dispatch_timeout_seconds: float | None = None,
         *,
         upstream_tls_context: ssl.SSLContext | None = None,
+        provider_credentials: Mapping[str, str] | None = None,
     ) -> None:
         if upstream_tls_context is not None and (
             not isinstance(upstream_tls_context, ssl.SSLContext)
@@ -957,6 +1031,13 @@ class MailboxBroker:
         )
         self.max_response_bytes = max_response_bytes
         self.workspace_root = workspace_root
+        credentials = dict(provider_credentials or {})
+        if credentials and (
+            set(credentials) != {"openai", "anthropic"}
+            or any(not value or "\x00" in value or len(value.encode("utf-8")) > 4096 for value in credentials.values())
+        ):
+            raise ValueError("broker provider credentials are invalid")
+        self._provider_credentials = credentials
         self._rotation = 0
 
     def poll_once(self) -> int:
@@ -1093,7 +1174,7 @@ class MailboxBroker:
                 response = self._error_response(429, "broker_backlog_exceeded")
             else:
                 try:
-                    response = self._process(claim_fd, claimed[0], claimed)
+                    response = self._process(claim_fd, claimed[0], claimed, record)
                 except DeadlineExceeded:
                     raise
                 except GatewayError as exc:
@@ -1161,6 +1242,7 @@ class MailboxBroker:
         request_fd: int,
         name: str,
         expected_identity: tuple[str, int, int, int, int] | None = None,
+        record: LeaseRecord | None = None,
     ) -> dict[str, Any]:
         try:
             descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=request_fd)
@@ -1234,6 +1316,23 @@ class MailboxBroker:
             or requested_timeout <= 0
         ):
             raise GatewayError(400, "broker_request_invalid")
+        if kind in {"openai", "anthropic"}:
+            auth_name, auth_value = authorize_model_request(
+                self.store,
+                record,
+                name=name,
+                provider=kind,
+                method=method,
+                path=suffix,
+                query=local.query,
+                body=body,
+                created_at=created_at,
+                now=now,
+                credential=self._provider_credentials.get(kind, ""),
+            )
+            outbound_headers.pop("authorization", None)
+            outbound_headers.pop("x-api-key", None)
+            outbound_headers[auth_name] = auth_value
         remaining = created_at + min(requested_timeout, policy_timeout) - now
         deadline = operation_deadline(remaining)
         if self.upstream_tls_context is None:
