@@ -52,13 +52,17 @@ test("destructive server reload fences every editor interaction", () => {
   assert.match(controllerSource, /this\.stateValue\.destructiveReloadPending/);
 });
 
-test("unsupported preview and fake lifecycle controls are absent", () => {
+test("real lifecycle controls use the profile authority without fake handoff paths", () => {
   const featureProductionSource = [workbenchSource, controllerSource].join("\n");
   assert.doesNotMatch(featureProductionSource, /local-draft-[12]/);
   assert.doesNotMatch(featureProductionSource, /useAgent/);
   assert.doesNotMatch(featureProductionSource, /预览消息|打开对话运行|对话交接/);
   assert.doesNotMatch(featureProductionSource, /sessionApi|sendMessage|onHandoffReady/);
-  assert.doesNotMatch(featureProductionSource, /unpublish|deactivate|avatar|handoff/i);
+  assert.match(workbenchSource, /controller\.runActiveProfileTest\(message\)/);
+  assert.match(workbenchSource, /controller\.unpublishActiveProfile\(\)/);
+  assert.match(controllerSource, /this\.api\.runTest\(/);
+  assert.match(controllerSource, /this\.api\.unpublish\(/);
+  assert.doesNotMatch(featureProductionSource, /deactivate|handoff/i);
 });
 
 test("safe errors never render arbitrary Error.message", () => {

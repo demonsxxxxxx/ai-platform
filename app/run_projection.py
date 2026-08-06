@@ -346,6 +346,7 @@ def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None
 
 
 PUBLIC_EVENT_TYPE_ALIASES = {
+    "artifact_created": "artifact_ready",
     "legacy_runtime211_direct_executor_denied": "status",
     "mcp_tool_call_completed": "tool_call_completed",
     "mcp_tool_call_started": "tool_call_started",
@@ -527,6 +528,46 @@ PUBLIC_ORDINARY_EVENT_DETAILS.update(
 )
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
     _ordinary_event_details(
+        ("capability_staged",),
+        stage="capability",
+        message="所需能力已加载到受控环境。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("capability_sdk_registered",),
+        stage="capability",
+        message="所需能力已注册到执行引擎。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("capability_actually_invoked",),
+        stage="capability",
+        message="所需能力已由执行引擎实际调用。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("capability_completed",),
+        stage="capability",
+        message="所需能力已实际执行完成。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
+        ("capability_optional_not_invoked",),
+        stage="capability",
+        message="可选能力本次未调用。",
+        status="completed",
+    )
+)
+PUBLIC_ORDINARY_EVENT_DETAILS.update(
+    _ordinary_event_details(
         ("intent_detected",),
         stage="preparation",
         message="正在准备受控运行请求。",
@@ -551,10 +592,11 @@ PUBLIC_ORDINARY_EVENT_DETAILS.update(
 )
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
     _ordinary_event_details(
-        ("artifact_created",),
+        ("artifact_created", "artifact_ready"),
         stage="artifact",
-        message="已生成结果文件，正在完成可用性检查。",
+        message="结果文件已可安全下载。",
         status="completed",
+        event_type="artifact_ready",
     )
 )
 PUBLIC_ORDINARY_EVENT_DETAILS.update(

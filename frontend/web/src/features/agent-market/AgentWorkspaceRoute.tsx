@@ -34,7 +34,8 @@ interface LoadedAgentWorkspace {
   agentId: string;
   revision: string;
   profile: AgentProfilePublicProjection;
-  startProfile: AgentProfilePublicProjection;
+  startProfile: AgentProfilePublicProjection | null;
+  readOnly: boolean;
 }
 
 function historicalProfile(
@@ -45,8 +46,18 @@ function historicalProfile(
     expected_revision: identity.revision,
     name: identity.name,
     description: identity.description,
+    welcome_message: identity.welcome_message,
+    starter_prompts: identity.starter_prompts,
+    capability_summary: identity.capability_summary,
+    recommended_tasks: identity.recommended_tasks,
+    supported_input_types: identity.supported_input_types,
+    supported_file_types: identity.supported_file_types,
+    expected_outputs: identity.expected_outputs,
+    permissions_and_data_access_notice:
+      identity.permissions_and_data_access_notice,
     avatar_ref: identity.avatar_ref,
     category: identity.category,
+    published_at: identity.published_at,
   };
 }
 
@@ -94,14 +105,16 @@ export function AgentWorkspaceRoute() {
       };
     }
 
-    const currentProfileRequest = agentProfileApi.getPublished(agentId);
+    const currentProfileRequest = routeSessionId
+      ? agentProfileApi.getPublished(agentId).catch(() => null)
+      : agentProfileApi.getPublished(agentId);
     const sessionRequest = routeSessionId
       ? sessionApi.getAuthoritative(routeSessionId)
       : Promise.resolve(null);
     void Promise.all([currentProfileRequest, sessionRequest])
       .then(([currentProfile, session]) => {
         if (!active) return;
-        if (currentProfile.agent_id !== agentId) {
+        if (currentProfile !== null && currentProfile.agent_id !== agentId) {
           setPhase("unavailable");
           return;
         }
@@ -123,13 +136,14 @@ export function AgentWorkspaceRoute() {
             revision,
             profile: historicalProfile(identity),
             startProfile: currentProfile,
+            readOnly: currentProfile === null,
           });
           setPhase("ready");
           return;
         }
 
         const exactProfile = selectPublishedMarketProfile(
-          [currentProfile],
+          currentProfile ? [currentProfile] : [],
           agentId,
           revision,
         );
@@ -142,6 +156,7 @@ export function AgentWorkspaceRoute() {
           revision,
           profile: exactProfile,
           startProfile: currentProfile,
+          readOnly: false,
         });
         setPhase("ready");
       })
@@ -186,8 +201,9 @@ export function AgentWorkspaceRoute() {
       <ChatAppContent
         agentWorkspace={resolvedWorkspace.profile}
         agentWorkspaceHistoryError={conversationList.error}
+        agentWorkspaceReadOnly={resolvedWorkspace.readOnly}
         agentWorkspaceSessionSource={conversationList}
-        agentWorkspaceStartProfile={resolvedWorkspace.startProfile}
+        agentWorkspaceStartProfile={resolvedWorkspace.startProfile ?? undefined}
         mobileSidebarOpen={mobileSidebarOpen}
         onAgentWorkspaceHistoryRetry={conversationList.refresh}
         onAgentWorkspaceSessionCreated={() => void conversationList.refresh()}

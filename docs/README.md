@@ -16,6 +16,9 @@ does not represent deployed runtime state.
 - `architecture/sandbox-runtime-control-layer.md` defines the Sandbox Runtime
   application authority, target lifecycle, ownership fences, provider port, and
   staged recovery model.
+- `adr/0001-agent-app-revision-authorization-lifecycle.md` records the Agent App
+  decision to pin conversations, reauthorize every run, and retain withdrawn
+  history as read-only.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
 - `architecture/redis-streams-sse-event-channel.md` defines the current v2
@@ -23,6 +26,9 @@ does not represent deployed runtime state.
   implementation authority.
 - `adr/0003-redis-streams-sse-event-channel-v2-correction.md` records the v2
   correction; ADR 0002 is retained as the superseded v1 audit record.
+
+The repository-root `../CONTEXT.md` defines the compressed Agent App ubiquitous
+language used by source, product, and acceptance contracts.
 
 ## Operations
 
@@ -34,6 +40,10 @@ or substitutes for current host evidence.
 `operations/s72-opensandbox-gateway-runbook.md` is the separate root-owned s72
 gateway install and rollback authority. It does not replace the 211 procedure or
 make a 211 verification claim.
+
+`acceptance/agent-app/ordinary-user-matrix.md` defines the source/runtime
+evidence boundary and post-merge ordinary-user matrix for Agent Apps. It grants
+no deployment or runtime mutation authority.
 
 ## Contracts And Evidence
 
