@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Iterable
+from urllib.parse import quote, urlsplit
 
 
 SCHEMA_VERSION = "ai-platform.release-image-manifest.v1"
@@ -62,6 +63,9 @@ _SIGNATURE_KEYS = {"identity", "issuer", "ref"}
 _SCAN_KEYS = {"blocking_severities", "ref", "result", "scanner", "sha256"}
 _ATTESTATION_ID = re.compile(r"[A-Za-z0-9_-]+")
 _TRIVY_SEVERITIES = {"UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"}
+_SBOM_NAMESPACE_PLACEHOLDER = (
+    f"https://github.com/{WORKFLOW_REPOSITORY}/sbom/content-pending"
+)
 
 
 def _object(value: Any, name: str) -> dict[str, Any]:
@@ -102,11 +106,169 @@ def _ready_artifact_name(*, source_commit: str, workflow: dict[str, Any]) -> str
     )
 
 
-def _sbom_document_namespace(*, role: str, source_commit: str, digest: str) -> str:
+def _canonical_json_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _sbom_content_sha256(document: dict[str, Any]) -> str:
+    normalized = copy.deepcopy(document)
+    normalized["documentNamespace"] = _SBOM_NAMESPACE_PLACEHOLDER
+    return _canonical_json_sha256(normalized)
+
+
+def _sbom_document_namespace(
+    *,
+    role: str,
+    source_commit: str,
+    digest: str,
+    workflow: dict[str, Any],
+    content_sha256: str,
+) -> str:
     return (
-        f"https://github.com/{WORKFLOW_REPOSITORY}/sbom/{role}/{source_commit}/"
-        f"sha256/{digest.removeprefix('sha256:')}"
+        f"https://github.com/{WORKFLOW_REPOSITORY}/actions/runs/{workflow['run_id']}/"
+        f"attempts/{workflow['run_attempt']}/sbom/{role}/{source_commit}/sha256/"
+        f"{digest.removeprefix('sha256:')}/{content_sha256}"
     )
+
+
+def _spdx_oci_purl(*, subject: str, digest: str) -> str:
+    return f"pkg:oci/{quote(subject, safe='')}@{quote(digest, safe='')}?arch="
+
+
+def _validate_spdx_23_document(document: dict[str, Any]) -> None:
+    required = {"SPDXID", "creationInfo", "dataLicense", "name", "spdxVersion"}
+    if (
+        not required.issubset(document)
+        or document.get("spdxVersion") != "SPDX-2.3"
+        or document.get("dataLicense") != "CC0-1.0"
+        or document.get("SPDXID") != "SPDXRef-DOCUMENT"
+        or not isinstance(document.get("name"), str)
+        or not document["name"]
+    ):
+        raise ValueError("sbom_document")
+
+    namespace = document.get("documentNamespace")
+    if not isinstance(namespace, str):
+        raise ValueError("sbom_document")
+    parsed_namespace = urlsplit(namespace)
+    if (
+        not parsed_namespace.scheme
+        or not parsed_namespace.netloc
+        or parsed_namespace.fragment
+    ):
+        raise ValueError("sbom_document")
+
+    creation_info = document.get("creationInfo")
+    if not isinstance(creation_info, dict):
+        raise ValueError("sbom_document")
+    creators = creation_info.get("creators")
+    if (
+        not isinstance(creators, list)
+        or not creators
+        or any(not isinstance(creator, str) or not creator for creator in creators)
+        or not isinstance(creation_info.get("created"), str)
+        or not creation_info["created"]
+    ):
+        raise ValueError("sbom_document")
+
+    packages = document.get("packages")
+    if not isinstance(packages, list) or not packages:
+        raise ValueError("sbom_document")
+    package_ids: set[str] = set()
+    for package in packages:
+        if not isinstance(package, dict):
+            raise ValueError("sbom_document")
+        if (
+            not isinstance(package.get("SPDXID"), str)
+            or not package["SPDXID"].startswith("SPDXRef-")
+            or not isinstance(package.get("name"), str)
+            or not package["name"]
+            or not isinstance(package.get("downloadLocation"), str)
+            or not package["downloadLocation"]
+            or package["SPDXID"] in package_ids
+        ):
+            raise ValueError("sbom_document")
+        package_ids.add(package["SPDXID"])
+
+    relationships = document.get("relationships")
+    if not isinstance(relationships, list):
+        raise ValueError("sbom_document")
+    for relationship in relationships:
+        if not isinstance(relationship, dict) or any(
+            not isinstance(relationship.get(key), str) or not relationship[key]
+            for key in ("spdxElementId", "relatedSpdxElement", "relationshipType")
+        ):
+            raise ValueError("sbom_document")
+
+    if "documentDescribes" in document:
+        described = document["documentDescribes"]
+        if (
+            not isinstance(described, list)
+            or not described
+            or any(not isinstance(value, str) or not value for value in described)
+            or len(set(described)) != len(described)
+        ):
+            raise ValueError("sbom_document")
+
+
+def _validate_spdx_image_binding(
+    document: dict[str, Any],
+    *,
+    subject: str,
+    digest: str,
+    require_document_describes: bool,
+) -> str:
+    _validate_spdx_23_document(document)
+    if document["name"] != subject:
+        raise ValueError("sbom_subject_binding")
+
+    describes = [
+        relationship
+        for relationship in document["relationships"]
+        if relationship.get("spdxElementId") == "SPDXRef-DOCUMENT"
+        and relationship.get("relationshipType") == "DESCRIBES"
+    ]
+    if len(describes) != 1:
+        raise ValueError("sbom_subject_binding")
+    root_id = describes[0]["relatedSpdxElement"]
+    roots = [package for package in document["packages"] if package["SPDXID"] == root_id]
+    if len(roots) != 1 or not root_id.startswith("SPDXRef-DocumentRoot-Image-"):
+        raise ValueError("sbom_subject_binding")
+    root = roots[0]
+
+    if require_document_describes:
+        if document.get("documentDescribes") != [root_id]:
+            raise ValueError("sbom_subject_binding")
+    elif "documentDescribes" in document and document["documentDescribes"] != [root_id]:
+        raise ValueError("sbom_subject_binding")
+
+    expected_checksum = [
+        {"algorithm": "SHA256", "checksumValue": digest.removeprefix("sha256:")}
+    ]
+    expected_external_refs = [
+        {
+            "referenceCategory": "PACKAGE-MANAGER",
+            "referenceType": "purl",
+            "referenceLocator": _spdx_oci_purl(subject=subject, digest=digest),
+        }
+    ]
+    if (
+        root.get("name") != subject
+        or root.get("versionInfo") != digest
+        or root.get("primaryPackagePurpose") != "CONTAINER"
+        or root.get("filesAnalyzed") is not False
+        or root.get("downloadLocation") != "NOASSERTION"
+        or root.get("checksums") != expected_checksum
+        or root.get("externalRefs") != expected_external_refs
+    ):
+        raise ValueError("sbom_subject_binding")
+    return root_id
 
 
 def _require_canonical_expected_roles(expected_roles: Iterable[str] | None) -> None:
@@ -260,6 +422,7 @@ def _validate_sbom_file(
     expected_sha256: str,
     source_commit: str,
     digest: str,
+    workflow: dict[str, Any],
 ) -> None:
     path = evidence_root / f"sbom-{role}.spdx.json"
     if not path.is_file():
@@ -267,17 +430,21 @@ def _validate_sbom_file(
     if _sha256(path) != expected_sha256:
         raise ValueError("sbom_sha256")
     document = json.loads(path.read_text(encoding="utf-8"))
-    if (
-        not isinstance(document, dict)
-        or not isinstance(document.get("spdxVersion"), str)
-        or not document["spdxVersion"].startswith("SPDX-2.")
-        or document.get("SPDXID") != "SPDXRef-DOCUMENT"
-    ):
+    if not isinstance(document, dict):
         raise ValueError("sbom_document")
+    _validate_spdx_image_binding(
+        document,
+        subject=SUBJECTS[role],
+        digest=digest,
+        require_document_describes=True,
+    )
+    content_sha256 = _sbom_content_sha256(document)
     if document.get("documentNamespace") != _sbom_document_namespace(
         role=role,
         source_commit=source_commit,
         digest=digest,
+        workflow=workflow,
+        content_sha256=content_sha256,
     ):
         raise ValueError("sbom_subject_binding")
 
@@ -376,6 +543,7 @@ def validate_subject(
             expected_sha256=sbom_sha256,
             source_commit=source_commit,
             digest=digest,
+            workflow=workflow,
         )
 
     provenance = _object(evidence["provenance"], "provenance")
@@ -682,22 +850,41 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         raise ValueError("role")
     source_commit = _fullmatch(_COMMIT, args.source_commit, "source_commit")
     digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
+    subject = SUBJECTS[args.role]
+    if args.image_ref != f"{subject}@{digest}":
+        raise ValueError("sbom_subject_binding")
+    if not isinstance(args.workflow_run_id, str) or not args.workflow_run_id.isdigit():
+        raise ValueError("workflow_run_id")
+    if args.workflow_run_attempt < 1:
+        raise ValueError("workflow_run_attempt")
+    workflow = {
+        "run_id": args.workflow_run_id,
+        "run_attempt": args.workflow_run_attempt,
+    }
     path = Path(args.sbom_file)
     if path.name != f"sbom-{args.role}.spdx.json":
         raise ValueError("sbom_path")
     document = _load_object(path)
-    if (
-        not isinstance(document.get("spdxVersion"), str)
-        or not document["spdxVersion"].startswith("SPDX-2.")
-        or document.get("SPDXID") != "SPDXRef-DOCUMENT"
-        or not isinstance(document.get("documentNamespace"), str)
-        or not document["documentNamespace"]
-    ):
-        raise ValueError("sbom_document")
+    root_id = _validate_spdx_image_binding(
+        document,
+        subject=subject,
+        digest=digest,
+        require_document_describes=False,
+    )
+    document["documentDescribes"] = [root_id]
+    content_sha256 = _sbom_content_sha256(document)
     document["documentNamespace"] = _sbom_document_namespace(
         role=args.role,
         source_commit=source_commit,
         digest=digest,
+        workflow=workflow,
+        content_sha256=content_sha256,
+    )
+    _validate_spdx_image_binding(
+        document,
+        subject=subject,
+        digest=digest,
+        require_document_describes=True,
     )
     _write_json(path, document)
 
@@ -760,6 +947,9 @@ def main() -> int:
     bind_spdx.add_argument("--role", required=True, choices=sorted(SUBJECTS))
     bind_spdx.add_argument("--source-commit", required=True)
     bind_spdx.add_argument("--manifest-digest", required=True)
+    bind_spdx.add_argument("--image-ref", required=True)
+    bind_spdx.add_argument("--workflow-run-id", required=True)
+    bind_spdx.add_argument("--workflow-run-attempt", required=True, type=int)
     bind_spdx.add_argument("--sbom-file", required=True)
 
     target = subparsers.add_parser(

@@ -115,6 +115,9 @@ jobs:
             --role "${{ matrix.role }}" \
             --source-commit "$SOURCE_COMMIT" \
             --manifest-digest "$MANIFEST_DIGEST" \
+            --image-ref "$IMAGE_REF" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
             --sbom-file "sbom-${{ matrix.role }}.spdx.json"
 
       - name: Scan published digest
@@ -266,6 +269,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Checkout exact verifier source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -310,6 +314,13 @@ jobs:
           test "$actual_version" = "$GH_CLI_VERSION"
           printf 'GH_CLI_BIN=%s\n' "$gh_bin" >> "$GITHUB_ENV"
 
+      - name: Log in to GHCR for assembly
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
       - name: Reverify downloaded provenance bundles
         env:
           CERTIFICATE_IDENTITY: https://github.com/demonsxxxxxx/ai-platform/.github/workflows/ai-platform-packaging-publish.yml@refs/heads/main
@@ -339,6 +350,10 @@ jobs:
               --deny-self-hosted-runners \
               --format json > "provenance-$role.assembly-verified.json"
           done
+
+      - name: Log out of GHCR after assembly verification
+        if: always()
+        run: docker logout ghcr.io
 
       - name: Assemble and verify ready manifest
         run: |

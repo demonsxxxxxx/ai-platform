@@ -55,8 +55,8 @@ def test_publish_permissions_are_job_scoped_and_environment_protected():
     )
 
     manifest = workflow["jobs"]["release-manifest"]
-    assert manifest["permissions"] == {"contents": "read"}
-    assert "packages" not in manifest["permissions"]
+    assert manifest["permissions"] == {"contents": "read", "packages": "read"}
+    assert "attestations" not in manifest["permissions"]
     assert "id-token" not in manifest["permissions"]
 
 
@@ -199,7 +199,6 @@ def test_github_cli_is_fixed_checksum_verified_and_token_is_step_scoped():
     assert '--bundle "provenance-${{ matrix.role }}.bundle.json"' in verify["run"]
     assert "set -x" not in verify["run"]
     assert 'echo "$GH_TOKEN"' not in verify["run"]
-
     for step in steps:
         if step is verify:
             continue
@@ -235,6 +234,70 @@ def test_release_manifest_reverifies_exact_downloaded_bundles_with_pinned_gh():
         assert "GH_TOKEN" not in step.get("env", {})
 
 
+def test_release_manifest_authenticates_private_ghcr_before_local_bundle_verification():
+    workflow = _workflow()
+    manifest = workflow["jobs"]["release-manifest"]
+    steps = manifest["steps"]
+    names = [step.get("name") for step in steps]
+    login = next(step for step in steps if step.get("name") == "Log in to GHCR for assembly")
+    verify = next(
+        step for step in steps if step.get("name") == "Reverify downloaded provenance bundles"
+    )
+
+    assert manifest["permissions"] == {"contents": "read", "packages": "read"}
+    assert "attestations" not in manifest["permissions"]
+    assert names.index("Log in to GHCR for assembly") < names.index(
+        "Reverify downloaded provenance bundles"
+    )
+    assert login["uses"] == (
+        "docker/login-action@dbcb813823bdd20940b903addbd779551569679f"
+    )
+    assert login["with"] == {
+        "registry": "ghcr.io",
+        "username": "${{ github.actor }}",
+        "password": "${{ github.token }}",
+    }
+    assert verify["env"] == {
+        "CERTIFICATE_IDENTITY": (
+            "https://github.com/demonsxxxxxx/ai-platform/.github/workflows/"
+            "ai-platform-packaging-publish.yml@refs/heads/main"
+        ),
+        "GH_CLI_BIN": "${{ env.GH_CLI_BIN }}",
+        "GH_TOKEN": "${{ github.token }}",
+        "OIDC_ISSUER": "https://token.actions.githubusercontent.com",
+    }
+    assert "--bundle" in verify["run"]
+    assert "attestations:" not in str(manifest["permissions"])
+    assert "set -x" not in verify["run"]
+    assert 'echo "$GH_TOKEN"' not in verify["run"]
+    logout = next(
+        step
+        for step in steps
+        if step.get("name") == "Log out of GHCR after assembly verification"
+    )
+    assert names.index("Reverify downloaded provenance bundles") < names.index(
+        "Log out of GHCR after assembly verification"
+    )
+    assert names.index("Log out of GHCR after assembly verification") < names.index(
+        "Assemble and verify ready manifest"
+    )
+    assert logout["if"] == "always()"
+    assert logout["run"] == "docker logout ghcr.io"
+
+    for step in steps:
+        if step is verify:
+            continue
+        assert "GH_TOKEN" not in step.get("env", {})
+    for step in steps:
+        if step is login:
+            continue
+        assert "github.token" not in str(step.get("with", {}))
+    artifact_steps = [step for step in steps if "artifact" in str(step.get("uses", ""))]
+    for step in artifact_steps:
+        assert "github.token" not in str(step)
+        assert "GH_TOKEN" not in str(step)
+
+
 def test_generated_spdx_is_bound_before_scan_and_attestation():
     steps = _workflow()["jobs"]["publish"]["steps"]
     names = [step.get("name") for step in steps]
@@ -246,6 +309,9 @@ def test_generated_spdx_is_bound_before_scan_and_attestation():
     assert "python tools/release_image_manifest.py bind-spdx" in bind["run"]
     assert '--source-commit "$SOURCE_COMMIT"' in bind["run"]
     assert '--manifest-digest "$MANIFEST_DIGEST"' in bind["run"]
+    assert '--image-ref "$IMAGE_REF"' in bind["run"]
+    assert '--workflow-run-id "$GITHUB_RUN_ID"' in bind["run"]
+    assert '--workflow-run-attempt "$GITHUB_RUN_ATTEMPT"' in bind["run"]
 
 
 def test_artifact_and_evidence_names_bind_run_attempt():

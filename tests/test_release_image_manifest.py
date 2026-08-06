@@ -33,17 +33,138 @@ WORKFLOW_REF = (
 SIGNATURE_IDENTITY = f"https://github.com/{WORKFLOW_REF}"
 RUN_ID = "123456"
 RUN_ATTEMPT = 2
+SBOM_NAMESPACE_PLACEHOLDER = (
+    f"https://github.com/{WORKFLOW_REPOSITORY}/sbom/content-pending"
+)
 
 
 def _artifact_name(role: str) -> str:
     return f"release-image-subject-{SOURCE_COMMIT}-{RUN_ID}-{RUN_ATTEMPT}-{role}"
 
 
-def _sbom_namespace(role: str) -> str:
+def _sbom_namespace(role: str, document: dict[str, object]) -> str:
+    normalized = copy.deepcopy(document)
+    normalized["documentNamespace"] = SBOM_NAMESPACE_PLACEHOLDER
+    content_sha256 = hashlib.sha256(
+        json.dumps(
+            normalized,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
     return (
-        f"https://github.com/{WORKFLOW_REPOSITORY}/sbom/{role}/{SOURCE_COMMIT}/"
-        f"sha256/{MANIFEST_DIGEST.removeprefix('sha256:')}"
+        f"https://github.com/{WORKFLOW_REPOSITORY}/actions/runs/{RUN_ID}/attempts/"
+        f"{RUN_ATTEMPT}/sbom/{role}/{SOURCE_COMMIT}/sha256/"
+        f"{MANIFEST_DIGEST.removeprefix('sha256:')}/{content_sha256}"
     )
+
+
+def _syft_spdx(role: str) -> dict[str, object]:
+    subject = f"ghcr.io/demonsxxxxxx/ai-platform-{role}"
+    root_id = f"SPDXRef-DocumentRoot-Image-ghcr.io-demonsxxxxxx-ai-platform-{role}"
+    dependency_id = f"SPDXRef-Package-apk-busybox-{role}"
+    digest_hex = MANIFEST_DIGEST.removeprefix("sha256:")
+    return {
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": subject,
+        "documentNamespace": f"https://anchore.com/syft/image/generated-{role}",
+        "creationInfo": {
+            "created": "2026-08-07T00:00:00Z",
+            "creators": ["Tool: syft-1.50.0"],
+            "licenseListVersion": "3.27.0",
+        },
+        "packages": [
+            {
+                "name": subject,
+                "SPDXID": root_id,
+                "versionInfo": MANIFEST_DIGEST,
+                "supplier": "NOASSERTION",
+                "downloadLocation": "NOASSERTION",
+                "filesAnalyzed": False,
+                "checksums": [{"algorithm": "SHA256", "checksumValue": digest_hex}],
+                "licenseConcluded": "NOASSERTION",
+                "licenseDeclared": "NOASSERTION",
+                "copyrightText": "NOASSERTION",
+                "externalRefs": [
+                    {
+                        "referenceCategory": "PACKAGE-MANAGER",
+                        "referenceType": "purl",
+                        "referenceLocator": (
+                            f"pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-{role}"
+                            f"@sha256%3A{digest_hex}?arch="
+                        ),
+                    }
+                ],
+                "primaryPackagePurpose": "CONTAINER",
+            },
+            {
+                "name": "busybox",
+                "SPDXID": dependency_id,
+                "downloadLocation": "NOASSERTION",
+                "filesAnalyzed": False,
+                "licenseConcluded": "NOASSERTION",
+                "licenseDeclared": "GPL-2.0-only",
+                "copyrightText": "NOASSERTION",
+            },
+        ],
+        "relationships": [
+            {
+                "spdxElementId": "SPDXRef-DOCUMENT",
+                "relatedSpdxElement": root_id,
+                "relationshipType": "DESCRIBES",
+            },
+            {
+                "spdxElementId": root_id,
+                "relatedSpdxElement": dependency_id,
+                "relationshipType": "CONTAINS",
+            },
+        ],
+    }
+
+
+def _syft_directory_spdx(role: str) -> dict[str, object]:
+    root_id = "SPDXRef-DocumentRoot-Directory-workspace"
+    return {
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "C:/workspace",
+        "documentNamespace": "https://anchore.com/syft/dir/generated-workspace",
+        "creationInfo": {
+            "created": "2026-08-07T00:00:00Z",
+            "creators": ["Tool: syft-1.50.0"],
+        },
+        "packages": [
+            {
+                "name": "C:/workspace",
+                "SPDXID": root_id,
+                "downloadLocation": "NOASSERTION",
+                "filesAnalyzed": False,
+                "licenseConcluded": "NOASSERTION",
+                "licenseDeclared": "NOASSERTION",
+                "copyrightText": "NOASSERTION",
+                "primaryPackagePurpose": "FILE",
+            }
+        ],
+        "relationships": [
+            {
+                "spdxElementId": "SPDXRef-DOCUMENT",
+                "relatedSpdxElement": root_id,
+                "relationshipType": "DESCRIBES",
+            }
+        ],
+    }
+
+
+def _bound_spdx(role: str) -> dict[str, object]:
+    document = _syft_spdx(role)
+    root_id = document["relationships"][0]["relatedSpdxElement"]
+    document["documentDescribes"] = [root_id]
+    document["documentNamespace"] = _sbom_namespace(role, document)
+    return document
 
 
 def _subject(role: str) -> dict[str, object]:
@@ -199,17 +320,7 @@ def _write_evidence(root: Path, manifest: dict[str, object]) -> None:
         bundle.write_text(json.dumps(bundle_payload), encoding="utf-8")
         verified.write_text(json.dumps(verification_payload), encoding="utf-8")
         reverified.write_text(json.dumps(verification_payload), encoding="utf-8")
-        sbom.write_text(
-            json.dumps(
-                {
-                    "spdxVersion": "SPDX-2.3",
-                    "SPDXID": "SPDXRef-DOCUMENT",
-                    "documentNamespace": _sbom_namespace(role),
-                    "name": subject["image"]["immutable_ref"],
-                }
-            ),
-            encoding="utf-8",
-        )
+        sbom.write_text(json.dumps(_bound_spdx(role)), encoding="utf-8")
         scan.write_text(
             json.dumps(
                 {
@@ -289,17 +400,9 @@ def test_assemble_binds_fresh_provenance_reverification_to_ready_manifest(tmp_pa
 
 def test_bind_spdx_cli_writes_deterministic_immutable_subject_namespace(tmp_path: Path):
     sbom_path = tmp_path / "sbom-backend.spdx.json"
-    sbom_path.write_text(
-        json.dumps(
-            {
-                "spdxVersion": "SPDX-2.3",
-                "SPDXID": "SPDXRef-DOCUMENT",
-                "documentNamespace": "https://anchore.example/generated/unstable-value",
-                "name": "syft-generated-document",
-            }
-        ),
-        encoding="utf-8",
-    )
+    document = _syft_spdx("backend")
+    document["documentNamespace"] = "https://anchore.example/generated/unstable-value"
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
 
     result = _run_cli(
         "bind-spdx",
@@ -309,13 +412,57 @@ def test_bind_spdx_cli_writes_deterministic_immutable_subject_namespace(tmp_path
         SOURCE_COMMIT,
         "--manifest-digest",
         MANIFEST_DIGEST,
+        "--image-ref",
+        f"ghcr.io/demonsxxxxxx/ai-platform-backend@{MANIFEST_DIGEST}",
+        "--workflow-run-id",
+        RUN_ID,
+        "--workflow-run-attempt",
+        str(RUN_ATTEMPT),
         "--sbom-file",
         str(sbom_path),
     )
 
     assert result.returncode == 0, result.stderr
     document = json.loads(sbom_path.read_text(encoding="utf-8"))
-    assert document["documentNamespace"] == _sbom_namespace("backend")
+    assert document["documentDescribes"] == [
+        document["relationships"][0]["relatedSpdxElement"]
+    ]
+    assert document["documentNamespace"] == _sbom_namespace("backend", document)
+
+
+def test_bind_spdx_namespace_cannot_collide_for_distinct_documents_with_same_tuple(
+    tmp_path: Path,
+):
+    paths = [tmp_path / "first" / "sbom-backend.spdx.json", tmp_path / "second" / "sbom-backend.spdx.json"]
+    for index, path in enumerate(paths):
+        path.parent.mkdir()
+        document = _syft_spdx("backend")
+        document["documentNamespace"] = f"https://anchore.example/generated/{index}"
+        document["creationInfo"]["created"] = f"2026-08-07T00:00:0{index}Z"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        result = _run_cli(
+            "bind-spdx",
+            "--role",
+            "backend",
+            "--source-commit",
+            SOURCE_COMMIT,
+            "--manifest-digest",
+            MANIFEST_DIGEST,
+            "--image-ref",
+            f"ghcr.io/demonsxxxxxx/ai-platform-backend@{MANIFEST_DIGEST}",
+            "--workflow-run-id",
+            RUN_ID,
+            "--workflow-run-attempt",
+            str(RUN_ATTEMPT),
+            "--sbom-file",
+            str(path),
+        )
+        assert result.returncode == 0, result.stderr
+
+    namespaces = {
+        json.loads(path.read_text(encoding="utf-8"))["documentNamespace"] for path in paths
+    }
+    assert len(namespaces) == 2
 
 
 @pytest.mark.parametrize(
@@ -649,8 +796,107 @@ def test_spdx_document_namespace_binds_exact_subject_source_and_digest(tmp_path:
         f"https://github.com/{WORKFLOW_REPOSITORY}/sbom/frontend/{'f' * 40}/"
         f"sha256/{'e' * 64}"
     )
-    unrelated["name"] = "structurally-valid-but-unrelated-spdx"
     sbom_path.write_text(json.dumps(unrelated), encoding="utf-8")
+    manifest["subjects"][0]["evidence"]["sbom"]["sha256"] = hashlib.sha256(
+        sbom_path.read_bytes()
+    ).hexdigest()
+
+    Draft202012Validator(_schema()).validate(manifest)
+    with pytest.raises(ValueError, match="sbom_subject_binding"):
+        validate_manifest(manifest, evidence_root=tmp_path)
+
+
+def test_schema_valid_syft_directory_sbom_cannot_be_coordinated_into_image_evidence(
+    tmp_path: Path,
+):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    directory = _syft_directory_spdx("backend")
+    directory["documentDescribes"] = [
+        directory["relationships"][0]["relatedSpdxElement"]
+    ]
+    directory["documentNamespace"] = _sbom_namespace("backend", directory)
+    sbom_path.write_text(json.dumps(directory), encoding="utf-8")
+    manifest["subjects"][0]["evidence"]["sbom"]["sha256"] = hashlib.sha256(
+        sbom_path.read_bytes()
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="sbom_subject_binding"):
+        validate_manifest(manifest, evidence_root=tmp_path)
+
+
+def test_other_syft_image_sbom_cannot_be_coordinated_into_subject_evidence(tmp_path: Path):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    unrelated = _syft_spdx("frontend")
+    unrelated["documentDescribes"] = [
+        unrelated["relationships"][0]["relatedSpdxElement"]
+    ]
+    unrelated["documentNamespace"] = _sbom_namespace("backend", unrelated)
+    sbom_path.write_text(json.dumps(unrelated), encoding="utf-8")
+    manifest["subjects"][0]["evidence"]["sbom"]["sha256"] = hashlib.sha256(
+        sbom_path.read_bytes()
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="sbom_subject_binding"):
+        validate_manifest(manifest, evidence_root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda document: document.update(
+            {"name": "ghcr.io/demonsxxxxxx/ai-platform-frontend"}
+        ),
+        lambda document: document["packages"][0].update(
+            {"name": "ghcr.io/demonsxxxxxx/ai-platform-frontend"}
+        ),
+        lambda document: document["packages"][0].update(
+            {"versionInfo": "sha256:" + "f" * 64}
+        ),
+        lambda document: document["packages"][0]["checksums"][0].update(
+            {"checksumValue": "f" * 64}
+        ),
+        lambda document: document["packages"][0]["externalRefs"][0].update(
+            {
+                "referenceLocator": (
+                    "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-frontend"
+                    f"@sha256%3A{MANIFEST_DIGEST.removeprefix('sha256:')}?arch="
+                )
+            }
+        ),
+        lambda document: document["packages"][0]["externalRefs"][0].update(
+            {
+                "referenceLocator": (
+                    "pkg:oci/ghcr.io%252Fdemonsxxxxxx%252Fai-platform-backend"
+                    f"@sha256%253A{MANIFEST_DIGEST.removeprefix('sha256:')}?arch="
+                )
+            }
+        ),
+        lambda document: document["packages"][0].update(
+            {"primaryPackagePurpose": "FILE"}
+        ),
+        lambda document: document["relationships"][0].update(
+            {"relatedSpdxElement": document["packages"][1]["SPDXID"]}
+        ),
+        lambda document: document.update(
+            {"documentDescribes": [document["packages"][1]["SPDXID"]]}
+        ),
+    ],
+)
+def test_spdx_root_image_identity_swaps_fail_with_coordinated_hash(
+    tmp_path: Path,
+    mutation,
+):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    document = json.loads(sbom_path.read_text(encoding="utf-8"))
+    mutation(document)
+    document["documentNamespace"] = _sbom_namespace("backend", document)
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
     manifest["subjects"][0]["evidence"]["sbom"]["sha256"] = hashlib.sha256(
         sbom_path.read_bytes()
     ).hexdigest()

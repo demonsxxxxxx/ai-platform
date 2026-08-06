@@ -66,8 +66,11 @@ Repository and checkout identity are rechecked before the build. Pull request,
 `pull_request_target`, fork, tag, branch, and user-supplied ref inputs have no
 publish path. Ordinary verification jobs retain only `contents: read`; the
 publish job alone receives `packages: write`, `id-token: write`, and the
-attestation permission. Action dependencies are fixed to reviewed 40-hex
-commits, and all jobs use unprivileged GitHub-hosted runners.
+attestation permission. The post-publish assembly job has `contents: read` plus
+`packages: read` solely so a default/private GHCR subject can be resolved during
+local-bundle verification; it has neither OIDC nor attestation API permission.
+Action dependencies are fixed to reviewed 40-hex commits, and all jobs use
+unprivileged GitHub-hosted runners.
 
 The publisher emits exactly two repository-owned subjects:
 
@@ -112,28 +115,43 @@ attempt so reruns cannot silently mix evidence.
 
 The assembly job installs the same checksum- and version-verified GitHub CLI and
 cryptographically verifies each exact downloaded provenance bundle again. It
-supplies `github.token` only to that verification step. The new verification
-JSON must be canonically equal to the publish-job verification JSON, and its
-embedded verified bundle must equal the downloaded bundle. The final manifest
-records the run-bound assembly verification reference and hash. Coordinated
-replacement of a bundle, its signature or verification material, and the
-caller-provided JSON/hashes therefore cannot produce a ready manifest without a
-successful fresh verification by the pinned CLI.
+first uses the commit-pinned GHCR login action with the job's package-read token,
+then supplies `github.token` as `GH_TOKEN` only to the exact verification step,
+and logs out before manifest assembly. GitHub CLI 2.97.0 local `--bundle`
+verification does not fetch the attestations API, so `attestations: read` is not
+granted; registry authentication is still required to resolve a private OCI
+subject. The new verification JSON must be canonically equal to the publish-job
+verification JSON, and its embedded verified bundle must equal the downloaded
+bundle. The final manifest records the run-bound assembly verification reference
+and hash. Coordinated replacement of a bundle, its signature or verification
+material, and the caller-provided JSON/hashes therefore cannot produce a ready
+manifest without a successful fresh verification by the pinned CLI.
 
 The JSON Schema rejects all expressible cross-role combinations, including
 Dockerfile, source tag, immutable image reference, SBOM/signature reference,
 provenance artifact reference, and scan artifact reference. JSON Schema cannot
 express equality among arbitrary source, digest, and run fields. The Python
 semantic verifier is therefore the readiness authority: with the downloaded
-evidence root it rehashes and parses the SPDX document and Trivy report. Syft's
-native document name, package references, and generated namespace are not image
-identity authority. Immediately after pinned Syft generation, the trusted
-workflow replaces the standard SPDX `documentNamespace` with a deterministic
-absolute URI derived from role, exact source commit, and registry manifest
-digest; hashing and OCI attestation use those final bytes. The verifier requires
-that exact namespace. It also requires every reported Trivy vulnerability to be
-an object with one of `UNKNOWN`, `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL` and then
-rejects the configured blocking severities. It rehashes and parses the
+evidence root it rehashes and parses the SPDX document and Trivy report. The
+pinned Syft 1.50.0 image profile is accepted only when the document and the sole
+`SPDXRef-DOCUMENT DESCRIBES` root package identify the exact GHCR subject, the
+root purpose is `CONTAINER`, and root `versionInfo`, SHA256 checksum, and
+canonical `pkg:oci` external reference all bind the independently captured
+registry manifest digest. A directory root, another image, alternate purl
+encoding, extra/missing root, or a role/digest/ref swap fails before binding.
+The trusted binder then adds the SPDX 2.3 `documentDescribes` form for the same
+root and replaces Syft's random namespace. The final absolute namespace binds
+workflow run and attempt, role, source commit, manifest digest, and a SHA256 of
+the complete normalized document computed with a fixed namespace placeholder.
+This avoids a circular hash while ensuring two distinct documents cannot claim
+the same namespace. The verifier recomputes the normalized content hash and all
+root bindings from the final bytes; namespace or manifest hash coordination
+alone is insufficient. This is an SPDX 2.3 structural and image-identity
+profile grounded in pinned Syft output; it is not a claim that JSON Schema alone
+can express cross-document identity. The verifier also requires every reported
+Trivy vulnerability to be an object with one of `UNKNOWN`, `LOW`, `MEDIUM`,
+`HIGH`, or `CRITICAL` and then rejects the configured blocking severities. It
+rehashes and parses the
 provenance bundle, publish verification JSON, and assembly verification JSON;
 the two verification results and their embedded bundle must match exactly. It
 then checks the verified statement subject/digest and certificate-backed
