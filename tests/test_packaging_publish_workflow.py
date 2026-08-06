@@ -301,17 +301,34 @@ def test_release_manifest_authenticates_private_ghcr_before_local_bundle_verific
 def test_generated_spdx_is_bound_before_scan_and_attestation():
     steps = _workflow()["jobs"]["publish"]["steps"]
     names = [step.get("name") for step in steps]
+    source = next(
+        step
+        for step in steps
+        if step.get("name") == "Capture generated SPDX source identity"
+    )
     bind = next(step for step in steps if step.get("name") == "Bind SPDX SBOM to immutable subject")
 
-    assert names.index("Generate SPDX SBOM") < names.index("Bind SPDX SBOM to immutable subject")
+    assert names.index("Generate SPDX SBOM") < names.index(
+        "Capture generated SPDX source identity"
+    )
+    assert names.index("Capture generated SPDX source identity") < names.index(
+        "Bind SPDX SBOM to immutable subject"
+    )
     assert names.index("Bind SPDX SBOM to immutable subject") < names.index("Scan published digest")
     assert names.index("Bind SPDX SBOM to immutable subject") < names.index("Attest SPDX SBOM")
+    assert source["id"] == "spdx-source"
+    assert "python tools/release_image_manifest.py spdx-source-hash" in source["run"]
+    assert 'printf \'sha256=%s\\n\' "$source_hash" >> "$GITHUB_OUTPUT"' in source["run"]
     assert "python tools/release_image_manifest.py bind-spdx" in bind["run"]
     assert '--source-commit "$SOURCE_COMMIT"' in bind["run"]
     assert '--manifest-digest "$MANIFEST_DIGEST"' in bind["run"]
     assert '--image-ref "$IMAGE_REF"' in bind["run"]
     assert '--workflow-run-id "$GITHUB_RUN_ID"' in bind["run"]
     assert '--workflow-run-attempt "$GITHUB_RUN_ATTEMPT"' in bind["run"]
+    assert (
+        '--unbound-content-sha256 "${{ steps.spdx-source.outputs.sha256 }}"'
+        in bind["run"]
+    )
 
 
 def test_artifact_and_evidence_names_bind_run_attempt():

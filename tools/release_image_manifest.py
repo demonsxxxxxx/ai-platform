@@ -45,7 +45,7 @@ _CONTEXT_KEYS = {"path", "source_commit"}
 _DOCKERFILE_KEYS = {"path", "sha256"}
 _IMAGE_KEYS = {"subject", "source_tag", "manifest_digest", "immutable_ref"}
 _EVIDENCE_KEYS = {"sbom", "provenance", "signature", "scan"}
-_SBOM_KEYS = {"format", "ref", "sha256"}
+_SBOM_KEYS = {"format", "ref", "sha256", "unbound_content_sha256"}
 _PREASSEMBLY_PROVENANCE_KEYS = {
     "attestation_id",
     "bundle_ref",
@@ -66,6 +66,51 @@ _TRIVY_SEVERITIES = {"UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"}
 _SBOM_NAMESPACE_PLACEHOLDER = (
     f"https://github.com/{WORKFLOW_REPOSITORY}/sbom/content-pending"
 )
+_BOUND_SBOM_NAMESPACE_PREFIX = (
+    f"https://github.com/{WORKFLOW_REPOSITORY}/actions/runs/"
+)
+_BOUND_SBOM_NAMESPACE = re.compile(
+    rf"{re.escape(_BOUND_SBOM_NAMESPACE_PREFIX)}(?P<run_id>[0-9]+)/"
+    r"attempts/(?P<run_attempt>[1-9][0-9]*)/sbom/"
+    r"(?P<role>backend|frontend)/(?P<source_commit>[0-9a-f]{40})/"
+    r"sha256/(?P<digest>[0-9a-f]{64})/(?P<content_sha256>[0-9a-f]{64})"
+)
+_SYFT_IMAGE_NAMESPACE = re.compile(r"https://anchore\.com/syft/image/.+")
+_SPDX_ID = re.compile(r"SPDXRef-[A-Za-z0-9.-]+")
+_SBOM_BINDING_ANNOTATOR = "Tool: ai-platform-release-image-manifest"
+_SBOM_BINDING_COMMENT_PREFIX = "ai-platform.sbom-binding.v1:"
+_SBOM_BINDING_KEYS = {
+    "annotations_present",
+    "original_namespace",
+    "unbound_content_sha256",
+}
+
+
+class _DuplicateJsonKey(ValueError):
+    pass
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise _DuplicateJsonKey(key)
+        value[key] = item
+    return value
+
+
+def _loads_json(payload: str | bytes, name: str) -> Any:
+    try:
+        text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
+        return json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
+    except _DuplicateJsonKey as exc:
+        raise ValueError("json_duplicate_key") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(name) from exc
+
+
+def _load_json(path: Path, name: str) -> Any:
+    return _loads_json(path.read_bytes(), name)
 
 
 def _object(value: Any, name: str) -> dict[str, Any]:
@@ -141,7 +186,87 @@ def _spdx_oci_purl(*, subject: str, digest: str) -> str:
     return f"pkg:oci/{quote(subject, safe='')}@{quote(digest, safe='')}?arch="
 
 
-def _validate_spdx_23_document(document: dict[str, Any]) -> None:
+def _spdx_element_id(element: dict[str, Any]) -> str:
+    spdx_id = element.get("SPDXID")
+    if not isinstance(spdx_id, str) or _SPDX_ID.fullmatch(spdx_id) is None:
+        raise ValueError("sbom_document")
+    return spdx_id
+
+
+def _validate_spdx_graph(document: dict[str, Any]) -> set[str]:
+    external_refs = document.get("externalDocumentRefs", [])
+    if not isinstance(external_refs, list):
+        raise ValueError("sbom_document")
+    if external_refs:
+        raise ValueError("sbom_graph")
+
+    node_ids = {"SPDXRef-DOCUMENT"}
+    file_ids: set[str] = set()
+    elements: dict[str, list[Any]] = {}
+    for collection in ("packages", "files", "snippets"):
+        values = document.get(collection, [])
+        if not isinstance(values, list):
+            raise ValueError("sbom_document")
+        if collection == "packages" and not values:
+            raise ValueError("sbom_document")
+        elements[collection] = values
+        for element in values:
+            if not isinstance(element, dict):
+                raise ValueError("sbom_document")
+            spdx_id = _spdx_element_id(element)
+            if spdx_id in node_ids:
+                raise ValueError("sbom_graph")
+            node_ids.add(spdx_id)
+            if collection == "files":
+                file_ids.add(spdx_id)
+
+    for package in elements["packages"]:
+        if (
+            not isinstance(package.get("name"), str)
+            or not package["name"]
+            or not isinstance(package.get("downloadLocation"), str)
+            or not package["downloadLocation"]
+        ):
+            raise ValueError("sbom_document")
+    for file_entry in elements["files"]:
+        if (
+            not isinstance(file_entry.get("fileName"), str)
+            or not file_entry["fileName"]
+            or not isinstance(file_entry.get("checksums"), list)
+            or not file_entry["checksums"]
+        ):
+            raise ValueError("sbom_document")
+    for snippet in elements["snippets"]:
+        source_file = snippet.get("snippetFromFile")
+        if not isinstance(source_file, str) or source_file not in file_ids:
+            raise ValueError("sbom_graph")
+
+    relationships = document.get("relationships")
+    if not isinstance(relationships, list):
+        raise ValueError("sbom_document")
+    relationship_triples: set[tuple[str, str, str]] = set()
+    for relationship in relationships:
+        if not isinstance(relationship, dict) or any(
+            not isinstance(relationship.get(key), str) or not relationship[key]
+            for key in ("spdxElementId", "relatedSpdxElement", "relationshipType")
+        ):
+            raise ValueError("sbom_document")
+        source = relationship["spdxElementId"]
+        target = relationship["relatedSpdxElement"]
+        relationship_type = relationship["relationshipType"]
+        triple = (source, target, relationship_type)
+        if (
+            source not in node_ids
+            or target not in node_ids
+            or source == target
+            or triple in relationship_triples
+        ):
+            raise ValueError("sbom_graph")
+        relationship_triples.add(triple)
+    return node_ids
+
+
+def _validate_spdx_23_document(document: dict[str, Any]) -> set[str]:
     required = {"SPDXID", "creationInfo", "dataLicense", "name", "spdxVersion"}
     if (
         not required.issubset(document)
@@ -177,34 +302,7 @@ def _validate_spdx_23_document(document: dict[str, Any]) -> None:
     ):
         raise ValueError("sbom_document")
 
-    packages = document.get("packages")
-    if not isinstance(packages, list) or not packages:
-        raise ValueError("sbom_document")
-    package_ids: set[str] = set()
-    for package in packages:
-        if not isinstance(package, dict):
-            raise ValueError("sbom_document")
-        if (
-            not isinstance(package.get("SPDXID"), str)
-            or not package["SPDXID"].startswith("SPDXRef-")
-            or not isinstance(package.get("name"), str)
-            or not package["name"]
-            or not isinstance(package.get("downloadLocation"), str)
-            or not package["downloadLocation"]
-            or package["SPDXID"] in package_ids
-        ):
-            raise ValueError("sbom_document")
-        package_ids.add(package["SPDXID"])
-
-    relationships = document.get("relationships")
-    if not isinstance(relationships, list):
-        raise ValueError("sbom_document")
-    for relationship in relationships:
-        if not isinstance(relationship, dict) or any(
-            not isinstance(relationship.get(key), str) or not relationship[key]
-            for key in ("spdxElementId", "relatedSpdxElement", "relationshipType")
-        ):
-            raise ValueError("sbom_document")
+    node_ids = _validate_spdx_graph(document)
 
     if "documentDescribes" in document:
         described = document["documentDescribes"]
@@ -213,8 +311,19 @@ def _validate_spdx_23_document(document: dict[str, Any]) -> None:
             or not described
             or any(not isinstance(value, str) or not value for value in described)
             or len(set(described)) != len(described)
+            or any(value not in node_ids for value in described)
         ):
             raise ValueError("sbom_document")
+    annotations = document.get("annotations", [])
+    if not isinstance(annotations, list):
+        raise ValueError("sbom_document")
+    for annotation in annotations:
+        if not isinstance(annotation, dict) or any(
+            not isinstance(annotation.get(key), str) or not annotation[key]
+            for key in ("annotationDate", "annotationType", "annotator", "comment")
+        ):
+            raise ValueError("sbom_document")
+    return node_ids
 
 
 def _validate_spdx_image_binding(
@@ -228,19 +337,29 @@ def _validate_spdx_image_binding(
     if document["name"] != subject:
         raise ValueError("sbom_subject_binding")
 
-    describes = [
+    root_claims = [
         relationship
         for relationship in document["relationships"]
-        if relationship.get("spdxElementId") == "SPDXRef-DOCUMENT"
-        and relationship.get("relationshipType") == "DESCRIBES"
+        if relationship.get("relationshipType") in {"DESCRIBES", "DESCRIBED_BY"}
     ]
-    if len(describes) != 1:
-        raise ValueError("sbom_subject_binding")
-    root_id = describes[0]["relatedSpdxElement"]
+    if (
+        len(root_claims) != 1
+        or root_claims[0].get("spdxElementId") != "SPDXRef-DOCUMENT"
+        or root_claims[0].get("relationshipType") != "DESCRIBES"
+    ):
+        raise ValueError("sbom_graph")
+    root_id = root_claims[0]["relatedSpdxElement"]
     roots = [package for package in document["packages"] if package["SPDXID"] == root_id]
     if len(roots) != 1 or not root_id.startswith("SPDXRef-DocumentRoot-Image-"):
         raise ValueError("sbom_subject_binding")
     root = roots[0]
+    container_roots = [
+        package
+        for package in document["packages"]
+        if package.get("primaryPackagePurpose") == "CONTAINER"
+    ]
+    if len(container_roots) != 1 or container_roots[0]["SPDXID"] != root_id:
+        raise ValueError("sbom_graph")
 
     if require_document_describes:
         if document.get("documentDescribes") != [root_id]:
@@ -268,6 +387,178 @@ def _validate_spdx_image_binding(
         or root.get("externalRefs") != expected_external_refs
     ):
         raise ValueError("sbom_subject_binding")
+    return root_id
+
+
+def _parse_bound_sbom_namespace(namespace: str) -> re.Match[str] | None:
+    if not namespace.startswith(_BOUND_SBOM_NAMESPACE_PREFIX):
+        return None
+    match = _BOUND_SBOM_NAMESPACE.fullmatch(namespace)
+    if match is None:
+        raise ValueError("sbom_binding_state")
+    return match
+
+
+def _binding_annotation(
+    document: dict[str, Any],
+    *,
+    annotations_present: bool,
+    original_namespace: str,
+    unbound_content_sha256: str,
+) -> dict[str, Any]:
+    record = {
+        "annotations_present": annotations_present,
+        "original_namespace": original_namespace,
+        "unbound_content_sha256": unbound_content_sha256,
+    }
+    return {
+        "annotationDate": document["creationInfo"]["created"],
+        "annotationType": "OTHER",
+        "annotator": _SBOM_BINDING_ANNOTATOR,
+        "comment": _SBOM_BINDING_COMMENT_PREFIX
+        + json.dumps(record, ensure_ascii=True, separators=(",", ":"), sort_keys=True),
+    }
+
+
+def _parse_binding_annotation(document: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    annotations = document.get("annotations", [])
+    matches = [
+        (index, annotation)
+        for index, annotation in enumerate(annotations)
+        if annotation.get("annotator") == _SBOM_BINDING_ANNOTATOR
+        or annotation.get("comment", "").startswith(_SBOM_BINDING_COMMENT_PREFIX)
+    ]
+    if len(matches) != 1:
+        raise ValueError("sbom_binding_state")
+    index, annotation = matches[0]
+    if (
+        annotation.get("annotator") != _SBOM_BINDING_ANNOTATOR
+        or annotation.get("annotationType") != "OTHER"
+        or annotation.get("annotationDate") != document["creationInfo"]["created"]
+        or not isinstance(annotation.get("comment"), str)
+        or not annotation["comment"].startswith(_SBOM_BINDING_COMMENT_PREFIX)
+    ):
+        raise ValueError("sbom_binding_state")
+    record = _loads_json(
+        annotation["comment"].removeprefix(_SBOM_BINDING_COMMENT_PREFIX),
+        "sbom_binding_state",
+    )
+    if not isinstance(record, dict) or set(record) != _SBOM_BINDING_KEYS:
+        raise ValueError("sbom_binding_state")
+    if not isinstance(record["annotations_present"], bool):
+        raise ValueError("sbom_binding_state")
+    if (
+        not isinstance(record["original_namespace"], str)
+        or _SYFT_IMAGE_NAMESPACE.fullmatch(record["original_namespace"]) is None
+        or _HEX_SHA256.fullmatch(str(record["unbound_content_sha256"])) is None
+    ):
+        raise ValueError("sbom_binding_state")
+    return index, record
+
+
+def _validate_unbound_spdx(
+    document: dict[str, Any],
+    *,
+    subject: str,
+    digest: str,
+) -> tuple[str, str, bool]:
+    namespace = document.get("documentNamespace")
+    if not isinstance(namespace, str):
+        raise ValueError("sbom_document")
+    if _parse_bound_sbom_namespace(namespace) is not None:
+        raise ValueError("sbom_binding_state")
+    if _SYFT_IMAGE_NAMESPACE.fullmatch(namespace) is None:
+        raise ValueError("sbom_binding_state")
+    if "documentDescribes" in document:
+        raise ValueError("sbom_binding_state")
+    annotations = document.get("annotations", [])
+    if any(
+        isinstance(annotation, dict)
+        and (
+            annotation.get("annotator") == _SBOM_BINDING_ANNOTATOR
+            or str(annotation.get("comment", "")).startswith(_SBOM_BINDING_COMMENT_PREFIX)
+        )
+        for annotation in annotations
+    ):
+        raise ValueError("sbom_binding_state")
+    creators = document.get("creationInfo", {}).get("creators", [])
+    if "Tool: syft-1.50.0" not in creators:
+        raise ValueError("sbom_binding_state")
+    _validate_spdx_image_binding(
+        document,
+        subject=subject,
+        digest=digest,
+        require_document_describes=False,
+    )
+    return _canonical_json_sha256(document), namespace, "annotations" in document
+
+
+def _validate_bound_spdx(
+    document: dict[str, Any],
+    *,
+    role: str,
+    source_commit: str,
+    digest: str,
+    workflow: dict[str, Any],
+    expected_unbound_content_sha256: str,
+) -> str:
+    namespace = document.get("documentNamespace")
+    if not isinstance(namespace, str):
+        raise ValueError("sbom_document")
+    match = _parse_bound_sbom_namespace(namespace)
+    if match is None:
+        raise ValueError("sbom_binding_state")
+    expected_tuple = {
+        "run_id": str(workflow["run_id"]),
+        "run_attempt": str(workflow["run_attempt"]),
+        "role": role,
+        "source_commit": source_commit,
+        "digest": digest.removeprefix("sha256:"),
+    }
+    if any(match.group(key) != value for key, value in expected_tuple.items()):
+        raise ValueError("sbom_binding_state")
+
+    subject = SUBJECTS[role]
+    root_id = _validate_spdx_image_binding(
+        document,
+        subject=subject,
+        digest=digest,
+        require_document_describes=True,
+    )
+    annotation_index, binding = _parse_binding_annotation(document)
+    restored = copy.deepcopy(document)
+    restored_annotations = restored["annotations"]
+    restored_annotations.pop(annotation_index)
+    if binding["annotations_present"]:
+        restored["annotations"] = restored_annotations
+    elif restored_annotations:
+        raise ValueError("sbom_binding_state")
+    else:
+        restored.pop("annotations")
+    restored.pop("documentDescribes")
+    restored["documentNamespace"] = binding["original_namespace"]
+    unbound_content_sha256, _, _ = _validate_unbound_spdx(
+        restored,
+        subject=subject,
+        digest=digest,
+    )
+    if (
+        binding["unbound_content_sha256"] != expected_unbound_content_sha256
+        or unbound_content_sha256 != expected_unbound_content_sha256
+    ):
+        raise ValueError("sbom_binding_state")
+
+    content_sha256 = _sbom_content_sha256(document)
+    if match.group("content_sha256") != content_sha256:
+        raise ValueError("sbom_binding_state")
+    if namespace != _sbom_document_namespace(
+        role=role,
+        source_commit=source_commit,
+        digest=digest,
+        workflow=workflow,
+        content_sha256=content_sha256,
+    ):
+        raise ValueError("sbom_binding_state")
     return root_id
 
 
@@ -320,7 +611,7 @@ def _validate_provenance_files(
         if _sha256(reverification_path) != provenance["reverification_sha256"]:
             raise ValueError("provenance_assembly_reverification_sha256")
 
-    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    bundle = _load_json(bundle_path, "provenance_bundle")
     if not isinstance(bundle, dict) or bundle.get("mediaType") != (
         "application/vnd.dev.sigstore.bundle.v0.3+json"
     ):
@@ -339,12 +630,19 @@ def _validate_provenance_files(
     _required_mapping(bundle.get("verificationMaterial"), "provenance_bundle_verification_material")
     try:
         decoded_payload = base64.b64decode(envelope.get("payload", ""), validate=True)
-        bundle_statement = json.loads(decoded_payload)
-    except (binascii.Error, json.JSONDecodeError, TypeError, ValueError) as exc:
+        bundle_statement = _loads_json(decoded_payload, "provenance_bundle_payload")
+    except _DuplicateJsonKey:
+        raise
+    except (binascii.Error, TypeError, ValueError) as exc:
+        if str(exc) == "json_duplicate_key":
+            raise
         raise ValueError("provenance_bundle_payload") from exc
-    verified = json.loads(verification_path.read_text(encoding="utf-8"))
+    verified = _load_json(verification_path, "provenance_verification")
     if require_reverification:
-        reverified = json.loads(reverification_path.read_text(encoding="utf-8"))
+        reverified = _load_json(
+            reverification_path,
+            "provenance_assembly_reverification",
+        )
         if reverified != verified:
             raise ValueError("provenance_assembly_reverification")
     entries = _required_list(verified, "provenance_verification")
@@ -420,6 +718,7 @@ def _validate_sbom_file(
     evidence_root: Path,
     role: str,
     expected_sha256: str,
+    expected_unbound_content_sha256: str,
     source_commit: str,
     digest: str,
     workflow: dict[str, Any],
@@ -429,24 +728,17 @@ def _validate_sbom_file(
         raise ValueError("sbom_missing")
     if _sha256(path) != expected_sha256:
         raise ValueError("sbom_sha256")
-    document = json.loads(path.read_text(encoding="utf-8"))
+    document = _load_json(path, "sbom_document")
     if not isinstance(document, dict):
         raise ValueError("sbom_document")
-    _validate_spdx_image_binding(
+    _validate_bound_spdx(
         document,
-        subject=SUBJECTS[role],
-        digest=digest,
-        require_document_describes=True,
-    )
-    content_sha256 = _sbom_content_sha256(document)
-    if document.get("documentNamespace") != _sbom_document_namespace(
         role=role,
         source_commit=source_commit,
         digest=digest,
         workflow=workflow,
-        content_sha256=content_sha256,
-    ):
-        raise ValueError("sbom_subject_binding")
+        expected_unbound_content_sha256=expected_unbound_content_sha256,
+    )
 
 
 def _validate_scan_file(
@@ -461,7 +753,7 @@ def _validate_scan_file(
         raise ValueError("scan_missing")
     if _sha256(path) != expected_sha256:
         raise ValueError("scan_sha256")
-    report = json.loads(path.read_text(encoding="utf-8"))
+    report = _load_json(path, "scan_document")
     if not isinstance(report, dict) or report.get("ArtifactName") != immutable_ref:
         raise ValueError("scan_subject")
     if not isinstance(report.get("SchemaVersion"), int) or report["SchemaVersion"] < 1:
@@ -536,11 +828,17 @@ def validate_subject(
     if sbom["ref"] != f"oci://{expected_subject}@{digest}#sbom-spdx-attestation":
         raise ValueError("sbom_ref")
     sbom_sha256 = _fullmatch(_HEX_SHA256, sbom["sha256"], "sbom_sha256")
+    unbound_content_sha256 = _fullmatch(
+        _HEX_SHA256,
+        sbom["unbound_content_sha256"],
+        "sbom_unbound_content_sha256",
+    )
     if evidence_root is not None:
         _validate_sbom_file(
             evidence_root=evidence_root,
             role=role,
             expected_sha256=sbom_sha256,
+            expected_unbound_content_sha256=unbound_content_sha256,
             source_commit=source_commit,
             digest=digest,
             workflow=workflow,
@@ -739,7 +1037,7 @@ def assemble_manifest(
 
 
 def _load_object(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = _load_json(path, str(path))
     return _object(payload, str(path))
 
 
@@ -807,6 +1105,7 @@ def _subject_command(args: argparse.Namespace) -> None:
                 "format": "spdx-json",
                 "ref": args.sbom_ref,
                 "sha256": _sha256(sbom_path),
+                "unbound_content_sha256": args.sbom_unbound_content_sha256,
             },
             "provenance": {
                 "predicate_type": "https://slsa.dev/provenance/v1",
@@ -845,6 +1144,25 @@ def _subject_command(args: argparse.Namespace) -> None:
     _write_json(Path(args.output), record)
 
 
+def _spdx_source_hash_command(args: argparse.Namespace) -> None:
+    if args.role not in SUBJECTS:
+        raise ValueError("role")
+    digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
+    subject = SUBJECTS[args.role]
+    if args.image_ref != f"{subject}@{digest}":
+        raise ValueError("sbom_subject_binding")
+    path = Path(args.sbom_file)
+    if path.name != f"sbom-{args.role}.spdx.json":
+        raise ValueError("sbom_path")
+    document = _load_object(path)
+    unbound_content_sha256, _, _ = _validate_unbound_spdx(
+        document,
+        subject=subject,
+        digest=digest,
+    )
+    print(unbound_content_sha256)
+
+
 def _bind_spdx_command(args: argparse.Namespace) -> None:
     if args.role not in SUBJECTS:
         raise ValueError("role")
@@ -861,16 +1179,51 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         "run_id": args.workflow_run_id,
         "run_attempt": args.workflow_run_attempt,
     }
+    expected_unbound_content_sha256 = _fullmatch(
+        _HEX_SHA256,
+        args.unbound_content_sha256,
+        "sbom_unbound_content_sha256",
+    )
     path = Path(args.sbom_file)
     if path.name != f"sbom-{args.role}.spdx.json":
         raise ValueError("sbom_path")
     document = _load_object(path)
+    namespace = document.get("documentNamespace")
+    if not isinstance(namespace, str):
+        raise ValueError("sbom_document")
+    if _parse_bound_sbom_namespace(namespace) is not None:
+        _validate_bound_spdx(
+            document,
+            role=args.role,
+            source_commit=source_commit,
+            digest=digest,
+            workflow=workflow,
+            expected_unbound_content_sha256=expected_unbound_content_sha256,
+        )
+        return
+
+    unbound_content_sha256, original_namespace, annotations_present = (
+        _validate_unbound_spdx(
+            document,
+            subject=subject,
+            digest=digest,
+        )
+    )
+    if unbound_content_sha256 != expected_unbound_content_sha256:
+        raise ValueError("sbom_binding_state")
     root_id = _validate_spdx_image_binding(
         document,
         subject=subject,
         digest=digest,
         require_document_describes=False,
     )
+    binding_annotation = _binding_annotation(
+        document,
+        annotations_present=annotations_present,
+        original_namespace=original_namespace,
+        unbound_content_sha256=unbound_content_sha256,
+    )
+    document.setdefault("annotations", []).append(binding_annotation)
     document["documentDescribes"] = [root_id]
     content_sha256 = _sbom_content_sha256(document)
     document["documentNamespace"] = _sbom_document_namespace(
@@ -885,6 +1238,14 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         subject=subject,
         digest=digest,
         require_document_describes=True,
+    )
+    _validate_bound_spdx(
+        document,
+        role=args.role,
+        source_commit=source_commit,
+        digest=digest,
+        workflow=workflow,
+        expected_unbound_content_sha256=expected_unbound_content_sha256,
     )
     _write_json(path, document)
 
@@ -930,6 +1291,7 @@ def main() -> int:
     subject.add_argument("--run-attempt", required=True, type=int)
     subject.add_argument("--sbom-ref", required=True)
     subject.add_argument("--sbom-file", required=True)
+    subject.add_argument("--sbom-unbound-content-sha256", required=True)
     subject.add_argument("--provenance-attestation-id", required=True)
     subject.add_argument("--provenance-ref", required=True)
     subject.add_argument("--provenance-bundle", required=True)
@@ -950,7 +1312,17 @@ def main() -> int:
     bind_spdx.add_argument("--image-ref", required=True)
     bind_spdx.add_argument("--workflow-run-id", required=True)
     bind_spdx.add_argument("--workflow-run-attempt", required=True, type=int)
+    bind_spdx.add_argument("--unbound-content-sha256", required=True)
     bind_spdx.add_argument("--sbom-file", required=True)
+
+    spdx_source_hash = subparsers.add_parser(
+        "spdx-source-hash",
+        help="Validate and hash one unbound pinned-Syft image SPDX document.",
+    )
+    spdx_source_hash.add_argument("--role", required=True, choices=sorted(SUBJECTS))
+    spdx_source_hash.add_argument("--manifest-digest", required=True)
+    spdx_source_hash.add_argument("--image-ref", required=True)
+    spdx_source_hash.add_argument("--sbom-file", required=True)
 
     target = subparsers.add_parser(
         "subject-target",
@@ -987,6 +1359,9 @@ def main() -> int:
         return 0
     if args.command == "bind-spdx":
         _bind_spdx_command(args)
+        return 0
+    if args.command == "spdx-source-hash":
+        _spdx_source_hash_command(args)
         return 0
     if args.command == "subject-target":
         _subject_target_command(args)

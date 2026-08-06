@@ -36,6 +36,8 @@ RUN_ATTEMPT = 2
 SBOM_NAMESPACE_PLACEHOLDER = (
     f"https://github.com/{WORKFLOW_REPOSITORY}/sbom/content-pending"
 )
+SBOM_BINDING_ANNOTATOR = "Tool: ai-platform-release-image-manifest"
+SBOM_BINDING_COMMENT_PREFIX = "ai-platform.sbom-binding.v1:"
 
 
 def _artifact_name(role: str) -> str:
@@ -60,10 +62,22 @@ def _sbom_namespace(role: str, document: dict[str, object]) -> str:
     )
 
 
+def _canonical_json_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _syft_spdx(role: str) -> dict[str, object]:
     subject = f"ghcr.io/demonsxxxxxx/ai-platform-{role}"
     root_id = f"SPDXRef-DocumentRoot-Image-ghcr.io-demonsxxxxxx-ai-platform-{role}"
     dependency_id = f"SPDXRef-Package-apk-busybox-{role}"
+    file_id = f"SPDXRef-File-bin-busybox-{role}"
     digest_hex = MANIFEST_DIGEST.removeprefix("sha256:")
     return {
         "spdxVersion": "SPDX-2.3",
@@ -110,6 +124,16 @@ def _syft_spdx(role: str) -> dict[str, object]:
                 "copyrightText": "NOASSERTION",
             },
         ],
+        "files": [
+            {
+                "fileName": "/bin/busybox",
+                "SPDXID": file_id,
+                "checksums": [{"algorithm": "SHA256", "checksumValue": "1" * 64}],
+                "licenseConcluded": "NOASSERTION",
+                "licenseInfoInFiles": ["NOASSERTION"],
+                "copyrightText": "NOASSERTION",
+            }
+        ],
         "relationships": [
             {
                 "spdxElementId": "SPDXRef-DOCUMENT",
@@ -119,6 +143,11 @@ def _syft_spdx(role: str) -> dict[str, object]:
             {
                 "spdxElementId": root_id,
                 "relatedSpdxElement": dependency_id,
+                "relationshipType": "CONTAINS",
+            },
+            {
+                "spdxElementId": dependency_id,
+                "relatedSpdxElement": file_id,
                 "relationshipType": "CONTAINS",
             },
         ],
@@ -161,7 +190,27 @@ def _syft_directory_spdx(role: str) -> dict[str, object]:
 
 def _bound_spdx(role: str) -> dict[str, object]:
     document = _syft_spdx(role)
+    unbound_content_sha256 = _canonical_json_sha256(document)
     root_id = document["relationships"][0]["relatedSpdxElement"]
+    binding = {
+        "annotations_present": False,
+        "original_namespace": document["documentNamespace"],
+        "unbound_content_sha256": unbound_content_sha256,
+    }
+    document["annotations"] = [
+        {
+            "annotationDate": document["creationInfo"]["created"],
+            "annotationType": "OTHER",
+            "annotator": SBOM_BINDING_ANNOTATOR,
+            "comment": SBOM_BINDING_COMMENT_PREFIX
+            + json.dumps(
+                binding,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        }
+    ]
     document["documentDescribes"] = [root_id]
     document["documentNamespace"] = _sbom_namespace(role, document)
     return document
@@ -189,6 +238,7 @@ def _subject(role: str) -> dict[str, object]:
                 "format": "spdx-json",
                 "ref": f"oci://{subject}@{MANIFEST_DIGEST}#sbom-spdx-attestation",
                 "sha256": SBOM_DIGEST.removeprefix("sha256:"),
+                "unbound_content_sha256": _canonical_json_sha256(_syft_spdx(role)),
             },
             "provenance": {
                 "predicate_type": "https://slsa.dev/provenance/v1",
@@ -354,6 +404,59 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _run_bind_spdx(
+    path: Path,
+    *,
+    role: str = "backend",
+    source_commit: str = SOURCE_COMMIT,
+    manifest_digest: str = MANIFEST_DIGEST,
+    run_id: str = RUN_ID,
+    run_attempt: int = RUN_ATTEMPT,
+    unbound_content_sha256: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    subject = f"ghcr.io/demonsxxxxxx/ai-platform-{role}"
+    return _run_cli(
+        "bind-spdx",
+        "--role",
+        role,
+        "--source-commit",
+        source_commit,
+        "--manifest-digest",
+        manifest_digest,
+        "--image-ref",
+        f"{subject}@{manifest_digest}",
+        "--workflow-run-id",
+        run_id,
+        "--workflow-run-attempt",
+        str(run_attempt),
+        "--unbound-content-sha256",
+        unbound_content_sha256 or _canonical_json_sha256(_syft_spdx(role)),
+        "--sbom-file",
+        str(path),
+    )
+
+
+def _rewrite_bound_sbom(
+    tmp_path: Path,
+    manifest: dict[str, object],
+    mutation,
+) -> None:
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    document = json.loads(sbom_path.read_text(encoding="utf-8"))
+    mutation(document)
+    document["documentNamespace"] = _sbom_namespace("backend", document)
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+    manifest["subjects"][0]["evidence"]["sbom"]["sha256"] = hashlib.sha256(
+        sbom_path.read_bytes()
+    ).hexdigest()
+
+
+def _duplicate_json_member(path: Path, member: str) -> None:
+    payload = path.read_text(encoding="utf-8")
+    assert member in payload
+    path.write_text(payload.replace(member, f"{member}, {member}", 1), encoding="utf-8")
+
+
 def test_manifest_accepts_complete_digest_bound_evidence(tmp_path: Path):
     manifest = _manifest()
     _write_evidence(tmp_path, manifest)
@@ -401,7 +504,8 @@ def test_assemble_binds_fresh_provenance_reverification_to_ready_manifest(tmp_pa
 def test_bind_spdx_cli_writes_deterministic_immutable_subject_namespace(tmp_path: Path):
     sbom_path = tmp_path / "sbom-backend.spdx.json"
     document = _syft_spdx("backend")
-    document["documentNamespace"] = "https://anchore.example/generated/unstable-value"
+    document["documentNamespace"] = "https://anchore.com/syft/image/unstable-value"
+    unbound_content_sha256 = _canonical_json_sha256(document)
     sbom_path.write_text(json.dumps(document), encoding="utf-8")
 
     result = _run_cli(
@@ -418,6 +522,8 @@ def test_bind_spdx_cli_writes_deterministic_immutable_subject_namespace(tmp_path
         RUN_ID,
         "--workflow-run-attempt",
         str(RUN_ATTEMPT),
+        "--unbound-content-sha256",
+        unbound_content_sha256,
         "--sbom-file",
         str(sbom_path),
     )
@@ -437,8 +543,9 @@ def test_bind_spdx_namespace_cannot_collide_for_distinct_documents_with_same_tup
     for index, path in enumerate(paths):
         path.parent.mkdir()
         document = _syft_spdx("backend")
-        document["documentNamespace"] = f"https://anchore.example/generated/{index}"
+        document["documentNamespace"] = f"https://anchore.com/syft/image/{index}"
         document["creationInfo"]["created"] = f"2026-08-07T00:00:0{index}Z"
+        unbound_content_sha256 = _canonical_json_sha256(document)
         path.write_text(json.dumps(document), encoding="utf-8")
         result = _run_cli(
             "bind-spdx",
@@ -454,6 +561,8 @@ def test_bind_spdx_namespace_cannot_collide_for_distinct_documents_with_same_tup
             RUN_ID,
             "--workflow-run-attempt",
             str(RUN_ATTEMPT),
+            "--unbound-content-sha256",
+            unbound_content_sha256,
             "--sbom-file",
             str(path),
         )
@@ -463,6 +572,169 @@ def test_bind_spdx_namespace_cannot_collide_for_distinct_documents_with_same_tup
         json.loads(path.read_text(encoding="utf-8"))["documentNamespace"] for path in paths
     }
     assert len(namespaces) == 2
+
+
+def test_bind_spdx_is_byte_identical_on_exact_idempotent_reexecution(tmp_path: Path):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    sbom_path.write_text(json.dumps(_syft_spdx("backend")), encoding="utf-8")
+    first = _run_bind_spdx(sbom_path)
+    assert first.returncode == 0, first.stderr
+    bound_bytes = sbom_path.read_bytes()
+
+    second = _run_bind_spdx(sbom_path)
+
+    assert second.returncode == 0, second.stderr
+    assert sbom_path.read_bytes() == bound_bytes
+
+
+@pytest.mark.parametrize(
+    "namespace_mutation",
+    [
+        lambda value: value.replace(f"/{SOURCE_COMMIT}/", f"/{'f' * 40}/"),
+        lambda value: value.replace(f"/runs/{RUN_ID}/", "/runs/999999/"),
+        lambda value: value.replace(f"/attempts/{RUN_ATTEMPT}/", "/attempts/99/"),
+        lambda value: value.replace("/sbom/backend/", "/sbom/frontend/"),
+        lambda value: (
+            f"https://github.com/{WORKFLOW_REPOSITORY}/actions/runs/not-a-run/"
+            "attempts/2/sbom/backend/malformed"
+        ),
+    ],
+)
+def test_bind_spdx_rejects_existing_bound_namespace_tuple_or_grammar_swap(
+    tmp_path: Path,
+    namespace_mutation,
+):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    sbom_path.write_text(json.dumps(_syft_spdx("backend")), encoding="utf-8")
+    first = _run_bind_spdx(sbom_path)
+    assert first.returncode == 0, first.stderr
+    document = json.loads(sbom_path.read_text(encoding="utf-8"))
+    document["documentNamespace"] = namespace_mutation(document["documentNamespace"])
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+
+    second = _run_bind_spdx(sbom_path)
+
+    assert second.returncode != 0
+    assert "sbom_binding_state" in second.stderr
+
+
+def test_bind_spdx_rejects_coordinated_bound_content_and_namespace_replacement(
+    tmp_path: Path,
+):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    sbom_path.write_text(json.dumps(_syft_spdx("backend")), encoding="utf-8")
+    first = _run_bind_spdx(sbom_path)
+    assert first.returncode == 0, first.stderr
+    document = json.loads(sbom_path.read_text(encoding="utf-8"))
+    document["packages"][1]["licenseDeclared"] = "MIT"
+    document["documentNamespace"] = _sbom_namespace("backend", document)
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+
+    second = _run_bind_spdx(sbom_path)
+
+    assert second.returncode != 0
+    assert "sbom_binding_state" in second.stderr
+
+
+def test_bind_spdx_rejects_coordinated_bound_digest_root_and_purl_replacement(
+    tmp_path: Path,
+):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    sbom_path.write_text(json.dumps(_syft_spdx("backend")), encoding="utf-8")
+    first = _run_bind_spdx(sbom_path)
+    assert first.returncode == 0, first.stderr
+    replacement_digest = "sha256:" + "f" * 64
+    document = json.loads(sbom_path.read_text(encoding="utf-8"))
+    root = document["packages"][0]
+    root["versionInfo"] = replacement_digest
+    root["checksums"][0]["checksumValue"] = "f" * 64
+    root["externalRefs"][0]["referenceLocator"] = (
+        "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-backend@sha256%3A"
+        f"{'f' * 64}?arch="
+    )
+    document["documentNamespace"] = _sbom_namespace("backend", document).replace(
+        MANIFEST_DIGEST.removeprefix("sha256:"),
+        replacement_digest.removeprefix("sha256:"),
+    )
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+
+    second = _run_bind_spdx(sbom_path, manifest_digest=replacement_digest)
+
+    assert second.returncode != 0
+    assert "sbom_binding_state" in second.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda document: document["packages"].append(
+            {
+                **copy.deepcopy(document["packages"][0]),
+                "SPDXID": "SPDXRef-Disconnected-Container",
+            }
+        ),
+        lambda document: document["relationships"].append(
+            {
+                "spdxElementId": document["packages"][0]["SPDXID"],
+                "relatedSpdxElement": "SPDXRef-Missing-Node",
+                "relationshipType": "CONTAINS",
+            }
+        ),
+        lambda document: document["relationships"].append(
+            copy.deepcopy(document["relationships"][1])
+        ),
+        lambda document: document["relationships"].append(
+            {
+                "spdxElementId": document["packages"][0]["SPDXID"],
+                "relatedSpdxElement": "SPDXRef-DOCUMENT",
+                "relationshipType": "DESCRIBED_BY",
+            }
+        ),
+        lambda document: document["packages"][1].update(
+            {"SPDXID": "SPDXRef-DOCUMENT"}
+        ),
+        lambda document: document.setdefault("snippets", []).append(
+            {
+                "SPDXID": document["files"][0]["SPDXID"],
+                "snippetFromFile": document["files"][0]["SPDXID"],
+                "ranges": [],
+                "licenseConcluded": "NOASSERTION",
+                "licenseInfoInSnippets": ["NOASSERTION"],
+                "copyrightText": "NOASSERTION",
+            }
+        ),
+        lambda document: (
+            document.update(
+                {
+                    "externalDocumentRefs": [
+                        {
+                            "externalDocumentId": "DocumentRef-external",
+                            "spdxDocument": "https://example.invalid/external.spdx.json",
+                            "checksum": {"algorithm": "SHA256", "checksumValue": "2" * 64},
+                        }
+                    ]
+                }
+            ),
+            document["relationships"].append(
+                {
+                    "spdxElementId": document["packages"][0]["SPDXID"],
+                    "relatedSpdxElement": "DocumentRef-external:SPDXRef-Package",
+                    "relationshipType": "CONTAINS",
+                }
+            ),
+        ),
+    ],
+)
+def test_spdx_graph_is_closed_unique_and_single_rooted(
+    tmp_path: Path,
+    mutation,
+):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+    _rewrite_bound_sbom(tmp_path, manifest, mutation)
+
+    with pytest.raises(ValueError, match="sbom_graph"):
+        validate_manifest(manifest, evidence_root=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -581,6 +853,149 @@ def test_cli_assemble_and_verify_reject_noncanonical_role_multisets(
     assert result.returncode != 0
     expected_error = "expected_roles" if case == "mismatched" else "subject_roles"
     assert expected_error in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["ready-manifest", "source-record"])
+def test_cli_json_objects_reject_duplicate_top_level_or_nested_keys(
+    tmp_path: Path,
+    kind: str,
+):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+    if kind == "ready-manifest":
+        path = tmp_path / "release-image-manifest.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        _duplicate_json_member(path, f'"source_commit": "{SOURCE_COMMIT}"')
+        result = _run_cli(
+            "verify",
+            "--manifest",
+            str(path),
+            "--evidence-root",
+            str(tmp_path),
+            "--expected-role",
+            "backend",
+            "--expected-role",
+            "frontend",
+        )
+    else:
+        record = copy.deepcopy(manifest["subjects"][0])
+        provenance = record["evidence"]["provenance"]
+        provenance.pop("reverification_ref")
+        provenance.pop("reverification_sha256")
+        path = tmp_path / "subject-backend.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        _duplicate_json_member(path, f'"role": "{record["role"]}"')
+        result = _run_cli(
+            "subject-target",
+            "--subject-record",
+            str(path),
+            "--source-commit",
+            SOURCE_COMMIT,
+            "--workflow-repository",
+            WORKFLOW_REPOSITORY,
+            "--workflow-ref",
+            WORKFLOW_REF,
+            "--run-id",
+            RUN_ID,
+            "--run-attempt",
+            str(RUN_ATTEMPT),
+            "--expected-role",
+            "backend",
+        )
+
+    assert result.returncode != 0
+    assert "json_duplicate_key" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("kind", "member"),
+    [
+        ("sbom", '"spdxVersion": "SPDX-2.3"'),
+        ("scan", '"SchemaVersion": 2'),
+        (
+            "bundle",
+            '"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json"',
+        ),
+        (
+            "verified",
+            '"issuer": "https://token.actions.githubusercontent.com"',
+        ),
+        (
+            "reverified",
+            '"issuer": "https://token.actions.githubusercontent.com"',
+        ),
+    ],
+)
+def test_evidence_json_rejects_duplicate_keys_at_every_file_ingress(
+    tmp_path: Path,
+    kind: str,
+    member: str,
+):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+    paths = {
+        "sbom": tmp_path / "sbom-backend.spdx.json",
+        "scan": tmp_path / "trivy-backend.json",
+        "bundle": tmp_path / "provenance-backend.bundle.json",
+        "verified": tmp_path / "provenance-backend.verified.json",
+        "reverified": tmp_path / "provenance-backend.assembly-verified.json",
+    }
+    path = paths[kind]
+    _duplicate_json_member(path, member)
+    subject = manifest["subjects"][0]
+    if kind == "sbom":
+        subject["evidence"]["sbom"]["sha256"] = hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+    elif kind == "scan":
+        subject["evidence"]["scan"]["sha256"] = hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+    else:
+        key = {
+            "bundle": "bundle_sha256",
+            "verified": "verification_sha256",
+            "reverified": "reverification_sha256",
+        }[kind]
+        subject["evidence"]["provenance"][key] = hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+
+    with pytest.raises(ValueError, match="json_duplicate_key"):
+        validate_manifest(manifest, evidence_root=tmp_path)
+
+
+def test_dsse_payload_rejects_duplicate_nested_json_keys(tmp_path: Path):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+    bundle_path = tmp_path / "provenance-backend.bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    statement = json.loads(base64.b64decode(bundle["dsseEnvelope"]["payload"]))
+    payload = json.dumps(statement)
+    digest_member = f'"sha256": "{MANIFEST_DIGEST.removeprefix("sha256:")}"'
+    assert digest_member in payload
+    payload = payload.replace(digest_member, f"{digest_member}, {digest_member}", 1)
+    bundle["dsseEnvelope"]["payload"] = base64.b64encode(payload.encode()).decode()
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+    for name in (
+        "provenance-backend.verified.json",
+        "provenance-backend.assembly-verified.json",
+    ):
+        path = tmp_path / name
+        verification = json.loads(path.read_text(encoding="utf-8"))
+        verification[0]["attestation"]["bundle"] = bundle
+        path.write_text(json.dumps(verification), encoding="utf-8")
+    provenance = manifest["subjects"][0]["evidence"]["provenance"]
+    provenance["bundle_sha256"] = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+    provenance["verification_sha256"] = hashlib.sha256(
+        (tmp_path / "provenance-backend.verified.json").read_bytes()
+    ).hexdigest()
+    provenance["reverification_sha256"] = hashlib.sha256(
+        (tmp_path / "provenance-backend.assembly-verified.json").read_bytes()
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="json_duplicate_key"):
+        validate_manifest(manifest, evidence_root=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -802,7 +1217,7 @@ def test_spdx_document_namespace_binds_exact_subject_source_and_digest(tmp_path:
     ).hexdigest()
 
     Draft202012Validator(_schema()).validate(manifest)
-    with pytest.raises(ValueError, match="sbom_subject_binding"):
+    with pytest.raises(ValueError, match="sbom_binding_state"):
         validate_manifest(manifest, evidence_root=tmp_path)
 
 
@@ -822,7 +1237,7 @@ def test_schema_valid_syft_directory_sbom_cannot_be_coordinated_into_image_evide
         sbom_path.read_bytes()
     ).hexdigest()
 
-    with pytest.raises(ValueError, match="sbom_subject_binding"):
+    with pytest.raises(ValueError, match="sbom_(subject_binding|graph)"):
         validate_manifest(manifest, evidence_root=tmp_path)
 
 
@@ -901,7 +1316,7 @@ def test_spdx_root_image_identity_swaps_fail_with_coordinated_hash(
         sbom_path.read_bytes()
     ).hexdigest()
 
-    with pytest.raises(ValueError, match="sbom_subject_binding"):
+    with pytest.raises(ValueError, match="sbom_(subject_binding|graph)"):
         validate_manifest(manifest, evidence_root=tmp_path)
 
 

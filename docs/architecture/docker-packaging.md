@@ -127,6 +127,13 @@ and hash. Coordinated replacement of a bundle, its signature or verification
 material, and the caller-provided JSON/hashes therefore cannot produce a ready
 manifest without a successful fresh verification by the pinned CLI.
 
+All release-evidence JSON is parsed with a shared duplicate-key-rejecting
+loader before canonicalization or semantic checks, including nested objects in
+arrays and decoded DSSE payloads. Evidence hashes continue to cover the exact
+saved bytes. In particular, the downloaded provenance bundle is hashed and
+cryptographically verified as saved; it is never rewritten into a normalized
+JSON representation before verification.
+
 The JSON Schema rejects all expressible cross-role combinations, including
 Dockerfile, source tag, immutable image reference, SBOM/signature reference,
 provenance artifact reference, and scan artifact reference. JSON Schema cannot
@@ -139,19 +146,30 @@ root purpose is `CONTAINER`, and root `versionInfo`, SHA256 checksum, and
 canonical `pkg:oci` external reference all bind the independently captured
 registry manifest digest. A directory root, another image, alternate purl
 encoding, extra/missing root, or a role/digest/ref swap fails before binding.
-The trusted binder then adds the SPDX 2.3 `documentDescribes` form for the same
-root and replaces Syft's random namespace. The final absolute namespace binds
-workflow run and attempt, role, source commit, manifest digest, and a SHA256 of
-the complete normalized document computed with a fixed namespace placeholder.
-This avoids a circular hash while ensuring two distinct documents cannot claim
-the same namespace. The verifier recomputes the normalized content hash and all
-root bindings from the final bytes; namespace or manifest hash coordination
-alone is insufficient. This is an SPDX 2.3 structural and image-identity
-profile grounded in pinned Syft output; it is not a claim that JSON Schema alone
-can express cross-document identity. The verifier also requires every reported
-Trivy vulnerability to be an object with one of `UNKNOWN`, `LOW`, `MEDIUM`,
-`HIGH`, or `CRITICAL` and then rejects the configured blocking severities. It
-rehashes and parses the
+The supported graph is closed over the document, package, file, and snippet
+node collections: identifiers and relationship triples must be globally
+unique, every endpoint must resolve locally, and the sole `CONTAINER` package
+must be the one root named identically by `documentDescribes` and the
+`DOCUMENT DESCRIBES` relationship. External document references are rejected by
+this v1 profile rather than accepted without an external-document verification
+contract.
+
+Before mutation, the workflow captures a canonical hash of the exact unbound
+Syft document and independently carries it into the subject evidence. The
+trusted binder adds the SPDX 2.3 `documentDescribes` form, a standards-valid
+annotation recording the original Syft namespace and unbound hash, and a final
+namespace bound to workflow run and attempt, role, source commit, manifest
+digest, and normalized bound content. An unbound document may make this
+transition once. A bound document is accepted only as byte-identical,
+idempotent re-execution for the same tuple: the verifier reverses the binder's
+fields, reconstructs the original Syft document, and checks its hash against the
+independently captured value. Coordinated namespace, content, root, digest, or
+purl replacement therefore fails. This is an SPDX 2.3 structural and
+image-identity profile grounded in pinned Syft output; it is not a claim that
+JSON Schema alone can express cross-document identity. The verifier also
+requires every reported Trivy vulnerability to be an object with one of
+`UNKNOWN`, `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL` and then rejects the configured
+blocking severities. It rehashes and parses the
 provenance bundle, publish verification JSON, and assembly verification JSON;
 the two verification results and their embedded bundle must match exactly. It
 then checks the verified statement subject/digest and certificate-backed

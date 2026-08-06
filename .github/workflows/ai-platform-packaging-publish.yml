@@ -108,6 +108,18 @@ jobs:
           syft-version: v1.50.0
           upload-artifact: false
 
+      - name: Capture generated SPDX source identity
+        id: spdx-source
+        run: |
+          set -euo pipefail
+          source_hash="$(python tools/release_image_manifest.py spdx-source-hash \
+            --role "${{ matrix.role }}" \
+            --manifest-digest "$MANIFEST_DIGEST" \
+            --image-ref "$IMAGE_REF" \
+            --sbom-file "sbom-${{ matrix.role }}.spdx.json")"
+          [[ "$source_hash" =~ ^[0-9a-f]{64}$ ]]
+          printf 'sha256=%s\n' "$source_hash" >> "$GITHUB_OUTPUT"
+
       - name: Bind SPDX SBOM to immutable subject
         run: |
           set -euo pipefail
@@ -118,6 +130,7 @@ jobs:
             --image-ref "$IMAGE_REF" \
             --workflow-run-id "$GITHUB_RUN_ID" \
             --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --unbound-content-sha256 "${{ steps.spdx-source.outputs.sha256 }}" \
             --sbom-file "sbom-${{ matrix.role }}.spdx.json"
 
       - name: Scan published digest
@@ -238,6 +251,7 @@ jobs:
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --sbom-ref "oci://$IMAGE_REF#sbom-spdx-attestation" \
             --sbom-file "sbom-${{ matrix.role }}.spdx.json" \
+            --sbom-unbound-content-sha256 "${{ steps.spdx-source.outputs.sha256 }}" \
             --provenance-attestation-id "$PROVENANCE_ID" \
             --provenance-ref "$PROVENANCE_REF" \
             --provenance-bundle "provenance-${{ matrix.role }}.bundle.json" \

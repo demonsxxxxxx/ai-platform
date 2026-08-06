@@ -141,11 +141,12 @@
               "sbom": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["format", "ref", "sha256"],
+                "required": ["format", "ref", "sha256", "unbound_content_sha256"],
                 "properties": {
                   "format": {"const": "spdx-json"},
                   "ref": {"type": "string", "pattern": "^oci://ghcr\\.io/demonsxxxxxx/ai-platform-(backend|frontend)@sha256:[0-9a-f]{64}#sbom-spdx-attestation$"},
-                  "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                  "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "unbound_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
                 }
               },
               "provenance": {
