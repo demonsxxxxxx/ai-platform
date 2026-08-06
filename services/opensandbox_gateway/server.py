@@ -55,6 +55,7 @@ def load_config(environ: Mapping[str, str] | None = None) -> tuple[GatewayConfig
         callback_upstream_base=_required(env, "OPENSANDBOX_GATEWAY_CALLBACK_BASE"),
         openai_upstream_base=_required(env, "OPENSANDBOX_GATEWAY_OPENAI_BASE"),
         anthropic_upstream_base=_required(env, "OPENSANDBOX_GATEWAY_ANTHROPIC_BASE"),
+        upstream_transport=env.get("OPENSANDBOX_GATEWAY_UPSTREAM_TRANSPORT", "pinned_https"),
         executor_entrypoint=tuple(json.loads(env.get("OPENSANDBOX_GATEWAY_EXECUTOR_ENTRYPOINT_JSON", '["/app/docker-entrypoint.sh","uvicorn"]'))),
         request_timeout_seconds=float(env.get("OPENSANDBOX_GATEWAY_TIMEOUT_SECONDS", "5")),
         dispatch_timeout_seconds=float(env.get("OPENSANDBOX_GATEWAY_DISPATCH_TIMEOUT_SECONDS", "3600")),
@@ -66,7 +67,7 @@ def load_config(environ: Mapping[str, str] | None = None) -> tuple[GatewayConfig
         _required(env, "OPENSANDBOX_GATEWAY_EGRESS_POLICY_FILE"),
         _required(env, "OPENSANDBOX_GATEWAY_TLS_CERT_FILE"),
         _required(env, "OPENSANDBOX_GATEWAY_TLS_KEY_FILE"),
-        _app_scoped_upstream_ca_path(env),
+        _app_scoped_upstream_ca_path(env, required=config.upstream_transport == "pinned_https"),
         int(env.get("OPENSANDBOX_GATEWAY_LISTEN_PORT", "8443")),
     )
 
@@ -94,7 +95,11 @@ def run() -> None:
     application, store = build_application(config, state_path)
     policy_value = json.loads(pathlib.Path(policy_path).read_text(encoding="utf-8"))
     policy = BrokerPolicy(policy_value)
-    upstream_tls_context = _load_upstream_tls_context(upstream_ca_path)
+    upstream_tls_context = (
+        _load_upstream_tls_context(upstream_ca_path)
+        if config.upstream_transport == "pinned_https"
+        else None
+    )
     expected_bases = {
         "callback": config.callback_upstream_base,
         "openai": config.openai_upstream_base,
@@ -439,7 +444,10 @@ def _verify_certificate_ip_san(cert_path: str, public_authority: str) -> None:
         raise ValueError("gateway TLS certificate IP SAN does not exactly match public authority")
 
 
-def _app_scoped_upstream_ca_path(env: Mapping[str, str]) -> str:
+def _app_scoped_upstream_ca_path(env: Mapping[str, str], *, required: bool = True) -> str:
+    path = env.get("OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE", "")
+    if not required and not path:
+        return ""
     path = _required(env, "OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE")
     if path != UPSTREAM_CA_BUNDLE_PATH:
         raise ValueError("gateway upstream CA path is not app-scoped")

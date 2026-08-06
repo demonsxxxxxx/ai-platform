@@ -1,7 +1,13 @@
-# RETIRED: historical 211-to-s72 cross-host overlay. Public release-authority
-# deploy commands reject this selection; use docker-compose.s72-colocation.yml
-# only through tools/s72_colocation_authority.py.
 services:
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  minio:
+    ports: !reset []
+
   api:
     environment:
       SANDBOX_CONTAINER_PROVIDER: opensandbox
@@ -20,9 +26,13 @@ services:
       OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN: ${OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN:?set OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN}
       OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT: ${OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT:?set OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT}
       OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT: ${OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT:?set OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT}
-      OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL: ${OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL:?set OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL}
-      OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL: ${OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL:?set OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL}
-      OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL: ${OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL:?set OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL}
+      OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL: http://127.0.0.1:18043
+      OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL: http://127.0.0.1:18043/openai/v1
+      OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL: http://127.0.0.1:18043/anthropic
+    ports: !reset []
+    networks:
+      - default
+      - s72_callback
 
   worker:
     environment:
@@ -42,20 +52,57 @@ services:
       OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN: ${OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN:?set OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN}
       OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT: ${OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT:?set OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT}
       OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT: ${OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT:?set OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT}
-      OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL: ${OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL:?set OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL}
-      OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL: ${OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL:?set OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL}
-      OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL: ${OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL:?set OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL}
+      OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL: http://127.0.0.1:18043
+      OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL: http://127.0.0.1:18043/openai/v1
+      OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL: http://127.0.0.1:18043/anthropic
 
-  frontend:
+  s72-broker-entry:
+    image: ${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}
+    container_name: ai-platform-s72-broker-entry
+    labels:
+      ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
+      ai-platform.source-dirty: "false"
+      ai-platform.release-owner: repo-local-compose
+      ai-platform.release-role: s72-broker-entry
+      ai-platform.security-domain: control-plane-broker
+    restart: unless-stopped
+    user: "101:101"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
-      NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-opensandbox
-      AI_PLATFORM_S72_BRIDGE_SERVER_NAME: ${AI_PLATFORM_S72_BRIDGE_SERVER_NAME:?set AI_PLATFORM_S72_BRIDGE_SERVER_NAME}
-      AI_PLATFORM_S72_BRIDGE_PORT: ${AI_PLATFORM_S72_BRIDGE_PORT:-18443}
-      AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP: ${AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP:?set AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP}
+      NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-s72-colocation
+      AI_PLATFORM_API_UPSTREAM: http://api:8020
+      AI_PLATFORM_MODEL_UPSTREAM: ${AI_PLATFORM_MODEL_UPSTREAM:?set AI_PLATFORM_MODEL_UPSTREAM}
     ports:
-      - "${AI_PLATFORM_S72_BRIDGE_PORT:-18443}:8443"
+      - "127.0.0.1:18043:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - s72_callback
+      - s72_model_host
     volumes:
-      - "${AI_PLATFORM_S72_BRIDGE_TLS_CERT_FILE:?set AI_PLATFORM_S72_BRIDGE_TLS_CERT_FILE}:/etc/nginx/s72-bridge/tls/fullchain.pem:ro"
-      - "${AI_PLATFORM_S72_BRIDGE_TLS_KEY_FILE:?set AI_PLATFORM_S72_BRIDGE_TLS_KEY_FILE}:/etc/nginx/s72-bridge/tls/privkey.pem:ro"
+      - ./s72-broker-nginx.conf.template:/etc/nginx/templates-s72-colocation/default.conf.template:ro
+    tmpfs:
+      - /etc/nginx/conf.d:size=1m,mode=0755,uid=101,gid=101
+      - /var/cache/nginx:size=16m,mode=0755,uid=101,gid=101
+      - /var/run:size=1m,mode=0755,uid=101,gid=101
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      api:
+        condition: service_started
+
+networks:
+  s72_callback:
+    internal: true
+    labels:
+      ai-platform.security-domain: callback-only
+  s72_model_host:
+    labels:
+      ai-platform.security-domain: model-host-only

@@ -95,9 +95,38 @@ DEFAULT_MANAGED_ENV_RELATIVE_PATH = Path("deploy/ai-platform/.env")
 MANAGED_RELEASE_DIRECTORY_NAME = "releases"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
+S72_COLOCATION_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.s72-colocation.yml"
 PROVIDER_OVERLAY_COMPOSE_SELECTIONS = frozenset(
     {
         (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), SANDBOX_COMPOSE_RELATIVE_PATH),
+        (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+        (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), S72_COLOCATION_COMPOSE_RELATIVE_PATH),
+    }
+)
+PROVIDER_OVERLAY_COMPOSE_TRANSITIONS = frozenset(
+    {
+        frozenset(
+            {
+                (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), SANDBOX_COMPOSE_RELATIVE_PATH),
+                (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+            }
+        ),
+        frozenset(
+            {
+                (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), SANDBOX_COMPOSE_RELATIVE_PATH),
+                (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), S72_COLOCATION_COMPOSE_RELATIVE_PATH),
+            }
+        ),
+        frozenset(
+            {
+                (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+                (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), S72_COLOCATION_COMPOSE_RELATIVE_PATH),
+            }
+        ),
+    }
+)
+RETIRED_FUTURE_DEPLOY_COMPOSE_SELECTIONS = frozenset(
+    {
         (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH),
     }
 )
@@ -1713,6 +1742,19 @@ def resolve_compose_files(
     return _ComposeSelection(root, tuple(relative_paths), tuple(absolute_paths), working_dir, ",".join(path.as_posix() for path in absolute_paths))
 
 
+def assert_cli_deploy_compose_selection_is_active(
+    compose_files: Sequence[str | Path] | None,
+) -> None:
+    if compose_files is None:
+        return
+    selection = tuple(Path(value).as_posix() for value in compose_files)
+    if selection in RETIRED_FUTURE_DEPLOY_COMPOSE_SELECTIONS:
+        raise ReleaseAuthorityError(
+            "legacy cross-host OpenSandbox Compose selection is retired; "
+            "use tools/s72_colocation_authority.py"
+        )
+
+
 def _normalized_release_root(release_root: Path) -> Path:
     supplied = Path(release_root)
     if not supplied.is_absolute() or ".." in supplied.parts:
@@ -2199,7 +2241,7 @@ def _compose_ownership_selection(
     if observed.relative_paths == target.relative_paths:
         return observed
     transition = frozenset({observed.relative_paths, target.relative_paths})
-    if transition == PROVIDER_OVERLAY_COMPOSE_SELECTIONS:
+    if transition in PROVIDER_OVERLAY_COMPOSE_TRANSITIONS:
         return observed
     return None
 
@@ -3126,6 +3168,8 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
+        if args.command in {"deploy", "deploy-main-commit"}:
+            assert_cli_deploy_compose_selection_is_active(args.compose_files)
         if args.command == "preserve-dirty":
             destination = preserve_dirty_source(args.repo_root, args.output_root)
             _write_json({"preserved": True, "path": str(destination)}, None)

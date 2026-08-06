@@ -1,0 +1,40 @@
+[Unit]
+Description=AI Platform managed OpenSandbox server on s72
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/ai-platform/opensandbox/server.env
+ExecStartPre=-/usr/bin/docker rm -f ai-platform-opensandbox-server
+ExecStart=/usr/bin/docker run --rm --name ai-platform-opensandbox-server --label ai-platform.source-commit=@@SOURCE_COMMIT@@ --label ai-platform.release-owner=s72-colocation-authority --label ai-platform.release-role=opensandbox-server --label ai-platform.security-domain=execution-controller --user ${OPENSANDBOX_SERVER_UID}:${OPENSANDBOX_SERVER_GID} --group-add ${OPENSANDBOX_DOCKER_SOCKET_GID} --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --network ai-platform-opensandbox-lifecycle --publish 127.0.0.1:8080:8080 --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock,readonly --mount type=bind,src=/etc/ai-platform/opensandbox/server.toml,dst=/etc/opensandbox/config.toml,readonly --mount type=bind,src=/var/lib/ai-platform-opensandbox,dst=/var/lib/ai-platform-opensandbox --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m ${OPENSANDBOX_SERVER_IMAGE} --config /etc/opensandbox/config.toml
+ExecStop=/usr/bin/docker stop --time 15 ai-platform-opensandbox-server
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=120s
+TimeoutStopSec=30s
+KillMode=process
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/var/run/docker.sock /etc/ai-platform/opensandbox
+ReadWritePaths=/var/lib/ai-platform-opensandbox
+
+[Install]
+WantedBy=multi-user.target

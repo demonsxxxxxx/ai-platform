@@ -960,7 +960,7 @@ class HelperRuntimeAdapter:
 
 
 class BrokerPolicy:
-    """Exact HTTPS broker targets and their pinned IP addresses."""
+    """Exact governed broker targets and their pinned IP addresses."""
 
     def __init__(self, value: Mapping[str, Any]) -> None:
         if set(value) != {"version", "targets"} or value.get("version") != 1 or not isinstance(value.get("targets"), dict):
@@ -970,6 +970,7 @@ class BrokerPolicy:
         self.targets: dict[str, tuple[str, tuple[str, ...]]] = {}
         bases: dict[str, str] = {}
         pinned_ips: set[str] = set()
+        schemes: set[str] = set()
         for kind in ("callback", "openai", "anthropic"):
             item = value["targets"].get(kind)
             if not isinstance(item, dict) or set(item) != {"base_url", "expected_ips"}:
@@ -983,12 +984,29 @@ class BrokerPolicy:
             if len(ips) != 1:
                 raise ValueError("broker target must be pinned HTTPS")
             address = ipaddress.ip_address(ips[0])
-            if address.version != 4 or not address.is_private or address.is_loopback or address.is_unspecified:
+            try:
+                scheme = urllib.parse.urlsplit(item["base_url"]).scheme
+            except ValueError:
+                raise ValueError("broker target is invalid") from None
+            if address.version != 4 or address.is_unspecified or (
+                scheme == "https" and (not address.is_private or address.is_loopback)
+            ) or (
+                scheme == "http" and str(address) != "127.0.0.1"
+            ) or scheme not in {"http", "https"}:
                 raise ValueError("broker target must be pinned HTTPS")
             bases[kind] = item["base_url"]
             pinned_ips.add(ips[0])
+            schemes.add(scheme)
             self.targets[kind] = (item["base_url"], ips)
-        _validate_upstream_bridge_bases(bases["callback"], bases["openai"], bases["anthropic"])
+        if len(schemes) != 1:
+            raise ValueError("broker targets must share one transport")
+        self.transport = "loopback_http" if schemes == {"http"} else "pinned_https"
+        _validate_upstream_bridge_bases(
+            bases["callback"],
+            bases["openai"],
+            bases["anthropic"],
+            transport=self.transport,
+        )
         if len(pinned_ips) != 1:
             raise ValueError("broker targets must share one pinned IP")
 
@@ -1022,6 +1040,9 @@ class MailboxBroker:
             or upstream_tls_context.minimum_version < ssl.TLSVersion.TLSv1_2
         ):
             raise ValueError("broker upstream TLS context is invalid")
+        self.policy_transport = getattr(policy, "transport", "pinned_https")
+        if self.policy_transport == "loopback_http" and upstream_tls_context is not None:
+            raise ValueError("loopback broker must not load upstream TLS roots")
         self.store = store
         self.policy = policy
         self.upstream_tls_context = upstream_tls_context
@@ -1335,15 +1356,24 @@ class MailboxBroker:
             outbound_headers[auth_name] = auth_value
         remaining = created_at + min(requested_timeout, policy_timeout) - now
         deadline = operation_deadline(remaining)
-        if self.upstream_tls_context is None:
-            raise GatewayError(500, "broker_upstream_trust_unavailable")
-        connection = _PinnedHTTPSConnection(
-            target.hostname,
-            target.port or 443,
-            ips,
-            deadline,
-            self.upstream_tls_context,
-        )
+        if self.policy_transport == "pinned_https":
+            if self.upstream_tls_context is None:
+                raise GatewayError(500, "broker_upstream_trust_unavailable")
+            connection: http.client.HTTPConnection = _PinnedHTTPSConnection(
+                target.hostname,
+                target.port or 443,
+                ips,
+                deadline,
+                self.upstream_tls_context,
+            )
+        else:
+            if target.hostname != "127.0.0.1" or ips != ("127.0.0.1",):
+                raise GatewayError(500, "broker_policy_invalid")
+            connection = http.client.HTTPConnection(
+                "127.0.0.1",
+                target.port or 80,
+                timeout=deadline.remaining(),
+            )
         timer = deadline.arm(lambda: _close_http_connection(connection))
         try:
             request_path = target.path + (("?" + local.query) if local.query else "")

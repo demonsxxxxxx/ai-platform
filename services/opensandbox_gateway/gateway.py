@@ -281,6 +281,7 @@ class GatewayConfig:
     max_body_bytes: int = MAX_BODY_BYTES
     max_response_bytes: int = MAX_RESPONSE_BYTES
     max_concurrent_handlers: int = 32
+    upstream_transport: str = "pinned_https"
 
     def validate(self) -> None:
         """Reject ambiguous endpoints, weak secrets, and mutable subjects."""
@@ -321,6 +322,7 @@ class GatewayConfig:
             self.callback_upstream_base,
             self.openai_upstream_base,
             self.anthropic_upstream_base,
+            transport=self.upstream_transport,
         )
         if not 0.1 <= self.request_timeout_seconds <= 10.0:
             raise ValueError("request timeout is outside the bounded range")
@@ -1322,11 +1324,19 @@ def _metadata_matches(value: Any, expected: Mapping[str, str]) -> bool:
     return isinstance(value, Mapping) and all(value.get(key) == item for key, item in expected.items())
 
 
-def _validate_upstream_bridge_bases(callback: str, openai: str, anthropic: str) -> None:
-    """Require one canonical DNS origin and the three bridge v1 path shapes."""
+def _validate_upstream_bridge_bases(
+    callback: str,
+    openai: str,
+    anthropic: str,
+    *,
+    transport: str = "pinned_https",
+) -> None:
+    """Require one canonical origin and the three governed broker path shapes."""
 
     expected_paths = ((callback, ""), (openai, "/openai/v1"), (anthropic, "/anthropic"))
-    origins: set[tuple[str, int]] = set()
+    if transport not in {"pinned_https", "loopback_http"}:
+        raise ValueError("upstream broker transport is invalid")
+    origins: set[tuple[str, str, int]] = set()
     hostname_pattern = re.compile(
         r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
         r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
@@ -1338,9 +1348,14 @@ def _validate_upstream_bridge_bases(callback: str, openai: str, anthropic: str) 
         except (TypeError, ValueError):
             raise ValueError("upstream bridge bases are invalid") from None
         host = parsed.hostname or ""
+        expected_scheme = "https" if transport == "pinned_https" else "http"
+        valid_host = (
+            bool(hostname_pattern.fullmatch(host))
+            and host not in {"api.sandbox.internal", "host.docker.internal"}
+        ) if transport == "pinned_https" else host == "127.0.0.1"
         if (
-            parsed.scheme != "https"
-            or not hostname_pattern.fullmatch(host)
+            parsed.scheme != expected_scheme
+            or not valid_host
             or host != host.lower()
             or parsed.username
             or parsed.password
@@ -1350,11 +1365,10 @@ def _validate_upstream_bridge_bases(callback: str, openai: str, anthropic: str) 
             or port is None
             or not 1 <= port <= 65535
             or parsed.netloc != f"{host}:{port}"
-            or host in {"api.sandbox.internal", "host.docker.internal"}
-            or value != urllib.parse.urlunsplit(("https", f"{host}:{port}", expected_path, "", ""))
+            or value != urllib.parse.urlunsplit((expected_scheme, f"{host}:{port}", expected_path, "", ""))
         ):
             raise ValueError("upstream bridge bases are invalid")
-        origins.add((host, port))
+        origins.add((expected_scheme, host, port))
     if len(origins) != 1:
         raise ValueError("upstream bridge bases must share one origin")
 

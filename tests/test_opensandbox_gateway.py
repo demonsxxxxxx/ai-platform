@@ -2813,10 +2813,11 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
     assert callback_base == policy["targets"]["callback"]["base_url"]
     assert urllib.parse.urlsplit(callback_base).path == ""
     assert env_example.count(f"OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE={UPSTREAM_CA_BUNDLE_PATH}") == 1
-    assert {tuple(value["expected_ips"]) for value in policy["targets"].values()} == {("10.56.0.211",)}
+    assert {tuple(value["expected_ips"]) for value in policy["targets"].values()} == {("127.0.0.1",)}
     assert {urllib.parse.urlsplit(value["base_url"]).netloc for value in policy["targets"].values()} == {
-        "REQUIRED_FIXED_EGRESS_HOSTNAME:18443"
+        "127.0.0.1:18043"
     }
+    assert "OPENSANDBOX_GATEWAY_UPSTREAM_TRANSPORT=loopback_http" in env_example
     assert nginx.count("listen 8080;") == 1
     assert nginx.count("listen 8443 ssl;") == 1
     assert nginx.count("listen 8443 ssl default_server;") == 1
