@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/demonsxxxxxx/ai-platform/schemas/release-image-manifest.v1.schema.json",
+  "title": "AI Platform release image manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_commit", "repository", "workflow", "subjects"],
+  "properties": {
+    "schema_version": {"const": "ai-platform.release-image-manifest.v1"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "repository": {"const": "https://github.com/demonsxxxxxx/ai-platform.git"},
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "workflow_ref", "run_id", "run_attempt", "head_sha"],
+      "properties": {
+        "repository": {"const": "demonsxxxxxx/ai-platform"},
+        "workflow_ref": {"const": "demonsxxxxxx/ai-platform/.github/workflows/ai-platform-packaging-publish.yml@refs/heads/main"},
+        "run_id": {"type": "string", "pattern": "^[0-9]+$"},
+        "run_attempt": {"type": "integer", "minimum": 1},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "subjects": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "platform", "build", "image", "evidence"],
+        "properties": {
+          "role": {"enum": ["backend", "frontend"]},
+          "platform": {"const": "linux/amd64"},
+          "build": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["context", "dockerfile"],
+            "properties": {
+              "context": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "source_commit"],
+                "properties": {
+                  "path": {"const": "."},
+                  "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+                }
+              },
+              "dockerfile": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "sha256"],
+                "properties": {
+                  "path": {"enum": ["Dockerfile", "frontend/web/Dockerfile"]},
+                  "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              }
+            }
+          },
+          "image": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["subject", "source_tag", "manifest_digest", "immutable_ref"],
+            "properties": {
+              "subject": {"enum": ["ghcr.io/demonsxxxxxx/ai-platform-backend", "ghcr.io/demonsxxxxxx/ai-platform-frontend"]},
+              "source_tag": {"type": "string"},
+              "manifest_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+              "immutable_ref": {"type": "string"}
+            }
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sbom", "provenance", "signature", "scan"],
+            "properties": {
+              "sbom": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["format", "ref", "sha256"],
+                "properties": {
+                  "format": {"const": "spdx-json"},
+                  "ref": {"type": "string", "minLength": 1},
+                  "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              },
+              "provenance": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["predicate_type", "ref"],
+                "properties": {
+                  "predicate_type": {"const": "https://slsa.dev/provenance/v1"},
+                  "ref": {"type": "string", "minLength": 1}
+                }
+              },
+              "signature": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["identity", "issuer", "ref"],
+                "properties": {
+                  "identity": {"const": "https://github.com/demonsxxxxxx/ai-platform/.github/workflows/ai-platform-packaging-publish.yml@refs/heads/main"},
+                  "issuer": {"const": "https://token.actions.githubusercontent.com"},
+                  "ref": {"type": "string", "minLength": 1}
+                }
+              },
+              "scan": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["blocking_severities", "ref", "result", "scanner", "sha256"],
+                "properties": {
+                  "blocking_severities": {"const": ["HIGH", "CRITICAL"]},
+                  "ref": {"type": "string", "minLength": 1},
+                  "result": {"const": "passed"},
+                  "scanner": {"const": "trivy@0.70.0"},
+                  "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
