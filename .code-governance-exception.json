@@ -1,12 +1,12 @@
 {
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
-    "base_ref": "f473ce440b7deb0b38ff47a461dc842139cf9c5c",
-    "scope_sha256": "f3d126de9de126abd149240663806f5548d17ead47b241ac3b395be562869cb3"
+    "base_ref": "5d5a0c537baa0af2d9c47cb8d010a713c5240dc6",
+    "scope_sha256": "6bf41011715c0535cb0f977aae26d9fda9518ea61f6baec8b4140bf5a630e926"
   },
-  "expires_on": "2026-08-19",
+  "expires_on": "2026-08-20",
   "owner": "docker-packaging-phase1-issue-752",
-  "reason": "Allow the reviewed uv.lock authority while the same candidate adds a durable exact-path lock classification.",
+  "reason": "Allow the reviewed exact-path uv.lock classification while this Phase 1 packaging candidate exceeds generic size heuristics.",
   "violations": [
     {
       "code": "hot_file_growth",
