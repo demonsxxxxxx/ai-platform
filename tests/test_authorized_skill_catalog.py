@@ -26,7 +26,6 @@ from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAu
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.skills import catalog
 from app.skills.catalog import (
-    AVAILABLE,
     AuthorizedSkillCatalogBinding,
     AuthorizedSkillCatalogError,
     load_runtime_authorized_skill_catalog,
@@ -541,11 +540,12 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
             source="company-user-info-current",
         )
 
+    principal = await current_principal(user_id="user-a", tenant_id="tenant-a")
     authorization = await _reauthorize_worker_capabilities(
         object(),
         payload=payload,
         run_identity=run_identity,
-        current_principal_resolver=current_principal,
+        current_principal=principal,
     )
 
     assert authorization.denial is None
@@ -649,6 +649,10 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
         calls.append(("lock", kwargs))
         return locked_run
 
+    async def get_run(_conn, **kwargs):
+        calls.append(("preflight", kwargs))
+        return {**locked_run, "status": "queued"}
+
     async def fail_run(_conn, **kwargs):
         calls.append(("fail", kwargs))
         return True
@@ -667,6 +671,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
 
     monkeypatch.setattr("app.worker.transaction", transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
@@ -1063,6 +1068,10 @@ def _sdk_settings():
     )
 
 
+async def _acknowledge_capability_evidence(_evidence):
+    return True
+
+
 def _skill_policy_subject(skill_ids: list[str]) -> dict[str, Any]:
     return {
         "identity": "Skill",
@@ -1127,14 +1136,21 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
 
     async def query(prompt, options):
         captured["prompt_messages"] = [item async for item in prompt]
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "skill-c"},
-                "tool_use_id": "tool-use-c",
-            }
+        skill_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "skill-c"},
+            "tool_use_id": "tool-use-c",
+        }
+        await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+            skill_input,
+            "tool-use-c",
+            {},
+        )
+        await options.kwargs["hooks"]["PostToolUse"][0].hooks[0](
+            {**skill_input, "hook_event_name": "PostToolUse"},
+            "tool-use-c",
+            {},
         )
         yield ResultMessage()
 
@@ -1162,6 +1178,7 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
         skills=skill_ids,
         tool_policy_subjects=[_skill_policy_subject(skill_ids)],
         execution_policy="sandbox_brokered",
+        on_capability_evidence=_acknowledge_capability_evidence,
     )
 
     assert captured["skills"] == skill_ids
@@ -1222,17 +1239,26 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
             "Skill",
             {"skill": "minimax-docx"},
         )
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        for skill_id in (
+        for index, skill_id in enumerate((
             "ctd-32s73-stability-template-fill",
             "reference-fact-extraction",
-        ):
-            await hook(
-                {
-                    "hook_event_name": "PostToolUse",
-                    "tool_name": "Skill",
-                    "tool_input": {"skill": skill_id},
-                }
+        )):
+            tool_use_id = f"skill-tool-{index}"
+            skill_input = {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Skill",
+                "tool_input": {"skill": skill_id},
+                "tool_use_id": tool_use_id,
+            }
+            await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+                skill_input,
+                tool_use_id,
+                {},
+            )
+            await options.kwargs["hooks"]["PostToolUse"][0].hooks[0](
+                {**skill_input, "hook_event_name": "PostToolUse"},
+                tool_use_id,
+                {},
             )
         yield ResultMessage()
 
@@ -1263,6 +1289,7 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
         skills=skill_ids,
         tool_policy_subjects=[_skill_policy_subject(skill_ids)],
         execution_policy="sandbox_brokered",
+        on_capability_evidence=_acknowledge_capability_evidence,
         public_skill_metadata={
             "ctd-32s73-stability-template-fill": {
                 "name": "CTD stability template fill",

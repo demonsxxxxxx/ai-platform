@@ -697,6 +697,15 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
+    async def get_run(conn, *, tenant_id, run_id, for_update=False):
+        if _CURRENT_QUEUE_PAYLOAD is None:
+            return None
+        locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        locked_run["status"] = "queued"
+        return locked_run
+
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run, raising=False)
+
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return False
 
@@ -1319,6 +1328,67 @@ def locked_run_from_payload(payload):
             }
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_worker_rechecks_queued_state_after_current_principal_http(monkeypatch):
+    calls = []
+    transaction_depth = 0
+    get_run_count = 0
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+        calls.append("transaction_enter")
+        try:
+            yield object()
+        finally:
+            calls.append("transaction_exit")
+            transaction_depth -= 1
+
+    async def get_run(_conn, **_kwargs):
+        nonlocal get_run_count
+        get_run_count += 1
+        calls.append(f"get_run_{get_run_count}")
+        run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        run["status"] = "queued" if get_run_count == 1 else "running"
+        return run
+
+    async def resolve_current_principal(*, user_id, tenant_id):
+        assert transaction_depth == 0
+        calls.append("current_principal_http")
+        return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
+
+    async def mark_run_running(_conn, **_kwargs):
+        assert transaction_depth == 1
+        calls.append("mark_run_running")
+        return None
+
+    async def append_event(_conn, **_kwargs):
+        calls.append("skip_event")
+        return "event-a"
+
+    monkeypatch.setattr("app.worker.transaction", recording_transaction)
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker.resolve_current_principal", resolve_current_principal)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+
+    outcome = await process_run_payload(base_payload())
+
+    assert outcome == WorkerOutcome("skipped", "run-a")
+    assert calls == [
+        "transaction_enter",
+        "get_run_1",
+        "transaction_exit",
+        "current_principal_http",
+        "transaction_enter",
+        "mark_run_running",
+        "get_run_2",
+        "skip_event",
+        "transaction_exit",
+    ]
 
 
 def test_multi_agent_result_summary_counts_pending_and_cancelled_steps_like_sse_snapshot():
@@ -5664,6 +5734,7 @@ async def test_worker_skips_stale_queue_payload_when_run_row_is_missing(monkeypa
     assert outcome.status == "skipped"
     assert outcome.error_code == "stale_queue_payload"
     assert calls == [
+        ("get_run", "tenant-a", "run-a"),
         ("running", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
     ]
@@ -6148,6 +6219,7 @@ async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatc
     assert outcome.status == "skipped"
     assert not any(item[0] == "fail" for item in calls)
     assert calls == [
+        ("get_run", "tenant-a", "run-a"),
         ("running", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
         ("event", "skip", "worker"),
@@ -6232,6 +6304,7 @@ async def test_worker_skips_direct_runtime211_payload_for_terminal_run(monkeypat
     assert outcome.status == "skipped"
     assert not any(item[0] in {"adapter", "fail"} for item in calls)
     assert calls == [
+        ("get_run", "tenant-a", "run-a"),
         ("running", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
         ("event", "skip", "worker"),
