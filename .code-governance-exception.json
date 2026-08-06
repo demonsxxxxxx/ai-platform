@@ -2,11 +2,11 @@
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
     "base_ref": "e7b86136c02aa7d68d2c5b4e12a7d57faa6052a9",
-    "scope_sha256": "b73b672bde710571ca58a46aae860e724648d3a9ecd231668e11730c13510761"
+    "scope_sha256": "6f7bdad53419c9b52ade7ffa2a0252fd0ce53d2d8e093673dd5348bb2e97078e"
   },
   "expires_on": "2026-08-20",
-  "owner": "docker-packaging-phase1-issue-752",
-  "reason": "Allow the exact Phase 1 packaging uv.lock growth under the trusted-base governance policy.",
+  "owner": "docker-packaging-phase2-issue-752",
+  "reason": "Bind the stacked Phase 2 candidate to the exact Phase 1 predecessor and preserve only its existing uv.lock exceptions.",
   "violations": [
     {
       "code": "hot_file_growth",
