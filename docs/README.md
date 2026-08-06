@@ -19,6 +19,11 @@ does not represent deployed runtime state.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
 
+## Architecture
+
+- `architecture/docker-packaging.md` defines reproducible dependency authority,
+  immutable image bases, and CI image acceptance; it does not establish a registry or runtime subject.
+
 ## Operations
 
 `operations/211-release-operations-runbook.md` is the sole executable 211
