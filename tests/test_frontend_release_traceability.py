@@ -449,8 +449,9 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
         "python tools/deploy_frontend_static.py --help",
         "python tools/frontend_packaged_runtime_smoke.py --format json",
         "docker build",
-        "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
+        '--build-arg AI_PLATFORM_BUILD_COMMIT="$IMAGE_SOURCE_COMMIT"',
         "--build-arg AI_PLATFORM_BUILD_DIRTY=false",
+        '--build-arg AI_PLATFORM_BUILD_REPOSITORY="$IMAGE_SOURCE_REPOSITORY"',
         "-f frontend/web/Dockerfile",
         "docker run --rm --entrypoint cat",
         "ai-platform-build-provenance.json",
@@ -487,14 +488,22 @@ def test_frontend_dockerfile_has_no_registry_resolved_syntax_directive():
 
 def test_frontend_packaged_image_files_define_static_proxy_contract():
     dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
-    runtime_dockerfile = dockerfile.split("FROM nginx:1.27-alpine AS runtime", 1)[1]
+    node_base = (
+        "node:22.23.2-bookworm@"
+        "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
+    )
+    nginx_base = (
+        "nginx:1.27.5-alpine@"
+        "sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
+    )
+    runtime_dockerfile = dockerfile.split(f"FROM {nginx_base} AS runtime", 1)[1]
     npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
     nginx_template = Path("frontend/web/nginx.conf.template").read_text(encoding="utf-8")
     compose_overlay = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     runtime_compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     provenance_script = Path("frontend/web/scripts/write-build-provenance.mjs").read_text(encoding="utf-8")
 
-    assert "FROM node:22-bookworm AS build" in dockerfile
+    assert f"FROM {node_base} AS build" in dockerfile
     assert "apk add" not in dockerfile
     assert "ARG AI_PLATFORM_BUILD_COMMIT=unknown" in dockerfile
     assert "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}" in dockerfile
@@ -673,7 +682,10 @@ def test_frontend_release_traceability_rejects_commented_debian_build_stage(tmp_
     (frontend_root / "Dockerfile").write_text(
         "\n".join(
             [
-                "# FROM node:22-bookworm AS build",
+                (
+                    "# FROM node:22.23.2-bookworm@"
+                    "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a AS build"
+                ),
                 "FROM node:22-alpine AS build",
                 "ARG AI_PLATFORM_BUILD_COMMIT=unknown",
                 "ARG AI_PLATFORM_BUILD_DIRTY=unknown",
@@ -807,7 +819,11 @@ def missing_plain_dockerfile_copy_sources(dockerfile: str, repo_root: Path | Non
 
 def frontend_healthcheck_command():
     dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
-    runtime_dockerfile = dockerfile.split("FROM nginx:1.27-alpine AS runtime", 1)[1]
+    runtime_dockerfile = dockerfile.split(
+        "FROM nginx:1.27.5-alpine@"
+        "sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS runtime",
+        1,
+    )[1]
     healthcheck = next(
         line for line in runtime_dockerfile.splitlines() if line.startswith("HEALTHCHECK ")
     )
