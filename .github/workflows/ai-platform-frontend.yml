@@ -192,15 +192,28 @@ jobs:
           set -euo pipefail
           image="ai-platform-frontend:$IMAGE_SOURCE_COMMIT"
           container="ai-platform-frontend-ci"
+          emit_bounded_container_diagnostic() {
+            local state
+            state="$(docker inspect --format 'status={{.State.Status}} exit_code={{.State.ExitCode}}' "$container" 2>/dev/null || true)"
+            printf 'frontend_container_state=%s\n' "${state:-unavailable}"
+            docker logs --tail 80 "$container" 2>&1 \
+              | python -c 'import re, sys; lines = sys.stdin.readlines(); patterns = (("nginx_upstream_resolution", r"nginx: \[emerg\] host not found in upstream"), ("nginx_config", r"nginx: \[emerg\]"), ("application_startup", r"^(ERROR|CRITICAL):")); signals = [name for name, pattern in patterns if any(re.search(pattern, line) for line in lines)]; print(f"frontend_redacted_container_log_tail_lines={len(lines)}"); [print(f"frontend_container_log_signal={signal}") for signal in signals] or print("frontend_container_log_signal=redacted")' \
+              || true
+          }
           cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
-          docker run --detach --name "$container" --publish 127.0.0.1:18080:8080 "$image"
+          if ! docker run --detach --name "$container" --publish 127.0.0.1:18080:8080 \
+            --env AI_PLATFORM_API_UPSTREAM=http://127.0.0.1:8020 "$image"; then
+            emit_bounded_container_diagnostic
+            exit 1
+          fi
           for attempt in $(seq 1 30); do
             if test "$(curl --fail --silent --show-error http://127.0.0.1:18080/healthz)" = "ok"; then
               exit 0
             fi
             sleep 1
           done
+          emit_bounded_container_diagnostic
           exit 1
 
   required:

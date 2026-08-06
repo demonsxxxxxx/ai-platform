@@ -361,6 +361,7 @@ def test_existing_pr_checks_switch_to_the_validated_head_after_governance():
 def test_backend_image_job_builds_every_candidate_and_checks_the_runtime_contract():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     image_job = workflow.split("  backend-image:", 1)[1].split("  required:", 1)[0]
+    startup_step = image_job.split("- name: Verify backend image startup", 1)[1]
 
     assert "paths:" not in workflow
     assert "if:" not in image_job
@@ -377,6 +378,14 @@ def test_backend_image_job_builds_every_candidate_and_checks_the_runtime_contrac
     assert '--env IMAGE_SOURCE_COMMIT="$IMAGE_SOURCE_COMMIT"' in image_job
     assert "import app.main, claude_agent_sdk" in image_job
     assert "http://127.0.0.1:18020/api/ai/health" in image_job
+    assert "python - <<'PY'" not in startup_step
+    assert 'BACKEND_HEALTH_FILE="$RUNNER_TEMP/backend-health.json" python -c' in startup_step
+    assert "backend_container_state=" in startup_step
+    assert "docker logs --tail 80" in startup_step
+    assert "backend_redacted_container_log_tail_lines=" in startup_step
+    assert "backend_container_log_signal=redacted" in startup_step
+    assert "| sed -E" not in startup_step
+    assert "exit 1" in startup_step
     assert "docker push" not in image_job
     assert "docker compose" not in image_job.lower()
 

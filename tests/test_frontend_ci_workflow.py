@@ -54,6 +54,13 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert 'labels["ai-platform.source-repository"]' in workflow
     assert "packaged_frontend_image_id=%s" in workflow
     assert "docker run --detach --name" in workflow
+    assert "--env AI_PLATFORM_API_UPSTREAM=http://127.0.0.1:8020" in workflow
+    assert "frontend_container_state=" in workflow
+    assert "docker logs --tail 80" in workflow
+    assert "frontend_redacted_container_log_tail_lines=" in workflow
+    assert '"nginx_upstream_resolution"' in workflow
+    assert 'print(f"frontend_container_log_signal={signal}")' in workflow
+    assert "| sed -E" not in workflow
     assert "http://127.0.0.1:18080/healthz" in workflow
 
     pytest_install_index = workflow.index("python -m pip install pytest pyyaml")

@@ -123,4 +123,18 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
     assert "PIP_TRUSTED_HOST" not in backend_image
     assert "packaged_backend_image_id=%s" in backend_image
     assert "packaged_frontend_image_id=%s" in frontend_image
+    assert "backend_container_state=" in backend_image
+    assert "frontend_container_state=" in frontend_image
+    assert "docker logs --tail 80" in backend_image
+    assert "docker logs --tail 80" in frontend_image
+    assert "backend_redacted_container_log_tail_lines=" in backend_image
+    assert "frontend_redacted_container_log_tail_lines=" in frontend_image
+    assert "container_log_signal=redacted" in backend_image
+    assert "container_log_signal=redacted" in frontend_image
+    assert "| sed -E" not in backend_image
+    assert "| sed -E" not in frontend_image
+    assert "--env AI_PLATFORM_API_UPSTREAM=http://127.0.0.1:8020" in frontend_image
+    assert "AI_PLATFORM_API_UPSTREAM=http://api:8020" in (
+        ROOT / "frontend" / "web" / "Dockerfile"
+    ).read_text(encoding="utf-8")
     assert "http://127.0.0.1:18080/healthz" in frontend_image
