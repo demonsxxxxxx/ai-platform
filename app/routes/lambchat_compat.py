@@ -206,6 +206,18 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
     "capability_selected": _ChatPublicRunEventProjection(
         "capability_selected", "planning", "已加载授权处理能力，下一步将按所选流程分析请求", "completed"
     ),
+    "capability_staged": _ChatPublicRunEventProjection(
+        "capability_staged", "capability", "所需能力已加载到受控环境", "completed"
+    ),
+    "capability_sdk_registered": _ChatPublicRunEventProjection(
+        "capability_sdk_registered", "capability", "所需能力已注册到执行引擎", "completed"
+    ),
+    "capability_actually_invoked": _ChatPublicRunEventProjection(
+        "capability_actually_invoked", "capability", "所需能力已由执行引擎实际调用", "completed"
+    ),
+    "capability_optional_not_invoked": _ChatPublicRunEventProjection(
+        "capability_optional_not_invoked", "capability", "可选能力本次未调用", "completed"
+    ),
     "intent_detected": _ChatPublicRunEventProjection(
         "intent_detected", "preparation", "正在准备受控运行请求。", "active"
     ),
@@ -222,7 +234,10 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "file_bound", "context", "已识别授权附件，下一步将确认文件结构", "completed"
     ),
     "artifact_created": _ChatPublicRunEventProjection(
-        "artifact_created", "artifact", "已生成结果文件，正在完成可用性检查", "completed"
+        "artifact_ready", "artifact", "结果文件已可安全下载", "completed"
+    ),
+    "artifact_ready": _ChatPublicRunEventProjection(
+        "artifact_ready", "artifact", "结果文件已可安全下载", "completed"
     ),
     "mcp_tool_denied": _ChatPublicRunEventProjection(
         "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"

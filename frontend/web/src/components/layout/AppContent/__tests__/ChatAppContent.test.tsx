@@ -6,6 +6,8 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import type { AgentConversationIdentity } from "../../../../types/agentProfile.ts";
+
 register(
   new URL("../../../../features/agent-market/__tests__/frontendAssetLoader.mjs", import.meta.url),
   import.meta.url,
@@ -18,20 +20,30 @@ const {
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
   getChatToolAccess,
+  getOrCreateAgentConversationOperationId,
   isExactAgentWorkspaceBinding,
   recoverAgentConversationIdentity,
 } = await import("../ChatAppContent.tsx");
 const { agentProfileApi } = await import("../../../../services/api/agentProfile.ts");
 const { sessionApi } = await import("../../../../services/api/session.ts");
 
-const safeIdentity = {
+const safeIdentity: AgentConversationIdentity = {
   agent_id: "agt_support",
   revision: 7,
   name: "支持助手",
   description: "处理已授权的支持请求。",
+  welcome_message: "欢迎使用支持助手。",
+  starter_prompts: ["帮我处理支持请求"],
+  capability_summary: "在授权范围内处理企业支持请求。",
+  recommended_tasks: ["支持请求分流"],
+  supported_input_types: ["text"],
+  supported_file_types: [],
+  expected_outputs: ["处理建议"],
+  permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant",
   category: "support",
-} as const;
+  published_at: "2026-08-04T01:00:00Z",
+};
 
 const safeWorkspace = {
   agent_id: safeIdentity.agent_id,
@@ -47,24 +59,25 @@ test("recovers an exact current Agent Conversation and keeps ordinary sessions g
     workspace_id: "default",
     agent_id: safeIdentity.agent_id,
     title: safeIdentity.name,
+    purpose: "conversation",
     agent_conversation: sessionId === "session-agent" ? safeIdentity : null,
   });
   agentProfileApi.getPublished = async () => {
     detailCalls += 1;
     return {
-      agent_id: safeIdentity.agent_id,
+      ...safeIdentity,
       expected_revision: safeIdentity.revision,
-      name: safeIdentity.name,
-      description: safeIdentity.description,
-      avatar_ref: safeIdentity.avatar_ref,
-      category: safeIdentity.category,
     };
   };
 
   try {
     assert.deepEqual(await recoverAgentConversationIdentity("session-agent"), safeIdentity);
     assert.equal(await recoverAgentConversationIdentity("session-generic"), null);
-    assert.equal(detailCalls, 1, "generic sessions must not inherit or probe a prior Agent");
+    assert.equal(
+      detailCalls,
+      0,
+      "conversation recovery must not depend on, inherit, or probe the current publication",
+    );
   } finally {
     sessionApi.getAuthoritative = originalGetAuthoritative;
     agentProfileApi.getPublished = originalGetPublished;
@@ -86,16 +99,13 @@ test("keeps immutable revision history while current access remains authorized",
       workspace_id: "default",
       agent_id: safeIdentity.agent_id,
       title: safeIdentity.name,
+      purpose: "conversation",
       agent_conversation: safeIdentity,
     };
   };
   agentProfileApi.getPublished = async () => ({
-    agent_id: safeIdentity.agent_id,
+    ...safeIdentity,
     expected_revision: safeIdentity.revision + 1,
-    name: safeIdentity.name,
-    description: safeIdentity.description,
-    avatar_ref: safeIdentity.avatar_ref,
-    category: safeIdentity.category,
   });
 
   try {
@@ -118,6 +128,33 @@ test("keeps immutable revision history while current access remains authorized",
   }
 });
 
+test("recovers an owned immutable Agent Conversation after its current profile is withdrawn", async () => {
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetPublished = agentProfileApi.getPublished;
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: sessionId,
+    workspace_id: "default",
+    agent_id: safeIdentity.agent_id,
+    title: safeIdentity.name,
+    purpose: "conversation",
+    agent_conversation: safeIdentity,
+  });
+  agentProfileApi.getPublished = async () => {
+    throw Object.assign(new Error("withdrawn"), { status: 404 });
+  };
+
+  try {
+    assert.deepEqual(
+      await recoverAgentConversationIdentity("session-withdrawn"),
+      safeIdentity,
+      "a withdrawn current profile must not block an owned session pinned to an immutable revision",
+    );
+  } finally {
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    agentProfileApi.getPublished = originalGetPublished;
+  }
+});
+
 test("rejects authoritative Agent identity returned for a different Session", async () => {
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetPublished = agentProfileApi.getPublished;
@@ -127,6 +164,7 @@ test("rejects authoritative Agent identity returned for a different Session", as
     workspace_id: "default",
     agent_id: safeIdentity.agent_id,
     title: safeIdentity.name,
+    purpose: "conversation",
     agent_conversation: sessionId === "session-requested-bound" ? safeIdentity : null,
   });
   agentProfileApi.getPublished = async () => {
@@ -200,6 +238,78 @@ test("an Agent workspace becomes send-ready only after its exact bound Session i
   );
 });
 
+test("persists one Agent Conversation operation identity across a response-loss retry", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+  };
+  const createId = () => "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+
+  const first = getOrCreateAgentConversationOperationId({
+    agentId: safeIdentity.agent_id,
+    revision: safeIdentity.revision,
+    storage,
+    createId,
+  });
+  const replay = getOrCreateAgentConversationOperationId({
+    agentId: safeIdentity.agent_id,
+    revision: safeIdentity.revision,
+    storage,
+    createId: () => "6ed64d27-bbdb-486b-9b2c-1ece2cad1ee1",
+  });
+
+  assert.equal(first, replay);
+});
+
+test("fails closed when stable Agent Conversation operation storage is unavailable", () => {
+  const operationId = getOrCreateAgentConversationOperationId({
+    agentId: safeIdentity.agent_id,
+    revision: safeIdentity.revision,
+    storage: null,
+    createId: () => "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+  });
+
+  assert.equal(operationId, null);
+});
+
+test("fails closed when Agent Conversation operation storage cannot be read or verified", () => {
+  const createId = () => "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+  const attempts = [
+    {
+      getItem: () => {
+        throw new Error("storage_get_denied");
+      },
+      setItem: () => {},
+    },
+    {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("storage_set_denied");
+      },
+    },
+    {
+      getItem: () => null,
+      setItem: () => {},
+    },
+  ];
+
+  for (const storage of attempts) {
+    let result: string | null | "threw" = "threw";
+    try {
+      result = getOrCreateAgentConversationOperationId({
+        agentId: safeIdentity.agent_id,
+        revision: safeIdentity.revision,
+        storage,
+        createId,
+      });
+    } catch {
+      // The product seam must convert browser storage failures into a fail-closed result.
+    }
+    assert.equal(result, null);
+  }
+});
+
 test("renders only safe Agent identity and locks MCP catalog controls", () => {
   const html = renderToStaticMarkup(
     React.createElement(AgentConversationIdentityBanner, { identity: safeIdentity }),
@@ -226,24 +336,24 @@ test("renders a productized Agent workspace welcome before creating a conversati
   const html = renderToStaticMarkup(
     React.createElement(AgentWorkspaceWelcome, {
       profile: {
-        ...safeWorkspace,
-        name: safeIdentity.name,
-        description: safeIdentity.description,
-        avatar_ref: safeIdentity.avatar_ref,
-        category: safeIdentity.category,
+        ...safeIdentity,
+        expected_revision: safeIdentity.revision,
       },
       creating: false,
+      readOnly: false,
       error: null,
       historyError: null,
       onStart: () => {},
+      onStarterPrompt: () => {},
       onOpenDetail: () => {},
     }),
   );
 
   assert.match(html, /data-agent-workspace-welcome/);
   assert.match(html, /企业已发布/);
-  assert.match(html, /专属会话/);
-  assert.match(html, /企业受控能力/);
+  assert.match(html, /欢迎使用支持助手/);
+  assert.match(html, /权限与数据访问/);
+  assert.match(html, /帮我处理支持请求/);
   assert.match(html, /开始新对话/);
   assert.doesNotMatch(html, /model_id|instructions|mcp_tool_ids|selected_skill/);
 });
