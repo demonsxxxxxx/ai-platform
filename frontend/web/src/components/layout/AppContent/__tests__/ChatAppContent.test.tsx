@@ -72,7 +72,11 @@ test("recovers an exact current Agent Conversation and keeps ordinary sessions g
   try {
     assert.deepEqual(await recoverAgentConversationIdentity("session-agent"), safeIdentity);
     assert.equal(await recoverAgentConversationIdentity("session-generic"), null);
-    assert.equal(detailCalls, 1, "generic sessions must not inherit or probe a prior Agent");
+    assert.equal(
+      detailCalls,
+      0,
+      "conversation recovery must not depend on, inherit, or probe the current publication",
+    );
   } finally {
     sessionApi.getAuthoritative = originalGetAuthoritative;
     agentProfileApi.getPublished = originalGetPublished;
@@ -116,6 +120,33 @@ test("keeps immutable revision history while current access remains authorized",
     await assert.rejects(
       recoverAgentConversationIdentity("session-missing"),
       (error: unknown) => (error as { status?: unknown }).status === 404,
+    );
+  } finally {
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    agentProfileApi.getPublished = originalGetPublished;
+  }
+});
+
+test("recovers an owned immutable Agent Conversation after its current profile is withdrawn", async () => {
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetPublished = agentProfileApi.getPublished;
+  sessionApi.getAuthoritative = async (sessionId) => ({
+    session_id: sessionId,
+    workspace_id: "default",
+    agent_id: safeIdentity.agent_id,
+    title: safeIdentity.name,
+    purpose: "conversation",
+    agent_conversation: safeIdentity,
+  });
+  agentProfileApi.getPublished = async () => {
+    throw Object.assign(new Error("withdrawn"), { status: 404 });
+  };
+
+  try {
+    assert.deepEqual(
+      await recoverAgentConversationIdentity("session-withdrawn"),
+      safeIdentity,
+      "a withdrawn current profile must not block an owned session pinned to an immutable revision",
     );
   } finally {
     sessionApi.getAuthoritative = originalGetAuthoritative;

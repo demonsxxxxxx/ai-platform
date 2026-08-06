@@ -162,9 +162,6 @@ export async function recoverAgentConversationIdentity(
   if (identity === null) return null;
   if (session.agent_id !== identity.agent_id)
     throw new Error("agent_conversation_identity_mismatch");
-  const currentProfile = await agentProfileApi.getPublished(identity.agent_id);
-  if (currentProfile.agent_id !== identity.agent_id)
-    throw new Error("agent_conversation_identity_mismatch");
   return identity;
 }
 
