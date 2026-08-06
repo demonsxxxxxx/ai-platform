@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import hashlib
 import inspect
@@ -157,9 +158,8 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
         "SANDBOX_CALLBACK_BASE_URL": config.callback_upstream_base,
         "AI_PLATFORM_EXECUTOR_AUTH_TOKEN": "executor-" + "d" * 32,
         "OPENAI_BASE_URL": config.openai_upstream_base,
-        "OPENAI_API_KEY": "test-openai-secret",
         "ANTHROPIC_BASE_URL": config.anthropic_upstream_base,
-        "ANTHROPIC_AUTH_TOKEN": "test-anthropic-secret",
+        "DEFAULT_MODEL_ID": "deepseek-v4-flash",
     }
     return {
         "image": {"image": IMAGE},
@@ -248,7 +248,7 @@ def _collection_proxy():
 
 
 def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> None:
-    app, lifecycle, runtime, _ = application()
+    app, lifecycle, runtime, store = application()
     config = gateway_config()
     response = call(app, "POST", "/v1/sandboxes", create_payload(config))
     assert response.status == 201
@@ -256,7 +256,14 @@ def test_create_rewrites_only_broker_bases_and_returns_exact_attestation() -> No
     sent = json.loads(lifecycle.requests[0][2])
     assert sent["env"]["AI_PLATFORM_CALLBACK_BASE_URL"] == "http://127.0.0.1:18888"
     assert sent["env"]["OPENAI_BASE_URL"] == "http://127.0.0.1:18888/model/openai"
+    assert sent["env"]["OPENAI_API_KEY"] == "opensandbox-host-broker"
+    assert sent["env"]["ANTHROPIC_AUTH_TOKEN"] == "opensandbox-host-broker"
+    assert "test-openai-secret" not in repr(lifecycle.requests)
+    assert "test-anthropic-secret" not in repr(lifecycle.requests)
     assert "test-openai-secret" not in repr(runtime.evidence)
+    assert store.get(sandbox_id).metadata["ai-platform.model_id_sha256"] == base64.b32encode(
+        hashlib.sha256(b"deepseek-v4-flash").digest()
+    ).decode("ascii").rstrip("=")
     attestation = call(app, "GET", f"/v1/sandboxes/{sandbox_id}/attestation")
     assert attestation.status == 200
     value = decoded(attestation)
@@ -374,6 +381,11 @@ def test_auth_size_path_redirect_and_tls_fail_closed() -> None:
         (lambda value: value.update(image="registry.example/executor:latest"), "immutable_image_mismatch"),
         (lambda value: value["volumes"][0].update(host={"path": "/etc"}), "host_path_not_scoped"),
         (lambda value: value["env"].update(HTTPS_PROXY="https://proxy.example"), "proxy_environment_not_allowed"),
+        (lambda value: value["env"].update(OPENAI_API_KEY="legacy-provider-secret"), "provider_credential_not_allowed"),
+        (
+            lambda value: value["env"].update(ANTHROPIC_AUTH_TOKEN="legacy-provider-secret"),
+            "provider_credential_not_allowed",
+        ),
         (lambda value: value.update(entrypoint=["sh"]), "entrypoint_mismatch"),
     ],
 )
@@ -1073,7 +1085,23 @@ def test_online_reconciliation_restores_relay_and_cleans_later_page_orphans() ->
     assert not any(sandbox_id.startswith("sandbox-orphan-") for sandbox_id in lifecycle.sandboxes)
 
 
-@pytest.mark.parametrize("case", ("success", "config-mismatch", "root", "unavailable"))
+@pytest.mark.parametrize(
+    "case",
+    (
+        "success",
+        "config-mismatch",
+        "root",
+        "unavailable",
+        "openai-secret",
+        "anthropic-secret",
+        "anthropic-api-key",
+        "duplicate-openai-secret",
+        "lowercase-openai-secret",
+        "duplicate-executor-token",
+        "duplicate-openai-base",
+        "case-variant-callback",
+    ),
+)
 def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, case) -> None:
     app, _, _, store = application()
     sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config())))["id"]
@@ -1089,6 +1117,27 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
     container_id = "a" * 64
     config_user = "0:0" if case == "root" else "1000:1000"
     live_user = "1001:1001" if case == "config-mismatch" else config_user
+    provider_env = [
+        "OPENAI_API_KEY=opensandbox-host-broker",
+        "ANTHROPIC_AUTH_TOKEN=opensandbox-host-broker",
+    ]
+    if case == "openai-secret":
+        provider_env[0] = "OPENAI_API_KEY=legacy-provider-secret"
+    elif case == "anthropic-secret":
+        provider_env[1] = "ANTHROPIC_AUTH_TOKEN=legacy-provider-secret"
+    elif case == "anthropic-api-key":
+        provider_env.append("ANTHROPIC_API_KEY=legacy-provider-secret")
+    elif case == "duplicate-openai-secret":
+        provider_env.insert(0, "OPENAI_API_KEY=legacy-provider-secret")
+    elif case == "lowercase-openai-secret":
+        provider_env.append("openai_api_key=legacy-provider-secret")
+    protected_env = []
+    if case == "duplicate-executor-token":
+        protected_env.append("AI_PLATFORM_EXECUTOR_AUTH_TOKEN=wrong-executor-token")
+    elif case == "duplicate-openai-base":
+        protected_env.append("OPENAI_BASE_URL=https://untrusted.example/v1")
+    elif case == "case-variant-callback":
+        protected_env.append("ai_platform_callback_base_url=https://untrusted.example/callback")
     inspect_payload = [{
         "Image": "image-id",
         "HostConfig": {"Runtime": "runsc", "NetworkMode": "none", "SecurityOpt": ["no-new-privileges:true"]},
@@ -1097,11 +1146,13 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
             "Image": record.image,
             "Labels": record.metadata,
             "Env": [
+                *protected_env,
                 "AI_PLATFORM_EXECUTOR_AUTH_TOKEN=executor-" + "d" * 32,
                 "AI_PLATFORM_CALLBACK_BASE_URL=http://127.0.0.1:18888",
                 "SANDBOX_CALLBACK_BASE_URL=http://127.0.0.1:18888",
                 "OPENAI_BASE_URL=http://127.0.0.1:18888/model/openai",
                 "ANTHROPIC_BASE_URL=http://127.0.0.1:18888/model/anthropic",
+                *provider_env,
             ],
         },
         "State": {"Running": True},
@@ -1132,8 +1183,10 @@ def test_host_runtime_identity_probe_is_live_fixed_and_fail_closed(monkeypatch, 
             "1000:1000", "1000", "1000", True
         )
     else:
-        with pytest.raises(GatewayError):
+        with pytest.raises(GatewayError) as error:
             adapter.verify(record)
+        if case not in {"config-mismatch", "root", "unavailable"}:
+            assert error.value.code == "broker_environment_drift"
 
 
 def test_runtime_starts_relay_with_trusted_request_and_dispatch_budgets(monkeypatch) -> None:
@@ -1689,7 +1742,7 @@ def test_mailbox_poll_consumes_one_shared_absolute_budget(monkeypatch) -> None:
     processed: list[str] = []
     responses: list[int] = []
 
-    def process(_descriptor, name, _identity):
+    def process(_descriptor, name, _identity, _record):
         processed.append(name)
         while True:
             time.sleep(0.02)
@@ -2151,6 +2204,11 @@ def test_mailbox_request_inode_change_fails_closed(monkeypatch) -> None:
 
 def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(monkeypatch) -> None:
     captured: list[tuple[str, dict[str, str]]] = []
+    captured_bodies: list[bytes] = []
+    app, _, _, store = application()
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "headers")))["id"]
+    record = store.get(sandbox_id)
+    assert record is not None
 
     class FakeResponse:
         status = 200
@@ -2170,7 +2228,7 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
             pass
 
         def request(self, _method, path, *, body, headers):
-            del body
+            captured_bodies.append(body)
             captured.append((path, dict(headers)))
 
         @staticmethod
@@ -2194,20 +2252,35 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
         }
     )
     broker = MailboxBroker(
-        SimpleNamespace(), policy, 1.0, 1024, upstream_tls_context=_test_tls_context()
+        store,
+        policy,
+        1.0,
+        1024,
+        upstream_tls_context=_test_tls_context(),
+        provider_credentials={"openai": "host-openai-secret", "anthropic": "host-anthropic-secret"},
     )
 
-    def forward(path: str) -> dict[str, str]:
+    def forward(path: str, request_id: str) -> dict[str, str]:
+        is_model = path.startswith("/model/")
+        body = json.dumps({"model": "deepseek-v4-flash", "stream": True}).encode() if is_model else b"{}"
+        headers = {
+            "X-AI-Platform-Callback-Token": "attempt-bound-token",
+            "Content-Type": "application/json",
+        }
+        if is_model:
+            headers.update(
+                {
+                    "Authorization": "Bearer sandbox-forged-secret",
+                    "x-api-key": "sandbox-forged-key",
+                }
+            )
         raw = json.dumps(
             {
                 "version": 1,
                 "method": "POST",
                 "path": path,
-                "headers": {
-                    "X-AI-Platform-Callback-Token": "attempt-bound-token",
-                    "Content-Type": "application/json",
-                },
-                "body": "e30=",
+                "headers": headers,
+                "body": base64.b64encode(body).decode("ascii"),
                 "created_at_unix_seconds": time.time(),
                 "timeout_seconds": 3600.0,
             }
@@ -2225,23 +2298,34 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
         chunks = iter((raw, b""))
         monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _fd: evidence)
         monkeypatch.setattr(gateway_adapters.os, "read", lambda *_: next(chunks))
-        broker._process(6, "0" * 32 + ".json")
+        broker._process(6, request_id + ".json", record=record if is_model else None)
         return captured[-1][1]
 
-    callback_headers = forward("/api/ai/runtime/callbacks/executor")
-    context_headers = forward("/api/ai/runtime/callbacks/context-retrieval")
-    model_headers = forward("/model/openai/chat/completions")
-    anthropic_headers = forward("/model/anthropic/v1/messages")
+    callback_headers = forward("/api/ai/runtime/callbacks/executor", "0" * 32)
+    context_headers = forward("/api/ai/runtime/callbacks/context-retrieval", "1" * 32)
+    model_headers = forward("/model/openai/chat/completions", "2" * 32)
+    anthropic_headers = forward("/model/anthropic/v1/messages", "3" * 32)
 
     assert callback_headers["x-ai-platform-callback-token"] == "attempt-bound-token"
     assert context_headers["x-ai-platform-callback-token"] == "attempt-bound-token"
     assert "x-ai-platform-callback-token" not in model_headers
     assert "x-ai-platform-callback-token" not in anthropic_headers
+    assert model_headers["authorization"] == "Bearer host-openai-secret"
+    assert "x-api-key" not in model_headers
+    assert anthropic_headers["x-api-key"] == "host-anthropic-secret"
+    assert "authorization" not in anthropic_headers
+    assert "sandbox-forged-secret" not in repr(captured)
+    assert "sandbox-forged-key" not in repr(captured)
     assert captured[-1][0] == "/anthropic/v1/messages"
+    assert json.loads(captured_bodies[-2])["stream"] is True
 
 
 def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_only_shortens(monkeypatch) -> None:
     observed: list[float] = []
+    app, _, _, store = application()
+    sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "budgets")))["id"]
+    record = store.get(sandbox_id)
+    assert record is not None
 
     class Deadline:
         def __init__(self, timeout):
@@ -2300,22 +2384,25 @@ def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_on
         }
     )
     broker = MailboxBroker(
-        SimpleNamespace(),
+        store,
         policy,
         5.0,
         1024,
         dispatch_timeout_seconds=3600.0,
         upstream_tls_context=_test_tls_context(),
+        provider_credentials={"openai": "host-openai-secret", "anthropic": "host-anthropic-secret"},
     )
 
-    def process(path: str, requested_timeout: float) -> None:
+    def process(path: str, requested_timeout: float, request_id: str) -> None:
+        is_model = path.startswith("/model/")
+        body = json.dumps({"model": "deepseek-v4-flash"}).encode() if is_model else b"{}"
         raw = json.dumps(
             {
                 "version": 1,
                 "method": "POST",
                 "path": path,
                 "headers": {"content-type": "application/json"},
-                "body": "e30=",
+                "body": base64.b64encode(body).decode("ascii"),
                 "created_at_unix_seconds": time.time(),
                 "timeout_seconds": requested_timeout,
             }
@@ -2333,11 +2420,11 @@ def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_on
         chunks = iter((raw, b""))
         monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _fd: evidence)
         monkeypatch.setattr(gateway_adapters.os, "read", lambda *_args: next(chunks))
-        broker._process(6, "0" * 32 + ".json")
+        broker._process(6, request_id + ".json", record=record if is_model else None)
 
-    process("/api/ai/runtime/callbacks/executor", 7200.0)
-    process("/model/openai/chat/completions", 7200.0)
-    process("/model/anthropic/v1/messages", 12.0)
+    process("/api/ai/runtime/callbacks/executor", 7200.0, "0" * 32)
+    process("/model/openai/chat/completions", 7200.0, "1" * 32)
+    process("/model/anthropic/v1/messages", 12.0, "2" * 32)
 
     assert 4.5 <= observed[0] <= 5.0
     assert 3599.0 <= observed[1] <= 3600.0
@@ -2370,7 +2457,7 @@ def test_mailbox_poll_isolates_bad_requests_and_bounds_each_sandbox(monkeypatch)
     broker._request_identity_matches = lambda *_: True
     broker._unlink_request_if_identity = lambda *_: True
 
-    def process(_descriptor, name, _identity):
+    def process(_descriptor, name, _identity, _record):
         processed.append(name)
         if len(processed) == 1:
             raise RuntimeError("one malformed request")

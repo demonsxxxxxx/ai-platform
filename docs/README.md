@@ -16,6 +16,8 @@ does not represent deployed runtime state.
 - `architecture/sandbox-runtime-control-layer.md` defines the Sandbox Runtime
   application authority, target lifecycle, ownership fences, provider port, and
   staged recovery model.
+- `architecture/opensandbox-ephemeral-model-credentials.md` defines the
+  attempt-bound model-route admission and trusted provider-secret boundary.
 
 ## Operations
 

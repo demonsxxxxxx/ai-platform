@@ -1676,6 +1676,11 @@ async def test_opensandbox_provider_admits_only_authenticated_runsc_external_egr
     assert FakeOpenSandbox.created[0]["env"]["ANTHROPIC_BASE_URL"] == (
         "https://bridge.internal.example:18443/anthropic"
     )
+    assert FakeOpenSandbox.created[0]["env"]["DEFAULT_MODEL_ID"] == "deepseek-v4-flash"
+    assert "OPENAI_API_KEY" not in FakeOpenSandbox.created[0]["env"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in FakeOpenSandbox.created[0]["env"]
+    assert "test-newapi-token" not in repr(FakeOpenSandbox.created[0])
+    assert "test-anthropic-token" not in repr(FakeOpenSandbox.created[0])
     assert "http://opensandbox.local:8080" not in repr(remote_metadata)
     assert "network_policy" not in FakeOpenSandbox.created[0] or FakeOpenSandbox.created[0]["network_policy"] is None
 

@@ -1009,7 +1009,7 @@ def _executor_environment(
         "ANTHROPIC_AUTH_TOKEN": _env_value(settings, "anthropic_auth_token"),
         "ANTHROPIC_MODEL": _env_value(settings, "anthropic_model", "deepseek-v4-flash"),
         "CLAUDE_AGENT_MODEL": _env_value(settings, "claude_agent_model", "deepseek-v4-flash"),
-        "DEFAULT_MODEL_ID": _env_value(settings, "default_model_id"),
+        "DEFAULT_MODEL_ID": request.model,
         "MODEL_CATALOG_JSON": _env_value(settings, "model_catalog_json"),
         "CLAUDE_AGENT_SDK_ENABLED": _env_bool(getattr(settings, "claude_agent_sdk_enabled", False)),
         "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS": _env_value(settings, "claude_agent_sdk_timeout_seconds", 120),
@@ -4885,14 +4885,14 @@ class OpenSandboxContainerProvider:
                 ),
             )
 
-        executor_egress_bases = capability.executor_egress_bases()
         environment = _executor_environment(
             request,
             settings,
             executor_auth_token=executor_auth_token,
-            egress_bases=executor_egress_bases,
+            egress_bases=capability.executor_egress_bases(),
             workspace_container_path=workspace.workspace_container_path,
         )
+        environment = {key: value for key, value in environment.items() if key not in {"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"}}
         kwargs = {
             "image": _opensandbox_image(settings),
             "timeout": timedelta(seconds=max(int(getattr(settings, "opensandbox_timeout_seconds", 1800) or 1800), 1)),
