@@ -649,6 +649,10 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
         calls.append(("lock", kwargs))
         return locked_run
 
+    async def get_run(_conn, **kwargs):
+        calls.append(("preflight", kwargs))
+        return {**locked_run, "status": "queued"}
+
     async def fail_run(_conn, **kwargs):
         calls.append(("fail", kwargs))
         return True
@@ -667,6 +671,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, calls):
 
     monkeypatch.setattr("app.worker.transaction", transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)

@@ -1309,15 +1309,21 @@ async def _reauthorize_worker_capabilities(
     run_identity: dict[str, str],
     attempt_id: str = "",
     current_principal_resolver: Callable[..., Awaitable[AuthPrincipal]] | None = None,
+    current_principal: AuthPrincipal | None = None,
+    current_principal_resolved: bool = False,
 ) -> _WorkerCapabilityAuthorization:
     decisions: list[_WorkerCapabilityDecision] = []
-    resolver = current_principal_resolver or resolve_current_principal
-    try:
-        principal = await resolver(
-            user_id=run_identity["user_id"],
-            tenant_id=run_identity["tenant_id"],
-        )
-    except PrincipalAuthorityDenied:
+    principal = current_principal
+    if not current_principal_resolved:
+        resolver = current_principal_resolver or resolve_current_principal
+        try:
+            principal = await resolver(
+                user_id=run_identity["user_id"],
+                tenant_id=run_identity["tenant_id"],
+            )
+        except PrincipalAuthorityDenied:
+            principal = None
+    if principal is None:
         principal = AuthPrincipal(
             user_id=run_identity["user_id"],
             display_name=run_identity["user_id"],
@@ -2051,6 +2057,31 @@ async def _ensure_worker_context_snapshot(
     }
 
 
+async def _resolve_current_principal_before_dispatch(
+    payload: QueueRunPayload,
+) -> AuthPrincipal | None:
+    """Resolve current authority without holding the dispatch transaction open."""
+
+    async with transaction() as conn:
+        queued_run = await repositories.get_run(
+            conn,
+            tenant_id=payload.tenant_id,
+            run_id=payload.run_id,
+        )
+    if queued_run is None or str(queued_run.get("status") or "") != "queued":
+        return None
+    run_identity = _locked_run_identity(payload, queued_run)
+    if _identity_mismatch_fields(payload, run_identity):
+        return None
+    try:
+        return await resolve_current_principal(
+            user_id=run_identity["user_id"],
+            tenant_id=run_identity["tenant_id"],
+        )
+    except PrincipalAuthorityDenied:
+        return None
+
+
 async def process_run_payload(
     raw: dict[str, Any],
     registry: AdapterRegistry | None = None,
@@ -2087,6 +2118,7 @@ async def process_run_payload(
     capability_authorization: _WorkerCapabilityAuthorization | None = None
     admin_bypass_audits: tuple[_WorkerAdminBypassAudit, ...] = ()
     try:
+        current_principal = await _resolve_current_principal_before_dispatch(payload)
         async with transaction() as conn:
             locked = await repositories.mark_run_running(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
             if not locked:
@@ -2209,6 +2241,8 @@ async def process_run_payload(
                 payload=payload,
                 run_identity=run_identity,
                 attempt_id=attempt_id,
+                current_principal=current_principal,
+                current_principal_resolved=True,
             )
             admin_bypass_audits = _worker_admin_bypass_audits(
                 authorization=capability_authorization,
