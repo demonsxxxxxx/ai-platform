@@ -4166,7 +4166,7 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
     assert response.status_code == 200
     events = response.json()["events"]
     event_types = [event["event_type"] for event in events]
-    assert event_types.index("artifact_created") < event_types.index("artifact_card") < event_types.index("final_detail") < event_types.index("done")
+    assert event_types.index("artifact_ready") < event_types.index("artifact_card") < event_types.index("final_detail") < event_types.index("done")
     final = events[event_types.index("final_detail")]
     assert final["payload"] == {
         "run_id": "run_a",

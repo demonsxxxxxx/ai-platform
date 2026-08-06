@@ -321,6 +321,31 @@ export function buildSubmitChatUrl(agentId = DEFAULT_CHAT_AGENT_ID): string {
   return `${API_BASE}/api/chat/stream?agent_id=${encodeURIComponent(agentId)}`;
 }
 
+/** Build the selector-free Agent App submission surface for one pinned conversation. */
+export function buildAgentAppRunUrl(agentId: string, sessionId: string): string {
+  return `${API_BASE}/api/ai/agent-apps/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(sessionId)}/runs`;
+}
+
+export function buildAgentAppRunBody({
+  message,
+  attachments,
+  submissionId,
+  userTimezone,
+}: {
+  message: string;
+  attachments?: MessageAttachment[];
+  submissionId: string;
+  userTimezone?: string;
+}): Record<string, unknown> {
+  const fileIds = [...new Set((attachments ?? []).map((attachment) => attachment.id))];
+  return {
+    message,
+    submission_id: submissionId,
+    file_ids: fileIds,
+    ...(userTimezone ? { user_timezone: userTimezone } : {}),
+  };
+}
+
 export function buildChatSubmissionUrl(submissionId: string): string {
   return `${API_BASE}/api/chat/submissions/${encodeURIComponent(submissionId)}`;
 }
@@ -564,6 +589,23 @@ export const sessionApi = {
     selectedMcpToolIds?: string[],
     selectedAgentProfile?: SelectedAgentProfileRequest | null,
   ): Promise<ChatStreamResponse> {
+    if (sessionId && selectedAgentProfile) {
+      if (!submissionId) throw new Error("agent_app_submission_id_required");
+      return authFetch(
+        buildAgentAppRunUrl(selectedAgentProfile.agent_id, sessionId),
+        {
+          method: "POST",
+          body: JSON.stringify(
+            buildAgentAppRunBody({
+              message,
+              attachments,
+              submissionId,
+              userTimezone: getBrowserTimezone(),
+            }),
+          ),
+        },
+      );
+    }
     const body = buildSubmitChatBody({
       message,
       sessionId,

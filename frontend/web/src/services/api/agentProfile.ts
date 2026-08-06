@@ -33,6 +33,14 @@ export interface AgentConversationListOptions {
   limit?: number;
 }
 
+export interface AgentProfileTrialRunResponse {
+  session_id: string;
+  run_id: string;
+  status: "queued" | "accepted_pending_enqueue";
+  submission_id: string;
+  purpose: "builder_test";
+}
+
 /** Build the current-principal published catalog URL. */
 export function buildAgentProfileCatalogUrl(query: AgentProfileCatalogQuery = {}): string {
   const searchParams = new URLSearchParams();
@@ -114,20 +122,30 @@ export const agentProfileApi = {
     return projectConversationListResponse(response);
   },
 
-  async createConversation(selection: SelectedAgentProfileRequest): Promise<AgentConversationSessionProjection> {
+  async createConversation(
+    selection: SelectedAgentProfileRequest,
+    operationId: string,
+  ): Promise<AgentConversationSessionProjection> {
     const selected_agent_profile = {
       agent_id: selection.agent_id,
       expected_revision: selection.expected_revision,
     };
     const response = await authFetch<unknown>(`${API_BASE}/api/ai/agent-conversations`, {
       method: "POST",
-      body: JSON.stringify({ selected_agent_profile }),
+      body: JSON.stringify({ selected_agent_profile, operation_id: operationId }),
     });
     return projectAgentConversationSession(response);
   },
 
   listAdmin(): Promise<{ agent_profiles: AgentProfileAdminProjection[] }> {
     return authFetch(`${API_BASE}/api/ai/admin/agent-profiles`);
+  },
+
+  listHistory(agentId: string): Promise<{ agent_profiles: AgentProfileAdminProjection[] }> {
+    return authFetch(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/history`,
+      { cache: "no-store" },
+    );
   },
 
   saveDraft(
@@ -151,6 +169,35 @@ export const agentProfileApi = {
       {
         method: "POST",
         body: JSON.stringify({ expected_revision: expectedRevision }),
+      },
+    );
+  },
+
+  unpublish(agentId: string, expectedRevision: number): Promise<AgentProfileMutationResponse> {
+    return authFetch(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/unpublish`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_revision: expectedRevision }),
+      },
+    );
+  },
+
+  runTest(
+    agentId: string,
+    expectedRevision: number,
+    message: string,
+    submissionId: string,
+  ): Promise<AgentProfileTrialRunResponse> {
+    return authFetch(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}/test-runs`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_revision: expectedRevision,
+          message,
+          submission_id: submissionId,
+        }),
       },
     );
   },

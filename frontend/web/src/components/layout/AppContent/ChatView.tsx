@@ -115,6 +115,8 @@ interface ChatViewProps {
   connectionStatus?: ConnectionStatus;
   canSendMessage: boolean;
   composerPlaceholder?: string;
+  initialComposerDraft?: string;
+  initialComposerDraftKey?: string;
   tools: ToolState[];
   onToggleTool: (name: string) => void;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
@@ -184,6 +186,8 @@ export function ChatView({
   connectionStatus,
   canSendMessage,
   composerPlaceholder,
+  initialComposerDraft,
+  initialComposerDraftKey,
   tools,
   onToggleTool,
   onToggleCategory,
@@ -242,6 +246,7 @@ export function ChatView({
   );
   const previousArtifactDownloadScopeRef = useRef(artifactDownloadScopeContext);
   const [composerDraft, setComposerDraft] = useState("");
+  const appliedInitialDraftKeyRef = useRef<string | null>(null);
   const [sessionFiles, setSessionFiles] = useState<SessionInputFile[]>([]);
   const [sessionFilesStatus, setSessionFilesStatus] = useState<
     "idle" | "loading" | "ready" | "error"
@@ -250,6 +255,13 @@ export function ChatView({
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );
+
+  useEffect(() => {
+    if (!initialComposerDraft || !initialComposerDraftKey) return;
+    if (appliedInitialDraftKeyRef.current === initialComposerDraftKey) return;
+    appliedInitialDraftKeyRef.current = initialComposerDraftKey;
+    setComposerDraft((current) => current || initialComposerDraft);
+  }, [initialComposerDraft, initialComposerDraftKey]);
 
   const showStreamingFooterSkeleton = shouldShowStreamingFooterSkeleton({
     connectionStatus,

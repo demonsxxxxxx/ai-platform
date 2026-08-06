@@ -393,6 +393,14 @@ create table if not exists agent_profile_revisions (
   revision_status text not null check (revision_status in ('draft', 'published', 'withdrawn')),
   name text not null,
   description text not null default '',
+  welcome_message text not null default '',
+  starter_prompts jsonb not null default '[]'::jsonb,
+  capability_summary text not null default '',
+  recommended_tasks jsonb not null default '[]'::jsonb,
+  supported_input_types jsonb not null default '["text"]'::jsonb,
+  supported_file_types jsonb not null default '[]'::jsonb,
+  expected_outputs jsonb not null default '[]'::jsonb,
+  permissions_and_data_access_notice text not null default '',
   instructions text not null,
   model_id text not null,
   skill_id text not null references skills(id),
@@ -401,6 +409,7 @@ create table if not exists agent_profile_revisions (
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  avatar_asset_id text,
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
   visibility text not null,
@@ -468,6 +477,8 @@ create table if not exists sessions (
   agent_id text not null,
   title text not null default '',
   status text not null default 'active',
+  purpose text not null default 'conversation'
+    check (purpose in ('conversation', 'builder_test')),
   admitted_agent_profile_revision bigint,
   admitted_agent_profile_hash text,
   next_run_generation bigint not null default 0,
@@ -540,6 +551,11 @@ alter table runs add column if not exists principal_department_id text not null 
 alter table runs add column if not exists auth_source text;
 alter table sessions add column if not exists admitted_agent_profile_revision bigint;
 alter table sessions add column if not exists admitted_agent_profile_hash text;
+alter table sessions add column if not exists purpose text not null default 'conversation';
+alter table sessions drop constraint if exists chk_sessions_purpose;
+alter table sessions drop constraint if exists sessions_purpose_check;
+alter table sessions add constraint chk_sessions_purpose
+  check (purpose in ('conversation', 'builder_test'));
 create index if not exists idx_sessions_agent_conversation_history
   on sessions(
     tenant_id,
@@ -557,11 +573,20 @@ alter table agent_profile_revisions add column if not exists published_from_revi
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
 alter table agent_profile_revisions add column if not exists revision_status text;
 alter table agent_profile_revisions add column if not exists avatar_ref text;
+alter table agent_profile_revisions add column if not exists avatar_asset_id text;
 alter table agent_profile_revisions add column if not exists category text;
 alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
 alter table agent_profile_revisions add column if not exists allowed_roles jsonb;
 alter table agent_profile_revisions add column if not exists allowed_user_ids jsonb;
+alter table agent_profile_revisions add column if not exists welcome_message text not null default '';
+alter table agent_profile_revisions add column if not exists starter_prompts jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists capability_summary text not null default '';
+alter table agent_profile_revisions add column if not exists recommended_tasks jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists supported_input_types jsonb not null default '["text"]'::jsonb;
+alter table agent_profile_revisions add column if not exists supported_file_types jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists expected_outputs jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists permissions_and_data_access_notice text not null default '';
 alter table agent_profile_revisions add column if not exists legacy_compatibility_write boolean not null default false;
 alter table agent_profiles add column if not exists published_status text;
 

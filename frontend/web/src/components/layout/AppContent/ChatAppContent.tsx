@@ -54,6 +54,7 @@ import { RunPlaybackPanel } from "./RunPlaybackPanel";
 import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistentToolPanelState";
 import { agentProfileApi } from "../../../services/api/agentProfile";
 import { sessionApi } from "../../../services/api/session";
+import { uuid } from "../../../utils/uuid";
 import type {
   AgentConversationIdentity,
   AgentProfileAvatarRef,
@@ -75,6 +76,60 @@ function conversationState(
   identity: AgentConversationIdentity | null = null,
 ): AgentConversationRecoveryState {
   return { phase, targetSessionId, identity };
+}
+
+const AGENT_CONVERSATION_OPERATION_STORAGE_PREFIX = "agent-conversation-operation:";
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function agentConversationOperationStorageKey(agentId: string, revision: number): string {
+  return `${AGENT_CONVERSATION_OPERATION_STORAGE_PREFIX}${agentId}:${revision}`;
+}
+
+function browserSessionStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Keep a caller operation stable across response-loss retries and reloads. */
+export function getOrCreateAgentConversationOperationId({
+  agentId,
+  revision,
+  storage,
+  createId,
+}: {
+  agentId: string;
+  revision: number;
+  storage: Pick<Storage, "getItem" | "setItem"> | null;
+  createId: () => string;
+}): string | null {
+  const key = agentConversationOperationStorageKey(agentId, revision);
+  if (!storage) return null;
+  try {
+    const existing = storage.getItem(key);
+    if (existing && UUID_V4_PATTERN.test(existing)) return existing;
+    const operationId = createId();
+    if (!UUID_V4_PATTERN.test(operationId)) return null;
+    storage.setItem(key, operationId);
+    return storage.getItem(key) === operationId ? operationId : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearAgentConversationOperationId({
+  agentId,
+  revision,
+  storage,
+}: {
+  agentId: string;
+  revision: number;
+  storage: Pick<Storage, "removeItem"> | null;
+}): void {
+  storage?.removeItem(agentConversationOperationStorageKey(agentId, revision));
 }
 
 const AGENT_CATEGORY_LABELS: Record<AgentProfileCategory, string> = {
@@ -162,9 +217,6 @@ export async function recoverAgentConversationIdentity(
   if (identity === null) return null;
   if (session.agent_id !== identity.agent_id)
     throw new Error("agent_conversation_identity_mismatch");
-  const currentProfile = await agentProfileApi.getPublished(identity.agent_id);
-  if (currentProfile.agent_id !== identity.agent_id)
-    throw new Error("agent_conversation_identity_mismatch");
   return identity;
 }
 
@@ -217,31 +269,35 @@ export function AgentConversationIdentityBanner({
 export function AgentWorkspaceWelcome({
   profile,
   creating,
+  readOnly,
   error,
   historyError,
   onRetryHistory,
   onStart,
+  onStarterPrompt,
   onOpenDetail,
 }: {
   profile: AgentProfilePublicProjection;
   creating: boolean;
+  readOnly: boolean;
   error: string | null;
   historyError: string | null;
   onRetryHistory?: () => void;
   onStart: () => void;
+  onStarterPrompt: (prompt: string) => void;
   onOpenDetail: () => void;
 }) {
   return (
     <main
-      className="min-h-0 flex-1 overflow-y-auto bg-[var(--theme-workbench-canvas)] px-4 py-8 text-[var(--theme-text)] sm:px-6 sm:py-12"
+      className="min-h-0 flex-1 overflow-y-auto bg-[var(--theme-workbench-canvas)] px-4 py-7 text-[var(--theme-text)] sm:px-7 sm:py-10"
       data-agent-workspace-welcome
     >
-      <section className="mx-auto max-w-3xl overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-sm">
-        <div className="border-b border-[var(--theme-border)] bg-gradient-to-br from-emerald-50/80 via-transparent to-sky-50/70 px-6 py-7 dark:from-emerald-950/20 dark:to-sky-950/20 sm:px-8 sm:py-9">
+      <div className="mx-auto max-w-4xl">
+        <section className="border-b border-[var(--theme-border)] pb-7 sm:pb-9">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
             <span
               aria-label={`${profile.name} 头像`}
-              className="inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700 shadow-sm dark:bg-emerald-950/60 dark:text-emerald-300"
+              className="inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
               data-agent-avatar-ref={profile.avatar_ref}
               role="img"
             >
@@ -249,14 +305,14 @@ export function AgentWorkspaceWelcome({
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-xs font-medium">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
+                <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
                   <ShieldCheck size={14} aria-hidden="true" />
                   企业已发布
                 </span>
-                <span className="rounded-full bg-[var(--theme-bg-sidebar)] px-2.5 py-1 text-[var(--theme-text-secondary)]">
+                <span className="border-l border-[var(--theme-border)] pl-2 text-[var(--theme-text-secondary)]">
                   {AGENT_CATEGORY_LABELS[profile.category]}
                 </span>
-                <span className="rounded-full bg-[var(--theme-bg-sidebar)] px-2.5 py-1 text-[var(--theme-text-secondary)]">
+                <span className="border-l border-[var(--theme-border)] pl-2 text-[var(--theme-text-secondary)]">
                   版本 {profile.expected_revision}
                 </span>
               </div>
@@ -264,28 +320,73 @@ export function AgentWorkspaceWelcome({
                 {profile.name}
               </h1>
               <p className="mt-3 max-w-2xl whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
-                {profile.description || "该智能体已通过企业平台发布，可在受控会话中使用。"}
+                {profile.capability_summary || profile.description}
               </p>
+              {profile.welcome_message ? (
+                <p className="mt-5 border-l-2 border-emerald-500 pl-4 text-sm leading-7">
+                  {profile.welcome_message}
+                </p>
+              ) : null}
             </div>
           </div>
-        </div>
+        </section>
 
-        <div className="grid gap-4 px-6 py-6 sm:grid-cols-2 sm:px-8">
-          <div className="rounded-lg border border-[var(--theme-border)] p-4">
-            <h2 className="text-sm font-semibold">专属会话</h2>
-            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-              对话会固定到这个发布版本，历史记录只在当前智能体工作区显示。
+        <section className="grid border-b border-[var(--theme-border)] py-6 sm:grid-cols-3 sm:divide-x sm:divide-[var(--theme-border)]">
+          <div className="pb-5 sm:pb-0 sm:pr-6">
+            <h2 className="text-xs font-semibold text-[var(--theme-text-secondary)]">推荐任务</h2>
+            <p className="mt-2 text-sm leading-6">
+              {profile.recommended_tasks.join("、") || profile.description}
             </p>
           </div>
-          <div className="rounded-lg border border-[var(--theme-border)] p-4">
-            <h2 className="text-sm font-semibold">企业受控能力</h2>
-            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-              模型、Skills 与工具由平台统一配置，使用者无需自行选择或调整。
+          <div className="border-t border-[var(--theme-border)] py-5 sm:border-0 sm:px-6 sm:py-0">
+            <h2 className="text-xs font-semibold text-[var(--theme-text-secondary)]">支持输入</h2>
+            <p className="mt-2 text-sm leading-6">
+              {profile.supported_input_types.join(" / ")}
+              {profile.supported_file_types.length
+                ? ` · ${profile.supported_file_types.join("、")}`
+                : ""}
             </p>
           </div>
-        </div>
+          <div className="border-t border-[var(--theme-border)] pt-5 sm:border-0 sm:pl-6 sm:pt-0">
+            <h2 className="text-xs font-semibold text-[var(--theme-text-secondary)]">预期输出</h2>
+            <p className="mt-2 text-sm leading-6">
+              {profile.expected_outputs.join("、") || "对话答复"}
+            </p>
+          </div>
+        </section>
 
-        <div className="flex flex-col gap-3 border-t border-[var(--theme-border)] px-6 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+        {profile.starter_prompts.length ? (
+          <section className="border-b border-[var(--theme-border)] py-6">
+            <h2 className="text-sm font-semibold">示例问题</h2>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {profile.starter_prompts.map((prompt) => (
+                <button
+                  className="min-h-11 rounded-md border border-[var(--theme-border)] px-3 py-2 text-left text-sm leading-6 transition-colors hover:border-[var(--theme-primary)] hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={creating || readOnly}
+                  key={prompt}
+                  onClick={() => onStarterPrompt(prompt)}
+                  type="button"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {profile.permissions_and_data_access_notice ? (
+          <section className="flex gap-3 border-b border-[var(--theme-border)] py-5 text-sm leading-6">
+            <ShieldCheck className="mt-0.5 shrink-0 text-emerald-600" size={17} aria-hidden="true" />
+            <div>
+              <h2 className="font-semibold">权限与数据访问</h2>
+              <p className="mt-1 text-[var(--theme-text-secondary)]">
+                {profile.permissions_and_data_access_notice}
+              </p>
+            </div>
+          </section>
+        ) : null}
+
+        <div className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center sm:justify-between">
           <button
             className="inline-flex items-center gap-1 text-sm font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-primary)]"
             onClick={onOpenDetail}
@@ -298,15 +399,19 @@ export function AgentWorkspaceWelcome({
             aria-label={`开始与 ${profile.name} 对话`}
             className="btn-primary inline-flex min-h-10 items-center justify-center gap-2 px-5 disabled:cursor-not-allowed disabled:opacity-60"
             data-agent-workspace-start
-            disabled={creating}
-            onClick={onStart}
+            disabled={creating || readOnly}
+            onClick={() => onStart()}
             type="button"
           >
             <MessageCircle size={17} aria-hidden="true" />
-            {creating ? "正在创建专属会话…" : "开始新对话"}
+            {readOnly
+              ? "已下架，仅可查看历史"
+              : creating
+                ? "正在创建专属会话…"
+                : "开始新对话"}
           </button>
         </div>
-      </section>
+      </div>
 
       {error ? (
         <p className="mx-auto mt-4 max-w-3xl text-sm text-[var(--theme-danger)]" role="alert">
@@ -334,6 +439,7 @@ export interface ChatAppContentProps {
   setMobileSidebarOpen: (open: boolean) => void;
   agentWorkspace?: AgentProfilePublicProjection;
   agentWorkspaceStartProfile?: AgentProfilePublicProjection;
+  agentWorkspaceReadOnly?: boolean;
   agentWorkspaceSessionSource?: SessionSidebarSessionSource;
   agentWorkspaceHistoryError?: string | null;
   onAgentWorkspaceHistoryRetry?: () => void;
@@ -347,6 +453,7 @@ export function ChatAppContent({
   setMobileSidebarOpen,
   agentWorkspace,
   agentWorkspaceStartProfile,
+  agentWorkspaceReadOnly = false,
   agentWorkspaceSessionSource,
   agentWorkspaceHistoryError = null,
   onAgentWorkspaceHistoryRetry,
@@ -370,6 +477,14 @@ export function ChatAppContent({
   const agentWorkspaceDetailPath = agentWorkspace
     ? `/agent-market/${encodeURIComponent(agentWorkspace.agent_id)}/${agentWorkspace.expected_revision}`
     : "/agent-market";
+  const agentWorkspaceStarterDraft = useMemo(() => {
+    if (!agentWorkspace) return "";
+    const routeState = location.state as { agentStarterPrompt?: unknown } | null;
+    const prompt = routeState?.agentStarterPrompt;
+    return typeof prompt === "string" && agentWorkspace.starter_prompts.includes(prompt)
+      ? prompt
+      : "";
+  }, [agentWorkspace, location.state]);
   const chatToolAccess = getChatToolAccess({
     agentWorkspace,
     phase: agentConversationState.phase,
@@ -861,6 +976,7 @@ export function ChatAppContent({
     agentConversationState.targetSessionId === sessionId;
   const canSendMessage =
     hasPermission(Permission.CHAT_WRITE) &&
+    !agentWorkspaceReadOnly &&
     agentConversationState.phase !== "loading" &&
     agentConversationState.phase !== "blocked" &&
     recoveredSessionReady &&
@@ -977,10 +1093,14 @@ export function ChatAppContent({
     historyLoadEnabled: agentWorkspaceHistoryLoadEnabled,
   });
 
-  const handleNewSessionWithReset = useCallback(() => {
+  const handleNewSessionWithReset = useCallback((starterPrompt?: string) => {
     if (agentWorkspace) {
       if (agentWorkspaceCreating) return;
-      const startProfile = agentWorkspaceStartProfile ?? agentWorkspace;
+      const startProfile = agentWorkspaceStartProfile;
+      if (agentWorkspaceReadOnly || !startProfile) {
+        setAgentWorkspaceError("该智能体已下架，历史会话仅供查看。");
+        return;
+      }
       if (
         startProfile.agent_id !== agentWorkspace.agent_id ||
         startProfile.expected_revision !== agentWorkspace.expected_revision
@@ -991,13 +1111,23 @@ export function ChatAppContent({
         );
         return;
       }
-      setAgentWorkspaceCreating(true);
       setAgentWorkspaceError(null);
+      const operationId = getOrCreateAgentConversationOperationId({
+        agentId: startProfile.agent_id,
+        revision: startProfile.expected_revision,
+        storage: browserSessionStorage(),
+        createId: uuid,
+      });
+      if (!operationId) {
+        setAgentWorkspaceError("浏览器无法安全保存本次创建标识，请启用会话存储后重试。");
+        return;
+      }
+      setAgentWorkspaceCreating(true);
       void agentProfileApi
         .createConversation({
           agent_id: startProfile.agent_id,
           expected_revision: startProfile.expected_revision,
-        })
+        }, operationId)
         .then((session) => {
           const identity = session.agent_conversation;
           if (
@@ -1009,10 +1139,18 @@ export function ChatAppContent({
           ) {
             throw new Error("agent_workspace_identity_mismatch");
           }
+          clearAgentConversationOperationId({
+            agentId: startProfile.agent_id,
+            revision: startProfile.expected_revision,
+            storage: browserSessionStorage(),
+          });
           clearMessages();
           onAgentWorkspaceSessionCreated?.(session.session_id);
           navigate(
             `${agentWorkspaceRouteBasePath}/${encodeURIComponent(session.session_id)}`,
+            starterPrompt
+              ? { state: { agentStarterPrompt: starterPrompt } }
+              : undefined,
           );
         })
         .catch((error: unknown) => {
@@ -1056,6 +1194,7 @@ export function ChatAppContent({
     resetAgentOptionDefaults,
     agentWorkspace,
     agentWorkspaceStartProfile,
+    agentWorkspaceReadOnly,
     agentWorkspaceCreating,
     agentWorkspaceRouteBasePath,
     onAgentWorkspaceSessionCreated,
@@ -1231,9 +1370,11 @@ export function ChatAppContent({
             creating={agentWorkspaceCreating}
             error={agentWorkspaceError}
             historyError={agentWorkspaceHistoryError}
+            readOnly={agentWorkspaceReadOnly}
             onOpenDetail={() => navigate(agentWorkspaceDetailPath)}
             onRetryHistory={onAgentWorkspaceHistoryRetry}
             onStart={handleNewSessionWithReset}
+            onStarterPrompt={(prompt) => handleNewSessionWithReset(prompt)}
             profile={agentWorkspace}
           />
         ) : (
@@ -1246,8 +1387,12 @@ export function ChatAppContent({
             isLoadingHistory={isLoadingHistory}
             connectionStatus={connectionStatus}
             canSendMessage={canSendMessage}
+            initialComposerDraft={agentWorkspaceStarterDraft}
+            initialComposerDraftKey={location.key}
             composerPlaceholder={
-              agentWorkspace
+              agentWorkspaceReadOnly
+                ? "该历史会话为只读状态"
+                : agentWorkspace
                 ? `向 ${agentWorkspace.name} 描述要完成的任务…`
                 : undefined
             }

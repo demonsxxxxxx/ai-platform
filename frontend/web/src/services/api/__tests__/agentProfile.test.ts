@@ -7,6 +7,18 @@ import {
   buildAgentProfileDetailUrl,
 } from "../agentProfile.ts";
 
+const defaultEnterpriseProjection = {
+  welcome_message: "",
+  starter_prompts: [] as string[],
+  capability_summary: "",
+  recommended_tasks: [] as string[],
+  supported_input_types: ["text"] as Array<"text" | "file">,
+  supported_file_types: [] as string[],
+  expected_outputs: [] as string[],
+  permissions_and_data_access_notice: "",
+  published_at: null,
+};
+
 test("builds server-authoritative catalog and detail URLs", () => {
   assert.equal(
     buildAgentProfileCatalogUrl({ query: "支持 助手", category: "support" }),
@@ -50,6 +62,7 @@ test("loads only the safe public Agent Profile projection", async () => {
     assert.deepEqual(result, {
       agent_profiles: [
         {
+          ...defaultEnterpriseProjection,
           agent_id: "agt_support",
           expected_revision: 7,
           name: "支持助手",
@@ -178,7 +191,9 @@ test("lists only server-authorized conversations with their immutable safe ident
           workspace_id: "default",
           agent_id: "agt_support",
           title: "支持助手",
+          purpose: "conversation",
           agent_conversation: {
+            ...defaultEnterpriseProjection,
             agent_id: "agt_support",
             revision: 7,
             name: "支持助手",
@@ -207,7 +222,7 @@ test("lists only server-authorized conversations with their immutable safe ident
   }
 });
 
-test("creates a durable Agent Conversation with only the exact published selector", async () => {
+test("creates a durable Agent Conversation with one caller-owned operation identity", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; method?: string; body?: string | null }> = [];
   globalThis.fetch = (async (input, init) => {
@@ -243,7 +258,7 @@ test("creates a durable Agent Conversation with only the exact published selecto
     const response = await agentProfileApi.createConversation({
       agent_id: "agt_support",
       expected_revision: 7,
-    });
+    }, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4");
     assert.deepEqual(calls, [
       {
         url: "/api/ai/agent-conversations",
@@ -253,10 +268,12 @@ test("creates a durable Agent Conversation with only the exact published selecto
             agent_id: "agt_support",
             expected_revision: 7,
           },
+          operation_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
         }),
       },
     ]);
     assert.deepEqual(response.agent_conversation, {
+      ...defaultEnterpriseProjection,
       agent_id: "agt_support",
       revision: 7,
       name: "支持助手",
@@ -284,7 +301,10 @@ test("preserves typed 403 and stale revision failures from conversation admissio
 
   try {
     await assert.rejects(
-      agentProfileApi.createConversation({ agent_id: "agt_support", expected_revision: 7 }),
+      agentProfileApi.createConversation(
+        { agent_id: "agt_support", expected_revision: 7 },
+        "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+      ),
       (error: unknown) =>
         typeof error === "object" &&
         error !== null &&
@@ -292,7 +312,10 @@ test("preserves typed 403 and stale revision failures from conversation admissio
     );
     status = 409;
     await assert.rejects(
-      agentProfileApi.createConversation({ agent_id: "agt_support", expected_revision: 7 }),
+      agentProfileApi.createConversation(
+        { agent_id: "agt_support", expected_revision: 7 },
+        "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+      ),
       (error: unknown) =>
         typeof error === "object" &&
         error !== null &&

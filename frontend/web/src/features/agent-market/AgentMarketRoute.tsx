@@ -259,8 +259,13 @@ function AgentMarketCard({
             </span>
           </span>
           <span className="mt-2 line-clamp-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-            {profile.description || "该智能体已通过平台发布。"}
+            {profile.capability_summary || profile.description}
           </span>
+          {profile.recommended_tasks[0] ? (
+            <span className="mt-3 line-clamp-1 text-xs text-[var(--theme-text-secondary)]">
+              推荐：{profile.recommended_tasks[0]}
+            </span>
+          ) : null}
           <span className="mt-auto inline-flex items-center gap-1.5 pt-4 text-sm font-medium text-[var(--theme-primary)]">
             打开智能体工作区
             <span aria-hidden="true">→</span>
@@ -493,23 +498,59 @@ function AgentMarketDetail({
               </div>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{profile.name}</h1>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
-                {profile.description || "该智能体已通过平台发布。"}
+                {profile.capability_summary || profile.description}
               </p>
+              {profile.description && profile.description !== profile.capability_summary ? (
+                <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                  {profile.description}
+                </p>
+              ) : null}
+              {profile.published_at ? (
+                <p className="mt-4 text-xs text-[var(--theme-text-secondary)]">
+                  企业发布时间 {profile.published_at.slice(0, 10)}
+                </p>
+              ) : null}
             </div>
           </div>
         </section>
 
-        <section className="grid gap-4 border-b border-[var(--theme-border)] py-7 sm:grid-cols-2">
-          <div className="rounded-lg border border-[var(--theme-border)] p-5">
-            <h2 className="text-sm font-semibold">适合处理</h2>
-            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-              {profile.description || "使用企业已发布的受控能力完成相关工作。"}
-            </p>
+        <section className="grid border-b border-[var(--theme-border)] py-7 sm:grid-cols-2 sm:gap-x-10">
+          <div className="pb-6 sm:pb-7">
+            <h2 className="text-sm font-semibold">推荐任务</h2>
+            <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+              {(profile.recommended_tasks.length
+                ? profile.recommended_tasks
+                : [profile.description]
+              ).filter(Boolean).map((task) => (
+                <li className="border-l-2 border-emerald-500 pl-3" key={task}>
+                  {task}
+                </li>
+              ))}
+            </ul>
           </div>
-          <div className="rounded-lg border border-[var(--theme-border)] p-5">
-            <h2 className="text-sm font-semibold">使用方式</h2>
-            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-              进入专属工作区后再创建会话。模型、Skills 与工具由平台统一配置。
+          <div className="border-t border-[var(--theme-border)] py-6 sm:border-0 sm:py-0">
+            <h2 className="text-sm font-semibold">示例问题</h2>
+            <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+              {profile.starter_prompts.map((prompt) => (
+                <li key={prompt}>{prompt}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="border-t border-[var(--theme-border)] py-6">
+            <h2 className="text-sm font-semibold">输入与输出</h2>
+            <dl className="mt-3 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 text-sm leading-6">
+              <dt className="text-[var(--theme-text-secondary)]">输入</dt>
+              <dd>{profile.supported_input_types.join(" / ")}</dd>
+              <dt className="text-[var(--theme-text-secondary)]">文件</dt>
+              <dd>{profile.supported_file_types.join("、") || "不接收文件"}</dd>
+              <dt className="text-[var(--theme-text-secondary)]">输出</dt>
+              <dd>{profile.expected_outputs.join("、") || "对话答复"}</dd>
+            </dl>
+          </div>
+          <div className="border-t border-[var(--theme-border)] py-6">
+            <h2 className="text-sm font-semibold">权限与数据访问</h2>
+            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--theme-text-secondary)]">
+              {profile.permissions_and_data_access_notice || "遵循企业当前授权策略。"}
             </p>
           </div>
         </section>

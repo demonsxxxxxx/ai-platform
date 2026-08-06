@@ -18,8 +18,17 @@ export interface SelectedAgentProfileRequest {
 export interface AgentProfilePublicProjection extends SelectedAgentProfileRequest {
   name: string;
   description: string;
+  welcome_message: string;
+  starter_prompts: string[];
+  capability_summary: string;
+  recommended_tasks: string[];
+  supported_input_types: Array<"text" | "file">;
+  supported_file_types: string[];
+  expected_outputs: string[];
+  permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
   category: AgentProfileCategory;
+  published_at: string | null;
 }
 
 /** Safe immutable identity recovered from a server-owned Agent Conversation. */
@@ -28,8 +37,17 @@ export interface AgentConversationIdentity {
   revision: number;
   name: string;
   description: string;
+  welcome_message: string;
+  starter_prompts: string[];
+  capability_summary: string;
+  recommended_tasks: string[];
+  supported_input_types: Array<"text" | "file">;
+  supported_file_types: string[];
+  expected_outputs: string[];
+  permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
   category: AgentProfileCategory;
+  published_at: string | null;
 }
 
 /** Canonical server projection for either an Agent-bound or ordinary Session. */
@@ -38,6 +56,7 @@ export interface AgentConversationSessionProjection {
   workspace_id: string;
   agent_id: string;
   title: string;
+  purpose: "conversation" | "builder_test";
   agent_conversation: AgentConversationIdentity | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -56,6 +75,72 @@ function requireString(value: unknown, code: string, allowEmpty = false): string
 function requirePositiveRevision(value: unknown, code: string): number {
   if (!Number.isInteger(value) || (value as number) < 1) throw new Error(code);
   return value as number;
+}
+
+function requireStringList(value: unknown, code: string): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new Error(code);
+  }
+  return [...value];
+}
+
+function projectEnterpriseFields(
+  record: Record<string, unknown>,
+  code: string,
+): Pick<
+  AgentProfilePublicProjection,
+  | "welcome_message"
+  | "starter_prompts"
+  | "capability_summary"
+  | "recommended_tasks"
+  | "supported_input_types"
+  | "supported_file_types"
+  | "expected_outputs"
+  | "permissions_and_data_access_notice"
+  | "published_at"
+> {
+  const supportedInputTypes =
+    record.supported_input_types === undefined
+      ? ["text"]
+      : requireStringList(record.supported_input_types, code);
+  if (
+    supportedInputTypes.length === 0 ||
+    supportedInputTypes.some((item) => item !== "text" && item !== "file")
+  ) {
+    throw new Error(code);
+  }
+  return {
+    welcome_message:
+      record.welcome_message === undefined
+        ? ""
+        : requireString(record.welcome_message, code, true),
+    starter_prompts:
+      record.starter_prompts === undefined
+        ? []
+        : requireStringList(record.starter_prompts, code),
+    capability_summary:
+      record.capability_summary === undefined
+        ? ""
+        : requireString(record.capability_summary, code, true),
+    recommended_tasks:
+      record.recommended_tasks === undefined
+        ? []
+        : requireStringList(record.recommended_tasks, code),
+    supported_input_types: supportedInputTypes as Array<"text" | "file">,
+    supported_file_types:
+      record.supported_file_types === undefined
+        ? []
+        : requireStringList(record.supported_file_types, code),
+    expected_outputs:
+      record.expected_outputs === undefined
+        ? []
+        : requireStringList(record.expected_outputs, code),
+    permissions_and_data_access_notice:
+      record.permissions_and_data_access_notice === undefined
+        ? ""
+        : requireString(record.permissions_and_data_access_notice, code, true),
+    published_at: typeof record.published_at === "string" ? record.published_at : null,
+  };
 }
 
 function requireOneOf<const T extends readonly string[]>(
@@ -79,6 +164,7 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     expected_revision: requirePositiveRevision(record.expected_revision, PROFILE_ERROR),
     name: requireString(record.name, PROFILE_ERROR),
     description: requireString(record.description, PROFILE_ERROR, true),
+    ...projectEnterpriseFields(record, PROFILE_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, PROFILE_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
   };
@@ -93,6 +179,7 @@ export function projectAgentConversationIdentity(value: unknown): AgentConversat
     revision: requirePositiveRevision(record.revision, IDENTITY_ERROR),
     name: requireString(record.name, IDENTITY_ERROR),
     description: requireString(record.description, IDENTITY_ERROR, true),
+    ...projectEnterpriseFields(record, IDENTITY_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, IDENTITY_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, IDENTITY_ERROR),
   };
@@ -106,6 +193,8 @@ export function projectAgentConversationSession(value: unknown): AgentConversati
     workspace_id: requireString(record.workspace_id, SESSION_ERROR),
     agent_id: requireString(record.agent_id, SESSION_ERROR),
     title: requireString(record.title, SESSION_ERROR, true),
+    purpose:
+      record.purpose === "builder_test" ? "builder_test" : "conversation",
     agent_conversation: projectAgentConversationIdentity(record.agent_conversation),
     created_at: typeof record.created_at === "string" ? record.created_at : null,
     updated_at: typeof record.updated_at === "string" ? record.updated_at : null,
@@ -115,10 +204,25 @@ export function projectAgentConversationSession(value: unknown): AgentConversati
 export interface AgentProfileDraftRequest {
   name: string;
   description: string;
+  welcome_message: string;
+  starter_prompts: string[];
+  capability_summary: string;
+  recommended_tasks: string[];
+  supported_input_types: Array<"text" | "file">;
+  supported_file_types: string[];
+  expected_outputs: string[];
+  permissions_and_data_access_notice: string;
   instructions: string;
   model_id: string;
   selected_skill: SelectedSkillRequest;
   mcp_tool_ids: string[];
+  avatar_ref: AgentProfileAvatarRef;
+  avatar_asset_id: string | null;
+  category: AgentProfileCategory;
+  visibility: "tenant" | "restricted";
+  allowed_department_ids: string[];
+  allowed_roles: string[];
+  allowed_user_ids: string[];
   /** 0 creates a profile; later saves must name the current immutable revision. */
   expected_draft_revision: number;
 }
@@ -126,8 +230,10 @@ export interface AgentProfileDraftRequest {
 export interface AgentProfileAdminProjection extends Omit<AgentProfileDraftRequest, "expected_draft_revision"> {
   agent_id: string;
   revision: number;
-  status: "draft" | "published";
+  status: "draft" | "published" | "withdrawn";
   content_hash: string;
+  created_at?: string | null;
+  published_at?: string | null;
 }
 
 export interface AgentProfileMutationResponse {

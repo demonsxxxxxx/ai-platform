@@ -55,6 +55,21 @@ function profile(
     status: "draft",
     name: "文档审阅助手",
     description: "审阅授权文档。",
+    welcome_message: "欢迎使用企业专家。",
+    starter_prompts: ["请审阅这份材料"],
+    capability_summary: "在授权范围内审阅企业文档。",
+    recommended_tasks: ["文档审阅"],
+    supported_input_types: ["text"],
+    supported_file_types: [],
+    expected_outputs: ["审阅意见"],
+    permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
+    avatar_ref: "builtin:document",
+    avatar_asset_id: null,
+    category: "operations",
+    visibility: "tenant",
+    allowed_department_ids: [],
+    allowed_roles: [],
+    allowed_user_ids: [],
     instructions: "仅使用已授权资料。",
     model_id: model.id,
     selected_skill: {
@@ -150,6 +165,12 @@ test("materializes create and update requests with the exact optimistic revision
     ...createUnsavedAgentEditor(),
     name: " 新智能体 ",
     description: " 简介 ",
+    welcomeMessage: " 欢迎使用 ",
+    starterPrompts: [" 示例问题 "],
+    capabilitySummary: " 企业能力 ",
+    recommendedTasks: [" 推荐任务 "],
+    expectedOutputs: [" 审阅意见 "],
+    permissionsAndDataAccessNotice: " 仅访问授权数据 ",
     instructions: "Keep trailing space. ",
     modelId: model.id,
     selectedSkill: {
@@ -161,6 +182,14 @@ test("materializes create and update requests with the exact optimistic revision
   assert.deepEqual(buildAgentProfileDraftRequest(created), {
     name: "新智能体",
     description: "简介",
+    welcome_message: "欢迎使用",
+    starter_prompts: ["示例问题"],
+    capability_summary: "企业能力",
+    recommended_tasks: ["推荐任务"],
+    supported_input_types: ["text"],
+    supported_file_types: [],
+    expected_outputs: ["审阅意见"],
+    permissions_and_data_access_notice: "仅访问授权数据",
     instructions: "Keep trailing space. ",
     model_id: "model-id",
     selected_skill: {
@@ -168,6 +197,13 @@ test("materializes create and update requests with the exact optimistic revision
       expected_version: "2026.07.28",
     },
     mcp_tool_ids: ["mcp:knowledge:search"],
+    avatar_ref: "builtin:agent",
+    avatar_asset_id: null,
+    category: "general",
+    visibility: "tenant",
+    allowed_department_ids: [],
+    allowed_roles: [],
+    allowed_user_ids: [],
     expected_draft_revision: 0,
   });
 
@@ -178,7 +214,14 @@ test("materializes create and update requests with the exact optimistic revision
 test("reports precise missing data and revision reasons", () => {
   const empty = createUnsavedAgentEditor();
   assert.equal(validateAgentProfileEditor(empty, catalog())?.code, "name_required");
-  const withoutInstructions = { ...empty, name: "Agent" };
+  const withoutInstructions = {
+    ...empty,
+    name: "Agent",
+    capabilitySummary: "Enterprise capability",
+    recommendedTasks: ["Review"],
+    expectedOutputs: ["Decision"],
+    permissionsAndDataAccessNotice: "Authorized data only",
+  };
   assert.equal(
     validateAgentProfileEditor(withoutInstructions, catalog())?.code,
     "instructions_required",
