@@ -38,17 +38,41 @@ The only allowed order is:
 A0 cannot enable production, admit a Redis run, or dispatch the SDK. A1 must
 atomically persist the v2 backend/design pin, monotonic `stream_incarnation`,
 attempt/generation authority, current authorization epoch,
-`admission_open_pending`, an idempotent open token, an owner lease, and a bounded
-deadline. That transaction commits before `stream_open`. The exact-token open is
-idempotent and fails closed if an existing first envelope does not match every
-pin. A second PostgreSQL transaction records `stream_open_confirmed` before SDK
-dispatch.
+`admission_open_pending`, an idempotent open token, owner identity, a positive
+monotonic `admission_owner_epoch`, an owner lease, and a bounded deadline. That
+transaction commits before `stream_open`. The exact-token open is idempotent and
+fails closed if an existing first envelope does not match every pin.
+
+Takeover is allowed only after database-clock lease expiry while admission is
+pending. It row-locks the authority, replaces the owner, and increments
+`admission_owner_epoch` without changing the token or pins. A delayed old-owner
+success or unknown-result retry cannot renew, confirm, create dispatch authority,
+or call the SDK after its epoch is stale.
+
+The `stream_open_confirmed` transaction is a compare-and-set requiring pending
+state, exact open token and pins, current owner identity/epoch, and a lease still
+valid by database time. It atomically records confirmation and inserts the one
+immutable `sdk_dispatch_intent`, with a `dispatch_token` unique for the
+run/attempt/generation. Zero updated rows is a fenced result; confirmation without
+the intent rolls back.
+
+Every SDK start goes through `dispatch_once(dispatch_token)`, which durably
+acquires or returns the same `sdk_execution_fence` and execution identity before
+external SDK start. The SDK gateway uses that identity as a mandatory idempotency
+key and acquires or returns the same execution handle. Retry and crash recovery
+may finish that handle without starting another SDK execution. A boundary unable
+to prove this property after an uncertain start fails A1 closed; it never falls
+back to a fresh SDK call.
 
 An open failure or unknown result never authorizes dispatch. The owner retries
-the same token; after lease expiry a maintenance owner takes over. Within one
-admission-lease expiry plus one maintenance interval after PostgreSQL and Redis
-are available, recovery must either confirm that same open or commit a truthful
-pre-dispatch admission failure. Once D is present, D owns any corresponding
+the same token; after lease expiry a maintenance owner takes over with a higher
+fence. The normative RED set includes a delayed old-owner response after takeover,
+unknown XADD with a two-owner retry, and a crash after confirm commit but before
+dispatch. Each must prove stale CAS rejection, one confirmation/dispatch intent,
+and exactly one acquire-or-return SDK execution identity. Within one admission-
+lease expiry plus one maintenance interval after PostgreSQL and Redis are
+available, recovery must either confirm that same open or commit a truthful pre-
+dispatch admission failure. Once D is present, D owns any corresponding
 publication intent. Recovery cannot leave the run permanently running or allocate
 a replacement incarnation to hide ambiguity.
 

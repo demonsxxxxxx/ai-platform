@@ -58,9 +58,10 @@ authorize implementation, deployment, or a runtime claim.
    pins the stream backend, v2 design, tenant, session, run, attempt/generation,
    authorization epoch, public projection policy, and first monotonic stream
    incarnation together with `admission_open_pending`, an idempotent open token,
-   and an admission deadline. It commits before `stream_open`; a second
-   PostgreSQL transition records `stream_open_confirmed` after the idempotent
-   open succeeds, and only then may SDK dispatch.
+   a positive `admission_owner_epoch`, owner lease, and admission deadline. It
+   commits before `stream_open`. A fenced compare-and-set confirmation records
+   `stream_open_confirmed` and creates the unique durable SDK dispatch intent in
+   one transaction; only that intent may reach the idempotent SDK dispatch gate.
 2. Safe typed text arrives quickly in coalesced chunks. Tool, approval, artifact,
    and lifecycle events remain typed and are projected only after their durable
    authority allows them to be public.
@@ -234,10 +235,11 @@ Upstream source proves design patterns, not ai-platform runtime behavior.
 ```mermaid
 flowchart LR
     U["Authorized run request"] --> A1["PostgreSQL admission authority"]
-    A1 -->|"commit pin, epoch, admission_open_pending, and open token"| PG[("PostgreSQL durable authority")]
-    PG -->|"after commit"| W["StreamBridge stream_open"]
-    W -->|"idempotent open succeeds"| A1C["PostgreSQL stream_open_confirmed"]
-    A1C -->|"after commit"| SDK["Claude Agent SDK adapter"]
+    A1 -->|"commit pin, pending, open token, owner epoch, and lease"| PG[("PostgreSQL durable authority")]
+    PG -->|"open token and owner epoch"| W["StreamBridge stream_open"]
+    W -->|"matching open proof"| A1C["Fenced confirm CAS plus dispatch intent"]
+    A1C -->|"committed dispatch token"| DG["Idempotent dispatch_once gate"]
+    DG -->|"one execution identity"| SDK["Claude Agent SDK adapter"]
     SDK --> N["Typed event normalizer"]
     N --> P["Tenant/run authorization and safe projection"]
     P --> C["Bounded per-run coalescer"]
@@ -604,17 +606,42 @@ positive decimal `stream_incarnation`; the payload includes the bounded
   A replacement attempt changes `stream_generation`, then appends `stream_reset`;
   it does not change incarnation unless Redis continuity also needs rebuilding.
 - Admission persists `admission_open_pending`, a unique open token derived from
-  the immutable run/incarnation/generation/attempt, an owner lease, and a bounded
+  the immutable run/incarnation/generation/attempt, plus the owner identity, a
+  positive monotonic `admission_owner_epoch`, an owner lease, and a bounded
   deadline in the first PostgreSQL transaction. `stream_open` is idempotent for
   that exact token: an existing first envelope is success only when every pinned
-  field matches; mismatch fails closed. A second PostgreSQL transaction records
-  `stream_open_confirmed` before SDK dispatch. Failure, timeout, crash, or an
-  unknown open result never changes the pin and never authorizes SDK dispatch.
-  The current owner retries the same token; after lease expiry a maintenance
-  owner takes over. By one admission-lease expiry plus one maintenance interval
-  after PostgreSQL and Redis are available, it must either confirm the same open
-  or commit a truthful pre-dispatch admission failure. Once D is present, D owns
-  any corresponding publication intent. Thus an admitted v2 row cannot remain
+  field matches; mismatch fails closed.
+- Takeover is a PostgreSQL row-lock transition allowed only while admission is
+  pending and the prior lease is expired according to the database clock. It
+  replaces the owner, increments `admission_owner_epoch`, and never reuses an old
+  epoch or changes the open token/pins. A delayed old-owner Redis success or
+  unknown-result retry may supply evidence about that token, but its stale epoch
+  cannot confirm admission, create dispatch authority, renew the lease, or call
+  the SDK.
+- `stream_open_confirmed` is a compare-and-set transaction requiring all of:
+  admission is still `admission_open_pending`; the immutable open token and
+  run/incarnation/generation/attempt match; the caller's owner identity and epoch
+  are current; the owner lease is still valid by database time; and the first
+  Redis envelope proves the exact pin. Zero rows updated is a stale/fenced result.
+  The same transaction records `stream_open_confirmed` and inserts exactly one
+  immutable `sdk_dispatch_intent` with a `dispatch_token`, uniquely constrained
+  by run/attempt/generation. Confirmation without that intent rolls back.
+- A durable dispatch intent alone is not exactly-once authority. Every SDK start
+  path must call repository-owned `dispatch_once(dispatch_token)`. That boundary
+  durably acquires or returns the one `sdk_execution_fence` and execution identity
+  uniquely bound to run/attempt/generation before external SDK start. The SDK
+  gateway must use that identity as a mandatory idempotency key and acquire or
+  return the same execution handle. Repeated claims or recovery calls may finish
+  the same handle but cannot start another SDK execution. If the SDK boundary
+  cannot prove this acquire-or-return property for an uncertain start, A1 fails
+  closed and may not issue a fresh SDK call or pass its gate.
+- Failure, timeout, crash, or an unknown open result never changes the pin and
+  never directly authorizes SDK dispatch. The current owner retries the same
+  token; after lease expiry a maintenance owner takes over with a higher fence.
+  By one admission-lease expiry plus one maintenance interval after PostgreSQL
+  and Redis are available, it must either confirm the same open or commit a
+  truthful pre-dispatch admission failure. Once D is present, D owns any
+  corresponding publication intent. Thus an admitted v2 row cannot remain
   permanently running solely because open failed.
 - Terminal publication intent durably stores the backend pin, design version,
   target incarnation, terminal semantic `event_id`, and end semantic `event_id`.
@@ -841,7 +868,10 @@ blocked connection.
 | Scenario | Required behavior |
 | --- | --- |
 | Redis unavailable at run admission | Reject or hold admission fail closed; do not start a Redis-pinned SDK run and do not select memory fallback. |
-| PostgreSQL admission commits and `stream_open` fails or is unknown | Keep `admission_open_pending`; never dispatch SDK. Retry the same idempotent open token and immutable pin. Ownership transfers after admission-lease expiry. Within one lease expiry plus one maintenance interval after PostgreSQL and Redis are available, commit `stream_open_confirmed` or a truthful pre-dispatch admission failure; once D exists, D owns any publication intent. Never leave the run permanently running. |
+| PostgreSQL admission commits and `stream_open` fails or is unknown | Keep `admission_open_pending`; never dispatch SDK directly. Retry the same idempotent open token and immutable pin. Takeover after lease expiry increments the persisted owner fence. Fenced confirmation atomically creates the unique dispatch intent or commits a truthful pre-dispatch admission failure within the bounded recovery deadline. |
+| Delayed old-owner `stream_open` response after takeover | The old epoch may report matching Redis evidence, but confirm CAS updates zero rows because the owner fence is stale. It cannot create a dispatch intent, renew, or dispatch. The current owner alone may confirm using the unchanged token. RED asserts stale CAS rejection and one dispatch intent/execution identity. |
+| Unknown `stream_open` XADD with two-owner retry | Owner e times out after an unknown XADD; takeover commits e+1 and retries the same token. Existing exact envelope is idempotent success, while any late e confirmation is fenced. Exactly one confirm transaction and one unique dispatch intent win; all dispatch recovery returns the same SDK execution identity. |
+| Process crashes after confirm commit and before SDK dispatch | The atomic confirmation already left one pending `sdk_dispatch_intent`. Recovery calls `dispatch_once` with its token; acquire-or-return yields one durable execution identity and one SDK start. No recovery path re-confirms admission, invents a token, or starts a second execution. |
 | Redis fails during eligible non-interactive work | Stop live deltas, seal bounded memory, record transport degradation, and continue controlled SDK execution only while cancellation/resource/egress/safety authority remains reliable. Commit the truthful final result and pending publication intent in PostgreSQL; clients converge through durable status/final hydrate. |
 | Redis fails while approval, user interaction, or a control/safety event is required | Pause before the dependent side effect or fail closed. If a safe bounded pause cannot be maintained, terminalize failure/cancellation; never continue as though the event was delivered. |
 | Redis fails and execution later fails or is cancelled | Commit failure/cancellation, degraded-transport fact, required semantics, and a pending terminal publication intent in PostgreSQL. Do not leave the run running. |
@@ -1057,8 +1087,10 @@ review/PR/deploy ceiling; next gate.
 - Target/user result: atomically persist the immutable backend/design pin,
   monotonic `stream_incarnation`, attempt/generation authority, and current
   `authorization_epoch` plus `admission_open_pending`, idempotent open token,
-  owner lease, and deadline; commit before `stream_open`, then commit
-  `stream_open_confirmed` before SDK dispatch.
+  positive monotonic `admission_owner_epoch`, owner lease, and deadline; commit
+  before `stream_open`, then use the fenced confirm CAS to atomically commit
+  `stream_open_confirmed` plus the unique durable SDK dispatch intent. All SDK
+  starts use its idempotent acquire-or-return execution fence.
 - Clean worktree/branch: new worktree from main containing reviewed A0; branch
   `codex/sse-a1-pg-admission-v2`.
 - Exclusive files: the bounded admission repository/schema/migration path,
@@ -1071,10 +1103,16 @@ review/PR/deploy ceiling; next gate.
   real database connections; attempt/generation mismatch; transaction rollback;
   Redis unavailable before admission; `stream_open` failure and unknown outcome;
   idempotent retry with exact matching envelope; mismatched existing envelope;
-  crash before/after open confirmation; missing owner recovery after lease expiry;
-  admission deadline commits pre-dispatch failure instead of permanent running;
-  SDK dispatch before the initial or confirmed-open PG commit; retry/resume
-  cannot change pin; A0-only configuration cannot admit a Redis run.
+  takeover increments `admission_owner_epoch`; delayed old-owner response after
+  takeover updates zero confirmation rows and creates no intent; unknown
+  `stream_open` XADD
+  with two-owner retry produces one confirm/intent/execution identity; crash after
+  confirm commit and before dispatch recovers the same intent and starts the SDK
+  exactly once; missing owner recovery after lease expiry; admission deadline
+  commits pre-dispatch failure instead of permanent running; SDK dispatch before
+  the initial or confirmed-plus-intent PG commit; any direct/non-idempotent SDK
+  call; retry/resume cannot change pin; A0-only configuration cannot admit a
+  Redis run.
 - Focused gate: unit tests plus an isolated real PostgreSQL integration selector
   under `--basetemp .pytest-tmp/run-sse-a1`, schema checks, Ruff, compileall,
   diff check, governance, and immutable readiness. A missing DSN is
@@ -1272,6 +1310,11 @@ remain closed after exact Markdown and diagram validation:
 
 - Dependency: A0 has no production enablement; A1 is merged and passes a real
   PostgreSQL gate before B can produce or dispatch any Redis-pinned run.
+- Admission dispatch: a persisted monotonic owner epoch fences takeover; confirm
+  CAS requires pending state, exact token/pins, current owner fence, and a valid
+  lease; the same transaction creates one unique dispatch intent. Delayed stale
+  success, two-owner unknown XADD retry, and confirm-before-dispatch crash REDs
+  each prove stale CAS rejection and one acquire-or-return SDK execution identity.
 - Cursor: run/incarnation-bound, canonical, accepted only after fold;
   future/foreign invalid and older incarnation gaps before Redis read.
 - Gap: missing/trimmed/restarted stream never masquerades as complete replay;
