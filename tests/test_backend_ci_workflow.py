@@ -368,6 +368,13 @@ def test_backend_image_job_builds_every_candidate_and_checks_the_runtime_contrac
     assert "needs: sandbox-provider" in image_job
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in image_job
     assert "persist-credentials: false" in image_job
+    assert "IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in image_job
+    assert "- name: Resolve image source repository" in image_job
+    assert 'if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then' in image_job
+    assert '[[ "$IMAGE_SOURCE_HEAD_REPOSITORY" =~ ^[A-Za-z0-9]' in image_job
+    assert 'image_source_repository="https://github.com/${IMAGE_SOURCE_HEAD_REPOSITORY}.git"' in image_job
+    assert 'printf \'IMAGE_SOURCE_REPOSITORY=%s\\n\' "$image_source_repository" >> "$GITHUB_ENV"' in image_job
+    assert "IMAGE_SOURCE_REPOSITORY: https://github.com/${{ github.repository }}.git" not in image_job
     assert "docker build" in image_job
     assert "-f Dockerfile" in image_job
     assert "uv.lock" not in image_job  # The real Docker build proves lock consumption.

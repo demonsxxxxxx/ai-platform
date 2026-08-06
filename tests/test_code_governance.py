@@ -327,6 +327,17 @@ def test_reviewed_dependency_locks_are_not_hot_production_files(
     ]
 
 
+def test_repository_exception_matches_the_current_candidate_policy() -> None:
+    base = _git(REPO_ROOT, "rev-parse", "origin/main")
+    head = _git(REPO_ROOT, "rev-parse", "HEAD")
+
+    evaluation = _evaluate(REPO_ROOT, base, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.exempted_violations == ()
+    assert evaluation.exception["status"] == "absent"
+
+
 def test_unlisted_lock_file_remains_governed(governance_repo: tuple[Path, str]) -> None:
     repo, base = governance_repo
     _write(repo, "config/dependencies.lock", "".join(f"locked-{index}\n" for index in range(1601)))

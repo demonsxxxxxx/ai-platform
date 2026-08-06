@@ -115,13 +115,23 @@ jobs:
     needs: sandbox-provider
     env:
       IMAGE_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-      IMAGE_SOURCE_REPOSITORY: https://github.com/${{ github.repository }}.git
+      IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
     steps:
       - name: Checkout exact image source
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
+      - name: Resolve image source repository
+        run: |
+          set -euo pipefail
+          image_source_repository="https://github.com/${GITHUB_REPOSITORY}.git"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            [[ "$IMAGE_SOURCE_HEAD_REPOSITORY" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]
+            image_source_repository="https://github.com/${IMAGE_SOURCE_HEAD_REPOSITORY}.git"
+          fi
+          printf 'IMAGE_SOURCE_REPOSITORY=%s\n' "$image_source_repository" >> "$GITHUB_ENV"
 
       - name: Build backend image
         run: |

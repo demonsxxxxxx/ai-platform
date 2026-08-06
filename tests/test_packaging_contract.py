@@ -121,6 +121,14 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
     assert "if:" not in frontend_image
     assert "PIP_INDEX_URL" not in backend_image
     assert "PIP_TRUSTED_HOST" not in backend_image
+    for image_job in (backend_image, frontend_image):
+        assert "IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in image_job
+        assert "- name: Resolve image source repository" in image_job
+        assert 'if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then' in image_job
+        assert '[[ "$IMAGE_SOURCE_HEAD_REPOSITORY" =~ ^[A-Za-z0-9]' in image_job
+        assert 'image_source_repository="https://github.com/${IMAGE_SOURCE_HEAD_REPOSITORY}.git"' in image_job
+        assert 'printf \'IMAGE_SOURCE_REPOSITORY=%s\\n\' "$image_source_repository" >> "$GITHUB_ENV"' in image_job
+        assert "IMAGE_SOURCE_REPOSITORY: https://github.com/${{ github.repository }}.git" not in image_job
     assert "packaged_backend_image_id=%s" in backend_image
     assert "packaged_frontend_image_id=%s" in frontend_image
     assert "backend_container_state=" in backend_image
@@ -138,3 +146,4 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
         ROOT / "frontend" / "web" / "Dockerfile"
     ).read_text(encoding="utf-8")
     assert "http://127.0.0.1:18080/healthz" in frontend_image
+    assert 'labels["ai-platform.source-commit"] == os.environ["IMAGE_SOURCE_COMMIT"]' in frontend_image
