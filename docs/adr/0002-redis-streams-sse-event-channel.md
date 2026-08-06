@@ -4,8 +4,9 @@ status: proposed
 
 # Use Redis Streams for bounded SSE replay and PostgreSQL for durable final facts
 
-AI Platform will use one per-run Redis Stream as the bounded live/replay channel
-for Agent SSE and will keep PostgreSQL as the durable authority for run/session
+AI Platform will use one current Redis Stream per run, fenced by a durable stream
+incarnation, as the bounded live/replay channel for Agent SSE and will keep
+PostgreSQL as the durable authority for run/session
 state, final answers, tool/approval/artifact facts, and necessary audit or
 semantic facts. This removes per-text-delta PostgreSQL writes while retaining
 explicit reconnect gaps and durable final-state reconciliation.
@@ -31,18 +32,27 @@ answer must remain correct even if Redis or an API process disappears.
 
 ## Decision
 
-- Redis Stream IDs are the ordering authority for the bounded replay plane.
-  Public SSE IDs bind the run to the Redis ID as `<run_id>:<ms>-<seq>`.
+- Native Redis Stream IDs are ordering authority only inside one proven stream
+  incarnation. Public SSE IDs bind all three identities as
+  `<run_id>:<stream_incarnation>:<ms>-<seq>`.
+- PostgreSQL durably allocates a positive, monotonically increasing
+  `stream_incarnation` with the Redis backend/design pin. It is embedded in the
+  Redis key and every envelope. Missing-key rebuild, unprovable Redis continuity,
+  and reconciler recovery must increment it before publication; an old cursor is
+  never compared with overlapping native IDs from a new incarnation.
 - Redis holds only bounded, typed, public-safe projections. It is not a
   transcript or business authority.
 - PostgreSQL stores the immutable per-run backend pin, final answer and status,
   tool/approval/artifact and required semantic facts, plus an idempotent terminal
-  publication intent. Redis-pinned runs do not persist text deltas to PG.
+  publication intent pinned to one stream incarnation and stable terminal/end
+  semantic event IDs. Redis-pinned runs do not persist text deltas to PG.
 - The terminal invariant is `flush pending -> persist final facts -> commit PG
   -> XADD terminal -> XADD end`.
-- Trim, expiry, restart, missing keys, or an invalid/foreign/future cursor produce
-  an explicit replay gap and authorized durable-state reload. A partial live fold
-  is never presented as a complete final answer.
+- Trim, expiry, restart, missing keys, or an older/unprovable incarnation produce
+  an explicit replay gap and authorized durable-state reload. Malformed, foreign,
+  future-incarnation, and future-ID cursors fail closed as invalid requests; they
+  are not converted into gaps. A partial live fold is never presented as a
+  complete final answer.
 - Typed normalization, tenant/run authorization, safe public projection, secret
   filtering, and size bounds happen before every `XADD`.
 - The frontend stores a cursor only after its reducer accepts the event and
@@ -50,6 +60,12 @@ answer must remain correct even if Redis or an API process disappears.
 - Blocking readers have separate connection capacity from publishers and other
   Redis functions. Slow consumers reconnect or gap; they do not create
   unbounded server buffers.
+- An SSE send-authorization lease cannot outlive its `XREAD BLOCK` interval
+  (initially 15,000 ms). Revocation cancels a blocked read; before every payload
+  frame the adapter obtains a current authority decision or uses a lease whose
+  revocation is synchronously invalidated across API instances. Heartbeat cannot
+  renew stale authority; post-revocation payload count is zero and close latency
+  is at most 15 seconds.
 
 The full contract, diagrams, capacity formulas, migration modes, failure matrix,
 and A-F dispatch gates live in
@@ -81,11 +97,27 @@ It is simple for one process but fails multi-API delivery, restart recovery, and
 production fail-closed behavior. It remains only the bounded coalescing layer,
 never a fallback channel.
 
+### Run plus native Redis ID without stream incarnation
+
+`<run_id>:<ms>-<seq>` is shorter, but Redis key loss/rebuild can produce native
+IDs that lexically overlap an accepted cursor. Run binding alone cannot prove
+that the cursor and replacement key share replay history. We reject this option:
+PostgreSQL allocates the incarnation and any same-run older incarnation yields a
+gap before Redis is read.
+
 ### Redis consumer groups
 
 Consumer groups distribute entries among competing workers. Browsers need
 independent replay of the same run, so `XREADGROUP` has the wrong ownership and
 pending-entry semantics.
+
+### Authorization only at connection start or heartbeat write
+
+Connection-start authorization leaves a stale-authority window for long blocked
+reads; checking only when emitting a heartbeat can also allow a payload returned
+by `XREAD` to race revocation. The selected revocable lease is bounded by the
+block deadline, supports cross-instance cancellation, and is authoritatively
+checked before each payload frame. A process-local TTL cache is rejected.
 
 ### Direct model proxy or WebSocket-only transport
 
@@ -118,23 +150,50 @@ Costs and risks:
 - Redis connection and memory budgets become product capacity constraints.
 - A producer crash may lose only the bounded, not-yet-flushed memory buffer.
 - Redis trim or restart can interrupt live continuity and force an honest gap.
+- PostgreSQL gains a small per-run incarnation authority and terminal intent
+  lineage. Incarnations can only increase; old and new native Redis IDs are never
+  stitched together.
 - API, worker, frontend, and migration versions must be coordinated through the
   per-run backend pin and accepted design version.
 - Terminal publication needs an idempotent durable intent because PostgreSQL and
   Redis cannot share one atomic transaction.
+- Long-lived SSE authorization adds bounded refresh load. Required metrics track
+  authorization rechecks, revocation closes/latency, and any payload attempted
+  after revocation; the latter must remain zero.
 
-## Irreversible Boundary And Rollback
+## Migration, Irreversible Boundary, And Rollback
+
+`redis_streams_v1` admission remains disabled until PostgreSQL can atomically
+persist backend/design pin plus current incarnation, terminal intent lineage can
+pin an incarnation, and producer/API/frontend all enforce the three-component
+cursor. Shadow mode is non-public and cannot create a client cursor. Legacy
+PostgreSQL runs retain their existing cursor parser; no backend may guess or
+translate a cursor owned by another pin.
 
 The irreversible boundary is the first `redis_streams_v1` run for which text
 deltas are intentionally not written to PostgreSQL. Those deltas cannot be
 reconstructed later. Only the durable final answer and semantic facts are
 guaranteed history.
 
+A second irreversible protocol boundary is issuing a cursor for an incarnation:
+that incarnation number can never be reset, decremented, reused, or translated
+to the former two-component cursor grammar. This design was not deployed before
+the incarnation field, so there is no valid Redis cursor migration from
+`<run_id>:<ms>-<seq>`.
+
 Rollback changes only admission of new runs to `postgres_legacy`. Existing
 Redis-pinned runs stay on their pinned contract until terminal reconciliation
 and recovery retention finish. The Redis reader cannot be removed while such
 runs remain. Rollback never silently switches an active run or backfills
 invented deltas.
+
+Rollback also preserves current incarnation and immutable-target terminal
+intents for Redis-pinned runs. A retry may reuse a target only while its key and
+envelopes prove the same incarnation. Otherwise an auditable successor intent
+increments the incarnation and reuses the same terminal/end semantic event IDs;
+it never pretends the rebuilt stream continues an old cursor. Authorization
+revocation semantics require no data migration and remain mandatory while any
+Redis-pinned reader is retained.
 
 Steady-state dual writing is prohibited. A short-lived non-public shadow mode
 may compare envelopes and capacity while PostgreSQL remains authoritative, but
