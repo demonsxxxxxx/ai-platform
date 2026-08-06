@@ -18,6 +18,11 @@ does not represent deployed runtime state.
   staged recovery model.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
+- `architecture/redis-streams-sse-event-channel.md` defines the current v2
+  bounded Redis replay, PostgreSQL convergence, revocation fencing, and staged
+  implementation authority.
+- `adr/0003-redis-streams-sse-event-channel-v2-correction.md` records the v2
+  correction; ADR 0002 is retained as the superseded v1 audit record.
 
 ## Operations
 
