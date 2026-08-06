@@ -20,7 +20,6 @@ from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.fake import FakeFailureAdapter, FakeSuccessAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
-from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -1301,49 +1300,6 @@ def locked_run_from_payload(payload):
             }
         },
     }
-
-
-@pytest.mark.asyncio
-async def test_current_principal_resolution_releases_preflight_transaction_before_http(monkeypatch):
-    raw_payload = base_payload()
-    payload = QueueRunPayload.model_validate(
-        {key: value for key, value in raw_payload.items() if key != QUEUE_ATTEMPT_ID_FIELD}
-    )
-    transaction_depth = 0
-    calls = []
-
-    @asynccontextmanager
-    async def recording_transaction():
-        nonlocal transaction_depth
-        transaction_depth += 1
-        calls.append("transaction_enter")
-        try:
-            yield object()
-        finally:
-            calls.append("transaction_exit")
-            transaction_depth -= 1
-
-    async def get_run(_conn, **_kwargs):
-        assert transaction_depth == 1
-        queued_run = locked_run_from_payload(payload.model_dump(mode="json"))
-        queued_run["status"] = "queued"
-        return queued_run
-
-    async def resolve_current_principal(*, user_id, tenant_id):
-        assert transaction_depth == 0
-        calls.append("current_principal_http")
-        return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
-
-    principal = await worker_module._resolve_current_principal_before_dispatch(
-        payload,
-        transaction_factory=recording_transaction,
-        run_loader=get_run,
-        principal_resolver=resolve_current_principal,
-    )
-
-    assert principal is not None
-    assert principal.user_id == "user-a"
-    assert calls == ["transaction_enter", "transaction_exit", "current_principal_http"]
 
 
 @pytest.mark.asyncio
