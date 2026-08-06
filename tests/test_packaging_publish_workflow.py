@@ -136,10 +136,11 @@ def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_mani
     names = [step.get("name") for step in steps]
 
     assert names.index("Build and push immutable image") < names.index("Generate SPDX SBOM")
-    assert names.index("Generate SPDX SBOM") < names.index("Attest SPDX SBOM")
+    assert names.index("Generate SPDX SBOM") < names.index("Scan published digest")
+    assert names.index("Scan published digest") < names.index("Attest SPDX SBOM")
+    assert names.index("Scan published digest") < names.index("Attest build provenance")
     assert names.index("Attest build provenance") < names.index("Sign image by digest")
-    assert names.index("Sign image by digest") < names.index("Scan published digest")
-    assert names.index("Scan published digest") < names.index("Create subject evidence record")
+    assert names.index("Sign image by digest") < names.index("Create subject evidence record")
 
     build = next(step for step in steps if step.get("name") == "Build and push immutable image")
     build_inputs = build["with"]
@@ -150,6 +151,7 @@ def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_mani
         "AI_PLATFORM_BUILD_DIRTY=false",
         "AI_PLATFORM_BUILD_REPOSITORY=https://github.com/demonsxxxxxx/ai-platform.git",
     }
+    assert build_inputs["provenance"] == "false"
 
     text = _workflow_text()
     assert "secrets." not in build_inputs["build-args"]
@@ -171,6 +173,56 @@ def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_mani
     assert "--deny-self-hosted-runners" in text
 
 
+def test_github_cli_is_fixed_checksum_verified_and_token_is_step_scoped():
+    workflow = _workflow()
+    steps = workflow["jobs"]["publish"]["steps"]
+    install = next(step for step in steps if step.get("name") == "Install pinned GitHub CLI")
+    verify = next(step for step in steps if step.get("name") == "Verify signature and attestations")
+
+    assert install["env"] == {
+        "GH_CLI_CHECKSUMS_SHA256": "61905c69ec8660f310814ec98395cdd0c2d07aabf024c597ec45813984a02334",
+        "GH_CLI_TARBALL_SHA256": "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112",
+        "GH_CLI_VERSION": "2.97.0",
+    }
+    install_run = install["run"]
+    assert 'release_url="https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}"' in install_run
+    assert '"$release_url/gh_${GH_CLI_VERSION}_checksums.txt"' in install_run
+    assert '"$release_url/$archive_name"' in install_run
+    assert 'printf \'%s  %s\\n\' "$GH_CLI_CHECKSUMS_SHA256" "$checksums_path" | sha256sum -c -' in install_run
+    assert 'printf \'%s  %s\\n\' "$GH_CLI_TARBALL_SHA256" "$archive_path" | sha256sum -c -' in install_run
+    assert 'test "$actual_version" = "$GH_CLI_VERSION"' in install_run
+    assert "latest" not in install_run.lower()
+
+    assert verify["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert verify["env"]["GH_CLI_BIN"] == "${{ env.GH_CLI_BIN }}"
+    assert '"$GH_CLI_BIN" attestation verify' in verify["run"]
+    assert '--bundle "provenance-${{ matrix.role }}.bundle.json"' in verify["run"]
+    assert "set -x" not in verify["run"]
+    assert 'echo "$GH_TOKEN"' not in verify["run"]
+
+    for step in steps:
+        if step is verify:
+            continue
+        assert "GH_TOKEN" not in step.get("env", {})
+
+
+def test_artifact_and_evidence_names_bind_run_attempt():
+    text = _workflow_text()
+
+    assert (
+        "release-image-subject-${{ github.sha }}-${{ github.run_id }}-"
+        "${{ github.run_attempt }}-${{ matrix.role }}"
+    ) in text
+    assert (
+        "release-image-evidence-${{ github.sha }}-${{ github.run_id }}-"
+        "${{ github.run_attempt }}"
+    ) in text
+    assert (
+        "github-artifact://release-image-subject-$SOURCE_COMMIT-$GITHUB_RUN_ID-"
+        "$GITHUB_RUN_ATTEMPT-${{ matrix.role }}/trivy-${{ matrix.role }}.json"
+    ) in text
+
+
 def test_ready_manifest_requires_both_subject_records_and_is_uploaded_as_run_evidence():
     workflow = _workflow()
     manifest = workflow["jobs"]["release-manifest"]
@@ -181,5 +233,11 @@ def test_ready_manifest_requires_both_subject_records_and_is_uploaded_as_run_evi
     assert "python tools/release_image_manifest.py verify" in text
     assert "--expected-role backend" in text
     assert "--expected-role frontend" in text
+    assert text.count("--evidence-root .") == 2
+    assert "--provenance-bundle \"provenance-${{ matrix.role }}.bundle.json\"" in text
+    assert "--provenance-verification \"provenance-${{ matrix.role }}.verified.json\"" in text
     assert "release-image-manifest.json" in text
-    assert "release-image-evidence-${{ github.sha }}" in text
+    assert (
+        "release-image-evidence-${{ github.sha }}-${{ github.run_id }}-"
+        "${{ github.run_attempt }}"
+    ) in text

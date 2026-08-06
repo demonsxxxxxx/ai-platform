@@ -92,6 +92,38 @@ manifest job. The strict machine-readable contract is
 repository and workflow run identity, platform, Dockerfile hash and context,
 registry manifest digest, and all evidence references for both subjects.
 
+The scan runs against the published digest before any SBOM or provenance
+attestation and before keyless signing. Automatic BuildKit provenance is
+disabled so it cannot bypass that ordering. A scan failure can therefore leave
+an unattested, unsigned digest in GHCR, but it cannot create subject evidence or
+a ready manifest. Operators must treat every registry object without a verified
+ready manifest as quarantined; the workflow does not delete it or hide the
+failed run.
+
+Provenance verification uses GitHub CLI `2.97.0` downloaded from its fixed
+release URL. The workflow verifies both the checksum-list digest and the Linux
+amd64 archive digest before executing that binary, and exposes `github.token`
+as `GH_TOKEN` only to the exact verification step. The token is never a Docker
+build argument, build secret, or logged value. The action-produced provenance
+bundle is copied into run evidence and verified locally by that pinned CLI. The
+manifest records the action attestation ID and URL, bundle hash, and verified
+JSON hash. Artifact names and references include source commit, run ID, and run
+attempt so reruns cannot silently mix evidence.
+
+The JSON Schema rejects all expressible cross-role combinations, including
+Dockerfile, source tag, immutable image reference, SBOM/signature reference,
+provenance artifact reference, and scan artifact reference. JSON Schema cannot
+express equality among arbitrary source, digest, and run fields. The Python
+semantic verifier is therefore the readiness authority: with the downloaded
+evidence root it rehashes and parses the SPDX document and Trivy report, rejects
+blocking findings, rehashes and parses the provenance bundle and verified JSON,
+and requires their in-toto statements to match. It then checks the verified
+statement subject/digest and certificate-backed repository, workflow/ref,
+source commit, GitHub-hosted runner, run ID, run attempt, and trusted timestamp
+result. The v1 subject cardinality is invariant: exactly one backend and one
+frontend are required even when compatibility `--expected-role` flags are
+supplied.
+
 Repository visibility does not establish GHCR package visibility. Before first
 publication, an operator must configure and review the `packaging-publish`
 Environment protection, package visibility/access, retention, tag mutation or
