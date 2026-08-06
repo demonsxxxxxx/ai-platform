@@ -432,6 +432,44 @@ def test_agent_conversation_creation_binds_one_stable_operation_identity(monkeyp
     ]
 
 
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        "00000000-0000-0000-0000-000000000000",
+        "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+        "3d813cbb-47fb-32ba-91df-831e1593ac29",
+        "21f7f8de-8051-5b89-8680-0195ef798b6a",
+        "not-a-uuid",
+    ],
+    ids=["nil", "v1", "v3", "v5", "malformed"],
+)
+def test_agent_conversation_creation_rejects_non_v4_operation_identity(monkeypatch, operation_id):
+    async def must_not_create(*_args, **_kwargs):
+        raise AssertionError("invalid operation identity reached conversation authority")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles._authority.create_conversation",
+        must_not_create,
+    )
+
+    response = TestClient(create_app(), raise_server_exceptions=False).post(
+        "/api/ai/agent-conversations",
+        headers=ordinary_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "selected_agent_profile": {
+                "agent_id": "agt_support",
+                "expected_revision": 4,
+            },
+            "operation_id": operation_id,
+        },
+    )
+
+    assert response.status_code == 422
+
+
 async def test_agent_profile_repository_list_is_tenant_scoped():
     from app.repositories import list_latest_agent_profile_revisions
 

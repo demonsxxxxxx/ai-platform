@@ -744,9 +744,10 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
     sessions: [],
     next_cursor: null,
   });
-  const selections: unknown[] = [];
-  agentProfileApi.createConversation = async (selection) => {
-    selections.push(selection);
+  const selections: Array<{ selection: unknown; operationId: string }> = [];
+  const recordedSelections = () => selections.slice();
+  agentProfileApi.createConversation = async (selection, operationId) => {
+    selections.push({ selection, operationId });
     return {
       session_id: "session-support",
       workspace_id: "default",
@@ -788,6 +789,7 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
 
   const container = dom.document.createElement("div");
   const root = ReactDOM.createRoot(container as never);
+  const reliableSessionStorage = dom.window.sessionStorage;
   try {
     await React.act(async () => {
       root.render(
@@ -823,16 +825,36 @@ test("a bare Agent workspace creates the exact pinned conversation only after ex
 
     const start = container.querySelector("[data-agent-workspace-start]");
     assert.ok(start);
+    dom.window.sessionStorage = null as unknown as Storage;
     await React.act(async () => {
       start.dispatchEvent({ type: "click", bubbles: true });
       for (let index = 0; index < 8; index += 1) await Promise.resolve();
     });
 
-    assert.deepEqual(selections, [
-      { agent_id: "agt_support", expected_revision: 4 },
-    ]);
+    assert.deepEqual(
+      recordedSelections(),
+      [],
+      "unavailable durable operation storage must prevent POST",
+    );
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    assert.match(container.textContent, /浏览器无法安全保存本次创建标识/);
+
+    dom.window.sessionStorage = reliableSessionStorage;
+    await React.act(async () => {
+      start.dispatchEvent({ type: "click", bubbles: true });
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    });
+
+    const [created] = recordedSelections();
+    assert.ok(created);
+    assert.deepEqual(created.selection, { agent_id: "agt_support", expected_revision: 4 });
+    assert.match(
+      created.operationId,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support");
   } finally {
+    dom.window.sessionStorage = reliableSessionStorage;
     agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.listConversations = originalListConversations;
     agentProfileApi.createConversation = originalCreateConversation;

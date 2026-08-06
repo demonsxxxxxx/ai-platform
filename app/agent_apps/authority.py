@@ -972,23 +972,27 @@ class AgentProfileAuthority:
             )
             if existing is not None:
                 response = session_response(existing)
+                expected_title = title or (
+                    response.agent_conversation.name if response.agent_conversation is not None else ""
+                )
                 if (
                     str(existing.get("workspace_id") or "") != workspace_id
                     or str(existing.get("agent_id") or "") != selection.agent_id
                     or response.agent_conversation is None
                     or response.agent_conversation.revision != selection.expected_revision
                     or response.purpose != purpose
-                    or (title and response.title != title)
+                    or response.title != expected_title
                 ):
                     raise repositories.RepositoryConflictError("agent_conversation_operation_conflict")
                 return response
         admission = await self.resolve_for_admission(conn, principal=principal, selection=selection)
+        resolved_title = title or admission.public_identity.name
         create_session_kwargs: dict[str, Any] = {
             "tenant_id": principal.tenant_id,
             "workspace_id": workspace_id,
             "user_id": principal.user_id,
             "agent_id": admission.agent_id,
-            "title": title or admission.public_identity.name,
+            "title": resolved_title,
             "admitted_agent_profile_revision": admission.revision,
             "admitted_agent_profile_hash": admission.content_hash,
         }
@@ -1026,7 +1030,7 @@ class AgentProfileAuthority:
             session_id=session_id,
             workspace_id=workspace_id,
             agent_id=admission.agent_id,
-            title=title or admission.public_identity.name,
+            title=resolved_title,
             purpose=purpose,
             agent_conversation=admission.public_identity,
         )

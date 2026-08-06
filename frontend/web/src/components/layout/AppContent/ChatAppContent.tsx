@@ -105,13 +105,19 @@ export function getOrCreateAgentConversationOperationId({
   revision: number;
   storage: Pick<Storage, "getItem" | "setItem"> | null;
   createId: () => string;
-}): string {
+}): string | null {
   const key = agentConversationOperationStorageKey(agentId, revision);
-  const existing = storage?.getItem(key) ?? null;
-  if (existing && UUID_V4_PATTERN.test(existing)) return existing;
-  const operationId = createId();
-  storage?.setItem(key, operationId);
-  return operationId;
+  if (!storage) return null;
+  try {
+    const existing = storage.getItem(key);
+    if (existing && UUID_V4_PATTERN.test(existing)) return existing;
+    const operationId = createId();
+    if (!UUID_V4_PATTERN.test(operationId)) return null;
+    storage.setItem(key, operationId);
+    return storage.getItem(key) === operationId ? operationId : null;
+  } catch {
+    return null;
+  }
 }
 
 export function clearAgentConversationOperationId({
@@ -1105,7 +1111,6 @@ export function ChatAppContent({
         );
         return;
       }
-      setAgentWorkspaceCreating(true);
       setAgentWorkspaceError(null);
       const operationId = getOrCreateAgentConversationOperationId({
         agentId: startProfile.agent_id,
@@ -1113,6 +1118,11 @@ export function ChatAppContent({
         storage: browserSessionStorage(),
         createId: uuid,
       });
+      if (!operationId) {
+        setAgentWorkspaceError("浏览器无法安全保存本次创建标识，请启用会话存储后重试。");
+        return;
+      }
+      setAgentWorkspaceCreating(true);
       void agentProfileApi
         .createConversation({
           agent_id: startProfile.agent_id,

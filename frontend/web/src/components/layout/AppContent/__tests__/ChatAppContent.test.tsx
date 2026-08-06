@@ -262,6 +262,54 @@ test("persists one Agent Conversation operation identity across a response-loss 
   assert.equal(first, replay);
 });
 
+test("fails closed when stable Agent Conversation operation storage is unavailable", () => {
+  const operationId = getOrCreateAgentConversationOperationId({
+    agentId: safeIdentity.agent_id,
+    revision: safeIdentity.revision,
+    storage: null,
+    createId: () => "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+  });
+
+  assert.equal(operationId, null);
+});
+
+test("fails closed when Agent Conversation operation storage cannot be read or verified", () => {
+  const createId = () => "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+  const attempts = [
+    {
+      getItem: () => {
+        throw new Error("storage_get_denied");
+      },
+      setItem: () => {},
+    },
+    {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("storage_set_denied");
+      },
+    },
+    {
+      getItem: () => null,
+      setItem: () => {},
+    },
+  ];
+
+  for (const storage of attempts) {
+    let result: string | null | "threw" = "threw";
+    try {
+      result = getOrCreateAgentConversationOperationId({
+        agentId: safeIdentity.agent_id,
+        revision: safeIdentity.revision,
+        storage,
+        createId,
+      });
+    } catch {
+      // The product seam must convert browser storage failures into a fail-closed result.
+    }
+    assert.equal(result, null);
+  }
+});
+
 test("renders only safe Agent identity and locks MCP catalog controls", () => {
   const html = renderToStaticMarkup(
     React.createElement(AgentConversationIdentityBanner, { identity: safeIdentity }),

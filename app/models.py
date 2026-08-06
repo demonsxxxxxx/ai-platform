@@ -1,6 +1,6 @@
 import re
 from typing import Any, ClassVar, Literal
-from uuid import UUID
+from uuid import RFC_4122, UUID
 
 from pydantic import (
     AliasChoices,
@@ -518,6 +518,13 @@ class CreateAgentConversationRequest(BaseModel):
     @classmethod
     def validate_workspace_id(cls, value: str):
         return assert_safe_id(value, "workspace_id")
+
+    @field_validator("operation_id")
+    @classmethod
+    def validate_operation_id(cls, value: UUID):
+        if value.int == 0 or value.version != 4 or value.variant != RFC_4122:
+            raise ValueError("operation_id must be an RFC 4122 UUID v4")
+        return value
 
 
 class AgentConversationIdentity(BaseModel):
