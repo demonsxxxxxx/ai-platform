@@ -206,6 +206,48 @@ def test_github_cli_is_fixed_checksum_verified_and_token_is_step_scoped():
         assert "GH_TOKEN" not in step.get("env", {})
 
 
+def test_release_manifest_reverifies_exact_downloaded_bundles_with_pinned_gh():
+    workflow = _workflow()
+    steps = workflow["jobs"]["release-manifest"]["steps"]
+    install = next(
+        step for step in steps if step.get("name") == "Install pinned GitHub CLI for assembly"
+    )
+    verify = next(
+        step for step in steps if step.get("name") == "Reverify downloaded provenance bundles"
+    )
+
+    assert install["env"] == {
+        "GH_CLI_CHECKSUMS_SHA256": "61905c69ec8660f310814ec98395cdd0c2d07aabf024c597ec45813984a02334",
+        "GH_CLI_TARBALL_SHA256": "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112",
+        "GH_CLI_VERSION": "2.97.0",
+    }
+    assert 'test "$actual_version" = "$GH_CLI_VERSION"' in install["run"]
+    assert verify["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert verify["env"]["GH_CLI_BIN"] == "${{ env.GH_CLI_BIN }}"
+    assert '"$GH_CLI_BIN" attestation verify "$image_ref"' in verify["run"]
+    assert '--bundle "provenance-$role.bundle.json"' in verify["run"]
+    assert '> "provenance-$role.assembly-verified.json"' in verify["run"]
+    assert "set -x" not in verify["run"]
+    assert 'echo "$GH_TOKEN"' not in verify["run"]
+    for step in steps:
+        if step is verify:
+            continue
+        assert "GH_TOKEN" not in step.get("env", {})
+
+
+def test_generated_spdx_is_bound_before_scan_and_attestation():
+    steps = _workflow()["jobs"]["publish"]["steps"]
+    names = [step.get("name") for step in steps]
+    bind = next(step for step in steps if step.get("name") == "Bind SPDX SBOM to immutable subject")
+
+    assert names.index("Generate SPDX SBOM") < names.index("Bind SPDX SBOM to immutable subject")
+    assert names.index("Bind SPDX SBOM to immutable subject") < names.index("Scan published digest")
+    assert names.index("Bind SPDX SBOM to immutable subject") < names.index("Attest SPDX SBOM")
+    assert "python tools/release_image_manifest.py bind-spdx" in bind["run"]
+    assert '--source-commit "$SOURCE_COMMIT"' in bind["run"]
+    assert '--manifest-digest "$MANIFEST_DIGEST"' in bind["run"]
+
+
 def test_artifact_and_evidence_names_bind_run_attempt():
     text = _workflow_text()
 

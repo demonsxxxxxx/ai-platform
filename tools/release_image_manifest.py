@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import copy
 from datetime import datetime
 import hashlib
 import json
@@ -44,7 +45,7 @@ _DOCKERFILE_KEYS = {"path", "sha256"}
 _IMAGE_KEYS = {"subject", "source_tag", "manifest_digest", "immutable_ref"}
 _EVIDENCE_KEYS = {"sbom", "provenance", "signature", "scan"}
 _SBOM_KEYS = {"format", "ref", "sha256"}
-_PROVENANCE_KEYS = {
+_PREASSEMBLY_PROVENANCE_KEYS = {
     "attestation_id",
     "bundle_ref",
     "bundle_sha256",
@@ -53,9 +54,14 @@ _PROVENANCE_KEYS = {
     "verification_ref",
     "verification_sha256",
 }
+_PROVENANCE_KEYS = _PREASSEMBLY_PROVENANCE_KEYS | {
+    "reverification_ref",
+    "reverification_sha256",
+}
 _SIGNATURE_KEYS = {"identity", "issuer", "ref"}
 _SCAN_KEYS = {"blocking_severities", "ref", "result", "scanner", "sha256"}
 _ATTESTATION_ID = re.compile(r"[A-Za-z0-9_-]+")
+_TRIVY_SEVERITIES = {"UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"}
 
 
 def _object(value: Any, name: str) -> dict[str, Any]:
@@ -89,6 +95,20 @@ def _artifact_name(*, source_commit: str, workflow: dict[str, Any], role: str) -
     )
 
 
+def _ready_artifact_name(*, source_commit: str, workflow: dict[str, Any]) -> str:
+    return (
+        f"release-image-evidence-{source_commit}-{workflow['run_id']}-"
+        f"{workflow['run_attempt']}"
+    )
+
+
+def _sbom_document_namespace(*, role: str, source_commit: str, digest: str) -> str:
+    return (
+        f"https://github.com/{WORKFLOW_REPOSITORY}/sbom/{role}/{source_commit}/"
+        f"sha256/{digest.removeprefix('sha256:')}"
+    )
+
+
 def _require_canonical_expected_roles(expected_roles: Iterable[str] | None) -> None:
     if expected_roles is None:
         return
@@ -119,9 +139,11 @@ def _validate_provenance_files(
     source_commit: str,
     workflow: dict[str, Any],
     provenance: dict[str, Any],
+    require_reverification: bool,
 ) -> None:
     bundle_path = evidence_root / f"provenance-{role}.bundle.json"
     verification_path = evidence_root / f"provenance-{role}.verified.json"
+    reverification_path = evidence_root / f"provenance-{role}.assembly-verified.json"
     if not bundle_path.is_file():
         raise ValueError("provenance_bundle_missing")
     if not verification_path.is_file():
@@ -130,6 +152,11 @@ def _validate_provenance_files(
         raise ValueError("provenance_bundle_sha256")
     if _sha256(verification_path) != provenance["verification_sha256"]:
         raise ValueError("provenance_verification_sha256")
+    if require_reverification:
+        if not reverification_path.is_file():
+            raise ValueError("provenance_assembly_reverification_missing")
+        if _sha256(reverification_path) != provenance["reverification_sha256"]:
+            raise ValueError("provenance_assembly_reverification_sha256")
 
     bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
     if not isinstance(bundle, dict) or bundle.get("mediaType") != (
@@ -154,10 +181,17 @@ def _validate_provenance_files(
     except (binascii.Error, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise ValueError("provenance_bundle_payload") from exc
     verified = json.loads(verification_path.read_text(encoding="utf-8"))
+    if require_reverification:
+        reverified = json.loads(reverification_path.read_text(encoding="utf-8"))
+        if reverified != verified:
+            raise ValueError("provenance_assembly_reverification")
     entries = _required_list(verified, "provenance_verification")
     if len(entries) != 1:
         raise ValueError("provenance_verification_count")
     entry = _required_mapping(entries[0], "provenance_verification_entry")
+    attestation = _required_mapping(entry.get("attestation"), "provenance_attestation")
+    if attestation.get("bundle") != bundle:
+        raise ValueError("provenance_assembly_reverification_bundle")
     result = _required_mapping(entry.get("verificationResult"), "provenance_verification_result")
     timestamps = _required_list(result.get("verifiedTimestamps"), "provenance_verified_timestamps")
     for item in timestamps:
@@ -224,6 +258,8 @@ def _validate_sbom_file(
     evidence_root: Path,
     role: str,
     expected_sha256: str,
+    source_commit: str,
+    digest: str,
 ) -> None:
     path = evidence_root / f"sbom-{role}.spdx.json"
     if not path.is_file():
@@ -238,6 +274,12 @@ def _validate_sbom_file(
         or document.get("SPDXID") != "SPDXRef-DOCUMENT"
     ):
         raise ValueError("sbom_document")
+    if document.get("documentNamespace") != _sbom_document_namespace(
+        role=role,
+        source_commit=source_commit,
+        digest=digest,
+    ):
+        raise ValueError("sbom_subject_binding")
 
 
 def _validate_scan_file(
@@ -263,15 +305,17 @@ def _validate_scan_file(
     for result in results:
         if not isinstance(result, dict):
             raise ValueError("scan_document")
-        vulnerabilities = result.get("Vulnerabilities") or []
+        vulnerabilities = result.get("Vulnerabilities", [])
         if not isinstance(vulnerabilities, list):
             raise ValueError("scan_document")
-        if any(
-            isinstance(vulnerability, dict)
-            and vulnerability.get("Severity") in {"HIGH", "CRITICAL"}
-            for vulnerability in vulnerabilities
-        ):
-            raise ValueError("scan_blocking_vulnerability")
+        for vulnerability in vulnerabilities:
+            if (
+                not isinstance(vulnerability, dict)
+                or vulnerability.get("Severity") not in _TRIVY_SEVERITIES
+            ):
+                raise ValueError("scan_vulnerability_severity")
+            if vulnerability["Severity"] in {"HIGH", "CRITICAL"}:
+                raise ValueError("scan_blocking_vulnerability")
 
 
 def validate_subject(
@@ -280,6 +324,7 @@ def validate_subject(
     source_commit: str,
     workflow: dict[str, Any],
     evidence_root: Path | None = None,
+    allow_preassembly: bool = False,
 ) -> dict[str, Any]:
     value = _object(subject, "subject")
     _exact_keys(value, _SUBJECT_KEYS, "subject")
@@ -329,10 +374,16 @@ def validate_subject(
             evidence_root=evidence_root,
             role=role,
             expected_sha256=sbom_sha256,
+            source_commit=source_commit,
+            digest=digest,
         )
 
     provenance = _object(evidence["provenance"], "provenance")
-    _exact_keys(provenance, _PROVENANCE_KEYS, "provenance")
+    _exact_keys(
+        provenance,
+        _PREASSEMBLY_PROVENANCE_KEYS if allow_preassembly else _PROVENANCE_KEYS,
+        "provenance",
+    )
     if provenance["predicate_type"] != "https://slsa.dev/provenance/v1":
         raise ValueError("provenance_predicate_type")
     attestation_id = _fullmatch(
@@ -363,6 +414,21 @@ def validate_subject(
         provenance["verification_sha256"],
         "provenance_verification_sha256",
     )
+    if not allow_preassembly:
+        ready_artifact_name = _ready_artifact_name(
+            source_commit=source_commit,
+            workflow=workflow,
+        )
+        if provenance["reverification_ref"] != (
+            f"github-artifact://{ready_artifact_name}/"
+            f"provenance-{role}.assembly-verified.json"
+        ):
+            raise ValueError("provenance_assembly_reverification_ref")
+        _fullmatch(
+            _HEX_SHA256,
+            provenance["reverification_sha256"],
+            "provenance_assembly_reverification_sha256",
+        )
     if evidence_root is not None:
         _validate_provenance_files(
             evidence_root=evidence_root,
@@ -372,6 +438,7 @@ def validate_subject(
             source_commit=source_commit,
             workflow=workflow,
             provenance=provenance,
+            require_reverification=not allow_preassembly,
         )
 
     signature = _object(evidence["signature"], "signature")
@@ -456,12 +523,44 @@ def assemble_manifest(
     expected_roles: Iterable[str] | None = None,
     evidence_root: Path | None = None,
 ) -> dict[str, Any]:
+    _require_canonical_expected_roles(expected_roles)
+    assembled_subjects = [copy.deepcopy(subject) for subject in subjects]
+    roles = [
+        subject.get("role") if isinstance(subject, dict) else None
+        for subject in assembled_subjects
+    ]
+    if len(roles) != len(SUBJECTS) or sorted(roles, key=str) != sorted(SUBJECTS):
+        raise ValueError("subject_roles")
+    if evidence_root is not None:
+        ready_artifact_name = _ready_artifact_name(
+            source_commit=source_commit,
+            workflow=workflow,
+        )
+        for subject in assembled_subjects:
+            role = _nonempty_string(subject.get("role"), "role")
+            if role not in SUBJECTS:
+                raise ValueError("role")
+            path = evidence_root / f"provenance-{role}.assembly-verified.json"
+            if not path.is_file():
+                raise ValueError("provenance_assembly_reverification_missing")
+            provenance = _required_mapping(
+                _required_mapping(subject.get("evidence"), "evidence").get("provenance"),
+                "provenance",
+            )
+            provenance["reverification_ref"] = (
+                f"github-artifact://{ready_artifact_name}/"
+                f"provenance-{role}.assembly-verified.json"
+            )
+            provenance["reverification_sha256"] = _sha256(path)
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "source_commit": source_commit,
         "repository": repository,
         "workflow": workflow,
-        "subjects": sorted(subjects, key=lambda subject: str(subject.get("role", ""))),
+        "subjects": sorted(
+            assembled_subjects,
+            key=lambda subject: str(subject.get("role", "")),
+        ),
     }
     validate_manifest(
         manifest,
@@ -573,8 +672,55 @@ def _subject_command(args: argparse.Namespace) -> None:
         source_commit=args.source_commit,
         workflow=workflow,
         evidence_root=bundle_path.parent,
+        allow_preassembly=True,
     )
     _write_json(Path(args.output), record)
+
+
+def _bind_spdx_command(args: argparse.Namespace) -> None:
+    if args.role not in SUBJECTS:
+        raise ValueError("role")
+    source_commit = _fullmatch(_COMMIT, args.source_commit, "source_commit")
+    digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
+    path = Path(args.sbom_file)
+    if path.name != f"sbom-{args.role}.spdx.json":
+        raise ValueError("sbom_path")
+    document = _load_object(path)
+    if (
+        not isinstance(document.get("spdxVersion"), str)
+        or not document["spdxVersion"].startswith("SPDX-2.")
+        or document.get("SPDXID") != "SPDXRef-DOCUMENT"
+        or not isinstance(document.get("documentNamespace"), str)
+        or not document["documentNamespace"]
+    ):
+        raise ValueError("sbom_document")
+    document["documentNamespace"] = _sbom_document_namespace(
+        role=args.role,
+        source_commit=source_commit,
+        digest=digest,
+    )
+    _write_json(path, document)
+
+
+def _subject_target_command(args: argparse.Namespace) -> None:
+    workflow = {
+        "repository": args.workflow_repository,
+        "workflow_ref": args.workflow_ref,
+        "run_id": args.run_id,
+        "run_attempt": args.run_attempt,
+        "head_sha": args.source_commit,
+    }
+    record_path = Path(args.subject_record)
+    record = validate_subject(
+        _load_object(record_path),
+        source_commit=args.source_commit,
+        workflow=workflow,
+        evidence_root=record_path.parent,
+        allow_preassembly=True,
+    )
+    if record["role"] != args.expected_role:
+        raise ValueError("role")
+    print(f"oci://{record['image']['immutable_ref']}")
 
 
 def _add_expected_roles(parser: argparse.ArgumentParser) -> None:
@@ -607,6 +753,27 @@ def main() -> int:
     subject.add_argument("--scan-file", required=True)
     subject.add_argument("--output", required=True)
 
+    bind_spdx = subparsers.add_parser(
+        "bind-spdx",
+        help="Bind a generated SPDX document to its immutable image subject.",
+    )
+    bind_spdx.add_argument("--role", required=True, choices=sorted(SUBJECTS))
+    bind_spdx.add_argument("--source-commit", required=True)
+    bind_spdx.add_argument("--manifest-digest", required=True)
+    bind_spdx.add_argument("--sbom-file", required=True)
+
+    target = subparsers.add_parser(
+        "subject-target",
+        help="Validate a preassembly subject record and print its immutable OCI target.",
+    )
+    target.add_argument("--subject-record", required=True)
+    target.add_argument("--source-commit", required=True)
+    target.add_argument("--workflow-repository", required=True)
+    target.add_argument("--workflow-ref", required=True)
+    target.add_argument("--run-id", required=True)
+    target.add_argument("--run-attempt", required=True, type=int)
+    target.add_argument("--expected-role", required=True, choices=sorted(SUBJECTS))
+
     assemble = subparsers.add_parser("assemble", help="Assemble all required subject records.")
     assemble.add_argument("--source-commit", required=True)
     assemble.add_argument("--repository", required=True)
@@ -627,6 +794,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "subject":
         _subject_command(args)
+        return 0
+    if args.command == "bind-spdx":
+        _bind_spdx_command(args)
+        return 0
+    if args.command == "subject-target":
+        _subject_target_command(args)
         return 0
     if args.command == "assemble":
         manifest = assemble_manifest(

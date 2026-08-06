@@ -39,6 +39,13 @@ def _artifact_name(role: str) -> str:
     return f"release-image-subject-{SOURCE_COMMIT}-{RUN_ID}-{RUN_ATTEMPT}-{role}"
 
 
+def _sbom_namespace(role: str) -> str:
+    return (
+        f"https://github.com/{WORKFLOW_REPOSITORY}/sbom/{role}/{SOURCE_COMMIT}/"
+        f"sha256/{MANIFEST_DIGEST.removeprefix('sha256:')}"
+    )
+
+
 def _subject(role: str) -> dict[str, object]:
     subject = f"ghcr.io/demonsxxxxxx/ai-platform-{role}"
     dockerfile = "Dockerfile" if role == "backend" else "frontend/web/Dockerfile"
@@ -70,6 +77,11 @@ def _subject(role: str) -> dict[str, object]:
                 "bundle_sha256": "1" * 64,
                 "verification_ref": f"github-artifact://{artifact}/provenance-{role}.verified.json",
                 "verification_sha256": "2" * 64,
+                "reverification_ref": (
+                    f"github-artifact://release-image-evidence-{SOURCE_COMMIT}-{RUN_ID}-"
+                    f"{RUN_ATTEMPT}/provenance-{role}.assembly-verified.json"
+                ),
+                "reverification_sha256": "3" * 64,
             },
             "signature": {
                 "identity": SIGNATURE_IDENTITY,
@@ -107,10 +119,35 @@ def _manifest() -> dict[str, object]:
     )
 
 
-def _verification(role: str) -> list[dict[str, object]]:
+def _bundle(role: str) -> dict[str, object]:
+    statement = {
+        "subject": [
+            {
+                "name": f"ghcr.io/demonsxxxxxx/ai-platform-{role}",
+                "digest": {"sha256": MANIFEST_DIGEST.removeprefix("sha256:")},
+            }
+        ],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {},
+    }
+    return {
+        "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+        "dsseEnvelope": {
+            "payloadType": "application/vnd.in-toto+json",
+            "payload": base64.b64encode(json.dumps(statement).encode()).decode(),
+            "signatures": [{"sig": "fixture-signature"}],
+        },
+        "verificationMaterial": {"timestampVerificationData": {}},
+    }
+
+
+def _verification(
+    role: str,
+    bundle: dict[str, object] | None = None,
+) -> list[dict[str, object]]:
     return [
         {
-            "attestation": {"bundle": {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json"}},
+            "attestation": {"bundle": bundle or _bundle(role)},
             "verificationResult": {
                 "signature": {
                     "certificate": {
@@ -154,30 +191,20 @@ def _write_evidence(root: Path, manifest: dict[str, object]) -> None:
         role = subject["role"]
         bundle = root / f"provenance-{role}.bundle.json"
         verified = root / f"provenance-{role}.verified.json"
+        reverified = root / f"provenance-{role}.assembly-verified.json"
         sbom = root / f"sbom-{role}.spdx.json"
         scan = root / f"trivy-{role}.json"
-        statement = _verification(role)[0]["verificationResult"]["statement"]
-        payload = base64.b64encode(json.dumps(statement).encode()).decode()
-        bundle.write_text(
-            json.dumps(
-                {
-                    "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
-                    "dsseEnvelope": {
-                        "payloadType": "application/vnd.in-toto+json",
-                        "payload": payload,
-                        "signatures": [{"sig": "fixture-signature"}],
-                    },
-                    "verificationMaterial": {"timestampVerificationData": {}},
-                }
-            ),
-            encoding="utf-8",
-        )
-        verified.write_text(json.dumps(_verification(role)), encoding="utf-8")
+        bundle_payload = _bundle(role)
+        verification_payload = _verification(role, bundle_payload)
+        bundle.write_text(json.dumps(bundle_payload), encoding="utf-8")
+        verified.write_text(json.dumps(verification_payload), encoding="utf-8")
+        reverified.write_text(json.dumps(verification_payload), encoding="utf-8")
         sbom.write_text(
             json.dumps(
                 {
                     "spdxVersion": "SPDX-2.3",
                     "SPDXID": "SPDXRef-DOCUMENT",
+                    "documentNamespace": _sbom_namespace(role),
                     "name": subject["image"]["immutable_ref"],
                 }
             ),
@@ -197,6 +224,7 @@ def _write_evidence(root: Path, manifest: dict[str, object]) -> None:
         provenance = subject["evidence"]["provenance"]
         provenance["bundle_sha256"] = hashlib.sha256(bundle.read_bytes()).hexdigest()
         provenance["verification_sha256"] = hashlib.sha256(verified.read_bytes()).hexdigest()
+        provenance["reverification_sha256"] = hashlib.sha256(reverified.read_bytes()).hexdigest()
         subject["evidence"]["sbom"]["sha256"] = hashlib.sha256(sbom.read_bytes()).hexdigest()
         subject["evidence"]["scan"]["sha256"] = hashlib.sha256(scan.read_bytes()).hexdigest()
 
@@ -227,6 +255,67 @@ def test_manifest_accepts_complete_digest_bound_evidence(tmp_path: Path):
 
     assert manifest["schema_version"] == SCHEMA_VERSION
     assert [subject["role"] for subject in manifest["subjects"]] == ["backend", "frontend"]
+
+
+def test_assemble_binds_fresh_provenance_reverification_to_ready_manifest(tmp_path: Path):
+    source = _manifest()
+    _write_evidence(tmp_path, source)
+    records = copy.deepcopy(source["subjects"])
+    for subject in records:
+        provenance = subject["evidence"]["provenance"]
+        provenance.pop("reverification_ref")
+        provenance.pop("reverification_sha256")
+
+    manifest = assemble_manifest(
+        source_commit=SOURCE_COMMIT,
+        repository=REPOSITORY,
+        workflow=_workflow(),
+        subjects=records,
+        expected_roles=["backend", "frontend"],
+        evidence_root=tmp_path,
+    )
+
+    for subject in manifest["subjects"]:
+        role = subject["role"]
+        provenance = subject["evidence"]["provenance"]
+        assert provenance["reverification_ref"] == (
+            f"github-artifact://release-image-evidence-{SOURCE_COMMIT}-{RUN_ID}-{RUN_ATTEMPT}/"
+            f"provenance-{role}.assembly-verified.json"
+        )
+        assert provenance["reverification_sha256"] == hashlib.sha256(
+            (tmp_path / f"provenance-{role}.assembly-verified.json").read_bytes()
+        ).hexdigest()
+
+
+def test_bind_spdx_cli_writes_deterministic_immutable_subject_namespace(tmp_path: Path):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    sbom_path.write_text(
+        json.dumps(
+            {
+                "spdxVersion": "SPDX-2.3",
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "documentNamespace": "https://anchore.example/generated/unstable-value",
+                "name": "syft-generated-document",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "bind-spdx",
+        "--role",
+        "backend",
+        "--source-commit",
+        SOURCE_COMMIT,
+        "--manifest-digest",
+        MANIFEST_DIGEST,
+        "--sbom-file",
+        str(sbom_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    document = json.loads(sbom_path.read_text(encoding="utf-8"))
+    assert document["documentNamespace"] == _sbom_namespace("backend")
 
 
 @pytest.mark.parametrize(
@@ -370,8 +459,12 @@ def test_provenance_verification_rejects_subject_source_and_run_mismatch(
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     mutation(evidence)
     evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
-    manifest["subjects"][0]["evidence"]["provenance"]["verification_sha256"] = hashlib.sha256(
-        evidence_path.read_bytes()
+    reverified_path = tmp_path / "provenance-backend.assembly-verified.json"
+    reverified_path.write_text(json.dumps(evidence), encoding="utf-8")
+    provenance = manifest["subjects"][0]["evidence"]["provenance"]
+    provenance["verification_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    provenance["reverification_sha256"] = hashlib.sha256(
+        reverified_path.read_bytes()
     ).hexdigest()
 
     with pytest.raises(ValueError, match=message):
@@ -410,11 +503,43 @@ def test_provenance_bundle_must_match_verified_statement(tmp_path: Path):
         json.dumps(statement).encode()
     ).decode()
     bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
-    manifest["subjects"][0]["evidence"]["provenance"]["bundle_sha256"] = hashlib.sha256(
-        bundle_path.read_bytes()
+    verified_path = tmp_path / "provenance-backend.verified.json"
+    verified = json.loads(verified_path.read_text(encoding="utf-8"))
+    verified[0]["attestation"]["bundle"] = bundle
+    verified_path.write_text(json.dumps(verified), encoding="utf-8")
+    reverified_path = tmp_path / "provenance-backend.assembly-verified.json"
+    reverified_path.write_text(json.dumps(verified), encoding="utf-8")
+    provenance = manifest["subjects"][0]["evidence"]["provenance"]
+    provenance["bundle_sha256"] = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+    provenance["verification_sha256"] = hashlib.sha256(verified_path.read_bytes()).hexdigest()
+    provenance["reverification_sha256"] = hashlib.sha256(
+        reverified_path.read_bytes()
     ).hexdigest()
 
     with pytest.raises(ValueError, match="provenance_bundle_statement"):
+        validate_manifest(manifest, evidence_root=tmp_path)
+
+
+def test_provenance_coordinated_bundle_substitution_requires_assembly_reverification(
+    tmp_path: Path,
+):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+    bundle_path = tmp_path / "provenance-backend.bundle.json"
+    verified_path = tmp_path / "provenance-backend.verified.json"
+
+    substituted = json.loads(bundle_path.read_text(encoding="utf-8"))
+    substituted["dsseEnvelope"]["signatures"] = [{"sig": "attacker-controlled-signature"}]
+    substituted["verificationMaterial"] = {"certificate": "attacker-controlled-material"}
+    bundle_path.write_text(json.dumps(substituted), encoding="utf-8")
+    verified = json.loads(verified_path.read_text(encoding="utf-8"))
+    verified[0]["attestation"]["bundle"] = substituted
+    verified_path.write_text(json.dumps(verified), encoding="utf-8")
+    provenance = manifest["subjects"][0]["evidence"]["provenance"]
+    provenance["bundle_sha256"] = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+    provenance["verification_sha256"] = hashlib.sha256(verified_path.read_bytes()).hexdigest()
+
+    with pytest.raises(ValueError, match="provenance_assembly_reverification"):
         validate_manifest(manifest, evidence_root=tmp_path)
 
 
@@ -425,8 +550,12 @@ def test_provenance_verified_timestamp_requires_complete_trusted_result(tmp_path
     verified = json.loads(verified_path.read_text(encoding="utf-8"))
     verified[0]["verificationResult"]["verifiedTimestamps"] = [{}]
     verified_path.write_text(json.dumps(verified), encoding="utf-8")
-    manifest["subjects"][0]["evidence"]["provenance"]["verification_sha256"] = hashlib.sha256(
-        verified_path.read_bytes()
+    reverified_path = tmp_path / "provenance-backend.assembly-verified.json"
+    reverified_path.write_text(json.dumps(verified), encoding="utf-8")
+    provenance = manifest["subjects"][0]["evidence"]["provenance"]
+    provenance["verification_sha256"] = hashlib.sha256(verified_path.read_bytes()).hexdigest()
+    provenance["reverification_sha256"] = hashlib.sha256(
+        reverified_path.read_bytes()
     ).hexdigest()
 
     with pytest.raises(ValueError, match="provenance_verified_timestamps"):
@@ -483,6 +612,53 @@ def test_auxiliary_evidence_files_fail_closed(tmp_path: Path, case: str, message
         validate_manifest(manifest, evidence_root=tmp_path)
 
 
+@pytest.mark.parametrize(
+    "vulnerability",
+    [
+        "not-an-object",
+        ["not-an-object"],
+        None,
+        {"VulnerabilityID": "CVE-MISSING-SEVERITY"},
+        {"VulnerabilityID": "CVE-UNKNOWN-SEVERITY", "Severity": "UNRECOGNIZED"},
+    ],
+)
+def test_trivy_vulnerability_entries_require_recognized_severity(
+    tmp_path: Path,
+    vulnerability: object,
+):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+    scan_path = tmp_path / "trivy-backend.json"
+    scan = json.loads(scan_path.read_text(encoding="utf-8"))
+    scan["Results"] = [{"Target": "fixture", "Vulnerabilities": [vulnerability]}]
+    scan_path.write_text(json.dumps(scan), encoding="utf-8")
+    manifest["subjects"][0]["evidence"]["scan"]["sha256"] = hashlib.sha256(
+        scan_path.read_bytes()
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="scan_vulnerability_severity"):
+        validate_manifest(manifest, evidence_root=tmp_path)
+
+
+def test_spdx_document_namespace_binds_exact_subject_source_and_digest(tmp_path: Path):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    unrelated = json.loads(sbom_path.read_text(encoding="utf-8"))
+    unrelated["documentNamespace"] = (
+        f"https://github.com/{WORKFLOW_REPOSITORY}/sbom/frontend/{'f' * 40}/"
+        f"sha256/{'e' * 64}"
+    )
+    unrelated["name"] = "structurally-valid-but-unrelated-spdx"
+    sbom_path.write_text(json.dumps(unrelated), encoding="utf-8")
+    manifest["subjects"][0]["evidence"]["sbom"]["sha256"] = hashlib.sha256(
+        sbom_path.read_bytes()
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="sbom_subject_binding"):
+        validate_manifest(manifest, evidence_root=tmp_path)
+
+
 def test_manifest_rejects_unknown_fields():
     manifest = _manifest()
     manifest["subjects"][0]["image"]["local_image_id"] = "sha256:" + "f" * 64
@@ -503,6 +679,7 @@ def test_json_schema_rejects_cross_role_combinations():
         lambda value: value["subjects"][0]["evidence"]["sbom"].update({"ref": f"oci://ghcr.io/demonsxxxxxx/ai-platform-frontend@{MANIFEST_DIGEST}#sbom-spdx-attestation"}),
         lambda value: value["subjects"][0]["evidence"]["provenance"].update({"bundle_ref": f"github-artifact://{_artifact_name('frontend')}/provenance-frontend.bundle.json"}),
         lambda value: value["subjects"][0]["evidence"]["provenance"].update({"verification_ref": f"github-artifact://{_artifact_name('frontend')}/provenance-frontend.verified.json"}),
+        lambda value: value["subjects"][0]["evidence"]["provenance"].update({"reverification_ref": f"github-artifact://release-image-evidence-{SOURCE_COMMIT}-{RUN_ID}-{RUN_ATTEMPT}/provenance-frontend.assembly-verified.json"}),
         lambda value: value["subjects"][0]["evidence"]["signature"].update({"ref": f"oci://ghcr.io/demonsxxxxxx/ai-platform-frontend@{MANIFEST_DIGEST}#cosign-keyless-signature"}),
         lambda value: value["subjects"][0]["evidence"]["scan"].update({"ref": f"github-artifact://{_artifact_name('frontend')}/trivy-frontend.json"}),
     ]

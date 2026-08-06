@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/demonsxxxxxx/ai-platform/schemas/release-image-manifest.v1.schema.json",
-  "$comment": "This schema enforces document shape and all expressible role-specific combinations. Cross-field digest, source, workflow, and run equality requires the Python semantic verifier with supplied evidence files.",
+  "$comment": "This schema enforces document shape and all expressible role-specific combinations. Cross-field digest, source, workflow, run, SPDX namespace, and cryptographically reverified provenance equality requires the Python semantic verifier with supplied evidence files.",
   "title": "AI Platform release image manifest",
   "type": "object",
   "additionalProperties": false,
@@ -53,7 +53,8 @@
                     "provenance": {
                       "properties": {
                         "bundle_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-backend/provenance-backend\\.bundle\\.json$"},
-                        "verification_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-backend/provenance-backend\\.verified\\.json$"}
+                        "verification_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-backend/provenance-backend\\.verified\\.json$"},
+                        "reverification_ref": {"type": "string", "pattern": "^github-artifact://release-image-evidence-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*/provenance-backend\\.assembly-verified\\.json$"}
                       }
                     },
                     "signature": {"properties": {"ref": {"type": "string", "pattern": "^oci://ghcr\\.io/demonsxxxxxx/ai-platform-backend@sha256:[0-9a-f]{64}#cosign-keyless-signature$"}}},
@@ -81,7 +82,8 @@
                     "provenance": {
                       "properties": {
                         "bundle_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-frontend/provenance-frontend\\.bundle\\.json$"},
-                        "verification_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-frontend/provenance-frontend\\.verified\\.json$"}
+                        "verification_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-frontend/provenance-frontend\\.verified\\.json$"},
+                        "reverification_ref": {"type": "string", "pattern": "^github-artifact://release-image-evidence-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*/provenance-frontend\\.assembly-verified\\.json$"}
                       }
                     },
                     "signature": {"properties": {"ref": {"type": "string", "pattern": "^oci://ghcr\\.io/demonsxxxxxx/ai-platform-frontend@sha256:[0-9a-f]{64}#cosign-keyless-signature$"}}},
@@ -149,7 +151,7 @@
               "provenance": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["predicate_type", "attestation_id", "ref", "bundle_ref", "bundle_sha256", "verification_ref", "verification_sha256"],
+                "required": ["predicate_type", "attestation_id", "ref", "bundle_ref", "bundle_sha256", "verification_ref", "verification_sha256", "reverification_ref", "reverification_sha256"],
                 "properties": {
                   "predicate_type": {"const": "https://slsa.dev/provenance/v1"},
                   "attestation_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$"},
@@ -157,7 +159,9 @@
                   "bundle_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-(backend|frontend)/provenance-(backend|frontend)\\.bundle\\.json$"},
                   "bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                   "verification_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-(backend|frontend)/provenance-(backend|frontend)\\.verified\\.json$"},
-                  "verification_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                  "verification_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "reverification_ref": {"type": "string", "pattern": "^github-artifact://release-image-evidence-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*/provenance-(backend|frontend)\\.assembly-verified\\.json$"},
+                  "reverification_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
                 }
               },
               "signature": {
