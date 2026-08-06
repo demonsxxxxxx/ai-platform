@@ -118,14 +118,20 @@ def validate_subject(subject: Any, *, source_commit: str) -> dict[str, Any]:
     _exact_keys(sbom, _SBOM_KEYS, "sbom")
     if sbom["format"] != "spdx-json":
         raise ValueError("sbom_format")
-    _validate_ref(sbom["ref"], "sbom_ref")
+    if sbom["ref"] != f"oci://{expected_subject}@{digest}#sbom-spdx-attestation":
+        raise ValueError("sbom_ref")
     _fullmatch(_HEX_SHA256, sbom["sha256"], "sbom_sha256")
 
     provenance = _object(evidence["provenance"], "provenance")
     _exact_keys(provenance, _PROVENANCE_KEYS, "provenance")
     if provenance["predicate_type"] != "https://slsa.dev/provenance/v1":
         raise ValueError("provenance_predicate_type")
-    _validate_ref(provenance["ref"], "provenance_ref")
+    provenance_ref = _validate_ref(provenance["ref"], "provenance_ref")
+    if re.fullmatch(
+        r"https://github\.com/demonsxxxxxx/ai-platform/attestations/[A-Za-z0-9_-]+",
+        provenance_ref,
+    ) is None:
+        raise ValueError("provenance_ref")
 
     signature = _object(evidence["signature"], "signature")
     _exact_keys(signature, _SIGNATURE_KEYS, "signature")
@@ -133,7 +139,8 @@ def validate_subject(subject: Any, *, source_commit: str) -> dict[str, Any]:
         raise ValueError("signature_identity")
     if signature["issuer"] != "https://token.actions.githubusercontent.com":
         raise ValueError("signature_issuer")
-    _validate_ref(signature["ref"], "signature_ref")
+    if signature["ref"] != f"oci://{expected_subject}@{digest}#cosign-keyless-signature":
+        raise ValueError("signature_ref")
 
     scan = _object(evidence["scan"], "scan")
     _exact_keys(scan, _SCAN_KEYS, "scan")
@@ -143,7 +150,10 @@ def validate_subject(subject: Any, *, source_commit: str) -> dict[str, Any]:
         raise ValueError("scan_result")
     if scan["scanner"] != "trivy@0.70.0":
         raise ValueError("scan_scanner")
-    _validate_ref(scan["ref"], "scan_ref")
+    if scan["ref"] != (
+        f"github-artifact://release-image-evidence-{source_commit}/trivy-{role}.json"
+    ):
+        raise ValueError("scan_ref")
     _fullmatch(_HEX_SHA256, scan["sha256"], "scan_sha256")
     return value
 

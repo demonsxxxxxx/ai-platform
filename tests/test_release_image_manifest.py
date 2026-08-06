@@ -104,6 +104,10 @@ def test_manifest_accepts_complete_digest_bound_evidence():
         (lambda value: value["subjects"][0]["evidence"]["scan"].update({"result": "failed"}), "scan_result"),
         (lambda value: value["subjects"][0]["evidence"]["scan"].update({"blocking_severities": []}), "blocking_severities"),
         (lambda value: value["subjects"][0]["evidence"]["sbom"].update({"format": "text"}), "sbom_format"),
+        (lambda value: value["subjects"][0]["evidence"]["sbom"].update({"ref": "sha256:" + "1" * 64}), "sbom_ref"),
+        (lambda value: value["subjects"][0]["evidence"]["provenance"].update({"ref": "file://provenance.json"}), "provenance_ref"),
+        (lambda value: value["subjects"][0]["evidence"]["signature"].update({"ref": "oci://ghcr.io/demonsxxxxxx/ai-platform-backend:" + SOURCE_COMMIT}), "signature_ref"),
+        (lambda value: value["subjects"][0]["evidence"]["scan"].update({"ref": "sha256:" + "2" * 64}), "scan_ref"),
     ],
 )
 def test_manifest_rejects_unready_or_mismatched_subjects(mutation, message: str):
