@@ -51,7 +51,11 @@ placeholder value.
   `git ls-remote origin refs/heads/main` are the same reviewed 40-character SHA.
 - `/opt/ai-platform/deploy/ai-platform/.env`, owner-matched to the managed root,
   mode `0600`, with real platform/auth/model settings and immutable executor
-  `repository@sha256` plus matching digest.
+  `repository@sha256` plus matching digest. The production SDK selection is
+  exactly `WORKER_CLAUDE_AGENT_SDK_ENABLED=true`, permission mode `dontAsk`,
+  allowed tools `Read,Glob,LS,Bash`, denied tools `Write,Edit,NotebookEdit`, and
+  sandbox authority `opensandbox/governed`. `bypassPermissions`, a missing or
+  empty denylist, fake provider, and implicit Compose defaults all fail closed.
 - `/etc/opensandbox-gateway/gateway.env` and
   `egress-policy.v1.json` based on the committed s72 examples, with root-owned
   gateway TLS and lifecycle/capability/signing secret files. Pre-provision the
@@ -102,10 +106,11 @@ sudo python tools/s72_colocation_authority.py preflight \
 
 The result must verify exact-main source authority, managed file ownership and
 mode, absence of all retired bridge keys, immutable images, the fixed loopback
-egress policy, Docker/Compose >= 2.24.4, registered runsc, immutable OpenSandbox
-server registry/local availability, Docker socket group identity, ports, disk,
-and current units. An absent OpenSandbox unit is valid for a first deployment;
-an active unit must own exactly one 127.0.0.1:8080 listener.
+egress policy, the exact SDK/sandbox activation selection, Docker/Compose >=
+2.24.4, registered runsc, immutable OpenSandbox server registry/local
+availability, Docker socket group identity, ports, disk, and current units. An
+absent OpenSandbox unit is valid for a first deployment; an active unit must own
+exactly one 127.0.0.1:8080 listener.
 `mutation_performed` must be `false`.
 
 ## Canonical Deployment

@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -22,6 +23,12 @@ def _platform_environment() -> dict[str, str]:
     return {
         "AI_PLATFORM_MODEL_UPSTREAM": "http://host.docker.internal:3002",
         "AI_PLATFORM_FRONTEND_PORT": "18001",
+        "WORKER_CLAUDE_AGENT_SDK_ENABLED": "true",
+        "CLAUDE_AGENT_PERMISSION_MODE": "dontAsk",
+        "CLAUDE_AGENT_ALLOWED_TOOLS": "Read,Glob,LS,Bash",
+        "CLAUDE_AGENT_DISALLOWED_TOOLS": "Write,Edit,NotebookEdit",
+        "SANDBOX_CONTAINER_PROVIDER": "opensandbox",
+        "SANDBOX_SECURITY_PROFILE": "governed",
         "OPENSANDBOX_API_KEY": "secret-value",
         "OPENSANDBOX_DOMAIN": "10.56.0.72:8443",
         "OPENSANDBOX_PROTOCOL": "https",
@@ -67,15 +74,36 @@ def test_colocation_overlay_owns_ports_volumes_and_broker_boundary() -> None:
 def test_release_authority_accepts_only_the_new_exact_colocation_selection() -> None:
     selection = release_authority.resolve_compose_files(ROOT, authority.COMPOSE_FILES)
     assert selection.relative_paths == authority.COMPOSE_FILES
-    assert authority.COMPOSE_FILES in release_authority.PROVIDER_OVERLAY_COMPOSE_SELECTIONS
     assert (authority.BASE_COMPOSE, "deploy/ai-platform/docker-compose.opensandbox.yml") in (
         release_authority.PROVIDER_OVERLAY_COMPOSE_SELECTIONS
     )
-    with pytest.raises(release_authority.ReleaseAuthorityError, match="retired"):
-        release_authority.assert_cli_deploy_compose_selection_is_active(
-            (authority.BASE_COMPOSE, "deploy/ai-platform/docker-compose.opensandbox.yml")
-        )
-    release_authority.assert_cli_deploy_compose_selection_is_active(authority.COMPOSE_FILES)
+    assert authority.COMPOSE_FILES not in release_authority.PROVIDER_OVERLAY_COMPOSE_SELECTIONS
+
+
+def test_release_authority_cli_rejects_legacy_cross_host_overlay_before_deploy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py", "deploy",
+            "--repo-root", str(ROOT),
+            "--commit", "a" * 40,
+            "--env-file", str(tmp_path / ".env"),
+            "--compose-file", authority.BASE_COMPOSE,
+            "--compose-file", "deploy/ai-platform/docker-compose.opensandbox.yml",
+        ],
+    )
+    monkeypatch.setattr(
+        release_authority,
+        "deploy_clean_commit",
+        lambda *_args, **_kwargs: pytest.fail("retired selection must not dispatch"),
+    )
+    assert release_authority.main() == 2
+    assert "legacy cross-host OpenSandbox Compose selection is retired" in capsys.readouterr().out
 
 
 def test_opensandbox_server_contract_is_runsc_none_and_immutable(tmp_path: Path) -> None:
@@ -224,6 +252,7 @@ def test_broker_runtime_rejects_default_control_plane_network(
         "collect_opensandbox_runtime_parity",
         lambda *_args: {"verified": True},
     )
+    monkeypatch.setattr(authority, "_docker_record", lambda *_args, **_kwargs: record)
     monkeypatch.setattr(
         authority,
         "_command",
@@ -262,8 +291,25 @@ def test_existing_legacy_platform_selection_is_not_adopted(
         return subprocess.CompletedProcess(argv, 0, json.dumps([record]), "")
 
     monkeypatch.setattr(authority, "_command", fake_command)
-    with pytest.raises(authority.S72ColocationError, match="not the s72 authority"):
-        authority._current_platform_commit("docker")
+    monkeypatch.setattr(release_authority, "_run", fake_command)
+    with pytest.raises(release_authority.ReleaseAuthorityError, match="current runtime provenance"):
+        authority._current_platform_commit("docker", ROOT)
+
+
+def test_docker_record_sanitizes_malformed_inspect_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def malformed_inspect(*_args: object, **_kwargs: object) -> object:
+        raise json.JSONDecodeError("sensitive inspect output", "not-json", 0)
+
+    monkeypatch.setattr(release_authority, "_container_inspect_record", malformed_inspect)
+    with pytest.raises(authority.S72ColocationError, match="runtime evidence is invalid") as exc:
+        authority._docker_record(
+            "docker",
+            "opensandbox-server",
+            error="runtime evidence is invalid",
+        )
+    assert "sensitive inspect output" not in str(exc.value)
 
 
 def test_managed_environment_rejects_retired_bridge_projection(tmp_path: Path) -> None:
@@ -273,6 +319,44 @@ def test_managed_environment_rejects_retired_bridge_projection(tmp_path: Path) -
     _write_env(env_file, values)
     with pytest.raises(authority.S72ColocationError, match="retired cross-host"):
         authority.validate_platform_environment(env_file)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("WORKER_CLAUDE_AGENT_SDK_ENABLED", "false", "SDK production selection"),
+        ("CLAUDE_AGENT_PERMISSION_MODE", "bypassPermissions", "SDK production selection"),
+        ("CLAUDE_AGENT_DISALLOWED_TOOLS", "", "SDK production selection"),
+        ("SANDBOX_CONTAINER_PROVIDER", "fake", "sandbox authority selection"),
+        ("SANDBOX_SECURITY_PROFILE", "trusted_internal", "sandbox authority selection"),
+    ],
+)
+def test_managed_environment_rejects_unsafe_sdk_or_sandbox_selection(
+    tmp_path: Path,
+    key: str,
+    value: str,
+    message: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    values = _platform_environment()
+    values[key] = value
+    _write_env(env_file, values)
+    with pytest.raises(authority.S72ColocationError, match=message):
+        authority.validate_platform_environment(env_file)
+
+
+def test_colocation_compose_requires_safe_sdk_selection_and_example_is_not_fake() -> None:
+    overlay = OVERLAY.read_text(encoding="utf-8")
+    example = (ROOT / "deploy/ai-platform/.env.example").read_text(encoding="utf-8")
+    assert "CLAUDE_AGENT_SDK_ENABLED: ${WORKER_CLAUDE_AGENT_SDK_ENABLED:?" in overlay
+    assert "CLAUDE_AGENT_PERMISSION_MODE: ${CLAUDE_AGENT_PERMISSION_MODE:?" in overlay
+    assert "CLAUDE_AGENT_ALLOWED_TOOLS: ${CLAUDE_AGENT_ALLOWED_TOOLS:?" in overlay
+    assert "CLAUDE_AGENT_DISALLOWED_TOOLS: ${CLAUDE_AGENT_DISALLOWED_TOOLS:?" in overlay
+    assert "WORKER_CLAUDE_AGENT_SDK_ENABLED=true" in example
+    assert "CLAUDE_AGENT_PERMISSION_MODE=dontAsk" in example
+    assert "CLAUDE_AGENT_ALLOWED_TOOLS=Read,Glob,LS,Bash" in example
+    assert "CLAUDE_AGENT_DISALLOWED_TOOLS=Write,Edit,NotebookEdit" in example
+    assert "SANDBOX_CONTAINER_PROVIDER=opensandbox" in example
 
 
 @pytest.mark.parametrize(
@@ -318,7 +402,7 @@ def test_deploy_holds_one_outer_lease_and_rolls_back_platform_then_gateway(
     monkeypatch.setattr(authority, "mutation_lease", fake_lease)
     monkeypatch.setattr(authority, "collect_read_only_preflight", lambda *args, **kwargs: {"verified": True})
     monkeypatch.setattr(authority.release_authority, "resolve_managed_env_file", lambda *args: env_file)
-    monkeypatch.setattr(authority, "_current_platform_commit", lambda _docker: None)
+    monkeypatch.setattr(authority, "_current_platform_commit", lambda _docker, _checkout: None)
     monkeypatch.setattr(authority.release_authority, "materialize_main_checkout", lambda *_args: checkout)
     monkeypatch.setattr(
         authority,
@@ -339,7 +423,8 @@ def test_deploy_holds_one_outer_lease_and_rolls_back_platform_then_gateway(
     monkeypatch.setattr(
         authority,
         "_command",
-        lambda argv, **_kwargs: events.append("gateway-rollback") or None,
+        lambda argv, **_kwargs: events.append("gateway-rollback")
+        or subprocess.CompletedProcess(argv, 0, "", ""),
     )
     monkeypatch.setattr(
         authority,
@@ -384,7 +469,7 @@ def test_gateway_install_failure_relies_on_its_snapshot_trap_without_second_roll
     monkeypatch.setattr(authority, "mutation_lease", fake_lease)
     monkeypatch.setattr(authority, "collect_read_only_preflight", lambda *args, **kwargs: {"verified": True})
     monkeypatch.setattr(authority.release_authority, "resolve_managed_env_file", lambda *args: env_file)
-    monkeypatch.setattr(authority, "_current_platform_commit", lambda _docker: None)
+    monkeypatch.setattr(authority, "_current_platform_commit", lambda _docker, _checkout: None)
     monkeypatch.setattr(authority.release_authority, "materialize_main_checkout", lambda *_args: checkout)
     monkeypatch.setattr(
         authority,

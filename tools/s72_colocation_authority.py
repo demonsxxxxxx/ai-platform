@@ -30,7 +30,6 @@ except ImportError:  # pragma: no cover - direct script execution
     import release_authority  # type: ignore[no-redef]
 
 
-FULL_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 BASE_COMPOSE = "deploy/ai-platform/docker-compose.yml"
 COLOCATION_COMPOSE = "deploy/ai-platform/docker-compose.s72-colocation.yml"
 COMPOSE_FILES = (BASE_COMPOSE, COLOCATION_COMPOSE)
@@ -50,36 +49,21 @@ LOCAL_BROKER_BASES = {
     "anthropic": f"{LOCAL_BROKER_ORIGIN}/anthropic",
 }
 RETIRED_PLATFORM_KEYS = frozenset(
-    {
-        "AI_PLATFORM_S72_BRIDGE_PORT",
-        "AI_PLATFORM_S72_BRIDGE_SERVER_NAME",
-        "AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP",
-        "AI_PLATFORM_S72_BRIDGE_TLS_CERT_FILE",
-        "AI_PLATFORM_S72_BRIDGE_TLS_KEY_FILE",
-        "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL",
-        "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL",
-        "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL",
-    }
+    "AI_PLATFORM_S72_BRIDGE_PORT AI_PLATFORM_S72_BRIDGE_SERVER_NAME AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP "
+    "AI_PLATFORM_S72_BRIDGE_TLS_CERT_FILE AI_PLATFORM_S72_BRIDGE_TLS_KEY_FILE "
+    "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL "
+    "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL".split()
 )
 REQUIRED_PLATFORM_KEYS = frozenset(
-    {
-        "AI_PLATFORM_MODEL_UPSTREAM",
-        "AI_PLATFORM_FRONTEND_PORT",
-        "OPENSANDBOX_API_KEY",
-        "OPENSANDBOX_DOMAIN",
-        "OPENSANDBOX_PROTOCOL",
-        "OPENSANDBOX_EXECUTOR_IMAGE",
-        "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
-        "OPENSANDBOX_ATTESTATION_PATH",
-        "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION",
-        "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",
-        "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
-        "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT",
-        "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT",
-        "SANDBOX_CALLBACK_TOKEN",
-        "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
-        "SANDBOX_RUNTIME_SUBJECT",
-    }
+    "AI_PLATFORM_MODEL_UPSTREAM AI_PLATFORM_FRONTEND_PORT WORKER_CLAUDE_AGENT_SDK_ENABLED "
+    "CLAUDE_AGENT_PERMISSION_MODE CLAUDE_AGENT_ALLOWED_TOOLS CLAUDE_AGENT_DISALLOWED_TOOLS "
+    "SANDBOX_CONTAINER_PROVIDER SANDBOX_SECURITY_PROFILE OPENSANDBOX_API_KEY OPENSANDBOX_DOMAIN "
+    "OPENSANDBOX_PROTOCOL OPENSANDBOX_EXECUTOR_IMAGE OPENSANDBOX_EXECUTOR_IMAGE_DIGEST "
+    "OPENSANDBOX_ATTESTATION_PATH OPENSANDBOX_ATTESTATION_CONTRACT_VERSION "
+    "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN "
+    "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT "
+    "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT SANDBOX_CALLBACK_TOKEN "
+    "SANDBOX_EGRESS_PROOF_SIGNING_KEY SANDBOX_RUNTIME_SUBJECT".split()
 )
 GATEWAY_EXPECTED_VALUES = {
     "OPENSANDBOX_GATEWAY_API_KEY_FILE": "/etc/opensandbox-gateway/secrets/lifecycle-api-key",
@@ -92,23 +76,15 @@ GATEWAY_EXPECTED_VALUES = {
     "OPENSANDBOX_GATEWAY_OPENAI_BASE": LOCAL_BROKER_BASES["openai"],
     "OPENSANDBOX_GATEWAY_ANTHROPIC_BASE": LOCAL_BROKER_BASES["anthropic"],
 }
-MANAGED_CONTAINER_NAMES = (
-    "ai-platform-api",
-    "ai-platform-worker",
-    "ai-platform-frontend",
-)
+MANAGED_CONTAINER_NAMES = ("ai-platform-api", "ai-platform-worker", "ai-platform-frontend")
 MIN_COMPOSE_VERSION = (2, 24, 4)
 MIN_ROLLBACK_FREE_BYTES = 5 * 1024 * 1024 * 1024
 IMMUTABLE_IMAGE_RE = re.compile(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}\Z")
 SERVER_REQUIRED_ENV_KEYS = frozenset(
-    {
-        "OPENSANDBOX_SERVER_IMAGE",
-        "OPENSANDBOX_SERVER_IMAGE_DIGEST",
-        "OPENSANDBOX_SERVER_UID",
-        "OPENSANDBOX_SERVER_GID",
-        "OPENSANDBOX_DOCKER_SOCKET_GID",
-    }
+    "OPENSANDBOX_SERVER_IMAGE OPENSANDBOX_SERVER_IMAGE_DIGEST OPENSANDBOX_SERVER_UID "
+    "OPENSANDBOX_SERVER_GID OPENSANDBOX_DOCKER_SOCKET_GID".split()
 )
+DANGEROUS_CAPABILITIES = frozenset({"AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"})
 
 
 class S72ColocationError(RuntimeError):
@@ -128,16 +104,12 @@ def _command(
     timeout: int = 30,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        list(argv),
+    result = release_authority._run(
+        argv,
         cwd=cwd,
         env=None if env is None else dict(env),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         timeout=timeout,
         check=False,
-        shell=False,
     )
     if check and result.returncode != 0:
         raise S72ColocationError(f"command gate failed: {Path(argv[0]).name}")
@@ -189,6 +161,20 @@ def validate_platform_environment(path: Path) -> dict[str, object]:
     missing = sorted(key for key in REQUIRED_PLATFORM_KEYS if not values.get(key))
     if retired:
         raise S72ColocationError("retired cross-host platform keys are present")
+    if (
+        values.get("WORKER_CLAUDE_AGENT_SDK_ENABLED") != "true"
+        or values.get("CLAUDE_AGENT_PERMISSION_MODE") != "dontAsk"
+        or tuple(item.strip() for item in values.get("CLAUDE_AGENT_ALLOWED_TOOLS", "").split(","))
+        != ("Read", "Glob", "LS", "Bash")
+        or tuple(item.strip() for item in values.get("CLAUDE_AGENT_DISALLOWED_TOOLS", "").split(","))
+        != ("Write", "Edit", "NotebookEdit")
+    ):
+        raise S72ColocationError("SDK production selection is unsafe")
+    if (
+        values.get("SANDBOX_CONTAINER_PROVIDER") != "opensandbox"
+        or values.get("SANDBOX_SECURITY_PROFILE") != "governed"
+    ):
+        raise S72ColocationError("sandbox authority selection is unsafe")
     if missing:
         raise S72ColocationError("required s72 platform keys are missing")
     _validate_model_upstream(values["AI_PLATFORM_MODEL_UPSTREAM"])
@@ -200,6 +186,8 @@ def validate_platform_environment(path: Path) -> dict[str, object]:
         "required_keys_present": True,
         "retired_keys_absent": True,
         "executor_image_immutable": True,
+        "sdk_selection_fail_closed": True,
+        "sandbox_authority": "opensandbox",
     }
 
 
@@ -220,6 +208,37 @@ def _regular_file_metadata(path: Path, *, error: str) -> os.stat_result:
     if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
         raise S72ColocationError(error)
     return metadata
+
+
+def _docker_record(docker_cmd: str, identity: str, *, error: str) -> dict[str, Any]:
+    try:
+        _, record = release_authority._container_inspect_record([docker_cmd], identity)
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        json.JSONDecodeError,
+        IndexError,
+        KeyError,
+        TypeError,
+        release_authority.ReleaseAuthorityError,
+    ) as exc:
+        raise S72ColocationError(error) from exc
+    return record
+
+
+def _has_no_new_privileges(host: Mapping[str, object]) -> bool:
+    return any(
+        str(value).lower() in {"no-new-privileges", "no-new-privileges:true"}
+        for value in host.get("SecurityOpt") or []
+    )
+
+
+def _bind_mounts(record: Mapping[str, object]) -> set[tuple[str, str, bool]]:
+    return {
+        (str(item.get("Source") or ""), str(item.get("Destination") or ""), bool(item.get("RW")))
+        for item in record.get("Mounts") or []
+        if item.get("Type") == "bind"
+    }
 
 
 def _read_secret_file(path: Path, *, error: str) -> str:
@@ -293,17 +312,6 @@ def validate_opensandbox_server_configuration(
     api_key = server.get("api_key")
     execd_image = str(runtime.get("execd_image") or "")
     execd_digest = execd_image.rsplit("@", 1)[-1] if "@" in execd_image else ""
-    dangerous_capabilities = {
-        "AUDIT_WRITE",
-        "MKNOD",
-        "NET_ADMIN",
-        "NET_RAW",
-        "SYS_ADMIN",
-        "SYS_MODULE",
-        "SYS_PTRACE",
-        "SYS_TIME",
-        "SYS_TTY_CONFIG",
-    }
     drop_capabilities = {str(item) for item in docker.get("drop_capabilities") or []}
     if (
         server.get("host") != "0.0.0.0"
@@ -320,7 +328,7 @@ def validate_opensandbox_server_configuration(
         or store.get("path") != "/var/lib/ai-platform-opensandbox/opensandbox.db"
         or docker.get("network_mode") != "none"
         or docker.get("no_new_privileges") is not True
-        or not dangerous_capabilities.issubset(drop_capabilities)
+        or not DANGEROUS_CAPABILITIES.issubset(drop_capabilities)
         or not isinstance(docker.get("pids_limit"), int)
         or not 64 <= docker["pids_limit"] <= 65_536
         or ingress.get("mode") != "direct"
@@ -435,39 +443,28 @@ def validate_colocation_identity_coherence(
     )
     server_secret = str((server_config.get("server") or {}).get("api_key") or "")
     gateway_authority = gateway_values.get("OPENSANDBOX_GATEWAY_PUBLIC_AUTHORITY", "")
-    expected_capability_url = f"https://{gateway_authority}/v1/capabilities/governed-egress"
-    coherent = (
-        hmac.compare_digest(platform_values.get("OPENSANDBOX_API_KEY", ""), lifecycle_secret)
-        and hmac.compare_digest(server_secret, lifecycle_secret)
-        and hmac.compare_digest(
-            platform_values.get("OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN", ""),
-            capability_secret,
+    expected_platform = {
+        "OPENSANDBOX_PROTOCOL": "https",
+        "OPENSANDBOX_DOMAIN": gateway_authority,
+        "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL": f"https://{gateway_authority}/v1/capabilities/governed-egress",
+        "OPENSANDBOX_EXECUTOR_IMAGE": gateway_values.get("OPENSANDBOX_GATEWAY_EXECUTOR_IMAGE"),
+        "SANDBOX_RUNTIME_SUBJECT": gateway_values.get("OPENSANDBOX_GATEWAY_RUNTIME_SUBJECT"),
+        "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT": gateway_values.get("OPENSANDBOX_GATEWAY_POLICY_SUBJECT"),
+        "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT": gateway_values.get("OPENSANDBOX_GATEWAY_CALLBACK_SUBJECT"),
+        "OPENSANDBOX_ATTESTATION_PATH": "/v1/sandboxes/{sandbox_id}/attestation",
+        "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION": "ai-platform.opensandbox.topology-attestation.v1",
+    }
+    coherent = all(platform_values.get(key) == value for key, value in expected_platform.items()) and all(
+        hmac.compare_digest(observed, expected)
+        for observed, expected in (
+            (platform_values.get("OPENSANDBOX_API_KEY", ""), lifecycle_secret),
+            (server_secret, lifecycle_secret),
+            (platform_values.get("OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN", ""), capability_secret),
         )
-        and platform_values.get("OPENSANDBOX_PROTOCOL") == "https"
-        and platform_values.get("OPENSANDBOX_DOMAIN") == gateway_authority
-        and platform_values.get("OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL")
-        == expected_capability_url
-        and platform_values.get("OPENSANDBOX_EXECUTOR_IMAGE")
-        == gateway_values.get("OPENSANDBOX_GATEWAY_EXECUTOR_IMAGE")
-        and platform_values.get("SANDBOX_RUNTIME_SUBJECT")
-        == gateway_values.get("OPENSANDBOX_GATEWAY_RUNTIME_SUBJECT")
-        and platform_values.get("OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT")
-        == gateway_values.get("OPENSANDBOX_GATEWAY_POLICY_SUBJECT")
-        and platform_values.get("OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT")
-        == gateway_values.get("OPENSANDBOX_GATEWAY_CALLBACK_SUBJECT")
-        and platform_values.get("OPENSANDBOX_ATTESTATION_PATH")
-        == "/v1/sandboxes/{sandbox_id}/attestation"
-        and platform_values.get("OPENSANDBOX_ATTESTATION_CONTRACT_VERSION")
-        == "ai-platform.opensandbox.topology-attestation.v1"
     )
     if not coherent:
         raise S72ColocationError("OpenSandbox identity and subject coherence drifted")
-    return {
-        "lifecycle_identity_coherent": True,
-        "capability_identity_coherent": True,
-        "runtime_subjects_coherent": True,
-        "public_authority_coherent": True,
-    }
+    return dict.fromkeys(("lifecycle_identity_coherent", "capability_identity_coherent", "runtime_subjects_coherent", "public_authority_coherent"), True)
 
 
 def _safe_probe(argv: Sequence[str], *, timeout: int = 10) -> dict[str, object]:
@@ -493,12 +490,7 @@ def _compose_version(value: str) -> tuple[int, int, int]:
 def _systemd_projection(unit: str) -> dict[str, object]:
     try:
         result = _command(
-            [
-                "systemctl",
-                "show",
-                unit,
-                "--property=LoadState,ActiveState,FragmentPath,UnitFileState",
-            ],
+            ["systemctl", "show", unit, "--property=LoadState,ActiveState,FragmentPath,UnitFileState"],
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -577,8 +569,6 @@ def _port_listener_count(port: int) -> int:
 
 
 def _source_projection(source: Path, commit: str) -> dict[str, object]:
-    if not FULL_COMMIT_RE.fullmatch(commit):
-        raise S72ColocationError("authority commit must be a full SHA")
     release_authority.assert_clean_coordination_source(source, commit)
     local_main = _command(["git", "rev-parse", "origin/main"], cwd=source).stdout.strip()
     remote_result = _command(
@@ -927,51 +917,22 @@ def _install_opensandbox_runtime(
         ) from None
 
 
-def _current_platform_commit(docker_cmd: str) -> str | None:
-    records: list[dict[str, Any]] = []
-    missing = 0
-    for name in MANAGED_CONTAINER_NAMES:
-        result = _command([docker_cmd, "inspect", name], check=False)
-        if result.returncode != 0:
-            missing += 1
-            continue
-        try:
-            value = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise S72ColocationError("current platform provenance is invalid") from exc
-        if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
-            raise S72ColocationError("current platform provenance is invalid")
-        records.append(value[0])
-    if missing == len(MANAGED_CONTAINER_NAMES):
+def _current_platform_commit(docker_cmd: str, target_checkout: Path) -> str | None:
+    present = [
+        _command([docker_cmd, "inspect", name], check=False).returncode == 0
+        for name in MANAGED_CONTAINER_NAMES
+    ]
+    if not any(present):
         return None
-    if missing:
+    if not all(present):
         raise S72ColocationError("current platform provenance is incomplete")
-    commits = {
-        str(((item.get("Config") or {}).get("Labels") or {}).get("ai-platform.source-commit") or "")
-        for item in records
-    }
-    if len(commits) != 1:
-        raise S72ColocationError("current platform provenance is incomplete")
-    commit = next(iter(commits))
-    if not FULL_COMMIT_RE.fullmatch(commit):
-        raise S72ColocationError("current platform provenance is invalid")
-    for name, item in zip(MANAGED_CONTAINER_NAMES, records, strict=True):
-        role = name.removeprefix("ai-platform-")
-        labels = ((item.get("Config") or {}).get("Labels") or {})
-        working_dir = str(labels.get("com.docker.compose.project.working_dir") or "").replace("\\", "/")
-        config_files = str(labels.get("com.docker.compose.project.config_files") or "").replace("\\", "/")
-        expected_config_files = ",".join(
-            f"{working_dir}/{Path(relative).name}" for relative in COMPOSE_FILES
-        )
-        if (
-            labels.get("ai-platform.release-owner") != "repo-local-compose"
-            or labels.get("ai-platform.release-role") != role
-            or labels.get("com.docker.compose.project") != release_authority.COMPOSE_PROJECT
-            or not working_dir.endswith(f"/{commit}/deploy/ai-platform")
-            or config_files != expected_config_files
-        ):
-            raise S72ColocationError("current platform Compose ownership is not the s72 authority")
-    return commit
+    target_selection = release_authority.resolve_compose_files(target_checkout, COMPOSE_FILES)
+    runtime = release_authority._verified_current_runtime(
+        [docker_cmd],
+        target_selection,
+        docker_cmd=docker_cmd,
+    )
+    return str(runtime["commit"])
 
 
 def collect_opensandbox_runtime_parity(
@@ -980,17 +941,19 @@ def collect_opensandbox_runtime_parity(
     server_config_root: Path = SERVER_CONFIG_ROOT,
 ) -> dict[str, object]:
     values = _parse_env_file(server_config_root / "server.env")
-    result = _command([docker_cmd, "inspect", OPENSANDBOX_CONTAINER_NAME])
+    record = _docker_record(
+        docker_cmd,
+        OPENSANDBOX_CONTAINER_NAME,
+        error="OpenSandbox runtime evidence is invalid",
+    )
     try:
-        record = json.loads(result.stdout)[0]
         config = record["Config"]
         host = record["HostConfig"]
         labels = config["Labels"]
         bindings = host["PortBindings"]["8080/tcp"]
-    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    except (KeyError, TypeError) as exc:
         raise S72ColocationError("OpenSandbox runtime evidence is invalid") from exc
     expected_user = f"{values['OPENSANDBOX_SERVER_UID']}:{values['OPENSANDBOX_SERVER_GID']}"
-    security_options = {str(value).lower() for value in host.get("SecurityOpt") or []}
     cap_drop = {str(value).upper() for value in host.get("CapDrop") or []}
     if (
         labels.get("ai-platform.source-commit") != commit
@@ -1003,33 +966,16 @@ def collect_opensandbox_runtime_parity(
         or host.get("Privileged") is True
         or host.get("ReadonlyRootfs") is not True
         or "ALL" not in cap_drop
-        or not security_options.intersection({"no-new-privileges", "no-new-privileges:true"})
+        or not _has_no_new_privileges(host)
         or bindings != [{"HostIp": "127.0.0.1", "HostPort": "8080"}]
     ):
         raise S72ColocationError("OpenSandbox runtime boundary drifted")
     expected_mounts = {
         ("/var/run/docker.sock", "/var/run/docker.sock", False),
-        (
-            str((server_config_root / "server.toml").resolve()),
-            "/etc/opensandbox/config.toml",
-            False,
-        ),
-        (
-            str(OPENSANDBOX_STATE_ROOT),
-            "/var/lib/ai-platform-opensandbox",
-            True,
-        ),
+        (str((server_config_root / "server.toml").resolve()), "/etc/opensandbox/config.toml", False),
+        (str(OPENSANDBOX_STATE_ROOT), "/var/lib/ai-platform-opensandbox", True),
     }
-    observed_mounts = {
-        (
-            str(item.get("Source") or ""),
-            str(item.get("Destination") or ""),
-            bool(item.get("RW")),
-        )
-        for item in record.get("Mounts") or []
-        if item.get("Type") == "bind"
-    }
-    if observed_mounts != expected_mounts:
+    if _bind_mounts(record) != expected_mounts:
         raise S72ColocationError("OpenSandbox controller mount boundary drifted")
     network = _inspect_network(docker_cmd)
     if network is None or network.get("Internal") is not True:
@@ -1060,16 +1006,18 @@ def collect_colocation_parity(
         commit,
         server_config_root,
     )
-    result = _command([docker_cmd, "inspect", "ai-platform-s72-broker-entry"])
+    record = _docker_record(
+        docker_cmd,
+        "ai-platform-s72-broker-entry",
+        error="s72 broker runtime evidence is invalid",
+    )
     try:
-        values = json.loads(result.stdout)
-        record = values[0]
         config = record["Config"]
         host = record["HostConfig"]
         labels = config["Labels"]
         bindings = host["PortBindings"]["8080/tcp"]
         attached_networks = set(record["NetworkSettings"]["Networks"])
-    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    except (KeyError, TypeError) as exc:
         raise S72ColocationError("s72 broker runtime evidence is invalid") from exc
     if (
         labels.get("ai-platform.source-commit") != commit
@@ -1081,7 +1029,7 @@ def collect_colocation_parity(
         or host.get("Privileged") is True
         or host.get("ReadonlyRootfs") is not True
         or "ALL" not in {str(value).upper() for value in host.get("CapDrop") or []}
-        or not any(str(value).lower() in {"no-new-privileges", "no-new-privileges:true"} for value in host.get("SecurityOpt") or [])
+        or not _has_no_new_privileges(host)
         or bindings != [{"HostIp": "127.0.0.1", "HostPort": "18043"}]
         or attached_networks
         != {
@@ -1094,26 +1042,13 @@ def collect_colocation_parity(
     mounts = record.get("Mounts") or []
     working_dir = str(labels.get("com.docker.compose.project.working_dir") or "")
     expected_template_source = f"{working_dir}/s72-broker-nginx.conf.template"
-    bind_mounts = {
-        (
-            str(item.get("Source") or ""),
-            str(item.get("Destination") or ""),
-            bool(item.get("RW")),
-        )
-        for item in mounts
-        if item.get("Type") == "bind"
-    }
     if (
         not working_dir.replace("\\", "/").endswith(
             f"/{commit}/deploy/ai-platform"
         )
-        or bind_mounts
+        or _bind_mounts(record)
         != {
-            (
-                expected_template_source,
-                "/etc/nginx/templates-s72-colocation/default.conf.template",
-                False,
-            )
+            (expected_template_source, "/etc/nginx/templates-s72-colocation/default.conf.template", False)
         }
         or any(item.get("Type") == "volume" for item in mounts)
         or set((host.get("Tmpfs") or {}).keys())
@@ -1134,33 +1069,25 @@ def collect_colocation_parity(
     if any(not re.fullmatch(r"[0-9a-f]{64}", sandbox_id) for sandbox_id in sandbox_ids):
         raise S72ColocationError("sandbox runtime inventory is invalid")
     for sandbox_id in sandbox_ids:
-        sandbox_result = _command([docker_cmd, "inspect", sandbox_id])
+        sandbox = _docker_record(
+            docker_cmd,
+            sandbox_id,
+            error="sandbox runtime evidence is invalid",
+        )
         try:
-            sandbox = json.loads(sandbox_result.stdout)[0]
             sandbox_host = sandbox["HostConfig"]
             sandbox_config = sandbox["Config"]
-        except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        except (KeyError, TypeError) as exc:
             raise S72ColocationError("sandbox runtime evidence is invalid") from exc
         sandbox_mounts = sandbox.get("Mounts") or []
         if (
             sandbox_host.get("Runtime") != "runsc"
             or sandbox_host.get("NetworkMode") != "none"
             or sandbox_host.get("Privileged") is True
-            or not any(
-                str(value).lower() in {"no-new-privileges", "no-new-privileges:true"}
-                for value in sandbox_host.get("SecurityOpt") or []
+            or not _has_no_new_privileges(sandbox_host)
+            or not DANGEROUS_CAPABILITIES.issubset(
+                {str(value).upper() for value in sandbox_host.get("CapDrop") or []}
             )
-            or not {
-                "AUDIT_WRITE",
-                "MKNOD",
-                "NET_ADMIN",
-                "NET_RAW",
-                "SYS_ADMIN",
-                "SYS_MODULE",
-                "SYS_PTRACE",
-                "SYS_TIME",
-                "SYS_TTY_CONFIG",
-            }.issubset({str(value).upper() for value in sandbox_host.get("CapDrop") or []})
             or sandbox_config.get("User") != "1000:1000"
             or len(sandbox_mounts) > 2
             or any(
@@ -1181,13 +1108,11 @@ def collect_colocation_parity(
 
 def _gateway_install(checkout: Path, commit: str, evidence_id: str) -> None:
     env = dict(os.environ)
-    env.update(
-        {
-            "OPENSANDBOX_GATEWAY_AUTHORITY_REF": "origin/main",
-            "OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA": commit,
-            "OPENSANDBOX_GATEWAY_AUTHORITY_EVIDENCE_ID": evidence_id,
-        }
-    )
+    env.update({
+        "OPENSANDBOX_GATEWAY_AUTHORITY_REF": "origin/main",
+        "OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA": commit,
+        "OPENSANDBOX_GATEWAY_AUTHORITY_EVIDENCE_ID": evidence_id,
+    })
     _command(
         [str(checkout / "deploy/opensandbox/install-s72.sh"), str(checkout)],
         env=env,
@@ -1251,22 +1176,7 @@ def validate_smoke_inputs(
     ):
         raise S72ColocationError("ordinary-user smoke document is invalid")
     for directory in (RUNTIME_STATE_ROOT, RUNTIME_STATE_ROOT / "evidence"):
-        try:
-            directory_metadata = directory.stat(follow_symlinks=False)
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise S72ColocationError("s72 authority state is unavailable") from exc
-        if (
-            directory.is_symlink()
-            or not stat.S_ISDIR(directory_metadata.st_mode)
-            or (os.name == "posix" and (
-                directory_metadata.st_uid != 0
-                or directory_metadata.st_gid != 0
-                or stat.S_IMODE(directory_metadata.st_mode) != 0o700
-            ))
-        ):
-            raise S72ColocationError("s72 authority state ownership drifted")
+        _root_state_directory(directory, create=False)
     evidence_path = RUNTIME_STATE_ROOT / "evidence" / f"{evidence_id}.ordinary-user-smoke.json"
     if evidence_path.exists():
         raise S72ColocationError("ordinary-user runtime smoke evidence id already exists")
@@ -1278,18 +1188,23 @@ def validate_smoke_inputs(
     }
 
 
-def _ensure_root_state_directory(path: Path) -> None:
-    if path.exists():
+def _root_state_directory(path: Path, *, create: bool) -> None:
+    try:
         metadata = path.stat(follow_symlinks=False)
-        if (
-            path.is_symlink()
-            or not stat.S_ISDIR(metadata.st_mode)
-            or (os.name == "posix" and (metadata.st_uid != 0 or metadata.st_gid != 0))
-        ):
-            raise S72ColocationError("s72 authority state ownership drifted")
-    else:
+    except FileNotFoundError:
+        if not create:
+            return
         path.mkdir(parents=True, mode=0o700)
-    os.chmod(path, 0o700)
+        metadata = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise S72ColocationError("s72 authority state is unavailable") from exc
+    if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode) or (
+        os.name == "posix"
+        and (metadata.st_uid != 0 or metadata.st_gid != 0 or stat.S_IMODE(metadata.st_mode) != 0o700)
+    ):
+        raise S72ColocationError("s72 authority state ownership drifted")
+    if create:
+        os.chmod(path, 0o700)
 
 
 def _ordinary_user_runtime_smoke(
@@ -1313,21 +1228,14 @@ def _ordinary_user_runtime_smoke(
         raise S72ColocationError("ordinary-user smoke authority is unavailable") from exc
     argv = [
         str(checkout / "tools/verify_multiuser_poc.py"),
-        "--api-url",
-        f"http://127.0.0.1:{port}",
-        "--sample-docx",
-        str(sample_docx),
-        "--auth-mode",
-        "login",
-        "--trusted-header-role",
-        "developer",
+        "--api-url", f"http://127.0.0.1:{port}",
+        "--sample-docx", str(sample_docx),
+        "--auth-mode", "login",
+        "--trusted-header-role", "developer",
         "--foundation-runtime-evidence",
-        "--min-concurrent-cases",
-        "12",
-        "--commit-sha",
-        commit,
-        "--runtime-subject-commit-sha",
-        commit,
+        "--min-concurrent-cases", "12",
+        "--commit-sha", commit,
+        "--runtime-subject-commit-sha", commit,
     ]
     for account in accounts:
         argv.extend(["--account", account])
@@ -1369,9 +1277,9 @@ def _ordinary_user_runtime_smoke(
         or skill["used_count"] < 1
     ):
         raise S72ColocationError("ordinary-user SDK Skill smoke evidence is incomplete")
-    _ensure_root_state_directory(RUNTIME_STATE_ROOT)
+    _root_state_directory(RUNTIME_STATE_ROOT, create=True)
     evidence_root = RUNTIME_STATE_ROOT / "evidence"
-    _ensure_root_state_directory(evidence_root)
+    _root_state_directory(evidence_root, create=True)
     evidence_path = evidence_root / f"{evidence_id}.ordinary-user-smoke.json"
     if evidence_path.exists():
         raise S72ColocationError("ordinary-user runtime smoke evidence id already exists")
@@ -1410,23 +1318,16 @@ def _restore_platform(
     if prior_commit is None:
         _compose_down(target_checkout, env_file, docker_cmd)
         return {"mode": "remove-new-runtime", "commit": None}
-    prior_checkout = release_authority.materialize_main_checkout(release_root, prior_commit)
-    release_authority.deploy_clean_commit(
-        prior_checkout,
+    restored = release_authority.deploy_main_commit(
+        release_root,
         prior_commit,
         docker_cmd=docker_cmd,
         env_file=env_file,
         replace_known_manual_frontend=False,
         compose_files=COMPOSE_FILES,
         strategy="canonical",
-        managed_release_root=release_root,
     )
-    parity = release_authority.collect_live_parity(
-        prior_checkout,
-        prior_commit,
-        docker_cmd=docker_cmd,
-        compose_files=COMPOSE_FILES,
-    )
+    parity = restored.get("parity") if isinstance(restored.get("parity"), dict) else {}
     if parity.get("verified") is not True:
         raise S72ColocationError("platform rollback parity failed")
     return {"mode": "restore-exact-commit", "commit": prior_commit}
@@ -1459,11 +1360,10 @@ def deploy_main_commit(
             server_config_root=server_config_root,
         )
         env_file = release_authority.resolve_managed_env_file(release_root, None)
-        prior_commit = _current_platform_commit(docker_cmd)
         checkout = release_authority.materialize_main_checkout(release_root, commit)
+        prior_commit = _current_platform_commit(docker_cmd, checkout)
         runtime_install: dict[str, object] | None = None
         gateway_installed = False
-        platform_started = False
         try:
             runtime_install = _install_opensandbox_runtime(
                 checkout,
@@ -1483,12 +1383,7 @@ def deploy_main_commit(
                 strategy="canonical",
                 coordination_source=source,
             )
-            platform_started = True
-            colocation_parity = collect_colocation_parity(
-                docker_cmd,
-                commit,
-                server_config_root,
-            )
+            colocation_parity = collect_colocation_parity(docker_cmd, commit, server_config_root)
             ordinary_user_smoke = _ordinary_user_runtime_smoke(
                 checkout,
                 commit,
@@ -1497,11 +1392,7 @@ def deploy_main_commit(
                 smoke_sample_docx,
                 authority_evidence_id,
             )
-            post_smoke_parity = collect_colocation_parity(
-                docker_cmd,
-                commit,
-                server_config_root,
-            )
+            post_smoke_parity = collect_colocation_parity(docker_cmd, commit, server_config_root)
             return {
                 "verified": True,
                 "commit": commit,
@@ -1522,29 +1413,26 @@ def deploy_main_commit(
                 "opensandbox_runtime": None,
             }
             rollback_errors: list[str] = []
-            if platform_started or gateway_installed:
+            rollback_steps = [
+                ("platform", gateway_installed, lambda: _restore_platform(release_root, prior_commit, checkout, env_file, docker_cmd)),
+                (
+                    "gateway",
+                    gateway_installed,
+                    lambda: {
+                        "restored": _command(
+                            [str(checkout / "deploy/opensandbox/rollback-s72.sh")], timeout=300
+                        ) is not None
+                    },
+                ),
+                ("opensandbox_runtime", runtime_install is not None, lambda: _restore_opensandbox_runtime(runtime_install["snapshot"], docker_cmd=docker_cmd)),
+            ]
+            for step, required, action in rollback_steps:
+                if not required:
+                    continue
                 try:
-                    rollback["platform"] = _restore_platform(
-                        release_root, prior_commit, checkout, env_file, docker_cmd
-                    )
+                    rollback[step] = action()
                 except BaseException:
-                    rollback_errors.append("platform")
-                try:
-                    _command(
-                        [str(checkout / "deploy/opensandbox/rollback-s72.sh")],
-                        timeout=300,
-                    )
-                    rollback["gateway"] = {"restored": True}
-                except BaseException:
-                    rollback_errors.append("gateway")
-            if runtime_install is not None:
-                try:
-                    rollback["opensandbox_runtime"] = _restore_opensandbox_runtime(
-                        runtime_install["snapshot"],
-                        docker_cmd=docker_cmd,
-                    )
-                except BaseException:
-                    rollback_errors.append("opensandbox_runtime")
+                    rollback_errors.append(step)
             error = S72ColocationError(
                 "s72 deployment failed and rollback failed"
                 if rollback_errors
@@ -1575,30 +1463,18 @@ def main() -> int:
         command.add_argument("--smoke-sample-docx", type=Path, required=True)
     args = parser.parse_args()
     try:
-        if args.command == "preflight":
-            result = collect_read_only_preflight(
-                args.coordination_source,
-                args.commit,
-                args.release_root,
-                args.smoke_accounts_file,
-                args.smoke_sample_docx,
-                args.authority_evidence_id,
-                docker_cmd=args.docker_cmd,
-                gateway_config_root=args.gateway_config_root,
-                server_config_root=args.server_config_root,
-            )
-        else:
-            result = deploy_main_commit(
-                args.coordination_source,
-                args.commit,
-                args.release_root,
-                authority_evidence_id=args.authority_evidence_id,
-                smoke_accounts_file=args.smoke_accounts_file,
-                smoke_sample_docx=args.smoke_sample_docx,
-                docker_cmd=args.docker_cmd,
-                gateway_config_root=args.gateway_config_root,
-                server_config_root=args.server_config_root,
-            )
+        operation = collect_read_only_preflight if args.command == "preflight" else deploy_main_commit
+        result = operation(
+            source=args.coordination_source,
+            commit=args.commit,
+            release_root=args.release_root,
+            authority_evidence_id=args.authority_evidence_id,
+            smoke_accounts_file=args.smoke_accounts_file,
+            smoke_sample_docx=args.smoke_sample_docx,
+            docker_cmd=args.docker_cmd,
+            gateway_config_root=args.gateway_config_root,
+            server_config_root=args.server_config_root,
+        )
         _write_json(result)
         return 0
     except (S72ColocationError, release_authority.ReleaseAuthorityError) as exc:
