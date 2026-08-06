@@ -18,11 +18,8 @@ does not represent deployed runtime state.
   staged recovery model.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission and trusted provider-secret boundary.
-
-## Architecture
-
 - `architecture/docker-packaging.md` defines reproducible dependency authority,
-  immutable image bases, and CI image acceptance; it does not establish a registry or runtime subject.
+  immutable image bases, and CI image acceptance without registry or runtime authority.
 
 ## Operations
 
