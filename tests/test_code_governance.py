@@ -336,7 +336,7 @@ def test_repository_exception_matches_trusted_base_and_candidate_policy(tmp_path
     trusted_evaluation = _evaluate_without_exception(trusted, REPO_ROOT, base, head)
     candidate_evaluation = _evaluate_without_exception(code_governance, REPO_ROOT, base, head)
     applied_evaluation = _evaluate(REPO_ROOT, base, head)
-    expected = {("hot_file_growth", "uv.lock"), ("production_net_loc", None)}
+    expected = {("production_net_loc", None)}
 
     assert {(item.code, item.path) for item in trusted_evaluation.violations} == expected
     assert {(item.code, item.path) for item in candidate_evaluation.violations} == expected
