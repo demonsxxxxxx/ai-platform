@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
     "base_ref": "616e430f090ec5cd0d1ecefdb15e635772851467",
-    "scope_sha256": "6976882ce81e0a9076a8e1dcd5c9ae41e9bc22e837f338f9d7b3d34fcc81b849"
+    "scope_sha256": "0ffd0f8c1f983c9d9dd821e226725edacbad91d4314797c72a923f748f5a9766"
   },
   "expires_on": "2026-08-20",
   "owner": "docker-packaging-phase2-issue-752",
