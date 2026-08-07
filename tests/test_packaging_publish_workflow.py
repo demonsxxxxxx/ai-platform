@@ -331,6 +331,38 @@ def test_generated_spdx_is_bound_before_scan_and_attestation():
     )
 
 
+def test_spdx_binding_uses_an_authenticated_immutable_linux_amd64_producer_digest():
+    steps = _workflow()["jobs"]["publish"]["steps"]
+    names = [step.get("name") for step in steps]
+    resolver = next(
+        step
+        for step in steps
+        if step.get("name") == "Resolve authenticated linux/amd64 producer digest"
+    )
+    source = next(
+        step
+        for step in steps
+        if step.get("name") == "Capture generated SPDX source identity"
+    )
+    bind = next(step for step in steps if step.get("name") == "Bind SPDX SBOM to immutable subject")
+
+    assert names.index("Require registry manifest digest") < names.index(
+        "Resolve authenticated linux/amd64 producer digest"
+    ) < names.index("Generate SPDX SBOM")
+    assert 'docker buildx imagetools inspect --raw "$IMAGE_REF"' in resolver["run"]
+    assert "resolve-producer-digest" in resolver["run"]
+    assert '--manifest-digest "$MANIFEST_DIGEST"' in resolver["run"]
+    assert '--image-ref "$IMAGE_REF"' in resolver["run"]
+    assert 'printf \'PRODUCER_DIGEST=%s\\n\' "$producer_digest" >> "$GITHUB_ENV"' in resolver[
+        "run"
+    ]
+    assert "GH_TOKEN" not in resolver.get("env", {})
+    assert "github.token" not in str(resolver)
+    assert "set -x" not in resolver["run"]
+    assert '--producer-digest "$PRODUCER_DIGEST"' in source["run"]
+    assert '--producer-digest "$PRODUCER_DIGEST"' in bind["run"]
+
+
 def test_spdx_binding_failure_uploads_only_untrusted_run_bound_diagnostics():
     workflow = _workflow()
     publish = workflow["jobs"]["publish"]

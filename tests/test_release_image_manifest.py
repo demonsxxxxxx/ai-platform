@@ -24,6 +24,12 @@ TOOL = ROOT / "tools" / "release_image_manifest.py"
 SCHEMA_PATH = ROOT / "schemas" / "release-image-manifest.v1.schema.json"
 SOURCE_COMMIT = "a" * 40
 MANIFEST_DIGEST = "sha256:" + "b" * 64
+FAILED_RUN_MANIFEST_DIGEST = (
+    "sha256:68acd3cbed541d9551061bfb7cf92e83ae69e021118a0693aeb7e8832a5c330c"
+)
+FAILED_RUN_PRODUCER_DIGEST = (
+    "sha256:973f2d3bed36feb5625f8a5f31cf0c7277c37d097654207e57b2fad46adfeac0"
+)
 SBOM_DIGEST = "sha256:" + "c" * 64
 SCAN_DIGEST = "sha256:" + "d" * 64
 REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
@@ -444,9 +450,10 @@ def _run_bind_spdx(
     run_id: str = RUN_ID,
     run_attempt: int = RUN_ATTEMPT,
     unbound_content_sha256: str | None = None,
+    producer_digest: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     subject = f"ghcr.io/demonsxxxxxx/ai-platform-{role}"
-    return _run_cli(
+    arguments = [
         "bind-spdx",
         "--role",
         role,
@@ -464,7 +471,9 @@ def _run_bind_spdx(
         unbound_content_sha256 or _canonical_json_sha256(_syft_spdx(role)),
         "--sbom-file",
         str(path),
-    )
+    ]
+    arguments.extend(["--producer-digest", producer_digest or manifest_digest])
+    return _run_cli(*arguments)
 
 
 def _run_spdx_source_hash(
@@ -474,6 +483,7 @@ def _run_spdx_source_hash(
     manifest_digest: str = MANIFEST_DIGEST,
     image_ref: str | None = None,
     failure_evidence_file: Path | None = None,
+    producer_digest: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     subject = f"ghcr.io/demonsxxxxxx/ai-platform-{role}"
     arguments = [
@@ -489,6 +499,7 @@ def _run_spdx_source_hash(
     ]
     if failure_evidence_file is not None:
         arguments.extend(["--failure-evidence-file", str(failure_evidence_file)])
+    arguments.extend(["--producer-digest", producer_digest or manifest_digest])
     return _run_cli(*arguments)
 
 
@@ -521,8 +532,8 @@ def _hosted_linux_syft_1_50_backend_spdx() -> dict[str, object]:
 
 def _failed_run_syft_1_50_backend_spdx() -> dict[str, object]:
     """Minimal root captured from run 31214118574's retained SPDX artifact."""
-    digest = "sha256:68acd3cbed541d9551061bfb7cf92e83ae69e021118a0693aeb7e8832a5c330c"
-    producer_manifest = "973f2d3bed36feb5625f8a5f31cf0c7277c37d097654207e57b2fad46adfeac0"
+    digest = FAILED_RUN_MANIFEST_DIGEST
+    producer_manifest = FAILED_RUN_PRODUCER_DIGEST.removeprefix("sha256:")
     subject = "ghcr.io/demonsxxxxxx/ai-platform-backend"
     document = _syft_spdx("backend")
     root = document["packages"][0]
@@ -545,6 +556,46 @@ def _failed_run_syft_1_50_backend_spdx() -> dict[str, object]:
         }
     ]
     return document
+
+
+def _oci_index_bytes(*, child_digest: str = FAILED_RUN_PRODUCER_DIGEST) -> bytes:
+    return json.dumps(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": child_digest,
+                    "size": 123,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _run_resolve_producer_digest(
+    tmp_path: Path,
+    raw_document: bytes,
+    *,
+    requested_digest: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    raw_path = tmp_path / "oci-backend.json"
+    raw_path.write_bytes(raw_document)
+    requested = requested_digest or ("sha256:" + hashlib.sha256(raw_document).hexdigest())
+    return _run_cli(
+        "resolve-producer-digest",
+        "--role",
+        "backend",
+        "--manifest-digest",
+        requested,
+        "--image-ref",
+        f"ghcr.io/demonsxxxxxx/ai-platform-backend@{requested}",
+        "--oci-file",
+        str(raw_path),
+    )
 
 
 def _rewrite_bound_sbom(
@@ -627,6 +678,8 @@ def test_bind_spdx_cli_writes_deterministic_immutable_subject_namespace(tmp_path
         SOURCE_COMMIT,
         "--manifest-digest",
         MANIFEST_DIGEST,
+        "--producer-digest",
+        MANIFEST_DIGEST,
         "--image-ref",
         f"ghcr.io/demonsxxxxxx/ai-platform-backend@{MANIFEST_DIGEST}",
         "--workflow-run-id",
@@ -662,9 +715,256 @@ def test_spdx_source_hash_accepts_exact_failed_run_root_checksum_contour(tmp_pat
     digest = "sha256:68acd3cbed541d9551061bfb7cf92e83ae69e021118a0693aeb7e8832a5c330c"
     sbom_path.write_text(json.dumps(_failed_run_syft_1_50_backend_spdx()), encoding="utf-8")
 
-    result = _run_spdx_source_hash(sbom_path, manifest_digest=digest)
+    result = _run_spdx_source_hash(
+        sbom_path,
+        manifest_digest=digest,
+        producer_digest=FAILED_RUN_PRODUCER_DIGEST,
+    )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_spdx_binding_rejects_coordinated_untrusted_root_checksum_and_purl(
+    tmp_path: Path,
+):
+    """The SPDX checksum/PURL pair cannot self-authenticate a producer digest."""
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    document = _failed_run_syft_1_50_backend_spdx()
+    arbitrary_digest = "f" * 64
+    document["packages"][0]["checksums"] = [
+        {"algorithm": "SHA256", "checksumValue": arbitrary_digest}
+    ]
+    document["packages"][0]["externalRefs"][0]["referenceLocator"] = (
+        "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-backend@sha256%3A"
+        f"{arbitrary_digest}?arch=amd64"
+    )
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+
+    source_hash = _run_spdx_source_hash(
+        sbom_path,
+        manifest_digest=FAILED_RUN_MANIFEST_DIGEST,
+        producer_digest=FAILED_RUN_PRODUCER_DIGEST,
+    )
+
+    assert source_hash.returncode != 0
+    assert "sbom_subject_binding.root_checksums" in source_hash.stderr
+
+    bind = _run_bind_spdx(
+        sbom_path,
+        manifest_digest=FAILED_RUN_MANIFEST_DIGEST,
+        producer_digest=FAILED_RUN_PRODUCER_DIGEST,
+        unbound_content_sha256="0" * 64,
+    )
+    assert bind.returncode != 0
+    assert "sbom_subject_binding.root_checksums" in bind.stderr
+
+
+def test_spdx_binding_requires_an_external_producer_digest_for_both_entry_points(
+    tmp_path: Path,
+):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    document = _failed_run_syft_1_50_backend_spdx()
+    arbitrary_digest = "f" * 64
+    document["packages"][0]["checksums"][0]["checksumValue"] = arbitrary_digest
+    document["packages"][0]["externalRefs"][0]["referenceLocator"] = (
+        "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-backend@sha256%3A"
+        f"{arbitrary_digest}?arch=amd64"
+    )
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+
+    source_hash = _run_spdx_source_hash(
+        sbom_path,
+        manifest_digest=FAILED_RUN_MANIFEST_DIGEST,
+    )
+    bind = _run_bind_spdx(
+        sbom_path,
+        manifest_digest=FAILED_RUN_MANIFEST_DIGEST,
+        unbound_content_sha256="0" * 64,
+    )
+
+    assert source_hash.returncode != 0
+    assert bind.returncode != 0
+
+
+def test_resolve_producer_digest_authenticates_raw_index_and_linux_amd64_child(
+    tmp_path: Path,
+):
+    raw_path = tmp_path / "oci-backend.json"
+    raw_path.write_bytes(_oci_index_bytes())
+    requested_digest = "sha256:" + hashlib.sha256(raw_path.read_bytes()).hexdigest()
+
+    result = _run_cli(
+        "resolve-producer-digest",
+        "--role",
+        "backend",
+        "--manifest-digest",
+        requested_digest,
+        "--image-ref",
+        f"ghcr.io/demonsxxxxxx/ai-platform-backend@{requested_digest}",
+        "--oci-file",
+        str(raw_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == FAILED_RUN_PRODUCER_DIGEST
+
+
+def test_resolve_producer_digest_ignores_a_valid_foreign_platform_variant(tmp_path: Path):
+    document = json.loads(_oci_index_bytes())
+    document["manifests"].insert(
+        0,
+        {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:" + "1" * 64,
+            "size": 1,
+            "platform": {"architecture": "arm64", "os": "linux", "variant": "v8"},
+        },
+    )
+
+    result = _run_resolve_producer_digest(
+        tmp_path,
+        json.dumps(document, separators=(",", ":")).encode("utf-8"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == FAILED_RUN_PRODUCER_DIGEST
+
+
+def test_failed_run_spdx_requires_the_authenticated_producer_digest(tmp_path: Path):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    sbom_path.write_text(json.dumps(_failed_run_syft_1_50_backend_spdx()), encoding="utf-8")
+
+    accepted = _run_spdx_source_hash(
+        sbom_path,
+        manifest_digest=FAILED_RUN_MANIFEST_DIGEST,
+        producer_digest=FAILED_RUN_PRODUCER_DIGEST,
+    )
+    rejected = _run_spdx_source_hash(
+        sbom_path,
+        manifest_digest=FAILED_RUN_MANIFEST_DIGEST,
+        producer_digest=FAILED_RUN_MANIFEST_DIGEST,
+    )
+
+    assert accepted.returncode == 0, accepted.stderr
+    assert rejected.returncode != 0
+    assert "sbom_subject_binding.root_checksums" in rejected.stderr
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"schemaVersion": 2, "mediaType": "application/example", "manifests": []},
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": FAILED_RUN_PRODUCER_DIGEST,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ],
+        },
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": FAILED_RUN_PRODUCER_DIGEST,
+                    "size": 1,
+                    "platform": {"architecture": "arm64", "os": "linux"},
+                }
+            ],
+        },
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": FAILED_RUN_PRODUCER_DIGEST,
+                    "size": 1,
+                    "annotations": {"org.opencontainers.image.architecture": "amd64"},
+                }
+            ],
+        },
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": "sha256:" + "A" * 64,
+                    "size": 1,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ],
+        },
+    ],
+)
+def test_resolve_producer_digest_rejects_closed_world_invalid_oci_contours(
+    tmp_path: Path,
+    document: dict[str, object],
+):
+    result = _run_resolve_producer_digest(
+        tmp_path,
+        json.dumps(document, separators=(",", ":")).encode("utf-8"),
+    )
+
+    assert result.returncode != 0
+
+
+def test_resolve_producer_digest_rejects_tampering_duplicate_keys_and_duplicate_platforms(
+    tmp_path: Path,
+):
+    raw = _oci_index_bytes()
+    tampered = _run_resolve_producer_digest(
+        tmp_path,
+        raw,
+        requested_digest="sha256:" + "0" * 64,
+    )
+    duplicate_keys = _run_resolve_producer_digest(
+        tmp_path,
+        b'{"schemaVersion":2,"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}',
+    )
+    duplicate_document = json.loads(raw)
+    duplicate_document["manifests"].append(copy.deepcopy(duplicate_document["manifests"][0]))
+    duplicate_platform = _run_resolve_producer_digest(
+        tmp_path,
+        json.dumps(duplicate_document, separators=(",", ":")).encode("utf-8"),
+    )
+
+    assert tampered.returncode != 0
+    assert duplicate_keys.returncode != 0
+    assert "json_duplicate_key" in duplicate_keys.stderr
+    assert duplicate_platform.returncode != 0
+
+
+def test_resolve_producer_digest_accepts_an_authenticated_direct_image_manifest(tmp_path: Path):
+    raw = json.dumps(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": "sha256:" + "1" * 64,
+                "size": 1,
+            },
+            "layers": [],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    requested_digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+
+    result = _run_resolve_producer_digest(
+        tmp_path,
+        raw,
+        requested_digest=requested_digest,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == requested_digest
 
 
 def test_bind_spdx_preserves_exact_failed_run_checksum_contour_and_rejects_rebind(
@@ -673,12 +973,17 @@ def test_bind_spdx_preserves_exact_failed_run_checksum_contour_and_rejects_rebin
     sbom_path = tmp_path / "sbom-backend.spdx.json"
     digest = "sha256:68acd3cbed541d9551061bfb7cf92e83ae69e021118a0693aeb7e8832a5c330c"
     sbom_path.write_text(json.dumps(_failed_run_syft_1_50_backend_spdx()), encoding="utf-8")
-    source_hash = _run_spdx_source_hash(sbom_path, manifest_digest=digest)
+    source_hash = _run_spdx_source_hash(
+        sbom_path,
+        manifest_digest=digest,
+        producer_digest=FAILED_RUN_PRODUCER_DIGEST,
+    )
     assert source_hash.returncode == 0, source_hash.stderr
 
     first = _run_bind_spdx(
         sbom_path,
         manifest_digest=digest,
+        producer_digest=FAILED_RUN_PRODUCER_DIGEST,
         unbound_content_sha256=source_hash.stdout.strip(),
     )
     assert first.returncode == 0, first.stderr
@@ -687,6 +992,7 @@ def test_bind_spdx_preserves_exact_failed_run_checksum_contour_and_rejects_rebin
     repeated = _run_bind_spdx(
         sbom_path,
         manifest_digest=digest,
+        producer_digest=FAILED_RUN_PRODUCER_DIGEST,
         unbound_content_sha256=source_hash.stdout.strip(),
     )
     assert repeated.returncode == 0, repeated.stderr
@@ -695,6 +1001,7 @@ def test_bind_spdx_preserves_exact_failed_run_checksum_contour_and_rejects_rebin
     rebound = _run_bind_spdx(
         sbom_path,
         manifest_digest=digest,
+        producer_digest=FAILED_RUN_PRODUCER_DIGEST,
         run_id="999999",
         unbound_content_sha256=source_hash.stdout.strip(),
     )
@@ -1029,6 +1336,8 @@ def test_bind_spdx_namespace_cannot_collide_for_distinct_documents_with_same_tup
             "--source-commit",
             SOURCE_COMMIT,
             "--manifest-digest",
+            MANIFEST_DIGEST,
+            "--producer-digest",
             MANIFEST_DIGEST,
             "--image-ref",
             f"ghcr.io/demonsxxxxxx/ai-platform-backend@{MANIFEST_DIGEST}",

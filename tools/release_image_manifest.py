@@ -35,6 +35,58 @@ DOCKERFILES = {
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _HEX_SHA256 = re.compile(r"[0-9a-f]{64}")
+_OCI_INDEX_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    }
+)
+_OCI_IMAGE_MANIFEST_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    }
+)
+_OCI_CONFIG_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.config.v1+json",
+        "application/vnd.docker.container.image.v1+json",
+    }
+)
+_OCI_LAYER_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.layer.v1.tar",
+        "application/vnd.oci.image.layer.v1.tar+gzip",
+        "application/vnd.oci.image.layer.v1.tar+zstd",
+        "application/vnd.oci.image.layer.nondistributable.v1.tar",
+        "application/vnd.oci.image.layer.nondistributable.v1.tar+gzip",
+        "application/vnd.oci.image.layer.nondistributable.v1.tar+zstd",
+        "application/vnd.docker.image.rootfs.diff.tar",
+        "application/vnd.docker.image.rootfs.diff.tar.gzip",
+        "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip",
+    }
+)
+_OCI_DOCUMENT_KEYS = {
+    "schemaVersion",
+    "mediaType",
+    "manifests",
+    "config",
+    "layers",
+    "annotations",
+    "artifactType",
+    "subject",
+}
+_OCI_DESCRIPTOR_KEYS = {
+    "mediaType",
+    "digest",
+    "size",
+    "urls",
+    "annotations",
+    "platform",
+    "artifactType",
+    "data",
+}
+_OCI_PLATFORM_KEYS = {"architecture", "os", "variant"}
 _WORKFLOW_REF = re.compile(
     r"demonsxxxxxx/ai-platform/\.github/workflows/"
     r"ai-platform-packaging-publish\.yml@refs/heads/main"
@@ -186,6 +238,98 @@ def _load_json(path: Path, name: str) -> Any:
     return _loads_json(path.read_bytes(), name)
 
 
+def _validate_oci_descriptor(
+    value: Any,
+    *,
+    allowed_media_types: frozenset[str] = _OCI_IMAGE_MANIFEST_MEDIA_TYPES,
+) -> dict[str, Any]:
+    descriptor = _object(value, "oci_descriptor")
+    if not {"mediaType", "digest", "size"}.issubset(descriptor) or not set(descriptor).issubset(
+        _OCI_DESCRIPTOR_KEYS
+    ):
+        raise ValueError("oci_descriptor")
+    if descriptor["mediaType"] not in allowed_media_types:
+        raise ValueError("oci_descriptor_media_type")
+    _fullmatch(_DIGEST, descriptor["digest"], "oci_descriptor_digest")
+    if (
+        not isinstance(descriptor["size"], int)
+        or isinstance(descriptor["size"], bool)
+        or descriptor["size"] < 0
+    ):
+        raise ValueError("oci_descriptor_size")
+    platform = descriptor.get("platform")
+    if platform is not None:
+        platform = _object(platform, "oci_descriptor_platform")
+        if not {"architecture", "os"}.issubset(platform) or not set(platform).issubset(
+            _OCI_PLATFORM_KEYS
+        ):
+            raise ValueError("oci_descriptor_platform")
+        if not isinstance(platform["architecture"], str) or not isinstance(platform["os"], str):
+            raise ValueError("oci_descriptor_platform")
+        if "variant" in platform and not isinstance(platform["variant"], str):
+            raise ValueError("oci_descriptor_platform")
+    if "urls" in descriptor and (
+        not isinstance(descriptor["urls"], list)
+        or any(not isinstance(url, str) or not url for url in descriptor["urls"])
+    ):
+        raise ValueError("oci_descriptor")
+    if "annotations" in descriptor and (
+        not isinstance(descriptor["annotations"], dict)
+        or any(
+            not isinstance(key, str)
+            or not isinstance(item, str)
+            for key, item in descriptor["annotations"].items()
+        )
+    ):
+        raise ValueError("oci_descriptor")
+    return descriptor
+
+
+def _resolve_authenticated_producer_digest(
+    raw_document: bytes,
+    *,
+    requested_digest: str,
+) -> str:
+    """Resolve the only permitted producer manifest from authenticated OCI bytes."""
+    if f"sha256:{hashlib.sha256(raw_document).hexdigest()}" != requested_digest:
+        raise ValueError("oci_document_digest")
+    document = _object(_loads_json(raw_document, "oci_document"), "oci_document")
+    if not {"schemaVersion", "mediaType"}.issubset(document) or not set(document).issubset(
+        _OCI_DOCUMENT_KEYS
+    ):
+        raise ValueError("oci_document")
+    if document["schemaVersion"] != 2:
+        raise ValueError("oci_document_schema")
+    media_type = document["mediaType"]
+    if media_type in _OCI_IMAGE_MANIFEST_MEDIA_TYPES:
+        if not {"config", "layers"}.issubset(document):
+            raise ValueError("oci_image_manifest")
+        _validate_oci_descriptor(document["config"], allowed_media_types=_OCI_CONFIG_MEDIA_TYPES)
+        if not isinstance(document["layers"], list):
+            raise ValueError("oci_image_manifest")
+        for layer in document["layers"]:
+            _validate_oci_descriptor(layer, allowed_media_types=_OCI_LAYER_MEDIA_TYPES)
+        return requested_digest
+    if media_type not in _OCI_INDEX_MEDIA_TYPES:
+        raise ValueError("oci_document_media_type")
+    manifests = document.get("manifests")
+    if not isinstance(manifests, list) or not manifests:
+        raise ValueError("oci_index")
+    candidates = []
+    for value in manifests:
+        descriptor = _validate_oci_descriptor(value)
+        platform = descriptor.get("platform")
+        if platform == {"architecture": "amd64", "os": "linux"} or platform == {
+            "architecture": "amd64",
+            "os": "linux",
+            "variant": "",
+        }:
+            candidates.append(descriptor)
+    if len(candidates) != 1:
+        raise ValueError("oci_linux_amd64_descriptor")
+    return str(candidates[0]["digest"])
+
+
 def _object(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{name}_object")
@@ -265,14 +409,15 @@ def _validate_syft_root_checksum_and_purl(
     root: dict[str, Any],
     *,
     subject: str,
+    producer_digest: str | None,
 ) -> None:
-    """Validate Syft's image metadata checksum without making it source authority.
+    """Validate Syft's image metadata checksum against an external producer digest.
 
     Syft 1.50.0 uses the user-requested digest for root ``versionInfo`` but emits
     ``ImageMetadata.ManifestDigest`` in the root checksum and OCI PURL. The latter
-    may differ after the producer resolves the image. Require its exact, internally
-    consistent SHA-256/PURL form while the caller-provided digest remains bound by
-    ``versionInfo``.
+    may differ after the producer resolves an OCI index. Source-hash and bind pass
+    the authenticated producer digest explicitly; other structural readers pass
+    ``None`` only after that binding step has already completed.
     """
     checksums = root.get("checksums")
     if not isinstance(checksums, list) or len(checksums) != 1:
@@ -287,7 +432,10 @@ def _validate_syft_root_checksum_and_purl(
     ):
         raise _sbom_subject_binding_error("root_checksums")
 
-    producer_digest = f"sha256:{checksum['checksumValue']}"
+    actual_producer_digest = f"sha256:{checksum['checksumValue']}"
+    if producer_digest is not None and actual_producer_digest != producer_digest:
+        raise _sbom_subject_binding_error("root_checksums")
+    expected_producer_digest = producer_digest or actual_producer_digest
     expected_external_refs = [
         [
             {
@@ -296,7 +444,7 @@ def _validate_syft_root_checksum_and_purl(
                 "referenceLocator": locator,
             }
         ]
-        for locator in _spdx_oci_purls(subject=subject, digest=producer_digest)
+        for locator in _spdx_oci_purls(subject=subject, digest=expected_producer_digest)
     ]
     if root.get("externalRefs") not in expected_external_refs:
         raise _sbom_subject_binding_error("root_external_refs")
@@ -469,6 +617,7 @@ def _validate_spdx_image_binding(
     subject: str,
     digest: str,
     require_document_describes: bool,
+    producer_digest: str | None = None,
 ) -> str:
     _validate_spdx_23_document(document)
     if document["name"] != subject:
@@ -514,7 +663,11 @@ def _validate_spdx_image_binding(
         raise _sbom_subject_binding_error("root_files_analyzed")
     if root.get("downloadLocation") != "NOASSERTION":
         raise _sbom_subject_binding_error("root_download_location")
-    _validate_syft_root_checksum_and_purl(root, subject=subject)
+    _validate_syft_root_checksum_and_purl(
+        root,
+        subject=subject,
+        producer_digest=producer_digest,
+    )
     return root_id
 
 
@@ -589,6 +742,7 @@ def _validate_unbound_spdx(
     *,
     subject: str,
     digest: str,
+    producer_digest: str | None = None,
 ) -> tuple[str, str, bool]:
     namespace = document.get("documentNamespace")
     if not isinstance(namespace, str):
@@ -616,6 +770,7 @@ def _validate_unbound_spdx(
         document,
         subject=subject,
         digest=digest,
+        producer_digest=producer_digest,
         require_document_describes=False,
     )
     return _canonical_json_sha256(document), namespace, "annotations" in document
@@ -627,6 +782,7 @@ def _validate_bound_spdx(
     role: str,
     source_commit: str,
     digest: str,
+    producer_digest: str | None = None,
     workflow: dict[str, Any],
     expected_unbound_content_sha256: str,
 ) -> str:
@@ -651,6 +807,7 @@ def _validate_bound_spdx(
         document,
         subject=subject,
         digest=digest,
+        producer_digest=producer_digest,
         require_document_describes=True,
     )
     annotation_index, binding = _parse_binding_annotation(document)
@@ -669,6 +826,7 @@ def _validate_bound_spdx(
         restored,
         subject=subject,
         digest=digest,
+        producer_digest=producer_digest,
     )
     if (
         binding["unbound_content_sha256"] != expected_unbound_content_sha256
@@ -1276,6 +1434,7 @@ def _spdx_source_hash_command(args: argparse.Namespace) -> None:
     if args.role not in SUBJECTS:
         raise ValueError("role")
     digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
+    producer_digest = _fullmatch(_DIGEST, args.producer_digest, "producer_digest")
     subject = SUBJECTS[args.role]
     path = Path(args.sbom_file)
     failure_evidence_path = (
@@ -1302,6 +1461,7 @@ def _spdx_source_hash_command(args: argparse.Namespace) -> None:
             document,
             subject=subject,
             digest=digest,
+            producer_digest=producer_digest,
         )
     except ValueError as error:
         write_spdx_failure_evidence(
@@ -1322,6 +1482,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         raise ValueError("role")
     source_commit = _fullmatch(_COMMIT, args.source_commit, "source_commit")
     digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
+    producer_digest = _fullmatch(_DIGEST, args.producer_digest, "producer_digest")
     subject = SUBJECTS[args.role]
     if args.image_ref != f"{subject}@{digest}":
         raise _sbom_subject_binding_error("image_ref")
@@ -1351,6 +1512,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
             role=args.role,
             source_commit=source_commit,
             digest=digest,
+            producer_digest=producer_digest,
             workflow=workflow,
             expected_unbound_content_sha256=expected_unbound_content_sha256,
         )
@@ -1361,6 +1523,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
             document,
             subject=subject,
             digest=digest,
+            producer_digest=producer_digest,
         )
     )
     if unbound_content_sha256 != expected_unbound_content_sha256:
@@ -1369,6 +1532,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         document,
         subject=subject,
         digest=digest,
+        producer_digest=producer_digest,
         require_document_describes=False,
     )
     binding_annotation = _binding_annotation(
@@ -1391,6 +1555,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         document,
         subject=subject,
         digest=digest,
+        producer_digest=producer_digest,
         require_document_describes=True,
     )
     _validate_bound_spdx(
@@ -1398,10 +1563,26 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         role=args.role,
         source_commit=source_commit,
         digest=digest,
+        producer_digest=producer_digest,
         workflow=workflow,
         expected_unbound_content_sha256=expected_unbound_content_sha256,
     )
     _write_json(path, document)
+
+
+def _resolve_producer_digest_command(args: argparse.Namespace) -> None:
+    if args.role not in SUBJECTS:
+        raise ValueError("role")
+    digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
+    subject = SUBJECTS[args.role]
+    if args.image_ref != f"{subject}@{digest}":
+        raise ValueError("oci_image_ref")
+    print(
+        _resolve_authenticated_producer_digest(
+            Path(args.oci_file).read_bytes(),
+            requested_digest=digest,
+        )
+    )
 
 
 def _subject_target_command(args: argparse.Namespace) -> None:
@@ -1463,6 +1644,7 @@ def main() -> int:
     bind_spdx.add_argument("--role", required=True, choices=sorted(SUBJECTS))
     bind_spdx.add_argument("--source-commit", required=True)
     bind_spdx.add_argument("--manifest-digest", required=True)
+    bind_spdx.add_argument("--producer-digest", required=True)
     bind_spdx.add_argument("--image-ref", required=True)
     bind_spdx.add_argument("--workflow-run-id", required=True)
     bind_spdx.add_argument("--workflow-run-attempt", required=True, type=int)
@@ -1475,9 +1657,19 @@ def main() -> int:
     )
     spdx_source_hash.add_argument("--role", required=True, choices=sorted(SUBJECTS))
     spdx_source_hash.add_argument("--manifest-digest", required=True)
+    spdx_source_hash.add_argument("--producer-digest", required=True)
     spdx_source_hash.add_argument("--image-ref", required=True)
     spdx_source_hash.add_argument("--sbom-file", required=True)
     spdx_source_hash.add_argument("--failure-evidence-file")
+
+    resolve_producer_digest = subparsers.add_parser(
+        "resolve-producer-digest",
+        help="Authenticate immutable OCI bytes and select one linux/amd64 producer manifest.",
+    )
+    resolve_producer_digest.add_argument("--role", required=True, choices=sorted(SUBJECTS))
+    resolve_producer_digest.add_argument("--manifest-digest", required=True)
+    resolve_producer_digest.add_argument("--image-ref", required=True)
+    resolve_producer_digest.add_argument("--oci-file", required=True)
 
     target = subparsers.add_parser(
         "subject-target",
@@ -1522,6 +1714,9 @@ def main() -> int:
         except ValueError as error:
             print(f"release_image_manifest_error={error}", file=sys.stderr)
             return 1
+    if args.command == "resolve-producer-digest":
+        _resolve_producer_digest_command(args)
+        return 0
     if args.command == "subject-target":
         _subject_target_command(args)
         return 0

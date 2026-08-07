@@ -99,6 +99,19 @@ jobs:
           printf 'IMAGE_REF=%s@%s\n' "${{ matrix.subject }}" "$MANIFEST_DIGEST" >> "$GITHUB_ENV"
           printf 'MANIFEST_DIGEST=%s\n' "$MANIFEST_DIGEST" >> "$GITHUB_ENV"
 
+      - name: Resolve authenticated linux/amd64 producer digest
+        run: |
+          set -euo pipefail
+          oci_document="oci-${{ matrix.role }}.json"
+          docker buildx imagetools inspect --raw "$IMAGE_REF" > "$oci_document"
+          producer_digest="$(python tools/release_image_manifest.py resolve-producer-digest \
+            --role "${{ matrix.role }}" \
+            --manifest-digest "$MANIFEST_DIGEST" \
+            --image-ref "$IMAGE_REF" \
+            --oci-file "$oci_document")"
+          [[ "$producer_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'PRODUCER_DIGEST=%s\n' "$producer_digest" >> "$GITHUB_ENV"
+
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
@@ -115,6 +128,7 @@ jobs:
           source_hash="$(python tools/release_image_manifest.py spdx-source-hash \
             --role "${{ matrix.role }}" \
             --manifest-digest "$MANIFEST_DIGEST" \
+            --producer-digest "$PRODUCER_DIGEST" \
             --image-ref "$IMAGE_REF" \
             --sbom-file "sbom-${{ matrix.role }}.spdx.json" \
             --failure-evidence-file "spdx-binding-diagnostic-${{ matrix.role }}.json")"
@@ -142,6 +156,7 @@ jobs:
             --role "${{ matrix.role }}" \
             --source-commit "$SOURCE_COMMIT" \
             --manifest-digest "$MANIFEST_DIGEST" \
+            --producer-digest "$PRODUCER_DIGEST" \
             --image-ref "$IMAGE_REF" \
             --workflow-run-id "$GITHUB_RUN_ID" \
             --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
