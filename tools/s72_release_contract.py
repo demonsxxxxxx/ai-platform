@@ -9,8 +9,16 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Mapping, Sequence
+import sys
+from types import SimpleNamespace
+from typing import Callable, Mapping, Sequence
 from urllib.parse import urlsplit
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if not __package__:  # pragma: no cover - direct script execution
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.runtime.sandbox import container_provider as runtime_provider  # noqa: E402
 
 if __package__:
     from . import release_authority
@@ -22,6 +30,7 @@ SCHEMA_VERSION = "ai-platform.s72-release-contract.v1"
 IMMUTABLE_IMAGE_RE = re.compile(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}\Z")
 IDENTITY_SUBJECT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\Z")
 PLACEHOLDER_RE = re.compile(r"change[_-]?me|replace[_-]?me|required|placeholder|example|secret.value", re.I)
+MAX_MANAGED_ENV_BYTES = 1024 * 1024
 
 RETIRED_CROSS_HOST_KEYS = frozenset(
     {
@@ -64,7 +73,6 @@ REQUIRED_KEYS = frozenset(
 SECRET_KEYS = frozenset(
     {
         "OPENSANDBOX_API_KEY",
-        "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
         "SANDBOX_CALLBACK_TOKEN",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
     }
@@ -81,13 +89,15 @@ IDENTITY_SUBJECT_KEYS = frozenset(
 class S72ReleaseContractError(RuntimeError):
     """Raised without projecting managed configuration values."""
 
+    def __init__(self, message: str, *, category: str = "contract_invalid") -> None:
+        super().__init__(message)
+        self.category = category
+
 
 @dataclass(frozen=True)
 class ValidatedS72ReleaseContract:
     """Non-secret typed facts retained after configuration validation."""
 
-    frontend_port: int
-    executor_image_digest: str
     present_key_count: int
 
     def projection(self) -> dict[str, object]:
@@ -100,41 +110,111 @@ class ValidatedS72ReleaseContract:
             "retired_cross_host_keys_absent": True,
             "sdk_selection_fail_closed": True,
             "sandbox_authority": "opensandbox",
-            "executor_image_digest": self.executor_image_digest,
-            "frontend_port": self.frontend_port,
             "attempt_credentials_required": True,
             "callback_attestation_identity_bound": True,
             "secret_values_projected": False,
         }
 
 
-def _parse_env_file(path: Path) -> dict[str, str]:
+@dataclass(frozen=True)
+class _FileIdentity:
+    device: int
+    inode: int
+    owner: int
+    group: int
+    mode: int
+    links: int
+    size: int
+    modified_ns: int
+
+    @classmethod
+    def from_stat(cls, metadata: os.stat_result) -> _FileIdentity:
+        return cls(
+            device=metadata.st_dev,
+            inode=metadata.st_ino,
+            owner=metadata.st_uid,
+            group=metadata.st_gid,
+            mode=stat.S_IMODE(metadata.st_mode),
+            links=metadata.st_nlink,
+            size=metadata.st_size,
+            modified_ns=metadata.st_mtime_ns,
+        )
+
+
+def _require_regular_file(metadata: os.stat_result) -> None:
+    if not stat.S_ISREG(metadata.st_mode):
+        raise S72ReleaseContractError(
+            "managed configuration must be a regular non-link file"
+        )
+
+
+def _parse_env_file(
+    path: Path,
+    *,
+    revalidate: Callable[[], Path] | None = None,
+) -> dict[str, str]:
     descriptor: int | None = None
     try:
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        before_open = path.stat(follow_symlinks=False)
+        _require_regular_file(before_open)
+        expected_identity = _FileIdentity.from_stat(before_open)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
         descriptor = os.open(path, flags)
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
+        opened = os.fstat(descriptor)
+        _require_regular_file(opened)
+        if _FileIdentity.from_stat(opened) != expected_identity:
             raise S72ReleaseContractError(
-                "managed configuration must be a regular non-link file"
+                "managed configuration identity changed during validation"
             )
-        with os.fdopen(descriptor, encoding="utf-8") as stream:
-            descriptor = None
-            lines = stream.read().splitlines()
+        if revalidate is not None and Path(revalidate()) != path:
+            raise S72ReleaseContractError(
+                "managed configuration identity changed during validation"
+            )
+        revalidated = path.stat(follow_symlinks=False)
+        _require_regular_file(revalidated)
+        if _FileIdentity.from_stat(revalidated) != expected_identity:
+            raise S72ReleaseContractError(
+                "managed configuration identity changed during validation"
+            )
+        content = bytearray()
+        while len(content) <= MAX_MANAGED_ENV_BYTES:
+            chunk = os.read(
+                descriptor,
+                min(65_536, MAX_MANAGED_ENV_BYTES + 1 - len(content)),
+            )
+            if not chunk:
+                break
+            content.extend(chunk)
+        if len(content) > MAX_MANAGED_ENV_BYTES:
+            raise S72ReleaseContractError("managed configuration is too large")
+        after_read = os.fstat(descriptor)
         current = path.stat(follow_symlinks=False)
+        _require_regular_file(current)
+        if (
+            _FileIdentity.from_stat(after_read) != expected_identity
+            or _FileIdentity.from_stat(current) != expected_identity
+        ):
+            raise S72ReleaseContractError(
+                "managed configuration identity changed during validation"
+            )
+        lines = bytes(content).decode("utf-8").splitlines()
+    except S72ReleaseContractError:
+        raise
     except (OSError, UnicodeError) as exc:
         raise S72ReleaseContractError("managed configuration is unavailable") from exc
     finally:
         if descriptor is not None:
             os.close(descriptor)
-    if path.is_symlink() or (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
-        raise S72ReleaseContractError("managed configuration must be a regular non-link file")
     values: dict[str, str] = {}
     for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        key, separator, value = stripped.partition("=")
+        key, separator, value = line.partition("=")
         if not separator or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or key in values:
             raise S72ReleaseContractError("managed configuration shape is invalid")
         values[key] = value
@@ -162,25 +242,6 @@ def _validate_model_upstream(value: str) -> None:
         or parsed.fragment
     ):
         raise S72ReleaseContractError("model upstream contract is invalid")
-
-
-def _validate_url(value: str, *, message: str, allow_path: bool = True) -> None:
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError as exc:
-        raise S72ReleaseContractError(message) from exc
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or (not allow_path and parsed.path not in {"", "/"})
-        or (port is not None and not 1 <= port <= 65_535)
-    ):
-        raise S72ReleaseContractError(message)
 
 
 def _validate_secret_authority(values: Mapping[str, str]) -> None:
@@ -228,22 +289,31 @@ def _validated_contract(values: Mapping[str, str]) -> ValidatedS72ReleaseContrac
     if any(not IDENTITY_SUBJECT_RE.fullmatch(values[key]) for key in IDENTITY_SUBJECT_KEYS):
         raise S72ReleaseContractError("identity subject authority is invalid")
     _validate_secret_authority(values)
-    _validate_url(
-        values["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL"],
-        message="capability authority URL is invalid",
-    )
-    _validate_url(
-        f"{values['OPENSANDBOX_PROTOCOL']}://{values['OPENSANDBOX_DOMAIN']}",
-        message="OpenSandbox endpoint authority is invalid",
-        allow_path=False,
-    )
+    try:
+        runtime_provider._normalized_capability_profile_endpoint(
+            values["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL"]
+        )
+        runtime_provider._validated_configured_capability_token(
+            values["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN"]
+        )
+    except runtime_provider.OpenSandboxCapabilityAdmissionError as exc:
+        raise S72ReleaseContractError("capability authority is invalid") from exc
+    try:
+        runtime_provider._opensandbox_endpoint_subject(
+            SimpleNamespace(
+                opensandbox_protocol=values["OPENSANDBOX_PROTOCOL"],
+                opensandbox_domain=values["OPENSANDBOX_DOMAIN"],
+            )
+        )
+    except runtime_provider.OpenSandboxCapabilityAdmissionError as exc:
+        raise S72ReleaseContractError("OpenSandbox endpoint authority is invalid") from exc
     try:
         frontend_port = int(values["AI_PLATFORM_FRONTEND_PORT"])
     except ValueError as exc:
         raise S72ReleaseContractError("frontend port authority is invalid") from exc
     if not 1 <= frontend_port <= 65_535:
         raise S72ReleaseContractError("frontend port authority is invalid")
-    return ValidatedS72ReleaseContract(frontend_port, digest, len(values))
+    return ValidatedS72ReleaseContract(len(values))
 
 
 def validate_s72_environment(path: Path) -> dict[str, object]:
@@ -263,13 +333,24 @@ def validate_managed_s72_contract(
             Path(coordination_source),
             expected_commit=commit,
         )
-        managed_env = release_authority.resolve_managed_env_file(Path(release_root), env_file)
+        release_root = Path(release_root)
+        managed_env = release_authority.resolve_managed_env_file(release_root, env_file)
+        projection = _validated_contract(
+            _parse_env_file(
+                managed_env,
+                revalidate=lambda: release_authority.resolve_managed_env_file(
+                    release_root,
+                    env_file,
+                ),
+            )
+        ).projection()
     except release_authority.ReleaseAuthorityError as exc:
-        raise S72ReleaseContractError(str(exc)) from None
-    projection = validate_s72_environment(managed_env)
+        raise S72ReleaseContractError(
+            str(exc),
+            category="managed_authority",
+        ) from None
     return {
         **projection,
-        "source_commit": commit,
         "source_authority_verified": True,
         "managed_env_authority_verified": True,
     }
@@ -293,10 +374,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.env_file,
         )
     except S72ReleaseContractError as exc:
-        payload = {"verified": False, "command": args.command, "error": str(exc)}
+        payload = {
+            "verified": False,
+            "command": args.command,
+            "error_category": exc.category,
+        }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 2
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(json.dumps({**payload, "command": args.command}, indent=2, sort_keys=True))
     return 0
 
 
