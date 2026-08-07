@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -61,6 +63,8 @@ _OCI_DESCRIPTOR_KEYS = {
 }
 _OCI_PLATFORM_KEYS = {"architecture", "os", "variant"}
 _OCI_PLATFORM_VALUE = re.compile(r"[a-z0-9][a-z0-9._-]*")
+_MEDIA_TYPE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*")
+_URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:[^\x00-\x20\x7f]+")
 
 
 class _DuplicateJsonKey(ValueError):
@@ -91,17 +95,34 @@ def _object(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
+def _validate_annotations(value: Any, name: str) -> None:
+    annotations = _object(value, name)
+    if any(
+        not isinstance(key, str) or not isinstance(item, str)
+        for key, item in annotations.items()
+    ):
+        raise ValueError(name)
+
+
+def _validate_media_type(value: Any, name: str) -> None:
+    if not isinstance(value, str) or _MEDIA_TYPE.fullmatch(value) is None:
+        raise ValueError(name)
+
+
 def _validate_descriptor(
     value: Any,
     *,
-    allowed_media_types: frozenset[str] = _OCI_IMAGE_MANIFEST_MEDIA_TYPES,
+    allowed_media_types: frozenset[str] | None = _OCI_IMAGE_MANIFEST_MEDIA_TYPES,
 ) -> dict[str, Any]:
     descriptor = _object(value, "oci_descriptor")
     if not {"mediaType", "digest", "size"}.issubset(descriptor) or not set(descriptor).issubset(
         _OCI_DESCRIPTOR_KEYS
     ):
         raise ValueError("oci_descriptor")
-    if descriptor["mediaType"] not in allowed_media_types:
+    media_type = descriptor["mediaType"]
+    if allowed_media_types is None:
+        _validate_media_type(media_type, "oci_descriptor_media_type")
+    elif media_type not in allowed_media_types:
         raise ValueError("oci_descriptor_media_type")
     digest = descriptor["digest"]
     if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
@@ -112,9 +133,8 @@ def _validate_descriptor(
         or descriptor["size"] < 0
     ):
         raise ValueError("oci_descriptor_size")
-    platform = descriptor.get("platform")
-    if platform is not None:
-        platform = _object(platform, "oci_descriptor_platform")
+    if "platform" in descriptor:
+        platform = _object(descriptor["platform"], "oci_descriptor_platform")
         if not {"architecture", "os"}.issubset(platform) or not set(platform).issubset(
             _OCI_PLATFORM_KEYS
         ):
@@ -130,20 +150,40 @@ def _validate_descriptor(
             or _OCI_PLATFORM_VALUE.fullmatch(platform["variant"]) is None
         ):
             raise ValueError("oci_descriptor_platform")
-    if "urls" in descriptor and (
-        not isinstance(descriptor["urls"], list)
-        or any(not isinstance(url, str) or not url for url in descriptor["urls"])
-    ):
-        raise ValueError("oci_descriptor")
-    if "annotations" in descriptor and (
-        not isinstance(descriptor["annotations"], dict)
-        or any(
-            not isinstance(key, str) or not isinstance(item, str)
-            for key, item in descriptor["annotations"].items()
-        )
-    ):
-        raise ValueError("oci_descriptor")
+    if "urls" in descriptor:
+        urls = descriptor["urls"]
+        if not isinstance(urls, list) or any(
+            not isinstance(url, str) or _URI.fullmatch(url) is None for url in urls
+        ):
+            raise ValueError("oci_descriptor_urls")
+    if "annotations" in descriptor:
+        _validate_annotations(descriptor["annotations"], "oci_descriptor_annotations")
+    if "artifactType" in descriptor:
+        _validate_media_type(descriptor["artifactType"], "oci_descriptor_artifact_type")
+    if "data" in descriptor:
+        data = descriptor["data"]
+        if not isinstance(data, str):
+            raise ValueError("oci_descriptor_data")
+        try:
+            decoded = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("oci_descriptor_data") from exc
+        if (
+            base64.b64encode(decoded).decode("ascii") != data
+            or len(decoded) != descriptor["size"]
+            or f"sha256:{hashlib.sha256(decoded).hexdigest()}" != digest
+        ):
+            raise ValueError("oci_descriptor_data")
     return descriptor
+
+
+def _validate_document_optionals(document: dict[str, Any]) -> None:
+    if "annotations" in document:
+        _validate_annotations(document["annotations"], "oci_document_annotations")
+    if "artifactType" in document:
+        _validate_media_type(document["artifactType"], "oci_document_artifact_type")
+    if "subject" in document:
+        _validate_descriptor(document["subject"], allowed_media_types=None)
 
 
 def resolve_authenticated_producer_digest(raw_document: bytes, *, requested_digest: str) -> str:
@@ -166,6 +206,7 @@ def resolve_authenticated_producer_digest(raw_document: bytes, *, requested_dige
             _OCI_IMAGE_MANIFEST_KEYS
         ):
             raise ValueError("oci_image_manifest")
+        _validate_document_optionals(document)
         _validate_descriptor(document["config"], allowed_media_types=_OCI_CONFIG_MEDIA_TYPES)
         if not isinstance(document["layers"], list):
             raise ValueError("oci_image_manifest")
@@ -176,6 +217,7 @@ def resolve_authenticated_producer_digest(raw_document: bytes, *, requested_dige
         raise ValueError("oci_document_media_type")
     if not set(document).issubset(_OCI_INDEX_KEYS):
         raise ValueError("oci_index")
+    _validate_document_optionals(document)
     manifests = document.get("manifests")
     if not isinstance(manifests, list) or not manifests:
         raise ValueError("oci_index")

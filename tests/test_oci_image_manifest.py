@@ -1,3 +1,4 @@
+import base64
 import copy
 import hashlib
 import json
@@ -32,6 +33,14 @@ def _oci_index_bytes(*, child_digest: str = PRODUCER_DIGEST) -> bytes:
 
 def _requested_digest(raw_document: bytes) -> str:
     return f"sha256:{hashlib.sha256(raw_document).hexdigest()}"
+
+
+def _resolve_document(document: dict[str, object]) -> str:
+    raw_document = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    return resolve_authenticated_producer_digest(
+        raw_document,
+        requested_digest=_requested_digest(raw_document),
+    )
 
 
 def test_resolver_authenticates_raw_index_and_selects_linux_amd64_child():
@@ -139,6 +148,181 @@ def test_resolver_rejects_present_variant_on_selected_linux_amd64():
                 raw_document,
                 requested_digest=_requested_digest(raw_document),
             )
+
+
+def test_resolver_rejects_explicit_null_descriptor_platform():
+    document = json.loads(_oci_index_bytes())
+    document["manifests"].insert(
+        0,
+        {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:" + "1" * 64,
+            "size": 1,
+            "platform": None,
+        },
+    )
+
+    with pytest.raises(ValueError, match="oci_descriptor_platform"):
+        _resolve_document(document)
+
+
+def test_resolver_rejects_nonmapping_document_annotations():
+    document = json.loads(_oci_index_bytes())
+    document["annotations"] = []
+
+    with pytest.raises(ValueError, match="oci_document_annotations"):
+        _resolve_document(document)
+
+
+def test_resolver_rejects_nonstring_document_artifact_type():
+    document = json.loads(_oci_index_bytes())
+    document["artifactType"] = 7
+
+    with pytest.raises(ValueError, match="oci_document_artifact_type"):
+        _resolve_document(document)
+
+
+def test_resolver_rejects_nondescriptor_document_subject():
+    document = json.loads(_oci_index_bytes())
+    document["subject"] = "not-a-descriptor"
+
+    with pytest.raises(ValueError, match="oci_descriptor_object"):
+        _resolve_document(document)
+
+
+def test_resolver_rejects_nonstring_descriptor_artifact_type():
+    document = json.loads(_oci_index_bytes())
+    document["manifests"][0]["artifactType"] = 7
+
+    with pytest.raises(ValueError, match="oci_descriptor_artifact_type"):
+        _resolve_document(document)
+
+
+def test_resolver_rejects_nonstring_descriptor_data():
+    document = json.loads(_oci_index_bytes())
+    document["manifests"][0]["data"] = 7
+
+    with pytest.raises(ValueError, match="oci_descriptor_data"):
+        _resolve_document(document)
+
+
+@pytest.mark.parametrize("field", ["annotations", "artifactType", "subject"])
+def test_resolver_rejects_explicit_null_document_optionals(field: str):
+    document = json.loads(_oci_index_bytes())
+    document[field] = None
+
+    with pytest.raises(ValueError):
+        _resolve_document(document)
+
+
+@pytest.mark.parametrize(
+    ("data", "size", "digest"),
+    [
+        ("***", 7, "sha256:" + "1" * 64),
+        (
+            base64.b64encode(b"payload").decode("ascii"),
+            8,
+            "sha256:" + hashlib.sha256(b"payload").hexdigest(),
+        ),
+        (base64.b64encode(b"payload").decode("ascii"), 7, "sha256:" + "1" * 64),
+    ],
+)
+def test_resolver_rejects_descriptor_data_not_bound_to_size_and_digest(
+    data: str,
+    size: int,
+    digest: str,
+):
+    document = json.loads(_oci_index_bytes(child_digest=digest))
+    descriptor = document["manifests"][0]
+    descriptor["data"] = data
+    descriptor["size"] = size
+
+    with pytest.raises(ValueError, match="oci_descriptor_data"):
+        _resolve_document(document)
+
+
+def test_resolver_accepts_valid_document_and_descriptor_optional_fields():
+    producer_data = b"authenticated producer manifest"
+    producer_digest = f"sha256:{hashlib.sha256(producer_data).hexdigest()}"
+    subject_data = b"subject manifest"
+    subject_digest = f"sha256:{hashlib.sha256(subject_data).hexdigest()}"
+    document = json.loads(_oci_index_bytes(child_digest=producer_digest))
+    document.update(
+        {
+            "annotations": {
+                "org.opencontainers.image.ref.name": "release",
+                "org.example.empty": "",
+            },
+            "artifactType": "application/vnd.example.release.v1+json",
+            "subject": {
+                "mediaType": "application/vnd.example.subject.v1+json",
+                "digest": subject_digest,
+                "size": len(subject_data),
+                "urls": ["https://registry.example/v2/subject"],
+                "annotations": {"org.example.kind": "subject"},
+                "artifactType": "application/vnd.example.subject.v1+json",
+                "data": base64.b64encode(subject_data).decode("ascii"),
+            },
+        }
+    )
+    document["manifests"][0].update(
+        {
+            "size": len(producer_data),
+            "urls": ["https://registry.example/v2/producer"],
+            "annotations": {"org.example.kind": "producer"},
+            "artifactType": "application/vnd.example.release.v1+json",
+            "data": base64.b64encode(producer_data).decode("ascii"),
+        }
+    )
+
+    assert _resolve_document(document) == producer_digest
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("annotations", {"org.example.invalid": 7}),
+        ("artifactType", None),
+        ("artifactType", ""),
+        ("artifactType", "not-a-media-type"),
+        (
+            "subject",
+            {
+                "mediaType": "application/vnd.example.subject.v1+json",
+                "digest": "sha256:" + "1" * 64,
+            },
+        ),
+    ],
+)
+def test_resolver_rejects_invalid_document_optional_values(field: str, value: object):
+    document = json.loads(_oci_index_bytes())
+    document[field] = value
+
+    with pytest.raises(ValueError):
+        _resolve_document(document)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("urls", None),
+        ("urls", [7]),
+        ("urls", [""]),
+        ("urls", ["relative/reference"]),
+        ("annotations", None),
+        ("annotations", {"org.example.invalid": 7}),
+        ("artifactType", None),
+        ("artifactType", "not-a-media-type"),
+        ("data", None),
+        ("data", "cGF5bG9hZA"),
+    ],
+)
+def test_resolver_rejects_invalid_descriptor_optional_values(field: str, value: object):
+    document = json.loads(_oci_index_bytes())
+    document["manifests"][0][field] = value
+
+    with pytest.raises(ValueError):
+        _resolve_document(document)
 
 
 @pytest.mark.parametrize(
