@@ -16,6 +16,8 @@ PYTEST_COMMAND = (
     "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
 )
+PYTHON_TEST_DEPENDENCIES = "python -m pip install pytest pyyaml jsonschema"
+PYTHON_COLLECTION_DEPENDENCY_IMPORT = 'python -c "import jsonschema"'
 
 
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
@@ -34,7 +36,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "if: ${{ always() }}" in workflow
 
     assert "corepack pnpm install --frozen-lockfile" in workflow
-    assert "python -m pip install pytest pyyaml" in workflow
+    assert PYTHON_TEST_DEPENDENCIES in workflow
+    assert PYTHON_COLLECTION_DEPENDENCY_IMPORT in workflow
     assert PYTEST_COMMAND in workflow
     assert "tests/test_governance_readiness.py" not in workflow
     assert "python tools/deploy_frontend_static.py --help" in workflow
@@ -73,11 +76,14 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "| sed -E" not in workflow
     assert "http://127.0.0.1:18080/healthz" in workflow
 
-    pytest_install_index = workflow.index("python -m pip install pytest pyyaml")
+    pytest_install_index = workflow.index(PYTHON_TEST_DEPENDENCIES)
+    collection_dependency_import_index = workflow.index(PYTHON_COLLECTION_DEPENDENCY_IMPORT)
     deploy_test_index = workflow.index(PYTEST_COMMAND)
     ci_verify_index = workflow.index("corepack pnpm run ci:verify")
     traceability_index = workflow.index("python tools/frontend_release_traceability.py --format json")
     assert pytest_install_index < deploy_test_index
+    assert collection_dependency_import_index < deploy_test_index
+    assert pytest_install_index < collection_dependency_import_index
     assert deploy_test_index < ci_verify_index
     assert ci_verify_index < traceability_index
 
