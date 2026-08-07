@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 import multiprocessing
 import os
@@ -541,6 +542,90 @@ def test_cli_failure_projects_only_a_classification(
     }
 
 
+def _replace_after_validation_resolver(
+    original_resolver: Callable[..., object],
+    replace_node: Callable[[], None],
+) -> Callable[..., object]:
+    def replace_after_validation(
+        release: Path,
+        supplied: Path | None,
+        **kwargs: object,
+    ) -> object:
+        resolved = original_resolver(release, supplied, **kwargs)
+        replace_node()
+        return resolved
+
+    return replace_after_validation
+
+
+def test_special_node_wrapper_forwards_sealed_resolver_contract(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    _write_environment(env_file, _environment())
+    sealed = (env_file, env_file.stat(follow_symlinks=False))
+    events: list[tuple[str, object]] = []
+
+    def resolver(
+        release: Path,
+        supplied: Path | None,
+        **kwargs: object,
+    ) -> object:
+        events.append(("resolve", (release, supplied, kwargs)))
+        return sealed
+
+    wrapper = _replace_after_validation_resolver(
+        resolver,
+        lambda: events.append(("replace", None)),
+    )
+    release_root = tmp_path / "releases"
+
+    returned = wrapper(
+        release_root,
+        None,
+        include_identity=True,
+        future_contract="forwarded",
+    )
+
+    assert returned is sealed
+    assert events == [
+        (
+            "resolve",
+            (
+                release_root,
+                None,
+                {"include_identity": True, "future_contract": "forwarded"},
+            ),
+        ),
+        ("replace", None),
+    ]
+
+
+def test_special_node_wrapper_does_not_swallow_resolver_failure(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+
+    def reject_validation(
+        release: Path,
+        supplied: Path | None,
+        **kwargs: object,
+    ) -> object:
+        del release, supplied, kwargs
+        events.append("resolve")
+        raise contract.S72ReleaseContractError("expected resolver rejection")
+
+    wrapper = _replace_after_validation_resolver(
+        reject_validation,
+        lambda: events.append("replace"),
+    )
+
+    with pytest.raises(contract.S72ReleaseContractError, match="expected resolver"):
+        wrapper(tmp_path / "releases", None, include_identity=True)
+
+    assert events == ["resolve"]
+
+
 def _special_node_worker(
     source: str,
     commit: str,
@@ -552,8 +637,7 @@ def _special_node_worker(
     env_path = Path(env_file)
     original_resolver = contract.release_authority.resolve_managed_env_file
 
-    def replace_after_validation(release: Path, supplied: Path | None) -> Path:
-        resolved = original_resolver(release, supplied)
+    def replace_node() -> None:
         env_path.unlink()
         if node_kind == "fifo":
             os.mkfifo(env_path, mode=0o600)
@@ -562,9 +646,10 @@ def _special_node_worker(
             _write_environment(target, _environment())
             target.chmod(0o600)
             env_path.symlink_to(target)
-        return resolved
 
-    contract.release_authority.resolve_managed_env_file = replace_after_validation
+    contract.release_authority.resolve_managed_env_file = (
+        _replace_after_validation_resolver(original_resolver, replace_node)
+    )
     try:
         contract.validate_managed_s72_contract(
             Path(source),
