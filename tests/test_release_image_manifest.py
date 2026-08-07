@@ -519,6 +519,34 @@ def _hosted_linux_syft_1_50_backend_spdx() -> dict[str, object]:
     return document
 
 
+def _failed_run_syft_1_50_backend_spdx() -> dict[str, object]:
+    """Minimal root captured from run 31214118574's retained SPDX artifact."""
+    digest = "sha256:68acd3cbed541d9551061bfb7cf92e83ae69e021118a0693aeb7e8832a5c330c"
+    producer_manifest = "973f2d3bed36feb5625f8a5f31cf0c7277c37d097654207e57b2fad46adfeac0"
+    subject = "ghcr.io/demonsxxxxxx/ai-platform-backend"
+    document = _syft_spdx("backend")
+    root = document["packages"][0]
+    document["name"] = subject
+    document["documentNamespace"] = (
+        "https://anchore.com/syft/image/ghcr.io/demonsxxxxxx/"
+        "ai-platform-backend-8fd9e909-e204-4747-b3a5-5f45f28674a6"
+    )
+    root["name"] = subject
+    root["versionInfo"] = digest
+    root["checksums"] = [{"algorithm": "SHA256", "checksumValue": producer_manifest}]
+    root["externalRefs"] = [
+        {
+            "referenceCategory": "PACKAGE-MANAGER",
+            "referenceType": "purl",
+            "referenceLocator": (
+                "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-backend@sha256%3A"
+                f"{producer_manifest}?arch=amd64"
+            ),
+        }
+    ]
+    return document
+
+
 def _rewrite_bound_sbom(
     tmp_path: Path,
     manifest: dict[str, object],
@@ -627,6 +655,129 @@ def test_spdx_source_hash_accepts_hosted_linux_syft_amd64_root_purl(tmp_path: Pa
     result = _run_spdx_source_hash(sbom_path, manifest_digest=digest)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_spdx_source_hash_accepts_exact_failed_run_root_checksum_contour(tmp_path: Path):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    digest = "sha256:68acd3cbed541d9551061bfb7cf92e83ae69e021118a0693aeb7e8832a5c330c"
+    sbom_path.write_text(json.dumps(_failed_run_syft_1_50_backend_spdx()), encoding="utf-8")
+
+    result = _run_spdx_source_hash(sbom_path, manifest_digest=digest)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_bind_spdx_preserves_exact_failed_run_checksum_contour_and_rejects_rebind(
+    tmp_path: Path,
+):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    digest = "sha256:68acd3cbed541d9551061bfb7cf92e83ae69e021118a0693aeb7e8832a5c330c"
+    sbom_path.write_text(json.dumps(_failed_run_syft_1_50_backend_spdx()), encoding="utf-8")
+    source_hash = _run_spdx_source_hash(sbom_path, manifest_digest=digest)
+    assert source_hash.returncode == 0, source_hash.stderr
+
+    first = _run_bind_spdx(
+        sbom_path,
+        manifest_digest=digest,
+        unbound_content_sha256=source_hash.stdout.strip(),
+    )
+    assert first.returncode == 0, first.stderr
+    bound_bytes = sbom_path.read_bytes()
+
+    repeated = _run_bind_spdx(
+        sbom_path,
+        manifest_digest=digest,
+        unbound_content_sha256=source_hash.stdout.strip(),
+    )
+    assert repeated.returncode == 0, repeated.stderr
+    assert sbom_path.read_bytes() == bound_bytes
+
+    rebound = _run_bind_spdx(
+        sbom_path,
+        manifest_digest=digest,
+        run_id="999999",
+        unbound_content_sha256=source_hash.stdout.strip(),
+    )
+    assert rebound.returncode != 0
+    assert "sbom_binding_state" in rebound.stderr
+
+
+@pytest.mark.parametrize(
+    "checksums",
+    [
+        [],
+        [
+            {
+                "algorithm": "SHA256",
+                "checksumValue": "973f2d3bed36feb5625f8a5f31cf0c7277c37d097654207e57b2fad46adfeac0",
+            },
+            {
+                "algorithm": "SHA256",
+                "checksumValue": "973f2d3bed36feb5625f8a5f31cf0c7277c37d097654207e57b2fad46adfeac0",
+            },
+        ],
+        [{"algorithm": "SHA1", "checksumValue": "1" * 40}],
+        [{"algorithm": "SHA256", "checksumValue": "f" * 63}],
+        [{"algorithm": "SHA256", "checksumValue": "not-a-sha256"}],
+        [{"algorithm": "SHA256", "checksumValue": "f" * 64, "extra": "forbidden"}],
+    ],
+)
+def test_spdx_source_hash_rejects_malformed_root_checksum_contours(
+    tmp_path: Path,
+    checksums: list[dict[str, str]],
+):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    document = _failed_run_syft_1_50_backend_spdx()
+    document["packages"][0]["checksums"] = checksums
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+
+    result = _run_spdx_source_hash(
+        sbom_path,
+        manifest_digest="sha256:68acd3cbed541d9551061bfb7cf92e83ae69e021118a0693aeb7e8832a5c330c",
+    )
+
+    assert result.returncode != 0
+    assert "sbom_subject_binding.root_checksums" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda root: root["checksums"][0].update({"checksumValue": "f" * 64}),
+        lambda root: root["externalRefs"][0].update(
+            {
+                "referenceLocator": (
+                    "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-frontend@sha256%3A"
+                    "973f2d3bed36feb5625f8a5f31cf0c7277c37d097654207e57b2fad46adfeac0?arch=amd64"
+                )
+            }
+        ),
+        lambda root: root["externalRefs"][0].update(
+            {
+                "referenceLocator": (
+                    "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-backend@sha256%3A"
+                    "973f2d3bed36feb5625f8a5f31cf0c7277c37d097654207e57b2fad46adfeac0?arch=arm64"
+                )
+            }
+        ),
+    ],
+)
+def test_spdx_source_hash_requires_root_checksum_to_match_exact_purl_subject_and_arch(
+    tmp_path: Path,
+    mutation,
+):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    document = _failed_run_syft_1_50_backend_spdx()
+    mutation(document["packages"][0])
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+
+    result = _run_spdx_source_hash(
+        sbom_path,
+        manifest_digest="sha256:68acd3cbed541d9551061bfb7cf92e83ae69e021118a0693aeb7e8832a5c330c",
+    )
+
+    assert result.returncode != 0
+    assert "sbom_subject_binding" in result.stderr
 
 
 @pytest.mark.parametrize(

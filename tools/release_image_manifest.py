@@ -261,6 +261,47 @@ def _spdx_oci_purls(*, subject: str, digest: str) -> tuple[str, str]:
     return prefix, f"{prefix}amd64"
 
 
+def _validate_syft_root_checksum_and_purl(
+    root: dict[str, Any],
+    *,
+    subject: str,
+) -> None:
+    """Validate Syft's image metadata checksum without making it source authority.
+
+    Syft 1.50.0 uses the user-requested digest for root ``versionInfo`` but emits
+    ``ImageMetadata.ManifestDigest`` in the root checksum and OCI PURL. The latter
+    may differ after the producer resolves the image. Require its exact, internally
+    consistent SHA-256/PURL form while the caller-provided digest remains bound by
+    ``versionInfo``.
+    """
+    checksums = root.get("checksums")
+    if not isinstance(checksums, list) or len(checksums) != 1:
+        raise _sbom_subject_binding_error("root_checksums")
+    checksum = checksums[0]
+    if (
+        not isinstance(checksum, dict)
+        or set(checksum) != {"algorithm", "checksumValue"}
+        or checksum.get("algorithm") != "SHA256"
+        or not isinstance(checksum.get("checksumValue"), str)
+        or _HEX_SHA256.fullmatch(checksum["checksumValue"]) is None
+    ):
+        raise _sbom_subject_binding_error("root_checksums")
+
+    producer_digest = f"sha256:{checksum['checksumValue']}"
+    expected_external_refs = [
+        [
+            {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": locator,
+            }
+        ]
+        for locator in _spdx_oci_purls(subject=subject, digest=producer_digest)
+    ]
+    if root.get("externalRefs") not in expected_external_refs:
+        raise _sbom_subject_binding_error("root_external_refs")
+
+
 def _spdx_element_id(element: dict[str, Any]) -> str:
     spdx_id = element.get("SPDXID")
     if not isinstance(spdx_id, str) or _SPDX_ID.fullmatch(spdx_id) is None:
@@ -463,19 +504,6 @@ def _validate_spdx_image_binding(
     elif "documentDescribes" in document and document["documentDescribes"] != [root_id]:
         raise _sbom_subject_binding_error("document_describes_optional")
 
-    expected_checksum = [
-        {"algorithm": "SHA256", "checksumValue": digest.removeprefix("sha256:")}
-    ]
-    expected_external_refs = [
-        [
-            {
-                "referenceCategory": "PACKAGE-MANAGER",
-                "referenceType": "purl",
-                "referenceLocator": locator,
-            }
-        ]
-        for locator in _spdx_oci_purls(subject=subject, digest=digest)
-    ]
     if root.get("name") != subject:
         raise _sbom_subject_binding_error("root_name")
     if root.get("versionInfo") != digest:
@@ -486,10 +514,7 @@ def _validate_spdx_image_binding(
         raise _sbom_subject_binding_error("root_files_analyzed")
     if root.get("downloadLocation") != "NOASSERTION":
         raise _sbom_subject_binding_error("root_download_location")
-    if root.get("checksums") != expected_checksum:
-        raise _sbom_subject_binding_error("root_checksums")
-    if root.get("externalRefs") not in expected_external_refs:
-        raise _sbom_subject_binding_error("root_external_refs")
+    _validate_syft_root_checksum_and_purl(root, subject=subject)
     return root_id
 
 
