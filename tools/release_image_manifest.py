@@ -13,6 +13,11 @@ import sys
 from typing import Any, Iterable
 from urllib.parse import quote, urlsplit
 
+if __package__:
+    from .spdx_failure_evidence import write_spdx_failure_evidence
+else:
+    from spdx_failure_evidence import write_spdx_failure_evidence
+
 
 SCHEMA_VERSION = "ai-platform.release-image-manifest.v1"
 PLATFORM = "linux/amd64"
@@ -138,7 +143,6 @@ _SPDX_INVERSE_TO_CANONICAL = {
 }
 _SBOM_BINDING_ANNOTATOR = "Tool: ai-platform-release-image-manifest"
 _SBOM_BINDING_COMMENT_PREFIX = "ai-platform.sbom-binding.v1:"
-_SPDX_FAILURE_EVIDENCE_SCHEMA_VERSION = "ai-platform.spdx-failure-evidence.v1"
 _SBOM_BINDING_KEYS = {
     "annotations_present",
     "original_namespace",
@@ -1243,64 +1247,6 @@ def _subject_command(args: argparse.Namespace) -> None:
     _write_json(Path(args.output), record)
 
 
-def _spdx_failure_root_metadata(document: dict[str, Any] | None) -> tuple[int | None, str | None]:
-    if not isinstance(document, dict):
-        return None, None
-    packages = document.get("packages")
-    if not isinstance(packages, list):
-        return None, None
-    container_roots = [
-        package
-        for package in packages
-        if isinstance(package, dict) and package.get("primaryPackagePurpose") == "CONTAINER"
-    ]
-    if len(container_roots) != 1:
-        return None, None
-    external_refs = container_roots[0].get("externalRefs")
-    if not isinstance(external_refs, list):
-        return None, None
-    locator: str | None = None
-    if len(external_refs) == 1 and isinstance(external_refs[0], dict):
-        candidate = external_refs[0].get("referenceLocator")
-        if isinstance(candidate, str):
-            locator = candidate
-    return len(external_refs), (
-        hashlib.sha256(locator.encode("utf-8")).hexdigest() if locator is not None else None
-    )
-
-
-def _write_spdx_failure_evidence(
-    *,
-    path: Path | None,
-    role: str,
-    subject: str,
-    digest: str,
-    sbom_path: Path | None,
-    document: dict[str, Any] | None,
-    reason_code: str,
-) -> None:
-    if path is None or path.name != f"spdx-binding-diagnostic-{role}.json":
-        return
-    root_external_ref_count, root_purl_sha256 = _spdx_failure_root_metadata(document)
-    evidence = {
-        "schema_version": _SPDX_FAILURE_EVIDENCE_SCHEMA_VERSION,
-        "command": "spdx-source-hash",
-        "reason_code": reason_code,
-        "role": role,
-        "subject": subject,
-        "manifest_digest": digest,
-        "image_ref": f"{subject}@{digest}",
-        "sbom_sha256": _sha256(sbom_path) if sbom_path is not None and sbom_path.is_file() else None,
-        "root_external_ref_count": root_external_ref_count,
-        "root_purl_sha256": root_purl_sha256,
-    }
-    try:
-        _write_json(path, evidence)
-    except OSError:
-        # Preserve the source-identity failure even when diagnostic persistence fails.
-        return
-
-
 def _spdx_source_hash_command(args: argparse.Namespace) -> None:
     if args.role not in SUBJECTS:
         raise ValueError("role")
@@ -1312,7 +1258,7 @@ def _spdx_source_hash_command(args: argparse.Namespace) -> None:
     )
     if args.image_ref != f"{subject}@{digest}":
         error = _sbom_subject_binding_error("image_ref")
-        _write_spdx_failure_evidence(
+        write_spdx_failure_evidence(
             path=failure_evidence_path,
             role=args.role,
             subject=subject,
@@ -1333,7 +1279,7 @@ def _spdx_source_hash_command(args: argparse.Namespace) -> None:
             digest=digest,
         )
     except ValueError as error:
-        _write_spdx_failure_evidence(
+        write_spdx_failure_evidence(
             path=failure_evidence_path,
             role=args.role,
             subject=subject,
