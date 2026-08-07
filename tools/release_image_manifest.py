@@ -240,8 +240,10 @@ def _sbom_document_namespace(
     )
 
 
-def _spdx_oci_purl(*, subject: str, digest: str) -> str:
-    return f"pkg:oci/{quote(subject, safe='')}@{quote(digest, safe='')}?arch="
+def _spdx_oci_purls(*, subject: str, digest: str) -> tuple[str, str]:
+    """Return the two pinned Syft 1.50.0 forms for our linux/amd64 subject."""
+    prefix = f"pkg:oci/{quote(subject, safe='')}@{quote(digest, safe='')}?arch="
+    return prefix, f"{prefix}amd64"
 
 
 def _spdx_element_id(element: dict[str, Any]) -> str:
@@ -450,11 +452,14 @@ def _validate_spdx_image_binding(
         {"algorithm": "SHA256", "checksumValue": digest.removeprefix("sha256:")}
     ]
     expected_external_refs = [
-        {
-            "referenceCategory": "PACKAGE-MANAGER",
-            "referenceType": "purl",
-            "referenceLocator": _spdx_oci_purl(subject=subject, digest=digest),
-        }
+        [
+            {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": locator,
+            }
+        ]
+        for locator in _spdx_oci_purls(subject=subject, digest=digest)
     ]
     if (
         root.get("name") != subject
@@ -463,7 +468,7 @@ def _validate_spdx_image_binding(
         or root.get("filesAnalyzed") is not False
         or root.get("downloadLocation") != "NOASSERTION"
         or root.get("checksums") != expected_checksum
-        or root.get("externalRefs") != expected_external_refs
+        or root.get("externalRefs") not in expected_external_refs
     ):
         raise ValueError("sbom_subject_binding")
     return root_id
