@@ -260,6 +260,7 @@ def _validate_spdx_graph(document: dict[str, Any]) -> set[str]:
 
     node_ids = {"SPDXRef-DOCUMENT"}
     file_ids: set[str] = set()
+    package_ids: set[str] = set()
     elements: dict[str, list[Any]] = {}
     for collection in ("packages", "files", "snippets"):
         values = document.get(collection, [])
@@ -275,6 +276,8 @@ def _validate_spdx_graph(document: dict[str, Any]) -> set[str]:
             if spdx_id in node_ids:
                 raise ValueError("sbom_graph")
             node_ids.add(spdx_id)
+            if collection == "packages":
+                package_ids.add(spdx_id)
             if collection == "files":
                 file_ids.add(spdx_id)
 
@@ -321,10 +324,15 @@ def _validate_spdx_graph(document: dict[str, Any]) -> set[str]:
         else:
             canonical_source, canonical_target = source, target
         triple = (canonical_source, canonical_target, canonical_type)
+        is_permitted_self_dependency = (
+            source == target
+            and canonical_type == "DEPENDS_ON"
+            and source in package_ids
+        )
         if (
             source not in node_ids
             or target not in node_ids
-            or source == target
+            or (source == target and not is_permitted_self_dependency)
             or triple in relationship_triples
         ):
             raise ValueError("sbom_graph")
