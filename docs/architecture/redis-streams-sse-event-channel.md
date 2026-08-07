@@ -44,10 +44,11 @@ bounded-replay decision:
   treated as a resumable idempotent execution service.
 - Authorization revocation has requested, committed, and effective states. A
   commit advances a monotonic epoch and starts a cross-instance barrier; only
-  barrier completion makes the zero-payload guarantee effective.
+  transport-terminal barrier completion makes the zero-payload guarantee
+  effective. A slow socket send cannot outlive its durable lease fence.
 - PostgreSQL owns the revocation epoch, registered instance/ack set, database-
-  clock send leases, and barrier. Redis auth-context leases and process memory
-  are explicitly non-authoritative.
+  clock send leases with transport completion fences, and barrier. Redis auth-
+  context leases and process memory are explicitly non-authoritative.
 - A mid-run Redis outage degrades live transport, not automatically execution.
   Eligible non-interactive work may continue under bounded control and converge
   through PostgreSQL; interactive, approval, control, or unsafe work pauses or
@@ -125,8 +126,8 @@ final answer without PostgreSQL text-delta write amplification.
 | Authorization epoch | A positive, monotonically increasing authority version bound to each connection/send lease. Epoch advancement invalidates renewal of every older lease. |
 | Revocation requested | A change has been accepted for processing but its durable authorization epoch has not committed. Existing authority remains the reported state. |
 | Revocation committed | The new epoch is durable, no old-epoch lease may renew, and cross-instance invalidation/ack is in progress. The API reports revocation pending, not effective. |
-| Revocation effective | Every old-epoch writer has closed and acknowledged, or every bounded old lease has expired. From this barrier onward, zero payload frames are permitted. |
-| SSE send lease | A PostgreSQL-authorized, API-instance/connection/epoch-bound lease whose expiry is calculated with database time and is no more than 15 seconds. Redis auth-context operation leases are unrelated. |
+| Revocation effective | Every old-epoch writer has acknowledged only after its in-flight writes became transport-terminal and its writer/socket closed, or the durable expiry fence proves the same terminal state. From this barrier onward, zero payload frames are permitted. |
+| SSE send lease | A PostgreSQL-authorized, API-instance/connection/epoch-bound lease whose `lease_not_after` is calculated with database time and is no more than 15 seconds. Every payload write has a cancellable `transport_completion_not_after <= lease_not_after`. Redis auth-context operation leases are unrelated. |
 | Transport degraded | Redis live/replay publication is unavailable while PostgreSQL and the bounded execution authorities may still be healthy. It is a durable fact, not permission to buffer or write PostgreSQL deltas. |
 
 ## Current-Main Diagnosis
@@ -365,29 +366,31 @@ sequenceDiagram
     G->>PG: revocation requested for scope at epoch e
     PG->>PG: COMMIT authorization_epoch e+1
     PG-->>G: revocation committed and old-epoch renewal denied
-    G-->>I1: invalidate e and close old-epoch writers
-    G-->>I2: invalidate e and close old-epoch writers
-    I1-->>G: ack no writer at epoch e
+    G-->>I1: invalidate e, cancel writes and close sockets by fixed deadline
+    G-->>I2: invalidate e, cancel writes and close sockets by fixed deadline
+    I1-->>G: ack writes terminal and writer/socket closed at epoch e
     alt every registered instance acknowledges
-        I2-->>G: ack no writer at epoch e
+        I2-->>G: ack writes terminal and writer/socket closed at epoch e
         G->>PG: mark revocation effective
     else instance is missing or cannot ack
-        G->>G: wait until every old bounded lease deadline expires
-        G->>PG: mark revocation effective after expiry barrier
+        G->>PG: wait for latest durable transport completion fence
+        G->>PG: prove forced close/terminal writes, then mark effective
     end
-    Note over I1,B: A check at e may race the commit and finish a write before effective
+    Note over I1,B: A checked write may finish only before effective and by its completion deadline
     Note over I2,B: After effective, every payload write at epoch e is rejected
 ```
 
-The maximum committed-to-effective window is the maximum issued send lease and
-is normatively no more than 15 seconds in v2; deployments may configure a lower
-value. The API reports `access_revocation_requested` before commit while the old
-authority is still effective, `access_revocation_pending` after commit, and
-`access_revoked` only after the barrier. Timeout, missing acknowledgement,
-shared-authority error, or an attempted old-epoch renewal closes the connection
-fail closed. Stage F measures
-the check-to-commit-to-write race across multiple API instances and proves zero
-payload after the recorded effective barrier.
+The immutable `revocation_deadline` is no later than 15 seconds after commit;
+every old lease and in-flight transport completion deadline is at or before it.
+Drain, cancellation, maintenance, and barrier-owner takeover share that one
+budget and never reset it. The API reports `access_revocation_requested` before
+commit while the old authority is still effective, `access_revocation_pending`
+after commit, and `access_revoked` only after the transport-terminal barrier.
+Timeout, missing acknowledgement, shared-authority error, or an attempted old-
+epoch renewal closes the connection fail closed. Stage F measures the check-to-
+commit-to-write race across multiple API instances, including a slow socket and
+instance loss, and proves that effective is not recorded early and that zero
+payload completes after the recorded barrier.
 
 ## Reconnect Sequence
 
@@ -751,7 +754,9 @@ A1 has one transaction-path lease over these exact files and symbols:
 - `app/schema.sql` adds `sse_stream_admissions`,
   `sse_authorization_scopes`, `sse_api_instances`, `sse_send_leases`, and
   `sse_revocation_acks`, including unique keys, monotonic checks, foreign keys,
-  and database-clock expiry indexes. No later stage creates equivalent schema.
+  database-clock expiry indexes, per-lease `lease_not_after`/transport-completion
+  fences, and the immutable revocation deadline. No later stage creates
+  equivalent schema; no per-payload PostgreSQL event/delta row is added.
 - `app/streaming/postgres.py` adds transaction-owned repository functions
   `create_stream_admission`, `take_over_stream_admission`,
   `confirm_stream_open_and_create_dispatch_intent`,
@@ -959,12 +964,14 @@ Maximum authoritative authorization refresh demand is approximately:
 `auth_check_qps ~= active_SSE_connections / auth_lease_seconds + reconnect_qps + outbound_payload_frames_per_second`
 
 Every payload frame requires a send lease bound to the current monotonic
-`authorization_epoch` and a bounded deadline. The adapter immediately rechecks
-that the lease epoch has not been invalidated before writing. Epoch advancement
-denies renewal and broadcasts invalidation to every registered API instance;
-each instance closes old-epoch writers and acknowledges quiescence. A
-process-local cache without this shared epoch, invalidation, acknowledgement, and
-expiry barrier is not authority.
+`authorization_epoch`, a durable `lease_not_after`, and a derived cancellable
+transport completion deadline no later than that fence. The adapter immediately
+rechecks that the lease epoch has not been invalidated before writing and tracks
+the send in its local in-flight registry. Epoch advancement denies renewal and
+broadcasts invalidation to every registered API instance; each instance cancels
+and awaits old-epoch sends, closes their writers/sockets, then acknowledges
+quiescence. A process-local cache without this shared epoch, invalidation,
+acknowledgement, and durable completion/forced-close barrier is not authority.
 
 Revocation state is reported precisely:
 
@@ -972,15 +979,17 @@ Revocation state is reported precisely:
   authoritative and the API reports `access_revocation_requested`;
 - `committed`: the new epoch is durable, old leases cannot renew, and the public
   API reports `access_revocation_pending` while invalidation/acks are incomplete;
-- `effective`: every old-epoch writer acknowledged closed or its maximum
-  15-second lease expired. The API reports `access_revoked`; only this barrier
+- `effective`: every old-epoch send is transport-terminal and its writer/socket
+  closed, proven by a valid acknowledgement or the durable completion/forced-
+  close expiry fence. The API reports `access_revoked`; only this barrier
   establishes zero payload afterward.
 
 A missing instance acknowledgement does not let the system declare success. It
-holds the committed state until the bounded expiry barrier, closes on authority
-errors, and emits a bounded diagnostic. The check-to-commit-to-write race may
-produce a frame before `effective`; that bounded window is measured rather than
-hidden by an impossible commit-time zero-frame promise.
+holds the committed state until process/socket fencing proves no send can still
+complete, closes on authority errors, and emits a bounded diagnostic. Neither
+registration nor authorization-lease expiry alone is proof. The check-to-commit-
+to-write race may produce a frame before `effective`; that bounded window is
+measured rather than hidden by an impossible commit-time zero-frame promise.
 
 The current shared pool of ten is not assumed sufficient. A blocking `XREAD`
 connection is dedicated for the response lifetime and always released on close,
@@ -995,6 +1004,9 @@ blocked connection.
 - SSE reads use bounded count and response write queues. A client whose network
   queue exceeds the configured event/byte ceiling is disconnected and must
   reconnect with its accepted cursor.
+- Every response payload send is cancellable and awaited to a transport-terminal
+  result by its durable `transport_completion_not_after`; queue admission or an
+  ASGI send call returning to an intermediate buffer is not completion evidence.
 - Slow browsers never slow all producers and never create consumer-group
   pending entries. Independent `XREAD` readers receive the same stream.
 - A browser slower than retention gets a gap and durable reconciliation rather
@@ -1034,14 +1046,15 @@ blocked connection.
 | PostgreSQL commits and terminal XADD fails | Keep the immutable-target publication intent pending. Retry in its proven incarnation; if continuity is lost, create a successor intent/new incarnation with the same terminal/end semantic IDs. |
 | Terminal XADD outcome is unknown | Retry the same stable terminal/end `event_id` values only against the pinned proven incarnation; duplicate entries are reducer-idempotent. |
 | Late delta races terminal | Terminal coordinator atomically enters `closing` before flushing. Reject and measure any later delta; never append it after terminal. |
-| Authorization commit races a checked payload write | The lease is bound to epoch e and rechecked immediately before write, but a write may finish before the e+1 barrier is effective. Record and bound that window; never claim commit-time zero frames. |
-| Authorization is revoked during blocked XREAD | Epoch advancement denies renewal and broadcasts invalidation. Instances cancel old-epoch reads and ack; missing ack waits for the maximum 15-second old lease to expire. Zero payload is guaranteed only after `revocation_effective`. |
-| API instance dies without acknowledgement | Registration expiry does not claim quiescence. PostgreSQL keeps the barrier committed until every old send lease is closed or its database-clock deadline expires, then records effective; the run cannot remain pending forever. |
+| Authorization commit races a checked payload write | The lease is bound to epoch e and rechecked immediately before write. The write derives a cancellable transport completion deadline no later than the lease's durable `lease_not_after`; it may finish before, never after, the e+1 barrier becomes effective. Record and bound that window; never claim commit-time zero frames. |
+| Slow socket holds an authorized old-epoch write | Invalidation cancels the send and closes the socket. Ack is rejected while the write is nonterminal, and expiry alone cannot advance effective without the durable transport completion fence and forced-close proof. RED stalls the socket through commit and asserts completion/cancellation precedes effective and zero payload completes afterward. |
+| Authorization is revoked during blocked XREAD | Epoch advancement denies renewal and broadcasts invalidation. Instances cancel old-epoch reads and writes, close sockets, then ack transport quiescence; a missing ack uses the fixed completion/close fence, not lease comparison alone. Zero payload is guaranteed only after `revocation_effective`. |
+| API instance dies without acknowledgement | Registration expiry does not claim quiescence. PostgreSQL keeps the barrier committed until the old instance's durable write deadlines have elapsed and process/socket fencing proves that no send can complete, then records effective within the original 15-second budget. |
 | Stale revocation acknowledgement | An ack with the wrong scope epoch, instance ID/incarnation, barrier-owner epoch, or an outstanding old writer updates zero rows and cannot advance effective. |
 | New API instance joins after revocation commit | Registration returns only the new authorization epoch. The instance cannot acquire an old send lease, join the old writer snapshot, acknowledge for an old incarnation, or extend the barrier. |
-| Revocation barrier owner dies and maintenance takes over | After the database-clock owner lease expires, takeover row-locks the scope and increments `barrier_owner_epoch`; late work from the former owner is fenced. Effective still requires valid acks or expiry of every old send lease. |
-| Payload attempt after effective barrier | `lookup_sse_send_authority` rejects the old epoch/lease before write on every instance. RED proves zero payload after the recorded PostgreSQL effective timestamp, including dead-instance, stale-ack, join, and takeover cases. |
-| ACL/Agent publication/tenant authority changes | Advance the authorization epoch and enter committed/pending state. Heartbeat cannot renew old authority. Deny/error closes without payload; effective is recorded only after ack/expiry barrier. |
+| Revocation barrier owner dies and maintenance takes over | After the database-clock owner lease expires, takeover row-locks the scope and increments `barrier_owner_epoch`; late work from the former owner is fenced. It inherits the original commit time, old-writer snapshot, completion fences, and deadline. No takeover or maintenance interval can extend the <=15-second total. |
+| Payload attempt or late completion after effective barrier | `lookup_sse_send_authority` rejects a new old-epoch write, while the completion fence guarantees no already-started old write can finish after effective. RED proves zero payload after the recorded PostgreSQL effective timestamp, including slow-socket, dead-instance, invalidation, stale-ack, join, and takeover cases. |
+| ACL/Agent publication/tenant authority changes | Advance the authorization epoch and enter committed/pending state. Heartbeat cannot renew old authority. Deny/error closes without payload; effective is recorded only after the transport-quiescence acknowledgement/completion fence. |
 | Tenant/run mismatch in an envelope | Quarantine/error the entry, stop that response, and record redacted diagnostics; never forward it. |
 | Secret filter cannot classify a payload | Reject before XADD. No raw fallback event is permitted. |
 
@@ -1104,8 +1117,10 @@ text deltas cannot be reconstructed.
 `requested` without changing the reported epoch. `commit_sse_revocation` locks
 the same row, verifies that request, increments `authorization_epoch` exactly
 once, denies every old-epoch renewal, records `committed`, and snapshots the old-
-epoch send leases plus their API-instance incarnation. All lease and barrier
-deadlines use PostgreSQL `clock_timestamp()` and may never exceed 15 seconds.
+epoch send leases, their durable transport completion fences, and API-instance
+incarnations. It fixes an immutable `revocation_deadline` no later than
+`committed_at + 15 seconds`. All lease, write, and barrier deadlines use
+PostgreSQL `clock_timestamp()`; maintenance and takeover cannot extend them.
 
 Registration has an opaque `api_instance_id`, a monotonically new
 `instance_incarnation` on every process start, and a database-clock registration
@@ -1113,24 +1128,33 @@ lease. An instance joining after revocation commit receives only the new epoch;
 it is not part of the old writer set and cannot acknowledge for an old instance.
 `ack_sse_revocation` succeeds only for the exact scope, committed epoch, and
 snapshotted instance incarnation after that instance has closed every old-epoch
-connection/lease. A stale epoch/incarnation, duplicate with different facts, or
-an ack while an old writer remains updates zero rows and is fail-closed.
+connection/lease, every old-epoch in-flight write completed or was cancelled, and
+the corresponding writer/socket closure was observed. A stale epoch/incarnation,
+duplicate with different facts, or an ack while an old writer, socket, or write
+remains nonterminal updates zero rows and is fail-closed.
 
 `advance_sse_revocation_effective` row-locks the scope and succeeds only when
-every snapshotted old writer has a valid quiescence acknowledgement, or PostgreSQL
-database time is later than every old send-lease deadline. A dead API instance
-therefore cannot hold the barrier forever, but its registration expiry alone is
-not proof of quiescence; the hard send-lease expiry is the fence. Barrier-owner
+every snapshotted old writer has a valid transport-quiescence acknowledgement, or
+PostgreSQL database time is later than the latest durable old-epoch transport
+completion fence and expired-write maintenance has recorded forced process/socket
+closure so no old write can still complete. Comparing only the authorization-
+lease or registration deadline is insufficient. A dead API instance therefore
+cannot hold the barrier forever, but process/socket fencing, not registration
+expiry, supplies the terminal proof. Barrier-owner
 failure is recovered only after its database-clock lease expires by
 `take_over_sse_revocation_barrier`, which increments a positive
-`barrier_owner_epoch`; stale owners and acknowledgements cannot mark effective.
+`barrier_owner_epoch` while preserving the original `committed_at`, writer
+snapshot, completion fences, and `revocation_deadline`; stale owners and
+acknowledgements cannot mark effective or restart the <=15-second clock.
 Any PostgreSQL error, clock/row mismatch, missing registration, or uncertain
 transition denies send authority and preserves `access_revocation_pending`.
 
 C owns no revocation schema or state transition. It registers through
 `PostgresSseAuthorizationAuthority`, acquires a scope/epoch/connection-bound send
-lease, calls `lookup_sse_send_authority` immediately before every payload, closes
-on invalidation/error, and acknowledges only after its old writers are gone. The
+lease, calls `lookup_sse_send_authority` immediately before every payload,
+registers the in-flight write and its cancellable completion deadline, closes on
+invalidation/error/deadline, and acknowledges only after awaited completion or
+cancellation and writer/socket closure. The
 Redis `app.auth_sessions.AuthOperation` lease (90 seconds by default through
 `_operation_lease_seconds`) serializes browser auth-context mutation; its Redis
 epoch/TTL is neither an SSE send lease nor evidence that this barrier completed.
@@ -1158,14 +1182,23 @@ epoch/TTL is neither an SSE send lease nor evidence that this barrier completed.
   adapter immediately rechecks its lease epoch and local invalidation state. For
   a batch, check each frame. A process-local unexpired timestamp alone is
   insufficient.
+- That same authorization operation derives
+  `transport_completion_not_after <= lease_not_after` and places the write in the
+  instance-local in-flight registry. The socket send is cancellable at that
+  deadline; completion means the transport can emit no later bytes, not merely
+  that application code queued or yielded the frame. This uses durable lease/
+  control metadata and never creates a per-payload PostgreSQL event or delta row.
 - The durable state machine is `requested -> committed -> effective`.
   `committed` means the epoch advanced and revocation is pending; `effective`
-  means all old-epoch writers acknowledged closed or all old leases expired.
-  Only effective promises zero later payload. A frame that passed an epoch-e
-  check may finish between e+1 commit and the effective barrier.
-- The initial committed-to-effective upper bound is 15 seconds. Missing ack,
-  timeout, or shared-authority error cannot be reported as effective early and
-  closes affected connections fail closed. The user/API sees
+  means all old-epoch writes are transport-terminal and their writer/socket is
+  closed, proven by valid acknowledgements or the durable completion/forced-close
+  expiry fence. Only effective promises zero later payload. A frame that passed
+  an epoch-e check may finish between e+1 commit and that barrier, never after it.
+- The committed-to-effective upper bound is 15 seconds. The fixed deadline covers
+  drain, cancellation, process/socket fencing, maintenance, and barrier-owner
+  takeover together; none starts a new interval. Missing ack, timeout, or shared-
+  authority error cannot be reported as effective early and closes affected
+  connections fail closed. The user/API sees
   `access_revocation_pending` until the barrier records effective.
 - Heartbeats have no payload/id, require a current-epoch lease, and never extend
   an old lease.
@@ -1180,6 +1213,8 @@ epoch/TTL is neither an SSE send lease nor evidence that this barrier completed.
   result, `sse_auth_revocation_close_total` by fixed reason,
   `sse_auth_revocation_latency_seconds`,
   `sse_auth_revocation_missing_ack_total`,
+  `sse_auth_inflight_write_total` by fixed state,
+  `sse_auth_transport_deadline_total` by fixed result,
   `sse_payload_after_revocation_commit_total`, and
   `sse_payload_after_revocation_effective_total`. The commit counter measures the
   bounded race and must drain before effective; alert immediately if the
@@ -1255,7 +1290,9 @@ review/PR/deploy ceiling; next gate.
   before `stream_open`, then use the fenced confirm CAS to atomically commit
   `stream_open_confirmed` plus the unique durable SDK dispatch intent. Also own
   the authorization-scope epoch/state, API-instance registration/incarnation,
-  database-clock send leases, acknowledgement set, and fenced effective barrier.
+  database-clock send leases with per-lease transport completion fences,
+  acknowledgement set, and fenced effective barrier with an immutable <=15-
+  second deadline.
 - Clean worktree/branch: new worktree from main containing reviewed A0; branch
   `codex/sse-a1-pg-admission-v2`.
 - Exclusive files/symbols: `app/schema.sql`; the named A1 functions in
@@ -1277,8 +1314,11 @@ review/PR/deploy ceiling; next gate.
   confirm commit preserves the same intent for A2; missing owner recovery after
   lease expiry; admission deadline commits pre-dispatch failure instead of
   permanent running; request/commit/effective revocation transactions; two API
-  instances with check-e/commit-e+1/write; dead instance lease expiry; stale ack;
-  new instance join; barrier-owner takeover; zero payload after effective; DB
+  instances with check-e/commit-e+1/slow-socket write; ack rejected until transport
+  completion/cancellation and socket close; instance loss during invalidation;
+  durable completion/forced-close expiry fence; stale ack; new instance join;
+  barrier-owner takeover preserves the original deadline; zero payload completion
+  after effective and committed-to-effective <=15 seconds; DB
   error/clock uncertainty fail closed; Redis auth-context epoch/90-second lease
   cannot authorize or complete the barrier; retry/resume cannot change pin; A0-
   only configuration cannot admit a Redis run.
@@ -1405,8 +1445,10 @@ review/PR/deploy ceiling; next gate.
 - RED: absent/valid/malformed/foreign/future `Last-Event-ID`; no-ID heartbeat;
   stale/cross-incarnation and trim/missing-key gap then close; ACL denial before
   Redis; monotonic authorization epoch; connection/send lease binds epoch;
-  check-at-e then commit-e+1 then write race; cross-instance invalidation and
-  acknowledgements; one instance missing ack waits for bounded lease expiry;
+  check-at-e then commit-e+1 then slow-socket write race; cross-instance
+  invalidation and acknowledgements only after in-flight drain/cancel and socket
+  close; one instance lost during invalidation waits for the durable completion/
+  forced-close fence rather than lease comparison alone;
   requested/committed/effective API states; zero payload only after effective;
   revocation-to-effective at most 15,000 ms; heartbeat cannot extend stale
   authority; slow client queue bound; two browsers see the same entries; no
@@ -1563,8 +1605,11 @@ review/PR/deploy ceiling; next gate.
   Redis restart/outage/rebuild with overlapping native IDs; PG rollback and
   commit/XADD/reconciler-incarnation race; duplicates; cross-run/incarnation/
   tenant denial; check-at-e/commit-e+1/write race across multiple API instances;
-  missing invalidation ack and expiry barrier; zero payload after recorded
-  effective and <=15-second committed-to-effective window; Redis mid-run outage
+  slow socket through commit; instance loss during invalidation; ack rejected
+  before write completion/cancellation and socket close; takeover retains the
+  original completion fence/deadline; no early effective and zero payload
+  completion after recorded effective; <=15-second committed-to-effective window;
+  Redis mid-run outage
   with successful eligible final, approval pause/fail, failure terminal, PG
   commit plus terminal-XADD unknown; no run permanently running; multiple
   browsers; slow consumers; terminal/history parity; no delta rows in PG;
@@ -1685,9 +1730,11 @@ remain closed after exact Markdown and diagram validation:
   duplicate terminal publication is semantic-idempotent.
 - Tenant leak: authorization precedes key access, envelope scope is verified,
   projection/filtering precedes XADD, and every payload lease binds a monotonic
-  epoch. The check-to-commit-to-write race is bounded; missing instance ack waits
-  for lease expiry; only the recorded effective barrier promises zero later
-  payload; logs contain no payload.
+  epoch. Every in-flight write has a cancellable durable completion deadline; ack
+  follows write completion/cancellation and socket close. A missing instance ack
+  waits for the completion/forced-close fence, and takeover cannot reset the
+  <=15-second barrier. Only recorded effective promises zero later payload; logs
+  contain no payload.
 - Capacity: buffer, replay, connection, authorization-check, response queue, and
   Redis memory formulas have hard limits and stage F measurements.
 - Cutover: the final source has no old poll/sleep, PG assistant-delta writer, live

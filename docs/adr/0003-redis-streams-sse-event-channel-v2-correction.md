@@ -129,16 +129,21 @@ flag can run both mechanisms.
 
 Authorization authority maintains a positive monotonic `authorization_epoch` for
 the affected authorization scope. Every SSE connection and send lease binds one
-exact epoch and a deadline of at most 15 seconds.
+exact epoch and a durable `lease_not_after` of at most 15 seconds. Before every
+payload write, the instance derives a cancellable
+`transport_completion_not_after` no later than that lease deadline and tracks the
+write in its connection-local in-flight registry.
 
 A1 implements this authority in PostgreSQL: the scope/epoch and state row, API
 instance incarnation and database-clock registration lease, old-epoch send-lease
-set, revocation acknowledgements, and a monotonically fenced barrier owner are
+set with per-lease transport completion fences, revocation acknowledgements, an
+immutable `revocation_deadline`, and a monotonically fenced barrier owner are
 durable. Request/commit, acknowledgement, takeover, and effective transition use
 row locks and database time. A stale epoch, stale instance incarnation, stale
 acknowledgement, expired barrier owner, or authority error fails closed. An API
 instance joining after commit can acquire only the new epoch and cannot extend or
-ack the old barrier.
+ack the old barrier. Barrier-owner takeover inherits the original `committed_at`,
+old-writer snapshot, completion fences, and deadline; it never restarts the clock.
 
 `app.auth_sessions.AuthOperation` and its default 90-second Redis operation lease
 serialize browser auth-context mutation only. Redis expiry, auth-context epoch,
@@ -152,23 +157,36 @@ Revocation has three externally meaningful states:
 - `committed`: the new epoch is durable, old-epoch renewal is denied, and
   cross-instance invalidation/ack is in progress; the API reports
   `access_revocation_pending`;
-- `effective`: every old-epoch writer acknowledged closed or every old bounded
-  lease expired; the API reports `access_revoked`. Zero payload is guaranteed
+- `effective`: every old-epoch writer has acknowledged only after all of its
+  in-flight writes completed or were cancelled and its writer/socket closed, or
+  the durable expiry fence proves that every old write has reached that transport-
+  terminal state. The API reports `access_revoked`. Zero payload is guaranteed
   only after this barrier.
 
 Each API instance applies invalidation, cancels blocked `XREAD`, closes every
-old-epoch writer, and acknowledges quiescence. A missing acknowledgement prevents
-early effective status. The authorization lease has a normative maximum of 15
-seconds, configurable lower but never higher, so lease expiry supplies the
-maximum 15-second committed-to-effective window. Authority errors and renewal
-attempts fail closed.
+old-epoch writer, cancels every outstanding socket send at its durable transport
+deadline, and acknowledges quiescence only after awaited send completion or
+cancellation and socket closure. Merely observing authorization-lease or instance-
+registration expiry is not quiescence. The expiry path uses the latest durable
+old-epoch transport completion fence and forced close evidence; it cannot advance
+`effective` while an old write could still complete. The immutable barrier
+deadline is no later than `committed_at + 15 seconds`, and send cancellation,
+maintenance, or barrier-owner takeover must finish inside that same budget without
+extending it. Authority errors and renewal attempts fail closed.
+
+The durable fence is lease/control metadata, not a PostgreSQL event or delta per
+payload. V2 retains the prohibition on steady-state PostgreSQL/Redis text dual-
+write; the instance-local in-flight registry exists only to drain before ack.
 
 The SSE writer rechecks its epoch immediately before each payload write. A write
-that checked epoch e may race an e+1 commit and finish before the effective
-barrier. V2 measures and bounds that race rather than promising impossible
-commit-time zero frames. Stage F must inject this exact check/commit/write race,
-including a missing instance acknowledgement, and prove zero payload after the
-recorded effective barrier.
+that checked epoch e may race an e+1 commit, but it may finish only before the
+effective barrier and no later than its cancellable transport completion deadline.
+V2 measures and bounds that race rather than promising impossible commit-time zero
+frames. Stage F must inject a slow socket and instance-loss/invalidation during
+this exact check/commit/write race: acknowledgement and effective must remain
+blocked until the write completes or is cancelled and the socket closes, takeover
+must preserve the original deadline, the committed-to-effective interval must stay
+at or below 15 seconds, and zero payload may complete after the recorded barrier.
 
 ### Mid-run Redis failure
 
