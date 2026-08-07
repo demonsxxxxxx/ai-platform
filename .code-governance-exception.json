@@ -6,12 +6,8 @@
   },
   "expires_on": "2026-08-20",
   "owner": "docker-packaging-phase2-issue-752",
-  "reason": "Bind the stacked Phase 2 candidate to the exact Phase 1 predecessor and preserve only its existing uv.lock exceptions.",
+  "reason": "Bind the stacked Phase 2 publication candidate to the exact current main range.",
   "violations": [
-    {
-      "code": "hot_file_growth",
-      "path": "uv.lock"
-    },
     {
       "code": "production_net_loc",
       "path": null
