@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from tools.oci_image_manifest import resolve_authenticated_producer_digest
+from tools import oci_image_manifest
+from tools.oci_image_manifest import MAX_OCI_DOCUMENT_BYTES, resolve_authenticated_producer_digest
 
 
 PRODUCER_DIGEST = (
@@ -33,6 +34,18 @@ def _oci_index_bytes(*, child_digest: str = PRODUCER_DIGEST) -> bytes:
 
 def _requested_digest(raw_document: bytes) -> str:
     return f"sha256:{hashlib.sha256(raw_document).hexdigest()}"
+
+
+def _padded_oci_index_bytes(size: int) -> bytes:
+    document = json.loads(_oci_index_bytes())
+    document["annotations"] = {"org.example.padding": ""}
+    unpadded = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    padding = size - len(unpadded)
+    assert padding >= 0
+    document["annotations"]["org.example.padding"] = "x" * padding
+    payload = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    assert len(payload) == size
+    return payload
 
 
 def _resolve_document(document: dict[str, object]) -> str:
@@ -323,6 +336,154 @@ def test_resolver_rejects_invalid_descriptor_optional_values(field: str, value: 
 
     with pytest.raises(ValueError):
         _resolve_document(document)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://example/\N{LATIN SMALL LETTER E WITH ACUTE}",
+        "https://example/%ZZ",
+        "https://[bad",
+        "scheme:%",
+    ],
+)
+def test_resolver_rejects_non_rfc3986_descriptor_urls(uri: str):
+    document = json.loads(_oci_index_bytes())
+    document["manifests"][0]["urls"] = [uri]
+
+    with pytest.raises(ValueError, match="oci_descriptor_urls"):
+        _resolve_document(document)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://registry.example:443/v2/image/%E2%82%AC?source=ci#digest",
+        "https://[2001:db8::1]:443/v2/image",
+        "urn:example:animal:ferret:nose",
+        "mailto:release@example.com",
+        "file:///var/lib/oci/index.json",
+        "scheme:/absolute/path",
+    ],
+)
+def test_resolver_accepts_valid_absolute_rfc3986_descriptor_urls(uri: str):
+    document = json.loads(_oci_index_bytes())
+    document["manifests"][0]["urls"] = [uri]
+
+    assert _resolve_document(document) == PRODUCER_DIGEST
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://example:bad/path",
+        "https://[2001:db8::1]tail/path",
+        "https://[vG.bad]/path",
+        "https://user@@example/path",
+        "https://example/path with space",
+        "https://example/control\x01",
+        "https://example/100%",
+        "relative/reference",
+    ],
+)
+def test_resolver_rejects_structurally_invalid_absolute_uris(uri: str):
+    document = json.loads(_oci_index_bytes())
+    document["manifests"][0]["urls"] = [uri]
+
+    with pytest.raises(ValueError, match="oci_descriptor_urls"):
+        _resolve_document(document)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "data:text/plain,hello",
+        "scheme:",
+        "scheme://user:info@example:/path",
+        "https://[v1.a]:443/",
+    ],
+)
+def test_resolver_preserves_other_valid_rfc3986_uri_forms(uri: str):
+    document = json.loads(_oci_index_bytes())
+    document["manifests"][0]["urls"] = [uri]
+
+    assert _resolve_document(document) == PRODUCER_DIGEST
+
+
+def test_resolver_accepts_document_at_raw_json_byte_limit():
+    raw_document = _padded_oci_index_bytes(MAX_OCI_DOCUMENT_BYTES)
+
+    assert (
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=_requested_digest(raw_document),
+        )
+        == PRODUCER_DIGEST
+    )
+
+
+def test_resolver_rejects_document_over_raw_json_byte_limit():
+    raw_document = _padded_oci_index_bytes(MAX_OCI_DOCUMENT_BYTES + 1)
+
+    with pytest.raises(ValueError, match="^oci_document$"):
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=_requested_digest(raw_document),
+        )
+
+
+def test_resolver_rejects_oversize_before_json_parse(monkeypatch: pytest.MonkeyPatch):
+    raw_document = b"x" * (MAX_OCI_DOCUMENT_BYTES + 1)
+
+    def fail_if_called(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("json parser must not receive oversized input")
+
+    monkeypatch.setattr(oci_image_manifest.json, "loads", fail_if_called)
+    with pytest.raises(ValueError, match="^oci_document$"):
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=_requested_digest(raw_document),
+        )
+
+
+def test_resolver_classifies_excessive_json_nesting_as_oci_document():
+    raw_document = (
+        b'{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json",'
+        b'"manifests":'
+        + b"[" * 10_000
+        + b"0"
+        + b"]" * 10_000
+        + b"}"
+    )
+
+    with pytest.raises(ValueError, match="^oci_document$"):
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=_requested_digest(raw_document),
+        )
+
+
+def test_resolver_normalizes_json_parser_recursion_error(monkeypatch: pytest.MonkeyPatch):
+    raw_document = _oci_index_bytes()
+
+    def raise_recursion(*_args: object, **_kwargs: object) -> object:
+        raise RecursionError("synthetic parser recursion")
+
+    monkeypatch.setattr(oci_image_manifest.json, "loads", raise_recursion)
+    with pytest.raises(ValueError, match="^oci_document$"):
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=_requested_digest(raw_document),
+        )
+
+
+@pytest.mark.parametrize("raw_document", [b"{", b"\xff"])
+def test_resolver_classifies_invalid_json_and_unicode_as_oci_document(raw_document: bytes):
+    with pytest.raises(ValueError, match="^oci_document$"):
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=_requested_digest(raw_document),
+        )
 
 
 @pytest.mark.parametrize(
