@@ -336,13 +336,13 @@ def test_repository_exception_matches_trusted_base_and_candidate_policy(tmp_path
     trusted_evaluation = _evaluate_without_exception(trusted, REPO_ROOT, base, head)
     candidate_evaluation = _evaluate_without_exception(code_governance, REPO_ROOT, base, head)
     applied_evaluation = _evaluate(REPO_ROOT, base, head)
-    expected = {("production_net_loc", None)}
+    expected: set[tuple[str, str | None]] = set()
 
     assert {(item.code, item.path) for item in trusted_evaluation.violations} == expected
     assert {(item.code, item.path) for item in candidate_evaluation.violations} == expected
     assert {(item.code, item.path) for item in applied_evaluation.exempted_violations} == expected
     assert applied_evaluation.status == "pass"
-    assert applied_evaluation.exception["status"] == "applied"
+    assert applied_evaluation.exception["status"] == "absent"
 
 
 def test_production_net_loc_boundary_is_exclusive(governance_repo: tuple[Path, str]) -> None:
