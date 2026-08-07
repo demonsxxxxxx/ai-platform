@@ -8,9 +8,13 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from app import repositories
+from app.context.file_content import (
+    ContextFileContentError,
+    parse_context_file,
+    validate_context_file_for_stage,
+)
 from app.context_manifest import truncate_utf8_text, utf8_token_estimate
 from app.control_plane_contracts import sanitize_public_payload
-from app.file_parser_contracts import is_known_binary_workbook
 from app.path_safety import ensure_creatable_inside
 
 
@@ -659,18 +663,24 @@ class ContextRetrievalAuthority:
             run_id=run_id,
             file_id=file_id,
         )
-        if is_known_binary_workbook(
-            file_name=row.get("original_name") or row.get("name"),
-            content_type=row.get("content_type"),
-        ):
-            raise ContextRetrievalDenied("context_file_parser_required")
-        content, truncated = self._bounded_content_from_row(row, max_bytes=max_bytes)
+        try:
+            parsed = parse_context_file(
+                row,
+                self._raw_content_bytes(row),
+                max_output_bytes=max_bytes,
+            )
+        except ContextFileContentError as exc:
+            raise ContextRetrievalDenied(exc.code) from exc
         return self._envelope(
             "context_retrieval.read_context_file",
             file_id=file_id,
             name=self._safe_name(row),
-            content=content,
-            truncated=truncated,
+            content=parsed.content,
+            content_type=parsed.content_type,
+            parser_id=parsed.parser_id,
+            parser_version=parsed.parser_version,
+            source_bytes=parsed.source_bytes,
+            truncated=parsed.truncated,
         )
 
     async def read_run_artifact(
@@ -807,6 +817,10 @@ class ContextRetrievalAuthority:
             size_required_reason="context_file_size_required",
             too_large_reason="context_file_too_large",
         )
+        try:
+            validate_context_file_for_stage(row, raw_bytes)
+        except ContextFileContentError as exc:
+            raise ContextRetrievalDenied(exc.code) from exc
         return {
             "file_id": file_id,
             "name": self._safe_name(row),
@@ -1006,7 +1020,10 @@ class ContextRetrievalAuthority:
 
     def _raw_content_bytes(self, row: dict[str, Any]) -> bytes:
         if isinstance(self._repository, InMemoryContextRetrievalRepository):
-            return str(row.get("content") or "").encode("utf-8")
+            content = row.get("content")
+            if isinstance(content, bytes):
+                return content
+            return str(content or "").encode("utf-8")
         return self._repository.read_storage_bytes(row)
 
     def _declared_size_bytes(self, row: dict[str, Any]) -> int | None:

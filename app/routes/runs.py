@@ -10,6 +10,7 @@ from app.agent_profiles import reauthorize_pinned_run_for_replay
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capabilities import get_capability
 from app.context_builder import record_initial_context_snapshot
+from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.context_manifest import public_context_manifest_projection
 from app.db import transaction
 from app.models import (
@@ -792,8 +793,22 @@ async def create_run(
                     conn,
                     **authorization_kwargs,
                 )
-            input_modes = skill.get("input_modes") or []
-            if "docx" in input_modes and not request.file_ids:
+            input_modes = list(skill.get("input_modes") or [])
+            reusable_file_rows = []
+            if request.session_id and not request.file_ids and has_file_input_mode(input_modes):
+                reusable_file_rows = await repositories.list_authorized_session_input_files(
+                    conn,
+                    tenant_id=tenant_id,
+                    workspace_id=request.workspace_id,
+                    user_id=user_id,
+                    session_id=request.session_id,
+                )
+            primary_file_ids = primary_file_ids_for_run(
+                requested_file_ids=request.file_ids,
+                reusable_rows=[dict(row) for row in reusable_file_rows],
+                input_modes=input_modes,
+            )
+            if has_file_input_mode(input_modes) and not primary_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
             await enforce_user_active_run_limit(conn, tenant_id=tenant_id, user_id=user_id)
             release_decision = resolve_rollout_skill_decision(
@@ -840,7 +855,7 @@ async def create_run(
                 "run_id": run_id,
                 "agent_id": resolved_agent_id,
                 "skill_id": resolved_skill_id,
-                "file_ids": request.file_ids,
+                "file_ids": primary_file_ids,
                 "input": run_input,
                 "executor_type": skill["executor_type"],
                 "skill_version": skill_version,
@@ -861,6 +876,7 @@ async def create_run(
                 session_id=session_id,
                 run_id=run_id,
                 file_ids=request.file_ids,
+                input_modes=input_modes,
             )
             await repositories.ensure_user(
                 conn,
@@ -887,7 +903,7 @@ async def create_run(
                 skill_id=resolved_skill_id,
                 input_json={
                     "input": run_input,
-                    "file_ids": request.file_ids,
+                    "file_ids": primary_file_ids,
                     "executor_type": skill["executor_type"],
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
@@ -926,8 +942,9 @@ async def create_run(
                 skill_id=resolved_skill_id,
                 input_payload=run_input,
                 message_ids=[],
-                file_ids=request.file_ids,
+                file_ids=primary_file_ids,
                 source="runs_api",
+                include_session_history=bool(request.session_id),
             )
             queue_payload = _validate_queue_payload_for_enqueue(
                 {
@@ -943,7 +960,7 @@ async def create_run(
                 skill_id=resolved_skill_id,
                 skill_version=skill_version,
                 executor_type=str(skill["executor_type"]),
-                file_ids=request.file_ids,
+                file_ids=primary_file_ids,
                 source="runs_api",
             ):
                 await repositories.append_event(

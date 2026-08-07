@@ -1,6 +1,7 @@
 import pytest
 from datetime import datetime
 
+from app import repositories
 from app.context_builder import (
     executor_context_pack_from_snapshot,
     ensure_public_context_provenance,
@@ -685,6 +686,10 @@ async def test_record_initial_context_snapshot_adds_source_run_artifact_followup
             },
         ]
 
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        calls.append(("source_file", kwargs["run_id"], kwargs["file_id"]))
+        return {"id": kwargs["file_id"]}
+
     async def fake_create_context_snapshot(conn, **kwargs):
         calls.append(("snapshot", kwargs))
         return {"id": "ctx-followup"}
@@ -698,6 +703,7 @@ async def test_record_initial_context_snapshot_adds_source_run_artifact_followup
 
     monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
     monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
     monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
@@ -721,6 +727,7 @@ async def test_record_initial_context_snapshot_adds_source_run_artifact_followup
     )
 
     assert ("authorize_source", "tenant-a", "user-a", "run-source", False) in calls
+    assert ("source_file", "run-source", "file-a") in calls
     assert ("source_artifacts", "tenant-a", "run-source") in calls
     snapshot_call = next(item[1] for item in calls if item[0] == "snapshot")
     assert snapshot_call["included_artifact_ids"] == ["art-v1", "art-v2"]
@@ -1090,6 +1097,9 @@ async def test_record_initial_context_snapshot_does_not_invent_artifact_version_
             },
         ]
 
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        return {"id": kwargs["file_id"]}
+
     async def fake_create_context_snapshot(conn, **kwargs):
         calls.append(("snapshot", kwargs))
         return {"id": "ctx-followup"}
@@ -1103,6 +1113,7 @@ async def test_record_initial_context_snapshot_does_not_invent_artifact_version_
 
     monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
     monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
     monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
@@ -1187,7 +1198,7 @@ async def test_record_initial_context_snapshot_skips_source_artifacts_without_sa
         skill_id="qa-file-reviewer",
         input_payload={"message": "continue previous document"},
         message_ids=["msg-followup"],
-        file_ids=["file-a"],
+        file_ids=[],
         source="copy_run",
         source_run_id="run-cross-user",
     )
@@ -1262,7 +1273,7 @@ async def test_record_initial_context_snapshot_requires_source_artifacts_same_wo
         skill_id="qa-file-reviewer",
         input_payload={"message": "continue previous document"},
         message_ids=["msg-followup"],
-        file_ids=["file-a"],
+        file_ids=[],
         source="copy_run",
         source_run_id="run-other-scope",
     )
@@ -1273,6 +1284,48 @@ async def test_record_initial_context_snapshot_requires_source_artifacts_same_wo
     assert snapshot_call["included_artifact_ids"] == []
     assert snapshot_call["payload_json"]["referenced_materials"]["artifact_count"] == 0
     assert context_ref["referenced_materials"]["artifact_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_record_initial_context_snapshot_rejects_source_file_missing_from_source_snapshot(
+    monkeypatch,
+):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": "default",
+            "user_id": user_id,
+            "session_id": "session-a",
+        }
+
+    async def missing_source_file(conn, **kwargs):
+        return None
+
+    async def fail_source_artifacts(*args, **kwargs):
+        raise AssertionError("source artifacts must not be read after file authorization fails")
+
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.get_scoped_context_file", missing_source_file)
+    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fail_source_artifacts)
+
+    with pytest.raises(repositories.RepositoryConflictError, match="context_file_unavailable"):
+        await record_initial_context_snapshot(
+            object(),
+            tenant_id="tenant-a",
+            workspace_id="default",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-followup",
+            trace_id="trace-followup",
+            agent_id="qa-word-review",
+            skill_id="qa-file-reviewer",
+            input_payload={"message": "continue previous document"},
+            message_ids=[],
+            file_ids=["file-not-authorized"],
+            source="copy_run",
+            source_run_id="run-source",
+        )
 
 
 @pytest.mark.asyncio
@@ -1335,7 +1388,7 @@ async def test_record_initial_context_snapshot_requires_source_artifacts_same_te
         skill_id="qa-file-reviewer",
         input_payload={"message": "continue previous document"},
         message_ids=["msg-followup"],
-        file_ids=["file-a"],
+        file_ids=[],
         source="copy_run",
         source_run_id="run-other-owner",
     )

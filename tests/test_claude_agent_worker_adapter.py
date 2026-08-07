@@ -1223,12 +1223,16 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
     async def fake_transaction():
         yield object()
 
-    async def fake_get_run_file(conn, *, tenant_id, run_id, file_id):
-        return {"original_name": "input.docx", "storage_key": "files/input.docx"}
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        return {
+            "original_name": "input.docx",
+            "size_bytes": 3,
+            "storage_key": "files/input.docx",
+        }
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_run_file", fake_get_run_file)
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
     with pytest.raises(ValueError, match="run workspace"):
@@ -1252,16 +1256,18 @@ async def test_materialize_files_captures_exact_facts_before_duplicate_basename_
     async def fake_transaction():
         yield object()
 
-    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
+    async def fake_get_scoped_context_file(_conn, **kwargs):
+        file_id = kwargs["file_id"]
         return {
             "original_name": "book.xlsx",
             "content_type": XLSX_CONTENT_TYPE,
+            "size_bytes": 4,
             "storage_key": f"files/{'a' if file_id == 'file-a' else 'b'}",
         }
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_run_file", fake_get_run_file)
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
     materialized = await adapter._materialize_files(
@@ -1293,7 +1299,7 @@ async def test_general_chat_attachment_refs_are_metadata_only_without_object_rea
     async def fake_transaction():
         yield object()
 
-    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
+    async def fake_get_scoped_context_file(_conn, **kwargs):
         return {
             "original_name": "book.xlsx",
             "content_type": XLSX_CONTENT_TYPE,
@@ -1303,7 +1309,7 @@ async def test_general_chat_attachment_refs_are_metadata_only_without_object_rea
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_run_file", fake_get_run_file)
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
     prepared_files = await adapter._materialize_files(
@@ -1342,7 +1348,7 @@ async def test_general_chat_with_explicit_skill_keeps_typed_attachment_materiali
     async def fake_transaction():
         yield object()
 
-    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
+    async def fake_get_scoped_context_file(_conn, **kwargs):
         return {
             "original_name": "book.xlsx",
             "content_type": XLSX_CONTENT_TYPE,
@@ -1352,7 +1358,7 @@ async def test_general_chat_with_explicit_skill_keeps_typed_attachment_materiali
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_run_file", fake_get_run_file)
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
     prepared_files = await adapter._materialize_files(
@@ -1975,8 +1981,15 @@ async def test_general_chat_xlsx_metadata_does_not_create_parser_contract_or_req
     async def fake_transaction():
         yield object()
 
-    async def fake_get_run_file(_conn, *, tenant_id, run_id, file_id):
-        assert (tenant_id, run_id, file_id) == ("default", "run_1", "file_1")
+    async def fake_get_scoped_context_file(_conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "default",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "session_id": "ses_1",
+            "run_id": "run_1",
+            "file_id": "file_1",
+        }
         return {
             "original_name": "book.xlsx",
             "content_type": XLSX_CONTENT_TYPE,
@@ -1991,8 +2004,8 @@ async def test_general_chat_xlsx_metadata_does_not_create_parser_contract_or_req
         FailIfReadStorage,
     )
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_run_file",
-        fake_get_run_file,
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     runtime_requests = install_sandbox_runtime(monkeypatch)

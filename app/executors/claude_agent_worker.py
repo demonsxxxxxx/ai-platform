@@ -13,6 +13,7 @@ from xml.etree import ElementTree
 from app import repositories
 from app.capabilities import required_artifact_types_for_skill
 from app.context_builder import executor_context_pack_from_snapshot
+from app.context.file_content import ContextFileContentError
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     available_context_retrieval_tools,
@@ -2168,17 +2169,26 @@ class ClaudeAgentWorkerAdapter:
         attachment_metadata: list[_AuthorizedAttachmentMetadata] = []
         async with transaction() as conn:
             for file_id in payload.file_ids:
-                row = await repositories.get_run_file(
+                row = await repositories.get_scoped_context_file(
                     conn,
                     tenant_id=payload.tenant_id,
+                    workspace_id=payload.workspace_id,
+                    user_id=payload.user_id,
+                    session_id=payload.session_id,
                     run_id=payload.run_id,
                     file_id=file_id,
                 )
                 if row is None:
-                    continue
+                    raise ContextFileContentError("context_file_unavailable")
                 filename = Path(str(row["original_name"] or file_id)).name
                 content_type = str(row.get("content_type") or "")
-                size_bytes = max(0, int(row.get("size_bytes") or 0))
+                declared_size = row.get("size_bytes")
+                try:
+                    size_bytes = int(declared_size)
+                except (TypeError, ValueError) as exc:
+                    raise ContextFileContentError("context_file_identity_mismatch") from exc
+                if size_bytes < 0:
+                    raise ContextFileContentError("context_file_identity_mismatch")
                 attachment_metadata.append(
                     _AuthorizedAttachmentMetadata(
                         file_id=file_id,
@@ -2202,13 +2212,19 @@ class ClaudeAgentWorkerAdapter:
                 if storage is None:
                     raise RuntimeError("typed attachment storage is unavailable")
                 content = storage.get_bytes(storage_key=row["storage_key"])
+                actual_sha256 = hashlib.sha256(content).hexdigest()
+                expected_sha256 = str(row.get("sha256") or "").casefold()
+                if len(content) != size_bytes or (
+                    expected_sha256 and actual_sha256 != expected_sha256
+                ):
+                    raise ContextFileContentError("context_file_identity_mismatch")
                 attachment_facts.append(
                     MaterializedAttachmentFact(
                         file_id=file_id,
                         file_name=filename,
                         content_type=content_type,
                         byte_count=len(content),
-                        sha256=hashlib.sha256(content).hexdigest(),
+                        sha256=actual_sha256,
                     )
                 )
                 target.write_bytes(content)
