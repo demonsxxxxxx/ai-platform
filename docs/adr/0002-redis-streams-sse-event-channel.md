@@ -1,6 +1,7 @@
 ---
 status: superseded
 superseded_by: 0003-redis-streams-sse-event-channel-v2-correction.md
+amended_by: 0003-redis-streams-sse-event-channel-v2-correction.md
 ---
 
 # Use Redis Streams for bounded SSE replay and PostgreSQL for durable final facts
@@ -26,4 +27,5 @@ transport from bounded execution authority.
 ADR 0003 and design ID `ai-platform.redis-streams-sse-event-channel.v2` are the
 only current implementation authority. This file preserves the accepted v1
 identity and audit history; it does not silently change v1 semantics or authorize
-implementation.
+implementation. No v1 parser, PostgreSQL polling loop, delta-write path, runtime
+feature flag, or fallback may treat this historical text as a runnable option.

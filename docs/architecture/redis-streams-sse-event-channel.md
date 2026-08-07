@@ -8,7 +8,7 @@ Supersedes: `ai-platform.redis-streams-sse-event-channel.v1`, accepted at
 `73b37ff40f965dcfb7b9f2a9f499d7d5fb32be11` and merged as
 `5d5a0c537baa0af2d9c47cb8d010a713c5240dc6`
 
-Source baseline: `5d5a0c537baa0af2d9c47cb8d010a713c5240dc6`
+Source baseline: `046d4b8a91d70dac51fe31d517d8d09c907a3f9f`
 
 ## Decision Summary
 
@@ -33,21 +33,30 @@ trimmed replay window produces an explicit gap and durable-state reload. The
 durable final answer always replaces any partial live fold at terminal
 reconciliation.
 
-Version 2 corrects four implementation constraints without weakening the
+Version 2 corrects seven implementation constraints without weakening the
 bounded-replay decision:
 
 - A pure StreamBridge contract cannot enable production. PostgreSQL admission
   authority must be merged and pass a real PostgreSQL gate before any producer
   can create or dispatch a Redis-pinned run.
+- Durable executor dispatch is a mandatory A2 stage after admission. It owns the
+  token protocol and execution ledger; the installed SDK cannot truthfully be
+  treated as a resumable idempotent execution service.
 - Authorization revocation has requested, committed, and effective states. A
   commit advances a monotonic epoch and starts a cross-instance barrier; only
   barrier completion makes the zero-payload guarantee effective.
+- PostgreSQL owns the revocation epoch, registered instance/ack set, database-
+  clock send leases, and barrier. Redis auth-context leases and process memory
+  are explicitly non-authoritative.
 - A mid-run Redis outage degrades live transport, not automatically execution.
   Eligible non-interactive work may continue under bounded control and converge
   through PostgreSQL; interactive, approval, control, or unsafe work pauses or
   fails closed.
 - Terminal PostgreSQL state and a pending publication intent converge the run
   even when terminal `XADD` fails or has an unknown outcome.
+- The final release replaces the PostgreSQL polling/delta SSE runtime. It does
+  not retain a production compatibility stack, shadow live path, or feature flag
+  that can select both mechanisms.
 
 This document selects the architecture and dispatch contracts. It does not
 authorize implementation, deployment, or a runtime claim.
@@ -61,27 +70,32 @@ authorize implementation, deployment, or a runtime claim.
    a positive `admission_owner_epoch`, owner lease, and admission deadline. It
    commits before `stream_open`. A fenced compare-and-set confirmation records
    `stream_open_confirmed` and creates the unique durable SDK dispatch intent in
-   one transaction; only that intent may reach the idempotent SDK dispatch gate.
-2. Safe typed text arrives quickly in coalesced chunks. Tool, approval, artifact,
+   one transaction; only that intent may reach A2.
+2. A2 binds the intent's stable dispatch token to the exact admitted authority,
+   durably accepts or returns one execution ledger record, and authorizes at most
+   one SDK start. A response loss is resolved by status/handle lookup, never by a
+   fresh token or direct SDK call. Executor loss converges to `execution_lost`
+   when the installed SDK cannot resume the in-flight work.
+3. Safe typed text arrives quickly in coalesced chunks. Tool, approval, artifact,
    and lifecycle events remain typed and are projected only after their durable
    authority allows them to be public.
-3. A browser that disconnects reconnects with the last event it actually
+4. A browser that disconnects reconnects with the last event it actually
    accepted. It receives only later retained events and folds duplicates
    idempotently.
-4. If the retained window no longer covers the cursor, the browser is told that
+5. If the retained window no longer covers the cursor, the browser is told that
    replay is incomplete. It discards the incomplete live answer, reloads the
    authorized durable run state, and resumes only from a server-issued current
    tail when the run is still active.
-5. If Redis fails mid-run, live delta publication stops immediately and no
+6. If Redis fails mid-run, live delta publication stops immediately and no
    unbounded memory or PostgreSQL delta fallback begins. Eligible non-interactive
    work may continue only while cancellation, resource, egress, and safety
    authorities remain controllable. Approval or user interaction pauses or fails
    closed when its event cannot be delivered reliably.
-6. At completion, the worker seals the live transport, commits the truthful
+7. At completion, the worker seals the live transport, commits the truthful
    success, failure, or cancellation state, final answer when complete, required
    facts, degraded-transport fact, and terminal publication intent in one
    PostgreSQL transaction. Only then may terminal and end be published in Redis.
-7. If Redis is absent or an `XADD` outcome is unknown, the run remains durably
+8. If Redis is absent or an `XADD` outcome is unknown, the run remains durably
    terminal rather than permanently running. The pending intent and authorized
    final hydrate converge delivery; PostgreSQL is never rolled back to make the
    stream look healthy and incomplete execution is never marked successful.
@@ -105,11 +119,14 @@ final answer without PostgreSQL text-delta write amplification.
 | Replay gap | Proof that a syntactically valid cursor for the authorized run is no longer covered by retained history or cannot be related safely to the current stream incarnation/generation. Foreign, malformed, and future cursors are invalid requests, not gaps. |
 | Terminal announcement | A Redis event emitted only after the authoritative PostgreSQL terminal transaction commits. |
 | Final reconciliation | Replacement of the live fold with the authorized PostgreSQL final answer, status, semantics, and artifacts. |
-| Stream backend pin | The immutable per-run choice of legacy PostgreSQL streaming or Redis Streams v2. |
+| Stream backend pin | The immutable active-run assertion `redis_streams_v2`. It is a consistency fence, not a production selector between two live streaming stacks. |
+| Dispatch token | An opaque immutable A1 intent identifier whose durable binding includes design, tenant/session/run, attempt, incarnation, generation, and the winning admission-owner epoch. It is never replaced after an uncertain request. |
+| Execution ledger | The A2 PostgreSQL record that owns executor acceptance, executor-instance binding, start authorization, bounded status/handle lookup, and terminal or `execution_lost` outcome for one dispatch token. |
 | Authorization epoch | A positive, monotonically increasing authority version bound to each connection/send lease. Epoch advancement invalidates renewal of every older lease. |
 | Revocation requested | A change has been accepted for processing but its durable authorization epoch has not committed. Existing authority remains the reported state. |
 | Revocation committed | The new epoch is durable, no old-epoch lease may renew, and cross-instance invalidation/ack is in progress. The API reports revocation pending, not effective. |
 | Revocation effective | Every old-epoch writer has closed and acknowledged, or every bounded old lease has expired. From this barrier onward, zero payload frames are permitted. |
+| SSE send lease | A PostgreSQL-authorized, API-instance/connection/epoch-bound lease whose expiry is calculated with database time and is no more than 15 seconds. Redis auth-context operation leases are unrelated. |
 | Transport degraded | Redis live/replay publication is unavailable while PostgreSQL and the bounded execution authorities may still be healthy. It is a durable fact, not permission to buffer or write PostgreSQL deltas. |
 
 ## Current-Main Diagnosis
@@ -125,8 +142,9 @@ deltas and polling load on PostgreSQL:
 - The current ledger atomically allocates per-run cursors, supports exact batch
   receipts, terminal drain fences, and incremental reads in
   [`app/streaming/postgres.py`](https://github.com/demonsxxxxxx/ai-platform/blob/839f851bc0954d1d97910c07489fc750bdb01b2b/app/streaming/postgres.py#L116-L333).
-  Those primitives remain useful for legacy rows and necessary semantic facts;
-  they do not justify retaining each text delta.
+  Historical rows and necessary semantic facts may remain readable, but these
+  primitives cease to be a live SSE cursor/page and do not justify retaining
+  each text delta.
 - The public LambChat SSE route accepts `Last-Event-ID`, but reconnect seeds fold
   state by reading the full durable prefix. Its loop rereads the run, event page,
   and artifacts, then sleeps one second in
@@ -151,9 +169,11 @@ amplification or establish bounded replay semantics.
 
 - This design does not implement A-F, change a route, add schema, or select a
   deployment topology.
-- It does not create a second public SSE product route. LambChat-compatible Chat
-  remains the public adapter; native event/playback APIs remain history and
-  diagnostics.
+- It does not create a second public SSE product route. The existing LambChat-
+  compatible URL remains only as the public transport contract; C replaces its
+  implementation with Redis `XREAD` and cannot proxy or fall back to the
+  PostgreSQL poller. Native history/playback APIs remain durable-history and
+  diagnostics interfaces, never live-stream fallbacks.
 - It does not make Redis a transcript, audit ledger, run authority, artifact
   authority, or final-answer authority.
 - It does not use `XREADGROUP`; browsers are independent readers, not competing
@@ -238,8 +258,9 @@ flowchart LR
     A1 -->|"commit pin, pending, open token, owner epoch, and lease"| PG[("PostgreSQL durable authority")]
     PG -->|"open token and owner epoch"| W["StreamBridge stream_open"]
     W -->|"matching open proof"| A1C["Fenced confirm CAS plus dispatch intent"]
-    A1C -->|"committed dispatch token"| DG["Idempotent dispatch_once gate"]
-    DG -->|"one execution identity"| SDK["Claude Agent SDK adapter"]
+    A1C -->|"committed dispatch token"| A2["A2 durable executor dispatch ledger"]
+    A2 -->|"token-aware claim and lookup"| EX["Sandbox executor instance"]
+    EX -->|"at most one authorized start"| SDK["Claude Agent SDK adapter"]
     SDK --> N["Typed event normalizer"]
     N --> P["Tenant/run authorization and safe projection"]
     P --> C["Bounded per-run coalescer"]
@@ -259,6 +280,47 @@ flowchart LR
 read/write, and terminal publication contracts. Claude, LambChat, and frontend
 code are adapters. This preserves the Harness replacement boundary in
 `runtime-authorities.md`.
+
+## Executor Dispatch Sequence
+
+```mermaid
+sequenceDiagram
+    participant W as Worker and SandboxRuntime
+    participant L as PostgreSQL execution ledger
+    participant X as Executor instance
+    participant G as Platform execution gateway
+    participant SDK as Claude SDK
+
+    W->>L: acquire_or_return dispatch token and exact binding
+    L-->>W: durable execution identity and pending status
+    W->>X: POST execute with token, identity, and binding
+    X->>G: accept_or_lookup token for this executor instance
+    G->>L: lock ledger and verify A1 intent, owner epoch, and binding
+    L-->>G: accepted or existing status and handle
+    G-->>X: start_authorized only for the winning live executor instance
+    X->>G: commit sdk_start before invoking SDK
+    G->>L: persist start commitment for this instance and token
+    L-->>G: committed
+    G-->>X: start committed
+    X->>SDK: one query for the committed token
+    alt caller loses the execute response
+        W->>G: lookup immutable token
+        G->>L: read durable status and handle
+        L-->>W: accepted, running, terminal, or execution_lost
+    else executor restarts before or after SDK start
+        X-xSDK: in-flight process and SDK handle are lost
+        G->>L: mark execution_lost after executor-instance lease expiry
+        Note over W,SDK: No new executor may inherit the start or issue another query
+    end
+```
+
+The `start_authorized` and `sdk_start` transitions are intentionally fail-closed.
+The executor records a durable pre-start commitment before calling the SDK. A
+crash after that commitment but before the SDK call may produce no execution; it
+still terminalizes `execution_lost` rather than risking a duplicate start. A
+same-process response loss may be resolved only by the winning executor
+instance's lookup. An executor restart has a new instance identity and cannot
+claim successful same-handle resumption.
 
 ## Normal Streaming Sequence
 
@@ -590,8 +652,9 @@ positive decimal `stream_incarnation`; the payload includes the bounded
 - PostgreSQL is the only durable allocator of `stream_incarnation`. The run
   admission transaction creates positive incarnation `1` together with the
   immutable `redis_streams_v2` backend pin and design version. The allocation
-  commits before `stream_open` and SDK dispatch. Legacy PostgreSQL-pinned runs
-  have no Redis incarnation.
+  commits before `stream_open` and SDK dispatch. Historical pre-cutover rows have
+  no Redis incarnation and are hydrate-only; they cannot resume, retry, or become
+  an active live stream.
 - Key: `ai-platform:sse:v2:{<tenant_scope>:<run_id>}:<stream_incarnation>:events`.
   The braces keep every sequential incarnation for one tenant/run in one Redis
   Cluster hash slot. Exactly one incarnation is current; an older key may remain
@@ -625,16 +688,28 @@ positive decimal `stream_incarnation`; the payload includes the bounded
   Redis envelope proves the exact pin. Zero rows updated is a stale/fenced result.
   The same transaction records `stream_open_confirmed` and inserts exactly one
   immutable `sdk_dispatch_intent` with a `dispatch_token`, uniquely constrained
-  by run/attempt/generation. Confirmation without that intent rolls back.
-- A durable dispatch intent alone is not exactly-once authority. Every SDK start
-  path must call repository-owned `dispatch_once(dispatch_token)`. That boundary
-  durably acquires or returns the one `sdk_execution_fence` and execution identity
-  uniquely bound to run/attempt/generation before external SDK start. The SDK
-  gateway must use that identity as a mandatory idempotency key and acquire or
-  return the same execution handle. Repeated claims or recovery calls may finish
-  the same handle but cannot start another SDK execution. If the SDK boundary
-  cannot prove this acquire-or-return property for an uncertain start, A1 fails
-  closed and may not issue a fresh SDK call or pass its gate.
+  by run/attempt/incarnation/generation and the winning owner epoch. Confirmation
+  without that intent rolls back.
+- A1 creates authority but does not own executor delivery. A2 consumes only the
+  committed intent and creates or returns one `sdk_execution_ledger` row whose
+  opaque `dispatch_token` and `execution_identity` are bound to design,
+  tenant/session/run, attempt, incarnation, generation, and winning
+  `admission_owner_epoch`. Duplicate tokens with any different binding and every
+  stale-owner call fail closed.
+- A2 replaces the current direct-POST/process-local replay claim with durable
+  token acceptance, executor-instance binding, status/handle lookup, and a
+  database-committed pre-start transition. Every `ExecutorTaskRequest`, gateway
+  claim, executor request, callback, lookup, and worker recovery carries and
+  validates the same token and execution identity. An uncertain outer POST is
+  resolved by lookup, never by minting a token or directly calling the SDK.
+- The installed Claude SDK `session_id` is conversation continuity, not a durable
+  idempotency key or resumable in-flight handle. Only the live executor instance
+  that won the ledger claim may perform the one SDK query. Executor restart or
+  loss before/after SDK start cannot transfer that authorization; after its
+  bounded instance lease expires, the ledger records `execution_lost` and D
+  commits a truthful non-success terminal state. A crash after the durable
+  pre-start commitment but before the SDK call may execute zero times; this is the
+  explicit at-most-once tradeoff used to prevent duplicate work.
 - Failure, timeout, crash, or an unknown open result never changes the pin and
   never directly authorizes SDK dispatch. The current owner retries the same
   token; after lease expiry a maintenance owner takes over with a higher fence.
@@ -668,6 +743,70 @@ positive decimal `stream_incarnation`; the payload includes the bounded
   frame. A gap cannot be acknowledged as progress.
 - `terminal` and `end` each have Redis-backed IDs. `end` references the stable
   terminal `event_id`; the reducer accepts both idempotently.
+
+## A1 And A2 Implementation Ownership
+
+A1 has one transaction-path lease over these exact files and symbols:
+
+- `app/schema.sql` adds `sse_stream_admissions`,
+  `sse_authorization_scopes`, `sse_api_instances`, `sse_send_leases`, and
+  `sse_revocation_acks`, including unique keys, monotonic checks, foreign keys,
+  and database-clock expiry indexes. No later stage creates equivalent schema.
+- `app/streaming/postgres.py` adds transaction-owned repository functions
+  `create_stream_admission`, `take_over_stream_admission`,
+  `confirm_stream_open_and_create_dispatch_intent`,
+  `register_sse_api_instance`, `acquire_sse_send_lease`,
+  `lookup_sse_send_authority`, `request_sse_revocation`,
+  `commit_sse_revocation`, `ack_sse_revocation`,
+  `take_over_sse_revocation_barrier`, and
+  `advance_sse_revocation_effective`.
+- New `app/streaming/admission.py::PostgresStreamAdmissionAuthority` owns the
+  pending/open/takeover/confirm service state machine. New
+  `app/streaming/authorization.py::PostgresSseAuthorizationAuthority` owns API
+  registration, send-lease acquisition/recheck, revocation orchestration, and
+  the effective barrier. Both receive transaction-owned connections and never
+  treat Redis or process memory as authority.
+
+A2 has one executor-dispatch lease over these exact files and symbols:
+
+- `app/schema.sql` adds `sdk_execution_ledger`, uniquely keyed by dispatch token
+  and by the admitted run/attempt/incarnation/generation. It persists execution
+  identity, execution-owner epoch, executor instance/lease, state, bounded public
+  status, opaque handle, start/terminal timestamps, and loss reason.
+- New `app/runtime/sandbox/execution_ledger.py::PostgresExecutorExecutionLedger`
+  owns `acquire_or_return`, `lookup_status`, `take_over_before_start`,
+  `commit_sdk_start`, `mark_running`, `mark_terminal`, and
+  `mark_execution_lost`. Each method validates the complete A1 intent binding.
+- `app/runtime/sandbox/contracts.py::ExecutorTaskRequest` adds the dispatch token,
+  execution identity/fence, incarnation, generation, admission-owner epoch, and
+  executor-instance identity. New `ExecutorExecutionStatus` is the only bounded
+  status/handle response contract.
+- `app/routes/runtime_callbacks.py` adds authenticated internal
+  `acquire_executor_execution` and `lookup_executor_execution` gateway handlers;
+  the existing callback-token binding is extended to the execution identity.
+- `app/runtime/sandbox/executor_client.py::SandboxExecutorClient.execute` and new
+  `lookup_execution`, plus `app/runtime/sandbox/runtime.py::SandboxRuntime.submit`
+  and `_call_execute_task`, must resolve timeout/409/response loss by immutable
+  token lookup. They never retry with a fresh token.
+- `app/runtime/sandbox/executor_app.py::create_executor_app`, `execute_task`, and
+  new `lookup_task_execution` replace the process-local `execute_claimed` boolean
+  with gateway-backed token acceptance and a per-process executor-instance ID.
+  Only a newly returned `start_authorized` result permits the SDK boundary.
+- `app/executors/claude_agent_worker.py::_submit_prepared_run_to_sandbox_runtime`
+  propagates the A1 intent binding and consumes durable status; it cannot call a
+  direct SDK fallback. `app/executors/claude_agent_sdk_runner.py::run_claude_agent_sdk`
+  accepts the already committed execution identity for diagnostics but must not
+  claim that `ClaudeAgentOptions.session_id` is an idempotency or resume key.
+
+The A2 state machine is
+`intent_ready -> accepted -> start_committed -> running -> succeeded|failed|execution_lost`.
+Before `start_committed`, expiry of the database-clock executor-instance lease
+may permit a monotonically fenced takeover of the same token; the old instance's
+later start commit updates zero rows. At or after `start_committed`, ownership is
+never transferred. Loss of that instance converges to `execution_lost`; neither
+the opaque ledger handle nor the SDK session ID authorizes another SDK query.
+Every duplicate with the same binding returns current status/handle, while a
+duplicate token with different binding returns a fenced conflict.
 
 ## Gap And Durable Reload Contract
 
@@ -729,7 +868,7 @@ answer. Terminal hydration is the convergence point.
 | --- | --- | --- |
 | Process memory | Small compatible text/reasoning buffers, timers, and one run-local producer state machine | Replay after process loss, terminal authority, unbounded queues |
 | Redis Streams | Ordered bounded public-safe events inside one proven incarnation, reconnect cursor, retained bounds, terminal/end delivery | Permanent history, stream-incarnation allocation, final answer, authorization, artifact/tool/approval truth |
-| PostgreSQL | Run/session authority, final answer, tool/approval/artifact facts, necessary audit/semantic facts, backend/design pin, current stream incarnation, immutable-target terminal publication intents | Per-text-delta transport after Redis cutover |
+| PostgreSQL | Run/session authority, final answer, tool/approval/artifact facts, necessary audit/semantic facts, backend/design pin, current stream incarnation, A2 execution ledger, SSE authorization epoch/send leases/revocation barrier, immutable-target terminal publication intents | Per-text-delta transport after Redis cutover |
 
 Consistency boundaries:
 
@@ -869,9 +1008,15 @@ blocked connection.
 | --- | --- |
 | Redis unavailable at run admission | Reject or hold admission fail closed; do not start a Redis-pinned SDK run and do not select memory fallback. |
 | PostgreSQL admission commits and `stream_open` fails or is unknown | Keep `admission_open_pending`; never dispatch SDK directly. Retry the same idempotent open token and immutable pin. Takeover after lease expiry increments the persisted owner fence. Fenced confirmation atomically creates the unique dispatch intent or commits a truthful pre-dispatch admission failure within the bounded recovery deadline. |
-| Delayed old-owner `stream_open` response after takeover | The old epoch may report matching Redis evidence, but confirm CAS updates zero rows because the owner fence is stale. It cannot create a dispatch intent, renew, or dispatch. The current owner alone may confirm using the unchanged token. RED asserts stale CAS rejection and one dispatch intent/execution identity. |
-| Unknown `stream_open` XADD with two-owner retry | Owner e times out after an unknown XADD; takeover commits e+1 and retries the same token. Existing exact envelope is idempotent success, while any late e confirmation is fenced. Exactly one confirm transaction and one unique dispatch intent win; all dispatch recovery returns the same SDK execution identity. |
-| Process crashes after confirm commit and before SDK dispatch | The atomic confirmation already left one pending `sdk_dispatch_intent`. Recovery calls `dispatch_once` with its token; acquire-or-return yields one durable execution identity and one SDK start. No recovery path re-confirms admission, invents a token, or starts a second execution. |
+| Delayed old-owner `stream_open` response after takeover | The old epoch may report matching Redis evidence, but confirm CAS updates zero rows because the owner fence is stale. It cannot create a dispatch intent, renew, or dispatch. The current owner alone may confirm using the unchanged token. RED asserts stale CAS rejection and one dispatch intent. |
+| Unknown `stream_open` XADD with two-owner retry | Owner e times out after an unknown XADD; takeover commits e+1 and retries the same token. Existing exact envelope is idempotent success, while any late e confirmation is fenced. Exactly one confirm transaction and one uniquely bound dispatch intent win. |
+| Process crashes after confirm commit and before A2 dispatch | The atomic confirmation leaves one pending `sdk_dispatch_intent`. Recovery presents that immutable token to A2; no path re-confirms admission, invents a token, or directly starts the SDK. |
+| Executor accepts a token and the execute response is lost | Retry/maintenance performs authenticated `lookup_execution` for the same token. The winning live executor returns its durable status/handle; the caller never sends a fresh token or interprets transport loss as permission to start. |
+| Duplicate dispatch token | Exact duplicate binding returns the existing ledger status/handle. Any changed run, attempt, incarnation, generation, owner epoch, design, or executor claim is a fenced conflict and performs zero SDK calls. |
+| Stale admission owner reaches A2 | `acquire_or_return` validates the committed A1 intent and winning owner epoch in the same transaction. A stale owner updates zero rows, receives no start authorization, and cannot attach to the current execution. |
+| Executor restarts before SDK start commitment | The new executor has a new instance identity. Only after the old database-clock instance lease expires may it take over the same token with a higher execution-owner epoch; the old instance's later start commit is rejected. At most one start authorization commits. |
+| Executor crashes after start commitment but before SDK call | The commitment is not transferable. After executor-instance expiry the ledger records `execution_lost`; zero SDK calls is an accepted at-most-once outcome and no retry starts work. |
+| Executor restarts after SDK start | The installed SDK offers no durable in-flight resume handle. The ledger/status endpoint returns `execution_lost` or a previously durable terminal result; a replacement executor does not call the SDK with the same session ID. |
 | Redis fails during eligible non-interactive work | Stop live deltas, seal bounded memory, record transport degradation, and continue controlled SDK execution only while cancellation/resource/egress/safety authority remains reliable. Commit the truthful final result and pending publication intent in PostgreSQL; clients converge through durable status/final hydrate. |
 | Redis fails while approval, user interaction, or a control/safety event is required | Pause before the dependent side effect or fail closed. If a safe bounded pause cannot be maintained, terminalize failure/cancellation; never continue as though the event was delivered. |
 | Redis fails and execution later fails or is cancelled | Commit failure/cancellation, degraded-transport fact, required semantics, and a pending terminal publication intent in PostgreSQL. Do not leave the run running. |
@@ -890,88 +1035,104 @@ blocked connection.
 | Late delta races terminal | Terminal coordinator atomically enters `closing` before flushing. Reject and measure any later delta; never append it after terminal. |
 | Authorization commit races a checked payload write | The lease is bound to epoch e and rechecked immediately before write, but a write may finish before the e+1 barrier is effective. Record and bound that window; never claim commit-time zero frames. |
 | Authorization is revoked during blocked XREAD | Epoch advancement denies renewal and broadcasts invalidation. Instances cancel old-epoch reads and ack; missing ack waits for the maximum 15-second old lease to expire. Zero payload is guaranteed only after `revocation_effective`. |
+| API instance dies without acknowledgement | Registration expiry does not claim quiescence. PostgreSQL keeps the barrier committed until every old send lease is closed or its database-clock deadline expires, then records effective; the run cannot remain pending forever. |
+| Stale revocation acknowledgement | An ack with the wrong scope epoch, instance ID/incarnation, barrier-owner epoch, or an outstanding old writer updates zero rows and cannot advance effective. |
+| New API instance joins after revocation commit | Registration returns only the new authorization epoch. The instance cannot acquire an old send lease, join the old writer snapshot, acknowledge for an old incarnation, or extend the barrier. |
+| Revocation barrier owner dies and maintenance takes over | After the database-clock owner lease expires, takeover row-locks the scope and increments `barrier_owner_epoch`; late work from the former owner is fenced. Effective still requires valid acks or expiry of every old send lease. |
+| Payload attempt after effective barrier | `lookup_sse_send_authority` rejects the old epoch/lease before write on every instance. RED proves zero payload after the recorded PostgreSQL effective timestamp, including dead-instance, stale-ack, join, and takeover cases. |
 | ACL/Agent publication/tenant authority changes | Advance the authorization epoch and enter committed/pending state. Heartbeat cannot renew old authority. Deny/error closes without payload; effective is recorded only after ack/expiry barrier. |
 | Tenant/run mismatch in an envelope | Quarantine/error the entry, stop that response, and record redacted diagnostics; never forward it. |
 | Secret filter cannot classify a payload | Reject before XADD. No raw fallback event is permitted. |
 
-## PostgreSQL Compatibility And Migration
+## Hard Cutover, Historical Data, And Rollback
 
-### Per-run backend pin
-
-Admission persists one immutable backend and design version per run. For
-`redis_streams_v2`, the same transaction also creates the current durable stream
-incarnation; every later increment is serialized on that run authority:
-
-- `postgres_legacy`;
-- `redis_streams_shadow_v2`;
-- `redis_streams_v2`.
-
-A process-level feature flag controls which backend new runs may receive, but
-every active run follows its persisted pin. Restart, retry, resume, browser
-reconnect, and worker recovery cannot switch an existing run between planes.
-
-### Modes
-
-1. `postgres_legacy`: current PostgreSQL delta writes and polling remain. Redis
-   Stream production for public text is disabled.
-2. `redis_streams_shadow_v2`: PostgreSQL remains the live authority while a
-   non-public, short-lived Redis shadow validates envelope and capacity. This is
-   allowed only for bounded nonproduction or explicitly admitted canaries.
-3. `redis_streams_v2`: public text deltas go only to Redis. PostgreSQL keeps
-   final/semantic facts and legacy rows remain readable for old runs.
-
-### Double-write prohibition
+The final source and image contain exactly one live SSE runtime. Admission
+persists `redis_streams_v2` and the v2 design/incarnation as consistency fences;
+they are not a feature-flag choice among production backends. No configuration
+may enable PostgreSQL polling, Redis shadow live streaming, PG+Redis text dual-
+write, dual cursor parsing, dual terminal authority, or process-memory fallback.
+The full A0-A2+B-E set is release-atomic: intermediate source slices are not a
+deployable compatibility stack and v2 admission remains disabled until the old
+live path has been deleted and F is ready to test the single runtime.
 
 Startup and admission fail closed when any of these is true:
 
-- the reviewed v2 A1 PostgreSQL admission authority or its real-database gate is
-  absent, so no A0-only or producer flag can create or dispatch a Redis run;
-- `redis_streams_v2` and PostgreSQL text-delta persistence are both enabled;
-- a public SSE route can read a shadow stream;
-- a run has more than one backend pin;
-- a retry or resume attempts to change its pin;
-- the Redis producer is enabled without the matching Redis reader, gap hydrate,
-  terminal publication, and frontend reducer versions;
-- a Redis run lacks durable incarnation allocation or an intent/key/envelope/
-  cursor incarnation can disagree;
-- an accepted design SHA/version is absent or differs across API and worker.
+- the reviewed A1 admission/revocation authority, reviewed A2 executor authority,
+  or either real-database/protocol gate is absent;
+- `app/worker.py` or `app/routes/runtime_callbacks.py` can persist an
+  `assistant_delta` to PostgreSQL;
+- `app/routes/lambchat_compat.py::chat_session_stream` can call
+  `list_run_events`, use the old sequence cursor/event page/fold, sleep/poll, or
+  proxy/fallback instead of serving the Redis XREAD adapter;
+- frontend reconnect can invent an event ID, poll `/status` to reconstruct live
+  progress, accept a two-component PG cursor, or omit the last accepted
+  incarnation-bound cursor;
+- the Redis producer, reader, gap hydrate, terminal publication, and frontend
+  reducer versions are not one accepted set;
+- intent/key/envelope/cursor incarnation or the accepted design SHA differs
+  across API, worker, executor, and frontend.
 
-Shadow dual-write is time-bounded evidence collection, never the steady state
-and never a claim that write amplification is solved.
+Historical `run_events` rows may remain stored for audit/retention, and their
+sequence may remain internal history ordering. They are not a live cursor,
+reconnect source, or terminal stream. Old chats are read from durable session,
+message/final-answer, tool, approval, artifact, and audit facts through history
+and final-hydrate APIs. Historical per-delta aliases are not replayed into Redis
+and no v1 parser/backend remains runnable.
 
-### Legacy compatibility
+No migration is required merely to preserve delta rows. If a pre-cutover audit
+finds terminal chats whose final business answer is missing, a separately
+reviewed offline idempotent migration may backfill only that final fact. It runs
+with live admission disabled, records eligible/updated/skipped/error counts plus
+an input/output checksum, exits successfully only when the eligible missing-final
+count is zero, and is then removed or disabled. It never turns historical deltas
+into a runtime adapter or copies them into Redis.
 
-- Existing `run_events` rows and cursor APIs remain readable.
-- Necessary semantic events may continue using the existing atomic cursor,
-  batch receipt, and terminal fence capabilities.
-- New Redis-pinned runs do not backfill text deltas into `run_events`.
-- History and final reload choose the persisted backend pin. Legacy runs fold PG
-  deltas; Redis runs hydrate the final PostgreSQL message and semantic facts.
-- The final assistant message is written exactly once and replaces any live
-  Redis fold on hydration.
-- The two-component `<run_id>:<redis-id>` form is never accepted for a
-  Redis-pinned run. This design was not deployed before the incarnation field,
-  so there is no valid Redis v1 cursor to translate. Legacy PostgreSQL cursors
-  remain under their legacy parser/backend pin.
-
-### Rollback
-
-Rollback changes admission for new runs back to `postgres_legacy`. Redis-pinned
-active runs are drained under their original contract or are terminalized and
-reconciled; they are never switched mid-run. The Redis reader remains available
-until every Redis-pinned run is terminal and beyond its recovery window.
-
-An incarnation number is never reset, decremented, or reused during rollback.
-Rollback cannot reinterpret an old Redis cursor against a legacy run or a newer
-incarnation. Pending terminal intents retain their target incarnation; rebuild
-uses an auditable successor intent, even while new admissions use legacy mode.
-
-The irreversible boundary is explicit: after `redis_streams_v2` stops writing
-text deltas to PostgreSQL, rollback cannot recreate those historical deltas. It
-can recover durable final answers and semantic facts only. This is acceptable
-because text deltas are transport, not permanent product history.
+Deployment rollback is an immutable-image switch with backward-compatible
+schema, not a flag inside the current image. Before switching images, active v2
+runs drain, safely pause, or terminalize; an unresolved v2 publication intent
+remains owned by the v2 recovery image and blocks rollback completion. The older
+image cannot resume a v2 cursor/execution or reinterpret its incarnation. The
+current image never ships the older poller as a hidden rollback path, and omitted
+text deltas cannot be reconstructed.
 
 ## Authorization, Filtering, And Logging
+
+### Durable revocation transaction and barrier
+
+`request_sse_revocation` locks the authorization-scope row and records
+`requested` without changing the reported epoch. `commit_sse_revocation` locks
+the same row, verifies that request, increments `authorization_epoch` exactly
+once, denies every old-epoch renewal, records `committed`, and snapshots the old-
+epoch send leases plus their API-instance incarnation. All lease and barrier
+deadlines use PostgreSQL `clock_timestamp()` and may never exceed 15 seconds.
+
+Registration has an opaque `api_instance_id`, a monotonically new
+`instance_incarnation` on every process start, and a database-clock registration
+lease. An instance joining after revocation commit receives only the new epoch;
+it is not part of the old writer set and cannot acknowledge for an old instance.
+`ack_sse_revocation` succeeds only for the exact scope, committed epoch, and
+snapshotted instance incarnation after that instance has closed every old-epoch
+connection/lease. A stale epoch/incarnation, duplicate with different facts, or
+an ack while an old writer remains updates zero rows and is fail-closed.
+
+`advance_sse_revocation_effective` row-locks the scope and succeeds only when
+every snapshotted old writer has a valid quiescence acknowledgement, or PostgreSQL
+database time is later than every old send-lease deadline. A dead API instance
+therefore cannot hold the barrier forever, but its registration expiry alone is
+not proof of quiescence; the hard send-lease expiry is the fence. Barrier-owner
+failure is recovered only after its database-clock lease expires by
+`take_over_sse_revocation_barrier`, which increments a positive
+`barrier_owner_epoch`; stale owners and acknowledgements cannot mark effective.
+Any PostgreSQL error, clock/row mismatch, missing registration, or uncertain
+transition denies send authority and preserves `access_revocation_pending`.
+
+C owns no revocation schema or state transition. It registers through
+`PostgresSseAuthorizationAuthority`, acquires a scope/epoch/connection-bound send
+lease, calls `lookup_sse_send_authority` immediately before every payload, closes
+on invalidation/error, and acknowledges only after its old writers are gone. The
+Redis `app.auth_sessions.AuthOperation` lease (90 seconds by default through
+`_operation_lease_seconds`) serializes browser auth-context mutation; its Redis
+epoch/TTL is neither an SSE send lease nor evidence that this barrier completed.
 
 - Resolve principal, tenant, workspace, session, run, and run ownership before
   deriving a Redis key or reading retained bounds.
@@ -1024,12 +1185,13 @@ because text deltas are transport, not permanent product history.
   after-effective counter is nonzero or effective latency exceeds 15 seconds.
   Never label them by run/user/tenant.
 
-## A-F Dependency Graph
+## A0-F Dependency Graph
 
 ```mermaid
 flowchart LR
-    A0["A0 Envelope, cursor, and pure StreamBridge contract"] --> A1["A1 PostgreSQL admission authority"]
-    A1 --> B["B SDK normalizer and coalescer producer"]
+    A0["A0 Envelope, cursor, and pure StreamBridge contract"] --> A1["A1 PostgreSQL admission and revocation authority"]
+    A1 --> A2["A2 Durable executor dispatch authority"]
+    A2 --> B["B SDK normalizer and coalescer producer"]
     B --> C["C SSE XREAD adapter"]
     C --> D["D Terminal convergence, intent, and stop-PG-delta policy"]
     D --> E["E Frontend parser, reducer, and recovery"]
@@ -1037,11 +1199,13 @@ flowchart LR
 ```
 
 Stages are serial. A0 is a pure contract and cannot enable production. A1 must
-merge and pass its real PostgreSQL gate before B may produce events or dispatch
-any Redis-pinned run. Production admission remains disabled until all later
-required stages and F acceptance pass. At most one production writer and one non-conflicting
-read-only verifier may be active. A shared file has exactly one writer; later
-stages request a bounded handoff instead of editing across an active lease.
+merge and pass its real PostgreSQL admission/revocation gate, then A2 must merge
+and pass its durable-ledger/executor-protocol gate before B may produce events or
+dispatch any Redis-pinned run. Production admission remains disabled until all
+later required stages and F acceptance pass. At most one production writer and
+one non-conflicting read-only verifier may be active. A shared file has exactly
+one writer; later stages request a bounded handoff instead of editing across an
+active lease.
 
 Every stage dispatch includes the following mandatory fields verbatim in its
 task record: target/user result; clean worktree/branch; exact base/head;
@@ -1077,25 +1241,28 @@ review/PR/deploy ceiling; next gate.
   pool/cursor/gap invariants, readiness result, unresolved real-Redis gate.
 - Ceiling: source contract PR only; no production enablement, schema, dispatch,
   merge without fixed-SHA review, deploy, Redis mutation, or runtime claim.
-- Candidate `b6f3c0878c5c68358e57664174828b7404959a84` is frozen and is not v2 authority. Only after this v2
-  design merges may it be independently re-reviewed as an A0 candidate from its
-  exact full SHA, or discarded. It may not be reused for A1 or later stages.
+- Candidate `b6f3c0878c5c68358e57664174828b7404959a84` is discarded and is not v2
+  authority. It may not be reused, rebased, or treated as A0 or any later stage.
 - Next gate: fixed-SHA A0 review and normal merge, then A1.
 
-### A1. PostgreSQL admission authority
+### A1. PostgreSQL admission and revocation authority
 
 - Target/user result: atomically persist the immutable backend/design pin,
   monotonic `stream_incarnation`, attempt/generation authority, and current
   `authorization_epoch` plus `admission_open_pending`, idempotent open token,
   positive monotonic `admission_owner_epoch`, owner lease, and deadline; commit
   before `stream_open`, then use the fenced confirm CAS to atomically commit
-  `stream_open_confirmed` plus the unique durable SDK dispatch intent. All SDK
-  starts use its idempotent acquire-or-return execution fence.
+  `stream_open_confirmed` plus the unique durable SDK dispatch intent. Also own
+  the authorization-scope epoch/state, API-instance registration/incarnation,
+  database-clock send leases, acknowledgement set, and fenced effective barrier.
 - Clean worktree/branch: new worktree from main containing reviewed A0; branch
   `codex/sse-a1-pg-admission-v2`.
-- Exclusive files: the bounded admission repository/schema/migration path,
-  admission service, A0 adapter call, and direct real-PostgreSQL tests. One A1
-  owner holds every shared transaction-path lease.
+- Exclusive files/symbols: `app/schema.sql`; the named A1 functions in
+  `app/streaming/postgres.py`; new
+  `app/streaming/admission.py::PostgresStreamAdmissionAuthority` and
+  `app/streaming/authorization.py::PostgresSseAuthorizationAuthority`; the A0
+  adapter call; and direct real-PostgreSQL tests. One A1 owner holds every shared
+  transaction-path lease.
 - Forbidden: producer callbacks, public SSE routes, terminal convergence,
   frontend, Compose, deployment, or a production feature default.
 - Prerequisite: reviewed/merged v2 design and A0 SHAs.
@@ -1105,43 +1272,101 @@ review/PR/deploy ceiling; next gate.
   idempotent retry with exact matching envelope; mismatched existing envelope;
   takeover increments `admission_owner_epoch`; delayed old-owner response after
   takeover updates zero confirmation rows and creates no intent; unknown
-  `stream_open` XADD
-  with two-owner retry produces one confirm/intent/execution identity; crash after
-  confirm commit and before dispatch recovers the same intent and starts the SDK
-  exactly once; missing owner recovery after lease expiry; admission deadline
-  commits pre-dispatch failure instead of permanent running; SDK dispatch before
-  the initial or confirmed-plus-intent PG commit; any direct/non-idempotent SDK
-  call; retry/resume cannot change pin; A0-only configuration cannot admit a
-  Redis run.
+  `stream_open` XADD with two-owner retry produces one confirm/intent; crash after
+  confirm commit preserves the same intent for A2; missing owner recovery after
+  lease expiry; admission deadline commits pre-dispatch failure instead of
+  permanent running; request/commit/effective revocation transactions; two API
+  instances with check-e/commit-e+1/write; dead instance lease expiry; stale ack;
+  new instance join; barrier-owner takeover; zero payload after effective; DB
+  error/clock uncertainty fail closed; Redis auth-context epoch/90-second lease
+  cannot authorize or complete the barrier; retry/resume cannot change pin; A0-
+  only configuration cannot admit a Redis run.
 - Focused gate: unit tests plus an isolated real PostgreSQL integration selector
   under `--basetemp .pytest-tmp/run-sse-a1`, schema checks, Ruff, compileall,
   diff check, governance, and immutable readiness. A missing DSN is
   `EVIDENCE_BLOCKED`, never a pass.
-- Ceiling: source/migration PR and real-PG evidence only; no producer, public
-  traffic, deploy, or runtime claim. B cannot begin until A1 is reviewed, merged,
-  and the real PostgreSQL gate is recorded.
-- Next gate: B from exact merged A0+A1 main.
+- Ceiling: source/migration PR and real-PG evidence only; no executor protocol,
+  producer, public traffic, deploy, or runtime claim. A2 cannot begin until A1 is
+  reviewed, merged, and the real PostgreSQL gate is recorded.
+- Next gate: A2 from exact merged A0+A1 main.
+
+### A2. Durable executor dispatch authority
+
+- Target/user result: carry the A1 dispatch token through a token-aware executor
+  request, durably acquire or return one execution ledger/status/handle, fence
+  stale owners and duplicate bindings, authorize at most one SDK start, and
+  converge executor/SDK loss without inventing same-handle resumption.
+- Clean worktree/branch: new worktree from main containing reviewed A0+A1; branch
+  `codex/sse-a2-executor-dispatch-v2`.
+- Exact base/head: fresh four-way proof; pin accepted design, A0, and A1 merge
+  SHAs plus the recorded A1 real-PostgreSQL gate.
+- Exclusive files/symbols: `app/schema.sql::sdk_execution_ledger`; new
+  `app/runtime/sandbox/execution_ledger.py::PostgresExecutorExecutionLedger`;
+  `app/runtime/sandbox/contracts.py::ExecutorTaskRequest` and
+  `ExecutorExecutionStatus`; `app/routes/runtime_callbacks.py` acquire/lookup
+  handlers; `SandboxExecutorClient.execute`/`lookup_execution`;
+  `SandboxRuntime.submit`/`_call_execute_task`; executor-app execute/lookup;
+  `ClaudeAgentWorker._submit_prepared_run_to_sandbox_runtime`;
+  `run_claude_agent_sdk`; and direct ledger/gateway/client/executor/worker tests.
+- Forbidden: A1 admission/revocation state, producer/coalescer callbacks, public
+  SSE routes, terminal convergence, frontend, Compose, deployment, or a production
+  feature default.
+- Prerequisite: reviewed/merged v2 design and A0+A1 SHAs, including A1's real-
+  PostgreSQL evidence. A2 may not weaken the A1 intent binding or use a direct SDK
+  call as recovery.
+- RED: accept then execute-response loss and immutable lookup; same-token retry;
+  duplicate token with equal binding returns status/handle; duplicate with changed
+  binding is fenced; stale admission owner updates zero rows; executor restart
+  before start permits only post-expiry higher-fence takeover; crash after
+  `start_committed` before SDK call becomes `execution_lost`; restart after SDK
+  start cannot resume or restart the query; callback/status/handle lookup survives
+  API/worker process loss; outer timeout and HTTP 409 perform lookup rather than a
+  second POST; process-local `execute_claimed` and SDK `session_id` alone fail the
+  gate. Every case measures SDK calls and proves count <= 1.
+- Focused gate: unit tests plus isolated real-PostgreSQL two-connection ledger
+  races and executor process-restart selectors under
+  `--basetemp .pytest-tmp/run-sse-a2`; installed SDK boundary inspection/tests,
+  schema checks, Ruff, compileall, diff check, governance, immutable readiness. A
+  missing DSN or untested installed SDK boundary is `EVIDENCE_BLOCKED`.
+- Terminal packet: exact refs/paths/schema, token binding/state transitions,
+  per-RED SDK call counts, response-loss/restart/status evidence, readiness, and
+  explicit residual that in-flight SDK work is not resumable.
+- Ceiling: source/migration/protocol PR and real-PG evidence only; no producer,
+  public traffic, deployment, or runtime claim. B cannot begin until A2 is
+  independently reviewed, merged, and its gate is recorded.
+- Next gate: B from exact merged A0+A1+A2 main.
 
 ### B. SDK normalizer and coalescer producer
 
 - Target/user result: convert private Claude SDK events to authorized typed
   projections, coalesce text with hard memory/time bounds, and publish through A0
-  with low latency and no raw payload leakage.
-- Clean worktree/branch: new worktree from main containing A0+A1; branch
+  with low latency and no raw payload leakage. Replace every live
+  `assistant_delta` PostgreSQL production path with Redis-only publication.
+- Clean worktree/branch: new worktree from main containing A0+A1+A2; branch
   `codex/sse-b-sdk-producer-v2`.
-- Exact base/head: fresh four-way proof; pin accepted A0 and A1 merge SHAs.
-- Exclusive files: Claude adapter/runner/projector modules, one new focused
-  coalescer/normalizer adapter, and direct tests. B does not edit A0/A1-owned core.
+- Exact base/head: fresh four-way proof; pin accepted A0, A1, and A2 merge SHAs.
+- Exclusive files/symbols: Claude adapter/runner/projector modules and one focused
+  coalescer/normalizer adapter; `app/worker.py::_canonical_assistant_delta_event`
+  plus the `emit_event`/`append_user_event` assistant-delta branch;
+  `app/routes/runtime_callbacks.py::record_executor_callback` assistant-delta
+  canonicalization/batch branch; `tests/test_worker.py`,
+  `tests/test_runtime_callbacks.py`, and direct producer tests. B removes PG
+  delta writes but
+  preserves durable tool/approval/artifact/audit callback facts and does not edit
+  A0/A1/A2-owned core.
 - Forbidden: worker terminal transaction, routes, repositories, schema,
   frontend, deployment, and config outside A0's accepted interface.
-- Prerequisite: reviewed v2 design and accepted/merged A0+A1 SHAs, including the
-  recorded real PostgreSQL A1 gate. Without A1, B cannot produce or dispatch a
-  Redis-pinned run in tests, canary, shadow, or production.
+- Prerequisite: reviewed v2 design and accepted/merged A0+A1+A2 SHAs, including
+  the recorded real PostgreSQL A1 and executor-protocol A2 gates. Without both,
+  B cannot produce or dispatch a Redis-pinned run in tests, canary, or
+  production.
 - RED: 40 ms/size/boundary flush; ordering; UTF-8 byte bounds; cross-type/run/
   attempt/incarnation/generation non-coalescing; process/global cap; Redis timeout
   backpressure; unknown SDK event; secret/private payload; shutdown flush; late
   callback rejection at the producer boundary; Redis failure stops live deltas
-  without PG-delta or unbounded-memory fallback.
+  without PG-delta or unbounded-memory fallback; worker callback and runtime
+  callback produce zero PostgreSQL `assistant_delta` inserts while required
+  semantic facts remain durable.
 - Focused commands: B pytest modules with
   `--basetemp .pytest-tmp/run-sse-b`, installed SDK boundary tests where already
   supported, Ruff, compileall, diff check, governance, immutable readiness.
@@ -1154,18 +1379,27 @@ review/PR/deploy ceiling; next gate.
 
 ### C. SSE XREAD adapter
 
-- Target/user result: replace PostgreSQL polling for Redis-pinned runs with
-  authorized `XREAD BLOCK`, standard `Last-Event-ID`, heartbeat, explicit gap,
-  bounded response queues, and independent multi-browser reads while preserving
-  the sole public Chat adapter.
-- Clean worktree/branch: new worktree from main containing A0-A1-B; branch
+- Target/user result: replace the existing public Chat URL's PostgreSQL polling
+  implementation with authorized `XREAD BLOCK`, standard `Last-Event-ID`,
+  heartbeat, explicit gap, bounded response queues, and independent multi-browser
+  reads. The URL remains; the poller does not proxy, fallback, or remain callable.
+- Clean worktree/branch: new worktree from main containing A0-A2+B; branch
   `codex/sse-c-xread-adapter-v2`.
-- Exact base/head: fresh four-way proof and accepted A0-A1-B SHAs.
-- Exclusive files: `app/routes/lambchat_compat.py`, a focused adapter module if
-  extraction is needed, and direct route/adapter tests. One C owner.
-- Forbidden: native second SSE route, SDK/producer, worker terminal transaction,
-  schema, frontend, Compose, deployment.
-- Prerequisite: reviewed design and accepted A0-A1-B SHAs.
+- Exact base/head: fresh four-way proof and accepted A0-A2+B SHAs.
+- Exclusive files/symbols: `app/routes/lambchat_compat.py::chat_session_stream`
+  and its route tests; a focused Redis adapter module if extracted; deletion of
+  `_CompatibilityWireEvent`, `_CompatibilityFoldState`,
+  `_compatibility_events_for_run_page`, `_durable_cursor_id`, and live uses of
+  `RunCursor`, `parse_last_event_id`, and `event_page`. Durable history/final
+  hydrate projects business facts without those per-delta aliases.
+  `tests/test_lambchat_compat.py`, `tests/test_lambchat_streaming_replay.py`,
+  `tests/test_lambchat_projection_contract.py`, and
+  `tests/test_lambchat_public_lifecycle_singletons.py` are deleted or rewritten
+  to the Redis wire/gap/revocation contract. One C owner.
+- Forbidden: native second SSE route, old `list_run_events` poll/sleep/fold path,
+  status or memory fallback, SDK/producer, worker terminal transaction, schema,
+  frontend, Compose, deployment.
+- Prerequisite: reviewed design and accepted A0-A2+B SHAs.
 - RED: absent/valid/malformed/foreign/future `Last-Event-ID`; no-ID heartbeat;
   stale/cross-incarnation and trim/missing-key gap then close; ACL denial before
   Redis; monotonic authorization epoch; connection/send lease binds epoch;
@@ -1174,7 +1408,8 @@ review/PR/deploy ceiling; next gate.
   requested/committed/effective API states; zero payload only after effective;
   revocation-to-effective at most 15,000 ms; heartbeat cannot extend stale
   authority; slow client queue bound; two browsers see the same entries; no
-  `XREADGROUP`; legacy PG-pinned route compatibility.
+  `XREADGROUP`; route source contains no `list_run_events`, one-second sleep, old
+  two-component cursor parser, compatibility live fold, or proxy/fallback.
 - Focused commands: C pytest modules with
   `--basetemp .pytest-tmp/run-sse-c`, Ruff, compileall, diff check, governance,
   immutable readiness.
@@ -1186,32 +1421,42 @@ review/PR/deploy ceiling; next gate.
 
 ### D. Terminal convergence, publication intent, and stop-PG-delta policy
 
-- Target/user result: stop PG delta writes for Redis-pinned runs, persist truthful
+- Target/user result: enforce the already cut-over zero-PG-delta contract, persist truthful
   success/failure/cancel/pause outcomes, final/semantic and transport-degraded
   facts plus terminal publication intent, and enforce PG commit before
-  terminal/end with idempotent reconciliation.
+  terminal/end with idempotent reconciliation. Retire remaining PostgreSQL live-
+  cursor/page/terminal transport symbols and add the repository absence gate.
 - Clean worktree/branch: new worktree from main containing A0-C; branch
   `codex/sse-d-pg-convergence-v2`.
 - Exact base/head: fresh four-way proof and accepted A0-C SHAs.
-- Exclusive files: worker integration, repositories, schema/migration, terminal
-  coordinator, and direct PostgreSQL tests. D is the sole owner of every shared
-  transaction path during the stage.
-- Forbidden: SDK internals, SSE route, frontend, unrelated schema, Compose,
-  deployment, and legacy data deletion.
+- Exclusive files/symbols: worker integration, repositories, `app/schema.sql`,
+  terminal coordinator, `app/streaming/authority.py` live-only `RunCursor`/
+  `parse_last_event_id`/`PublicDelta`/`event_page`,
+  `app/streaming/postgres.py` live page APIs, new
+  `tools/check_sse_runtime_cutover.py`, `tests/test_streaming_authority.py`,
+  `tests/test_streaming_postgres.py`, `tests/test_streaming_repository.py`,
+  `tests/test_streaming_schema_postgres.py`, and direct negative tests. D
+  keeps internal history ordering and necessary batch/audit facts only when no
+  live route consumes them, and is sole owner of shared transaction paths.
+- Forbidden: SDK internals, SSE route, frontend, unrelated schema, deletion of
+  durable final/message/tool/approval/artifact/audit facts, Compose, deployment.
 - Prerequisite: reviewed design and accepted A0-C SHAs.
-- RED: Redis run produces zero PG text-delta rows; legacy run remains unchanged;
+- RED: every run produces zero PG text-delta rows; historical rows remain stored
+  but are not a live replay source;
   A1 backend/design/incarnation authority is reused rather than reallocated;
-  startup double-write rejection; mid-run Redis outage with successful eligible
+  startup rejects any double-write/poller/fallback configuration; mid-run Redis outage with successful eligible
   non-interactive final; approval-required pause/fail closed; uncontrollable
   resource/egress/cancellation terminal failure; PG rollback emits no terminal;
   PG commit then terminal `XADD` failure/unknown outcome leaves the run terminal
   and intent pending; proven-incarnation retry versus unproven-key successor
   intent/new incarnation; unknown outcome duplicate; late delta; failure and
-  cancellation transactions; no path leaves the run permanently running.
+  cancellation transactions; no path leaves the run permanently running; the
+  negative checker rejects old route polling/sleep, PG assistant-delta writes,
+  old live cursor/page/fold symbols, dual backend flags, and dual terminal paths.
 - Focused commands: D unit and opt-in isolated PostgreSQL integration tests with
   `--basetemp .pytest-tmp/run-sse-d`, schema checks, Ruff, compileall, diff check,
-  governance, immutable readiness. An absent DSN is reported as skipped, never
-  passed.
+  `python tools/check_sse_runtime_cutover.py`, governance, immutable readiness. An
+  absent DSN is reported as skipped, never passed.
 - Terminal packet: refs/paths/migration, SQL before/after write counts, ordering
   fault injection, rollback behavior, check counts, readiness, residual real
   multi-process Redis+PG gate.
@@ -1223,12 +1468,22 @@ review/PR/deploy ceiling; next gate.
 
 - Target/user result: parse SSE safely, persist the last accepted run-bound
   cursor, deduplicate semantic events, detect/obey gaps, hydrate durable final
-  state, and make live/history rendering converge exactly once.
+  state, and make live/history rendering converge exactly once. Remove every
+  frontend fallback that invents a transport ID or reconstructs live progress by
+  polling PostgreSQL status/history.
 - Clean worktree/branch: new worktree from main containing A0-D; branch
   `codex/sse-e-frontend-recovery-v2`.
 - Exact base/head: fresh four-way proof and accepted A0-D SHAs.
-- Exclusive files: focused SSE connection/parser, event processor/reducer,
-  history hydration modules, and their direct frontend tests. One E owner.
+- Exclusive files/symbols: `frontend/web/src/hooks/useAgent/sseConnection.ts`
+  parser/reconnect code, including deletion of the UUID event-ID fallback,
+  `queryAuthoritativeRunStatus` reconnect path, and
+  `MAX_CONSECUTIVE_SSE_RECONNECTS` status-poll budget; the accepted-cursor
+  reducer; durable final/history hydrate integration; and direct frontend tests.
+  `frontend/web/src/hooks/useAgent/__tests__/sseConnection.test.ts` cases that
+  assert authoritative-status polling, compatibility status, run-event replay,
+  or heartbeat-close polling budgets are deleted or rewritten for v2.
+  History message/UI UUIDs and durable `getEvents`/final hydrate remain because
+  they are not transport cursors. One E owner.
 - Forbidden: backend, schema, routes, generic Chat redesign, presentation-only
   smoothing, dependencies unless separately authorized, Compose, deployment.
 - Prerequisite: reviewed design and accepted A0-D wire contract SHA.
@@ -1237,11 +1492,16 @@ review/PR/deploy ceiling; next gate.
   heartbeat no cursor; explicit gap discards incomplete fold and reloads;
   terminal hydrate replaces rather than appends; live/history parity; stale
   reconnect generation/incarnation, including overlapping native Redis IDs;
-  bounded retries; `access_revocation_pending`; transport-degraded status and
-  final hydrate while terminal publication is pending; unavailable state.
+  bounded Redis reconnects carrying exact `Last-Event-ID`; missing payload ID
+  fails/gaps instead of `uuid()`; no status-before-reconnect or PG history replay;
+  `access_revocation_pending`; transport-degraded status and final hydrate while
+  terminal publication is pending; unavailable state. Tests that asserted
+  authoritative-status polling, raw compatibility status, heartbeat-close polling
+  budgets, or replayed `run_event` reconnect are deleted or rewritten for the v2
+  cursor/gap contract.
 - Focused commands: `corepack pnpm exec tsx --test` for direct modules, scoped
   ESLint, TypeScript no-emit, production build, projection audit, diff check,
-  governance, immutable readiness.
+  `python tools/check_sse_runtime_cutover.py`, governance, immutable readiness.
 - Terminal packet: refs/paths, test counts, exact cursor/gap/final scenarios,
   build/projection evidence, readiness, residual real-browser and capacity gate.
 - Ceiling: frontend source PR only; no merge without fixed-SHA review and no
@@ -1276,8 +1536,11 @@ review/PR/deploy ceiling; next gate.
   with successful eligible final, approval pause/fail, failure terminal, PG
   commit plus terminal-XADD unknown; no run permanently running; multiple
   browsers; slow consumers; terminal/history parity; no delta rows in PG;
-  connection/auth-refresh/memory formulas; rollback for new and active runs;
-  cleanup to zero.
+  old chats hydrate from durable business facts without per-delta replay; exact
+  negative repository gate reports no poll loop/sleep, PG delta writer, old live
+  cursor/fold, frontend UUID/status-poll fallback, dual-mode flag, or parked Slice
+  A authority; connection/auth-refresh/memory formulas; immutable-image rollback
+  and backward-compatible schema; cleanup to zero.
 - Focused commands: dedicated integration selectors with
   `--basetemp .pytest-tmp/run-sse-f`, frontend browser suite, bounded capacity
   harness, exact readiness for harness source. No routine full pytest.
@@ -1289,6 +1552,39 @@ review/PR/deploy ceiling; next gate.
   evidence runtime verified.
 - Next gate: independent evidence review, then a separately authorized release
   decision.
+
+## Cutover Negative Acceptance Gate
+
+`tools/check_sse_runtime_cutover.py` is a required D-through-F CI gate. It uses
+Python AST/import inspection plus bounded TypeScript source inspection and fails
+with the owning file/symbol when any forbidden live mechanism is present:
+
+- `chat_session_stream` calls `repositories.list_run_events`, `event_page`, the
+  old two-component `parse_last_event_id`, `asyncio.sleep`, a status poller, or a
+  proxy/fallback instead of the Redis XREAD adapter;
+- `_CompatibilityWireEvent`, `_CompatibilityFoldState`,
+  `_compatibility_events_for_run_page`, or `_durable_cursor_id` remains in
+  production source; durable history/final hydrate must not reconstruct their
+  per-delta compatibility fold;
+- `app/worker.py` or `record_executor_callback` can route `assistant_delta` into
+  `append_user_event`, `append_event`, `append_event_batch`, or another
+  PostgreSQL insert;
+- old live `RunCursor`/`PublicDelta`/`event_page` APIs remain imported by a public
+  stream adapter, or a PostgreSQL sequence is serialized as an SSE ID;
+- `sseConnection.ts` can use `event.id || parsed.event_id || uuid()`, call
+  `queryAuthoritativeRunStatus` during reconnect, use
+  `MAX_CONSECUTIVE_SSE_RECONNECTS` to status-poll live progress, reconnect without
+  the accepted incarnation-bound ID, or treat history events as live replay;
+- production source/config contains `postgres_legacy`,
+  `redis_streams_shadow_v2`, a selectable second live terminal/cursor authority,
+  or any executable reference to the discarded `b6f3c0878c5c68358e57664174828b7404959a84`.
+
+The checker explicitly permits PostgreSQL `run_events` for non-delta audit/
+semantic retention, durable history/final hydrate APIs, history ordering that is
+never exposed as an SSE cursor, and UUIDs used only for UI messages/submission
+idempotency. Direct RED tests accompany every rule, so renaming a forbidden
+symbol without removing the call/import/data-flow still fails. F reruns the gate
+against the exact image source before any runtime acceptance.
 
 ## Evidence Layers
 
@@ -1309,12 +1605,15 @@ The v2 source candidate is not ready for independent review until all answers be
 remain closed after exact Markdown and diagram validation:
 
 - Dependency: A0 has no production enablement; A1 is merged and passes a real
-  PostgreSQL gate before B can produce or dispatch any Redis-pinned run.
+  PostgreSQL admission/revocation gate; A2 is merged and passes its durable
+  ledger/executor-protocol gate before B can produce or dispatch any run.
 - Admission dispatch: a persisted monotonic owner epoch fences takeover; confirm
   CAS requires pending state, exact token/pins, current owner fence, and a valid
   lease; the same transaction creates one unique dispatch intent. Delayed stale
   success, two-owner unknown XADD retry, and confirm-before-dispatch crash REDs
-  each prove stale CAS rejection and one acquire-or-return SDK execution identity.
+  prove stale CAS rejection and one intent. A2 response-loss, duplicate, stale-
+  owner, and executor-restart REDs prove at most one SDK start and truthful
+  `execution_lost`, never invented same-handle resumption.
 - Cursor: run/incarnation-bound, canonical, accepted only after fold;
   future/foreign invalid and older incarnation gaps before Redis read.
 - Gap: missing/trimmed/restarted stream never masquerades as complete replay;
@@ -1337,8 +1636,13 @@ remain closed after exact Markdown and diagram validation:
   payload; logs contain no payload.
 - Capacity: buffer, replay, connection, authorization-check, response queue, and
   Redis memory formulas have hard limits and stage F measurements.
-- Rollback: new runs can return to legacy; active runs stay pinned; historical
-  text deltas cannot be reconstructed and are not promised.
+- Cutover: the final source has no old poll/sleep, PG assistant-delta writer, live
+  PG cursor/page/fold, frontend ID/status-poll fallback, dual mode, or second
+  terminal authority. Historical rows remain audit data and old chats hydrate
+  durable facts without delta replay.
+- Rollback: a prior immutable image and backward-compatible schema are the only
+  rollback; the current image has no switchable legacy runtime, and historical
+  text deltas cannot be reconstructed or promised.
 
 ## Design Acceptance Gate
 
