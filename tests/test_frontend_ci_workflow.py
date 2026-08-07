@@ -21,7 +21,7 @@ PYTEST_COMMAND = (
     "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
 )
-PYTHON_TEST_DEPENDENCIES = '"pytest",\n                  "pyyaml",\n                  f"jsonschema=={locked_jsonschema}",'
+PYTHON_TEST_DEPENDENCIES = "python -m pip install pytest pyyaml"
 JSONSCHEMA_CONTRACT_START = "          import importlib.metadata"
 JSONSCHEMA_CONTRACT_END = "          '@ | python -"
 
@@ -51,7 +51,8 @@ def test_frontend_ci_workflow_derives_and_verifies_jsonschema_from_lock_authorit
 ) -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "python -m pip install pytest pyyaml jsonschema" not in workflow
-    assert 'python -c "import jsonschema"' not in workflow
+    assert 'python -c "import jsonschema"' in workflow
+    assert 'f"jsonschema=={locked_jsonschema}"' in workflow
 
     namespace = _jsonschema_contract_namespace()
     locked_version = namespace["locked_jsonschema_version"]
@@ -149,12 +150,14 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     collection_dependency_import_index = workflow.index(
         "verify_installed_jsonschema_version(locked_jsonschema)"
     )
+    jsonschema_import_index = workflow.index('python -c "import jsonschema"')
     deploy_test_index = workflow.index(PYTEST_COMMAND)
     ci_verify_index = workflow.index("corepack pnpm run ci:verify")
     traceability_index = workflow.index("python tools/frontend_release_traceability.py --format json")
     assert pytest_install_index < deploy_test_index
     assert collection_dependency_import_index < deploy_test_index
     assert pytest_install_index < collection_dependency_import_index
+    assert collection_dependency_import_index < jsonschema_import_index < deploy_test_index
     assert deploy_test_index < ci_verify_index
     assert ci_verify_index < traceability_index
 
