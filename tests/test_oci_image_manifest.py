@@ -410,6 +410,22 @@ def test_resolver_preserves_other_valid_rfc3986_uri_forms(uri: str):
     assert _resolve_document(document) == PRODUCER_DIGEST
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://[fe80::1%eth0]/",
+        "https://[fe80::1%25eth0]/",
+    ],
+    ids=["raw-zone-id", "percent-encoded-zone-id"],
+)
+def test_resolver_rejects_ipv6_zone_identifiers(uri: str):
+    document = json.loads(_oci_index_bytes())
+    document["manifests"][0]["urls"] = [uri]
+
+    with pytest.raises(ValueError, match="oci_descriptor_urls"):
+        _resolve_document(document)
+
+
 def test_resolver_accepts_document_at_raw_json_byte_limit():
     raw_document = _padded_oci_index_bytes(MAX_OCI_DOCUMENT_BYTES)
 
@@ -444,6 +460,70 @@ def test_resolver_rejects_oversize_before_json_parse(monkeypatch: pytest.MonkeyP
             raw_document,
             requested_digest=_requested_digest(raw_document),
         )
+
+
+def test_resolver_rejects_oversize_before_hash_or_json(monkeypatch: pytest.MonkeyPatch):
+    raw_document = b"x" * (MAX_OCI_DOCUMENT_BYTES + 1)
+    calls: list[str] = []
+
+    def fail_hash(*_args: object, **_kwargs: object) -> object:
+        calls.append("hash")
+        raise AssertionError("hash must not receive oversized input")
+
+    def fail_json(*_args: object, **_kwargs: object) -> object:
+        calls.append("json")
+        raise AssertionError("JSON parser must not receive oversized input")
+
+    monkeypatch.setattr(oci_image_manifest.hashlib, "sha256", fail_hash)
+    monkeypatch.setattr(oci_image_manifest.json, "loads", fail_json)
+    with pytest.raises(ValueError, match="^oci_document$"):
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest="sha256:" + "0" * 64,
+        )
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("location", "code_point"),
+    [("nested-key", 0xD800), ("nested-value", 0xDC00)],
+    ids=["lone-high-surrogate-key", "lone-low-surrogate-value"],
+)
+def test_resolver_rejects_unpaired_utf16_surrogates_in_nested_json_strings(
+    location: str,
+    code_point: int,
+):
+    document = json.loads(_oci_index_bytes())
+    annotations = document["manifests"][0].setdefault("annotations", {})
+    surrogate = chr(code_point)
+    if location == "nested-key":
+        annotations[surrogate] = "value"
+    else:
+        annotations["org.example.value"] = surrogate
+
+    with pytest.raises(ValueError, match="^oci_document$"):
+        _resolve_document(document)
+
+
+def test_resolver_accepts_unicode_scalars_and_an_escaped_surrogate_pair():
+    document = json.loads(_oci_index_bytes())
+    escaped_pair = chr(0xD83D) + chr(0xDE80)
+    document["annotations"] = {"org.example.scalar": "\N{SNOWMAN}"}
+    document["manifests"][0]["annotations"] = {
+        escaped_pair: escaped_pair,
+        "org.example.utf8": "\N{ROCKET}",
+    }
+    raw_document = json.dumps(document, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
+
+    assert (
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=_requested_digest(raw_document),
+        )
+        == PRODUCER_DIGEST
+    )
 
 
 def test_resolver_classifies_excessive_json_nesting_as_oci_document():

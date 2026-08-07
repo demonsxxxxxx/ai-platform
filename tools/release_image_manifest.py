@@ -14,10 +14,10 @@ from typing import Any, Iterable
 from urllib.parse import quote, urlsplit
 
 if __package__:
-    from .oci_image_manifest import resolve_authenticated_producer_digest
+    from .oci_image_manifest import MAX_OCI_DOCUMENT_BYTES, resolve_authenticated_producer_digest
     from .spdx_failure_evidence import write_spdx_failure_evidence
 else:
-    from oci_image_manifest import resolve_authenticated_producer_digest
+    from oci_image_manifest import MAX_OCI_DOCUMENT_BYTES, resolve_authenticated_producer_digest
     from spdx_failure_evidence import write_spdx_failure_evidence
 
 
@@ -1435,9 +1435,17 @@ def _resolve_producer_digest_command(args: argparse.Namespace) -> None:
     subject = SUBJECTS[args.role]
     if args.image_ref != f"{subject}@{digest}":
         raise ValueError("oci_image_ref")
+    path = Path(args.oci_file)
+    try:
+        with path.open("rb") as stream:
+            raw_document = stream.read(MAX_OCI_DOCUMENT_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("oci_document") from exc
+    if len(raw_document) > MAX_OCI_DOCUMENT_BYTES:
+        raise ValueError("oci_document")
     print(
         resolve_authenticated_producer_digest(
-            Path(args.oci_file).read_bytes(),
+            raw_document,
             requested_digest=digest,
         )
     )

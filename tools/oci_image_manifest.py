@@ -95,11 +95,15 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def _validate_json_bounds(payload: bytes) -> None:
+def _validate_document_size(payload: bytes) -> None:
     # Distribution registries cap manifest bodies at 4 MiB; keep this trust parser
     # bounded to the same metadata envelope rather than accepting blob-sized JSON.
     if len(payload) > MAX_OCI_DOCUMENT_BYTES:
         raise ValueError("oci_document")
+
+
+def _validate_json_bounds(payload: bytes) -> None:
+    _validate_document_size(payload)
     depth = 0
     in_string = False
     escaped = False
@@ -122,14 +126,45 @@ def _validate_json_bounds(payload: bytes) -> None:
             depth -= 1
 
 
+def _validate_unicode_scalars(value: Any) -> None:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+            continue
+        if isinstance(current, list):
+            pending.extend(current)
+            continue
+        if not isinstance(current, str):
+            continue
+
+        index = 0
+        while index < len(current):
+            code_point = ord(current[index])
+            if 0xD800 <= code_point <= 0xDBFF:
+                if index + 1 >= len(current) or not (
+                    0xDC00 <= ord(current[index + 1]) <= 0xDFFF
+                ):
+                    raise ValueError("oci_document")
+                index += 2
+            elif 0xDC00 <= code_point <= 0xDFFF:
+                raise ValueError("oci_document")
+            else:
+                index += 1
+
+
 def _loads_json(payload: bytes) -> Any:
     _validate_json_bounds(payload)
     try:
-        return json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_keys)
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_keys)
     except _DuplicateJsonKey as exc:
         raise ValueError("json_duplicate_key") from exc
     except (json.JSONDecodeError, RecursionError, UnicodeDecodeError) as exc:
         raise ValueError("oci_document") from exc
+    _validate_unicode_scalars(value)
+    return value
 
 
 def _object(value: Any, name: str) -> dict[str, Any]:
@@ -182,7 +217,12 @@ def _is_uri_authority(value: str) -> bool:
             return False
         literal = host_port[1:close]
         suffix = host_port[close + 1 :]
-        if not literal or (suffix and not suffix.startswith(":")) or "]" in suffix:
+        if (
+            not literal
+            or "%" in literal
+            or (suffix and not suffix.startswith(":"))
+            or "]" in suffix
+        ):
             return False
         if _URI_IPV_FUTURE.fullmatch(literal) is None:
             try:
@@ -321,6 +361,7 @@ def resolve_authenticated_producer_digest(raw_document: bytes, *, requested_dige
     one canonical linux/amd64 descriptor; valid non-selected platforms are retained
     as syntax only and cannot influence the selected digest.
     """
+    _validate_document_size(raw_document)
     if f"sha256:{hashlib.sha256(raw_document).hexdigest()}" != requested_digest:
         raise ValueError("oci_document_digest")
     document = _object(_loads_json(raw_document), "oci_document")

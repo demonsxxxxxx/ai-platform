@@ -1,3 +1,4 @@
+from argparse import Namespace
 import base64
 import copy
 import hashlib
@@ -17,6 +18,8 @@ from tools.release_image_manifest import (
     assemble_manifest,
     validate_manifest,
 )
+from tools import release_image_manifest
+from tools.oci_image_manifest import MAX_OCI_DOCUMENT_BYTES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -798,6 +801,78 @@ def test_resolve_producer_digest_cli_integrates_the_pure_resolver(tmp_path: Path
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == requested_digest
+
+
+class _ReadProbe:
+    def __init__(self, payload: bytes):
+        self.payload = payload
+        self.sizes: list[int] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        self.sizes.append(size)
+        if size != MAX_OCI_DOCUMENT_BYTES + 1:
+            raise AssertionError("OCI input must be read with the bounded limit")
+        return self.payload
+
+
+def _resolve_command_arguments(path: Path, digest: str) -> Namespace:
+    return Namespace(
+        role="backend",
+        manifest_digest=digest,
+        image_ref=f"ghcr.io/demonsxxxxxx/ai-platform-backend@{digest}",
+        oci_file=str(path),
+    )
+
+
+def test_resolve_producer_digest_cli_reads_at_most_limit_plus_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    raw = json.dumps(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": "sha256:" + "1" * 64,
+                "size": 1,
+            },
+            "layers": [],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    probe = _ReadProbe(raw)
+    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: probe)
+
+    release_image_manifest._resolve_producer_digest_command(
+        _resolve_command_arguments(tmp_path / "oci-backend.json", digest)
+    )
+
+    assert probe.sizes == [MAX_OCI_DOCUMENT_BYTES + 1]
+    assert capsys.readouterr().out.strip() == digest
+
+
+def test_resolve_producer_digest_cli_rejects_oversize_after_bounded_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    probe = _ReadProbe(b"x" * (MAX_OCI_DOCUMENT_BYTES + 1))
+    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: probe)
+
+    with pytest.raises(ValueError, match="^oci_document$"):
+        release_image_manifest._resolve_producer_digest_command(
+            _resolve_command_arguments(tmp_path / "oci-backend.json", "sha256:" + "0" * 64)
+        )
+
+    assert probe.sizes == [MAX_OCI_DOCUMENT_BYTES + 1]
 
 
 def test_bind_spdx_preserves_exact_failed_run_checksum_contour_and_rejects_rebind(
