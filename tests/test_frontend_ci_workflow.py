@@ -1,8 +1,13 @@
+import importlib.metadata
 from pathlib import Path
+import tomllib
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
+LOCK = ROOT / "uv.lock"
 PYTEST_COMMAND = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
@@ -16,8 +21,71 @@ PYTEST_COMMAND = (
     "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
 )
-PYTHON_TEST_DEPENDENCIES = "python -m pip install pytest pyyaml jsonschema"
-PYTHON_COLLECTION_DEPENDENCY_IMPORT = 'python -c "import jsonschema"'
+PYTHON_TEST_DEPENDENCIES = '"pytest",\n                  "pyyaml",\n                  f"jsonschema=={locked_jsonschema}",'
+JSONSCHEMA_CONTRACT_START = "          import importlib.metadata"
+JSONSCHEMA_CONTRACT_END = "          '@ | python -"
+
+
+def _jsonschema_contract_namespace() -> dict[str, object]:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    start = workflow.index(JSONSCHEMA_CONTRACT_START)
+    end = workflow.index(JSONSCHEMA_CONTRACT_END, start)
+    source = "\n".join(
+        line.removeprefix("          ") for line in workflow[start:end].splitlines()
+    )
+    namespace: dict[str, object] = {"__name__": "workflow_contract"}
+    exec(source, namespace)
+    return namespace
+
+
+def _locked_jsonschema_version(lock_path: Path) -> str:
+    with lock_path.open("rb") as handle:
+        packages = tomllib.load(handle)["package"]
+    jsonschema_packages = [package for package in packages if package["name"] == "jsonschema"]
+    assert len(jsonschema_packages) == 1
+    return jsonschema_packages[0]["version"]
+
+
+def test_frontend_ci_workflow_derives_and_verifies_jsonschema_from_lock_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "python -m pip install pytest pyyaml jsonschema" not in workflow
+    assert 'python -c "import jsonschema"' not in workflow
+
+    namespace = _jsonschema_contract_namespace()
+    locked_version = namespace["locked_jsonschema_version"]
+    verify_installed = namespace["verify_installed_jsonschema_version"]
+    assert callable(locked_version)
+    assert callable(verify_installed)
+    expected_locked_version = _locked_jsonschema_version(LOCK)
+    assert locked_version(LOCK) == expected_locked_version
+
+    missing_lock = tmp_path / "missing.lock"
+    missing_lock.write_text('version = 1\n[[package]]\nname = "pytest"\nversion = "9.0.2"\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="exactly one jsonschema"):
+        locked_version(missing_lock)
+
+    invalid_lock = tmp_path / "invalid.lock"
+    invalid_lock.write_text(
+        'version = 1\n[[package]]\nname = "jsonschema"\nversion = "untrusted"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="canonical numeric version"):
+        locked_version(invalid_lock)
+
+    duplicate_lock = tmp_path / "duplicate.lock"
+    duplicate_lock.write_text(
+        f'version = 1\n[[package]]\nname = "jsonschema"\nversion = "{expected_locked_version}"\n'
+        f'[[package]]\nname = "jsonschema"\nversion = "{expected_locked_version}"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="exactly one jsonschema"):
+        locked_version(duplicate_lock)
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda _: "0.0.0")
+    with pytest.raises(RuntimeError, match="installed jsonschema version mismatch"):
+        verify_installed(expected_locked_version)
 
 
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
@@ -37,7 +105,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
 
     assert "corepack pnpm install --frozen-lockfile" in workflow
     assert PYTHON_TEST_DEPENDENCIES in workflow
-    assert PYTHON_COLLECTION_DEPENDENCY_IMPORT in workflow
+    assert "locked_jsonschema_version(Path(\"uv.lock\"))" in workflow
+    assert "verify_installed_jsonschema_version(locked_jsonschema)" in workflow
     assert PYTEST_COMMAND in workflow
     assert "tests/test_governance_readiness.py" not in workflow
     assert "python tools/deploy_frontend_static.py --help" in workflow
@@ -77,7 +146,9 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "http://127.0.0.1:18080/healthz" in workflow
 
     pytest_install_index = workflow.index(PYTHON_TEST_DEPENDENCIES)
-    collection_dependency_import_index = workflow.index(PYTHON_COLLECTION_DEPENDENCY_IMPORT)
+    collection_dependency_import_index = workflow.index(
+        "verify_installed_jsonschema_version(locked_jsonschema)"
+    )
     deploy_test_index = workflow.index(PYTEST_COMMAND)
     ci_verify_index = workflow.index("corepack pnpm run ci:verify")
     traceability_index = workflow.index("python tools/frontend_release_traceability.py --format json")
