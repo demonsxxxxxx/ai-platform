@@ -1532,7 +1532,7 @@ def assert_clean_coordination_source(repo_root: Path, expected_commit: str | Non
     return root
 
 
-def _posix_owner_mode(path: Path) -> tuple[int, int]:
+def _posix_owner_mode(path: Path, metadata: os.stat_result | None = None) -> tuple[int, int]:
     """Return owner and permission bits on the managed POSIX release host."""
     if os.name != "posix":
         raise ReleaseAuthorityError(
@@ -1540,7 +1540,7 @@ def _posix_owner_mode(path: Path) -> tuple[int, int]:
             "unavailable; run the canonical release on the managed POSIX host"
         )
     try:
-        metadata = path.stat(follow_symlinks=False)
+        metadata = metadata or path.stat(follow_symlinks=False)
     except OSError as exc:
         raise ReleaseAuthorityError(
             "managed-env-metadata gate failed: owner and mode metadata is unavailable; "
@@ -1591,7 +1591,7 @@ def _managed_root_from_release_root(release_root: Path) -> tuple[Path, Path]:
     return normalized, managed_root
 
 
-def resolve_managed_env_file(release_root: Path, env_file: Path | None) -> Path:
+def resolve_managed_env_file(release_root: Path, env_file: Path | None, include_identity: bool = False) -> Path | tuple[Path, os.stat_result]:
     """Derive or validate the opaque managed Compose env file without reading it."""
     _, managed_root = _managed_root_from_release_root(release_root)
     canonical = managed_root / DEFAULT_MANAGED_ENV_RELATIVE_PATH
@@ -1643,7 +1643,7 @@ def resolve_managed_env_file(release_root: Path, env_file: Path | None) -> Path:
             "requesting the release lease"
         )
     managed_owner, _ = _posix_owner_mode(managed_root)
-    env_owner, env_mode = _posix_owner_mode(candidate)
+    env_owner, env_mode = _posix_owner_mode(candidate, metadata)
     if env_owner != managed_owner:
         raise ReleaseAuthorityError(
             "managed-env-file-ownership gate failed: the environment file owner must match "
@@ -1655,7 +1655,7 @@ def resolve_managed_env_file(release_root: Path, env_file: Path | None) -> Path:
             "managed-env-file-mode gate failed: the environment file mode must be 0600; "
             "have the managed owner correct it before requesting the release lease"
         )
-    return candidate
+    return (candidate, metadata) if include_identity else candidate
 
 
 def resolve_compose_files(
