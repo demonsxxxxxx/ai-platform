@@ -39,6 +39,10 @@ SBOM_NAMESPACE_PLACEHOLDER = (
 )
 SBOM_BINDING_ANNOTATOR = "Tool: ai-platform-release-image-manifest"
 SBOM_BINDING_COMMENT_PREFIX = "ai-platform.sbom-binding.v1:"
+REAL_SYFT_1_50_BACKEND_SELF_DEPENDENCY_IDS = (
+    "SPDXRef-Package-python-contourpy-81597264a63d721b",
+    "SPDXRef-Package-python-contourpy-b851cae05db6c3f4",
+)
 
 
 def _artifact_name(role: str) -> str:
@@ -153,6 +157,31 @@ def _syft_spdx(role: str) -> dict[str, object]:
             },
         ],
     }
+
+
+def _captured_syft_1_50_backend_self_dependency_graph() -> dict[str, object]:
+    """Minimal graph extracted from Syft 1.50.0's backend digest output."""
+    document = _syft_spdx("backend")
+    for package_id in REAL_SYFT_1_50_BACKEND_SELF_DEPENDENCY_IDS:
+        document["packages"].append(
+            {
+                "name": "contourpy",
+                "SPDXID": package_id,
+                "downloadLocation": "NOASSERTION",
+                "filesAnalyzed": False,
+                "licenseConcluded": "NOASSERTION",
+                "licenseDeclared": "NOASSERTION",
+                "copyrightText": "NOASSERTION",
+            }
+        )
+        document["relationships"].append(
+            {
+                "spdxElementId": package_id,
+                "relatedSpdxElement": package_id,
+                "relationshipType": "DEPENDENCY_OF",
+            }
+        )
+    return document
 
 
 def _syft_directory_spdx(role: str) -> dict[str, object]:
@@ -793,6 +822,42 @@ def test_spdx_graph_preserves_distinct_legal_relationships_on_same_nodes():
     )
 
     _validate_spdx_graph(document)
+
+
+def test_spdx_graph_accepts_captured_syft_1_50_package_self_dependencies():
+    _validate_spdx_graph(_captured_syft_1_50_backend_self_dependency_graph())
+
+
+@pytest.mark.parametrize(
+    ("source", "relationship_type", "target"),
+    [
+        ("package", "CONTAINS", "package"),
+        ("document", "DEPENDS_ON", "document"),
+        ("file", "DEPENDENCY_OF", "file"),
+    ],
+    ids=["self-containment", "document-self-dependency", "file-self-dependency"],
+)
+def test_spdx_graph_rejects_self_relationships_outside_package_dependencies(
+    source: str,
+    relationship_type: str,
+    target: str,
+):
+    document = _syft_spdx("backend")
+    node_ids = {
+        "document": "SPDXRef-DOCUMENT",
+        "package": document["packages"][1]["SPDXID"],
+        "file": document["files"][0]["SPDXID"],
+    }
+    document["relationships"].append(
+        {
+            "spdxElementId": node_ids[source],
+            "relationshipType": relationship_type,
+            "relatedSpdxElement": node_ids[target],
+        }
+    )
+
+    with pytest.raises(ValueError, match="sbom_graph"):
+        _validate_spdx_graph(document)
 
 
 @pytest.mark.parametrize(
