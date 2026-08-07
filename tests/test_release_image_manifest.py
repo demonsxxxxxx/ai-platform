@@ -12,6 +12,7 @@ import pytest
 
 from tools.release_image_manifest import (
     SCHEMA_VERSION,
+    _validate_spdx_graph,
     assemble_manifest,
     validate_manifest,
 )
@@ -735,6 +736,101 @@ def test_spdx_graph_is_closed_unique_and_single_rooted(
 
     with pytest.raises(ValueError, match="sbom_graph"):
         validate_manifest(manifest, evidence_root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("source_key", "relationship_type", "target_key"),
+    [
+        ("dependency", "UNKNOWN_EXTENSION", "file"),
+        ("file", "CONTAINED_BY", "dependency"),
+        ("root", "CONTAINED_BY", "dependency"),
+    ],
+    ids=[
+        "unknown-spdx-2.3-type",
+        "equivalent-inverse-duplicate",
+        "contradictory-containment",
+    ],
+)
+def test_spdx_relationship_semantics_fail_closed(
+    tmp_path: Path,
+    source_key: str,
+    relationship_type: str,
+    target_key: str,
+):
+    manifest = _manifest()
+    _write_evidence(tmp_path, manifest)
+
+    def mutate(document: dict) -> None:
+        node_ids = {
+            "root": document["packages"][0]["SPDXID"],
+            "dependency": document["packages"][1]["SPDXID"],
+            "file": document["files"][0]["SPDXID"],
+        }
+        document["relationships"].append(
+            {
+                "spdxElementId": node_ids[source_key],
+                "relationshipType": relationship_type,
+                "relatedSpdxElement": node_ids[target_key],
+            }
+        )
+
+    _rewrite_bound_sbom(tmp_path, manifest, mutate)
+
+    with pytest.raises(ValueError, match="sbom_graph"):
+        validate_manifest(manifest, evidence_root=tmp_path)
+
+
+def test_spdx_graph_preserves_distinct_legal_relationships_on_same_nodes():
+    document = _syft_spdx("backend")
+    root_id = document["packages"][0]["SPDXID"]
+    dependency_id = document["packages"][1]["SPDXID"]
+    document["relationships"].append(
+        {
+            "spdxElementId": root_id,
+            "relationshipType": "DEPENDS_ON",
+            "relatedSpdxElement": dependency_id,
+        }
+    )
+
+    _validate_spdx_graph(document)
+
+
+@pytest.mark.parametrize(
+    ("forward_type", "inverse_type"),
+    [
+        ("DESCRIBES", "DESCRIBED_BY"),
+        ("CONTAINS", "CONTAINED_BY"),
+        ("DEPENDS_ON", "DEPENDENCY_OF"),
+        ("GENERATES", "GENERATED_FROM"),
+        ("ANCESTOR_OF", "DESCENDANT_OF"),
+        ("PREREQUISITE_FOR", "HAS_PREREQUISITE"),
+    ],
+)
+def test_spdx_graph_rejects_all_semantically_equivalent_inverse_spellings(
+    forward_type: str,
+    inverse_type: str,
+):
+    document = _syft_spdx("backend")
+    dependency_id = document["packages"][1]["SPDXID"]
+    file_id = document["files"][0]["SPDXID"]
+    document["relationships"] = document["relationships"][:2]
+    document["relationships"].extend(
+        [
+            {
+                "spdxElementId": dependency_id,
+                "relationshipType": forward_type,
+                "relatedSpdxElement": file_id,
+            },
+            {
+                "spdxElementId": file_id,
+                "relationshipType": inverse_type,
+                "relatedSpdxElement": dependency_id,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="sbom_graph"):
+        _validate_spdx_graph(document)
 
 
 @pytest.mark.parametrize(

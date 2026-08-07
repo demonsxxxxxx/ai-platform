@@ -77,6 +77,64 @@ _BOUND_SBOM_NAMESPACE = re.compile(
 )
 _SYFT_IMAGE_NAMESPACE = re.compile(r"https://anchore\.com/syft/image/.+")
 _SPDX_ID = re.compile(r"SPDXRef-[A-Za-z0-9.-]+")
+_SPDX_23_RELATIONSHIP_TYPES = frozenset(
+    {
+        "AMENDS",
+        "ANCESTOR_OF",
+        "BUILD_DEPENDENCY_OF",
+        "BUILD_TOOL_OF",
+        "CONTAINED_BY",
+        "CONTAINS",
+        "COPY_OF",
+        "DATA_FILE_OF",
+        "DEPENDENCY_MANIFEST_OF",
+        "DEPENDENCY_OF",
+        "DEPENDS_ON",
+        "DESCENDANT_OF",
+        "DESCRIBED_BY",
+        "DESCRIBES",
+        "DEV_DEPENDENCY_OF",
+        "DEV_TOOL_OF",
+        "DISTRIBUTION_ARTIFACT",
+        "DOCUMENTATION_OF",
+        "DYNAMIC_LINK",
+        "EXAMPLE_OF",
+        "EXPANDED_FROM_ARCHIVE",
+        "FILE_ADDED",
+        "FILE_DELETED",
+        "FILE_MODIFIED",
+        "GENERATED_FROM",
+        "GENERATES",
+        "HAS_PREREQUISITE",
+        "METAFILE_OF",
+        "OPTIONAL_COMPONENT_OF",
+        "OPTIONAL_DEPENDENCY_OF",
+        "OTHER",
+        "PACKAGE_OF",
+        "PATCH_APPLIED",
+        "PATCH_FOR",
+        "PREREQUISITE_FOR",
+        "PROVIDED_DEPENDENCY_OF",
+        "REQUIREMENT_DESCRIPTION_FOR",
+        "RUNTIME_DEPENDENCY_OF",
+        "SPECIFICATION_FOR",
+        "STATIC_LINK",
+        "TEST_CASE_OF",
+        "TEST_DEPENDENCY_OF",
+        "TEST_OF",
+        "TEST_TOOL_OF",
+        "VARIANT_OF",
+    }
+)
+# SPDX 2.3 Table 68 defines these as the reverse spelling of the same edge.
+_SPDX_INVERSE_TO_CANONICAL = {
+    "CONTAINED_BY": "CONTAINS",
+    "DEPENDENCY_OF": "DEPENDS_ON",
+    "DESCENDANT_OF": "ANCESTOR_OF",
+    "DESCRIBED_BY": "DESCRIBES",
+    "GENERATED_FROM": "GENERATES",
+    "HAS_PREREQUISITE": "PREREQUISITE_FOR",
+}
 _SBOM_BINDING_ANNOTATOR = "Tool: ai-platform-release-image-manifest"
 _SBOM_BINDING_COMMENT_PREFIX = "ai-platform.sbom-binding.v1:"
 _SBOM_BINDING_KEYS = {
@@ -245,6 +303,7 @@ def _validate_spdx_graph(document: dict[str, Any]) -> set[str]:
     if not isinstance(relationships, list):
         raise ValueError("sbom_document")
     relationship_triples: set[tuple[str, str, str]] = set()
+    containment_edges: set[tuple[str, str]] = set()
     for relationship in relationships:
         if not isinstance(relationship, dict) or any(
             not isinstance(relationship.get(key), str) or not relationship[key]
@@ -254,7 +313,14 @@ def _validate_spdx_graph(document: dict[str, Any]) -> set[str]:
         source = relationship["spdxElementId"]
         target = relationship["relatedSpdxElement"]
         relationship_type = relationship["relationshipType"]
-        triple = (source, target, relationship_type)
+        if relationship_type not in _SPDX_23_RELATIONSHIP_TYPES:
+            raise ValueError("sbom_graph")
+        canonical_type = _SPDX_INVERSE_TO_CANONICAL.get(relationship_type, relationship_type)
+        if canonical_type != relationship_type:
+            canonical_source, canonical_target = target, source
+        else:
+            canonical_source, canonical_target = source, target
+        triple = (canonical_source, canonical_target, canonical_type)
         if (
             source not in node_ids
             or target not in node_ids
@@ -262,6 +328,11 @@ def _validate_spdx_graph(document: dict[str, Any]) -> set[str]:
             or triple in relationship_triples
         ):
             raise ValueError("sbom_graph")
+        if canonical_type == "CONTAINS":
+            containment = (canonical_source, canonical_target)
+            if (canonical_target, canonical_source) in containment_edges:
+                raise ValueError("sbom_graph")
+            containment_edges.add(containment)
         relationship_triples.add(triple)
     return node_ids
 
