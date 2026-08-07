@@ -331,6 +331,55 @@ def test_generated_spdx_is_bound_before_scan_and_attestation():
     )
 
 
+def test_spdx_binding_failure_uploads_only_untrusted_run_bound_diagnostics():
+    workflow = _workflow()
+    publish = workflow["jobs"]["publish"]
+    steps = publish["steps"]
+    names = [step.get("name") for step in steps]
+    source = next(
+        step for step in steps if step.get("name") == "Capture generated SPDX source identity"
+    )
+    diagnostic = next(
+        step
+        for step in steps
+        if step.get("name") == "Upload untrusted SPDX binding diagnostic"
+    )
+
+    assert source["id"] == "spdx-source"
+    assert "continue-on-error" not in source
+    assert (
+        '--failure-evidence-file "spdx-binding-diagnostic-${{ matrix.role }}.json"'
+        in source["run"]
+    )
+    assert names.index("Capture generated SPDX source identity") < names.index(
+        "Upload untrusted SPDX binding diagnostic"
+    ) < names.index("Bind SPDX SBOM to immutable subject")
+    assert diagnostic["if"] == (
+        "${{ failure() && steps.spdx-source.outcome == 'failure' && "
+        "hashFiles(format('sbom-{0}.spdx.json', matrix.role)) != '' && "
+        "hashFiles(format('spdx-binding-diagnostic-{0}.json', matrix.role)) != '' }}"
+    )
+    assert diagnostic["uses"] == (
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    )
+    assert diagnostic["with"] == {
+        "name": (
+            "release-image-spdx-diagnostic-${{ github.sha }}-${{ github.run_id }}-"
+            "${{ github.run_attempt }}-${{ matrix.role }}"
+        ),
+        "if-no-files-found": "error",
+        "retention-days": "1",
+        "path": (
+            "sbom-${{ matrix.role }}.spdx.json\n"
+            "spdx-binding-diagnostic-${{ matrix.role }}.json\n"
+        ),
+    }
+    assert "github.token" not in str(diagnostic)
+    assert "GH_TOKEN" not in str(diagnostic)
+    assert "release-image-spdx-diagnostic" not in str(workflow["jobs"]["release-manifest"])
+    assert workflow["jobs"]["release-manifest"]["needs"] == ["publish"]
+
+
 def test_artifact_and_evidence_names_bind_run_attempt():
     text = _workflow_text()
 

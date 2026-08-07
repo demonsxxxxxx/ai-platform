@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 from typing import Any, Iterable
 from urllib.parse import quote, urlsplit
 
@@ -137,6 +138,7 @@ _SPDX_INVERSE_TO_CANONICAL = {
 }
 _SBOM_BINDING_ANNOTATOR = "Tool: ai-platform-release-image-manifest"
 _SBOM_BINDING_COMMENT_PREFIX = "ai-platform.sbom-binding.v1:"
+_SPDX_FAILURE_EVIDENCE_SCHEMA_VERSION = "ai-platform.spdx-failure-evidence.v1"
 _SBOM_BINDING_KEYS = {
     "annotations_present",
     "original_namespace",
@@ -146,6 +148,15 @@ _SBOM_BINDING_KEYS = {
 
 class _DuplicateJsonKey(ValueError):
     pass
+
+
+class _SbomSubjectBindingError(ValueError):
+    def __init__(self, reason: str):
+        super().__init__(f"sbom_subject_binding.{reason}")
+
+
+def _sbom_subject_binding_error(reason: str) -> _SbomSubjectBindingError:
+    return _SbomSubjectBindingError(reason)
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -416,7 +427,7 @@ def _validate_spdx_image_binding(
 ) -> str:
     _validate_spdx_23_document(document)
     if document["name"] != subject:
-        raise ValueError("sbom_subject_binding")
+        raise _sbom_subject_binding_error("document_name")
 
     root_claims = [
         relationship
@@ -432,7 +443,7 @@ def _validate_spdx_image_binding(
     root_id = root_claims[0]["relatedSpdxElement"]
     roots = [package for package in document["packages"] if package["SPDXID"] == root_id]
     if len(roots) != 1 or not root_id.startswith("SPDXRef-DocumentRoot-Image-"):
-        raise ValueError("sbom_subject_binding")
+        raise _sbom_subject_binding_error("root_identity")
     root = roots[0]
     container_roots = [
         package
@@ -444,9 +455,9 @@ def _validate_spdx_image_binding(
 
     if require_document_describes:
         if document.get("documentDescribes") != [root_id]:
-            raise ValueError("sbom_subject_binding")
+            raise _sbom_subject_binding_error("document_describes_required")
     elif "documentDescribes" in document and document["documentDescribes"] != [root_id]:
-        raise ValueError("sbom_subject_binding")
+        raise _sbom_subject_binding_error("document_describes_optional")
 
     expected_checksum = [
         {"algorithm": "SHA256", "checksumValue": digest.removeprefix("sha256:")}
@@ -461,16 +472,20 @@ def _validate_spdx_image_binding(
         ]
         for locator in _spdx_oci_purls(subject=subject, digest=digest)
     ]
-    if (
-        root.get("name") != subject
-        or root.get("versionInfo") != digest
-        or root.get("primaryPackagePurpose") != "CONTAINER"
-        or root.get("filesAnalyzed") is not False
-        or root.get("downloadLocation") != "NOASSERTION"
-        or root.get("checksums") != expected_checksum
-        or root.get("externalRefs") not in expected_external_refs
-    ):
-        raise ValueError("sbom_subject_binding")
+    if root.get("name") != subject:
+        raise _sbom_subject_binding_error("root_name")
+    if root.get("versionInfo") != digest:
+        raise _sbom_subject_binding_error("root_version")
+    if root.get("primaryPackagePurpose") != "CONTAINER":
+        raise _sbom_subject_binding_error("root_purpose")
+    if root.get("filesAnalyzed") is not False:
+        raise _sbom_subject_binding_error("root_files_analyzed")
+    if root.get("downloadLocation") != "NOASSERTION":
+        raise _sbom_subject_binding_error("root_download_location")
+    if root.get("checksums") != expected_checksum:
+        raise _sbom_subject_binding_error("root_checksums")
+    if root.get("externalRefs") not in expected_external_refs:
+        raise _sbom_subject_binding_error("root_external_refs")
     return root_id
 
 
@@ -1228,22 +1243,106 @@ def _subject_command(args: argparse.Namespace) -> None:
     _write_json(Path(args.output), record)
 
 
+def _spdx_failure_root_metadata(document: dict[str, Any] | None) -> tuple[int | None, str | None]:
+    if not isinstance(document, dict):
+        return None, None
+    packages = document.get("packages")
+    if not isinstance(packages, list):
+        return None, None
+    container_roots = [
+        package
+        for package in packages
+        if isinstance(package, dict) and package.get("primaryPackagePurpose") == "CONTAINER"
+    ]
+    if len(container_roots) != 1:
+        return None, None
+    external_refs = container_roots[0].get("externalRefs")
+    if not isinstance(external_refs, list):
+        return None, None
+    locator: str | None = None
+    if len(external_refs) == 1 and isinstance(external_refs[0], dict):
+        candidate = external_refs[0].get("referenceLocator")
+        if isinstance(candidate, str):
+            locator = candidate
+    return len(external_refs), (
+        hashlib.sha256(locator.encode("utf-8")).hexdigest() if locator is not None else None
+    )
+
+
+def _write_spdx_failure_evidence(
+    *,
+    path: Path | None,
+    role: str,
+    subject: str,
+    digest: str,
+    sbom_path: Path | None,
+    document: dict[str, Any] | None,
+    reason_code: str,
+) -> None:
+    if path is None or path.name != f"spdx-binding-diagnostic-{role}.json":
+        return
+    root_external_ref_count, root_purl_sha256 = _spdx_failure_root_metadata(document)
+    evidence = {
+        "schema_version": _SPDX_FAILURE_EVIDENCE_SCHEMA_VERSION,
+        "command": "spdx-source-hash",
+        "reason_code": reason_code,
+        "role": role,
+        "subject": subject,
+        "manifest_digest": digest,
+        "image_ref": f"{subject}@{digest}",
+        "sbom_sha256": _sha256(sbom_path) if sbom_path is not None and sbom_path.is_file() else None,
+        "root_external_ref_count": root_external_ref_count,
+        "root_purl_sha256": root_purl_sha256,
+    }
+    try:
+        _write_json(path, evidence)
+    except OSError:
+        # Preserve the source-identity failure even when diagnostic persistence fails.
+        return
+
+
 def _spdx_source_hash_command(args: argparse.Namespace) -> None:
     if args.role not in SUBJECTS:
         raise ValueError("role")
     digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
     subject = SUBJECTS[args.role]
-    if args.image_ref != f"{subject}@{digest}":
-        raise ValueError("sbom_subject_binding")
     path = Path(args.sbom_file)
+    failure_evidence_path = (
+        Path(args.failure_evidence_file) if args.failure_evidence_file is not None else None
+    )
+    if args.image_ref != f"{subject}@{digest}":
+        error = _sbom_subject_binding_error("image_ref")
+        _write_spdx_failure_evidence(
+            path=failure_evidence_path,
+            role=args.role,
+            subject=subject,
+            digest=digest,
+            sbom_path=path,
+            document=None,
+            reason_code=str(error),
+        )
+        raise error
     if path.name != f"sbom-{args.role}.spdx.json":
         raise ValueError("sbom_path")
-    document = _load_object(path)
-    unbound_content_sha256, _, _ = _validate_unbound_spdx(
-        document,
-        subject=subject,
-        digest=digest,
-    )
+    document: dict[str, Any] | None = None
+    try:
+        document = _load_object(path)
+        unbound_content_sha256, _, _ = _validate_unbound_spdx(
+            document,
+            subject=subject,
+            digest=digest,
+        )
+    except ValueError as error:
+        _write_spdx_failure_evidence(
+            path=failure_evidence_path,
+            role=args.role,
+            subject=subject,
+            digest=digest,
+            sbom_path=path,
+            document=document,
+            reason_code=str(error),
+        )
+        raise
     print(unbound_content_sha256)
 
 
@@ -1254,7 +1353,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
     digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
     subject = SUBJECTS[args.role]
     if args.image_ref != f"{subject}@{digest}":
-        raise ValueError("sbom_subject_binding")
+        raise _sbom_subject_binding_error("image_ref")
     if not isinstance(args.workflow_run_id, str) or not args.workflow_run_id.isdigit():
         raise ValueError("workflow_run_id")
     if args.workflow_run_attempt < 1:
@@ -1407,6 +1506,7 @@ def main() -> int:
     spdx_source_hash.add_argument("--manifest-digest", required=True)
     spdx_source_hash.add_argument("--image-ref", required=True)
     spdx_source_hash.add_argument("--sbom-file", required=True)
+    spdx_source_hash.add_argument("--failure-evidence-file")
 
     target = subparsers.add_parser(
         "subject-target",
@@ -1445,8 +1545,12 @@ def main() -> int:
         _bind_spdx_command(args)
         return 0
     if args.command == "spdx-source-hash":
-        _spdx_source_hash_command(args)
-        return 0
+        try:
+            _spdx_source_hash_command(args)
+            return 0
+        except ValueError as error:
+            print(f"release_image_manifest_error={error}", file=sys.stderr)
+            return 1
     if args.command == "subject-target":
         _subject_target_command(args)
         return 0

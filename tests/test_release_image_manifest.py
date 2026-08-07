@@ -13,6 +13,7 @@ import pytest
 from tools.release_image_manifest import (
     SCHEMA_VERSION,
     _validate_spdx_graph,
+    _validate_spdx_image_binding,
     assemble_manifest,
     validate_manifest,
 )
@@ -471,19 +472,24 @@ def _run_spdx_source_hash(
     *,
     role: str = "backend",
     manifest_digest: str = MANIFEST_DIGEST,
+    image_ref: str | None = None,
+    failure_evidence_file: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     subject = f"ghcr.io/demonsxxxxxx/ai-platform-{role}"
-    return _run_cli(
+    arguments = [
         "spdx-source-hash",
         "--role",
         role,
         "--manifest-digest",
         manifest_digest,
         "--image-ref",
-        f"{subject}@{manifest_digest}",
+        image_ref or f"{subject}@{manifest_digest}",
         "--sbom-file",
         str(path),
-    )
+    ]
+    if failure_evidence_file is not None:
+        arguments.extend(["--failure-evidence-file", str(failure_evidence_file)])
+    return _run_cli(*arguments)
 
 
 def _hosted_linux_syft_1_50_backend_spdx() -> dict[str, object]:
@@ -691,6 +697,167 @@ def test_spdx_source_hash_rejects_ambiguous_or_noncanonical_root_purl(
 
     assert result.returncode != 0
     assert "sbom_subject_binding" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("reason", "mutate"),
+        [
+            ("image_ref", None),
+            ("document_name", lambda document: document.__setitem__("name", "foreign")),
+        ("root_name", lambda document: document["packages"][0].__setitem__("name", "foreign")),
+        (
+            "root_version",
+            lambda document: document["packages"][0].__setitem__("versionInfo", "sha256:" + "0" * 64),
+        ),
+        (
+            "root_files_analyzed",
+            lambda document: document["packages"][0].__setitem__("filesAnalyzed", True),
+        ),
+        (
+            "root_download_location",
+            lambda document: document["packages"][0].__setitem__(
+                "downloadLocation", "https://example.invalid/foreign"
+            ),
+        ),
+        (
+            "root_checksums",
+            lambda document: document["packages"][0].__setitem__("checksums", []),
+        ),
+        (
+            "root_external_refs",
+            lambda document: document["packages"][0].__setitem__("externalRefs", []),
+        ),
+    ],
+)
+def test_spdx_source_hash_preserves_safe_categorical_failure_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+    mutate,
+):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    failure_evidence = tmp_path / "spdx-binding-diagnostic-backend.json"
+    document = _syft_spdx("backend")
+    if mutate is not None:
+        mutate(document)
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+    sentinel = "never-print-this-token"
+    monkeypatch.setenv("GH_TOKEN", sentinel)
+
+    result = _run_spdx_source_hash(
+        sbom_path,
+        image_ref=(
+            "ghcr.io/demonsxxxxxx/ai-platform-frontend@" + MANIFEST_DIGEST
+            if reason == "image_ref"
+            else None
+        ),
+        failure_evidence_file=failure_evidence,
+    )
+
+    assert result.returncode != 0
+    assert f"sbom_subject_binding.{reason}" in result.stderr
+    assert sentinel not in result.stderr
+    evidence = json.loads(failure_evidence.read_text(encoding="utf-8"))
+    assert evidence["reason_code"] == f"sbom_subject_binding.{reason}"
+    assert evidence["role"] == "backend"
+    assert evidence["subject"] == "ghcr.io/demonsxxxxxx/ai-platform-backend"
+    assert evidence["manifest_digest"] == MANIFEST_DIGEST
+    assert evidence["image_ref"] == f"ghcr.io/demonsxxxxxx/ai-platform-backend@{MANIFEST_DIGEST}"
+    assert set(evidence) == {
+        "command",
+        "image_ref",
+        "manifest_digest",
+        "reason_code",
+        "role",
+        "root_external_ref_count",
+        "root_purl_sha256",
+        "sbom_sha256",
+        "schema_version",
+        "subject",
+    }
+    assert sentinel not in json.dumps(evidence, sort_keys=True)
+
+
+def test_spdx_image_binding_reports_required_document_describes_reason():
+    document = _syft_spdx("backend")
+    with pytest.raises(ValueError, match=r"sbom_subject_binding\.document_describes_required"):
+        _validate_spdx_image_binding(
+            document,
+            subject="ghcr.io/demonsxxxxxx/ai-platform-backend",
+            digest=MANIFEST_DIGEST,
+            require_document_describes=True,
+        )
+
+
+def _replace_root_identity(document: dict[str, object]) -> None:
+    old_root_id = document["packages"][0]["SPDXID"]
+    new_root_id = "SPDXRef-Package-foreign"
+    document["packages"][0]["SPDXID"] = new_root_id
+    for relationship in document["relationships"]:
+        if relationship["spdxElementId"] == old_root_id:
+            relationship["spdxElementId"] = new_root_id
+        if relationship["relatedSpdxElement"] == old_root_id:
+            relationship["relatedSpdxElement"] = new_root_id
+
+
+@pytest.mark.parametrize(
+    ("reason", "mutate", "require_document_describes"),
+    [
+        (
+            "root_identity",
+            _replace_root_identity,
+            False,
+        ),
+        (
+            "document_describes_optional",
+            lambda document: document.__setitem__(
+                "documentDescribes", [document["packages"][1]["SPDXID"]]
+            ),
+            False,
+        ),
+    ],
+)
+def test_spdx_image_binding_reports_reachable_optional_reason_codes(
+    reason: str,
+    mutate,
+    require_document_describes: bool,
+):
+    document = _syft_spdx("backend")
+    mutate(document)
+
+    with pytest.raises(ValueError, match=rf"sbom_subject_binding\.{reason}"):
+        _validate_spdx_image_binding(
+            document,
+            subject="ghcr.io/demonsxxxxxx/ai-platform-backend",
+            digest=MANIFEST_DIGEST,
+            require_document_describes=require_document_describes,
+        )
+
+
+@pytest.mark.parametrize(("role", "architecture"), [("backend", ""), ("backend", "amd64"), ("frontend", ""), ("frontend", "amd64")])
+def test_spdx_source_hash_preserves_existing_backend_frontend_purl_contours(
+    tmp_path: Path,
+    role: str,
+    architecture: str,
+):
+    sbom_path = tmp_path / f"sbom-{role}.spdx.json"
+    failure_evidence = tmp_path / f"spdx-binding-diagnostic-{role}.json"
+    document = _syft_spdx(role)
+    if architecture:
+        document["packages"][0]["externalRefs"][0]["referenceLocator"] = (
+            f"pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-{role}@sha256%3A"
+            f"{MANIFEST_DIGEST.removeprefix('sha256:')}?arch={architecture}"
+        )
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+
+    result = _run_spdx_source_hash(
+        sbom_path,
+        role=role,
+        failure_evidence_file=failure_evidence,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not failure_evidence.exists()
 
 
 def test_bind_spdx_namespace_cannot_collide_for_distinct_documents_with_same_tuple(
