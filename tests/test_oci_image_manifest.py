@@ -68,6 +68,79 @@ def test_resolver_ignores_a_valid_foreign_platform_variant():
     )
 
 
+def test_resolver_rejects_manifests_on_a_direct_image_manifest():
+    document = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": "sha256:" + "1" * 64,
+            "size": 1,
+        },
+        "layers": [],
+        "manifests": [],
+    }
+    raw_document = json.dumps(document, separators=(",", ":")).encode("utf-8")
+
+    with pytest.raises(ValueError, match="oci_image_manifest"):
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=_requested_digest(raw_document),
+        )
+
+
+def test_resolver_rejects_config_on_an_image_index():
+    document = json.loads(_oci_index_bytes())
+    document["config"] = {
+        "mediaType": "application/vnd.oci.image.config.v1+json",
+        "digest": "sha256:" + "1" * 64,
+        "size": 1,
+    }
+    raw_document = json.dumps(document, separators=(",", ":")).encode("utf-8")
+
+    with pytest.raises(ValueError, match="oci_index"):
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=_requested_digest(raw_document),
+        )
+
+
+def test_resolver_rejects_empty_nonselected_platform_architecture_and_os():
+    document = json.loads(_oci_index_bytes())
+    document["manifests"].insert(
+        0,
+        {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:" + "1" * 64,
+            "size": 1,
+            "platform": {"architecture": "", "os": ""},
+        },
+    )
+    raw_document = json.dumps(document, separators=(",", ":")).encode("utf-8")
+
+    with pytest.raises(ValueError, match="oci_descriptor_platform"):
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=_requested_digest(raw_document),
+        )
+
+
+def test_resolver_rejects_present_variant_on_selected_linux_amd64():
+    for variant, reason in (
+        ("", "oci_descriptor_platform"),
+        ("v1", "oci_linux_amd64_descriptor"),
+    ):
+        document = json.loads(_oci_index_bytes())
+        document["manifests"][0]["platform"]["variant"] = variant
+        raw_document = json.dumps(document, separators=(",", ":")).encode("utf-8")
+
+        with pytest.raises(ValueError, match=reason):
+            resolve_authenticated_producer_digest(
+                raw_document,
+                requested_digest=_requested_digest(raw_document),
+            )
+
+
 @pytest.mark.parametrize(
     "document",
     [

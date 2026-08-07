@@ -40,16 +40,15 @@ _OCI_LAYER_MEDIA_TYPES = frozenset(
         "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip",
     }
 )
-_OCI_DOCUMENT_KEYS = {
+_OCI_DOCUMENT_COMMON_KEYS = {
     "schemaVersion",
     "mediaType",
-    "manifests",
-    "config",
-    "layers",
     "annotations",
     "artifactType",
     "subject",
 }
+_OCI_IMAGE_MANIFEST_KEYS = _OCI_DOCUMENT_COMMON_KEYS | {"config", "layers"}
+_OCI_INDEX_KEYS = _OCI_DOCUMENT_COMMON_KEYS | {"manifests"}
 _OCI_DESCRIPTOR_KEYS = {
     "mediaType",
     "digest",
@@ -61,6 +60,7 @@ _OCI_DESCRIPTOR_KEYS = {
     "data",
 }
 _OCI_PLATFORM_KEYS = {"architecture", "os", "variant"}
+_OCI_PLATFORM_VALUE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 
 
 class _DuplicateJsonKey(ValueError):
@@ -119,9 +119,16 @@ def _validate_descriptor(
             _OCI_PLATFORM_KEYS
         ):
             raise ValueError("oci_descriptor_platform")
-        if not isinstance(platform["architecture"], str) or not isinstance(platform["os"], str):
+        if any(
+            not isinstance(platform[key], str)
+            or _OCI_PLATFORM_VALUE.fullmatch(platform[key]) is None
+            for key in ("architecture", "os")
+        ):
             raise ValueError("oci_descriptor_platform")
-        if "variant" in platform and not isinstance(platform["variant"], str):
+        if "variant" in platform and (
+            not isinstance(platform["variant"], str)
+            or _OCI_PLATFORM_VALUE.fullmatch(platform["variant"]) is None
+        ):
             raise ValueError("oci_descriptor_platform")
     if "urls" in descriptor and (
         not isinstance(descriptor["urls"], list)
@@ -149,15 +156,15 @@ def resolve_authenticated_producer_digest(raw_document: bytes, *, requested_dige
     if f"sha256:{hashlib.sha256(raw_document).hexdigest()}" != requested_digest:
         raise ValueError("oci_document_digest")
     document = _object(_loads_json(raw_document), "oci_document")
-    if not {"schemaVersion", "mediaType"}.issubset(document) or not set(document).issubset(
-        _OCI_DOCUMENT_KEYS
-    ):
+    if not {"schemaVersion", "mediaType"}.issubset(document):
         raise ValueError("oci_document")
     if document["schemaVersion"] != 2:
         raise ValueError("oci_document_schema")
     media_type = document["mediaType"]
     if media_type in _OCI_IMAGE_MANIFEST_MEDIA_TYPES:
-        if not {"config", "layers"}.issubset(document):
+        if not {"config", "layers"}.issubset(document) or not set(document).issubset(
+            _OCI_IMAGE_MANIFEST_KEYS
+        ):
             raise ValueError("oci_image_manifest")
         _validate_descriptor(document["config"], allowed_media_types=_OCI_CONFIG_MEDIA_TYPES)
         if not isinstance(document["layers"], list):
@@ -167,6 +174,8 @@ def resolve_authenticated_producer_digest(raw_document: bytes, *, requested_dige
         return requested_digest
     if media_type not in _OCI_INDEX_MEDIA_TYPES:
         raise ValueError("oci_document_media_type")
+    if not set(document).issubset(_OCI_INDEX_KEYS):
+        raise ValueError("oci_index")
     manifests = document.get("manifests")
     if not isinstance(manifests, list) or not manifests:
         raise ValueError("oci_index")
@@ -174,11 +183,7 @@ def resolve_authenticated_producer_digest(raw_document: bytes, *, requested_dige
     for value in manifests:
         descriptor = _validate_descriptor(value)
         platform = descriptor.get("platform")
-        if platform == {"architecture": "amd64", "os": "linux"} or platform == {
-            "architecture": "amd64",
-            "os": "linux",
-            "variant": "",
-        }:
+        if platform == {"architecture": "amd64", "os": "linux"}:
             candidates.append(descriptor)
     if len(candidates) != 1:
         raise ValueError("oci_linux_amd64_descriptor")
