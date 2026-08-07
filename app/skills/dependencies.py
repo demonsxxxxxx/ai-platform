@@ -4,6 +4,7 @@ from app.validation import assert_safe_id
 INVALID_DEPENDENCY_ID = "[invalid-skill-id]"
 
 PUBLIC_WORKBENCH_SKILL_IDS = {
+    "audit-finding-rca",
     "general-chat",
     "qa-file-reviewer",
     "baoyu-translate",

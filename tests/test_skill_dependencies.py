@@ -39,6 +39,18 @@ def test_skill_dependency_policy_projects_public_skill_internal_dependency():
     }
 
 
+def test_skill_dependency_policy_projects_audit_finding_rca_as_public_skill_without_dependencies():
+    available = {"audit-finding-rca"}
+
+    assert skill_dependency_policy("audit-finding-rca", available) == {
+        "skill_id": "audit-finding-rca",
+        "public": True,
+        "internal_dependency": False,
+        "dependency_ids": [],
+        "dependency_details": [],
+    }
+
+
 def test_skill_dependency_policy_marks_internal_dependency_skill_not_public():
     available = {"minimax-docx"}
 

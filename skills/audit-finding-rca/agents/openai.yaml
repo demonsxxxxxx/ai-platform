@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Finding RCA"
+  short_description: "审计缺陷 RCA/CAPA 生成与 Excel 回填"
+  default_prompt: "Use $audit-finding-rca to analyze audit findings and generate Chinese RCA/CAPA responses."
