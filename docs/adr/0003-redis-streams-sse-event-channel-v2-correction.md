@@ -118,9 +118,12 @@ stream/admission/revocation authority; A2 creates the only executor-dispatch
 authority; B removes PostgreSQL `assistant_delta` writes from worker and runtime-
 callback production; C replaces the existing Chat stream URL's poll/sleep/fold
 body with XREAD; D removes remaining live PostgreSQL cursor/page/terminal paths
-and adds the negative repository gate; E removes frontend invented-ID and status-
-poll/history-replay reconnect fallbacks. Intermediate slices cannot be deployed
-as a compatibility stack, and no feature flag can run both mechanisms.
+and introduces the cumulative cutover checker with its backend scope; E removes
+frontend invented-ID and PostgreSQL status/history reconnect fallbacks and extends
+that checker to its full scope; F reruns the full scope against the exact accepted
+source/image. D does not require E-owned frontend deletion before E exists.
+Intermediate slices cannot be deployed as a compatibility stack, and no feature
+flag can run both mechanisms.
 
 ### Revocation fencing
 

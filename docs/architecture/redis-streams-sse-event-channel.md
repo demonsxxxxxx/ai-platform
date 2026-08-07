@@ -792,9 +792,10 @@ A2 has one executor-dispatch lease over these exact files and symbols:
   new `lookup_task_execution` replace the process-local `execute_claimed` boolean
   with gateway-backed token acceptance and a per-process executor-instance ID.
   Only a newly returned `start_authorized` result permits the SDK boundary.
-- `app/executors/claude_agent_worker.py::_submit_prepared_run_to_sandbox_runtime`
-  propagates the A1 intent binding and consumes durable status; it cannot call a
-  direct SDK fallback. `app/executors/claude_agent_sdk_runner.py::run_claude_agent_sdk`
+- `app/executors/claude_agent_worker.py::ClaudeAgentWorkerAdapter._submit_prepared_run_to_sandbox_runtime`
+  propagates the A1 intent binding through `_submit_sandbox_runtime` to
+  `SandboxRuntime.submit` and consumes durable status; it cannot call a direct
+  SDK fallback. `app/executors/claude_agent_sdk_runner.py::run_claude_agent_sdk`
   accepts the already committed execution identity for diagnostics but must not
   claim that `ClaudeAgentOptions.session_id` is an idempotency or resume key.
 
@@ -1306,7 +1307,8 @@ review/PR/deploy ceiling; next gate.
   `ExecutorExecutionStatus`; `app/routes/runtime_callbacks.py` acquire/lookup
   handlers; `SandboxExecutorClient.execute`/`lookup_execution`;
   `SandboxRuntime.submit`/`_call_execute_task`; executor-app execute/lookup;
-  `ClaudeAgentWorker._submit_prepared_run_to_sandbox_runtime`;
+  `ClaudeAgentWorkerAdapter._submit_prepared_run_to_sandbox_runtime` and module
+  helper `_submit_sandbox_runtime`;
   `run_claude_agent_sdk`; and direct ledger/gateway/client/executor/worker tests.
 - Forbidden: A1 admission/revocation state, producer/coalescer callbacks, public
   SSE routes, terminal convergence, frontend, Compose, deployment, or a production
@@ -1421,11 +1423,12 @@ review/PR/deploy ceiling; next gate.
 
 ### D. Terminal convergence, publication intent, and stop-PG-delta policy
 
-- Target/user result: enforce the already cut-over zero-PG-delta contract, persist truthful
-  success/failure/cancel/pause outcomes, final/semantic and transport-degraded
-  facts plus terminal publication intent, and enforce PG commit before
-  terminal/end with idempotent reconciliation. Retire remaining PostgreSQL live-
-  cursor/page/terminal transport symbols and add the repository absence gate.
+- Target/user result: enforce the already cut-over zero-PG-delta contract,
+  persist truthful success/failure/cancel/pause outcomes, final/semantic and
+  transport-degraded facts plus terminal publication intent, and enforce PG
+  commit before terminal/end with idempotent reconciliation. Retire remaining
+  PostgreSQL live-cursor/page/terminal transport symbols and add the cumulative
+  repository absence gate at backend scope. Frontend absence is not a D gate.
 - Clean worktree/branch: new worktree from main containing A0-C; branch
   `codex/sse-d-pg-convergence-v2`.
 - Exact base/head: fresh four-way proof and accepted A0-C SHAs.
@@ -1433,7 +1436,9 @@ review/PR/deploy ceiling; next gate.
   terminal coordinator, `app/streaming/authority.py` live-only `RunCursor`/
   `parse_last_event_id`/`PublicDelta`/`event_page`,
   `app/streaming/postgres.py` live page APIs, new
-  `tools/check_sse_runtime_cutover.py`, `tests/test_streaming_authority.py`,
+  `tools/check_sse_runtime_cutover.py` with only `--scope backend`, new
+  `tests/test_sse_runtime_cutover_checker.py` backend-scope cases,
+  `tests/test_streaming_authority.py`,
   `tests/test_streaming_postgres.py`, `tests/test_streaming_repository.py`,
   `tests/test_streaming_schema_postgres.py`, and direct negative tests. D
   keeps internal history ordering and necessary batch/audit facts only when no
@@ -1451,39 +1456,56 @@ review/PR/deploy ceiling; next gate.
   and intent pending; proven-incarnation retry versus unproven-key successor
   intent/new incarnation; unknown outcome duplicate; late delta; failure and
   cancellation transactions; no path leaves the run permanently running; the
-  negative checker rejects old route polling/sleep, PG assistant-delta writes,
-  old live cursor/page/fold symbols, dual backend flags, and dual terminal paths.
+  backend-scope negative checker rejects old route polling/sleep, PG assistant-
+  delta writes, old live backend cursor/page/fold symbols, dual backend flags,
+  and dual terminal paths, while a fixture containing the still-unmodified E
+  frontend does not fail `--scope backend`.
 - Focused commands: D unit and opt-in isolated PostgreSQL integration tests with
   `--basetemp .pytest-tmp/run-sse-d`, schema checks, Ruff, compileall, diff check,
-  `python tools/check_sse_runtime_cutover.py`, governance, immutable readiness. An
-  absent DSN is reported as skipped, never passed.
+  `python tools/check_sse_runtime_cutover.py --scope backend`, governance,
+  immutable readiness. An absent DSN is reported as skipped, never passed.
 - Terminal packet: refs/paths/migration, SQL before/after write counts, ordering
-  fault injection, rollback behavior, check counts, readiness, residual real
-  multi-process Redis+PG gate.
+  fault injection, rollback behavior, backend-scope checker and test counts,
+  readiness, residual E full-scope and real multi-process Redis+PG gates.
 - Ceiling: source PR and migration review only; no merge without independent DB/
   concurrency review, no production migration, deploy, or runtime claim.
 - Next gate: accepted D merge, then E.
 
 ### E. Frontend parser, reducer, and recovery
 
-- Target/user result: parse SSE safely, persist the last accepted run-bound
+- Target/user result: parse SSE safely, persist the last accepted run-bound Redis
   cursor, deduplicate semantic events, detect/obey gaps, hydrate durable final
   state, and make live/history rendering converge exactly once. Remove every
-  frontend fallback that invents a transport ID or reconstructs live progress by
-  polling PostgreSQL status/history.
+  frontend fallback that invents a transport ID or reconstructs/resumes live
+  progress from PostgreSQL status/history. Durable history and terminal hydrate
+  remain presentation/convergence inputs but never create a live cursor or enter
+  the live reducer fold.
 - Clean worktree/branch: new worktree from main containing A0-D; branch
   `codex/sse-e-frontend-recovery-v2`.
 - Exact base/head: fresh four-way proof and accepted A0-D SHAs.
-- Exclusive files/symbols: `frontend/web/src/hooks/useAgent/sseConnection.ts`
-  parser/reconnect code, including deletion of the UUID event-ID fallback,
-  `queryAuthoritativeRunStatus` reconnect path, and
-  `MAX_CONSECUTIVE_SSE_RECONNECTS` status-poll budget; the accepted-cursor
-  reducer; durable final/history hydrate integration; and direct frontend tests.
-  `frontend/web/src/hooks/useAgent/__tests__/sseConnection.test.ts` cases that
-  assert authoritative-status polling, compatibility status, run-event replay,
-  or heartbeat-close polling budgets are deleted or rewritten for v2.
-  History message/UI UUIDs and durable `getEvents`/final hydrate remain because
-  they are not transport cursors. One E owner.
+- Exclusive files/symbols:
+  `frontend/web/src/hooks/useAgent.ts::loadHistory`,
+  `maxAcceptedRunEventSequence`, the `sessionApi.getEvents` result path, and the
+  `acceptedRunEventSequenceRef`/`processedEventIdsRef` mutations in the history-
+  to-live `connectToSSE` branch;
+  `frontend/web/src/hooks/useAgent/historyLoader.ts::reconstructMessagesFromEvents`
+  and `mergeHydratedRunSegment`;
+  `frontend/web/src/hooks/useAgent/eventHandlers.ts::handleStreamEvent` accepted-
+  cursor reducer; and
+  `frontend/web/src/hooks/useAgent/sseConnection.ts::queryAuthoritativeRunStatus`,
+  `connectToSSE`, `reconnectSSE`, parser/reconnect code, UUID event-ID fallback,
+  and `MAX_CONSECUTIVE_SSE_RECONNECTS` status-poll budget. E receives a bounded
+  handoff of `tools/check_sse_runtime_cutover.py` and
+  `tests/test_sse_runtime_cutover_checker.py` only to add `--scope full` and its
+  frontend cases; backend rules remain unchanged. Direct owners include
+  `frontend/web/src/hooks/useAgent/__tests__/useAgentRoutedSession.test.tsx`,
+  `useAgent.test.ts`, `historyLoader.test.ts`, `eventHandlers.test.ts`,
+  `sseConnection.test.ts`, `historyRunState.test.ts`, and
+  `runLifecycle.test.ts` in that same directory. Tests asserting
+  authoritative-status reconnect, compatibility status, PG run-event replay, PG
+  sequence resume, or heartbeat-close status-poll budgets are deleted or
+  rewritten for v2. History message/UI UUIDs and durable `getEvents`/final hydrate
+  remain only as non-transport presentation inputs. One E owner.
 - Forbidden: backend, schema, routes, generic Chat redesign, presentation-only
   smoothing, dependencies unless separately authorized, Compose, deployment.
 - Prerequisite: reviewed design and accepted A0-D wire contract SHA.
@@ -1493,15 +1515,25 @@ review/PR/deploy ceiling; next gate.
   terminal hydrate replaces rather than appends; live/history parity; stale
   reconnect generation/incarnation, including overlapping native Redis IDs;
   bounded Redis reconnects carrying exact `Last-Event-ID`; missing payload ID
-  fails/gaps instead of `uuid()`; no status-before-reconnect or PG history replay;
-  `access_revocation_pending`; transport-degraded status and final hydrate while
-  terminal publication is pending; unavailable state. Tests that asserted
-  authoritative-status polling, raw compatibility status, heartbeat-close polling
-  budgets, or replayed `run_event` reconnect are deleted or rewritten for the v2
-  cursor/gap contract.
+  fails/gaps instead of `uuid()`. A `sessionApi.getEvents` response with large or
+  overlapping PostgreSQL `sequence` values cannot update the accepted Redis
+  cursor, become `Last-Event-ID`, reset a live reconnect budget, or enter the live
+  event handler/dedup fold. `reconstructMessagesFromEvents` and
+  `mergeHydratedRunSegment` may replace durable presentation only. A durable
+  status/final query may terminate or hydrate presentation, but
+  `queryAuthoritativeRunStatus` cannot authorize history-to-live reconnect; an
+  active history view resumes only from a v2 authorized hydrate response carrying
+  a covered current-incarnation Redis cursor. Also cover
+  `access_revocation_pending`, transport-degraded status/final hydrate while
+  publication is pending, and unavailable state. Tests that asserted
+  authoritative-status reconnect, raw compatibility status, heartbeat-close
+  status polling, PG-sequence resume, or replayed `run_event` reconnect are
+  deleted or rewritten for the v2 cursor/gap contract. `--scope full` fails each
+  forbidden data flow while preserving durable-only history/final hydration.
 - Focused commands: `corepack pnpm exec tsx --test` for direct modules, scoped
   ESLint, TypeScript no-emit, production build, projection audit, diff check,
-  `python tools/check_sse_runtime_cutover.py`, governance, immutable readiness.
+  `python tools/check_sse_runtime_cutover.py --scope full`, governance, immutable
+  readiness.
 - Terminal packet: refs/paths, test counts, exact cursor/gap/final scenarios,
   build/projection evidence, readiness, residual real-browser and capacity gate.
 - Ceiling: frontend source PR only; no merge without fixed-SHA review and no
@@ -1537,13 +1569,15 @@ review/PR/deploy ceiling; next gate.
   commit plus terminal-XADD unknown; no run permanently running; multiple
   browsers; slow consumers; terminal/history parity; no delta rows in PG;
   old chats hydrate from durable business facts without per-delta replay; exact
-  negative repository gate reports no poll loop/sleep, PG delta writer, old live
-  cursor/fold, frontend UUID/status-poll fallback, dual-mode flag, or parked Slice
-  A authority; connection/auth-refresh/memory formulas; immutable-image rollback
-  and backward-compatible schema; cleanup to zero.
+  negative repository gate `--scope full` reports no poll loop/sleep, PG delta
+  writer, old live cursor/fold, frontend PG-sequence/status/history reconnect or
+  UUID fallback, dual-mode flag, or parked Slice A authority; connection/auth-
+  refresh/memory formulas; immutable-image rollback and backward-compatible
+  schema; cleanup to zero.
 - Focused commands: dedicated integration selectors with
   `--basetemp .pytest-tmp/run-sse-f`, frontend browser suite, bounded capacity
-  harness, exact readiness for harness source. No routine full pytest.
+  harness, `python tools/check_sse_runtime_cutover.py --scope full`, exact
+  readiness for harness source. No routine full pytest.
 - Terminal packet: exact source/images/runtime subjects, raw counts and
   percentiles, Redis memory/clients, PG write/query counts, gap/terminal evidence,
   privacy scan, cleanup/rollback, stop conditions, and failures without retries.
@@ -1555,9 +1589,14 @@ review/PR/deploy ceiling; next gate.
 
 ## Cutover Negative Acceptance Gate
 
-`tools/check_sse_runtime_cutover.py` is a required D-through-F CI gate. It uses
-Python AST/import inspection plus bounded TypeScript source inspection and fails
-with the owning file/symbol when any forbidden live mechanism is present:
+`tools/check_sse_runtime_cutover.py` is cumulative rather than prematurely full.
+D creates and must pass `--scope backend`; that scope uses Python AST/import and
+bounded source inspection over the B-D backend ownership and does not inspect or
+require deletion of E-owned frontend files. E receives the checker/test lease,
+adds `--scope full`, and must pass it; full first runs every backend rule and then
+the frontend rules below. F reruns `--scope full` against the exact accepted image
+source. An omitted/unknown scope fails closed. Every failure names the owning
+file/symbol. Backend scope rejects:
 
 - `chat_session_stream` calls `repositories.list_run_events`, `event_page`, the
   old two-component `parse_last_event_id`, `asyncio.sleep`, a status poller, or a
@@ -1571,20 +1610,35 @@ with the owning file/symbol when any forbidden live mechanism is present:
   PostgreSQL insert;
 - old live `RunCursor`/`PublicDelta`/`event_page` APIs remain imported by a public
   stream adapter, or a PostgreSQL sequence is serialized as an SSE ID;
-- `sseConnection.ts` can use `event.id || parsed.event_id || uuid()`, call
-  `queryAuthoritativeRunStatus` during reconnect, use
-  `MAX_CONSECUTIVE_SSE_RECONNECTS` to status-poll live progress, reconnect without
-  the accepted incarnation-bound ID, or treat history events as live replay;
 - production source/config contains `postgres_legacy`,
   `redis_streams_shadow_v2`, a selectable second live terminal/cursor authority,
   or any executable reference to the discarded `b6f3c0878c5c68358e57664174828b7404959a84`.
 
-The checker explicitly permits PostgreSQL `run_events` for non-delta audit/
-semantic retention, durable history/final hydrate APIs, history ordering that is
-never exposed as an SSE cursor, and UUIDs used only for UI messages/submission
-idempotency. Direct RED tests accompany every rule, so renaming a forbidden
-symbol without removing the call/import/data-flow still fails. F reruns the gate
-against the exact image source before any runtime acceptance.
+Full scope includes every backend rule and additionally rejects:
+
+- `sseConnection.ts` can use `event.id || parsed.event_id || uuid()`, call
+  `queryAuthoritativeRunStatus` to authorize reconnect, use
+  `MAX_CONSECUTIVE_SSE_RECONNECTS` to status-poll live progress, reconnect without
+  the accepted incarnation-bound Redis ID, or treat history events as live
+  replay;
+- `useAgent.ts::loadHistory`, its `sessionApi.getEvents` continuation, or
+  `maxAcceptedRunEventSequence` can write a PostgreSQL sequence into the accepted
+  live cursor, `Last-Event-ID`, reconnect budget, live event handler, or live
+  dedup/fold, or can enter `connectToSSE` solely from PostgreSQL status/history;
+- `historyLoader.ts::reconstructMessagesFromEvents` or
+  `mergeHydratedRunSegment` mutates live cursor/dedup state or supplies a live
+  fold instead of a durable presentation replacement. Durable status/final
+  hydrate remains allowed only when it does not create live progress or a cursor.
+
+Both scopes explicitly permit PostgreSQL `run_events` for non-delta audit/
+semantic retention. Full scope also permits durable history/final hydrate APIs,
+history ordering that is never exposed as an SSE cursor or live reducer input,
+and UUIDs used only for UI messages/submission idempotency. D's direct checker
+tests prove backend scope passes before E deletion and rejects every backend
+fixture. E's direct tests prove full scope inherits those failures and rejects
+each frontend cursor/reconnect data flow, so renaming a forbidden symbol without
+removing the call/import/data flow still fails. F reruns full scope against the
+exact image source before any runtime acceptance.
 
 ## Evidence Layers
 
@@ -1639,7 +1693,9 @@ remain closed after exact Markdown and diagram validation:
 - Cutover: the final source has no old poll/sleep, PG assistant-delta writer, live
   PG cursor/page/fold, frontend ID/status-poll fallback, dual mode, or second
   terminal authority. Historical rows remain audit data and old chats hydrate
-  durable facts without delta replay.
+  durable facts without delta replay. D's backend checker passes independently of
+  E-owned source; E and F pass the cumulative full checker, including proof that
+  PG history/status cannot seed the Redis cursor or live fold.
 - Rollback: a prior immutable image and backward-compatible schema are the only
   rollback; the current image has no switchable legacy runtime, and historical
   text deltas cannot be reconstructed or promised.
