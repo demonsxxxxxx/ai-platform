@@ -116,9 +116,24 @@ jobs:
             --role "${{ matrix.role }}" \
             --manifest-digest "$MANIFEST_DIGEST" \
             --image-ref "$IMAGE_REF" \
-            --sbom-file "sbom-${{ matrix.role }}.spdx.json")"
+            --sbom-file "sbom-${{ matrix.role }}.spdx.json" \
+            --failure-evidence-file "spdx-binding-diagnostic-${{ matrix.role }}.json")"
           [[ "$source_hash" =~ ^[0-9a-f]{64}$ ]]
           printf 'sha256=%s\n' "$source_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Upload untrusted SPDX binding diagnostic
+        if: >-
+          ${{ failure() && steps.spdx-source.outcome == 'failure' &&
+          hashFiles(format('sbom-{0}.spdx.json', matrix.role)) != '' &&
+          hashFiles(format('spdx-binding-diagnostic-{0}.json', matrix.role)) != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-image-spdx-diagnostic-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.role }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            sbom-${{ matrix.role }}.spdx.json
+            spdx-binding-diagnostic-${{ matrix.role }}.json
 
       - name: Bind SPDX SBOM to immutable subject
         run: |
