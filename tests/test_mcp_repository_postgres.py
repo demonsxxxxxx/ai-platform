@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,6 +64,8 @@ async def _insert_tool(
     tool_id: str,
     server_name: str,
     catalog_generation: int | None = None,
+    policy_reason: str | None = "test",
+    remote_tool_name: str = "query",
 ) -> None:
     await conn.execute(
         """
@@ -76,22 +79,23 @@ async def _insert_tool(
         """,
         (tool_id, server_name, tool_id),
     )
-    await conn.execute(
-        """
-        insert into tool_policies(
-          tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason, updated_by
-        ) values (%s, %s, 'active', false, 'low', true, 'test', %s)
-        """,
-        (tenant_id, tool_id, f"admin-{tenant_id}"),
-    )
+    if policy_reason is not None:
+        await conn.execute(
+            """
+            insert into tool_policies(
+              tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason, updated_by
+            ) values (%s, %s, 'active', false, 'low', true, %s, %s)
+            """,
+            (tenant_id, tool_id, policy_reason, f"admin-{tenant_id}"),
+        )
     if catalog_generation is not None:
         await conn.execute(
             """
             insert into mcp_tool_catalog_entries(
               tool_id, tenant_id, server_name, remote_tool_name, catalog_generation, schema_hash, status
-            ) values (%s, %s, %s, 'query', %s, 'schema-hash', 'active')
+            ) values (%s, %s, %s, %s, %s, 'schema-hash', 'active')
             """,
-            (tool_id, tenant_id, server_name, catalog_generation),
+            (tool_id, tenant_id, server_name, remote_tool_name, catalog_generation),
         )
 
 
@@ -304,6 +308,256 @@ async def test_mcp_catalog_postgres_expiry_tenant_scope_and_rollback(monkeypatch
         assert rollback_entries == {"count": 0}
     finally:
         for conn in (first_conn, second_conn):
+            if conn is not None:
+                await conn.rollback()
+                await conn.close()
+        await admin_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_catalog_postgres_legal_lock_query_handles_empty_and_optional_policy_rows():
+    """Regress PostgreSQL row locking for empty, managed, missing, and administrator-owned policies."""
+
+    dsn = _postgres_dsn()
+    schema_name = f"mcp_catalog_locks_{uuid.uuid4().hex}"
+    schema_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    admin_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    catalog_conn = None
+    try:
+        await admin_conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await _set_search_path(admin_conn, schema_name)
+        await admin_conn.execute(schema_sql)
+        await admin_conn.execute("insert into tenants(id, name) values ('tenant-a', 'tenant-a')")
+        await admin_conn.execute(
+            "insert into users(id, tenant_id, display_name) values ('admin-tenant-a', 'tenant-a', 'admin-a')"
+        )
+
+        await _insert_server(
+            admin_conn,
+            tenant_id="tenant-a",
+            name="empty-server",
+            generation=1,
+            attempt=1,
+            catalog_status="syncing",
+        )
+        for server_name, tool_id, remote_name, policy_reason in (
+            ("managed-server", "mcpt-managed", "managed_tool", "mcp_catalog_read_only"),
+            ("missing-server", "mcpt-missing", "missing_tool", None),
+            ("admin-server", "mcpt-admin", "admin_tool", "admin_owned_policy"),
+        ):
+            await _insert_server(
+                admin_conn,
+                tenant_id="tenant-a",
+                name=server_name,
+                generation=1,
+                attempt=1,
+                catalog_status="syncing",
+            )
+            await _insert_tool(
+                admin_conn,
+                tenant_id="tenant-a",
+                tool_id=tool_id,
+                server_name=server_name,
+                catalog_generation=1,
+                policy_reason=policy_reason,
+                remote_tool_name=remote_name,
+            )
+
+        catalog_conn = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        await _set_search_path(catalog_conn, schema_name)
+        await catalog_conn.commit()
+
+        async with catalog_conn.transaction():
+            empty = await mcp_repository.publish_mcp_tool_catalog(
+                catalog_conn,
+                tenant_id="tenant-a",
+                server_name="empty-server",
+                observed_generation=1,
+                observed_attempt=1,
+                endpoint="https://mcp.example.test/v1",
+                tools=(),
+                actor_id="admin-tenant-a",
+            )
+        assert empty["catalog_status"] == "no_tools"
+        assert empty["catalog_discovered_count"] == 0
+
+        results = {}
+        for server_name, remote_name in (
+            ("managed-server", "managed_tool"),
+            ("missing-server", "missing_tool"),
+            ("admin-server", "admin_tool"),
+        ):
+            async with catalog_conn.transaction():
+                results[server_name] = await mcp_repository.publish_mcp_tool_catalog(
+                    catalog_conn,
+                    tenant_id="tenant-a",
+                    server_name=server_name,
+                    observed_generation=1,
+                    observed_attempt=1,
+                    endpoint="https://mcp.example.test/v1",
+                    tools=(
+                        McpDiscoveredTool(
+                            remote_name,
+                            "schema-hash",
+                            True,
+                            MCP_TOOL_ANNOTATION_READ_ONLY,
+                        ),
+                    ),
+                    actor_id="admin-tenant-a",
+                )
+
+        assert {name: row["catalog_status"] for name, row in results.items()} == {
+            "managed-server": "available",
+            "missing-server": "available",
+            "admin-server": "available",
+        }
+        policies = await (
+            await admin_conn.execute(
+                """
+                select tool_id, reason
+                from tool_policies
+                where tenant_id = 'tenant-a'
+                  and tool_id = any(%s)
+                order by tool_id
+                """,
+                (["mcpt-managed", "mcpt-missing", "mcpt-admin"],),
+            )
+        ).fetchall()
+        assert [dict(row) for row in policies] == [
+            {"tool_id": "mcpt-admin", "reason": "admin_owned_policy"},
+            {"tool_id": "mcpt-managed", "reason": "mcp_catalog_read_only"},
+            {"tool_id": "mcpt-missing", "reason": "mcp_catalog_read_only"},
+        ]
+    finally:
+        if catalog_conn is not None:
+            await catalog_conn.rollback()
+            await catalog_conn.close()
+        await admin_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_catalog_postgres_missing_policy_is_fenced_against_concurrent_admin_update(monkeypatch):
+    """A catalog publication must serialize an administrator policy write, including from a missing row."""
+
+    dsn = _postgres_dsn()
+    schema_name = f"mcp_catalog_policy_fence_{uuid.uuid4().hex}"
+    schema_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    admin_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    catalog_conn = None
+    policy_conn = None
+    publication_task = None
+    publication_at_audit = asyncio.Event()
+    release_publication = asyncio.Event()
+
+    async def pause_publication_audit(*args, **kwargs):
+        publication_at_audit.set()
+        await release_publication.wait()
+        return "audit-paused"
+
+    monkeypatch.setattr(repositories, "append_audit_log", pause_publication_audit)
+    try:
+        await admin_conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await _set_search_path(admin_conn, schema_name)
+        await admin_conn.execute(schema_sql)
+        await admin_conn.execute("insert into tenants(id, name) values ('tenant-a', 'tenant-a')")
+        await admin_conn.execute(
+            "insert into users(id, tenant_id, display_name) values ('admin-tenant-a', 'tenant-a', 'admin-a')"
+        )
+        await _insert_server(
+            admin_conn,
+            tenant_id="tenant-a",
+            name="policy-server",
+            generation=1,
+            catalog_status="available",
+        )
+        await _insert_tool(
+            admin_conn,
+            tenant_id="tenant-a",
+            tool_id="mcpt-policy-fence",
+            server_name="policy-server",
+            catalog_generation=1,
+            policy_reason=None,
+            remote_tool_name="search_docs",
+        )
+
+        catalog_conn = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        policy_conn = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        await _set_search_path(catalog_conn, schema_name)
+        await _set_search_path(policy_conn, schema_name)
+        await catalog_conn.commit()
+        await policy_conn.commit()
+
+        async with catalog_conn.transaction():
+            await catalog_conn.execute(
+                """
+                update mcp_servers
+                set catalog_sync_attempt = 1,
+                    catalog_status = 'syncing',
+                    catalog_sync_lease_expires_at = now() + interval '5 minutes'
+                where tenant_id = 'tenant-a' and name = 'policy-server'
+                """
+            )
+            publication_task = asyncio.create_task(
+                mcp_repository.publish_mcp_tool_catalog(
+                    catalog_conn,
+                    tenant_id="tenant-a",
+                    server_name="policy-server",
+                    observed_generation=1,
+                    observed_attempt=1,
+                    endpoint="https://mcp.example.test/v1",
+                    tools=(
+                        McpDiscoveredTool(
+                            "search_docs",
+                            "schema-hash",
+                            True,
+                            MCP_TOOL_ANNOTATION_READ_ONLY,
+                        ),
+                    ),
+                    actor_id="admin-tenant-a",
+                )
+            )
+            await asyncio.wait_for(publication_at_audit.wait(), timeout=5)
+
+            with pytest.raises(psycopg.errors.QueryCanceled):
+                async with policy_conn.transaction():
+                    await policy_conn.execute("set local statement_timeout = '250ms'")
+                    await repositories.upsert_admin_tool_policy(
+                        policy_conn,
+                        tenant_id="tenant-a",
+                        tool_id="mcpt-policy-fence",
+                        status="disabled",
+                        risk_level="high",
+                        write_capable=True,
+                        visible_to_user=False,
+                        reason="admin_owned_policy",
+                        updated_by="admin-tenant-a",
+                    )
+
+            release_publication.set()
+            published = await publication_task
+
+        assert published["catalog_status"] == "available"
+        async with policy_conn.transaction():
+            admin_policy = await repositories.upsert_admin_tool_policy(
+                policy_conn,
+                tenant_id="tenant-a",
+                tool_id="mcpt-policy-fence",
+                status="disabled",
+                risk_level="high",
+                write_capable=True,
+                visible_to_user=False,
+                reason="admin_owned_policy",
+                updated_by="admin-tenant-a",
+            )
+        assert admin_policy["reason"] == "admin_owned_policy"
+        assert admin_policy["status"] == "disabled"
+    finally:
+        release_publication.set()
+        if publication_task is not None:
+            await asyncio.gather(publication_task, return_exceptions=True)
+        for conn in (catalog_conn, policy_conn):
             if conn is not None:
                 await conn.rollback()
                 await conn.close()

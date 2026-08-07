@@ -229,6 +229,126 @@ async def test_catalog_publication_activates_unknown_tools_as_high_risk_through_
     assert "where tool_policies.reason = any(%s)" in policy_sql
 
 
+@pytest.mark.asyncio
+async def test_catalog_manifest_locks_mandatory_and_optional_rows_with_legal_postgres_queries(monkeypatch):
+    class Cursor:
+        def __init__(self, *, row=None, rows=()):
+            self._row = row
+            self._rows = rows
+
+        async def fetchone(self):
+            return self._row
+
+        async def fetchall(self):
+            return self._rows
+
+    mandatory_rows = [
+        {
+            "tool_id": "mcpt-managed",
+            "remote_tool_name": "managed_tool",
+            "schema_hash": "schema-managed",
+            "catalog_entry_status": "active",
+            "write_capable": False,
+            "risk_level": "low",
+        },
+        {
+            "tool_id": "mcpt-missing",
+            "remote_tool_name": "missing_policy_tool",
+            "schema_hash": "schema-missing",
+            "catalog_entry_status": "active",
+            "write_capable": False,
+            "risk_level": "low",
+        },
+        {
+            "tool_id": "mcpt-admin",
+            "remote_tool_name": "admin_tool",
+            "schema_hash": "schema-admin",
+            "catalog_entry_status": "active",
+            "write_capable": True,
+            "risk_level": "high",
+        },
+    ]
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((sql, params))
+            normalized = " ".join(sql.lower().split())
+            if "from mcp_tool_catalog_entries entries" in normalized:
+                return Cursor(rows=mandatory_rows)
+            if "from tool_policies" in normalized and "for update" in normalized:
+                return Cursor(
+                    rows=[
+                        {"tool_id": "mcpt-managed", "policy_reason": "mcp_catalog_read_only"},
+                        {"tool_id": "mcpt-admin", "policy_reason": "admin_owned_policy"},
+                    ]
+                )
+            if "update mcp_servers" in normalized:
+                return Cursor(
+                    row={
+                        "catalog_status": "available",
+                        "catalog_unavailable_reason": "",
+                        "catalog_revision": 4,
+                        "catalog_discovered_count": 3,
+                        "catalog_selectable_count": 3,
+                    }
+                )
+            return Cursor()
+
+    async def active_server(conn, **kwargs):
+        return {
+            "status": "active",
+            "catalog_generation": 7,
+            "catalog_sync_attempt": 3,
+            "catalog_status": "syncing",
+            "catalog_sync_lease_active": True,
+            "catalog_revision": 4,
+            "catalog_discovered_count": 3,
+            "catalog_selectable_count": 3,
+        }
+
+    async def append_audit_log(*args, **kwargs):
+        return "audit-catalog"
+
+    monkeypatch.setattr(mcp_repository, "_locked_server", active_server)
+    monkeypatch.setattr(mcp_repository._repositories(), "append_audit_log", append_audit_log)
+    conn = Connection()
+
+    result = await mcp_repository.publish_mcp_tool_catalog(
+        conn,
+        tenant_id="tenant-a",
+        server_name="compatible-server",
+        observed_generation=7,
+        observed_attempt=3,
+        endpoint="https://mcp.example/tools",
+        tools=(
+            McpDiscoveredTool("managed_tool", "schema-managed", True, MCP_TOOL_ANNOTATION_READ_ONLY),
+            McpDiscoveredTool("missing_policy_tool", "schema-missing", True, MCP_TOOL_ANNOTATION_READ_ONLY),
+            McpDiscoveredTool("admin_tool", "schema-admin", False, MCP_TOOL_ANNOTATION_UNKNOWN),
+        ),
+        actor_id="admin-a",
+    )
+
+    normalized_calls = [(" ".join(sql.lower().split()), params) for sql, params in conn.calls]
+    manifest_sql, _ = next(
+        call for call in normalized_calls if "from mcp_tool_catalog_entries entries" in call[0]
+    )
+    policy_sql, policy_params = next(
+        call for call in normalized_calls if "from tool_policies" in call[0] and "for update" in call[0]
+    )
+
+    assert result["published"] is True
+    assert "left join tool_policies" not in manifest_sql
+    assert "for update of entries, mcp_tools" in manifest_sql
+    assert "for update" in policy_sql
+    assert policy_params == (
+        "tenant-a",
+        ["mcpt-managed", "mcpt-missing", "mcpt-admin"],
+    )
+
+
 def test_catalog_manifest_policy_reason_preserves_managed_transitions_and_ignores_custom_policy():
     assert mcp_repository._catalog_manifest_policy_reason(
         "mcp_catalog_read_only", "mcp_catalog_annotation_unknown"
@@ -270,7 +390,6 @@ async def test_catalog_publication_is_idempotent_after_an_admin_owned_policy_and
                             "catalog_entry_status": "active",
                             "write_capable": True,
                             "risk_level": "high",
-                            "policy_reason": "admin_owned_policy",
                         },
                         {
                             "tool_id": "mcpt-stale-read",
@@ -279,7 +398,6 @@ async def test_catalog_publication_is_idempotent_after_an_admin_owned_policy_and
                             "catalog_entry_status": "stale",
                             "write_capable": False,
                             "risk_level": "low",
-                            "policy_reason": "mcp_catalog_read_only",
                         },
                         {
                             "tool_id": "mcpt-stale-write",
@@ -288,8 +406,15 @@ async def test_catalog_publication_is_idempotent_after_an_admin_owned_policy_and
                             "catalog_entry_status": "stale",
                             "write_capable": True,
                             "risk_level": "high",
-                            "policy_reason": "mcp_catalog_write_capable",
                         },
+                    ]
+                )
+            if "from tool_policies" in sql and "for update" in sql:
+                return Cursor(
+                    rows=[
+                        {"tool_id": "mcpt-compatible", "policy_reason": "admin_owned_policy"},
+                        {"tool_id": "mcpt-stale-read", "policy_reason": "mcp_catalog_read_only"},
+                        {"tool_id": "mcpt-stale-write", "policy_reason": "mcp_catalog_write_capable"},
                     ]
                 )
             if "update mcp_servers" in sql:

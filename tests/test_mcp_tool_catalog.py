@@ -297,6 +297,74 @@ async def test_transport_failure_never_attempts_partial_publication(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_unexpected_publication_failure_terminalizes_the_claim_once():
+    class CompleteDiscovery:
+        async def discover(self, endpoint):
+            return (_tool("search_docs"),)
+
+    synchronizer, outcomes, publications, _, store = _install_synchronizer_fakes(
+        discovery=CompleteDiscovery()
+    )
+
+    async def failed_publish(command, *, observed_attempt, tools):
+        publications.append({"observed_attempt": observed_attempt, "tools": tools})
+        raise RuntimeError("private postgres lock failure at https://mcp.example/tools")
+
+    store.publish = failed_publish
+
+    result = await synchronizer.synchronize(_command())
+
+    assert result.status == "unavailable"
+    assert result.reason == "sync_failed"
+    assert result.published is False
+    assert outcomes == [{"observed_attempt": 2, "reason": "sync_failed"}]
+    assert len(publications) == 1
+    assert "postgres" not in str(result.public_payload())
+    assert "mcp.example" not in str(result.public_payload())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal_status", "terminal_reason"),
+    [("unavailable", "stale_generation"), ("disabled", "disabled")],
+)
+async def test_publication_failure_preserves_stale_or_disabled_terminal_race(
+    terminal_status,
+    terminal_reason,
+):
+    class CompleteDiscovery:
+        async def discover(self, endpoint):
+            return (_tool("search_docs"),)
+
+    synchronizer, outcomes, _, _, store = _install_synchronizer_fakes(
+        discovery=CompleteDiscovery()
+    )
+
+    async def failed_publish(command, *, observed_attempt, tools):
+        raise RuntimeError("publication failed")
+
+    async def raced_outcome(command, *, observed_attempt, reason):
+        outcomes.append({"observed_attempt": observed_attempt, "reason": reason})
+        return {
+            "catalog_status": terminal_status,
+            "catalog_unavailable_reason": terminal_reason,
+            "catalog_revision": 9,
+            "catalog_discovered_count": 0,
+            "catalog_selectable_count": 0,
+        }
+
+    store.publish = failed_publish
+    store.record_outcome = raced_outcome
+
+    result = await synchronizer.synchronize(_command())
+
+    assert result.status == terminal_status
+    assert result.reason == terminal_reason
+    assert result.published is False
+    assert outcomes == [{"observed_attempt": 2, "reason": "sync_failed"}]
+
+
+@pytest.mark.asyncio
 async def test_stale_generation_result_cannot_report_publication(monkeypatch):
     class CompleteDiscovery:
         async def discover(self, endpoint):
@@ -449,3 +517,26 @@ async def test_cancelled_discovery_records_retryable_outcome_before_lease_expiry
 
     assert outcomes == [{"observed_attempt": 2, "reason": "discovery_aborted"}]
     assert publications == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_publication_is_reraised_after_one_shielded_terminalization():
+    class CompleteDiscovery:
+        async def discover(self, endpoint):
+            return (_tool("search_docs"),)
+
+    synchronizer, outcomes, publications, _, store = _install_synchronizer_fakes(
+        discovery=CompleteDiscovery()
+    )
+
+    async def cancelled_publish(command, *, observed_attempt, tools):
+        publications.append({"observed_attempt": observed_attempt, "tools": tools})
+        raise asyncio.CancelledError()
+
+    store.publish = cancelled_publish
+
+    with pytest.raises(asyncio.CancelledError):
+        await synchronizer.synchronize(_command())
+
+    assert outcomes == [{"observed_attempt": 2, "reason": "sync_failed"}]
+    assert len(publications) == 1

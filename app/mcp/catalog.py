@@ -401,6 +401,31 @@ class McpToolCatalogSynchronizer:
         self._discovery = discovery or StreamableHttpMcpToolDiscoveryAdapter()
         self._store = store
 
+    async def _record_claimed_failure(
+        self,
+        command: McpToolCatalogSyncCommand,
+        *,
+        observed_attempt: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Finish one claimed attempt without letting caller cancellation stop its transaction."""
+
+        terminalization = asyncio.create_task(
+            self._store.record_outcome(
+                command,
+                observed_attempt=observed_attempt,
+                reason=reason,
+            )
+        )
+        try:
+            return await asyncio.shield(terminalization)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(terminalization)
+            except Exception:
+                pass
+            raise
+
     async def synchronize(self, command: McpToolCatalogSyncCommand) -> McpToolCatalogSyncResult:
         """Discover outside SQL, then publish only for the claimed generation and attempt."""
 
@@ -418,21 +443,58 @@ class McpToolCatalogSynchronizer:
         except McpToolDiscoveryError as exc:
             row = await self._store.record_outcome(command, observed_attempt=attempt, reason=exc.reason)
             return _result_from_row(row, published=False)
-        except BaseException:
-            # A best-effort durable outcome makes cancellation retryable; lease expiry
-            # remains the process-loss recovery path when this transaction cannot run.
+        except asyncio.CancelledError:
             try:
-                await asyncio.shield(
-                    self._store.record_outcome(
-                        command,
-                        observed_attempt=attempt,
-                        reason="discovery_aborted",
-                    )
+                await self._record_claimed_failure(
+                    command,
+                    observed_attempt=attempt,
+                    reason="discovery_aborted",
                 )
             except Exception:
                 pass
             raise
-        row = await self._store.publish(command, observed_attempt=attempt, tools=tools)
+        except BaseException:
+            try:
+                await self._record_claimed_failure(
+                    command,
+                    observed_attempt=attempt,
+                    reason="discovery_aborted",
+                )
+            except Exception:
+                pass
+            raise
+        try:
+            row = await self._store.publish(command, observed_attempt=attempt, tools=tools)
+        except asyncio.CancelledError:
+            try:
+                await self._record_claimed_failure(
+                    command,
+                    observed_attempt=attempt,
+                    reason="sync_failed",
+                )
+            except Exception:
+                pass
+            raise
+        except Exception as publication_error:
+            try:
+                row = await self._record_claimed_failure(
+                    command,
+                    observed_attempt=attempt,
+                    reason="sync_failed",
+                )
+            except Exception as terminalization_error:
+                raise publication_error from terminalization_error
+            return _result_from_row(row, published=False)
+        except BaseException:
+            try:
+                await self._record_claimed_failure(
+                    command,
+                    observed_attempt=attempt,
+                    reason="sync_failed",
+                )
+            except Exception:
+                pass
+            raise
         return _result_from_row(row, published=bool(row.get("published")))
 
     @staticmethod
