@@ -1,0 +1,16 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "616e430f090ec5cd0d1ecefdb15e635772851467",
+    "scope_sha256": "6976882ce81e0a9076a8e1dcd5c9ae41e9bc22e837f338f9d7b3d34fcc81b849"
+  },
+  "expires_on": "2026-08-20",
+  "owner": "docker-packaging-phase2-issue-752",
+  "reason": "Bind the stacked Phase 2 publication candidate to the exact current main range.",
+  "violations": [
+    {
+      "code": "production_net_loc",
+      "path": null
+    }
+  ]
+}
