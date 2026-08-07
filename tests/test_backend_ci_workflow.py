@@ -1,3 +1,4 @@
+import ast
 import os
 import re
 import subprocess
@@ -73,13 +74,81 @@ def _frontend_ruff_requirement_resolver():
     install_step = workflow.split("- name: Install Python test dependencies", 1)[1].split(
         "- name: Verify static frontend Python contracts", 1
     )[0]
-    install_script = install_step.split("@'\n", 1)[1].split("\n'@ | python -", 1)[0]
-    resolver_source = textwrap.dedent(
-        install_script.split('with open("pyproject.toml", "rb") as handle:', 1)[0]
+    install_script = install_step.split("@'\n", 1)[1]
+    heredoc_end = re.search(r"(?m)^\s*'@ \| python -\s*$", install_script)
+    if heredoc_end is None:
+        raise RuntimeError("frontend workflow Python heredoc has no terminator")
+    module = ast.parse(textwrap.dedent(install_script[: heredoc_end.start()]))
+    definitions: dict[str, ast.stmt] = {}
+
+    for statement in module.body:
+        if isinstance(statement, ast.Import):
+            for alias in statement.names:
+                definitions[alias.asname or alias.name.split(".", 1)[0]] = statement
+        elif isinstance(statement, ast.ImportFrom):
+            for alias in statement.names:
+                definitions[alias.asname or alias.name] = statement
+        elif isinstance(statement, ast.Assign):
+            if all(isinstance(target, ast.Name) for target in statement.targets):
+                for target in statement.targets:
+                    definitions[target.id] = statement
+        elif isinstance(statement, ast.FunctionDef):
+            definitions[statement.name] = statement
+
+    required_names = {"resolve_ruff_requirement"}
+    selected_statements: set[int] = set()
+    pending_names = list(required_names)
+    while pending_names:
+        name = pending_names.pop()
+        statement = definitions.get(name)
+        if statement is None or id(statement) in selected_statements:
+            continue
+        selected_statements.add(id(statement))
+        loaded_names = {
+            node.id
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+        if isinstance(statement, ast.FunctionDef):
+            local_names = {
+                node.id
+                for node in ast.walk(statement)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+            }
+            local_names.update(argument.arg for argument in ast.walk(statement) if isinstance(argument, ast.arg))
+            loaded_names.difference_update(local_names)
+        pending_names.extend(loaded_names)
+
+    resolver_module = ast.Module(
+        body=[
+            statement
+            for statement in module.body
+            if id(statement) in selected_statements
+        ],
+        type_ignores=[],
     )
-    namespace: dict[str, object] = {}
-    exec(resolver_source, namespace)  # noqa: S102 -- executes only the repository workflow snippet under test.
-    return namespace["resolve_ruff_requirement"]
+    namespace: dict[str, object] = {"__name__": "frontend_workflow_contract"}
+    exec(  # noqa: S102 -- AST closure contains only resolver imports, constants, and definition.
+        compile(ast.fix_missing_locations(resolver_module), "<frontend-ruff-resolver>", "exec"),
+        namespace,
+    )
+    resolver = namespace.get("resolve_ruff_requirement")
+    if not callable(resolver):
+        raise RuntimeError("frontend workflow does not define a Ruff resolver")
+    return resolver
+
+
+def test_frontend_ruff_requirement_resolver_extraction_does_not_run_installation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def reject_install(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"resolver extraction must not install dependencies: {args!r}")
+
+    monkeypatch.setattr(subprocess, "check_call", reject_install)
+
+    resolver = _frontend_ruff_requirement_resolver()
+
+    assert resolver(["pytest>=8.2.0", "ruff==0.11.13"]) == "ruff==0.11.13"
 
 
 def test_frontend_static_contracts_install_only_the_pinned_test_extra_ruff():
