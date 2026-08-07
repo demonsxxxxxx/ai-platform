@@ -73,6 +73,7 @@ REQUIRED_KEYS = frozenset(
 SECRET_KEYS = frozenset(
     {
         "OPENSANDBOX_API_KEY",
+        "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
         "SANDBOX_CALLBACK_TOKEN",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
     }
@@ -151,13 +152,20 @@ def _require_regular_file(metadata: os.stat_result) -> None:
 def _parse_env_file(
     path: Path,
     *,
-    revalidate: Callable[[], Path] | None = None,
+    expected_identity: _FileIdentity | None = None,
+    revalidate: Callable[[], tuple[Path, os.stat_result]] | None = None,
 ) -> dict[str, str]:
     descriptor: int | None = None
     try:
         before_open = path.stat(follow_symlinks=False)
         _require_regular_file(before_open)
-        expected_identity = _FileIdentity.from_stat(before_open)
+        before_open_identity = _FileIdentity.from_stat(before_open)
+        if expected_identity is None:
+            expected_identity = before_open_identity
+        elif before_open_identity != expected_identity:
+            raise S72ReleaseContractError(
+                "managed configuration identity changed during validation"
+            )
         flags = (
             os.O_RDONLY
             | getattr(os, "O_BINARY", 0)
@@ -171,10 +179,15 @@ def _parse_env_file(
             raise S72ReleaseContractError(
                 "managed configuration identity changed during validation"
             )
-        if revalidate is not None and Path(revalidate()) != path:
-            raise S72ReleaseContractError(
-                "managed configuration identity changed during validation"
-            )
+        if revalidate is not None:
+            revalidated_path, revalidated_metadata = revalidate()
+            if (
+                Path(revalidated_path) != path
+                or _FileIdentity.from_stat(revalidated_metadata) != expected_identity
+            ):
+                raise S72ReleaseContractError(
+                    "managed configuration identity changed during validation"
+                )
         revalidated = path.stat(follow_symlinks=False)
         _require_regular_file(revalidated)
         if _FileIdentity.from_stat(revalidated) != expected_identity:
@@ -334,13 +347,19 @@ def validate_managed_s72_contract(
             expected_commit=commit,
         )
         release_root = Path(release_root)
-        managed_env = release_authority.resolve_managed_env_file(release_root, env_file)
+        managed_env, managed_metadata = release_authority.resolve_managed_env_file(
+            release_root,
+            env_file,
+            include_identity=True,
+        )
         projection = _validated_contract(
             _parse_env_file(
                 managed_env,
+                expected_identity=_FileIdentity.from_stat(managed_metadata),
                 revalidate=lambda: release_authority.resolve_managed_env_file(
                     release_root,
                     env_file,
+                    include_identity=True,
                 ),
             )
         ).projection()

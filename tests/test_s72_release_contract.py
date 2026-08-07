@@ -94,7 +94,10 @@ def _adapt_posix_metadata_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             contract.release_authority,
             "_posix_owner_mode",
-            lambda path: (1000, 0o600 if Path(path).name == ".env" else 0o700),
+            lambda path, metadata=None: (
+                1000,
+                0o600 if Path(path).name == ".env" else 0o700,
+            ),
         )
 
 
@@ -233,10 +236,14 @@ def test_managed_environment_rejects_real_inode_replacement(
     calls = 0
     replacement_completed = False
 
-    def replace_during_revalidation(release: Path, supplied: Path | None) -> Path:
+    def replace_during_revalidation(
+        release: Path,
+        supplied: Path | None,
+        **kwargs: object,
+    ) -> object:
         nonlocal calls, replacement_completed
         calls += 1
-        resolved = original_resolver(release, supplied)
+        resolved = original_resolver(release, supplied, **kwargs)
         if calls == 2:
             os.replace(replacement, env_file)
             replacement_completed = True
@@ -258,6 +265,89 @@ def test_managed_environment_rejects_real_inode_replacement(
     assert calls == 2
     if replacement_completed:
         assert env_file.stat().st_ino != original_inode
+
+
+def test_managed_environment_binds_resolver_identity_to_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source, commit = _clean_source(tmp_path)
+    release_root, env_file = _managed_layout(tmp_path)
+    approved = tmp_path / "approved.env"
+    _write_environment(approved, _environment())
+    approved.chmod(0o600)
+    approved_metadata = approved.stat(follow_symlinks=False)
+
+    def resolver_with_distinct_identity(
+        release: Path,
+        supplied: Path | None,
+        *,
+        include_identity: bool = False,
+    ) -> object:
+        assert Path(release) == release_root
+        assert supplied is None
+        if include_identity:
+            return env_file, approved_metadata
+        return env_file
+
+    monkeypatch.setattr(
+        contract.release_authority,
+        "resolve_managed_env_file",
+        resolver_with_distinct_identity,
+    )
+
+    with pytest.raises(contract.S72ReleaseContractError, match="identity changed"):
+        contract.validate_managed_s72_contract(source, commit, release_root)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="required Linux resolver ABA evidence")
+def test_managed_environment_rejects_second_resolver_aba_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source, commit = _clean_source(tmp_path)
+    release_root, env_file = _managed_layout(tmp_path)
+    approved = tmp_path / "approved.env"
+    approved_values = _environment()
+    approved_values["AI_PLATFORM_FRONTEND_PORT"] = "18002"
+    _write_environment(approved, approved_values)
+    approved.chmod(0o600)
+    original_inode = env_file.stat().st_ino
+    approved_inode = approved.stat().st_ino
+    original_resolver = contract.release_authority.resolve_managed_env_file
+    calls = 0
+
+    def swap_only_during_second_resolver(
+        release: Path,
+        supplied: Path | None,
+        **kwargs: object,
+    ) -> object:
+        nonlocal calls
+        calls += 1
+        if calls != 2:
+            return original_resolver(release, supplied, **kwargs)
+        attacker = tmp_path / "attacker.env"
+        os.replace(env_file, attacker)
+        os.replace(approved, env_file)
+        try:
+            return original_resolver(release, supplied, **kwargs)
+        finally:
+            os.replace(env_file, approved)
+            os.replace(attacker, env_file)
+
+    _adapt_posix_metadata_on_windows(monkeypatch)
+    monkeypatch.setattr(
+        contract.release_authority,
+        "resolve_managed_env_file",
+        swap_only_during_second_resolver,
+    )
+
+    with pytest.raises(contract.S72ReleaseContractError, match="identity changed"):
+        contract.validate_managed_s72_contract(source, commit, release_root)
+
+    assert calls == 2
+    assert env_file.stat().st_ino == original_inode
+    assert approved.stat().st_ino == approved_inode
 
 
 @pytest.mark.parametrize(
@@ -328,8 +418,7 @@ def test_capability_endpoint_matches_runtime_authority(
 @pytest.mark.parametrize(
     ("value", "accepted"),
     [
-        ("x", True),
-        ("replace_me", True),
+        ("a" * 16, True),
         ("a" * 4096, True),
         ("", False),
         ("contains space", False),
@@ -359,6 +448,29 @@ def test_capability_token_matches_runtime_authority(
 
     assert runtime_accepted is accepted
     assert candidate_accepted is runtime_accepted
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "x",
+        "a" * 15,
+        "replace_me",
+        "valid-prefix-replace_me-suffix",
+    ],
+)
+def test_release_rejects_weak_or_placeholder_capability_token(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    values = _environment()
+    values["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN"] = value
+    _write_environment(env_file, values)
+
+    assert _runtime_accepts_capability_token(value)
+    with pytest.raises(contract.S72ReleaseContractError, match="secret authority"):
+        contract.validate_s72_environment(env_file)
 
 
 def test_cli_projects_only_redacted_contract_evidence(
@@ -465,6 +577,48 @@ def _special_node_worker(
         result.put("accepted")
 
 
+def _prestat_open_special_node_worker(
+    env_file: str,
+    node_kind: str,
+    result: multiprocessing.Queue[tuple[str, bool]],
+) -> None:
+    env_path = Path(env_file)
+    target = env_path.with_name("synchronized-symlink-target.env")
+    if node_kind == "symlink":
+        _write_environment(target, _environment())
+        target.chmod(0o600)
+    original_open = contract.os.open
+    observed_required_flags = False
+
+    def replace_between_prestat_and_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        *args: object,
+        **kwargs: object,
+    ) -> int:
+        nonlocal observed_required_flags
+        if Path(path) == env_path:
+            required = os.O_NONBLOCK | os.O_NOFOLLOW
+            observed_required_flags = flags & required == required
+            env_path.unlink()
+            if node_kind == "fifo":
+                os.mkfifo(env_path, mode=0o600)
+            else:
+                env_path.symlink_to(target)
+        return original_open(path, flags, *args, **kwargs)
+
+    contract.os.open = replace_between_prestat_and_open
+    try:
+        contract.validate_s72_environment(env_path)
+    except contract.S72ReleaseContractError:
+        outcome = "rejected"
+    else:
+        outcome = "accepted"
+    finally:
+        contract.os.open = original_open
+    result.put((outcome, observed_required_flags))
+
+
 @pytest.mark.skipif(os.name != "posix", reason="required Linux special-node evidence")
 @pytest.mark.parametrize("node_kind", ["fifo", "symlink"])
 def test_managed_environment_special_node_replacement_is_bounded(
@@ -495,3 +649,29 @@ def test_managed_environment_special_node_replacement_is_bounded(
 
     assert process.exitcode == 0
     assert result.get(timeout=1) == "rejected"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="required Linux stat/open race evidence")
+@pytest.mark.parametrize("node_kind", ["fifo", "symlink"])
+def test_managed_environment_replacement_between_prestat_and_open_is_bounded(
+    tmp_path: Path,
+    node_kind: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    _write_environment(env_file, _environment())
+    env_file.chmod(0o600)
+    context = multiprocessing.get_context("fork")
+    result = context.Queue()
+    process = context.Process(
+        target=_prestat_open_special_node_worker,
+        args=(str(env_file), node_kind, result),
+    )
+    process.start()
+    process.join(timeout=3)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=2)
+        pytest.fail(f"managed environment {node_kind} replacement blocked in os.open")
+
+    assert process.exitcode == 0
+    assert result.get(timeout=1) == ("rejected", True)

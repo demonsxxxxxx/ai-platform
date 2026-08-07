@@ -657,7 +657,7 @@ def _prepare_managed_release_layout(monkeypatch, tmp_path: Path) -> tuple[Path, 
     monkeypatch.setattr(
         release_authority,
         "_posix_owner_mode",
-        lambda path: (1000, 0o600 if Path(path) == env_file else 0o700),
+        lambda path, metadata=None: (1000, 0o600 if Path(path) == env_file else 0o700),
         raising=False,
     )
     return managed_root, release_root, env_file
@@ -678,7 +678,7 @@ def _prepare_managed_target_checkout(
     env_file.parent.mkdir(parents=True)
     env_file.write_text("PRIVATE_VALUE=must-not-be-read\n", encoding="utf-8")
 
-    def owner_mode(path):
+    def owner_mode(path, metadata=None):
         candidate = Path(path)
         if candidate == env_file:
             return (1000, 0o600)
@@ -935,7 +935,9 @@ def test_managed_env_owner_and_mode_fail_closed(
     monkeypatch.setattr(
         release_authority,
         "_posix_owner_mode",
-        lambda path: env_metadata if Path(path) == env_file else (1000, 0o700),
+        lambda path, metadata=None: env_metadata
+        if Path(path) == env_file
+        else (1000, 0o700),
         raising=False,
     )
 
@@ -957,7 +959,7 @@ def test_managed_env_external_same_owner_0600_override_is_rejected(
     monkeypatch.setattr(
         release_authority,
         "_posix_owner_mode",
-        lambda path: (1000, 0o600 if Path(path) == override else 0o700),
+        lambda path, metadata=None: (1000, 0o600 if Path(path) == override else 0o700),
         raising=False,
     )
     monkeypatch.setattr(
@@ -1007,6 +1009,35 @@ def test_managed_env_exact_canonical_override_is_accepted_without_reading_conten
     ) == canonical_env
 
 
+def test_managed_env_can_return_the_exact_authority_validated_identity(
+    monkeypatch,
+    tmp_path,
+):
+    _, release_root, canonical_env = _prepare_managed_release_layout(
+        monkeypatch,
+        tmp_path,
+    )
+    authority_metadata = []
+
+    def owner_mode(path, metadata=None):
+        if Path(path) == canonical_env:
+            authority_metadata.append(metadata)
+            return (1000, 0o600)
+        return (1000, 0o700)
+
+    monkeypatch.setattr(release_authority, "_posix_owner_mode", owner_mode)
+
+    resolved, sealed = release_authority.resolve_managed_env_file(
+        release_root,
+        canonical_env,
+        include_identity=True,
+    )
+
+    assert resolved == canonical_env
+    assert sealed == canonical_env.stat(follow_symlinks=False)
+    assert authority_metadata == [sealed]
+
+
 def test_managed_target_checkout_accepts_safe_exact_git_tree(monkeypatch, tmp_path):
     _, release_root, checkout, _, commit = _prepare_managed_target_checkout(
         monkeypatch,
@@ -1054,7 +1085,7 @@ def test_managed_target_owner_or_mode_rejects_before_docker(
     unsafe_path = expected_unsafe_paths[unsafe_subject]
     unsafe_metadata_reads: list[Path] = []
 
-    def owner_mode(path):
+    def owner_mode(path, metadata=None):
         candidate = Path(path)
         if candidate == unsafe_path:
             unsafe_metadata_reads.append(candidate)
@@ -1102,7 +1133,7 @@ def test_managed_env_is_revalidated_before_any_container_or_compose_mutation(
     env_metadata_reads = 0
     commands: list[list[str]] = []
 
-    def owner_mode(path):
+    def owner_mode(path, metadata=None):
         nonlocal env_metadata_reads
         if Path(path) != env_file:
             return (1000, 0o700)
@@ -3584,7 +3615,7 @@ def _install_checkout_git_runner(
     monkeypatch.setattr(
         release_authority,
         "_posix_owner_mode",
-        lambda path: (1000, 0o755 if Path(path).is_dir() else 0o644),
+        lambda path, metadata=None: (1000, 0o755 if Path(path).is_dir() else 0o644),
     )
     return commands
 
@@ -3691,7 +3722,7 @@ def test_materialize_main_checkout_rejects_insecure_existing_tree_without_normal
     checkout.chmod(0o775)
     commands = _install_checkout_git_runner(monkeypatch, commit=commit)
 
-    def owner_mode(path):
+    def owner_mode(path, metadata=None):
         candidate = Path(path)
         if candidate == checkout:
             return (1000, 0o775)
@@ -3766,7 +3797,7 @@ def test_materialize_main_checkout_rejects_unsafe_existing_tree_before_fetch(
     unsafe_path = unsafe_paths[unsafe_subject]
     unsafe_metadata_reads: list[Path] = []
 
-    def owner_mode(path):
+    def owner_mode(path, metadata=None):
         candidate = Path(path)
         if candidate == unsafe_path:
             unsafe_metadata_reads.append(candidate)
