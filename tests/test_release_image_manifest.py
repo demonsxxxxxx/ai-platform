@@ -558,46 +558,6 @@ def _failed_run_syft_1_50_backend_spdx() -> dict[str, object]:
     return document
 
 
-def _oci_index_bytes(*, child_digest: str = FAILED_RUN_PRODUCER_DIGEST) -> bytes:
-    return json.dumps(
-        {
-            "schemaVersion": 2,
-            "mediaType": "application/vnd.oci.image.index.v1+json",
-            "manifests": [
-                {
-                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                    "digest": child_digest,
-                    "size": 123,
-                    "platform": {"architecture": "amd64", "os": "linux"},
-                }
-            ],
-        },
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-
-def _run_resolve_producer_digest(
-    tmp_path: Path,
-    raw_document: bytes,
-    *,
-    requested_digest: str | None = None,
-) -> subprocess.CompletedProcess[str]:
-    raw_path = tmp_path / "oci-backend.json"
-    raw_path.write_bytes(raw_document)
-    requested = requested_digest or ("sha256:" + hashlib.sha256(raw_document).hexdigest())
-    return _run_cli(
-        "resolve-producer-digest",
-        "--role",
-        "backend",
-        "--manifest-digest",
-        requested,
-        "--image-ref",
-        f"ghcr.io/demonsxxxxxx/ai-platform-backend@{requested}",
-        "--oci-file",
-        str(raw_path),
-    )
-
-
 def _rewrite_bound_sbom(
     tmp_path: Path,
     manifest: dict[str, object],
@@ -786,50 +746,6 @@ def test_spdx_binding_requires_an_external_producer_digest_for_both_entry_points
     assert bind.returncode != 0
 
 
-def test_resolve_producer_digest_authenticates_raw_index_and_linux_amd64_child(
-    tmp_path: Path,
-):
-    raw_path = tmp_path / "oci-backend.json"
-    raw_path.write_bytes(_oci_index_bytes())
-    requested_digest = "sha256:" + hashlib.sha256(raw_path.read_bytes()).hexdigest()
-
-    result = _run_cli(
-        "resolve-producer-digest",
-        "--role",
-        "backend",
-        "--manifest-digest",
-        requested_digest,
-        "--image-ref",
-        f"ghcr.io/demonsxxxxxx/ai-platform-backend@{requested_digest}",
-        "--oci-file",
-        str(raw_path),
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == FAILED_RUN_PRODUCER_DIGEST
-
-
-def test_resolve_producer_digest_ignores_a_valid_foreign_platform_variant(tmp_path: Path):
-    document = json.loads(_oci_index_bytes())
-    document["manifests"].insert(
-        0,
-        {
-            "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "digest": "sha256:" + "1" * 64,
-            "size": 1,
-            "platform": {"architecture": "arm64", "os": "linux", "variant": "v8"},
-        },
-    )
-
-    result = _run_resolve_producer_digest(
-        tmp_path,
-        json.dumps(document, separators=(",", ":")).encode("utf-8"),
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == FAILED_RUN_PRODUCER_DIGEST
-
-
 def test_failed_run_spdx_requires_the_authenticated_producer_digest(tmp_path: Path):
     sbom_path = tmp_path / "sbom-backend.spdx.json"
     sbom_path.write_text(json.dumps(_failed_run_syft_1_50_backend_spdx()), encoding="utf-8")
@@ -850,98 +766,7 @@ def test_failed_run_spdx_requires_the_authenticated_producer_digest(tmp_path: Pa
     assert "sbom_subject_binding.root_checksums" in rejected.stderr
 
 
-@pytest.mark.parametrize(
-    "document",
-    [
-        {"schemaVersion": 2, "mediaType": "application/example", "manifests": []},
-        {
-            "schemaVersion": 2,
-            "mediaType": "application/vnd.oci.image.index.v1+json",
-            "manifests": [
-                {
-                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                    "digest": FAILED_RUN_PRODUCER_DIGEST,
-                    "platform": {"architecture": "amd64", "os": "linux"},
-                }
-            ],
-        },
-        {
-            "schemaVersion": 2,
-            "mediaType": "application/vnd.oci.image.index.v1+json",
-            "manifests": [
-                {
-                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                    "digest": FAILED_RUN_PRODUCER_DIGEST,
-                    "size": 1,
-                    "platform": {"architecture": "arm64", "os": "linux"},
-                }
-            ],
-        },
-        {
-            "schemaVersion": 2,
-            "mediaType": "application/vnd.oci.image.index.v1+json",
-            "manifests": [
-                {
-                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                    "digest": FAILED_RUN_PRODUCER_DIGEST,
-                    "size": 1,
-                    "annotations": {"org.opencontainers.image.architecture": "amd64"},
-                }
-            ],
-        },
-        {
-            "schemaVersion": 2,
-            "mediaType": "application/vnd.oci.image.index.v1+json",
-            "manifests": [
-                {
-                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                    "digest": "sha256:" + "A" * 64,
-                    "size": 1,
-                    "platform": {"architecture": "amd64", "os": "linux"},
-                }
-            ],
-        },
-    ],
-)
-def test_resolve_producer_digest_rejects_closed_world_invalid_oci_contours(
-    tmp_path: Path,
-    document: dict[str, object],
-):
-    result = _run_resolve_producer_digest(
-        tmp_path,
-        json.dumps(document, separators=(",", ":")).encode("utf-8"),
-    )
-
-    assert result.returncode != 0
-
-
-def test_resolve_producer_digest_rejects_tampering_duplicate_keys_and_duplicate_platforms(
-    tmp_path: Path,
-):
-    raw = _oci_index_bytes()
-    tampered = _run_resolve_producer_digest(
-        tmp_path,
-        raw,
-        requested_digest="sha256:" + "0" * 64,
-    )
-    duplicate_keys = _run_resolve_producer_digest(
-        tmp_path,
-        b'{"schemaVersion":2,"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}',
-    )
-    duplicate_document = json.loads(raw)
-    duplicate_document["manifests"].append(copy.deepcopy(duplicate_document["manifests"][0]))
-    duplicate_platform = _run_resolve_producer_digest(
-        tmp_path,
-        json.dumps(duplicate_document, separators=(",", ":")).encode("utf-8"),
-    )
-
-    assert tampered.returncode != 0
-    assert duplicate_keys.returncode != 0
-    assert "json_duplicate_key" in duplicate_keys.stderr
-    assert duplicate_platform.returncode != 0
-
-
-def test_resolve_producer_digest_accepts_an_authenticated_direct_image_manifest(tmp_path: Path):
+def test_resolve_producer_digest_cli_integrates_the_pure_resolver(tmp_path: Path):
     raw = json.dumps(
         {
             "schemaVersion": 2,
@@ -956,11 +781,19 @@ def test_resolve_producer_digest_accepts_an_authenticated_direct_image_manifest(
         separators=(",", ":"),
     ).encode("utf-8")
     requested_digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    raw_path = tmp_path / "oci-backend.json"
+    raw_path.write_bytes(raw)
 
-    result = _run_resolve_producer_digest(
-        tmp_path,
-        raw,
-        requested_digest=requested_digest,
+    result = _run_cli(
+        "resolve-producer-digest",
+        "--role",
+        "backend",
+        "--manifest-digest",
+        requested_digest,
+        "--image-ref",
+        f"ghcr.io/demonsxxxxxx/ai-platform-backend@{requested_digest}",
+        "--oci-file",
+        str(raw_path),
     )
 
     assert result.returncode == 0, result.stderr
