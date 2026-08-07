@@ -466,6 +466,53 @@ def _run_bind_spdx(
     )
 
 
+def _run_spdx_source_hash(
+    path: Path,
+    *,
+    role: str = "backend",
+    manifest_digest: str = MANIFEST_DIGEST,
+) -> subprocess.CompletedProcess[str]:
+    subject = f"ghcr.io/demonsxxxxxx/ai-platform-{role}"
+    return _run_cli(
+        "spdx-source-hash",
+        "--role",
+        role,
+        "--manifest-digest",
+        manifest_digest,
+        "--image-ref",
+        f"{subject}@{manifest_digest}",
+        "--sbom-file",
+        str(path),
+    )
+
+
+def _hosted_linux_syft_1_50_backend_spdx() -> dict[str, object]:
+    """Minimal SPDX root captured from the failed Linux Syft 1.50.0 invocation."""
+    digest = "sha256:77335e0179abc8286fe3cc637cabb5d78e96595bd66812ab9de7488fa514f3e0"
+    subject = "ghcr.io/demonsxxxxxx/ai-platform-backend"
+    document = _syft_spdx("backend")
+    root = document["packages"][0]
+    document["name"] = subject
+    document["documentNamespace"] = (
+        "https://anchore.com/syft/image/ghcr.io/demonsxxxxxx/"
+        "ai-platform-backend-linux-amd64"
+    )
+    root["name"] = subject
+    root["versionInfo"] = digest
+    root["checksums"] = [{"algorithm": "SHA256", "checksumValue": digest.removeprefix("sha256:")}]
+    root["externalRefs"] = [
+        {
+            "referenceCategory": "PACKAGE-MANAGER",
+            "referenceType": "purl",
+            "referenceLocator": (
+                "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-backend@sha256%3A"
+                f"{digest.removeprefix('sha256:')}?arch=amd64"
+            ),
+        }
+    ]
+    return document
+
+
 def _rewrite_bound_sbom(
     tmp_path: Path,
     manifest: dict[str, object],
@@ -564,6 +611,86 @@ def test_bind_spdx_cli_writes_deterministic_immutable_subject_namespace(tmp_path
         document["relationships"][0]["relatedSpdxElement"]
     ]
     assert document["documentNamespace"] == _sbom_namespace("backend", document)
+
+
+def test_spdx_source_hash_accepts_hosted_linux_syft_amd64_root_purl(tmp_path: Path):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    digest = "sha256:77335e0179abc8286fe3cc637cabb5d78e96595bd66812ab9de7488fa514f3e0"
+    sbom_path.write_text(json.dumps(_hosted_linux_syft_1_50_backend_spdx()), encoding="utf-8")
+
+    result = _run_spdx_source_hash(sbom_path, manifest_digest=digest)
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "external_refs",
+    [
+        [],
+        [
+            {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": (
+                    "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-backend@sha256%3A"
+                    "77335e0179abc8286fe3cc637cabb5d78e96595bd66812ab9de7488fa514f3e0?arch=amd64"
+                ),
+            },
+            {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": (
+                    "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-backend@sha256%3A"
+                    "77335e0179abc8286fe3cc637cabb5d78e96595bd66812ab9de7488fa514f3e0?arch=amd64"
+                ),
+            },
+        ],
+        [
+            {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": (
+                    "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-backend@sha256%3A"
+                    "77335e0179abc8286fe3cc637cabb5d78e96595bd66812ab9de7488fa514f3e0?arch=arm64"
+                ),
+            }
+        ],
+        [
+            {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": (
+                    "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-frontend@sha256%3A"
+                    "77335e0179abc8286fe3cc637cabb5d78e96595bd66812ab9de7488fa514f3e0?arch=amd64"
+                ),
+            }
+        ],
+        [
+            {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": (
+                    "pkg:oci/ghcr.io%2Fdemonsxxxxxx%2Fai-platform-backend@sha256%3A"
+                    "77335e0179abc8286fe3cc637cabb5d78e96595bd66812ab9de7488fa514f3e0?arch=amd64&tag=latest"
+                ),
+            }
+        ],
+    ],
+)
+def test_spdx_source_hash_rejects_ambiguous_or_noncanonical_root_purl(
+    tmp_path: Path,
+    external_refs: list[dict[str, str]],
+):
+    sbom_path = tmp_path / "sbom-backend.spdx.json"
+    digest = "sha256:77335e0179abc8286fe3cc637cabb5d78e96595bd66812ab9de7488fa514f3e0"
+    document = _hosted_linux_syft_1_50_backend_spdx()
+    document["packages"][0]["externalRefs"] = external_refs
+    sbom_path.write_text(json.dumps(document), encoding="utf-8")
+
+    result = _run_spdx_source_hash(sbom_path, manifest_digest=digest)
+
+    assert result.returncode != 0
+    assert "sbom_subject_binding" in result.stderr
 
 
 def test_bind_spdx_namespace_cannot_collide_for_distinct_documents_with_same_tuple(
