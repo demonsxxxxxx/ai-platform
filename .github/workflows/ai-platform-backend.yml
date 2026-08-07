@@ -102,6 +102,7 @@ jobs:
             tests/test_b2_sandbox_readiness.py \
             tests/test_repositories.py \
             tests/test_backend_ci_workflow.py \
+            tests/test_s72_release_contract.py \
             tests/test_packaging_publish_workflow.py \
             tests/test_release_image_manifest.py \
             tests/test_governance_readiness.py \

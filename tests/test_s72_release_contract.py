@@ -7,9 +7,13 @@ from pathlib import Path
 import subprocess
 
 import pytest
+import yaml
 
 from app.runtime.sandbox import container_provider as runtime_provider
 from tools import s72_release_contract as contract
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _environment() -> dict[str, str]:
@@ -108,6 +112,24 @@ def _runtime_accepts_capability_token(value: str) -> bool:
     except runtime_provider.OpenSandboxCapabilityAdmissionError:
         return False
     return True
+
+
+def test_required_backend_job_collects_linux_special_node_contract() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "ai-platform-backend.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    sandbox_job = workflow["jobs"]["sandbox-provider"]
+    targeted_step = next(
+        step
+        for step in sandbox_job["steps"]
+        if step.get("name") == "Run sandbox provider targeted tests"
+    )
+
+    assert sandbox_job["runs-on"] == "ubuntu-latest"
+    assert targeted_step["run"].count("tests/test_s72_release_contract.py") == 1
+    assert "sandbox-provider" in workflow["jobs"]["required"]["needs"]
 
 
 def test_invalid_commit_fails_before_source_or_env_access(tmp_path: Path) -> None:
