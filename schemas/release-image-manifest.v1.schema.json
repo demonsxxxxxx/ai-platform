@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/demonsxxxxxx/ai-platform/schemas/release-image-manifest.v1.schema.json",
+  "$comment": "This schema enforces document shape and all expressible role-specific combinations. Cross-field digest, source, workflow, run, SPDX namespace, and cryptographically reverified provenance equality requires the Python semantic verifier with supplied evidence files.",
+  "title": "AI Platform release image manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_commit", "repository", "workflow", "subjects"],
+  "properties": {
+    "schema_version": {"const": "ai-platform.release-image-manifest.v1"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "repository": {"const": "https://github.com/demonsxxxxxx/ai-platform.git"},
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "workflow_ref", "run_id", "run_attempt", "head_sha"],
+      "properties": {
+        "repository": {"const": "demonsxxxxxx/ai-platform"},
+        "workflow_ref": {"const": "demonsxxxxxx/ai-platform/.github/workflows/ai-platform-packaging-publish.yml@refs/heads/main"},
+        "run_id": {"type": "string", "pattern": "^[0-9]+$"},
+        "run_attempt": {"type": "integer", "minimum": 1},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "subjects": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "allOf": [
+        {"contains": {"type": "object", "properties": {"role": {"const": "backend"}}, "required": ["role"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"role": {"const": "frontend"}}, "required": ["role"]}, "minContains": 1, "maxContains": 1}
+      ],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "platform", "build", "image", "evidence"],
+        "allOf": [
+          {
+            "if": {"properties": {"role": {"const": "backend"}}, "required": ["role"]},
+            "then": {
+              "properties": {
+                "build": {"properties": {"dockerfile": {"properties": {"path": {"const": "Dockerfile"}}}}},
+                "image": {
+                  "properties": {
+                    "subject": {"const": "ghcr.io/demonsxxxxxx/ai-platform-backend"},
+                    "source_tag": {"type": "string", "pattern": "^ghcr\\.io/demonsxxxxxx/ai-platform-backend:[0-9a-f]{40}$"},
+                    "immutable_ref": {"type": "string", "pattern": "^ghcr\\.io/demonsxxxxxx/ai-platform-backend@sha256:[0-9a-f]{64}$"}
+                  }
+                },
+                "evidence": {
+                  "properties": {
+                    "sbom": {"properties": {"ref": {"type": "string", "pattern": "^oci://ghcr\\.io/demonsxxxxxx/ai-platform-backend@sha256:[0-9a-f]{64}#sbom-spdx-attestation$"}}},
+                    "provenance": {
+                      "properties": {
+                        "bundle_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-backend/provenance-backend\\.bundle\\.json$"},
+                        "verification_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-backend/provenance-backend\\.verified\\.json$"},
+                        "reverification_ref": {"type": "string", "pattern": "^github-artifact://release-image-evidence-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*/provenance-backend\\.assembly-verified\\.json$"}
+                      }
+                    },
+                    "signature": {"properties": {"ref": {"type": "string", "pattern": "^oci://ghcr\\.io/demonsxxxxxx/ai-platform-backend@sha256:[0-9a-f]{64}#cosign-keyless-signature$"}}},
+                    "scan": {"properties": {"ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-backend/trivy-backend\\.json$"}}}
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {"properties": {"role": {"const": "frontend"}}, "required": ["role"]},
+            "then": {
+              "properties": {
+                "build": {"properties": {"dockerfile": {"properties": {"path": {"const": "frontend/web/Dockerfile"}}}}},
+                "image": {
+                  "properties": {
+                    "subject": {"const": "ghcr.io/demonsxxxxxx/ai-platform-frontend"},
+                    "source_tag": {"type": "string", "pattern": "^ghcr\\.io/demonsxxxxxx/ai-platform-frontend:[0-9a-f]{40}$"},
+                    "immutable_ref": {"type": "string", "pattern": "^ghcr\\.io/demonsxxxxxx/ai-platform-frontend@sha256:[0-9a-f]{64}$"}
+                  }
+                },
+                "evidence": {
+                  "properties": {
+                    "sbom": {"properties": {"ref": {"type": "string", "pattern": "^oci://ghcr\\.io/demonsxxxxxx/ai-platform-frontend@sha256:[0-9a-f]{64}#sbom-spdx-attestation$"}}},
+                    "provenance": {
+                      "properties": {
+                        "bundle_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-frontend/provenance-frontend\\.bundle\\.json$"},
+                        "verification_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-frontend/provenance-frontend\\.verified\\.json$"},
+                        "reverification_ref": {"type": "string", "pattern": "^github-artifact://release-image-evidence-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*/provenance-frontend\\.assembly-verified\\.json$"}
+                      }
+                    },
+                    "signature": {"properties": {"ref": {"type": "string", "pattern": "^oci://ghcr\\.io/demonsxxxxxx/ai-platform-frontend@sha256:[0-9a-f]{64}#cosign-keyless-signature$"}}},
+                    "scan": {"properties": {"ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-frontend/trivy-frontend\\.json$"}}}
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "role": {"enum": ["backend", "frontend"]},
+          "platform": {"const": "linux/amd64"},
+          "build": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["context", "dockerfile"],
+            "properties": {
+              "context": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "source_commit"],
+                "properties": {
+                  "path": {"const": "."},
+                  "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+                }
+              },
+              "dockerfile": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "sha256"],
+                "properties": {
+                  "path": {"enum": ["Dockerfile", "frontend/web/Dockerfile"]},
+                  "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              }
+            }
+          },
+          "image": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["subject", "source_tag", "manifest_digest", "immutable_ref"],
+            "properties": {
+              "subject": {"enum": ["ghcr.io/demonsxxxxxx/ai-platform-backend", "ghcr.io/demonsxxxxxx/ai-platform-frontend"]},
+              "source_tag": {"type": "string", "pattern": "^ghcr\\.io/demonsxxxxxx/ai-platform-(backend|frontend):[0-9a-f]{40}$"},
+              "manifest_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+              "immutable_ref": {"type": "string", "pattern": "^ghcr\\.io/demonsxxxxxx/ai-platform-(backend|frontend)@sha256:[0-9a-f]{64}$"}
+            }
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sbom", "provenance", "signature", "scan"],
+            "properties": {
+              "sbom": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["format", "ref", "sha256", "unbound_content_sha256"],
+                "properties": {
+                  "format": {"const": "spdx-json"},
+                  "ref": {"type": "string", "pattern": "^oci://ghcr\\.io/demonsxxxxxx/ai-platform-(backend|frontend)@sha256:[0-9a-f]{64}#sbom-spdx-attestation$"},
+                  "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "unbound_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              },
+              "provenance": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["predicate_type", "attestation_id", "ref", "bundle_ref", "bundle_sha256", "verification_ref", "verification_sha256", "reverification_ref", "reverification_sha256"],
+                "properties": {
+                  "predicate_type": {"const": "https://slsa.dev/provenance/v1"},
+                  "attestation_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$"},
+                  "ref": {"type": "string", "pattern": "^https://github\\.com/demonsxxxxxx/ai-platform/attestations/[A-Za-z0-9_-]+$"},
+                  "bundle_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-(backend|frontend)/provenance-(backend|frontend)\\.bundle\\.json$"},
+                  "bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "verification_ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-(backend|frontend)/provenance-(backend|frontend)\\.verified\\.json$"},
+                  "verification_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "reverification_ref": {"type": "string", "pattern": "^github-artifact://release-image-evidence-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*/provenance-(backend|frontend)\\.assembly-verified\\.json$"},
+                  "reverification_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              },
+              "signature": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["identity", "issuer", "ref"],
+                "properties": {
+                  "identity": {"const": "https://github.com/demonsxxxxxx/ai-platform/.github/workflows/ai-platform-packaging-publish.yml@refs/heads/main"},
+                  "issuer": {"const": "https://token.actions.githubusercontent.com"},
+                  "ref": {"type": "string", "pattern": "^oci://ghcr\\.io/demonsxxxxxx/ai-platform-(backend|frontend)@sha256:[0-9a-f]{64}#cosign-keyless-signature$"}
+                }
+              },
+              "scan": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["blocking_severities", "ref", "result", "scanner", "sha256"],
+                "properties": {
+                  "blocking_severities": {"const": ["HIGH", "CRITICAL"]},
+                  "ref": {"type": "string", "pattern": "^github-artifact://release-image-subject-[0-9a-f]{40}-[0-9]+-[1-9][0-9]*-(backend|frontend)/trivy-(backend|frontend)\\.json$"},
+                  "result": {"const": "passed"},
+                  "scanner": {"const": "trivy@0.70.0"},
+                  "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

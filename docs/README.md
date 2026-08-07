@@ -29,7 +29,8 @@ does not represent deployed runtime state.
 - `adr/0003-redis-streams-sse-event-channel-v2-correction.md` records the v2
   correction; ADR 0002 is retained as the superseded v1 audit record.
 - `architecture/docker-packaging.md` defines reproducible dependency authority,
-  immutable image bases, and CI image acceptance without registry or runtime authority.
+  immutable image bases, CI image acceptance, and digest-bound GHCR supply-chain
+  publication without deployment or runtime authority.
 
 The repository-root `../CONTEXT.md` defines the compressed Agent App ubiquitous
 language used by source, product, and acceptance contracts.
