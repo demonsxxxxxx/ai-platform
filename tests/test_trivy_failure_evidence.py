@@ -123,6 +123,75 @@ def test_capture_emits_only_bounded_redacted_untrusted_evidence(tmp_path: Path):
     assert "InstalledVersion" not in serialized
 
 
+def test_capture_accepts_real_trivy_multiline_description_without_projecting_it(
+    tmp_path: Path,
+):
+    report = _valid_report()
+    description = "Vendor advisory paragraph.\n" * 20 + "Final advisory paragraph."
+    vulnerability = report["Results"][0]["Vulnerabilities"][0]
+    vulnerability["Description"] = description
+    vulnerability["Fingerprint"] = "sha256:" + "d" * 64
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode == 0, completed.stderr
+    output = tmp_path / "trivy-failure-diagnostic-backend.json"
+    serialized = output.read_text(encoding="utf-8")
+    assert description not in serialized
+    assert "Vendor advisory paragraph" not in serialized
+
+
+@pytest.mark.parametrize(
+    "fingerprint",
+    [
+        7,
+        "sha512:" + "d" * 64,
+        "sha256:" + "D" * 64,
+        "sha256:" + "d" * 63,
+        "sha256:" + "d" * 65,
+    ],
+)
+def test_capture_rejects_malformed_trivy_fingerprint(tmp_path: Path, fingerprint: object):
+    report = _valid_report()
+    report["Results"][0]["Vulnerabilities"][0]["Fingerprint"] = fingerprint
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_vulnerability"
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_value"),
+    [
+        ("Description", "line one\rline two"),
+        ("Description", "line one\tline two"),
+        ("Description", "line one\u0000line two"),
+        ("Description", "line one\u202eline two"),
+        ("Description", "authorization: bearer opaque-sensitive-value"),
+        ("Description", "x" * 8_193),
+        ("Target", "wolfi\nforged-target"),
+    ],
+)
+def test_capture_rejects_adjacent_multiline_description_hostiles(
+    tmp_path: Path, field: str, unsafe_value: str
+):
+    report = _valid_report()
+    if field == "Description":
+        report["Results"][0]["Vulnerabilities"][0][field] = unsafe_value
+    else:
+        report["Results"][0][field] = unsafe_value
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_string"
+    assert unsafe_value not in completed.stdout
+    assert unsafe_value not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
 @pytest.mark.parametrize(
     ("case", "mutate"),
     [
