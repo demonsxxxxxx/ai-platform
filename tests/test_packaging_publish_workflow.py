@@ -202,6 +202,77 @@ def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_mani
     assert "--deny-self-hosted-runners" in text
 
 
+def test_trivy_failure_uploads_only_redacted_untrusted_run_bound_diagnostics():
+    workflow = _workflow()
+    publish = workflow["jobs"]["publish"]
+    steps = publish["steps"]
+    names = [step.get("name") for step in steps]
+    scan = next(step for step in steps if step.get("name") == "Scan published digest")
+    capture = next(
+        step for step in steps if step.get("name") == "Create untrusted Trivy failure evidence"
+    )
+    upload = next(
+        step for step in steps if step.get("name") == "Upload untrusted Trivy scan diagnostic"
+    )
+
+    assert scan["id"] == "trivy-scan"
+    assert "continue-on-error" not in scan
+    assert scan["with"] == {
+        "scan-type": "image",
+        "image-ref": "${{ matrix.subject }}@${{ steps.build.outputs.digest }}",
+        "format": "json",
+        "output": "trivy-${{ matrix.role }}.json",
+        "vuln-type": "os,library",
+        "severity": "HIGH,CRITICAL",
+        "exit-code": "1",
+        "ignore-unfixed": "false",
+        "version": "v0.70.0",
+    }
+    assert names.index("Scan published digest") < names.index(
+        "Create untrusted Trivy failure evidence"
+    ) < names.index("Upload untrusted Trivy scan diagnostic") < names.index("Install cosign")
+    assert capture["id"] == "trivy-failure-evidence"
+    assert capture["if"] == (
+        "${{ failure() && steps.trivy-scan.outcome == 'failure' && "
+        "hashFiles(format('trivy-{0}.json', matrix.role)) != '' }}"
+    )
+    assert "env" not in capture
+    assert "python tools/trivy_failure_evidence.py capture" in capture["run"]
+    assert '--role "${{ matrix.role }}"' in capture["run"]
+    assert '--source-commit "$SOURCE_COMMIT"' in capture["run"]
+    assert '--github-sha "$GITHUB_SHA"' in capture["run"]
+    assert '--manifest-digest "$MANIFEST_DIGEST"' in capture["run"]
+    assert '--image-ref "$IMAGE_REF"' in capture["run"]
+    assert '--scan-file "trivy-${{ matrix.role }}.json"' in capture["run"]
+    assert '--output "trivy-failure-diagnostic-${{ matrix.role }}.json"' in capture["run"]
+    assert "read_bytes" not in capture["run"]
+    assert "json.loads" not in capture["run"]
+    assert upload["if"] == (
+        "${{ failure() && steps.trivy-scan.outcome == 'failure' && "
+        "steps.trivy-failure-evidence.outcome == 'success' && "
+        "hashFiles(format('trivy-failure-diagnostic-{0}.json', matrix.role)) != '' }}"
+    )
+    assert upload["uses"] == (
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    )
+    assert upload["with"] == {
+        "name": (
+            "release-image-trivy-diagnostic-${{ github.sha }}-${{ github.run_id }}-"
+            "${{ github.run_attempt }}-${{ matrix.role }}"
+        ),
+        "if-no-files-found": "error",
+        "retention-days": "1",
+        "path": "trivy-failure-diagnostic-${{ matrix.role }}.json",
+    }
+    assert "trivy-${{ matrix.role }}.json" not in upload["with"]["path"]
+    assert "github.token" not in str(capture) + str(upload)
+    assert "GH_TOKEN" not in str(capture) + str(upload)
+    manifest = workflow["jobs"]["release-manifest"]
+    assert "release-image-trivy-diagnostic" not in str(manifest)
+    assert "trivy-failure-diagnostic" not in str(manifest)
+    assert manifest["needs"] == ["publish"]
+
+
 def test_github_cli_is_fixed_checksum_verified_and_token_is_step_scoped():
     workflow = _workflow()
     steps = workflow["jobs"]["publish"]["steps"]

@@ -1,0 +1,405 @@
+import json
+import os
+import stat
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tools import trivy_failure_evidence
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TOOL = ROOT / "tools" / "trivy_failure_evidence.py"
+SOURCE_COMMIT = "a" * 40
+MANIFEST_DIGEST = "sha256:" + "b" * 64
+SUBJECT = "ghcr.io/demonsxxxxxx/ai-platform-backend"
+IMAGE_REF = f"{SUBJECT}@{MANIFEST_DIGEST}"
+
+
+def _valid_report() -> dict[str, object]:
+    return {
+        "SchemaVersion": 2,
+        "CreatedAt": "2026-08-08T00:00:00Z",
+        "ArtifactName": IMAGE_REF,
+        "ArtifactType": "container_image",
+        "Metadata": {
+            "ImageID": "sha256:" + "c" * 64,
+            "RepoDigests": [IMAGE_REF],
+        },
+        "Results": [
+            {
+                "Target": "wolfi",
+                "Class": "os-pkgs",
+                "Type": "wolfi",
+                "Vulnerabilities": [
+                    {
+                        "VulnerabilityID": "CVE-2026-0001",
+                        "PkgName": "example",
+                        "InstalledVersion": "1.0",
+                        "FixedVersion": "1.1",
+                        "Status": "fixed",
+                        "Severity": "CRITICAL",
+                        "PrimaryURL": "https://example.invalid/CVE-2026-0001",
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _run_capture(
+    tmp_path: Path,
+    *,
+    report: object | None = None,
+    raw: bytes | None = None,
+    arguments: dict[str, str] | None = None,
+    output_name: str = "trivy-failure-diagnostic-backend.json",
+) -> subprocess.CompletedProcess[str]:
+    scan_name = "trivy-backend.json"
+    if raw is None:
+        raw = json.dumps(_valid_report() if report is None else report).encode("utf-8")
+    (tmp_path / scan_name).write_bytes(raw)
+    values = {
+        "role": "backend",
+        "source-commit": SOURCE_COMMIT,
+        "github-sha": SOURCE_COMMIT,
+        "workflow-repository": "demonsxxxxxx/ai-platform",
+        "workflow-ref": (
+            "demonsxxxxxx/ai-platform/.github/workflows/"
+            "ai-platform-packaging-publish.yml@refs/heads/main"
+        ),
+        "run-id": "31233605951",
+        "run-attempt": "1",
+        "manifest-digest": MANIFEST_DIGEST,
+        "image-ref": IMAGE_REF,
+        "scan-file": scan_name,
+        "output": output_name,
+    }
+    if arguments:
+        values.update(arguments)
+    command = [sys.executable, str(TOOL), "capture"]
+    for key, value in values.items():
+        command.extend((f"--{key}", value))
+    return subprocess.run(
+        command,
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+
+def test_capture_emits_only_bounded_redacted_untrusted_evidence(tmp_path: Path):
+    completed = _run_capture(tmp_path)
+    assert completed.returncode == 0, completed.stderr
+
+    output = tmp_path / "trivy-failure-diagnostic-backend.json"
+    evidence = json.loads(output.read_text(encoding="utf-8"))
+    assert set(evidence) == {
+        "authority",
+        "image_ref",
+        "manifest_digest",
+        "platform",
+        "reason_code",
+        "role",
+        "run_attempt",
+        "run_id",
+        "schema_version",
+        "source_commit",
+        "trivy_policy",
+        "trivy_report",
+        "workflow_ref",
+        "workflow_repository",
+    }
+    assert evidence["authority"] == "untrusted_failure_diagnostic"
+    assert evidence["reason_code"] == "trivy_blocking_findings"
+    assert evidence["trivy_report"]["blocking_vulnerability_count"] == 1
+    serialized = json.dumps(evidence, sort_keys=True)
+    assert "CVE-2026-0001" not in serialized
+    assert "example.invalid" not in serialized
+    assert "InstalledVersion" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("case", "mutate"),
+    [
+        ("unknown_top_key", lambda report: report.update({"Token": "must-not-leak"})),
+        ("wrong_schema", lambda report: report.update({"SchemaVersion": 1})),
+        ("wrong_results_type", lambda report: report.update({"Results": {}})),
+        ("too_many_results", lambda report: report.update({"Results": [{}] * 257})),
+        (
+            "secret_like_nested_key",
+            lambda report: report["Metadata"].update({"authorization": "must-not-leak"}),
+        ),
+        (
+            "control_character",
+            lambda report: report["Results"][0].update({"Target": "bad\u0000target"}),
+        ),
+        (
+            "excessive_string",
+            lambda report: report["Results"][0].update({"Target": "x" * 8193}),
+        ),
+    ],
+)
+def test_capture_rejects_closed_world_bounds_without_leaking_input(
+    tmp_path: Path, case: str, mutate
+):
+    report = _valid_report()
+    mutate(report)
+    completed = _run_capture(tmp_path, report=report)
+    assert completed.returncode != 0, case
+    assert "must-not-leak" not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+def test_capture_rejects_oversize_deep_duplicate_and_malformed_json(tmp_path: Path):
+    hostile = {
+        "oversize": b" " * (4 * 1024 * 1024 + 1),
+        "deep": b"\n" + b"[" * 33 + b"0" + b"]" * 33,
+        "duplicate": (
+            b'{"SchemaVersion":2,"CreatedAt":"2026-08-08T00:00:00Z",'
+            + b'"ArtifactName":"'
+            + IMAGE_REF.encode()
+            + b'","ArtifactType":"container_image","Metadata":{},'
+            + b'"Results":[{"Target":"a","Target":"b"}]}'
+        ),
+        "malformed": b'{"SchemaVersion":',
+    }
+    for case, raw in hostile.items():
+        case_root = tmp_path / case
+        case_root.mkdir()
+        completed = _run_capture(case_root, raw=raw)
+        assert completed.returncode != 0, case
+        assert not (case_root / "trivy-failure-diagnostic-backend.json").exists()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"role": "worker"},
+        {"source-commit": "c" * 40},
+        {"github-sha": "c" * 40},
+        {"workflow-repository": "attacker/repo"},
+        {
+            "workflow-ref": (
+                "demonsxxxxxx/ai-platform/.github/workflows/evil.yml@refs/heads/main"
+            )
+        },
+        {"run-id": "0"},
+        {"run-attempt": "not-a-number"},
+        {"manifest-digest": "sha256:" + "d" * 64},
+        {"image-ref": "ghcr.io/demonsxxxxxx/ai-platform-backend:latest"},
+        {"scan-file": "../trivy-backend.json"},
+    ],
+)
+def test_capture_rejects_identity_and_path_drift(tmp_path: Path, arguments: dict[str, str]):
+    completed = _run_capture(tmp_path, arguments=arguments)
+    assert completed.returncode != 0
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+def test_capture_refuses_accepted_evidence_and_existing_output_names(tmp_path: Path):
+    accepted = _run_capture(tmp_path, output_name="subject-backend.json")
+    assert accepted.returncode != 0
+    assert not (tmp_path / "subject-backend.json").exists()
+
+    output = tmp_path / "trivy-failure-diagnostic-backend.json"
+    output.write_text("preserve-me", encoding="utf-8")
+    collision = _run_capture(tmp_path)
+    assert collision.returncode != 0
+    assert output.read_text(encoding="utf-8") == "preserve-me"
+
+
+def test_bounded_read_rejects_a_synchronized_stat_open_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    scan = tmp_path / "trivy-backend.json"
+    original = json.dumps(_valid_report()).encode("utf-8")
+    replacement = json.dumps({**_valid_report(), "ReportID": "replacement"}).encode("utf-8")
+    scan.write_bytes(original)
+    replacement_path = tmp_path / "replacement.json"
+    replacement_path.write_bytes(replacement)
+    displaced = tmp_path / "displaced.json"
+    real_lstat = os.lstat
+    replaced = False
+
+    def replace_after_stat(path, *args, **kwargs):
+        nonlocal replaced
+        result = real_lstat(path, *args, **kwargs)
+        if Path(path) == scan and not replaced:
+            scan.replace(displaced)
+            replacement_path.replace(scan)
+            replaced = True
+        return result
+
+    monkeypatch.setattr(trivy_failure_evidence.os, "lstat", replace_after_stat)
+    with pytest.raises(ValueError, match="trivy_diagnostic_path"):
+        trivy_failure_evidence._bounded_read(scan)
+    assert replaced
+
+
+def test_bounded_read_uses_descriptor_safety_flags_and_rechecks_fstat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    scan = tmp_path / "trivy-backend.json"
+    expected = json.dumps(_valid_report()).encode("utf-8")
+    scan.write_bytes(expected)
+    real_open = os.open
+    real_fstat = os.fstat
+    opened_flags: list[int] = []
+    fstat_calls = 0
+
+    def observe_open(path, flags, *args, **kwargs):
+        opened_flags.append(flags)
+        return real_open(path, flags, *args, **kwargs)
+
+    def observe_fstat(descriptor: int):
+        nonlocal fstat_calls
+        fstat_calls += 1
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(trivy_failure_evidence.os, "open", observe_open)
+    monkeypatch.setattr(trivy_failure_evidence.os, "fstat", observe_fstat)
+    assert trivy_failure_evidence._bounded_read(scan) == expected
+    assert len(opened_flags) == 1
+    for flag_name in ("O_NOFOLLOW", "O_NONBLOCK"):
+        flag = getattr(os, flag_name, 0)
+        if flag:
+            assert opened_flags[0] & flag
+    assert fstat_calls >= 2
+
+
+def test_regular_identity_rejects_a_windows_reparse_attribute():
+    value = SimpleNamespace(
+        st_dev=1,
+        st_ino=2,
+        st_mode=stat.S_IFREG | 0o600,
+        st_size=3,
+        st_mtime_ns=4,
+        st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+    )
+    with pytest.raises(ValueError, match="trivy_diagnostic_path"):
+        trivy_failure_evidence._regular_identity(value, "trivy_diagnostic_path")
+
+
+def test_bounded_read_rejects_path_replacement_after_descriptor_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    scan = tmp_path / "trivy-backend.json"
+    scan.write_bytes(json.dumps(_valid_report()).encode("utf-8"))
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(b"replacement-identity")
+    real_read = os.read
+    real_lstat = os.lstat
+    replaced = False
+
+    def replace_during_read(descriptor: int, length: int) -> bytes:
+        nonlocal replaced
+        replaced = True
+        return real_read(descriptor, length)
+
+    def observe_replacement(path, *args, **kwargs):
+        if replaced and Path(path) == scan:
+            return real_lstat(replacement, *args, **kwargs)
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(trivy_failure_evidence.os, "read", replace_during_read)
+    monkeypatch.setattr(trivy_failure_evidence.os, "lstat", observe_replacement)
+    with pytest.raises(ValueError, match="trivy_diagnostic_path"):
+        trivy_failure_evidence._bounded_read(scan)
+    assert replaced
+
+
+def test_failed_exclusive_write_never_path_unlinks_a_possible_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    output = tmp_path / "trivy-failure-diagnostic-backend.json"
+    unlink_attempted = False
+
+    def fail_fsync(_: int) -> None:
+        raise OSError("synchronized write failure")
+
+    def reject_path_unlink(self: Path, *args, **kwargs) -> None:
+        nonlocal unlink_attempted
+        unlink_attempted = True
+        raise AssertionError(f"must not unlink by pathname after descriptor failure: {self}")
+
+    monkeypatch.setattr(trivy_failure_evidence.os, "fsync", fail_fsync)
+    monkeypatch.setattr(Path, "unlink", reject_path_unlink)
+    with pytest.raises((OSError, ValueError)):
+        trivy_failure_evidence._write_exclusive(output, {"authority": "untrusted"})
+    assert not unlink_attempted
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX replacement semantics")
+def test_failed_exclusive_write_leaves_a_replacement_directory_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    output = tmp_path / "trivy-failure-diagnostic-backend.json"
+    displaced = tmp_path / "created-by-capture"
+
+    def replace_then_fail(_: int) -> None:
+        output.replace(displaced)
+        output.write_text("replacement-must-survive", encoding="utf-8")
+        raise OSError("synchronized replacement")
+
+    monkeypatch.setattr(trivy_failure_evidence.os, "fsync", replace_then_fail)
+    with pytest.raises((OSError, ValueError)):
+        trivy_failure_evidence._write_exclusive(output, {"authority": "untrusted"})
+    assert output.read_text(encoding="utf-8") == "replacement-must-survive"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO and O_NONBLOCK semantics")
+def test_capture_rejects_a_fifo_without_blocking(tmp_path: Path):
+    scan = tmp_path / "trivy-backend.json"
+    os.mkfifo(scan)
+    command = [
+        sys.executable,
+        str(TOOL),
+        "capture",
+        "--role",
+        "backend",
+        "--source-commit",
+        SOURCE_COMMIT,
+        "--github-sha",
+        SOURCE_COMMIT,
+        "--workflow-repository",
+        "demonsxxxxxx/ai-platform",
+        "--workflow-ref",
+        "demonsxxxxxx/ai-platform/.github/workflows/ai-platform-packaging-publish.yml@refs/heads/main",
+        "--run-id",
+        "31233605951",
+        "--run-attempt",
+        "1",
+        "--manifest-digest",
+        MANIFEST_DIGEST,
+        "--image-ref",
+        IMAGE_REF,
+        "--scan-file",
+        scan.name,
+        "--output",
+        "trivy-failure-diagnostic-backend.json",
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=5,
+    )
+    assert completed.returncode != 0
+    assert "trivy_diagnostic_path" in completed.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_bounded_read_rejects_a_symlink(tmp_path: Path):
+    target = tmp_path / "target.json"
+    target.write_bytes(json.dumps(_valid_report()).encode("utf-8"))
+    scan = tmp_path / "trivy-backend.json"
+    scan.symlink_to(target)
+    with pytest.raises(ValueError, match="trivy_diagnostic_path"):
+        trivy_failure_evidence._bounded_read(scan)
