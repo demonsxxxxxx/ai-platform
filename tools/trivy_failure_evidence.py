@@ -227,11 +227,22 @@ def _is_secret_key(value: str) -> bool:
     )
 
 
+def _allows_line_feed(path: tuple[str | int, ...]) -> bool:
+    return (
+        len(path) == 5
+        and path[0] == "Results"
+        and isinstance(path[1], int)
+        and path[2] == "Vulnerabilities"
+        and isinstance(path[3], int)
+        and path[4] == "Description"
+    )
+
+
 def _validate_bounds(document: Any) -> None:
     nodes = 0
-    stack: list[tuple[Any, int, str | None]] = [(document, 0, None)]
+    stack: list[tuple[Any, int, tuple[str | int, ...]]] = [(document, 0, ())]
     while stack:
-        value, depth, field = stack.pop()
+        value, depth, path = stack.pop()
         nodes += 1
         if nodes > MAX_NODES or depth > MAX_DEPTH:
             raise _error("trivy_diagnostic_bounds")
@@ -242,13 +253,15 @@ def _validate_bounds(document: Any) -> None:
                 if not isinstance(key, str) or _is_secret_key(key):
                     raise _error("trivy_diagnostic_key")
                 _validate_string(key)
-                stack.append((item, depth + 1, key))
+                stack.append((item, depth + 1, (*path, key)))
         elif isinstance(value, list):
             if len(value) > MAX_LIST_ITEMS:
                 raise _error("trivy_diagnostic_bounds")
-            stack.extend((item, depth + 1, None) for item in value)
+            stack.extend(
+                (item, depth + 1, (*path, index)) for index, item in enumerate(value)
+            )
         elif isinstance(value, str):
-            _validate_string(value, allow_line_feed=field == "Description")
+            _validate_string(value, allow_line_feed=_allows_line_feed(path))
         elif value is not None and not isinstance(value, (bool, int, float)):
             raise _error("trivy_diagnostic_type")
 

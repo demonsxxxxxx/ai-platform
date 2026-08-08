@@ -141,6 +141,29 @@ def test_capture_accepts_real_trivy_multiline_description_without_projecting_it(
     assert "Vendor advisory paragraph" not in serialized
 
 
+@pytest.mark.parametrize("location", ["cvss", "metadata", "trivy"])
+def test_capture_rejects_multiline_description_outside_direct_vulnerability_field(
+    tmp_path: Path, location: str
+):
+    report = _valid_report()
+    unsafe_value = f"nested {location} line one\nnested {location} line two"
+    vulnerability = report["Results"][0]["Vulnerabilities"][0]
+    if location == "cvss":
+        vulnerability["CVSS"] = {"Description": unsafe_value}
+    elif location == "metadata":
+        report["Metadata"]["ImageConfig"] = {"Description": unsafe_value}
+    else:
+        report["Trivy"] = {"Description": unsafe_value}
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_string"
+    assert unsafe_value not in completed.stdout
+    assert unsafe_value not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
 @pytest.mark.parametrize(
     "fingerprint",
     [
