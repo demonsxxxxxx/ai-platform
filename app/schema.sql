@@ -1831,10 +1831,18 @@ create table if not exists run_event_batches (
   attempt_id text not null, batch_id text not null,
   event_ids_json jsonb not null default '[]'::jsonb,
   first_sequence bigint, through_sequence bigint,
+  payload_digest text not null default '', projection_version text not null default 'legacy-run-event-v1',
+  item_count integer not null default 0 check (item_count >= 0), first_source_sequence integer, through_source_sequence integer,
   callback_received_at timestamptz not null default now(),
   durable_committed_at timestamptz,
   unique (tenant_id, run_id, attempt_id, batch_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
+
+alter table run_event_batches add column if not exists payload_digest text not null default '';
+alter table run_event_batches add column if not exists projection_version text not null default 'legacy-run-event-v1';
+alter table run_event_batches add column if not exists item_count integer not null default 0;
+alter table run_event_batches add column if not exists first_source_sequence integer;
+alter table run_event_batches add column if not exists through_source_sequence integer;
 
 create table if not exists run_event_terminal_drains (
   tenant_id text not null,
@@ -1843,6 +1851,49 @@ create table if not exists run_event_terminal_drains (
   batch_id text not null,
   primary key (tenant_id, run_id, attempt_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
+
+create table if not exists sse_stream_authorities (
+  tenant_id text not null, run_id text not null, attempt_id text not null,
+  design_id text not null, projection_version text not null, tenant_scope text not null,
+  stream_incarnation bigint not null check (stream_incarnation > 0), state text not null default 'admission_pending' check (state in ('admission_pending', 'confirmed', 'degraded', 'terminal')),
+  open_event_id text not null, open_payload_bytes text not null, open_payload_digest text not null,
+  authorization_epoch bigint not null default 1 check (authorization_epoch > 0), revocation_state text not null default 'active' check (revocation_state in ('active', 'committed', 'effective')),
+  admission_created_at timestamptz not null default clock_timestamp(), admission_confirmed_at timestamptz, degraded_at timestamptz,
+  revocation_committed_at timestamptz, revocation_effective_at timestamptz, updated_at timestamptz not null default clock_timestamp(),
+  primary key (tenant_id, run_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+create unique index if not exists uq_sse_stream_authority_attempt_incarnation
+  on sse_stream_authorities(tenant_id, run_id, attempt_id, stream_incarnation);
+
+create table if not exists sse_authority_leases (
+  id text primary key, tenant_id text not null, run_id text not null,
+  api_instance_id text not null, connection_id text not null, authorization_epoch bigint not null check (authorization_epoch > 0),
+  lease_not_after timestamptz not null, closed_at timestamptz, close_reason text,
+  created_at timestamptz not null default clock_timestamp(), updated_at timestamptz not null default clock_timestamp(),
+  unique (tenant_id, run_id, api_instance_id, connection_id),
+  foreign key (tenant_id, run_id) references sse_stream_authorities(tenant_id, run_id)
+);
+
+create index if not exists idx_sse_authority_leases_expiry
+  on sse_authority_leases(tenant_id, run_id, authorization_epoch, lease_not_after)
+  where closed_at is null;
+
+create table if not exists sse_terminal_publication_intents (
+  id text primary key, tenant_id text not null, run_id text not null, attempt_id text not null,
+  stream_incarnation bigint not null check (stream_incarnation > 0), schema_version text not null, projection_version text not null,
+  terminal_event_id text not null, end_event_id text not null,
+  terminal_payload_bytes text not null, terminal_payload_digest text not null, terminal_payload_size integer not null check (terminal_payload_size >= 0),
+  end_payload_bytes text not null, end_payload_digest text not null, end_payload_size integer not null check (end_payload_size >= 0),
+  state text not null default 'pending' check (state in ('pending', 'published', 'superseded')),
+  created_at timestamptz not null default clock_timestamp(), published_at timestamptz, updated_at timestamptz not null default clock_timestamp(),
+  unique (tenant_id, run_id, attempt_id),
+  foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+create index if not exists idx_sse_terminal_intents_pending
+  on sse_terminal_publication_intents(state, created_at)
+  where state = 'pending';
 
 do $$
 declare

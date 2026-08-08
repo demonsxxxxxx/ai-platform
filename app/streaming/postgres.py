@@ -8,10 +8,11 @@ transaction and either persist together or are rolled back together.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from psycopg import AsyncConnection
 
@@ -53,6 +54,9 @@ class BatchReceipt:
     first_cursor: RunCursor | None
     through_cursor: RunCursor | None
     duplicate: bool
+    payload_digest: str
+    projection_version: str
+    item_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +76,32 @@ def _require_nonempty(value: str, *, field_name: str) -> str:
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+CALLBACK_BATCH_PROJECTION_VERSION = "callback-receipt-v2.1"
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _batch_payload_digest(events: Sequence[LedgerEvent], *, projection_version: str) -> str:
+    names = tuple(item.name for item in fields(LedgerEvent))
+    items = [{"item_index": index, **{name: dict(value) if isinstance(value := getattr(event, name), Mapping) else value for name in names}} for index, event in enumerate(events)]
+    material = {"schema": "ai-platform.executor-callback-batch.v2.1", "projection_version": projection_version, "items": items}
+    return hashlib.sha256(_canonical_json(material).encode()).hexdigest()
+
+
+def _stable_batch_event_id(
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    batch_id: str,
+    item_index: int,
+    projection_version: str,
+) -> str:
+    material = ["ai-platform-callback-event-id-v2.1", tenant_id, run_id, attempt_id, batch_id, item_index, projection_version]
+    return f"evt_{hashlib.sha256(_canonical_json(material).encode()).hexdigest()}"
 
 
 def _severity(event: LedgerEvent) -> str:
@@ -104,12 +134,26 @@ def _batch_receipt(row: Mapping[str, object], *, run_id: str, duplicate: bool) -
     receipt_id = row.get("id")
     if not isinstance(receipt_id, str) or not receipt_id:
         raise RunEventLedgerConflictError("run_event_batch_receipt_unavailable")
+    payload_digest = row.get("payload_digest")
+    projection_version = row.get("projection_version")
+    item_count = row.get("item_count")
+    if (
+        not isinstance(payload_digest, str)
+        or not payload_digest
+        or not isinstance(projection_version, str)
+        or not projection_version
+        or isinstance(item_count, bool)
+    ):
+        raise RunEventLedgerConflictError("run_event_batch_receipt_unavailable")
     return BatchReceipt(
         receipt_id=receipt_id,
         event_ids=_event_ids(row.get("event_ids_json")),
         first_cursor=first_cursor,
         through_cursor=through_cursor,
         duplicate=duplicate,
+        payload_digest=payload_digest,
+        projection_version=projection_version,
+        item_count=int(item_count),
     )
 
 
@@ -155,6 +199,7 @@ async def append_event(
     tenant_id: str,
     run_id: str,
     event: LedgerEvent,
+    event_id: str | None = None,
 ) -> EventReceipt:
     """Append one event using a transaction-owned connection."""
 
@@ -162,7 +207,8 @@ async def append_event(
     _require_nonempty(run_id, field_name="run_id")
     _require_nonempty(event.event_type, field_name="type")
     _require_nonempty(event.stage, field_name="stage")
-    event_id = _new_id("evt")
+    event_id = event_id or _new_id("evt")
+    _require_nonempty(event_id, field_name="id")
     cursor = await _allocate_cursor(conn, tenant_id=tenant_id, run_id=run_id)
     await conn.execute(
         """
@@ -209,6 +255,7 @@ async def append_batch(
     attempt_id: str,
     batch_id: str,
     events: Sequence[LedgerEvent],
+    projection_version: str = CALLBACK_BATCH_PROJECTION_VERSION,
 ) -> BatchReceipt:
     """Persist one exact callback batch or replay its existing durable receipt."""
 
@@ -216,20 +263,19 @@ async def append_batch(
     _require_nonempty(run_id, field_name="run_id")
     _require_nonempty(attempt_id, field_name="attempt_id")
     _require_nonempty(batch_id, field_name="batch_id")
+    _require_nonempty(projection_version, field_name="projection_version")
+    payload_digest = _batch_payload_digest(events, projection_version=projection_version)
+    item_count = len(events)
     receipt_id = _new_id("evb")
     created = await conn.execute(
-        """
-        insert into run_event_batches(id, tenant_id, run_id, attempt_id, batch_id)
-        values (%s, %s, %s, %s, %s)
-        on conflict (tenant_id, run_id, attempt_id, batch_id) do nothing
-        returning id
-        """,
-        (receipt_id, tenant_id, run_id, attempt_id, batch_id),
+        """insert into run_event_batches(id,tenant_id,run_id,attempt_id,batch_id,payload_digest,projection_version,item_count,first_source_sequence,through_source_sequence) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) on conflict(tenant_id,run_id,attempt_id,batch_id) do nothing returning id""",
+        (receipt_id, tenant_id, run_id, attempt_id, batch_id, payload_digest, projection_version, item_count, 0 if events else None, len(events) - 1 if events else None),
     )
     if await created.fetchone() is None:
         existing = await conn.execute(
             """
-            select id, event_ids_json, first_sequence, through_sequence
+            select id, event_ids_json, first_sequence, through_sequence,
+                   payload_digest, projection_version, item_count
             from run_event_batches
             where tenant_id = %s and run_id = %s and attempt_id = %s and batch_id = %s
             """,
@@ -238,9 +284,11 @@ async def append_batch(
         row = await existing.fetchone()
         if row is None:
             raise RunEventLedgerConflictError("run_event_batch_receipt_unavailable")
+        if (row.get("payload_digest"), row.get("projection_version"), row.get("item_count")) != (payload_digest, projection_version, item_count):
+            raise RunEventLedgerConflictError("run_event_batch_conflict")
         return _batch_receipt(row, run_id=run_id, duplicate=True)
 
-    receipts = [await append_event(conn, tenant_id=tenant_id, run_id=run_id, event=event) for event in events]
+    receipts = [await append_event(conn, tenant_id=tenant_id, run_id=run_id, event=event, event_id=_stable_batch_event_id(tenant_id, run_id, attempt_id, batch_id, index, projection_version)) for index, event in enumerate(events)]
     first_sequence = min((receipt.cursor.sequence for receipt in receipts), default=None)
     through_sequence = max((receipt.cursor.sequence for receipt in receipts), default=None)
     completed = await conn.execute(
@@ -249,7 +297,8 @@ async def append_batch(
         set event_ids_json = %s::jsonb, first_sequence = %s, through_sequence = %s,
             durable_committed_at = now()
         where id = %s
-        returning id, event_ids_json, first_sequence, through_sequence
+        returning id, event_ids_json, first_sequence, through_sequence,
+                  payload_digest, projection_version, item_count
         """,
         (_json([receipt.event_id for receipt in receipts]), first_sequence, through_sequence, receipt_id),
     )

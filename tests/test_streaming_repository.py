@@ -79,6 +79,9 @@ async def test_batch_receipt_and_terminal_fence_keep_existing_dict_contract(monk
             first_cursor=RunCursor("run-a", 4),
             through_cursor=RunCursor("run-a", 5),
             duplicate=True,
+            payload_digest="digest-a",
+            projection_version="callback-receipt-v2.1",
+            item_count=2,
         )
 
     async def fence(_conn, **_kwargs):
