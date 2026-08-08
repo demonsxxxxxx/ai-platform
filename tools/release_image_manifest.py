@@ -14,8 +14,10 @@ from typing import Any, Iterable
 from urllib.parse import quote, urlsplit
 
 if __package__:
+    from .oci_image_manifest import MAX_OCI_DOCUMENT_BYTES, resolve_authenticated_producer_digest
     from .spdx_failure_evidence import write_spdx_failure_evidence
 else:
+    from oci_image_manifest import MAX_OCI_DOCUMENT_BYTES, resolve_authenticated_producer_digest
     from spdx_failure_evidence import write_spdx_failure_evidence
 
 
@@ -261,6 +263,51 @@ def _spdx_oci_purls(*, subject: str, digest: str) -> tuple[str, str]:
     return prefix, f"{prefix}amd64"
 
 
+def _validate_syft_root_checksum_and_purl(
+    root: dict[str, Any],
+    *,
+    subject: str,
+    producer_digest: str | None,
+) -> None:
+    """Validate Syft's image metadata checksum against an external producer digest.
+
+    Syft 1.50.0 uses the user-requested digest for root ``versionInfo`` but emits
+    ``ImageMetadata.ManifestDigest`` in the root checksum and OCI PURL. The latter
+    may differ after the producer resolves an OCI index. Source-hash and bind pass
+    the authenticated producer digest explicitly; other structural readers pass
+    ``None`` only after that binding step has already completed.
+    """
+    checksums = root.get("checksums")
+    if not isinstance(checksums, list) or len(checksums) != 1:
+        raise _sbom_subject_binding_error("root_checksums")
+    checksum = checksums[0]
+    if (
+        not isinstance(checksum, dict)
+        or set(checksum) != {"algorithm", "checksumValue"}
+        or checksum.get("algorithm") != "SHA256"
+        or not isinstance(checksum.get("checksumValue"), str)
+        or _HEX_SHA256.fullmatch(checksum["checksumValue"]) is None
+    ):
+        raise _sbom_subject_binding_error("root_checksums")
+
+    actual_producer_digest = f"sha256:{checksum['checksumValue']}"
+    if producer_digest is not None and actual_producer_digest != producer_digest:
+        raise _sbom_subject_binding_error("root_checksums")
+    expected_producer_digest = producer_digest or actual_producer_digest
+    expected_external_refs = [
+        [
+            {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": locator,
+            }
+        ]
+        for locator in _spdx_oci_purls(subject=subject, digest=expected_producer_digest)
+    ]
+    if root.get("externalRefs") not in expected_external_refs:
+        raise _sbom_subject_binding_error("root_external_refs")
+
+
 def _spdx_element_id(element: dict[str, Any]) -> str:
     spdx_id = element.get("SPDXID")
     if not isinstance(spdx_id, str) or _SPDX_ID.fullmatch(spdx_id) is None:
@@ -428,6 +475,7 @@ def _validate_spdx_image_binding(
     subject: str,
     digest: str,
     require_document_describes: bool,
+    producer_digest: str | None = None,
 ) -> str:
     _validate_spdx_23_document(document)
     if document["name"] != subject:
@@ -463,19 +511,6 @@ def _validate_spdx_image_binding(
     elif "documentDescribes" in document and document["documentDescribes"] != [root_id]:
         raise _sbom_subject_binding_error("document_describes_optional")
 
-    expected_checksum = [
-        {"algorithm": "SHA256", "checksumValue": digest.removeprefix("sha256:")}
-    ]
-    expected_external_refs = [
-        [
-            {
-                "referenceCategory": "PACKAGE-MANAGER",
-                "referenceType": "purl",
-                "referenceLocator": locator,
-            }
-        ]
-        for locator in _spdx_oci_purls(subject=subject, digest=digest)
-    ]
     if root.get("name") != subject:
         raise _sbom_subject_binding_error("root_name")
     if root.get("versionInfo") != digest:
@@ -486,10 +521,11 @@ def _validate_spdx_image_binding(
         raise _sbom_subject_binding_error("root_files_analyzed")
     if root.get("downloadLocation") != "NOASSERTION":
         raise _sbom_subject_binding_error("root_download_location")
-    if root.get("checksums") != expected_checksum:
-        raise _sbom_subject_binding_error("root_checksums")
-    if root.get("externalRefs") not in expected_external_refs:
-        raise _sbom_subject_binding_error("root_external_refs")
+    _validate_syft_root_checksum_and_purl(
+        root,
+        subject=subject,
+        producer_digest=producer_digest,
+    )
     return root_id
 
 
@@ -564,6 +600,7 @@ def _validate_unbound_spdx(
     *,
     subject: str,
     digest: str,
+    producer_digest: str | None = None,
 ) -> tuple[str, str, bool]:
     namespace = document.get("documentNamespace")
     if not isinstance(namespace, str):
@@ -591,6 +628,7 @@ def _validate_unbound_spdx(
         document,
         subject=subject,
         digest=digest,
+        producer_digest=producer_digest,
         require_document_describes=False,
     )
     return _canonical_json_sha256(document), namespace, "annotations" in document
@@ -602,6 +640,7 @@ def _validate_bound_spdx(
     role: str,
     source_commit: str,
     digest: str,
+    producer_digest: str | None = None,
     workflow: dict[str, Any],
     expected_unbound_content_sha256: str,
 ) -> str:
@@ -626,6 +665,7 @@ def _validate_bound_spdx(
         document,
         subject=subject,
         digest=digest,
+        producer_digest=producer_digest,
         require_document_describes=True,
     )
     annotation_index, binding = _parse_binding_annotation(document)
@@ -644,6 +684,7 @@ def _validate_bound_spdx(
         restored,
         subject=subject,
         digest=digest,
+        producer_digest=producer_digest,
     )
     if (
         binding["unbound_content_sha256"] != expected_unbound_content_sha256
@@ -1251,6 +1292,7 @@ def _spdx_source_hash_command(args: argparse.Namespace) -> None:
     if args.role not in SUBJECTS:
         raise ValueError("role")
     digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
+    producer_digest = _fullmatch(_DIGEST, args.producer_digest, "producer_digest")
     subject = SUBJECTS[args.role]
     path = Path(args.sbom_file)
     failure_evidence_path = (
@@ -1277,6 +1319,7 @@ def _spdx_source_hash_command(args: argparse.Namespace) -> None:
             document,
             subject=subject,
             digest=digest,
+            producer_digest=producer_digest,
         )
     except ValueError as error:
         write_spdx_failure_evidence(
@@ -1297,6 +1340,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         raise ValueError("role")
     source_commit = _fullmatch(_COMMIT, args.source_commit, "source_commit")
     digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
+    producer_digest = _fullmatch(_DIGEST, args.producer_digest, "producer_digest")
     subject = SUBJECTS[args.role]
     if args.image_ref != f"{subject}@{digest}":
         raise _sbom_subject_binding_error("image_ref")
@@ -1326,6 +1370,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
             role=args.role,
             source_commit=source_commit,
             digest=digest,
+            producer_digest=producer_digest,
             workflow=workflow,
             expected_unbound_content_sha256=expected_unbound_content_sha256,
         )
@@ -1336,6 +1381,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
             document,
             subject=subject,
             digest=digest,
+            producer_digest=producer_digest,
         )
     )
     if unbound_content_sha256 != expected_unbound_content_sha256:
@@ -1344,6 +1390,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         document,
         subject=subject,
         digest=digest,
+        producer_digest=producer_digest,
         require_document_describes=False,
     )
     binding_annotation = _binding_annotation(
@@ -1366,6 +1413,7 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         document,
         subject=subject,
         digest=digest,
+        producer_digest=producer_digest,
         require_document_describes=True,
     )
     _validate_bound_spdx(
@@ -1373,10 +1421,34 @@ def _bind_spdx_command(args: argparse.Namespace) -> None:
         role=args.role,
         source_commit=source_commit,
         digest=digest,
+        producer_digest=producer_digest,
         workflow=workflow,
         expected_unbound_content_sha256=expected_unbound_content_sha256,
     )
     _write_json(path, document)
+
+
+def _resolve_producer_digest_command(args: argparse.Namespace) -> None:
+    if args.role not in SUBJECTS:
+        raise ValueError("role")
+    digest = _fullmatch(_DIGEST, args.manifest_digest, "manifest_digest")
+    subject = SUBJECTS[args.role]
+    if args.image_ref != f"{subject}@{digest}":
+        raise ValueError("oci_image_ref")
+    path = Path(args.oci_file)
+    try:
+        with path.open("rb") as stream:
+            raw_document = stream.read(MAX_OCI_DOCUMENT_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("oci_document") from exc
+    if len(raw_document) > MAX_OCI_DOCUMENT_BYTES:
+        raise ValueError("oci_document")
+    print(
+        resolve_authenticated_producer_digest(
+            raw_document,
+            requested_digest=digest,
+        )
+    )
 
 
 def _subject_target_command(args: argparse.Namespace) -> None:
@@ -1438,6 +1510,7 @@ def main() -> int:
     bind_spdx.add_argument("--role", required=True, choices=sorted(SUBJECTS))
     bind_spdx.add_argument("--source-commit", required=True)
     bind_spdx.add_argument("--manifest-digest", required=True)
+    bind_spdx.add_argument("--producer-digest", required=True)
     bind_spdx.add_argument("--image-ref", required=True)
     bind_spdx.add_argument("--workflow-run-id", required=True)
     bind_spdx.add_argument("--workflow-run-attempt", required=True, type=int)
@@ -1450,9 +1523,19 @@ def main() -> int:
     )
     spdx_source_hash.add_argument("--role", required=True, choices=sorted(SUBJECTS))
     spdx_source_hash.add_argument("--manifest-digest", required=True)
+    spdx_source_hash.add_argument("--producer-digest", required=True)
     spdx_source_hash.add_argument("--image-ref", required=True)
     spdx_source_hash.add_argument("--sbom-file", required=True)
     spdx_source_hash.add_argument("--failure-evidence-file")
+
+    resolve_producer_digest = subparsers.add_parser(
+        "resolve-producer-digest",
+        help="Authenticate immutable OCI bytes and select one linux/amd64 producer manifest.",
+    )
+    resolve_producer_digest.add_argument("--role", required=True, choices=sorted(SUBJECTS))
+    resolve_producer_digest.add_argument("--manifest-digest", required=True)
+    resolve_producer_digest.add_argument("--image-ref", required=True)
+    resolve_producer_digest.add_argument("--oci-file", required=True)
 
     target = subparsers.add_parser(
         "subject-target",
@@ -1497,6 +1580,9 @@ def main() -> int:
         except ValueError as error:
             print(f"release_image_manifest_error={error}", file=sys.stderr)
             return 1
+    if args.command == "resolve-producer-digest":
+        _resolve_producer_digest_command(args)
+        return 0
     if args.command == "subject-target":
         _subject_target_command(args)
         return 0
