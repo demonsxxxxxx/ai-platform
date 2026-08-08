@@ -18,6 +18,7 @@ EXPECTED_CI_VERIFY = (
     "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
     "&& corepack pnpm run test:prd-closure-smoke-source "
     "&& corepack pnpm run test:company-rbac-browser-smoke-source "
+    "&& corepack pnpm run test:sse "
     "&& eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
 )
@@ -599,8 +600,8 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
 
 
 def test_frontend_healthcheck_file_predicate_fails_closed_before_http_probes(tmp_path):
-    if sys.platform == "win32":
-        pytest.skip("the production predicate requires a POSIX shell; Linux CI is the shell gate")
+    if not sys.platform.startswith("linux"):
+        pytest.skip("the production predicate uses GNU stat; Linux CI is the shell gate")
 
     healthcheck_command = frontend_healthcheck_command()
     file_predicate, http_probes = healthcheck_command.split(" && wget ", 1)

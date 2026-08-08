@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
     "base_ref": "cb11256309075ef58a813fcd51f49a0763f56834",
-    "scope_sha256": "4e31678f896a5957adaa386e7ffb47f4b1830e2ecfb7569cfcd5c8104d3e1c41"
+    "scope_sha256": "cf7c34f654cab512ecd94943bd53f028e76e4801fdef10281799db79bc35a480"
   },
   "expires_on": "2026-08-16",
   "owner": "demonsxxxxxx",
