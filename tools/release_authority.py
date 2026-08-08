@@ -2198,10 +2198,7 @@ def _compose_ownership_selection(
         return None
     if observed.relative_paths == target.relative_paths:
         return observed
-    transition = frozenset({observed.relative_paths, target.relative_paths})
-    if transition == PROVIDER_OVERLAY_COMPOSE_SELECTIONS:
-        return observed
-    return None
+    return observed if frozenset({observed.relative_paths, target.relative_paths}) == PROVIDER_OVERLAY_COMPOSE_SELECTIONS else None
 
 
 def _manual_frontend_container_id(inspected: dict[str, Any]) -> str:
@@ -3126,6 +3123,8 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
+        if args.command in {"deploy", "deploy-main-commit"} and tuple(args.compose_files or ()) == (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), OPENSANDBOX_COMPOSE_RELATIVE_PATH):
+            raise ReleaseAuthorityError("legacy cross-host OpenSandbox Compose selection is retired; use tools/s72_colocation_authority.py")
         if args.command == "preserve-dirty":
             destination = preserve_dirty_source(args.repo_root, args.output_root)
             _write_json({"preserved": True, "path": str(destination)}, None)

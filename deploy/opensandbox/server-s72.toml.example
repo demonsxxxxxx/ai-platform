@@ -1,0 +1,35 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+max_sandbox_timeout_seconds = 86400
+api_key = "REQUIRED_RANDOM_LIFECYCLE_API_KEY_AT_LEAST_32_BYTES"
+
+[log]
+level = "INFO"
+
+[runtime]
+type = "docker"
+execd_image = "REQUIRED_REGISTRY/opensandbox-execd@sha256:REQUIRED_DIGEST"
+
+[storage]
+allowed_host_paths = ["/data/opensandbox/workspaces"]
+volume_default_size = "1Gi"
+
+[store]
+type = "sqlite"
+path = "/var/lib/ai-platform-opensandbox/opensandbox.db"
+
+[docker]
+network_mode = "none"
+drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
+no_new_privileges = true
+pids_limit = 4096
+apparmor_profile = ""
+seccomp_profile = ""
+
+[ingress]
+mode = "direct"
+
+[secure_runtime]
+type = "gvisor"
+docker_runtime = "runsc"

@@ -18,6 +18,7 @@ from app.settings import Settings
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 OPENSANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.opensandbox.yml"
+S72_COLOCATION_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.s72-colocation.yml"
 ENV_EXAMPLE = ROOT / "deploy" / "ai-platform" / ".env.example"
 IMAGE_DIGEST = "sha256:" + "a" * 64
 IMAGE_SUBJECT = f"registry.example/team/ai-platform@{IMAGE_DIGEST}"
@@ -533,8 +534,14 @@ def test_settings_and_compose_wire_complete_opensandbox_contract_for_api_and_wor
         assert all(":?set " in overlay_environment[name] for name in bridge_environment)
 
     env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
-    for name in base_environment | bridge_environment:
+    for name in base_environment:
         assert f"{name}=" in env_example
+    for name in bridge_environment:
+        assert f"{name}=RETIRED_NOT_FOR_S72_FORWARD_DEPLOY" in env_example
+    colocation_overlay = S72_COLOCATION_COMPOSE.read_text(encoding="utf-8")
+    for name in bridge_environment:
+        assert f"{name}: http://127.0.0.1:18043" in colocation_overlay
+    assert "AI_PLATFORM_S72_BRIDGE" not in colocation_overlay
     assert {
         "opensandbox_attestation_path",
         "opensandbox_attestation_contract_version",

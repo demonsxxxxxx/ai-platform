@@ -1,19 +1,22 @@
-# 211 Release Operations Runbook
+# Legacy 211 Recovery Reference
+
+> Retired for future releases. s72 is the only future release/runtime authority.
+> Do not run this document to deploy, switch providers, inspect secrets, copy
+> data, or mutate 211. The historical commands below are retained only so a
+> separately authorized legacy recovery owner can interpret old evidence. The
+> canonical replacement is `docs/operations/s72-colocated-platform-runbook.md`.
 
 This runbook contains host commands, recovery paths, and terminal evidence for
 ai-platform releases on the Docker-capable 211 host. Product/source boundaries
 live in the guardrails; task ownership, readiness, leases, and break-glass
 authority live in `docs/agent-rules/multi-agent-context-workflow.md`.
 
-## Canonical Exact-Main Command
+## Historical Exact-Main Command Shape
 
-The normal 211 release uses exactly this Git-native authority flow with the base
-Compose file and Docker sandbox overlay. Run it only after read-only readiness
-has passed and exactly one project-bound release owner holds the single mutation
-lease. It does not grant a lease or replace the workflow gates. Resolve `SOURCE`
-and `ROOT` from the current 211 host mapping in
-`docs/agent-rules/ai-platform-guardrails.md`, the authoritative source for those
-host subjects.
+The retired 211 release used this Git-native authority flow with the base Compose
+file and Docker sandbox overlay. These commands are not authorized by this
+document. Only a separately chartered legacy recovery owner may interpret or run
+them; the s72 replacement must never depend on their host mappings or inputs.
 
 ### Governed Debian mirror preflight and no-deploy probe
 
