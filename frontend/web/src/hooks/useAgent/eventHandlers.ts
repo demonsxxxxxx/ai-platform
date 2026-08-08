@@ -46,6 +46,7 @@ export interface EventHandlerContext {
   currentRunIdRef: React.MutableRefObject<string | null>;
   processedEventIdsRef: React.MutableRefObject<Set<string>>;
   acceptedRunEventSequenceRef?: React.MutableRefObject<AcceptedRunEventSequence>;
+  acceptedStreamCursorRef?: React.MutableRefObject<AcceptedStreamCursor>;
   lastHistoryTimestampRef: React.MutableRefObject<Date | null>;
   activeSubagentStackRef: React.MutableRefObject<SubagentStackItem[]>;
   streamVersionRef: React.MutableRefObject<number>;
@@ -69,6 +70,12 @@ export interface AcceptedRunEventSequence {
   sessionId: string | null;
   runId: string | null;
   sequence: number | null;
+}
+
+export interface AcceptedStreamCursor {
+  sessionId: string | null;
+  runId: string | null;
+  eventId: string | null;
 }
 
 /** The connection generation that authorizes a runless stream frame. */

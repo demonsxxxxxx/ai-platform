@@ -76,6 +76,7 @@ import {
 } from "./useAgent/publicStreamPresentation";
 import {
   type AcceptedRunEventSequence,
+  type AcceptedStreamCursor,
   type EventHandlerContext,
 } from "./useAgent/eventHandlers";
 import {
@@ -680,6 +681,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     runId: null,
     sequence: null,
   });
+  const acceptedStreamCursorRef = useRef<AcceptedStreamCursor>({
+    sessionId: null,
+    runId: null,
+    eventId: null,
+  });
 
   // Track last event timestamp from history
   const lastHistoryTimestampRef = useRef<Date | null>(null);
@@ -1214,6 +1220,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       currentRunIdRef,
       processedEventIdsRef,
       acceptedRunEventSequenceRef,
+      acceptedStreamCursorRef,
       lastHistoryTimestampRef,
       activeSubagentStackRef,
       streamVersionRef,

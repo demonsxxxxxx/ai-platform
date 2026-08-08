@@ -4,7 +4,6 @@
  */
 
 import { fetchEventSource } from "@microsoft/fetch-event-source";
-import { uuid } from "../../utils/uuid";
 import { sessionApi } from "../../services/api";
 import {
   getValidAccessToken,
@@ -355,6 +354,14 @@ export async function connectToSSE(
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
+  const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
+  if (
+    acceptedCursor?.sessionId === targetSessionId &&
+    acceptedCursor.runId === targetRunId &&
+    acceptedCursor.eventId
+  ) {
+    headers["Last-Event-ID"] = acceptedCursor.eventId;
+  }
 
   console.log(
     `[SSE] Connecting: session=${targetSessionId}, run_id=${targetRunId}`,
@@ -428,11 +435,16 @@ export async function connectToSSE(
             // Ignore parse errors
             return;
           }
-          const eventId =
-            event.id ||
-            (typeof parsedData.event_id === "string" && parsedData.event_id.trim()
-              ? parsedData.event_id
-              : uuid());
+          if (event.event === "gap") {
+            ctx.onRunStatusUnavailable?.(targetRunId, messageId);
+            throw new Error("sse_replay_gap");
+          }
+          const eventId = event.id;
+          if (!eventId) {
+            if (event.event === "heartbeat") return;
+            receivedNonTerminalApplicationError = true;
+            throw new Error("sse_event_id_missing");
+          }
           const sourceRunId = explicitRunId(parsedData);
           // An old explicit frame cannot end this connection or suppress its
           // reconnect. It is not safe to rebind an explicit foreign run.
@@ -497,6 +509,13 @@ export async function connectToSSE(
               streamVersion,
             },
           );
+          if (accepted && ctx.acceptedStreamCursorRef) {
+            ctx.acceptedStreamCursorRef.current = {
+              sessionId: targetSessionId,
+              runId: targetRunId,
+              eventId,
+            };
+          }
           // A foreign, replayed, stale, or otherwise rejected terminal frame
           // must not suppress close reconciliation for the current run.
           if (terminalStatus && accepted) {
@@ -633,13 +652,10 @@ export async function reconnectSSE(
     isConnectingRef,
     reconnectTimeoutRef,
     retryCountRef,
-    statusRetryCountRef: providedStatusRetryCountRef,
     messagesRef,
     isReconnectFromHistoryRef,
     setConnectionStatus,
   } = ctx;
-  const statusRetryCountRef =
-    providedStatusRetryCountRef || { current: MAX_STATUS_QUERY_RETRIES };
   const connect = dependencies.connect || connectToSSE;
 
   const currentSessId = sessionIdRef.current;
@@ -685,44 +701,6 @@ export async function reconnectSSE(
   }
 
   isConnectingRef.current = false;
-
-  const statusResult = await queryAuthoritativeRunStatus({
-    sessionId: currentSessId,
-    runId: currentRId,
-    isCurrent: isCurrentReconnect,
-    statusRetryCountRef,
-    getStatus: dependencies.getStatus,
-    attemptTimeoutMs: dependencies.statusAttemptTimeoutMs,
-  });
-  if (statusResult.kind === "stale") {
-    return;
-  }
-  if (statusResult.kind === "unavailable") {
-    // The run's backend state remains unknown. Converge locally without
-    // inventing a failed backend result; reloading the session is recovery.
-    convergeUnavailable();
-    return;
-  }
-
-  const terminalStatus = terminalRunStatus(statusResult.status);
-  if (terminalStatus) {
-    console.log("[SSE] Task already completed");
-    if (ctx.hydrateTerminalRun) {
-      await ctx.hydrateTerminalRun(
-        currentSessId,
-        currentRId,
-        terminalStatus,
-        currentMsgId || currentRId,
-      );
-    } else {
-      ctx.onRunTerminal?.(
-        currentRId,
-        terminalStatus,
-        currentMsgId || currentRId,
-      );
-    }
-    return;
-  }
 
   if (retryCountRef.current >= MAX_CONSECUTIVE_SSE_RECONNECTS) {
     // The backend is still active, but this client has exhausted its bounded

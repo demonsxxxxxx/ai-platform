@@ -1,3 +1,5 @@
+import hashlib
+import json
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -26,14 +28,26 @@ from app.runtime.sandbox.contracts import (
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.settings import get_settings
+from app.streaming.redis import RedisStreamBridge, canonical_assistant_delta_event, get_stream_authority, new_envelope, stable_event_id
 from app.storage import ObjectStorage
-from app.worker import _canonical_assistant_delta_event as canonical_assistant_delta_event
 
 router = APIRouter()
 
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
 _TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
+
+
+def _coalesce_public_deltas(items: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    result: list[tuple[int, str]] = []
+    for index, text in items:
+        if result and len((result[-1][1] + text).encode()) <= 8192:
+            result[-1] = (result[-1][0], result[-1][1] + text)
+        else:
+            result.append((index, text))
+    return result
+
+
 async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str, object]:
     """Persist only non-terminal sandbox observations; worker owns run terminal facts."""
 
@@ -49,6 +63,8 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
         if canonical_assistant_delta_event(stage="message", payload={"delta": raw_delta}) is None:
             callback_for_events = callback.model_copy(update={"new_message": None})
     events = callback_event_to_run_events(callback_for_events)
+    public_deltas: list[tuple[int, str]] = []
+    authority = None
     async with transaction() as conn:
         run_identity = await repositories.get_run_identity(conn, run_id=callback.run_id, for_update=True)
         if run_identity is None:
@@ -64,6 +80,9 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
+        source_digest = hashlib.sha256(
+            json.dumps(callback_for_events.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         event_batch: list[dict[str, Any]] = [
             {
                 "event_type": "executor_callback",
@@ -73,14 +92,13 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
                     "callback_status": callback.status,
                     "attempt_id": callback.attempt_id,
                     "batch_id": callback.batch_id,
-                    "callback_token_id": callback.callback_token_id,
                     "progress": callback.progress,
-                    "sdk_session_id": callback.sdk_session_id,
+                    "source_digest": source_digest,
                     "visible_to_user": False,
                 },
             }
         ]
-        for event in events:
+        for item_index, event in enumerate(events):
             executor_event = agent_event_to_executor_event(event)
             executor_event_type = str(executor_event["event_type"])
             executor_payload = dict(executor_event["payload"])
@@ -92,10 +110,21 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
                 if canonical_delta is None:
                     continue
                 event_stage, event_message, event_payload = canonical_delta
+                public_deltas.append((item_index, str(event_payload["delta"])))
+                continue
             else:
                 event_stage = str(executor_event["stage"])
                 event_message = str(executor_event["message"])
                 event_payload = executor_payload
+            if executor_event_type in PUBLIC_EXECUTION_EVENT_TYPES:
+                event_payload = {
+                    "source": "executor_callback",
+                    "source_event_type": executor_event_type,
+                    "visible_to_user": False,
+                }
+                executor_event_type = "executor_private_event"
+                event_stage = "executor"
+                event_message = "Executor event withheld from public projection"
             if (
                 executor_event_type not in PUBLIC_EXECUTION_EVENT_TYPES
                 and executor_event_type
@@ -110,6 +139,18 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
                     "payload": event_payload,
                 }
             )
+        if public_deltas:
+            authority = await get_stream_authority(
+                conn, tenant_id=tenant_id, run_id=callback.run_id
+            )
+            if (
+                authority is None
+                or authority.attempt_id != callback.attempt_id
+                or authority.state != "confirmed"
+            ):
+                raise HTTPException(status_code=409, detail="sse_stream_attempt_inactive")
+            if not callback.batch_id:
+                raise HTTPException(status_code=409, detail="callback_batch_id_required")
         if callback.batch_id:
             await repositories.append_event_batch(
                 conn,
@@ -133,6 +174,52 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
+    if public_deltas:
+        bridge = RedisStreamBridge()
+        try:
+            async with transaction() as conn:
+                publish_run = await repositories.get_run_identity(
+                    conn, run_id=callback.run_id, for_update=True
+                )
+                if (
+                    publish_run is not None
+                    and str(publish_run.get("session_id") or "") == callback.session_id
+                    and str(publish_run.get("status") or "").lower() not in TERMINAL_RUN_STATUSES
+                ):
+                    await _require_current_runtime_attempt(
+                        conn,
+                        tenant_id=tenant_id,
+                        run_id=callback.run_id,
+                        attempt_id=callback.attempt_id,
+                    )
+                    authority = await get_stream_authority(
+                        conn, tenant_id=tenant_id, run_id=callback.run_id, for_update=True
+                    )
+                    if (
+                        authority is not None
+                        and authority.attempt_id == callback.attempt_id
+                        and authority.state == "confirmed"
+                    ):
+                        for item_index, delta in _coalesce_public_deltas(public_deltas):
+                            await bridge.append(
+                                new_envelope(
+                                    event_id=stable_event_id(
+                                        tenant_scope_value=authority.tenant_scope,
+                                        run_id=callback.run_id,
+                                        attempt_id=callback.attempt_id,
+                                        batch_id=str(callback.batch_id),
+                                        item_index=item_index,
+                                    ),
+                                    tenant_scope_value=authority.tenant_scope,
+                                    run_id=callback.run_id,
+                                    attempt_id=callback.attempt_id,
+                                    stream_incarnation=authority.stream_incarnation,
+                                    event_type="assistant_text_delta",
+                                    payload={"delta": delta},
+                                )
+                            )
+        finally:
+            await bridge.aclose()
     return {"accepted": True, "event_count": len(event_batch)}
 
 
