@@ -960,7 +960,7 @@ class HelperRuntimeAdapter:
 
 
 class BrokerPolicy:
-    """Exact HTTPS broker targets and their pinned IP addresses."""
+    """Exact pinned-HTTPS or loopback-HTTP targets and their resolved IP."""
 
     def __init__(self, value: Mapping[str, Any]) -> None:
         if set(value) != {"version", "targets"} or value.get("version") != 1 or not isinstance(value.get("targets"), dict):
@@ -970,6 +970,7 @@ class BrokerPolicy:
         self.targets: dict[str, tuple[str, tuple[str, ...]]] = {}
         bases: dict[str, str] = {}
         pinned_ips: set[str] = set()
+        schemes: set[str] = set()
         for kind in ("callback", "openai", "anthropic"):
             item = value["targets"].get(kind)
             if not isinstance(item, dict) or set(item) != {"base_url", "expected_ips"}:
@@ -979,18 +980,39 @@ class BrokerPolicy:
             try:
                 ips = tuple(str(ipaddress.ip_address(address)) for address in item["expected_ips"])
             except ValueError:
-                raise ValueError("broker target must be pinned HTTPS") from None
+                raise ValueError("broker target must be pinned HTTPS or loopback HTTP") from None
             if len(ips) != 1:
-                raise ValueError("broker target must be pinned HTTPS")
+                raise ValueError("broker target must be pinned HTTPS or loopback HTTP")
             address = ipaddress.ip_address(ips[0])
-            if address.version != 4 or not address.is_private or address.is_loopback or address.is_unspecified:
-                raise ValueError("broker target must be pinned HTTPS")
+            try:
+                parsed = urllib.parse.urlsplit(item["base_url"])
+                port = parsed.port
+            except ValueError:
+                raise ValueError("broker target must be pinned HTTPS or loopback HTTP") from None
+            scheme = parsed.scheme
+            pinned_https = (
+                scheme == "https"
+                and address.version == 4
+                and address.is_private
+                and not address.is_loopback
+                and not address.is_unspecified
+            )
+            loopback_http = (
+                scheme == "http"
+                and parsed.hostname == "127.0.0.1"
+                and port == 18043
+                and ips == ("127.0.0.1",)
+            )
+            if not (pinned_https or loopback_http):
+                raise ValueError("broker target must be pinned HTTPS or loopback HTTP")
             bases[kind] = item["base_url"]
             pinned_ips.add(ips[0])
+            schemes.add(scheme)
             self.targets[kind] = (item["base_url"], ips)
         _validate_upstream_bridge_bases(bases["callback"], bases["openai"], bases["anthropic"])
-        if len(pinned_ips) != 1:
+        if len(pinned_ips) != 1 or len(schemes) != 1:
             raise ValueError("broker targets must share one pinned IP")
+        self.transport = "loopback_http" if schemes == {"http"} else "pinned_https"
 
 
 class MailboxBroker:
@@ -1022,6 +1044,9 @@ class MailboxBroker:
             or upstream_tls_context.minimum_version < ssl.TLSVersion.TLSv1_2
         ):
             raise ValueError("broker upstream TLS context is invalid")
+        self.policy_transport = getattr(policy, "transport", "pinned_https")
+        if self.policy_transport == "loopback_http" and upstream_tls_context is not None:
+            raise ValueError("loopback broker must not load upstream TLS")
         self.store = store
         self.policy = policy
         self.upstream_tls_context = upstream_tls_context
@@ -1335,15 +1360,7 @@ class MailboxBroker:
             outbound_headers[auth_name] = auth_value
         remaining = created_at + min(requested_timeout, policy_timeout) - now
         deadline = operation_deadline(remaining)
-        if self.upstream_tls_context is None:
-            raise GatewayError(500, "broker_upstream_trust_unavailable")
-        connection = _PinnedHTTPSConnection(
-            target.hostname,
-            target.port or 443,
-            ips,
-            deadline,
-            self.upstream_tls_context,
-        )
+        connection = self._upstream_connection(target, ips, deadline)
         timer = deadline.arm(lambda: _close_http_connection(connection))
         try:
             request_path = target.path + (("?" + local.query) if local.query else "")
@@ -1365,6 +1382,28 @@ class MailboxBroker:
         finally:
             timer.cancel()
             connection.close()
+
+    def _upstream_connection(self, target, ips: tuple[str, ...], deadline):
+        """Create the policy-selected connection without DNS or redirects."""
+
+        if self.policy_transport == "loopback_http":
+            if (
+                target.scheme != "http"
+                or target.hostname != "127.0.0.1"
+                or target.port != 18043
+                or ips != ("127.0.0.1",)
+            ):
+                raise GatewayError(500, "broker_policy_invalid")
+            return http.client.HTTPConnection("127.0.0.1", 18043, timeout=deadline.remaining())
+        if self.upstream_tls_context is None:
+            raise GatewayError(500, "broker_upstream_trust_unavailable")
+        return _PinnedHTTPSConnection(
+            target.hostname,
+            target.port or 443,
+            ips,
+            deadline,
+            self.upstream_tls_context,
+        )
 
     @staticmethod
     def _request_identity_matches(
