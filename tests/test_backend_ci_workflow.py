@@ -54,6 +54,24 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "tests/test_worker_main.py" in workflow
 
 
+def test_backend_required_ubuntu_job_executes_the_complete_trivy_diagnostic_module():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    sandbox_job = workflow.split("  sandbox-provider:", 1)[1].split("  backend-image:", 1)[0]
+    pytest_step = sandbox_job.split("- name: Run sandbox provider targeted tests", 1)[1]
+    required_job = workflow.split("  required:", 1)[1]
+
+    assert "runs-on: ubuntu-latest" in sandbox_job
+    assert "uv run --locked --extra test python -m pytest" in pytest_step
+    assert "tests/test_trivy_failure_evidence.py \\" in pytest_step
+    assert pytest_step.index("tests/test_trivy_failure_evidence.py") < pytest_step.index("-q \\")
+    assert "--collect-only" not in pytest_step
+    assert "--ignore" not in pytest_step
+    assert " -k " not in pytest_step
+    assert "runs-on: ubuntu-latest" in required_job
+    assert "needs: [sandbox-provider, backend-image]" in required_job
+    assert "if: ${{ always() }}" in required_job
+
+
 def test_backend_required_check_runs_on_every_main_push():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 

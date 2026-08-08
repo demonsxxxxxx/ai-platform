@@ -24,9 +24,12 @@ MAX_VULNERABILITIES = 4_096
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SOURCE = re.compile(r"[0-9a-f]{40}\Z")
 _RUN = re.compile(r"[1-9][0-9]*\Z")
-_SECRET_KEY = re.compile(
-    r"(?:^|[_-])(?:authorization|password|private[_-]?key|secret|token)(?:$|[_-])",
-    re.IGNORECASE,
+_SECRET_KEY_MARKERS = (
+    "authorization",
+    "password",
+    "privatekey",
+    "secret",
+    "token",
 )
 _SECRET_VALUE = re.compile(
     r"(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -178,6 +181,14 @@ def _validate_string(value: str) -> None:
             raise _error("trivy_diagnostic_string")
 
 
+def _is_secret_key(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", value.casefold())
+    return any(
+        normalized.startswith(marker) or normalized.endswith(marker)
+        for marker in _SECRET_KEY_MARKERS
+    )
+
+
 def _validate_bounds(document: Any) -> None:
     nodes = 0
     stack: list[tuple[Any, int]] = [(document, 0)]
@@ -190,7 +201,7 @@ def _validate_bounds(document: Any) -> None:
             if len(value) > MAX_DICT_ITEMS:
                 raise _error("trivy_diagnostic_bounds")
             for key, item in value.items():
-                if not isinstance(key, str) or _SECRET_KEY.search(key):
+                if not isinstance(key, str) or _is_secret_key(key):
                     raise _error("trivy_diagnostic_key")
                 _validate_string(key)
                 stack.append((item, depth + 1))
@@ -246,7 +257,7 @@ def _validate_report(document: Any, *, image_ref: str) -> tuple[int, dict[str, i
         for required in ("Target", "Class", "Type"):
             _string(result.get(required), "trivy_diagnostic_result")
         packages = result.get("Packages", [])
-        if not isinstance(packages, list):
+        if not isinstance(packages, list) or packages:
             raise _error("trivy_diagnostic_packages")
         vulnerabilities = result.get("Vulnerabilities", [])
         if not isinstance(vulnerabilities, list) or len(vulnerabilities) > MAX_VULNERABILITIES:

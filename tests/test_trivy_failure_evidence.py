@@ -176,6 +176,47 @@ def test_capture_rejects_oversize_deep_duplicate_and_malformed_json(tmp_path: Pa
         assert not (case_root / "trivy-failure-diagnostic-backend.json").exists()
 
 
+def test_capture_rejects_package_inventory_with_secret_and_unknown_fields(tmp_path: Path):
+    report = _valid_report()
+    report["Results"][0]["Packages"] = [
+        {"accessToken": "opaque-value", "UnexpectedField": "accepted"}
+    ]
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert "opaque-value" not in completed.stdout
+    assert "opaque-value" not in completed.stderr
+    assert "accessToken" not in completed.stderr
+    assert "UnexpectedField" not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+@pytest.mark.parametrize("key", ["accessToken", "access_token", "ACCESS_TOKEN"])
+def test_capture_rejects_normalized_secret_key_variants(tmp_path: Path, key: str):
+    report = _valid_report()
+    report["Metadata"][key] = "opaque-value"
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_key"
+    assert "opaque-value" not in completed.stdout
+    assert "opaque-value" not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+def test_capture_rejects_all_nonempty_package_inventory(tmp_path: Path):
+    report = _valid_report()
+    report["Results"][0]["Packages"] = [{"Name": "example"}]
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_packages"
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
