@@ -206,6 +206,57 @@ def test_capture_rejects_normalized_secret_key_variants(tmp_path: Path, key: str
     assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "secret_value",
+        "api_secret_value",
+        "value_secret",
+        "token-value",
+        "api-token-value",
+        "value-token",
+        "password_hash",
+        "client_password_hash",
+        "hash_password",
+        "ApiSecretValue",
+        "APISecretValue",
+        "HTTPAccessTokenHeader",
+    ],
+)
+def test_capture_rejects_secret_tokens_at_every_key_position(tmp_path: Path, key: str):
+    report = _valid_report()
+    report["Results"][0]["Vulnerabilities"][0]["CVSS"] = {
+        key: "opaque-sensitive-value"
+    }
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_key"
+    assert key not in completed.stdout
+    assert key not in completed.stderr
+    assert "opaque-sensitive-value" not in completed.stdout
+    assert "opaque-sensitive-value" not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["secretary", "secretariat", "tokenizer", "tokenization", "passwordless"],
+)
+def test_capture_allows_nonsecret_near_match_key_tokens(tmp_path: Path, key: str):
+    report = _valid_report()
+    report["Results"][0]["Vulnerabilities"][0]["CVSS"] = {key: "benign-value"}
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode == 0, completed.stderr
+    output = tmp_path / "trivy-failure-diagnostic-backend.json"
+    serialized = output.read_text(encoding="utf-8")
+    assert key not in serialized
+    assert "benign-value" not in serialized
+
+
 def test_capture_rejects_all_nonempty_package_inventory(tmp_path: Path):
     report = _valid_report()
     report["Results"][0]["Packages"] = [{"Name": "example"}]

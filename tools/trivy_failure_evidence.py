@@ -24,13 +24,16 @@ MAX_VULNERABILITIES = 4_096
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SOURCE = re.compile(r"[0-9a-f]{40}\Z")
 _RUN = re.compile(r"[1-9][0-9]*\Z")
-_SECRET_KEY_MARKERS = (
-    "authorization",
-    "password",
-    "privatekey",
-    "secret",
-    "token",
+_SECRET_KEY_MARKERS = frozenset(
+    {
+        "authorization",
+        "password",
+        "privatekey",
+        "secret",
+        "token",
+    }
 )
+_SECRET_KEY_SEQUENCES = (("access", "token"), ("private", "key"))
 _SECRET_VALUE = re.compile(
     r"(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----|authorization\s*:\s*bearer\s+|password=)",
@@ -181,11 +184,43 @@ def _validate_string(value: str) -> None:
             raise _error("trivy_diagnostic_string")
 
 
+def _key_tokens(value: str) -> tuple[str, ...]:
+    tokens: list[str] = []
+    run: list[str] = []
+    for character in (*value, " "):
+        if character.isalnum():
+            run.append(character)
+            continue
+        if not run:
+            continue
+        start = 0
+        for index in range(1, len(run)):
+            previous = run[index - 1]
+            current = run[index]
+            following = run[index + 1] if index + 1 < len(run) else ""
+            boundary = (
+                (previous.islower() or previous.isdigit()) and current.isupper()
+            ) or (
+                previous.isupper()
+                and current.isupper()
+                and following.islower()
+            )
+            if boundary:
+                tokens.append("".join(run[start:index]).casefold())
+                start = index
+        tokens.append("".join(run[start:]).casefold())
+        run = []
+    return tuple(tokens)
+
+
 def _is_secret_key(value: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]", "", value.casefold())
+    tokens = _key_tokens(value)
+    if any(token in _SECRET_KEY_MARKERS for token in tokens):
+        return True
     return any(
-        normalized.startswith(marker) or normalized.endswith(marker)
-        for marker in _SECRET_KEY_MARKERS
+        tuple(tokens[index : index + len(sequence)]) == sequence
+        for sequence in _SECRET_KEY_SEQUENCES
+        for index in range(len(tokens) - len(sequence) + 1)
     )
 
 
