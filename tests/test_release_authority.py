@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 SANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.opensandbox.yml"
+S72_COLOCATION_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.s72-colocation.yml"
 RUNBOOK = ROOT / "docs" / "operations" / "211-release-operations-runbook.md"
 LEGACY_FRONTEND_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.frontend.yml"
 AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
@@ -580,12 +581,65 @@ def _write_required_provider_compose_files(repo_root: Path) -> tuple[Path, Path]
 def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys():
     required_pattern = re.compile(r"\$\{([A-Z][A-Z0-9_]*):\?", re.ASCII)
     required = set(required_pattern.findall(COMPOSE.read_text(encoding="utf-8")))
-    required.update(required_pattern.findall(OPENSANDBOX_COMPOSE.read_text(encoding="utf-8")))
+    legacy_opensandbox_required = set(
+        required_pattern.findall(OPENSANDBOX_COMPOSE.read_text(encoding="utf-8"))
+    )
+    retired_cross_host_keys = {
+        "AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP",
+        "AI_PLATFORM_S72_BRIDGE_SERVER_NAME",
+        "AI_PLATFORM_S72_BRIDGE_TLS_CERT_FILE",
+        "AI_PLATFORM_S72_BRIDGE_TLS_KEY_FILE",
+    }
+    colocation_required = set(
+        required_pattern.findall(S72_COLOCATION_COMPOSE.read_text(encoding="utf-8"))
+    )
+    reviewed_colocation_required = {
+        "AI_PLATFORM_FRONTEND_IMAGE",
+        "AI_PLATFORM_MODEL_UPSTREAM",
+        "AI_PLATFORM_SOURCE_COMMIT",
+        "CLAUDE_AGENT_ALLOWED_TOOLS",
+        "CLAUDE_AGENT_DISALLOWED_TOOLS",
+        "CLAUDE_AGENT_PERMISSION_MODE",
+        "OPENSANDBOX_API_KEY",
+        "OPENSANDBOX_ATTESTATION_CONTRACT_VERSION",
+        "OPENSANDBOX_ATTESTATION_PATH",
+        "OPENSANDBOX_DOMAIN",
+        "OPENSANDBOX_EXECUTOR_IMAGE",
+        "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
+        "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT",
+        "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
+        "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",
+        "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT",
+        "OPENSANDBOX_PROTOCOL",
+        "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
+        "SANDBOX_RUNTIME_SUBJECT",
+        "WORKER_CLAUDE_AGENT_SDK_ENABLED",
+    }
+    assert retired_cross_host_keys <= legacy_opensandbox_required
+    assert colocation_required == reviewed_colocation_required
+    required.update(legacy_opensandbox_required - retired_cross_host_keys)
+    required.update(colocation_required)
     example_text = (ROOT / "deploy" / "ai-platform" / ".env.example").read_text(encoding="utf-8")
     declared = {line.partition("=")[0] for line in example_text.splitlines() if line and not line.startswith("#") and "=" in line}
+    example_values = {
+        name: value
+        for line in example_text.splitlines()
+        if line and not line.startswith("#") and "=" in line
+        for name, _, value in (line.partition("="),)
+    }
     assert required <= declared
-    assert {"AI_PLATFORM_S72_BRIDGE_SERVER_NAME", "AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP", "AI_PLATFORM_S72_BRIDGE_TLS_CERT_FILE", "AI_PLATFORM_S72_BRIDGE_TLS_KEY_FILE"} <= declared
-    assert "REQUIRED_OPERATOR_PROVISIONED" in example_text
+    assert reviewed_colocation_required <= declared
+    assert not retired_cross_host_keys & declared
+    for operator_managed_key in (
+        "AI_PLATFORM_FRONTEND_IMAGE",
+        "AI_PLATFORM_SOURCE_COMMIT",
+        "OPENSANDBOX_API_KEY",
+        "OPENSANDBOX_EXECUTOR_IMAGE",
+        "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
+        "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
+        "SANDBOX_RUNTIME_SUBJECT",
+    ):
+        assert example_values[operator_managed_key] == ""
     assert "BEGIN CERTIFICATE" not in example_text and "BEGIN PRIVATE KEY" not in example_text
 
 
