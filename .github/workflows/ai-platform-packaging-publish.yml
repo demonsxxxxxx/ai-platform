@@ -112,10 +112,16 @@ jobs:
           [[ "$producer_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           printf 'PRODUCER_DIGEST=%s\n' "$producer_digest" >> "$GITHUB_ENV"
 
+      - name: Configure explicit registry SBOM source
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'platform: linux/amd64' > "$RUNNER_TEMP/syft-registry-linux-amd64.yaml"
+
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: ${{ matrix.subject }}@${{ steps.build.outputs.digest }}
+          image: registry:${{ matrix.subject }}@${{ steps.build.outputs.digest }}
+          config: ${{ runner.temp }}/syft-registry-linux-amd64.yaml
           format: spdx-json
           output-file: sbom-${{ matrix.role }}.spdx.json
           syft-version: v1.50.0

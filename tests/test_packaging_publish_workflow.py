@@ -129,6 +129,35 @@ def test_publish_matrix_is_exactly_backend_and_frontend_on_linux_amd64():
     assert "docker image inspect" not in text
 
 
+def test_syft_scans_the_immutable_subject_via_explicit_registry_linux_amd64():
+    steps = _workflow()["jobs"]["publish"]["steps"]
+    names = [step.get("name") for step in steps]
+    configure = next(
+        step for step in steps if step.get("name") == "Configure explicit registry SBOM source"
+    )
+    generate = next(step for step in steps if step.get("name") == "Generate SPDX SBOM")
+
+    assert names.index("Resolve authenticated linux/amd64 producer digest") < names.index(
+        "Configure explicit registry SBOM source"
+    ) < names.index("Generate SPDX SBOM")
+    assert configure["run"] == (
+        "set -euo pipefail\n"
+        'printf \'%s\\n\' \'platform: linux/amd64\' > '
+        '"$RUNNER_TEMP/syft-registry-linux-amd64.yaml"\n'
+    )
+    assert generate["with"]["image"] == (
+        "registry:${{ matrix.subject }}@${{ steps.build.outputs.digest }}"
+    )
+    assert generate["with"]["config"] == (
+        "${{ runner.temp }}/syft-registry-linux-amd64.yaml"
+    )
+    assert "registry-username" not in generate["with"]
+    assert "registry-password" not in generate["with"]
+    assert "github.token" not in str(configure)
+    assert "github.token" not in str(generate)
+    assert "docker:" not in str(generate["with"]["image"])
+
+
 def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_manifest():
     workflow = _workflow()
     publish = workflow["jobs"]["publish"]
