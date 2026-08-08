@@ -984,7 +984,12 @@ class BrokerPolicy:
             if len(ips) != 1:
                 raise ValueError("broker target must be pinned HTTPS or loopback HTTP")
             address = ipaddress.ip_address(ips[0])
-            scheme = urllib.parse.urlsplit(item["base_url"]).scheme
+            try:
+                parsed = urllib.parse.urlsplit(item["base_url"])
+                port = parsed.port
+            except ValueError:
+                raise ValueError("broker target must be pinned HTTPS or loopback HTTP") from None
+            scheme = parsed.scheme
             pinned_https = (
                 scheme == "https"
                 and address.version == 4
@@ -992,7 +997,12 @@ class BrokerPolicy:
                 and not address.is_loopback
                 and not address.is_unspecified
             )
-            loopback_http = scheme == "http" and ips == ("127.0.0.1",)
+            loopback_http = (
+                scheme == "http"
+                and parsed.hostname == "127.0.0.1"
+                and port == 18043
+                and ips == ("127.0.0.1",)
+            )
             if not (pinned_https or loopback_http):
                 raise ValueError("broker target must be pinned HTTPS or loopback HTTP")
             bases[kind] = item["base_url"]
@@ -1377,9 +1387,14 @@ class MailboxBroker:
         """Create the policy-selected connection without DNS or redirects."""
 
         if self.policy_transport == "loopback_http":
-            if target.scheme != "http" or target.hostname != "127.0.0.1" or ips != ("127.0.0.1",):
+            if (
+                target.scheme != "http"
+                or target.hostname != "127.0.0.1"
+                or target.port != 18043
+                or ips != ("127.0.0.1",)
+            ):
                 raise GatewayError(500, "broker_policy_invalid")
-            return http.client.HTTPConnection("127.0.0.1", target.port or 80, timeout=deadline.remaining())
+            return http.client.HTTPConnection("127.0.0.1", 18043, timeout=deadline.remaining())
         if self.upstream_tls_context is None:
             raise GatewayError(500, "broker_upstream_trust_unavailable")
         return _PinnedHTTPSConnection(

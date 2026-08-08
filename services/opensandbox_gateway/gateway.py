@@ -1346,7 +1346,7 @@ def _validate_upstream_bridge_bases(callback: str, openai: str, anthropic: str) 
             raise ValueError("upstream bridge bases are invalid") from None
         host = parsed.hostname or ""
         pinned_https = parsed.scheme == "https" and bool(hostname_pattern.fullmatch(host))
-        loopback_http = parsed.scheme == "http" and host == "127.0.0.1"
+        loopback_http = parsed.scheme == "http" and host == "127.0.0.1" and port == 18043
         if (
             not (pinned_https or loopback_http)
             or host != host.lower()

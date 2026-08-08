@@ -71,6 +71,19 @@ def test_governed_bridge_accepts_only_one_exact_loopback_http_origin() -> None:
         governed_opensandbox_egress_bases(settings)
 
 
+@pytest.mark.parametrize("port", (80, 18042, 18044))
+def test_governed_bridge_rejects_noncanonical_loopback_port(port: int) -> None:
+    origin = f"http://127.0.0.1:{port}"
+    settings = attestation_settings(
+        opensandbox_external_egress_callback_base_url=origin,
+        opensandbox_external_egress_openai_base_url=origin + "/openai/v1",
+        opensandbox_external_egress_anthropic_base_url=origin + "/anthropic",
+    )
+
+    with pytest.raises(OpenSandboxProfileConfigurationError, match="bridge"):
+        governed_opensandbox_egress_bases(settings)
+
+
 def capability(**overrides: Any) -> SimpleNamespace:
     values = {
         "profile_id": "profile-a",
@@ -651,6 +664,22 @@ def test_s72_colocation_templates_keep_control_and_execution_domains_isolated() 
     for datastore in ("postgres", "redis", "minio"):
         assert datastore not in service.lower()
         assert datastore not in server_config_text.lower()
+
+
+def test_s72_opensandbox_service_fails_closed_on_container_name_collision() -> None:
+    service = S72_OPENSANDBOX_SERVICE.read_text(encoding="utf-8")
+    directives = tuple(line for line in service.splitlines() if line.startswith("Exec"))
+
+    assert len(directives) == 1
+    assert directives[0].startswith(
+        "ExecStart=/usr/bin/docker run --rm --name ai-platform-opensandbox-server "
+    )
+    assert "ExecStartPre=" not in service
+    assert "ExecStop=" not in service
+    assert "/usr/bin/docker rm" not in service
+    assert "/usr/bin/docker stop" not in service
+    assert "KillMode=process" in service
+    assert "TimeoutStopSec=30s" in service
 
 
 def test_s72_lifecycle_network_is_internal_and_excludes_control_plane_datastores() -> None:

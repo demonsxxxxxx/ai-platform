@@ -61,7 +61,7 @@ def _canonical_governed_bridge_base(value: object, *, kind: str) -> str:
         raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge base is invalid") from None
     host = parsed.hostname or ""
     pinned_https = parsed.scheme == "https" and bool(_DNS_HOSTNAME.fullmatch(host))
-    loopback_http = parsed.scheme == "http" and host == "127.0.0.1"
+    loopback_http = parsed.scheme == "http" and host == "127.0.0.1" and port == 18043
     if (
         not (pinned_https or loopback_http)
         or host != host.lower()
