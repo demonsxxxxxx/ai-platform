@@ -282,6 +282,13 @@ class GatewayConfig:
     max_response_bytes: int = MAX_RESPONSE_BYTES
     max_concurrent_handlers: int = 32
 
+    @property
+    def upstream_transport(self) -> str:
+        """Return the transport implied by the already validated bridge bases."""
+
+        scheme = urllib.parse.urlsplit(self.callback_upstream_base).scheme
+        return "loopback_http" if scheme == "http" else "pinned_https"
+
     def validate(self) -> None:
         """Reject ambiguous endpoints, weak secrets, and mutable subjects."""
 
@@ -1323,10 +1330,10 @@ def _metadata_matches(value: Any, expected: Mapping[str, str]) -> bool:
 
 
 def _validate_upstream_bridge_bases(callback: str, openai: str, anthropic: str) -> None:
-    """Require one canonical DNS origin and the three bridge v1 path shapes."""
+    """Require one canonical pinned-HTTPS or exact loopback-HTTP origin."""
 
     expected_paths = ((callback, ""), (openai, "/openai/v1"), (anthropic, "/anthropic"))
-    origins: set[tuple[str, int]] = set()
+    origins: set[tuple[str, str, int]] = set()
     hostname_pattern = re.compile(
         r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
         r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
@@ -1338,9 +1345,10 @@ def _validate_upstream_bridge_bases(callback: str, openai: str, anthropic: str) 
         except (TypeError, ValueError):
             raise ValueError("upstream bridge bases are invalid") from None
         host = parsed.hostname or ""
+        pinned_https = parsed.scheme == "https" and bool(hostname_pattern.fullmatch(host))
+        loopback_http = parsed.scheme == "http" and host == "127.0.0.1"
         if (
-            parsed.scheme != "https"
-            or not hostname_pattern.fullmatch(host)
+            not (pinned_https or loopback_http)
             or host != host.lower()
             or parsed.username
             or parsed.password
@@ -1351,10 +1359,11 @@ def _validate_upstream_bridge_bases(callback: str, openai: str, anthropic: str) 
             or not 1 <= port <= 65535
             or parsed.netloc != f"{host}:{port}"
             or host in {"api.sandbox.internal", "host.docker.internal"}
-            or value != urllib.parse.urlunsplit(("https", f"{host}:{port}", expected_path, "", ""))
+            or value
+            != urllib.parse.urlunsplit((parsed.scheme, f"{host}:{port}", expected_path, "", ""))
         ):
             raise ValueError("upstream bridge bases are invalid")
-        origins.add((host, port))
+        origins.add((parsed.scheme, host, port))
     if len(origins) != 1:
         raise ValueError("upstream bridge bases must share one origin")
 

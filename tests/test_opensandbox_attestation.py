@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import tomllib
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -12,12 +13,21 @@ import pytest
 import yaml
 
 from app.runtime.sandbox import opensandbox_attestation
+from app.runtime.sandbox.opensandbox_policy import (
+    OpenSandboxProfileConfigurationError,
+    governed_opensandbox_egress_bases,
+)
 from app.settings import Settings
 
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 OPENSANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.opensandbox.yml"
+S72_COLOCATION_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.s72-colocation.yml"
+S72_BROKER_NGINX = ROOT / "deploy" / "ai-platform" / "s72-broker-nginx.conf.template"
+S72_OPENSANDBOX_SERVICE = ROOT / "deploy" / "opensandbox" / "opensandbox-s72.service"
+S72_SERVER_ENV = ROOT / "deploy" / "opensandbox" / "server-s72.env.example"
+S72_SERVER_CONFIG = ROOT / "deploy" / "opensandbox" / "server-s72.toml.example"
 ENV_EXAMPLE = ROOT / "deploy" / "ai-platform" / ".env.example"
 IMAGE_DIGEST = "sha256:" + "a" * 64
 IMAGE_SUBJECT = f"registry.example/team/ai-platform@{IMAGE_DIGEST}"
@@ -45,6 +55,20 @@ def attestation_settings(**overrides: Any) -> SimpleNamespace:
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_governed_bridge_accepts_only_one_exact_loopback_http_origin() -> None:
+    settings = attestation_settings(
+        opensandbox_external_egress_callback_base_url="http://127.0.0.1:18043",
+        opensandbox_external_egress_openai_base_url="http://127.0.0.1:18043/openai/v1",
+        opensandbox_external_egress_anthropic_base_url="http://127.0.0.1:18043/anthropic",
+    )
+    bases = governed_opensandbox_egress_bases(settings)
+    assert bases.callback_base_url == "http://127.0.0.1:18043"
+
+    settings.opensandbox_external_egress_openai_base_url = "https://127.0.0.1:18043/openai/v1"
+    with pytest.raises(OpenSandboxProfileConfigurationError, match="bridge"):
+        governed_opensandbox_egress_bases(settings)
 
 
 def capability(**overrides: Any) -> SimpleNamespace:
@@ -533,8 +557,38 @@ def test_settings_and_compose_wire_complete_opensandbox_contract_for_api_and_wor
         assert all(":?set " in overlay_environment[name] for name in bridge_environment)
 
     env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
-    for name in base_environment | bridge_environment:
+    for name in base_environment:
         assert f"{name}=" in env_example
+    expected_loopback = {
+        "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL": "http://127.0.0.1:18043",
+        "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL": "http://127.0.0.1:18043/openai/v1",
+        "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL": "http://127.0.0.1:18043/anthropic",
+    }
+    for name, value in expected_loopback.items():
+        assert f"{name}={value}" in env_example
+    assert "AI_PLATFORM_S72_BRIDGE_" not in env_example
+    assert "10.56." not in env_example and "211" not in env_example
+    for safe_selection in (
+        "WORKER_CLAUDE_AGENT_SDK_ENABLED=true",
+        "CLAUDE_AGENT_PERMISSION_MODE=dontAsk",
+        "CLAUDE_AGENT_DISALLOWED_TOOLS=Write,Edit,NotebookEdit",
+        "SANDBOX_CONTAINER_PROVIDER=opensandbox",
+        "AI_PLATFORM_MODEL_UPSTREAM=http://host.docker.internal:3002",
+    ):
+        assert safe_selection in env_example
+
+    class ComposeLoader(yaml.SafeLoader):
+        pass
+
+    ComposeLoader.add_constructor(
+        "!reset",
+        lambda loader, node: loader.construct_sequence(node),
+    )
+    colocation = yaml.load(S72_COLOCATION_COMPOSE.read_text(encoding="utf-8"), Loader=ComposeLoader)
+    for service_name in ("api", "worker"):
+        environment = colocation["services"][service_name]["environment"]
+        assert {name: environment[name] for name in bridge_environment} == expected_loopback
+    assert "AI_PLATFORM_S72_BRIDGE" not in S72_COLOCATION_COMPOSE.read_text(encoding="utf-8")
     assert {
         "opensandbox_attestation_path",
         "opensandbox_attestation_contract_version",
@@ -543,3 +597,82 @@ def test_settings_and_compose_wire_complete_opensandbox_contract_for_api_and_wor
         "opensandbox_external_egress_openai_base_url",
         "opensandbox_external_egress_anthropic_base_url",
     } <= Settings.model_fields.keys()
+
+
+def test_s72_colocation_templates_keep_control_and_execution_domains_isolated() -> None:
+    class ComposeLoader(yaml.SafeLoader):
+        pass
+
+    ComposeLoader.add_constructor(
+        "!reset",
+        lambda loader, node: loader.construct_sequence(node),
+    )
+    compose_text = S72_COLOCATION_COMPOSE.read_text(encoding="utf-8")
+    compose = yaml.load(compose_text, Loader=ComposeLoader)
+    broker = compose["services"]["s72-broker-entry"]
+    assert broker["ports"] == ["127.0.0.1:18043:8080"]
+    assert broker["read_only"] is True
+    assert broker["user"] == "101:101"
+    assert broker["cap_drop"] == ["ALL"]
+    assert broker["security_opt"] == ["no-new-privileges:true"]
+    assert "network_mode" not in broker
+    assert all("docker.sock" not in value for value in broker.get("volumes", ()))
+    assert compose["networks"]["s72_callback"]["internal"] is True
+    for service_name in ("postgres", "redis", "minio", "api"):
+        assert compose["services"][service_name]["ports"] == []
+
+    nginx = S72_BROKER_NGINX.read_text(encoding="utf-8")
+    assert nginx.count("listen 8080;") == 1
+    assert "listen 0.0.0.0" not in nginx and "ssl" not in nginx.lower()
+    assert "location ~ ^/api/ai/runtime/callbacks/" in nginx
+    assert "location ^~ /openai/" in nginx and "location ^~ /anthropic/" in nginx
+    assert "location / {\n        return 404;\n    }" in nginx
+
+    service = S72_OPENSANDBOX_SERVICE.read_text(encoding="utf-8")
+    server_env = S72_SERVER_ENV.read_text(encoding="utf-8")
+    server_config_text = S72_SERVER_CONFIG.read_text(encoding="utf-8")
+    server_config = tomllib.loads(server_config_text)
+    assert "--network host" not in service
+    assert "--publish 127.0.0.1:8080:8080" in service
+    assert "--user ${OPENSANDBOX_SERVER_UID}:${OPENSANDBOX_SERVER_GID}" in service
+    assert "--read-only" in service and "--cap-drop ALL" in service
+    assert "--security-opt no-new-privileges" in service
+    assert "REQUIRED_DEDICATED_NONROOT_UID" in server_env
+    assert "REQUIRED_DEDICATED_NONROOT_GID" in server_env
+    assert server_config["docker"]["network_mode"] == "none"
+    assert server_config["docker"]["no_new_privileges"] is True
+    assert "NET_RAW" in server_config["docker"]["drop_capabilities"]
+    assert server_config["secure_runtime"] == {"type": "gvisor", "docker_runtime": "runsc"}
+    assert "docker.sock" not in server_config_text
+
+    templates = "\n".join((compose_text, nginx, service, server_env, server_config_text))
+    for retired in ("10.56.", "211", "AI_PLATFORM_S72_BRIDGE", "REQUIRED_FIXED_EGRESS_HOSTNAME"):
+        assert retired not in templates
+    for datastore in ("postgres", "redis", "minio"):
+        assert datastore not in service.lower()
+        assert datastore not in server_config_text.lower()
+
+
+def test_s72_lifecycle_network_is_internal_and_excludes_control_plane_datastores() -> None:
+    class ComposeLoader(yaml.SafeLoader):
+        pass
+
+    ComposeLoader.add_constructor(
+        "!reset",
+        lambda loader, node: loader.construct_sequence(node),
+    )
+    compose = yaml.load(S72_COLOCATION_COMPOSE.read_text(encoding="utf-8"), Loader=ComposeLoader)
+    lifecycle = compose["networks"]["opensandbox_lifecycle"]
+
+    assert lifecycle["name"] == "ai-platform-opensandbox-lifecycle"
+    assert lifecycle["internal"] is True
+    for service_name in ("api", "worker"):
+        assert "opensandbox_lifecycle" in compose["services"][service_name]["networks"]
+    for service_name in ("postgres", "redis", "minio", "s72-broker-entry"):
+        assert "opensandbox_lifecycle" not in compose["services"][service_name].get("networks", ())
+
+    env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "OPENSANDBOX_DOMAIN=ai-platform-opensandbox-server:8080" in env_example
+    service = S72_OPENSANDBOX_SERVICE.read_text(encoding="utf-8")
+    assert "--name ai-platform-opensandbox-server" in service
+    assert "--network ai-platform-opensandbox-lifecycle" in service

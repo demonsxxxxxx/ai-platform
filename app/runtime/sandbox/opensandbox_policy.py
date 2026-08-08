@@ -60,9 +60,10 @@ def _canonical_governed_bridge_base(value: object, *, kind: str) -> str:
     except ValueError:
         raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge base is invalid") from None
     host = parsed.hostname or ""
+    pinned_https = parsed.scheme == "https" and bool(_DNS_HOSTNAME.fullmatch(host))
+    loopback_http = parsed.scheme == "http" and host == "127.0.0.1"
     if (
-        parsed.scheme != "https"
-        or not _DNS_HOSTNAME.fullmatch(host)
+        not (pinned_https or loopback_http)
         or host != host.lower()
         or parsed.username
         or parsed.password
@@ -75,7 +76,7 @@ def _canonical_governed_bridge_base(value: object, *, kind: str) -> str:
         or host in {"api.sandbox.internal", "host.docker.internal"}
     ):
         raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge base is invalid") from None
-    canonical = urlunsplit(("https", f"{host}:{port}", expected_path, "", ""))
+    canonical = urlunsplit((parsed.scheme, f"{host}:{port}", expected_path, "", ""))
     if raw != canonical:
         raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge base is invalid") from None
     return canonical
@@ -99,7 +100,7 @@ def governed_opensandbox_egress_bases(settings: Any) -> ExecutorEgressBases:
         ),
     )
     origins = {
-        (urlsplit(value).hostname, urlsplit(value).port)
+        (urlsplit(value).scheme, urlsplit(value).hostname, urlsplit(value).port)
         for value in (
             bases.callback_base_url,
             bases.openai_base_url,
