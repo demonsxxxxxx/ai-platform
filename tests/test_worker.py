@@ -44,6 +44,32 @@ _CURRENT_QUEUE_PAYLOAD = None
 _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
 
 
+@pytest.fixture(autouse=True)
+def admitted_sse_stream(monkeypatch):
+    published = []
+    class Publisher:
+        def __init__(self, tenant_id, run_id, attempt_id, authority_secret):
+            self.run_id = run_id
+
+        async def prepare(self, conn):
+            return None
+
+        async def open(self):
+            return None
+
+        async def confirm(self, conn):
+            return None
+
+        async def publish_assistant_delta(self, delta):
+            published.append(types.SimpleNamespace(event_type="assistant_text_delta", payload={"delta": delta}))
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(worker_module, "RunStreamPublisher", Publisher)
+    return published
+
+
 def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
     private_token = "private-native-token"
     private_path = "/home/private/workspace/native-tool.sock"
@@ -7109,15 +7135,7 @@ async def test_worker_records_general_chat_token_events(monkeypatch):
 
     assert outcome.status == "succeeded"
     assistant_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
-    assert len(assistant_deltas) == 1
-    assert assistant_deltas[0]["stage"] == "answer"
-    assert assistant_deltas[0]["message"] == ""
-    assert assistant_deltas[0]["payload"] == {
-        "delta": "你好",
-        "source": "worker_answer_delta_v1",
-        "visible_to_user": True,
-        "severity": "info",
-    }
+    assert assistant_deltas == []
 
 
 @pytest.mark.asyncio
@@ -7163,7 +7181,7 @@ async def test_worker_processes_embedded_poco_kernel_and_persists_stream_events(
     assert outcome.status == "succeeded"
     event_types = [event["event_type"] for event in events]
     assert "run_started" in event_types
-    assert "assistant_delta" in event_types
+    assert "assistant_delta" not in event_types
     assert "run_completed" in event_types
     assert "assistant_message_created" in event_types
     assert messages[0]["role"] == "assistant"
@@ -7222,6 +7240,7 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
 )
 async def test_worker_persists_only_public_capability_answer_and_ordered_deltas(
     monkeypatch,
+    admitted_sse_stream,
     public_chunks,
     public_answer,
 ):
@@ -7275,8 +7294,9 @@ async def test_worker_persists_only_public_capability_answer_and_ordered_deltas(
 
     assert outcome.status == "succeeded"
     persisted_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
-    assert [event["payload"]["delta"] for event in persisted_deltas] == public_chunks
-    assert [event["stage"] for event in persisted_deltas] == ["answer"] * len(public_chunks)
+    assert persisted_deltas == []
+    streamed = [item.payload["delta"] for item in admitted_sse_stream if item.event_type == "assistant_text_delta"]
+    assert streamed == public_chunks
     completed = next(event["result_json"] for event in events if event["event_type"] == "complete_run")
     assert completed["message"] == public_answer
     assert len(messages) == 1
