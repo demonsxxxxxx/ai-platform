@@ -1,0 +1,20 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "cb11256309075ef58a813fcd51f49a0763f56834",
+    "scope_sha256": "4e31678f896a5957adaa386e7ffb47f4b1830e2ecfb7569cfcd5c8104d3e1c41"
+  },
+  "expires_on": "2026-08-16",
+  "owner": "demonsxxxxxx",
+  "reason": "Issue #858 requires one release-atomic PostgreSQL, Redis, SSE route, and browser cutover; splitting this candidate would reintroduce mixed-protocol deployment states. This exception covers diff size only; hot-file, lint, test, CI, and external acceptance gates remain enforced.",
+  "violations": [
+    {
+      "code": "production_file_count",
+      "path": null
+    },
+    {
+      "code": "production_net_loc",
+      "path": null
+    }
+  ]
+}
