@@ -436,7 +436,9 @@ export async function connectToSSE(
             return;
           }
           if (event.event === "gap") {
-            ctx.onRunStatusUnavailable?.(targetRunId, messageId);
+            // Preserve the run owner so the caller can reconcile against
+            // durable status/history. A replay gap is not a terminal fact.
+            receivedNonTerminalApplicationError = true;
             throw new Error("sse_replay_gap");
           }
           const eventId = event.id;
@@ -497,6 +499,26 @@ export async function connectToSSE(
             event: event.event as EventType,
             data: JSON.stringify(normalizedData),
           };
+          const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
+            if (!isCurrentStream()) return;
+            if (ctx.acceptedStreamCursorRef) {
+              ctx.acceptedStreamCursorRef.current = {
+                sessionId: targetSessionId,
+                runId: targetRunId,
+                eventId,
+              };
+            }
+            if (
+              semanticApplied &&
+              isAcceptedRunProgress(
+                event.event,
+                normalizedData,
+                Boolean(terminalStatus),
+              )
+            ) {
+              retryCountRef.current = 0;
+            }
+          };
           const accepted = handleStreamEvent(
             streamEvent,
             messageId,
@@ -508,24 +530,12 @@ export async function connectToSSE(
               runId: targetRunId,
               streamVersion,
             },
+            commitAcceptedStreamEvent,
           );
-          if (accepted && ctx.acceptedStreamCursorRef) {
-            ctx.acceptedStreamCursorRef.current = {
-              sessionId: targetSessionId,
-              runId: targetRunId,
-              eventId,
-            };
-          }
           // A foreign, replayed, stale, or otherwise rejected terminal frame
           // must not suppress close reconciliation for the current run.
           if (terminalStatus && accepted) {
             receivedTerminalEvent = true;
-          }
-          if (
-            accepted &&
-            isAcceptedRunProgress(event.event, normalizedData, Boolean(terminalStatus))
-          ) {
-            retryCountRef.current = 0;
           }
         },
         onerror: (err) => {
@@ -652,10 +662,13 @@ export async function reconnectSSE(
     isConnectingRef,
     reconnectTimeoutRef,
     retryCountRef,
+    statusRetryCountRef: providedStatusRetryCountRef,
     messagesRef,
     isReconnectFromHistoryRef,
     setConnectionStatus,
   } = ctx;
+  const statusRetryCountRef =
+    providedStatusRetryCountRef || { current: MAX_STATUS_QUERY_RETRIES };
   const connect = dependencies.connect || connectToSSE;
 
   const currentSessId = sessionIdRef.current;
@@ -701,6 +714,41 @@ export async function reconnectSSE(
   }
 
   isConnectingRef.current = false;
+
+  const statusResult = await queryAuthoritativeRunStatus({
+    sessionId: currentSessId,
+    runId: currentRId,
+    isCurrent: isCurrentReconnect,
+    statusRetryCountRef,
+    getStatus: dependencies.getStatus,
+    attemptTimeoutMs: dependencies.statusAttemptTimeoutMs,
+  });
+  if (statusResult.kind === "stale") {
+    return;
+  }
+  if (statusResult.kind === "unavailable") {
+    convergeUnavailable();
+    return;
+  }
+
+  const terminalStatus = terminalRunStatus(statusResult.status);
+  if (terminalStatus) {
+    if (ctx.hydrateTerminalRun) {
+      await ctx.hydrateTerminalRun(
+        currentSessId,
+        currentRId,
+        terminalStatus,
+        currentMsgId || currentRId,
+      );
+    } else {
+      ctx.onRunTerminal?.(
+        currentRId,
+        terminalStatus,
+        currentMsgId || currentRId,
+      );
+    }
+    return;
+  }
 
   if (retryCountRef.current >= MAX_CONSECUTIVE_SSE_RECONNECTS) {
     // The backend is still active, but this client has exhausted its bounded

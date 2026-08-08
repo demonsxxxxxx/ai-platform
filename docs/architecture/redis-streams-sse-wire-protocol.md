@@ -92,14 +92,25 @@ through them and reducers apply the semantic event once.
 | --- | --- | --- |
 | `stream_open` | committed admitted run/attempt/incarnation | no |
 | `assistant_text_delta` | public answer text projector | bounded, same identity boundary only |
-| `semantic_stage` | server-owned stage enum and safe summary | no |
-| `semantic_progress` | server-owned bounded progress fields | no |
-| `tool_lifecycle` | committed public tool fact | no |
-| `approval_required` | committed approval request | no |
-| `artifact_ready` | committed public artifact record | no |
-| `run_status` | committed semantic run transition | no |
+| `semantic_stage` | committed PostgreSQL platform-phase row projected after commit | no |
+| `semantic_progress` | committed PostgreSQL strict `execution_step*` row projected after commit | no |
 | `terminal` | committed terminal transaction and frozen intent | no |
 | `end` | committed terminal and frozen end intent | no |
+
+V2.1 does not define separate Redis `tool_lifecycle`, `approval_required`,
+`artifact_ready`, or `run_status` envelope types. Skill and tool execution are
+shown only through the strict `execution_step*` projection carried by
+`semantic_progress`. Approval, artifact, and authoritative run status remain
+durable API/hydrate facts until a separately reviewed live producer contract
+exists. Consumer support alone is never evidence that a producer exists.
+
+For `semantic_stage` and `semantic_progress`, the envelope semantic `event_id`,
+the public `sequence`, and `emitted_at` come from the committed `run_events` row
+(`id`, PostgreSQL run sequence, and `created_at`). The worker refreshes the
+current run/attempt/incarnation authority in a new transaction after that row
+commits, closes the transaction, and only then calls Redis. Retry reuses the
+same row-derived envelope. Executor-originated arbitrary tool lifecycle or
+label payloads are not promoted directly to this channel.
 
 There is no public `assistant_reasoning_delta`. Claude hidden reasoning,
 chain-of-thought, raw intermediate messages, and any similarly private model
@@ -284,6 +295,9 @@ appends the live answer.
 
 - deterministic callback response loss, exact duplicate receipt, conflicting
   duplicate, item order, and duplicate semantic IDs;
+- committed semantic projection identity/sequence/time, transaction rollback,
+  post-commit authority refresh, and no Redis call inside a PostgreSQL
+  transaction;
 - atomic TTL refresh, terminal TTL switch, long-active stream, and publish pool
   cleanup;
 - malformed/foreign/future cursor, trim/missing/rebuild gap, overlapping native

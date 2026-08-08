@@ -71,6 +71,9 @@ It rejects:
   `asyncio.sleep`, or a status/history live fallback;
 - worker or runtime callback `assistant_delta` routing to PostgreSQL append
   functions;
+- semantic producer publication before its safe PostgreSQL row commits, Redis
+  calls inside direct or nested transaction helpers, or missing exact
+  row-derived identity/sequence/time wiring;
 - PostgreSQL sequence/cursor serialization as an SSE ID;
 - `XREADGROUP`, in-process replay, or selectable legacy/shadow backends;
 - public raw command/tool/reasoning/path/credential event types;
@@ -133,6 +136,8 @@ pytest for bounded suites. Required affected gates include:
 - backend compile/import checks;
 - deterministic callback/Redis bridge/coalescer/authorization/terminal unit
   suites under workspace-local `--basetemp .pytest-tmp/...`;
+- committed semantic producer tests proving the strict Skill/tool execution
+  projection reaches the Redis reader contract without raw payload fields;
 - opt-in real PostgreSQL and real Redis selectors when services are locally
   available, reported as unavailable rather than passed otherwise;
 - callback response-loss and Redis unknown-outcome fault injection;

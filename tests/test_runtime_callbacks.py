@@ -980,6 +980,7 @@ def test_executor_callback_canonicalizes_assistant_delta_and_projects_lambchat_c
 
     async def fake_append_batch(conn, **receipt):
         persisted.extend(receipt["events"])
+        return {"callback_received_at": "2026-08-09T00:00:00Z"}
 
     from app.routes import runtime_callbacks
 
@@ -1046,6 +1047,7 @@ def test_executor_callback_suppresses_delta_if_run_terminalizes_after_receipt_co
 
     async def append_batch(conn, **receipt):
         persisted.extend(receipt["events"])
+        return {"callback_received_at": "2026-08-09T00:00:00Z"}
 
     from app.routes import runtime_callbacks
 
@@ -1172,6 +1174,7 @@ def test_executor_callback_uses_text_when_delta_is_absent(monkeypatch):
 
     async def fake_append_batch(conn, **receipt):
         persisted.extend(receipt["events"])
+        return {"callback_received_at": "2026-08-09T00:00:00Z"}
 
     from app.routes import runtime_callbacks
 

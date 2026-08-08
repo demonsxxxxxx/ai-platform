@@ -1885,11 +1885,18 @@ create table if not exists sse_terminal_publication_intents (
   terminal_event_id text not null, end_event_id text not null,
   terminal_payload_bytes text not null, terminal_payload_digest text not null, terminal_payload_size integer not null check (terminal_payload_size >= 0),
   end_payload_bytes text not null, end_payload_digest text not null, end_payload_size integer not null check (end_payload_size >= 0),
+  emitted_at text not null,
   state text not null default 'pending' check (state in ('pending', 'published', 'superseded')),
   created_at timestamptz not null default clock_timestamp(), published_at timestamptz, updated_at timestamptz not null default clock_timestamp(),
   unique (tenant_id, run_id, attempt_id),
   foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
+
+alter table sse_terminal_publication_intents add column if not exists emitted_at text;
+update sse_terminal_publication_intents
+set emitted_at = to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+where emitted_at is null;
+alter table sse_terminal_publication_intents alter column emitted_at set not null;
 
 create index if not exists idx_sse_terminal_intents_pending
   on sse_terminal_publication_intents(state, created_at)

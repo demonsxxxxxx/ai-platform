@@ -180,7 +180,19 @@ test("skips replayed SSE events at the history timestamp boundary", () => {
 });
 
 test("reports acceptance only after current-run validation and deduplication", () => {
-  const ctx = createContext([], new Date("2026-04-19T01:02:03.456Z"));
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    new Date("2026-04-19T01:02:03.456Z"),
+  );
   ctx.currentRunIdRef.current = "run-active";
 
   const accepted = handleStreamEvent(
@@ -256,6 +268,62 @@ test("reports acceptance only after current-run validation and deduplication", (
     ),
     false,
   );
+});
+
+test("does not acknowledge a transport cursor until the reducer updater commits", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-active";
+  let deferredUpdater: React.SetStateAction<Message[]> | null = null;
+  ctx.setMessages = (updater) => {
+    deferredUpdater = updater;
+  };
+  const commits: boolean[] = [];
+
+  const accepted = handleStreamEvent(
+    {
+      event: "message:chunk",
+      data: JSON.stringify({
+        projection_version: "ai-platform.chat-public-projection.v1",
+        projection_kind: "assistant_delta",
+        run_id: "run-active",
+        event_id: "semantic-delta-1",
+        sequence: 4,
+        content: "committed later",
+      }),
+    },
+    "assistant-1",
+    "run-active:1:1-0",
+    undefined,
+    ctx,
+    { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+    (semanticApplied) => commits.push(semanticApplied),
+  );
+
+  assert.equal(accepted, true);
+  assert.deepEqual(commits, []);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, null);
+  assert.equal(ctx.processedEventIdsRef.current.has("semantic-delta-1"), false);
+  const commitUpdater = deferredUpdater as React.SetStateAction<Message[]> | null;
+  assert.equal(typeof commitUpdater, "function");
+
+  if (typeof commitUpdater === "function") {
+    commitUpdater(ctx.messages());
+  }
+  assert.deepEqual(commits, [true]);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 4);
+  assert.equal(ctx.processedEventIdsRef.current.has("semantic-delta-1"), true);
 });
 
 test("retains the run-event sequence replay guard after the event-id cap", () => {
@@ -519,7 +587,9 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
     ctx,
     binding,
   );
-  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 8);
+  // The accepted cursor stays at the last reducer commit while the delta is
+  // still buffered for the next presentation frame.
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 7);
   assert.equal(ctx.messages()[0]?.content, "A");
   assert.notEqual(frame, null);
   const acceptedFinal = handleStreamEvent(

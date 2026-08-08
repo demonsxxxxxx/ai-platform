@@ -53,7 +53,16 @@ function ownersEqual(
 
 interface PendingText {
   content: string;
-  commit: (content: string) => void;
+  commit: (content: string, onApplied: () => void) => void;
+  acknowledgements: Array<() => void>;
+  semanticEventIds: Set<string>;
+  latestSequence: number | null;
+}
+
+export interface PublicTextPresentationAcceptance {
+  onCommitted?: () => void;
+  semanticEventId?: string;
+  sequence?: number | null;
 }
 
 interface PendingProgress extends PublicExecutionPresentationUpdate {
@@ -87,20 +96,60 @@ export class PublicStreamPresentation {
     this.owner = null;
   }
 
+  owns(owner: PublicStreamPresentationOwner): boolean {
+    return ownersEqual(this.owner, owner);
+  }
+
   enqueueAssistantDelta(
     owner: PublicStreamPresentationOwner,
     content: string,
-    commit: (content: string) => void,
+    commit: (content: string, onApplied: () => void) => void,
+    acceptance: PublicTextPresentationAcceptance = {},
   ): boolean {
     if (!ownersEqual(this.owner, owner) || !content) return false;
     if (this.pendingText) {
+      if (
+        (acceptance.semanticEventId &&
+          this.pendingText.semanticEventIds.has(acceptance.semanticEventId)) ||
+        (typeof acceptance.sequence === "number" &&
+          this.pendingText.latestSequence !== null &&
+          acceptance.sequence <= this.pendingText.latestSequence)
+      ) {
+        return false;
+      }
+      const semanticEventIds = new Set(this.pendingText.semanticEventIds);
+      if (acceptance.semanticEventId) {
+        semanticEventIds.add(acceptance.semanticEventId);
+      }
       this.pendingText = {
         content: this.pendingText.content + content,
-        commit: this.pendingText.commit,
+        // The latest callback owns the latest accepted Redis cursor while its
+        // merged content commits every earlier delta in receive order.
+        commit,
+        acknowledgements: [
+          ...this.pendingText.acknowledgements,
+          ...(acceptance.onCommitted ? [acceptance.onCommitted] : []),
+        ],
+        semanticEventIds,
+        latestSequence:
+          typeof acceptance.sequence === "number"
+            ? acceptance.sequence
+            : this.pendingText.latestSequence,
       };
       return true;
     }
-    this.pendingText = { content, commit };
+    this.pendingText = {
+      content,
+      commit,
+      acknowledgements: acceptance.onCommitted
+        ? [acceptance.onCommitted]
+        : [],
+      semanticEventIds: new Set(
+        acceptance.semanticEventId ? [acceptance.semanticEventId] : [],
+      ),
+      latestSequence:
+        typeof acceptance.sequence === "number" ? acceptance.sequence : null,
+    };
     this.animationFrame = this.clock.requestAnimationFrame(() => {
       this.animationFrame = null;
       this.flushText(owner);
@@ -172,7 +221,9 @@ export class PublicStreamPresentation {
     if (!ownersEqual(this.owner, owner) || !this.pendingText) return;
     const pending = this.pendingText;
     this.pendingText = null;
-    pending.commit(pending.content);
+    pending.commit(pending.content, () => {
+      pending.acknowledgements.forEach((acknowledge) => acknowledge());
+    });
   }
 
   /** Preserve receive order when an execution update cannot wait for rAF. */

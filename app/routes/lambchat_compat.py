@@ -50,7 +50,19 @@ from app.run_projection import (
 )
 from app.settings import get_settings
 from app.streaming.authority import RunCursor, event_page
-from app.streaming.redis import SSE_AUTHORITY_LEASE_SECONDS, RedisStreamBridge, StreamContractError, StreamTransportUnavailable, acquire_sse_authority_lease, close_sse_authority_lease, get_stream_authority, get_terminal_intent, mark_terminal_intent_published, new_envelope
+from app.streaming.redis import (
+    SSE_AUTHORITY_LEASE_SECONDS,
+    RedisStreamBridge,
+    SseAuthorityConflictError,
+    StreamContractError,
+    StreamTransportUnavailable,
+    acquire_sse_authority_lease,
+    close_sse_authority_lease,
+    get_stream_authority,
+    get_terminal_intent,
+    mark_terminal_intent_published,
+    publish_terminal_intent,
+)
 from app.tool_permission_projection import tool_permission_public_event_payload
 
 router = APIRouter()
@@ -1406,6 +1418,8 @@ async def chat_session_stream(
 ) -> StreamingResponse:
     last_event_id = last_event_id if isinstance(last_event_id, str) else None
     connection_id = f"sse_{uuid.uuid4().hex}"
+    authority = None
+    lease = None
     async with transaction() as conn:
         initial_run = await repositories.get_authorized_run(
             conn,
@@ -1413,13 +1427,28 @@ async def chat_session_stream(
             user_id=principal.user_id,
             run_id=run_id,
         )
-        authority = await get_stream_authority(conn, tenant_id=principal.tenant_id, run_id=run_id)
         if initial_run is not None and initial_run.get("session_id") == session_id:
-            lease = await acquire_sse_authority_lease(conn, tenant_id=principal.tenant_id, run_id=run_id, api_instance_id=_SSE_API_INSTANCE_ID, connection_id=connection_id, lease_seconds=SSE_AUTHORITY_LEASE_SECONDS)
+            authority = await get_stream_authority(
+                conn, tenant_id=principal.tenant_id, run_id=run_id
+            )
+            if authority is not None:
+                try:
+                    lease = await acquire_sse_authority_lease(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        run_id=run_id,
+                        api_instance_id=_SSE_API_INSTANCE_ID,
+                        connection_id=connection_id,
+                        lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
+                    )
+                except SseAuthorityConflictError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
     if initial_run is None or initial_run.get("session_id") != session_id:
         raise HTTPException(status_code=404, detail="run_not_found")
     if authority is None:
         raise HTTPException(status_code=409, detail="sse_stream_not_admitted")
+    if lease is None:
+        raise HTTPException(status_code=409, detail="sse_authority_lease_unavailable")
     bridge = RedisStreamBridge()
     try:
         resume = await bridge.resolve_resume(
@@ -1439,72 +1468,93 @@ async def chat_session_stream(
         nonlocal lease
         after = resume.after_redis_id or "0-0"
         terminal_status: str | None = None
+        terminal_event_id: str | None = None
+
+        async def publish_pending_terminal() -> None:
+            async with transaction() as conn:
+                current_authority = await get_stream_authority(
+                    conn, tenant_id=principal.tenant_id, run_id=run_id
+                )
+                intent = await get_terminal_intent(
+                    conn, tenant_id=principal.tenant_id, run_id=run_id
+                )
+            if intent is None or intent.state != "pending":
+                return
+            if current_authority is None:
+                raise StreamContractError("stream_terminal_authority_missing")
+            await publish_terminal_intent(
+                bridge, authority=current_authority, intent=intent
+            )
+            async with transaction() as conn:
+                await mark_terminal_intent_published(conn, intent=intent)
+
         try:
             if resume.gap is not None:
                 yield _sse("gap", resume.gap.as_public_dict())
                 return
             while True:
                 now = datetime.now(timezone.utc)
-                if not lease.allows_frame(now=now, local_authorization_epoch=lease.authorization_epoch, invalidated_through_epoch=lease.authorization_epoch - 1):
-                    async with transaction() as conn:
-                        run = await repositories.get_authorized_run(
-                            conn,
-                            tenant_id=principal.tenant_id,
-                            user_id=principal.user_id,
-                            run_id=run_id,
-                        )
-                        if run is None or run.get("session_id") != session_id:
-                            return
-                        lease = await acquire_sse_authority_lease(conn, tenant_id=principal.tenant_id, run_id=run_id, api_instance_id=_SSE_API_INSTANCE_ID, connection_id=connection_id, lease_seconds=SSE_AUTHORITY_LEASE_SECONDS)
-                        intent = await get_terminal_intent(
-                            conn, tenant_id=principal.tenant_id, run_id=run_id
-                        )
-                    if intent is not None and intent.state == "pending":
-                        terminal_payload = json.loads(intent.terminal_payload_bytes)
-                        end_payload = json.loads(intent.end_payload_bytes)
-                        terminal_status = str(terminal_payload["status"])
-                        await bridge.append(
-                            new_envelope(
-                                event_id=intent.terminal_event_id,
-                                tenant_scope_value=authority.tenant_scope,
-                                run_id=run_id,
-                                attempt_id=authority.attempt_id,
-                                stream_incarnation=authority.stream_incarnation,
-                                event_type="terminal",
-                                payload=terminal_payload,
-                            ),
-                            terminal=True,
-                        )
-                        await bridge.append(
-                            new_envelope(
-                                event_id=intent.end_event_id,
-                                tenant_scope_value=authority.tenant_scope,
-                                run_id=run_id,
-                                attempt_id=authority.attempt_id,
-                                stream_incarnation=authority.stream_incarnation,
-                                event_type="end",
-                                payload=end_payload,
-                            ),
-                            terminal=True,
-                        )
+                if not lease.allows_frame(
+                    now=now,
+                    local_authorization_epoch=lease.authorization_epoch,
+                    invalidated_through_epoch=lease.authorization_epoch - 1,
+                ):
+                    try:
                         async with transaction() as conn:
-                            await mark_terminal_intent_published(conn, intent=intent)
-                entries = await bridge.read(tenant_scope_value=authority.tenant_scope, run_id=run_id, stream_incarnation=authority.stream_incarnation, after_redis_id=after, block_ms=5000)
+                            run = await repositories.get_authorized_run(
+                                conn,
+                                tenant_id=principal.tenant_id,
+                                user_id=principal.user_id,
+                                run_id=run_id,
+                            )
+                            if run is None or run.get("session_id") != session_id:
+                                return
+                            lease = await acquire_sse_authority_lease(
+                                conn,
+                                tenant_id=principal.tenant_id,
+                                run_id=run_id,
+                                api_instance_id=_SSE_API_INSTANCE_ID,
+                                connection_id=connection_id,
+                                lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
+                            )
+                    except (SseAuthorityConflictError, ValueError):
+                        return
+                await publish_pending_terminal()
+                entries = await bridge.read(
+                    tenant_scope_value=authority.tenant_scope,
+                    run_id=run_id,
+                    stream_incarnation=authority.stream_incarnation,
+                    after_redis_id=after,
+                    block_ms=5000,
+                )
                 if not entries:
                     yield ": heartbeat\n\n"
                     continue
                 for entry in entries:
-                    if not lease.allows_frame(now=datetime.now(timezone.utc), local_authorization_epoch=lease.authorization_epoch, invalidated_through_epoch=lease.authorization_epoch - 1):
+                    if not lease.allows_frame(
+                        now=datetime.now(timezone.utc),
+                        local_authorization_epoch=lease.authorization_epoch,
+                        invalidated_through_epoch=lease.authorization_epoch - 1,
+                    ):
                         break
                     after = entry.cursor.redis_id
                     envelope = entry.envelope
                     if envelope.event_type == "stream_open":
-                        yield _sse("metadata", {"session_id": session_id, "run_id": run_id}, entry.cursor.event_id)
+                        yield _sse(
+                            "metadata",
+                            {
+                                "event_id": envelope.event_id,
+                                "session_id": session_id,
+                                "run_id": run_id,
+                            },
+                            entry.cursor.event_id,
+                        )
                     elif envelope.event_type == "assistant_text_delta":
                         yield _sse(
                             "message:chunk",
                             {
                                 "run_id": run_id,
+                                "event_id": envelope.event_id,
                                 "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
                                 "projection_kind": "assistant_delta",
                                 "content": envelope.payload["delta"],
@@ -1513,22 +1563,61 @@ async def chat_session_stream(
                         )
                     elif envelope.event_type == "terminal":
                         terminal_status = str(envelope.payload["status"])
-                        yield _sse("done", {"run_id": run_id, "status": terminal_status}, entry.cursor.event_id)
+                        terminal_event_id = envelope.event_id
+                        yield _sse(
+                            "done",
+                            {
+                                "event_id": envelope.event_id,
+                                "run_id": run_id,
+                                "status": terminal_status,
+                            },
+                            entry.cursor.event_id,
+                        )
                     elif envelope.event_type == "end":
-                        yield _sse("done", {"run_id": run_id, "status": terminal_status}, entry.cursor.event_id)
+                        if (
+                            terminal_event_id is None
+                            or envelope.payload["terminal_event_id"]
+                            != terminal_event_id
+                        ):
+                            raise StreamContractError(
+                                "stream_end_without_observed_terminal"
+                            )
+                        yield _sse(
+                            "end",
+                            {
+                                "event_id": envelope.event_id,
+                                "run_id": run_id,
+                                "terminal_event_id": terminal_event_id,
+                            },
+                            entry.cursor.event_id,
+                        )
                         return
-        except StreamTransportUnavailable:
+                    elif envelope.event_type in {"semantic_stage", "semantic_progress"}:
+                        public_event = str(envelope.payload["event"])
+                        public_data = dict(envelope.payload["data"])
+                        public_data.setdefault("event_id", envelope.event_id)
+                        public_data.setdefault("run_id", run_id)
+                        yield _sse(public_event, public_data, entry.cursor.event_id)
+                    else:
+                        raise StreamContractError("stream_public_event_unmapped")
+        except (StreamTransportUnavailable, StreamContractError):
             yield _sse("error", {"error": "sse_stream_unavailable"})
         finally:
             await bridge.aclose()
             try:
                 async with transaction() as conn:
-                    await close_sse_authority_lease(conn, lease_id=lease.lease_id, reason="connection_closed")
+                    await close_sse_authority_lease(
+                        conn, lease_id=lease.lease_id, reason="connection_closed"
+                    )
             except Exception:
                 pass
 
     return StreamingResponse(
         stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )

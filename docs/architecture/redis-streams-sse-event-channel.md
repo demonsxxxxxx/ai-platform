@@ -28,7 +28,7 @@ here differs from a detailed owner, the detailed owner is normative.
 
 The accepted live path is:
 
-`Claude SDK -> executor callback/worker -> safe projector -> bounded coalescer -> per-run Redis Stream XADD -> public Chat SSE XREAD -> frontend reducer`
+`Claude SDK -> executor callback/worker -> safe projector -> committed semantic fact when required -> bounded coalescer -> per-run Redis Stream XADD -> public Chat SSE XREAD -> frontend reducer`
 
 PostgreSQL remains authoritative for run/session state, final answers,
 tool/approval/artifact facts, required safe semantic facts, audit, callback
@@ -84,6 +84,11 @@ authority.
   calls.
 - Projection and filtering happen before coalescing and `XADD`. Hidden reasoning,
   raw commands/tool payloads, credentials, and paths never enter Redis.
+- Skill/tool execution presentation enters Redis only as a strict committed
+  `execution_step*` projection. The row ID, PostgreSQL run sequence, and row
+  creation time are reused after commit; Redis is never called while its
+  PostgreSQL transaction is open. Unsupported live approval/artifact/status
+  envelope types are not advertised.
 - Each callback item has deterministic source order and semantic identity under
   one attempt/batch receipt. Duplicate response or Redis outcomes reuse that
   identity and canonical bytes.

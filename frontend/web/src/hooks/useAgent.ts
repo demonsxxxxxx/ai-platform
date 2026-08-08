@@ -349,6 +349,16 @@ function maxAcceptedRunEventSequence(
   return maximum;
 }
 
+function resetAcceptedStreamState(
+  sequenceRef: { current: AcceptedRunEventSequence },
+  cursorRef: { current: AcceptedStreamCursor },
+  sessionId: string | null = null,
+  runId: string | null = null,
+) {
+  sequenceRef.current = { sessionId, runId, sequence: null };
+  cursorRef.current = { sessionId, runId, eventId: null };
+}
+
 interface ReconcileOwner {
   sessionId: string;
   runId: string;
@@ -902,11 +912,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       isReconnectFromHistoryRef.current = false;
       retryCountRef.current = 0;
       statusRetryCountRef.current = 0;
-      acceptedRunEventSequenceRef.current = {
-        sessionId: null,
-        runId: null,
-        sequence: null,
-      };
+      resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
       lastHistoryTimestampRef.current = null;
       currentRunIdRef.current = null;
       setCurrentRunId(null);
@@ -970,11 +976,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       isSendingRef.current = false;
       retryCountRef.current = 0;
       statusRetryCountRef.current = 0;
-      acceptedRunEventSequenceRef.current = {
-        sessionId: null,
-        runId: null,
-        sequence: null,
-      };
+      resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
 
       toast.dismiss("chat-queue");
       setCurrentRunId(null);
@@ -1332,11 +1334,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       statusRetryCountRef.current = 0;
-      acceptedRunEventSequenceRef.current = {
-        sessionId: null,
-        runId: null,
-        sequence: null,
-      };
+      resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
       isLoadingHistoryRef.current = false;
       isSendingRef.current = false;
       isConnectingRef.current = false;
@@ -1383,11 +1381,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         // A new session owns an independent transport-reconnect budget. Clear
         // the previous session's budget before asynchronous history work.
         retryCountRef.current = 0;
-        acceptedRunEventSequenceRef.current = {
-          sessionId: null,
-          runId: null,
-          sequence: null,
-        };
+        resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
       }
       const isCurrentHistoryLoadRequest = () =>
         isMountedRef.current &&
@@ -1953,11 +1947,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       clearReconnectTimeout(reconnectTimeoutRef);
 
       processedEventIdsRef.current.clear();
-      acceptedRunEventSequenceRef.current = {
-        sessionId: null,
-        runId: null,
-        sequence: null,
-      };
+      resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
       lastHistoryTimestampRef.current = null;
 
       const previousMessages = messagesRef.current;
@@ -2241,11 +2231,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         if (newRunId) {
           // A confirmed run owns a fresh continuous transport-recovery budget.
           retryCountRef.current = 0;
-          acceptedRunEventSequenceRef.current = {
-            sessionId: newSessionId || requestSessionId || null,
-            runId: newRunId,
-            sequence: null,
-          };
+          resetAcceptedStreamState(
+            acceptedRunEventSequenceRef,
+            acceptedStreamCursorRef,
+            newSessionId || requestSessionId || null,
+            newRunId,
+          );
           setCurrentRunId(newRunId);
           currentRunIdRef.current = newRunId;
           const runControlSessionId = newSessionId || requestSessionId;
@@ -2453,11 +2444,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     setSandboxError(null);
     setConnectionStatus("disconnected");
     processedEventIdsRef.current.clear();
-    acceptedRunEventSequenceRef.current = {
-      sessionId: null,
-      runId: null,
-      sequence: null,
-    };
+    resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
     lastHistoryTimestampRef.current = null;
     streamingMessageIdRef.current = null;
     isReconnectFromHistoryRef.current = false;

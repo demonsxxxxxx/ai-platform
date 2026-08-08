@@ -58,6 +58,11 @@ from app.required_tool_contract import (
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.settings import get_settings
 from app.streaming.redis import RunStreamPublisher, canonical_assistant_delta_event
+from app.streaming.worker_projection import (
+    finalize_parent_and_publish,
+    persist_and_publish_worker_event,
+    publish_pending_run_terminal,
+)
 from app.skills.catalog import (
     RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY,
     RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY,
@@ -2337,6 +2342,11 @@ async def process_run_payload(
                 terminal_after_transaction.payload,
                 terminal_after_transaction.reconciled_parent,
             )
+            await publish_pending_run_terminal(
+                transaction,
+                tenant_id=terminal_after_transaction.payload.tenant_id,
+                run_id=terminal_after_transaction.payload.run_id,
+            )
 
     run_payload = RunPayload(
         tenant_id=run_identity["tenant_id"],
@@ -2392,31 +2402,18 @@ async def process_run_payload(
                 public_delta = str(event_payload["delta"])
         if public_delta is not None:
             await stream_publisher.publish_assistant_delta(public_delta)
-        async with transaction() as conn:
-            if persist_event:
-                await append_user_event(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                    event_type=event_type,
-                    stage=event_stage,
-                    message=event_message,
-                    payload=event_payload,
-                )
-                await _record_run_step_from_event(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                    event_type=event_type,
-                    message=event_message,
-                    payload=event_payload,
-                )
-            if await repositories.is_cancel_requested(
-                conn,
-                tenant_id=run_payload.tenant_id,
-                run_id=run_payload.run_id,
-            ):
-                raise WorkerRunCancelled
+        if await persist_and_publish_worker_event(
+            transaction,
+            stream_publisher=stream_publisher,
+            run_payload=run_payload,
+            persist_event=persist_event,
+            event_type=event_type,
+            stage=event_stage,
+            message=event_message,
+            payload=event_payload,
+            record_run_step=_record_run_step_from_event,
+        ):
+            raise WorkerRunCancelled
 
     async def release_runtime_sandbox_lease(conn, *, reason: str) -> None:
         nonlocal runtime_sandbox_lease_released
@@ -2529,7 +2526,7 @@ async def process_run_payload(
                 result_json=cancel_result,
             )
             await release_runtime_sandbox_lease(conn, reason="run_cancelled")
-        await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
         await stream_publisher.aclose()
@@ -2594,7 +2591,7 @@ async def process_run_payload(
                         },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
-        await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return outcome_after_exception
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
@@ -3106,5 +3103,5 @@ async def process_run_payload(
                     terminal_outcome.error_code if final_status == "failed" else None,
                     terminal_outcome.error_message if final_status == "failed" else None,
                 )
-    await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+    await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
     return terminal_outcome

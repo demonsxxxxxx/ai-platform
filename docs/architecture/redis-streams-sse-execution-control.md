@@ -58,10 +58,40 @@ the same semantic IDs. A duplicate exact receipt resumes/rechecks publication;
 a conflicting receipt does not publish. This handles HTTP response loss without
 turning PostgreSQL back into the text transport.
 
+Authenticated callback payloads do not become public Skill/tool lifecycle
+frames merely because their type name resembles a public type. The callback
+boundary continues to withhold arbitrary executor lifecycle payloads. The live
+Skill/tool presentation producer is the worker-owned strict execution projector
+described below.
+
 If receipt commit succeeds and Redis publication fails or is unknown, the
 bounded live result may be absent or duplicated. Retry uses the same IDs/bytes.
 The authoritative final answer still converges through terminal/final hydrate.
 No unbounded outbox of text deltas and no `run_events` text fallback is created.
+
+## Committed semantic producer
+
+The worker may publish only the two semantic envelope classes currently owned
+by closed platform projectors:
+
+- `semantic_stage` wraps a validated fixed platform phase as `run_event`;
+- `semantic_progress` wraps a strict versioned `execution_step*` event, including
+  the server-owned Skill/MCP/tool presentation mapping.
+
+The worker first appends the safe row to `run_events`. The returned row identity,
+PostgreSQL sequence, and database `created_at` are the sole semantic ID,
+presentation sequence, and envelope time. After the transaction commits, the
+worker opens a new short PostgreSQL transaction to refresh the exact run,
+attempt, and stream incarnation authority. It closes that transaction before
+the Redis append. A rollback therefore produces no live semantic frame, and an
+unknown Redis outcome can retry the same row-derived bytes without minting an
+identity.
+
+There is no generic object-to-Redis adapter. Raw command/tool arguments or
+results, hidden reasoning, paths, credentials, and executor-selected arbitrary
+labels cannot enter these projections. Approval, artifact, and run-status live
+producers are outside the accepted V2.1 source set; their durable facts remain
+available through authorized hydrate/API paths.
 
 ## Projection and bounded coalescer
 
@@ -236,6 +266,9 @@ Pending Redis publication does not leave a terminal run permanently `running`.
   calls before confirmation;
 - deterministic callback receipt, response loss, conflict, ordering, and Redis
   unknown outcome;
+- committed Skill/tool execution projection after PG commit, stable row-derived
+  identity/sequence/time, stale authority fencing, and structural detection of
+  direct or nested Redis access inside a PG transaction;
 - coalescer age/size/order/bounds, shutdown/terminal flush, secret/private event
   rejection, and no hidden reasoning;
 - Redis outage before/mid-run, eligible continuation, approval fail-closed, no

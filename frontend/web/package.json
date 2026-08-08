@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/write-build-provenance.mjs",
-    "ci:verify": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && corepack pnpm run test:prd-closure-smoke-source && corepack pnpm run test:company-rbac-browser-smoke-source && eslint . && tsc -b && vite build && node scripts/write-build-provenance.mjs",
+    "ci:verify": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && corepack pnpm run test:prd-closure-smoke-source && corepack pnpm run test:company-rbac-browser-smoke-source && corepack pnpm run test:sse && eslint . && tsc -b && vite build && node scripts/write-build-provenance.mjs",
     "lint": "eslint .",
     "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
     "preview": "vite preview",
@@ -14,6 +14,7 @@
     "smoke:company-rbac": "node scripts/company-rbac-browser-smoke.mjs",
     "test:company-rbac-browser-smoke-source": "tsx --test src/__tests__/companyRbacBrowserSmokeSource.test.ts",
     "test:prd-closure-smoke-source": "tsx --test src/__tests__/frontendPrdClosureSmokeSource.test.ts",
+    "test:sse": "tsx --test src/hooks/useAgent/__tests__/eventHandlers.test.ts src/hooks/useAgent/__tests__/sseConnection.test.ts src/hooks/useAgent/__tests__/publicStreamPresentation.test.ts",
     "i18n:extract": "tsx scripts/extract-i18n.ts",
     "find-large-files": "tsx scripts/find-large-files.ts",
     "migrate-tests": "tsx scripts/migrate-tests.ts"

@@ -126,6 +126,7 @@ const SIDE_EFFECT_EVENTS = new Set<string>([
   "user:cancel",
   "complete",
   "done",
+  "end",
   "queue_update",
   "approval_required",
   "skills:changed",
@@ -160,6 +161,7 @@ export function handleStreamEvent(
   eventTimestamp: string | undefined,
   ctx: EventHandlerContext,
   binding?: StreamEventBinding,
+  onCommitted?: (semanticApplied: boolean) => void,
 ): boolean {
   console.log("[handleStreamEvent] Received event:", {
     eventType: event.event,
@@ -222,8 +224,14 @@ export function handleStreamEvent(
     return false;
   }
 
-  if (ctx.processedEventIdsRef.current.has(eventId)) {
-    console.log("[SSE] Skipping duplicate event by ID:", eventId);
+  const semanticEventId =
+    typeof data.event_id === "string" && data.event_id.trim()
+      ? data.event_id
+      : eventId;
+  if (ctx.processedEventIdsRef.current.has(semanticEventId)) {
+    // The reducer already owns this semantic event, but a later Redis entry is
+    // still valid transport progress and may advance Last-Event-ID.
+    onCommitted?.(false);
     return false;
   }
 
@@ -266,33 +274,36 @@ export function handleStreamEvent(
     return false;
   }
 
-  // Mark only after all current-run/generation, parse, replay, and timestamp
-  // checks have passed. The capped UI dedup set stays bounded; the sequence
-  // cursor below remains the replay-safe authority for reconnect recovery.
-  ctx.processedEventIdsRef.current.add(eventId);
-  if (ctx.processedEventIdsRef.current.size > 10_000) {
-    ctx.processedEventIdsRef.current.clear();
-    ctx.processedEventIdsRef.current.add(eventId);
-  }
-  if (
-    sequencedPublicEvent &&
-    progressSequence !== null &&
-    progressSessionId &&
-    progressRunId
-  ) {
-    if (ctx.acceptedRunEventSequenceRef) {
+  let committed = false;
+  const commitAcceptedEvent = () => {
+    if (committed) return;
+    committed = true;
+    ctx.processedEventIdsRef.current.add(semanticEventId);
+    if (ctx.processedEventIdsRef.current.size > 10_000) {
+      ctx.processedEventIdsRef.current.clear();
+      ctx.processedEventIdsRef.current.add(semanticEventId);
+    }
+    if (
+      sequencedPublicEvent &&
+      progressSequence !== null &&
+      progressSessionId &&
+      progressRunId &&
+      ctx.acceptedRunEventSequenceRef
+    ) {
       ctx.acceptedRunEventSequenceRef.current = {
         sessionId: progressSessionId,
         runId: progressRunId,
         sequence: progressSequence,
       };
     }
-  }
+    onCommitted?.(true);
+  };
 
   if (terminalStatus && eventRunId) {
     const owner = presentationOwner(binding, messageId);
     if (owner) ctx.publicStreamPresentation?.flush(owner);
     if (ctx.onRunTerminal?.(eventRunId, terminalStatus, messageId)) {
+      commitAcceptedEvent();
       return true;
     }
   }
@@ -309,11 +320,13 @@ export function handleStreamEvent(
       ) {
         ctx.setSessionId(data.session_id);
       }
+      commitAcceptedEvent();
       return true;
     }
 
     case "user:message": {
       handleUserMessage(data, messageId, eventTimestamp, ctx);
+      commitAcceptedEvent();
       return true;
     }
 
@@ -322,6 +335,7 @@ export function handleStreamEvent(
       const owner = presentationOwner(binding, messageId);
       if (owner) ctx.publicStreamPresentation?.flush(owner);
       handleError(data, messageId, ctx, true, { keepConnectionOpen: true });
+      commitAcceptedEvent();
       return true;
     }
 
@@ -351,6 +365,7 @@ export function handleStreamEvent(
         sessionApi.markRead(activeSessionId).catch(() => {});
       }
       ctx.options?.onStreamDone?.();
+      commitAcceptedEvent();
       return true;
     }
 
@@ -361,17 +376,25 @@ export function handleStreamEvent(
           toast.success(i18n.t("chat.queueStart"), { duration: 2000 });
         });
       }
+      commitAcceptedEvent();
       return true;
     }
 
     case "heartbeat": {
       // Heartbeats have already passed the session/run/generation fence above.
       // They are liveness signals, not assistant text or a fake progress card.
+      commitAcceptedEvent();
+      return true;
+    }
+
+    case "end": {
+      commitAcceptedEvent();
       return true;
     }
 
     case "approval_required": {
       handleApprovalRequired(data, ctx);
+      commitAcceptedEvent();
       return true;
     }
 
@@ -388,6 +411,7 @@ export function handleStreamEvent(
           (data.files_count as number) || 0,
         );
       }
+      commitAcceptedEvent();
       return true;
     }
   }
@@ -401,8 +425,12 @@ export function handleStreamEvent(
     subagentStack.push({ agent_id: agentId, depth, message_id: messageId });
   }
 
-  const commitMessageEvent = (committedData: EventData = data) => ctx.setMessages((prev) =>
-    prev.map((m) => {
+  const commitMessageEvent = (
+    committedData: EventData = data,
+    onApplied: () => void = commitAcceptedEvent,
+  ) => ctx.setMessages((prev) => {
+    let didApply = false;
+    const next = prev.map((m) => {
       if (m.id !== messageId) return m;
 
       const result = processMessageEvent(
@@ -416,6 +444,7 @@ export function handleStreamEvent(
         true, // isStreaming
         messageId,
       );
+      didApply = true;
 
       const updated = {
         ...m,
@@ -439,8 +468,10 @@ export function handleStreamEvent(
       }
 
       return updated;
-    }),
-  );
+    });
+    if (didApply) onApplied();
+    return next;
+  });
 
   const owner = presentationOwner(binding, messageId);
   const assistantDelta =
@@ -470,14 +501,23 @@ export function handleStreamEvent(
     ctx.publicStreamPresentation?.flush(owner);
   }
   if (owner && assistantDelta && data.content) {
-    if (
-      ctx.publicStreamPresentation?.enqueueAssistantDelta(
+    const presentation = ctx.publicStreamPresentation;
+    if (presentation) {
+      const ownsPresentation = presentation.owns(owner);
+      if (presentation.enqueueAssistantDelta(
         owner,
         data.content,
-        (content) => commitMessageEvent({ ...data, content }),
-      )
-    ) {
-      return true;
+        (content, onApplied) =>
+          commitMessageEvent({ ...data, content }, onApplied),
+        {
+          onCommitted: commitAcceptedEvent,
+          semanticEventId,
+          sequence: progressSequence,
+        },
+      )) {
+        return true;
+      }
+      if (ownsPresentation) return false;
     }
   }
   if (
@@ -486,15 +526,18 @@ export function handleStreamEvent(
     isPublicExecutionEvent(executionEventType, data) &&
     typeof data.sequence === "number"
   ) {
-    if (
-      ctx.publicStreamPresentation?.enqueueExecutionUpdate(owner, {
+    const presentation = ctx.publicStreamPresentation;
+    if (presentation) {
+      const ownsPresentation = presentation.owns(owner);
+      if (presentation.enqueueExecutionUpdate(owner, {
         stepId: data.step_id,
         sequence: data.sequence,
         phase: executionPhase,
         commit: () => commitMessageEvent(),
-      })
-    ) {
-      return true;
+      })) {
+        return true;
+      }
+      if (ownsPresentation) return false;
     }
   }
 

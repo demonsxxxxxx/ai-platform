@@ -4825,8 +4825,8 @@ async def append_event(
     input_token_count: int = 0,
     output_token_count: int = 0,
     total_token_count: int = 0,
-    estimated_cost_minor: int = 0,
-) -> str:
+    estimated_cost_minor: int = 0, return_record: bool = False,
+) -> str | dict[str, Any]:
     try:
         return await _run_event_repository.append_event(
             conn,
@@ -4844,7 +4844,7 @@ async def append_event(
             input_token_count=input_token_count,
             output_token_count=output_token_count,
             total_token_count=total_token_count,
-            estimated_cost_minor=estimated_cost_minor,
+            estimated_cost_minor=estimated_cost_minor, return_record=return_record,
         )
     except _run_event_repository.RunEventLedgerConflictError as exc:
         raise _repository_ledger_conflict(exc) from exc

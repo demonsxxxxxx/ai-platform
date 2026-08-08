@@ -20,7 +20,7 @@ import type { Message } from "../../../types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-test.skip("flushes accepted public text before reconnect status can replay-deduplicate it", async () => {
+test("flushes accepted public text before reconnect status can replay-deduplicate it", async () => {
   let messages: Message[] = [
     {
       id: "assistant-flush",
@@ -533,7 +533,7 @@ test("does not let a stale connection target abort the active stream", async () 
   assert.equal(context.streamingMessageIdRef.current, "active-message");
 });
 
-test.skip("fails closed when reconnect cannot read the authoritative run status", async () => {
+test("fails closed when reconnect cannot read the authoritative run status", async () => {
   const connectionStates: string[] = [];
   let connectCalls = 0;
   const context = {
@@ -573,7 +573,7 @@ test.skip("fails closed when reconnect cannot read the authoritative run status"
   assert.equal(connectionStates.at(-1), "disconnected");
 });
 
-test.skip("drops a reconnect when its status response belongs to an old stream generation", async () => {
+test("drops a reconnect when its status response belongs to an old stream generation", async () => {
   let resolveStatus:
     | ((value: { session_id: string; run_id: string; status: string }) => void)
     | undefined;
@@ -625,7 +625,7 @@ test.skip("drops a reconnect when its status response belongs to an old stream g
   assert.equal(context.reconnectTimeoutRef.current, null);
 });
 
-test.skip("bounds status-query retries before converging to local unavailable state", async () => {
+test("bounds status-query retries before converging to local unavailable state", async () => {
   let statusCalls = 0;
   let unavailableCalls = 0;
   const context = {
@@ -670,7 +670,7 @@ test.skip("bounds status-query retries before converging to local unavailable st
   assert.equal(context.reconnectTimeoutRef.current, null);
 });
 
-test.skip("drops a status-query retry after its session generation changes", async () => {
+test("drops a status-query retry after its session generation changes", async () => {
   let unavailableCalls = 0;
   let statusCalls = 0;
   const context = {
@@ -946,7 +946,7 @@ test("does not let a deferred stale 401 refresh mutate a replacement SSE stream"
   assert.deepEqual(connectionStates, []);
 });
 
-test.skip("retries a current 401 once and aborts only its captured stream controller", async () => {
+test("retries a current 401 once and aborts only its captured stream controller", async () => {
   const { context, connectionStates } = createTokenRefreshContext();
   const signals: AbortSignal[] = [];
   let fetchCalls = 0;
@@ -981,6 +981,7 @@ test.skip("retries a current 401 once and aborts only its captured stream contro
         afterOpen: async (init) => {
           init.onmessage?.({
             event: "complete",
+            id: "run-old:1:2-0",
             data: JSON.stringify({ status: "succeeded" }),
           } as never);
           await init.onclose?.();
@@ -1006,7 +1007,7 @@ test.skip("retries a current 401 once and aborts only its captured stream contro
   assert.equal(connectionStates.at(-1), "disconnected");
 });
 
-test.skip("flushes a paused accepted answer delta exactly once before a 401 refresh handoff", async () => {
+test("flushes a paused accepted answer delta exactly once before a 401 refresh handoff", async () => {
   let messages: Message[] = [
     {
       id: "assistant-refresh-flush",
@@ -1099,6 +1100,7 @@ test.skip("flushes a paused accepted answer delta exactly once before a 401 refr
         afterOpen: async (init) => {
           init.onmessage?.({
             event: "complete",
+            id: "run-refresh-flush:1:2-0",
             data: JSON.stringify({ run_id: owner.runId, status: "succeeded" }),
           } as never);
           await init.onclose?.();
@@ -1376,7 +1378,7 @@ test("SSE failures log only fixed phases and bounded safe codes", async () => {
   }
 });
 
-test.skip("a scheduled reconnect converges non-retryable auth without another status read", async (t) => {
+test("a scheduled reconnect converges non-retryable auth without another status read", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const originalRandom = Math.random;
   Math.random = () => 0;
@@ -1488,7 +1490,7 @@ test.skip("a scheduled reconnect converges non-retryable auth without another st
   }
 });
 
-test.skip("a scheduled reconnect reconciles a post-refresh transport failure", async (t) => {
+test("a scheduled reconnect reconciles a post-refresh transport failure", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const originalRandom = Math.random;
   Math.random = () => 0;
@@ -1598,7 +1600,7 @@ test.skip("a scheduled reconnect reconciles a post-refresh transport failure", a
   }
 });
 
-test.skip("bounds replayed active run_event reconnects and converges unavailable once", async (t) => {
+test("bounds replayed active run_event reconnects and converges unavailable once", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let statusCalls = 0;
   let connectCalls = 0;
@@ -1697,7 +1699,7 @@ test.skip("bounds replayed active run_event reconnects and converges unavailable
   assert.equal(unavailableCalls, 1);
 });
 
-test.skip("bounds heartbeat-then-close reconnect loops without assistant text or new work", async (t) => {
+test("bounds heartbeat-then-close reconnect loops without assistant text or new work", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let statusCalls = 0;
   let connectCalls = 0;
@@ -1814,14 +1816,26 @@ test.skip("bounds heartbeat-then-close reconnect loops without assistant text or
   assert.equal(unavailableCalls, 1);
 });
 
-test.skip("resets reconnect budget only after a unique current-run progress frame", async () => {
+test("resets reconnect budget only after a unique current-run progress frame", async () => {
+  const currentMessagesRef: { current: Message[] } = {
+    current: [
+      {
+        id: "assistant-1",
+        role: "assistant" as const,
+        content: "",
+        timestamp: new Date(),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+  };
   const currentContext = {
     abortControllerRef: { current: null },
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: null },
     reconnectTimeoutRef: { current: null },
     retryCountRef: { current: MAX_CONSECUTIVE_SSE_RECONNECTS },
-    messagesRef: { current: [] },
+    messagesRef: currentMessagesRef,
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
     processedEventIdsRef: { current: new Set<string>() },
@@ -1832,7 +1846,12 @@ test.skip("resets reconnect budget only after a unique current-run progress fram
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
     setSessionId: () => undefined,
-    setMessages: () => undefined,
+    setMessages: (updater: React.SetStateAction<Message[]>) => {
+      currentMessagesRef.current =
+        typeof updater === "function"
+          ? updater(currentMessagesRef.current)
+          : updater;
+    },
     setConnectionStatus: () => undefined,
     setIsInitializingSandbox: () => undefined,
     setSandboxError: () => undefined,
@@ -1927,6 +1946,7 @@ test.skip("resets reconnect budget only after a unique current-run progress fram
         } as never);
         init.onmessage?.({
           event: "run_event",
+          id: "evt-foreign-progress",
           data: JSON.stringify({ run_id: "run-foreign", event_type: "worker_started" }),
         } as never);
         await init.onclose?.();
@@ -1938,6 +1958,145 @@ test.skip("resets reconnect budget only after a unique current-run progress fram
     nonProgressContext.retryCountRef.current,
     MAX_CONSECUTIVE_SSE_RECONNECTS,
   );
+});
+
+test("duplicate semantic Redis entry advances only the transport cursor", async () => {
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: null },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: MAX_CONSECUTIVE_SSE_RECONNECTS },
+    messagesRef: { current: [] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set(["semantic-progress-1"]) },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: 8 },
+    },
+    acceptedStreamCursorRef: {
+      current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:1-0" },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  } satisfies SSEConnectionContext;
+
+  await assert.rejects(
+    connectToSSE(
+      "session-1",
+      "run-1",
+      "assistant-1",
+      context,
+      false,
+      async (_input, init) => {
+        await init.onopen?.(new Response(null, { status: 200 }));
+        init.onmessage?.({
+          event: "run_event",
+          id: "run-1:1:2-0",
+          data: JSON.stringify({
+            run_id: "run-1",
+            event_id: "semantic-progress-1",
+            sequence: 9,
+            event_type: "worker_progress",
+          }),
+        } as never);
+        await init.onclose?.();
+      },
+    ),
+    /SSE closed before terminal event/,
+  );
+
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:2-0");
+  assert.equal(context.acceptedRunEventSequenceRef.current.sequence, 8);
+  assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS);
+});
+
+test("replay gap preserves the run owner and performs durable status reconciliation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let statusCalls = 0;
+  let reconnectCalls = 0;
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: {
+      current: [
+        {
+          id: "assistant-1",
+          role: "assistant" as const,
+          content: "partial",
+          timestamp: new Date(),
+          isStreaming: true,
+        },
+      ],
+    },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: 8 },
+    },
+    acceptedStreamCursorRef: {
+      current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:1-0" },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    isReconnectFromHistoryRef: { current: false },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+
+  await assert.rejects(
+    connectToSSE(
+      "session-1",
+      "run-1",
+      "assistant-1",
+      context,
+      false,
+      async (_input, init) => {
+        await init.onopen?.(new Response(null, { status: 200 }));
+        init.onmessage?.({
+          event: "gap",
+          data: JSON.stringify({ recovery: "reload_durable_state" }),
+        } as never);
+      },
+    ),
+    /sse_replay_gap/,
+  );
+  assert.equal(context.currentRunIdRef.current, "run-1");
+
+  await reconnectSSE(context, {
+    getStatus: async () => {
+      statusCalls += 1;
+      return { session_id: "session-1", run_id: "run-1", status: "running" };
+    },
+    connect: async () => {
+      reconnectCalls += 1;
+    },
+    reconnectDelay: () => 0,
+  });
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(statusCalls, 1);
+  assert.equal(reconnectCalls, 1);
+  assert.equal(context.currentRunIdRef.current, "run-1");
 });
 
 test("drops a queued reconnect timer after session switch or unmount", async (t) => {
