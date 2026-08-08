@@ -394,6 +394,14 @@ def test_auth_size_path_redirect_and_tls_fail_closed() -> None:
         )
         for host in ("localhost", "0.0.0.0", "host.docker.internal", "10.56.1.72")
     )
+    + tuple(
+        (
+            f"http://127.0.0.1:{port}",
+            f"http://127.0.0.1:{port}/openai/v1",
+            f"http://127.0.0.1:{port}/anthropic",
+        )
+        for port in (80, 18042, 18044)
+    )
     + (
         (
             LOOPBACK_BRIDGE_ORIGIN,
@@ -414,34 +422,6 @@ def test_loopback_bridge_rejects_non_loopback_and_mixed_transport(
             openai_upstream_base=openai,
             anthropic_upstream_base=anthropic,
         ).validate()
-
-
-@pytest.mark.parametrize("port", (80, 18042, 18044))
-def test_loopback_bridge_rejects_noncanonical_port_across_gateway_and_broker(port: int) -> None:
-    origin = f"http://127.0.0.1:{port}"
-    config = replace(
-        gateway_config(),
-        callback_upstream_base=origin,
-        openai_upstream_base=origin + "/openai/v1",
-        anthropic_upstream_base=origin + "/anthropic",
-    )
-    with pytest.raises(ValueError, match="upstream bridge"):
-        config.validate()
-
-    with pytest.raises(ValueError, match="broker"):
-        BrokerPolicy(
-            {
-                "version": 1,
-                "targets": {
-                    kind: {"base_url": value, "expected_ips": ["127.0.0.1"]}
-                    for kind, value in {
-                        "callback": origin,
-                        "openai": origin + "/openai/v1",
-                        "anthropic": origin + "/anthropic",
-                    }.items()
-                },
-            }
-        )
 
 
 def test_loopback_gateway_policy_is_closed_and_needs_no_cross_host_trust(tmp_path) -> None:
@@ -492,28 +472,6 @@ def test_loopback_mailbox_uses_plain_pinned_http_without_tls(monkeypatch) -> Non
             1024,
             upstream_tls_context=_test_tls_context(),
         )
-
-
-@pytest.mark.parametrize("port", (80, 18042, 18044))
-def test_loopback_mailbox_rejects_connection_target_port_drift(monkeypatch, port: int) -> None:
-    policy = gateway_server._load_broker_policy(loopback_gateway_config(), "")
-    broker = MailboxBroker(SimpleNamespace(), policy, 1.0, 1024)
-    connections: list[tuple[str, int]] = []
-
-    def connect(host: str, selected_port: int, timeout: float):
-        del timeout
-        connections.append((host, selected_port))
-        return SimpleNamespace()
-
-    monkeypatch.setattr(gateway_adapters.http.client, "HTTPConnection", connect)
-
-    with pytest.raises(GatewayError, match="broker_policy_invalid"):
-        broker._upstream_connection(
-            urllib.parse.urlsplit(f"http://127.0.0.1:{port}"),
-            ("127.0.0.1",),
-            MonotonicDeadline.after(1.0),
-        )
-    assert connections == []
 
 
 @pytest.mark.parametrize(

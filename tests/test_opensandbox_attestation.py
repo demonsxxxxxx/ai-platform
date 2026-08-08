@@ -3,6 +3,7 @@ import hmac
 import json
 import tomllib
 import time
+import urllib.parse
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,9 @@ from app.runtime.sandbox.opensandbox_policy import (
     governed_opensandbox_egress_bases,
 )
 from app.settings import Settings
+import services.opensandbox_gateway.adapters as gateway_adapters
+from services.opensandbox_gateway.adapters import BrokerPolicy, MailboxBroker
+from services.opensandbox_gateway.gateway import GatewayError, MonotonicDeadline
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +86,48 @@ def test_governed_bridge_rejects_noncanonical_loopback_port(port: int) -> None:
 
     with pytest.raises(OpenSandboxProfileConfigurationError, match="bridge"):
         governed_opensandbox_egress_bases(settings)
+
+
+def broker_policy(origin: str) -> BrokerPolicy:
+    return BrokerPolicy(
+        {
+            "version": 1,
+            "targets": {
+                kind: {"base_url": value, "expected_ips": ["127.0.0.1"]}
+                for kind, value in {
+                    "callback": origin,
+                    "openai": origin + "/openai/v1",
+                    "anthropic": origin + "/anthropic",
+                }.items()
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize("port", (80, 18042, 18044))
+def test_loopback_broker_policy_rejects_noncanonical_port(port: int) -> None:
+    with pytest.raises(ValueError, match="broker"):
+        broker_policy(f"http://127.0.0.1:{port}")
+
+
+@pytest.mark.parametrize("port", (80, 18042, 18044))
+def test_loopback_mailbox_rejects_connection_target_port_drift(monkeypatch, port: int) -> None:
+    broker = MailboxBroker(SimpleNamespace(), broker_policy("http://127.0.0.1:18043"), 1.0, 1024)
+    connections: list[tuple[str, int]] = []
+
+    def connect(host: str, selected_port: int, timeout: float):
+        del timeout
+        connections.append((host, selected_port))
+        return SimpleNamespace()
+
+    monkeypatch.setattr(gateway_adapters.http.client, "HTTPConnection", connect)
+    with pytest.raises(GatewayError, match="broker_policy_invalid"):
+        broker._upstream_connection(
+            urllib.parse.urlsplit(f"http://127.0.0.1:{port}"),
+            ("127.0.0.1",),
+            MonotonicDeadline.after(1.0),
+        )
+    assert connections == []
 
 
 def capability(**overrides: Any) -> SimpleNamespace:
