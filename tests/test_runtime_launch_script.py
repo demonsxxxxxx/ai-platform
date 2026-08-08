@@ -30,20 +30,18 @@ def env_example_values(env_example_text: str) -> dict[str, str]:
     }
 
 
-def test_company_auth_defaults_match_webui_production_backend():
-    settings_text = Path("app/settings.py").read_text(encoding="utf-8")
+def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
     env_values = env_example_values(env_example_text)
 
-    assert 'existing_auth_base_url: str = Field(default="http://10.56.0.25:7263")' in settings_text
-    assert 'existing_user_info_base_url: str = Field(default="http://10.56.0.25:5166")' in settings_text
-    assert "EXISTING_AUTH_BASE_URL:-http://10.56.0.25:7263" in compose_text
-    assert "EXISTING_USER_INFO_BASE_URL:-http://10.56.0.25:5166" in compose_text
+    for service_name in ("api", "worker"):
+        service = compose_service_text(compose_text, service_name)
+        assert "EXISTING_AUTH_BASE_URL: ${EXISTING_AUTH_BASE_URL:?set EXISTING_AUTH_BASE_URL}" in service
+        assert "EXISTING_USER_INFO_BASE_URL: ${EXISTING_USER_INFO_BASE_URL:?set EXISTING_USER_INFO_BASE_URL}" in service
+    assert "10.56.0.25" not in compose_text
     assert env_values["EXISTING_AUTH_BASE_URL"] == ""
     assert env_values["EXISTING_USER_INFO_BASE_URL"] == ""
-    assert "10.56.0.25" not in env_values["EXISTING_AUTH_BASE_URL"]
-    assert "10.56.0.25" not in env_values["EXISTING_USER_INFO_BASE_URL"]
 
 
 def test_cors_defaults_include_current_211_frontend_origin():
