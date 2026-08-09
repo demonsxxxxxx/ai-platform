@@ -68,6 +68,12 @@ def default_sandbox_cleanup(monkeypatch):
     async def cleanup_expired_memory_records_for_worker(settings=None):
         return []
 
+    async def run_data_retention_maintenance(settings=None):
+        return {"status": "not_due"}
+
+    async def require_schema_current():
+        return {"ready": True}
+
     async def progress_pending_tool_permission_terminalizations_for_worker(settings=None):
         return []
 
@@ -89,6 +95,16 @@ def default_sandbox_cleanup(monkeypatch):
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_memory_records_for_worker",
         cleanup_expired_memory_records_for_worker,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.run_data_retention_maintenance",
+        run_data_retention_maintenance,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.require_schema_current",
+        require_schema_current,
         raising=False,
     )
     monkeypatch.setattr(

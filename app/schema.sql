@@ -1,3 +1,21 @@
+create table if not exists schema_migrations (
+  version text primary key,
+  checksum_sha256 text not null,
+  applied_at timestamptz not null default now()
+);
+
+create table if not exists schema_index_migrations (
+  index_name text primary key,
+  target_version text not null,
+  checksum_sha256 text not null,
+  state text not null check (state in ('building', 'ready', 'failed')),
+  attempts integer not null default 0,
+  last_error_code text,
+  started_at timestamptz,
+  completed_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists tenants (
   id text primary key,
   name text not null,
@@ -505,6 +523,9 @@ create table if not exists runs (
   principal_roles jsonb not null default '[]'::jsonb,
   principal_department_id text not null default '',
   auth_source text,
+  authz_policy_version integer not null default 1,
+  authority_source text not null default '',
+  authority_checked_at timestamptz,
   admitted_agent_profile_revision bigint,
   admitted_agent_profile_hash text,
   status text not null,
@@ -549,6 +570,9 @@ alter table runs add column if not exists executor_schema_version text not null 
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
 alter table runs add column if not exists principal_department_id text not null default '';
 alter table runs add column if not exists auth_source text;
+alter table runs add column if not exists authz_policy_version integer not null default 1;
+alter table runs add column if not exists authority_source text not null default '';
+alter table runs add column if not exists authority_checked_at timestamptz;
 alter table sessions add column if not exists admitted_agent_profile_revision bigint;
 alter table sessions add column if not exists admitted_agent_profile_hash text;
 alter table sessions add column if not exists purpose text not null default 'conversation';
@@ -2074,6 +2098,9 @@ create table if not exists artifacts (
   manifest_json jsonb not null default '{}'::jsonb,
   retention_policy text not null default 'standard_90d',
   expires_at timestamptz,
+  lifecycle_state text not null default 'active',
+  delete_requested_at timestamptz,
+  deleted_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -2081,6 +2108,39 @@ alter table artifacts add column if not exists trace_id text not null default ''
 alter table artifacts add column if not exists manifest_version text not null default 'ai-platform.artifact-manifest.v1';
 alter table artifacts add column if not exists retention_policy text not null default 'standard_90d';
 alter table artifacts add column if not exists expires_at timestamptz;
+alter table artifacts add column if not exists lifecycle_state text not null default 'active';
+alter table artifacts add column if not exists delete_requested_at timestamptz;
+alter table artifacts add column if not exists deleted_at timestamptz;
+alter table artifacts drop constraint if exists chk_artifacts_lifecycle_state;
+alter table artifacts add constraint chk_artifacts_lifecycle_state
+  check (lifecycle_state in ('active', 'delete_pending', 'deleted'));
+
+create table if not exists object_deletion_outbox (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  artifact_id text not null references artifacts(id),
+  storage_key text not null,
+  state text not null default 'pending',
+  attempts integer not null default 0,
+  available_at timestamptz not null default now(),
+  leased_at timestamptz,
+  receipt_at timestamptz,
+  dead_letter_at timestamptz,
+  reconcile_required boolean not null default false,
+  last_error_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (tenant_id, artifact_id)
+);
+alter table object_deletion_outbox add column if not exists dead_letter_at timestamptz;
+alter table object_deletion_outbox add column if not exists reconcile_required boolean not null default false;
+alter table object_deletion_outbox drop constraint if exists object_deletion_outbox_state_check;
+alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_state;
+alter table object_deletion_outbox add constraint chk_object_deletion_outbox_state
+  check (state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted'));
+create index if not exists idx_object_deletion_outbox_claim
+  on object_deletion_outbox(state, available_at asc, created_at asc, id asc)
+  where state in ('pending', 'processing', 'failed');
 
 create table if not exists audit_logs (
   id text primary key,
@@ -2101,7 +2161,6 @@ create index if not exists idx_audit_logs_tool_policy_history
   on audit_logs(tenant_id, target_type, action, target_id, created_at desc, id desc);
 create index if not exists idx_audit_logs_tool_policy_history_latest
   on audit_logs(tenant_id, target_type, action, created_at desc, id desc);
-
 insert into tenants(id, name)
 values ('default', 'Default Tenant')
 on conflict (id) do nothing;

@@ -6,6 +6,12 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+from app.persistence_limits import (
+    RUN_EVENT_MESSAGE_MAX_BYTES,
+    RUN_EVENT_PAYLOAD_MAX_BYTES,
+    ensure_json_size,
+    ensure_text_size,
+)
 from app.streaming import postgres as _ledger
 from app.streaming.authority import RunCursor
 
@@ -39,6 +45,8 @@ def _ledger_event_from_values(
         payload = {}
     if not isinstance(payload, dict):
         raise ValueError("run_event_payload_invalid")
+    ensure_text_size(message, max_bytes=RUN_EVENT_MESSAGE_MAX_BYTES, code="run_event_message_too_large")
+    ensure_json_size(payload, max_bytes=RUN_EVENT_PAYLOAD_MAX_BYTES, code="run_event_payload_too_large")
     optional_strings = {
         "trace_id": trace_id,
         "severity": severity,

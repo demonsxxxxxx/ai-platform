@@ -86,6 +86,7 @@ def test_readiness_requires_postgresql_and_redis(monkeypatch):
 
     monkeypatch.setenv("AI_PLATFORM_RUNTIME_COMMIT", commit)
     monkeypatch.setattr(health_routes, "_probe_postgresql", available)
+    monkeypatch.setattr(health_routes, "_probe_schema", available)
     monkeypatch.setattr(health_routes, "_probe_redis", available)
 
     response = TestClient(create_app()).get("/api/ai/ready")
@@ -94,7 +95,12 @@ def test_readiness_requires_postgresql_and_redis(monkeypatch):
     assert response.json() == {
         "status": "ready",
         "runtime_commit": commit,
-        "dependencies": {"postgresql": "ok", "redis": "ok"},
+        "dependencies": {
+            "postgresql": "ok",
+            "schema": "ok",
+            "target_schema_version": health_routes.TARGET_SCHEMA_VERSION,
+            "redis": "ok",
+        },
     }
 
 
@@ -106,13 +112,19 @@ def test_readiness_fails_closed_without_exposing_dependency_errors(monkeypatch):
         return None
 
     monkeypatch.setattr(health_routes, "_probe_postgresql", postgresql_unavailable)
+    monkeypatch.setattr(health_routes, "_probe_schema", postgresql_unavailable)
     monkeypatch.setattr(health_routes, "_probe_redis", redis_available)
 
     response = TestClient(create_app()).get("/api/ai/ready")
 
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
-    assert response.json()["dependencies"] == {"postgresql": "unavailable", "redis": "ok"}
+    assert response.json()["dependencies"] == {
+        "postgresql": "unavailable",
+        "schema": "unavailable",
+        "target_schema_version": health_routes.TARGET_SCHEMA_VERSION,
+        "redis": "ok",
+    }
     assert "secret database detail" not in response.text
 
 
@@ -128,6 +140,7 @@ def test_readiness_times_out_each_dependency(monkeypatch):
 
     monkeypatch.setattr(health_routes, "get_settings", lambda: Settings())
     monkeypatch.setattr(health_routes, "_probe_postgresql", unavailable_before_timeout)
+    monkeypatch.setattr(health_routes, "_probe_schema", hangs)
     monkeypatch.setattr(health_routes, "_probe_redis", hangs)
 
     response = TestClient(create_app()).get("/api/ai/ready")
@@ -135,6 +148,8 @@ def test_readiness_times_out_each_dependency(monkeypatch):
     assert response.status_code == 503
     assert response.json()["dependencies"] == {
         "postgresql": "unavailable",
+        "schema": "unavailable",
+        "target_schema_version": health_routes.TARGET_SCHEMA_VERSION,
         "redis": "unavailable",
     }
 

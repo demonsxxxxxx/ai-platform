@@ -9,6 +9,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+from app import artifact_lifecycle_repository as _artifact_lifecycle_repository
 from app.auth import ADMIN_ROLE_ALIASES, normalize_roles
 from app.capability_distribution import (
     CapabilityAccessDecision,
@@ -38,8 +39,21 @@ from app.control_plane_contracts import (
 )
 from app.error_taxonomy import summarize_error_categories
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
-from app.persistence import RepositoryNotFoundError
-from app.persistence import chat_submissions
+from app.persistence import RepositoryNotFoundError, chat_submissions
+from app.persistence_limits import (
+    ARTIFACT_MANIFEST_MAX_BYTES,
+    AUDIT_PAYLOAD_MAX_BYTES,
+    CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES,
+    MESSAGE_CONTENT_MAX_BYTES,
+    MESSAGE_METADATA_MAX_BYTES,
+    RUN_INPUT_MAX_BYTES,
+    RUN_RESULT_MAX_BYTES,
+    RUN_STEP_PAYLOAD_MAX_BYTES,
+    PersistenceSizeLimitError,
+    compact_json_dumps,
+    ensure_json_size,
+    ensure_text_size,
+)
 from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
 from app import run_event_repository as _run_event_repository
 from app.run_admission_policy import RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON
@@ -61,14 +75,24 @@ from app.tool_permission_lifecycle import (
     TOOL_PERMISSION_REQUEST_TTL_SECONDS,
 )
 
+claim_object_deletions = _artifact_lifecycle_repository.claim_object_deletions
+complete_object_deletion = _artifact_lifecycle_repository.complete_object_deletion
+fail_object_deletion = _artifact_lifecycle_repository.fail_object_deletion
+get_admin_artifact = _artifact_lifecycle_repository.get_admin_artifact
+get_artifact = _artifact_lifecycle_repository.get_artifact
+get_authorized_artifact = _artifact_lifecycle_repository.get_authorized_artifact
+get_data_retention_backlog = _artifact_lifecycle_repository.get_data_retention_backlog
+list_revealed_artifact_sessions = _artifact_lifecycle_repository.list_revealed_artifact_sessions
+list_revealed_artifacts = _artifact_lifecycle_repository.list_revealed_artifacts
+purge_deleted_memory_records = _artifact_lifecycle_repository.purge_deleted_memory_records
+queue_expired_artifacts_for_deletion = _artifact_lifecycle_repository.queue_expired_artifacts_for_deletion
+requeue_dead_letter_object_deletion = _artifact_lifecycle_repository.requeue_dead_letter_object_deletion
 # Preserve the established repository facade used by Chat callers while making
 # the cross-module ownership explicit to Ruff.
 chat_submission_fingerprint = chat_submissions.chat_submission_fingerprint
 claim_chat_submission = chat_submissions.claim_chat_submission
 finalize_chat_submission = chat_submissions.finalize_chat_submission
 get_chat_submission = chat_submissions.get_chat_submission
-
-
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -91,6 +115,20 @@ def memory_policy_id(*, tenant_id: str, workspace_id: str, user_id: str, agent_i
 
 class RepositoryConflictError(ValueError):
     pass
+
+
+def _require_json_size(value: Any, *, max_bytes: int, code: str) -> None:
+    try:
+        ensure_json_size(value, max_bytes=max_bytes, code=code)
+    except PersistenceSizeLimitError as exc:
+        raise RepositoryConflictError(exc.code) from exc
+
+
+def _require_text_size(value: str, *, max_bytes: int, code: str) -> None:
+    try:
+        ensure_text_size(value, max_bytes=max_bytes, code=code)
+    except PersistenceSizeLimitError as exc:
+        raise RepositoryConflictError(exc.code) from exc
 
 
 class RepositoryAuthorizationError(ValueError):
@@ -891,6 +929,7 @@ async def list_current_published_agent_profiles(
     tenant_id: str,
     query: str | None = None,
     category: str | None = None,
+    limit: int = 200,
 ) -> list[dict[str, Any]]:
     """List aggregate-selected published profiles with bounded server-side search/filtering."""
 
@@ -904,6 +943,7 @@ async def list_current_published_agent_profiles(
     if category:
         category_filter = "and agent_profile_revisions.category = %s"
         params.append(category)
+    params.append(max(1, min(int(limit), 200)))
     cursor = await conn.execute(
         f"""
         select agent_profile_revisions.tenant_id, agent_profile_revisions.agent_id,
@@ -939,6 +979,7 @@ async def list_current_published_agent_profiles(
           {query_filter}
           {category_filter}
         order by agent_profile_revisions.name asc, agent_profile_revisions.agent_id asc
+        limit %s
         """,
         tuple(params),
     )
@@ -1129,6 +1170,7 @@ async def get_scoped_context_artifact(
           and sessions.workspace_id = current_run.workspace_id
           and context_snapshot.included_artifact_ids ? artifacts.id
           and artifacts.id = %s
+          and artifacts.lifecycle_state = 'active'
           and (artifacts.expires_at is null or artifacts.expires_at > now())
         """,
         (run_id, tenant_id, workspace_id, user_id, session_id, run_id, artifact_id),
@@ -1400,6 +1442,7 @@ async def list_session_context_artifacts(
               select 1 from artifacts
               where artifacts.tenant_id = runs.tenant_id
                 and artifacts.run_id = runs.id
+                and artifacts.lifecycle_state = 'active'
                 and (artifacts.expires_at is null or artifacts.expires_at > now())
             )
           order by runs.session_generation desc
@@ -1411,6 +1454,7 @@ async def list_session_context_artifacts(
         from artifacts
         join latest_source_run on latest_source_run.id = artifacts.run_id
         where artifacts.tenant_id = %s
+          and artifacts.lifecycle_state = 'active'
           and (artifacts.expires_at is null or artifacts.expires_at > now())
         order by artifacts.created_at asc, artifacts.id asc
         limit %s
@@ -4259,10 +4303,14 @@ async def create_run(
     principal_roles: list[str] | None = None,
     principal_department_id: str = "",
     auth_source: str | None = None,
+    authz_policy_version: int = 1,
+    authority_source: str = "",
+    authority_checked_at: str | None = None,
     run_id: str | None = None,
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
 ) -> str:
+    _require_json_size(input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large")
     resolved_run_id = run_id or new_id("run")
     trace_id = standard_trace_id(resolved_run_id)
     await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
@@ -4280,12 +4328,13 @@ async def create_run(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
+          authz_policy_version, authority_source, authority_checked_at,
           admitted_agent_profile_revision, admitted_agent_profile_hash,
           status, input_json, queued_at,
           session_generation,
           input_token_count, output_token_count, total_token_count, estimated_cost_minor
         )
-        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
         from sessions
         where sessions.tenant_id = %s
           and sessions.workspace_id = %s
@@ -4308,6 +4357,9 @@ async def create_run(
             dumps_json(normalize_roles(principal_roles or [])),
             str(principal_department_id or ""),
             auth_source,
+            int(authz_policy_version),
+            str(authority_source or auth_source or ""),
+            authority_checked_at or None,
             admitted_agent_profile_revision,
             admitted_agent_profile_hash,
             dumps_json(input_json),
@@ -5078,6 +5130,11 @@ async def create_context_snapshot(
     payload_json = sanitize_public_payload(payload_json)
     if not isinstance(payload_json, dict):
         payload_json = {}
+    _require_json_size(
+        payload_json,
+        max_bytes=CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES,
+        code="context_snapshot_payload_too_large",
+    )
     cursor = await conn.execute(
         """
         with scoped_run as (
@@ -5097,6 +5154,37 @@ async def create_context_snapshot(
                  %s::jsonb as file_ids,
                  %s::jsonb as artifact_ids,
                  %s::jsonb as memory_record_ids
+        ), locked_artifacts as materialized (
+          select artifacts.id
+          from scoped_run
+          cross join requested_members
+          cross join lateral jsonb_array_elements_text(requested_members.artifact_ids) requested(id)
+          join artifacts on artifacts.id = requested.id
+            and artifacts.tenant_id = scoped_run.tenant_id
+          join runs artifact_run on artifact_run.id = artifacts.run_id
+            and artifact_run.tenant_id = artifacts.tenant_id
+          where artifact_run.workspace_id = scoped_run.workspace_id
+            and artifact_run.user_id = scoped_run.user_id
+            and artifact_run.session_id = scoped_run.session_id
+            and artifact_run.agent_id = scoped_run.agent_id
+            and artifacts.lifecycle_state = 'active'
+            and (artifacts.expires_at is null or artifacts.expires_at > statement_timestamp())
+          for update of artifacts
+        ), locked_memory_records as materialized (
+          select memory_records.id
+          from scoped_run
+          cross join requested_members
+          cross join lateral jsonb_array_elements_text(requested_members.memory_record_ids) requested(id)
+          join memory_records on memory_records.id = requested.id
+            and memory_records.tenant_id = scoped_run.tenant_id
+          where memory_records.workspace_id = scoped_run.workspace_id
+            and memory_records.user_id = scoped_run.user_id
+            and memory_records.session_id = scoped_run.session_id
+            and memory_records.agent_id = scoped_run.agent_id
+            and memory_records.status = 'active'
+            and memory_records.deleted_at is null
+            and (memory_records.expires_at is null or memory_records.expires_at > statement_timestamp())
+          for update of memory_records
         ), eligible_members as (
           select scoped_run.*, requested_members.*,
             (
@@ -5139,29 +5227,11 @@ async def create_context_snapshot(
             ) as eligible_file_count,
             (
               select count(*)
-              from jsonb_array_elements_text(requested_members.artifact_ids) requested(id)
-              join artifacts on artifacts.id = requested.id
-                and artifacts.tenant_id = scoped_run.tenant_id
-              join runs artifact_run on artifact_run.id = artifacts.run_id
-                and artifact_run.tenant_id = artifacts.tenant_id
-              where artifact_run.workspace_id = scoped_run.workspace_id
-                and artifact_run.user_id = scoped_run.user_id
-                and artifact_run.session_id = scoped_run.session_id
-                and artifact_run.agent_id = scoped_run.agent_id
-                and (artifacts.expires_at is null or artifacts.expires_at > statement_timestamp())
+              from locked_artifacts
             ) as eligible_artifact_count,
             (
               select count(*)
-              from jsonb_array_elements_text(requested_members.memory_record_ids) requested(id)
-              join memory_records on memory_records.id = requested.id
-              where memory_records.tenant_id = scoped_run.tenant_id
-                and memory_records.workspace_id = scoped_run.workspace_id
-                and memory_records.user_id = scoped_run.user_id
-                and memory_records.session_id = scoped_run.session_id
-                and memory_records.agent_id = scoped_run.agent_id
-                and memory_records.status = 'active'
-                and memory_records.deleted_at is null
-                and (memory_records.expires_at is null or memory_records.expires_at > statement_timestamp())
+              from locked_memory_records
             ) as eligible_memory_record_count
           from scoped_run
           cross join requested_members
@@ -8555,6 +8625,74 @@ async def upsert_run_step(
     sequence: int,
     payload_json: dict[str, Any],
 ) -> str:
+    _require_json_size(
+        payload_json,
+        max_bytes=RUN_STEP_PAYLOAD_MAX_BYTES,
+        code="run_step_payload_too_large",
+    )
+    await conn.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"run-step:{tenant_id}:{run_id}:{step_key}",),
+    )
+    existing_cursor = await conn.execute(
+        """
+        select id, payload_json
+        from run_steps
+        where tenant_id = %s and run_id = %s and step_key = %s
+        for update
+        """,
+        (tenant_id, run_id, step_key),
+    )
+    existing = await existing_cursor.fetchone()
+    existing_payload = existing.get("payload_json") if existing is not None else {}
+    if not isinstance(existing_payload, dict):
+        existing_payload = {}
+    merged_payload = {**existing_payload, **payload_json}
+    _require_json_size(
+        merged_payload,
+        max_bytes=RUN_STEP_PAYLOAD_MAX_BYTES,
+        code="run_step_payload_too_large",
+    )
+    if existing is not None:
+        cursor = await conn.execute(
+            """
+            update run_steps
+            set step_kind = %s,
+                status = %s,
+                title = %s,
+                role = %s,
+                sequence = %s,
+                payload_json = %s::jsonb,
+                started_at = coalesce(
+                  started_at,
+                  case when %s in ('running', 'succeeded', 'failed') then now() else null end
+                ),
+                finished_at = coalesce(
+                  case when %s in ('succeeded', 'failed', 'cancelled') then now() else null end,
+                  finished_at
+                ),
+                updated_at = now()
+            where id = %s and tenant_id = %s and run_id = %s
+            returning id
+            """,
+            (
+                step_kind,
+                status,
+                title,
+                role,
+                sequence,
+                compact_json_dumps(merged_payload),
+                status,
+                status,
+                str(existing["id"]),
+                tenant_id,
+                run_id,
+            ),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise RepositoryConflictError("run_step_update_conflict")
+        return str(row["id"])
     step_id = new_id("step")
     cursor = await conn.execute(
         """
@@ -8568,17 +8706,6 @@ async def upsert_run_step(
           case when %s in ('running', 'succeeded', 'failed') then now() else null end,
           case when %s in ('succeeded', 'failed', 'cancelled') then now() else null end
         )
-        on conflict (tenant_id, run_id, step_key)
-        do update set
-          step_kind = excluded.step_kind,
-          status = excluded.status,
-          title = excluded.title,
-          role = excluded.role,
-          sequence = excluded.sequence,
-          payload_json = run_steps.payload_json || excluded.payload_json,
-          started_at = coalesce(run_steps.started_at, excluded.started_at),
-          finished_at = coalesce(excluded.finished_at, run_steps.finished_at),
-          updated_at = now()
         returning id
         """,
         (
@@ -8591,7 +8718,7 @@ async def upsert_run_step(
             title,
             role,
             sequence,
-            dumps_json(payload_json),
+            compact_json_dumps(merged_payload),
             status,
             status,
         ),
@@ -9977,6 +10104,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     copied_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
     copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
     copied_input_json.update(copied_execution_snapshot)
+    _require_json_size(copied_input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large")
     session_generation = await allocate_session_run_generation(
         conn,
         tenant_id=tenant_id,
@@ -10271,10 +10399,11 @@ async def update_run_input_execution_snapshot(
 ) -> None:
     """Merge one canonical copied-run execution snapshot in a tenant-scoped update."""
     canonical_snapshot = copied_run_execution_snapshot(execution_snapshot)
+    serialized_snapshot = compact_json_dumps(canonical_snapshot)
     cursor = await conn.execute(
         """
-        update runs
-        set input_json = coalesce(input_json, '{}'::jsonb) || %s::jsonb
+        select id, input_json
+        from runs
         where tenant_id = %s
           and id = %s
           and (
@@ -10287,19 +10416,39 @@ async def update_run_input_execution_snapshot(
               and %s::jsonb->'context_snapshot'->>'context_snapshot_id' = context_snapshot_id
             )
           )
-        returning id
+        for update
         """,
         (
-            json.dumps(canonical_snapshot, ensure_ascii=False),
             tenant_id,
             run_id,
-            json.dumps(canonical_snapshot, ensure_ascii=False),
-            json.dumps(canonical_snapshot, ensure_ascii=False),
-            json.dumps(canonical_snapshot, ensure_ascii=False),
-            json.dumps(canonical_snapshot, ensure_ascii=False),
+            serialized_snapshot,
+            serialized_snapshot,
+            serialized_snapshot,
+            serialized_snapshot,
         ),
     )
-    if await cursor.fetchone() is None:
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryConflictError("context_snapshot_binding_invalid")
+    existing_input = row.get("input_json")
+    if not isinstance(existing_input, dict):
+        existing_input = {}
+    merged_input = {**existing_input, **canonical_snapshot}
+    _require_json_size(
+        merged_input,
+        max_bytes=RUN_INPUT_MAX_BYTES,
+        code="run_input_too_large",
+    )
+    updated = await conn.execute(
+        """
+        update runs
+        set input_json = %s::jsonb
+        where tenant_id = %s and id = %s
+        returning id
+        """,
+        (compact_json_dumps(merged_input), tenant_id, run_id),
+    )
+    if await updated.fetchone() is None:
         raise RepositoryConflictError("context_snapshot_binding_invalid")
 
 
@@ -10572,6 +10721,7 @@ async def complete_run(
     run_id: str,
     result_json: dict[str, Any],
 ) -> bool:
+    _require_json_size(result_json, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     lock_cursor = await conn.execute(
         """
@@ -10683,6 +10833,7 @@ async def fail_run(
     result_json: dict[str, Any] | None = None,
     terminal_reason: str = "run_failed",
 ) -> ToolPermissionTerminalizationProgress:
+    _require_json_size(result_json or {}, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     staged = await _stage_run_tool_permission_terminalization(
         conn,
@@ -10776,6 +10927,7 @@ async def cancel_run(
     run_id: str,
     result_json: dict[str, Any] | None = None,
 ) -> ToolPermissionTerminalizationProgress:
+    _require_json_size(result_json or {}, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
     staged = await _stage_run_tool_permission_terminalization(
         conn,
         tenant_id=tenant_id,
@@ -10841,6 +10993,11 @@ async def create_artifact(
     size_bytes: int,
     manifest_json: dict[str, Any],
 ) -> None:
+    _require_json_size(
+        manifest_json,
+        max_bytes=ARTIFACT_MANIFEST_MAX_BYTES,
+        code="artifact_manifest_too_large",
+    )
     resolved_trace_id = trace_id or standard_trace_id(run_id)
     await conn.execute(
         """
@@ -10866,181 +11023,6 @@ async def create_artifact(
     )
 
 
-async def get_artifact(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    artifact_id: str,
-) -> dict[str, Any] | None:
-    cursor = await conn.execute(
-        """
-        select artifacts.*
-        from artifacts
-        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
-        where artifacts.tenant_id = %s and artifacts.id = %s
-        """,
-        (tenant_id, artifact_id),
-    )
-    return await cursor.fetchone()
-
-
-async def get_authorized_artifact(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-    artifact_id: str,
-) -> dict[str, Any] | None:
-    cursor = await conn.execute(
-        """
-        select artifacts.*
-        from artifacts
-        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
-        join sessions on sessions.id = runs.session_id
-          and sessions.tenant_id = runs.tenant_id
-          and sessions.workspace_id = runs.workspace_id
-          and sessions.user_id = runs.user_id
-          and sessions.agent_id = runs.agent_id
-        where artifacts.tenant_id = %s
-          and artifacts.id = %s
-          and runs.user_id = %s
-          and sessions.status = 'active'
-        """,
-        (tenant_id, artifact_id, user_id),
-    )
-    return await cursor.fetchone()
-
-
-async def get_admin_artifact(conn: AsyncConnection, *, tenant_id: str, artifact_id: str) -> dict[str, Any] | None:
-    cursor = await conn.execute(
-        """
-        select
-          artifacts.*,
-          runs.id as run_id,
-          runs.user_id as target_user_id
-        from artifacts
-        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
-        where artifacts.tenant_id = %s
-          and artifacts.id = %s
-        """,
-        (tenant_id, artifact_id),
-    )
-    return await cursor.fetchone()
-
-
-async def list_revealed_artifacts(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-    session_id: str | None = None,
-    project_id: str | None = None,
-    search: str | None = None,
-    sort_by: str = "created_at",
-    sort_order: str = "desc",
-) -> list[dict[str, Any]]:
-    """Return ACL-scoped artifacts for the public revealed-files projection."""
-
-    order_column = "artifacts.created_at" if sort_by not in {"file_name", "file_size"} else {
-        "file_name": "artifacts.label",
-        "file_size": "artifacts.size_bytes",
-    }[sort_by]
-    order_direction = "asc" if str(sort_order).lower() == "asc" else "desc"
-    filters = [
-        "artifacts.tenant_id = %s",
-        "runs.user_id = %s",
-        "sessions.status = 'active'",
-    ]
-    params: list[Any] = [tenant_id, user_id]
-    if session_id:
-        filters.append("runs.session_id = %s")
-        params.append(session_id)
-    if project_id:
-        filters.append("runs.workspace_id = %s")
-        params.append(project_id)
-    if search:
-        filters.append("(artifacts.label ilike %s or artifacts.storage_key ilike %s)")
-        like = f"%{search}%"
-        params.extend([like, like])
-    cursor = await conn.execute(
-        f"""
-        select
-          artifacts.id,
-          artifacts.storage_key,
-          artifacts.label,
-          artifacts.content_type,
-          artifacts.size_bytes,
-          artifacts.artifact_type,
-          artifacts.created_at,
-          artifacts.trace_id,
-          runs.id as run_id,
-          runs.session_id,
-          runs.workspace_id,
-          runs.user_id,
-          sessions.title as session_name
-        from artifacts
-        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
-        join sessions on sessions.id = runs.session_id
-          and sessions.tenant_id = runs.tenant_id
-          and sessions.workspace_id = runs.workspace_id
-          and sessions.user_id = runs.user_id
-          and sessions.agent_id = runs.agent_id
-        where {" and ".join(filters)}
-        order by {order_column} {order_direction}, artifacts.created_at desc
-        limit 500
-        """,
-        tuple(params),
-    )
-    return list(await cursor.fetchall())
-
-
-async def list_revealed_artifact_sessions(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-    project_id: str | None = None,
-    search: str | None = None,
-) -> list[dict[str, Any]]:
-    """Return session summaries for ACL-scoped revealed artifact rows."""
-
-    filters = [
-        "artifacts.tenant_id = %s",
-        "runs.user_id = %s",
-        "sessions.status = 'active'",
-    ]
-    params: list[Any] = [tenant_id, user_id]
-    if project_id:
-        filters.append("runs.workspace_id = %s")
-        params.append(project_id)
-    if search:
-        filters.append("(artifacts.label ilike %s or artifacts.storage_key ilike %s)")
-        like = f"%{search}%"
-        params.extend([like, like])
-    cursor = await conn.execute(
-        f"""
-        select
-          runs.session_id,
-          max(sessions.title) as session_name,
-          count(*) as file_count,
-          max(artifacts.created_at) as updated_at
-        from artifacts
-        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
-        join sessions on sessions.id = runs.session_id
-          and sessions.tenant_id = runs.tenant_id
-          and sessions.workspace_id = runs.workspace_id
-          and sessions.user_id = runs.user_id
-          and sessions.agent_id = runs.agent_id
-        where {" and ".join(filters)}
-        group by runs.session_id
-        order by updated_at desc
-        limit 200
-        """,
-        tuple(params),
-    )
-    return list(await cursor.fetchall())
-
-
 async def append_audit_log(
     conn: AsyncConnection,
     *,
@@ -11052,6 +11034,8 @@ async def append_audit_log(
     trace_id: str | None = None,
     payload_json: dict[str, Any] | None = None,
 ) -> str:
+    resolved_payload = payload_json or {}
+    _require_json_size(resolved_payload, max_bytes=AUDIT_PAYLOAD_MAX_BYTES, code="audit_payload_too_large")
     audit_id = new_id("aud")
     await conn.execute(
         """
@@ -11067,7 +11051,7 @@ async def append_audit_log(
             target_id,
             trace_id,
             AUDIT_EVENT_SCHEMA_VERSION,
-            dumps_json(payload_json or {}),
+            dumps_json(resolved_payload),
         ),
     )
     return audit_id
@@ -11270,6 +11254,7 @@ async def list_session_messages_for_fork(
     *,
     tenant_id: str,
     session_id: str,
+    limit: int = 201,
 ) -> list[dict[str, Any]]:
     """Load one authorized source session's ordered message prefix candidates."""
 
@@ -11279,8 +11264,9 @@ async def list_session_messages_for_fork(
         from messages
         where tenant_id = %s and session_id = %s
         order by created_at asc, id asc
+        limit %s
         """,
-        (tenant_id, session_id),
+        (tenant_id, session_id, max(1, min(int(limit), 201))),
     )
     return list(await cursor.fetchall())
 
@@ -11390,13 +11376,16 @@ async def append_message(
     content: str,
     metadata_json: dict[str, Any] | None = None,
 ) -> str:
+    resolved_metadata = metadata_json or {}
+    _require_text_size(content, max_bytes=MESSAGE_CONTENT_MAX_BYTES, code="message_content_too_large")
+    _require_json_size(resolved_metadata, max_bytes=MESSAGE_METADATA_MAX_BYTES, code="message_metadata_too_large")
     message_id = new_id("msg")
     await conn.execute(
         """
         insert into messages(id, tenant_id, session_id, run_id, role, content, metadata_json)
         values (%s, %s, %s, %s, %s, %s, %s::jsonb)
         """,
-        (message_id, tenant_id, session_id, run_id, role, content, dumps_json(metadata_json or {})),
+        (message_id, tenant_id, session_id, run_id, role, content, dumps_json(resolved_metadata)),
     )
     await conn.execute("update sessions set updated_at = now() where tenant_id = %s and id = %s", (tenant_id, session_id))
     return message_id
@@ -11408,9 +11397,17 @@ async def list_authorized_messages(
     tenant_id: str,
     user_id: str,
     session_id: str,
+    cursor: tuple[Any, str] | None = None,
+    limit: int = 101,
 ) -> list[dict[str, Any]]:
+    cursor_filter = ""
+    params: list[Any] = [tenant_id, session_id, user_id]
+    if cursor is not None:
+        cursor_filter = "and (messages.created_at, messages.id) > (%s, %s)"
+        params.extend(cursor)
+    params.append(max(1, min(int(limit), 201)))
     cursor = await conn.execute(
-        """
+        f"""
         select messages.id, messages.session_id, messages.run_id, messages.role, messages.content,
                messages.metadata_json, messages.created_at
         from messages
@@ -11418,9 +11415,11 @@ async def list_authorized_messages(
         where messages.tenant_id = %s
           and messages.session_id = %s
           and sessions.user_id = %s
+          {cursor_filter}
         order by messages.created_at asc, messages.id asc
+        limit %s
         """,
-        (tenant_id, session_id, user_id),
+        tuple(params),
     )
     return list(await cursor.fetchall())
 

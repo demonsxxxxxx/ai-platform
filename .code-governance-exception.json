@@ -1,0 +1,20 @@
+{
+  "schema_version": "ai-platform.code-governance-exception.v2",
+  "candidate": {
+    "base_ref": "5bda1c4d65a38c193685fd6298ed64308bbf371d",
+    "scope_sha256": "a9990a191988c488b450777dedf871b8ee0cb38baa3d306c7f55b15d48bec847"
+  },
+  "expires_on": "2026-08-23",
+  "owner": "demonsxxxxxx",
+  "reason": "Issue #864 requires one review-atomic contract across trusted identity admission, PostgreSQL schema readiness, bounded history reads, reference-safe MinIO deletion receipts, and persistence limits. Splitting these coupled authority and lifecycle invariants would allow incompatible API, worker, and schema combinations. This exception covers only production file count and net LOC; hot-file, Ruff, focused test, CI, and external acceptance gates remain enforced.",
+  "violations": [
+    {
+      "code": "production_file_count",
+      "path": null
+    },
+    {
+      "code": "production_net_loc",
+      "path": null
+    }
+  ]
+}
