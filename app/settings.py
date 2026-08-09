@@ -27,10 +27,9 @@ class Settings(BaseSettings):
 
     sandbox_workspace_root: str = Field(default="/tmp/ai-platform-sandbox-workspaces")
     sandbox_container_provider: str = Field(default="fake")
-    # OpenSandbox has one production security contract. Keeping this as a
-    # single-value Literal makes stale trusted_internal deployment settings
-    # fail during process startup instead of silently selecting a weaker path.
-    sandbox_security_profile: Literal["governed"] = Field(default="governed")
+    # Production remains governed. The explicit internal-test profile exists
+    # only for bounded functional acceptance against the official service.
+    sandbox_security_profile: Literal["governed", "internal-test"] = Field(default="governed")
     sandbox_executor_image: str = Field(default="ai-platform-executor:dev")
     sandbox_executor_browser_image: str = Field(default="")
     sandbox_executor_published_host: str = Field(default="127.0.0.1")
@@ -158,6 +157,12 @@ class Settings(BaseSettings):
             < self.artifact_object_delete_retry_base_seconds
         ):
             raise ValueError("artifact_object_delete_retry_cap_below_base")
+        if self.sandbox_security_profile == "internal-test" and not (
+            self.deployment_environment == "test"
+            and self.sandbox_container_provider == "opensandbox"
+            and self.opensandbox_expected_network_mode == "bridge"
+        ):
+            raise ValueError("internal_test_opensandbox_profile_invalid")
         if self.deployment_environment == "production":
             if self.frontend_poc_auth_enabled:
                 raise ValueError("frontend_poc_auth_forbidden_in_production")

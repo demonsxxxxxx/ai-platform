@@ -1024,6 +1024,18 @@ class ExternalEgressCapabilitySettings(OpenSandboxSettings):
     """Source-test settings for the required OpenSandbox runsc gateway profile."""
 
 
+class InternalTestDirectOpenSandboxSettings(OpenSandboxSettings):
+    deployment_environment = "test"
+    sandbox_security_profile = "internal-test"
+    sandbox_egress_proof_signing_key = ""
+    opensandbox_expected_network_mode = "bridge"
+    opensandbox_external_egress_capability_url = ""
+    opensandbox_external_egress_capability_token = ""
+    sandbox_callback_base_url = "http://host.docker.internal:8020"
+    openai_base_url = "http://host.docker.internal:18043/openai/v1"
+    anthropic_base_url = "http://host.docker.internal:18043/anthropic"
+
+
 
 
 class IncompatibleOpenSandboxNetworkPolicySettings(ExternalEgressCapabilitySettings):
@@ -1689,6 +1701,154 @@ async def test_opensandbox_real_create_path_does_not_require_custom_attestation(
     assert FakeOpenSandbox.created
     assert FakeOpenSandbox.instances[lease.container_id].info_calls == 1
     assert health_calls
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_direct_create_readback_health_identity_and_stop(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    settings = InternalTestDirectOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    health_calls: list[tuple[Any, ...]] = []
+    identity_calls: list[tuple[Any, ...]] = []
+
+    def forbidden_capability_fetch(*_args: Any) -> dict[str, Any]:
+        raise AssertionError("internal-test direct mode must not fetch a gateway capability")
+
+    provider = opensandbox_provider(
+        health_probe=lambda *args: health_calls.append(args) or True,
+        identity_probe=lambda *args: identity_calls.append(args) or {"uid": 10001, "gid": 10001},
+        capability_profile_fetcher=forbidden_capability_fetch,
+    )
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert lease.provider == "opensandbox"
+    assert lease.container_id == "osb-run-a"
+    assert lease.labels["ai-platform.security_profile"] == "internal-test"
+    assert lease.labels["ai-platform.internal_test.profile"] == "official-opensandbox-direct-v1"
+    assert lease.labels["ai-platform.internal_test.network_mode"] == "bridge"
+    assert lease.labels["ai-platform.executor.requested_image_digest"] == settings.opensandbox_executor_image_digest
+    assert FakeOpenSandbox.instances[lease.container_id].info_calls == 1
+    assert health_calls and identity_calls
+
+    await provider.validate_for_dispatch(lease, request(), workspace())
+
+    assert FakeOpenSandbox.instances[lease.container_id].info_calls == 2
+    assert len(health_calls) == len(identity_calls) == 2
+
+    stopped = await provider.stop(lease, reason="internal_test_acceptance")
+
+    assert stopped.status == "stopped"
+    assert FakeOpenSandbox.instances[lease.container_id].killed is True
+    assert lease.container_id not in provider._sandboxes
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_dispatch_digest_drift_fails_closed_and_retains_tracking(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = InternalTestDirectOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    lease.labels["ai-platform.executor.requested_image_digest"] = "sha256:" + "b" * 64
+
+    with pytest.raises(container_provider.ContainerCleanupFailedError):
+        await provider.validate_for_dispatch(lease, request(), workspace())
+
+    assert FakeOpenSandbox.instances[lease.container_id].killed is False
+    assert provider._sandboxes[lease.container_id] is FakeOpenSandbox.instances[lease.container_id]
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_orphan_cleanup_requires_exact_direct_runtime_evidence(monkeypatch):
+    from opensandbox.models.sandboxes import PaginationInfo
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
+    from app.runtime.sandbox.providers.opensandbox.metadata import normalize_opensandbox_metadata
+
+    settings = InternalTestDirectOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    labels = normalize_opensandbox_metadata(
+        internal_test_opensandbox_lease_labels(
+            request(attempt_id="attempt-a"),
+            settings,
+            executor_identity_labels={},
+            skill_mount_labels={},
+        )
+    )
+    exact = FakeOpenSandbox(sandbox_id="osb-exact", metadata=labels, state="FAILED")
+    drifted = FakeOpenSandbox(
+        sandbox_id="osb-drifted",
+        metadata={**labels, "ai-platform.runtime_subject": "foreign-runtime"},
+        state="FAILED",
+    )
+
+    class Manager:
+        killed: list[str] = []
+
+        @classmethod
+        def create(cls, **_kwargs):
+            return cls()
+
+        async def close(self):
+            return None
+
+        async def list_sandbox_infos(self, filter):
+            values = [
+                sandbox
+                for sandbox in (exact, drifted)
+                if all(sandbox.metadata.get(key) == value for key, value in (filter.metadata or {}).items())
+            ]
+            return SimpleNamespace(
+                sandbox_infos=values,
+                pagination=PaginationInfo(
+                    page=filter.page,
+                    page_size=filter.page_size,
+                    total_items=len(values),
+                    total_pages=1,
+                    has_next_page=False,
+                ),
+            )
+
+        async def kill_sandbox(self, sandbox_id):
+            type(self).killed.append(sandbox_id)
+
+    provider = _paged_opensandbox_provider(Manager)
+    cleanup_filters = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "sandbox_mode": "ephemeral",
+        "security_profile": "internal-test",
+    }
+
+    results = await provider.cleanup_orphan_containers(cleanup_filters, reason="orphan_reconciliation")
+
+    assert [result.container_id for result in results] == ["osb-exact"]
+    assert Manager.killed == ["osb-exact"]
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_internal_test_direct_health_failure_cleans_real_sandbox(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = InternalTestDirectOpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+
+    with pytest.raises(container_provider.ExecutorHealthTimeoutError):
+        await opensandbox_provider(
+            health_probe=lambda *_args: False,
+            capability_profile_fetcher=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("capability fetch must not run")
+            ),
+        ).create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.instances["osb-run-a"].killed is True
 
 
 @pytest.mark.asyncio
@@ -2916,7 +3076,7 @@ def test_create_container_provider_rejects_retired_profile_before_backend_select
         )(),
     )
 
-    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="not governed"):
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="selection is invalid"):
         container_provider.create_container_provider()
 
 

@@ -4,6 +4,7 @@ import hmac
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -1200,6 +1201,7 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
                     {
                         "source": "sandbox_runtime",
                         "evidence_class": "runtime_lease_projection",
+                        "security_profile": "governed",
                         "attempt_id": "qat_test-runtime-attempt",
                         "container_id": "exec-run-a",
                         "container_name": "executor-exec-run-a",
@@ -1354,6 +1356,71 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
     assert "private-capability" not in repr(create_kwargs["lease_payload_json"])
     assert "registry.example" not in repr(create_kwargs["lease_payload_json"])
     assert calls[1] == ("release", "lease-created-a", "dispatch_completed")
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_explicit_internal_test_opensandbox_evidence_without_governed_proof(
+    tmp_path, monkeypatch
+):
+    from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
+
+    runtime_request = request(sandbox_mode="ephemeral", browser_enabled=False)
+    captured: list[dict[str, Any]] = []
+    image = "registry.example/ai-platform@sha256:" + "a" * 64
+    digest = "sha256:" + "a" * 64
+
+    class StubSettings:
+        sandbox_container_provider = "opensandbox"
+        sandbox_security_profile = "internal-test"
+        deployment_environment = "test"
+        sandbox_egress_proof_signing_key = ""
+        opensandbox_expected_network_mode = "bridge"
+        opensandbox_executor_image = image
+        opensandbox_executor_image_digest = digest
+        sandbox_executor_image = image
+        sandbox_runtime_subject = "runtime-subject-fixed-sha"
+
+    async def create_sandbox_lease(_conn, **kwargs):
+        captured.append(kwargs)
+        return {"id": "lease-internal-test"}
+
+    labels = internal_test_opensandbox_lease_labels(
+        runtime_request,
+        StubSettings(),
+        executor_identity_labels={},
+        skill_mount_labels={},
+    )
+    lease = ContainerLease(
+        container_id="osb-run-a",
+        container_name="opensandbox-run-a",
+        provider="opensandbox",
+        executor_url="http://opensandbox-executor.test",
+        tenant_id=runtime_request.tenant_id,
+        workspace_id=runtime_request.workspace_id,
+        user_id=runtime_request.user_id,
+        session_id=runtime_request.session_id,
+        run_id=runtime_request.run_id,
+        sandbox_mode=runtime_request.sandbox_mode,
+        browser_enabled=False,
+        workspace_host_path=str(tmp_path),
+        workspace_container_path="/workspace",
+        labels=labels,
+    )
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.create_sandbox_lease", create_sandbox_lease)
+    runtime = SandboxRuntime(workspace_root=tmp_path, provider=FakeContainerProvider())
+    workspace = runtime.workspace_manager.prepare(runtime_request)
+
+    lease_id = await runtime._record_runtime_lease(lease, runtime_request, workspace)
+
+    assert lease_id == "lease-internal-test"
+    payload = captured[0]["lease_payload_json"]
+    assert payload["security_profile"] == "internal-test"
+    assert payload["labels"]["ai-platform.internal_test.profile"] == "official-opensandbox-direct-v1"
+    assert payload["requested_image"] == image
+    assert payload["requested_image_digest"] == digest
+    assert "governed_egress_proof" not in payload
 
 
 @pytest.mark.asyncio

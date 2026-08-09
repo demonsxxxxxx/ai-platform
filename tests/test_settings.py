@@ -44,6 +44,42 @@ def test_sandbox_security_profile_rejects_unknown_values():
         Settings(_env_file=None, sandbox_security_profile="permissive")
 
 
+def test_internal_test_opensandbox_profile_requires_explicit_test_bridge_selection():
+    settings = Settings(
+        _env_file=None,
+        deployment_environment="test",
+        sandbox_container_provider="opensandbox",
+        sandbox_security_profile="internal-test",
+        opensandbox_expected_network_mode="bridge",
+    )
+
+    assert settings.sandbox_security_profile == "internal-test"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"deployment_environment": "production"},
+        {"deployment_environment": "development"},
+        {"sandbox_container_provider": "fake"},
+        {"sandbox_container_provider": "docker"},
+        {"opensandbox_expected_network_mode": "none"},
+    ],
+)
+def test_internal_test_opensandbox_profile_rejects_single_sided_or_non_test_selection(overrides):
+    values = {
+        "deployment_environment": "test",
+        "sandbox_container_provider": "opensandbox",
+        "sandbox_security_profile": "internal-test",
+        "opensandbox_expected_network_mode": "bridge",
+        **overrides,
+    }
+    if values["deployment_environment"] == "production":
+        values["trusted_principal_secret"] = "test-only-principal-secret"
+    with pytest.raises(ValidationError, match="internal_test_opensandbox_profile_invalid"):
+        Settings(_env_file=None, **values)
+
+
 @pytest.mark.parametrize("provider", ["fake", "docker", "opensandbox"])
 def test_retired_security_profile_is_rejected_for_every_provider(provider):
     with pytest.raises(ValidationError):
