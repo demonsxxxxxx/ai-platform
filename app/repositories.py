@@ -40,6 +40,18 @@ from app.error_taxonomy import summarize_error_categories
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
 from app.persistence import RepositoryNotFoundError
 from app.persistence import chat_submissions
+from app.persistence_limits import (
+    ARTIFACT_MANIFEST_MAX_BYTES,
+    AUDIT_PAYLOAD_MAX_BYTES,
+    CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES,
+    MESSAGE_CONTENT_MAX_BYTES,
+    MESSAGE_METADATA_MAX_BYTES,
+    RUN_INPUT_MAX_BYTES,
+    RUN_RESULT_MAX_BYTES,
+    PersistenceSizeLimitError,
+    ensure_json_size,
+    ensure_text_size,
+)
 from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
 from app import run_event_repository as _run_event_repository
 from app.run_admission_policy import RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON
@@ -91,6 +103,20 @@ def memory_policy_id(*, tenant_id: str, workspace_id: str, user_id: str, agent_i
 
 class RepositoryConflictError(ValueError):
     pass
+
+
+def _require_json_size(value: Any, *, max_bytes: int, code: str) -> None:
+    try:
+        ensure_json_size(value, max_bytes=max_bytes, code=code)
+    except PersistenceSizeLimitError as exc:
+        raise RepositoryConflictError(exc.code) from exc
+
+
+def _require_text_size(value: str, *, max_bytes: int, code: str) -> None:
+    try:
+        ensure_text_size(value, max_bytes=max_bytes, code=code)
+    except PersistenceSizeLimitError as exc:
+        raise RepositoryConflictError(exc.code) from exc
 
 
 class RepositoryAuthorizationError(ValueError):
@@ -4272,6 +4298,7 @@ async def create_run(
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
 ) -> str:
+    _require_json_size(input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large")
     resolved_run_id = run_id or new_id("run")
     trace_id = standard_trace_id(resolved_run_id)
     await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
@@ -5091,6 +5118,11 @@ async def create_context_snapshot(
     payload_json = sanitize_public_payload(payload_json)
     if not isinstance(payload_json, dict):
         payload_json = {}
+    _require_json_size(
+        payload_json,
+        max_bytes=CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES,
+        code="context_snapshot_payload_too_large",
+    )
     cursor = await conn.execute(
         """
         with scoped_run as (
@@ -10586,6 +10618,7 @@ async def complete_run(
     run_id: str,
     result_json: dict[str, Any],
 ) -> bool:
+    _require_json_size(result_json, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     lock_cursor = await conn.execute(
         """
@@ -10697,6 +10730,7 @@ async def fail_run(
     result_json: dict[str, Any] | None = None,
     terminal_reason: str = "run_failed",
 ) -> ToolPermissionTerminalizationProgress:
+    _require_json_size(result_json or {}, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     staged = await _stage_run_tool_permission_terminalization(
         conn,
@@ -10790,6 +10824,7 @@ async def cancel_run(
     run_id: str,
     result_json: dict[str, Any] | None = None,
 ) -> ToolPermissionTerminalizationProgress:
+    _require_json_size(result_json or {}, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
     staged = await _stage_run_tool_permission_terminalization(
         conn,
         tenant_id=tenant_id,
@@ -10855,6 +10890,11 @@ async def create_artifact(
     size_bytes: int,
     manifest_json: dict[str, Any],
 ) -> None:
+    _require_json_size(
+        manifest_json,
+        max_bytes=ARTIFACT_MANIFEST_MAX_BYTES,
+        code="artifact_manifest_too_large",
+    )
     resolved_trace_id = trace_id or standard_trace_id(run_id)
     await conn.execute(
         """
@@ -11284,6 +11324,8 @@ async def append_audit_log(
     trace_id: str | None = None,
     payload_json: dict[str, Any] | None = None,
 ) -> str:
+    resolved_payload = payload_json or {}
+    _require_json_size(resolved_payload, max_bytes=AUDIT_PAYLOAD_MAX_BYTES, code="audit_payload_too_large")
     audit_id = new_id("aud")
     await conn.execute(
         """
@@ -11299,7 +11341,7 @@ async def append_audit_log(
             target_id,
             trace_id,
             AUDIT_EVENT_SCHEMA_VERSION,
-            dumps_json(payload_json or {}),
+            dumps_json(resolved_payload),
         ),
     )
     return audit_id
@@ -11624,13 +11666,16 @@ async def append_message(
     content: str,
     metadata_json: dict[str, Any] | None = None,
 ) -> str:
+    resolved_metadata = metadata_json or {}
+    _require_text_size(content, max_bytes=MESSAGE_CONTENT_MAX_BYTES, code="message_content_too_large")
+    _require_json_size(resolved_metadata, max_bytes=MESSAGE_METADATA_MAX_BYTES, code="message_metadata_too_large")
     message_id = new_id("msg")
     await conn.execute(
         """
         insert into messages(id, tenant_id, session_id, run_id, role, content, metadata_json)
         values (%s, %s, %s, %s, %s, %s, %s::jsonb)
         """,
-        (message_id, tenant_id, session_id, run_id, role, content, dumps_json(metadata_json or {})),
+        (message_id, tenant_id, session_id, run_id, role, content, dumps_json(resolved_metadata)),
     )
     await conn.execute("update sessions set updated_at = now() where tenant_id = %s and id = %s", (tenant_id, session_id))
     return message_id
