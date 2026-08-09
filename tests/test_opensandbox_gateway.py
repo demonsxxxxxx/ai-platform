@@ -2959,6 +2959,27 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
     )
 
 
+def test_installer_accepts_only_standard_sticky_or_nonwritable_lock_parent_modes(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        s72_lock_parent_mode_is_safe 1777
+        s72_lock_parent_mode_is_safe 755
+        for unsafe in 777 1775 2777 invalid ''; do
+          if s72_lock_parent_mode_is_safe "$unsafe"; then
+            exit 41
+          fi
+        done
+        ''',
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
     script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
     result = _run_gateway_bash_contract(

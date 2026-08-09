@@ -1198,11 +1198,19 @@ restore_snapshot() {
   s72_atomic_restore_snapshot "$1" "$2" "$TRANSACTION_RECORDS"
 }
 
+s72_lock_parent_mode_is_safe() {
+  case "$1" in
+    1777) return 0 ;;
+    [0-7][0-7][0-7]) test $((0$1 & 0022)) -eq 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 acquire_install_lock() {
   test -d /run/lock && test ! -L /run/lock || return 1
   test "$(stat -c %u /run/lock)" -eq 0 || return 1
   lock_parent_mode=$(stat -c %a /run/lock) || return 1
-  test $((0$lock_parent_mode & 0022)) -eq 0 || return 1
+  s72_lock_parent_mode_is_safe "$lock_parent_mode" || return 1
   s72_atomic_require_root_owned_regular "$LOCK_FILE" 600 || return 1
   lock_identity=$(s72_atomic_node_identity "$LOCK_FILE") || return 1
   exec 9<>"$LOCK_FILE" || return 1
