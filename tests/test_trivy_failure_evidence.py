@@ -123,6 +123,206 @@ def test_capture_emits_only_bounded_redacted_untrusted_evidence(tmp_path: Path):
     assert "InstalledVersion" not in serialized
 
 
+def test_capture_accepts_real_trivy_multiline_description_without_projecting_it(
+    tmp_path: Path,
+):
+    report = _valid_report()
+    description = "Vendor\tadvisory paragraph.\n" * 20 + "Final advisory paragraph."
+    vulnerability = report["Results"][0]["Vulnerabilities"][0]
+    vulnerability["Description"] = description
+    vulnerability["Fingerprint"] = "sha256:" + "d" * 64
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode == 0, completed.stderr
+    output = tmp_path / "trivy-failure-diagnostic-backend.json"
+    serialized = output.read_text(encoding="utf-8")
+    assert description not in serialized
+    assert "Final advisory paragraph." not in serialized
+
+
+def test_capture_accepts_trivy_image_history_created_by_tab_without_projecting_it(
+    tmp_path: Path,
+):
+    report = _valid_report()
+    created_by = "/bin/sh\t-c echo exact-image-history"
+    report["Metadata"]["ImageConfig"] = {"history": [{"created_by": created_by}]}
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode == 0, completed.stderr
+    output = tmp_path / "trivy-failure-diagnostic-backend.json"
+    serialized = output.read_text(encoding="utf-8")
+    assert created_by not in serialized
+    assert "exact-image-history" not in serialized
+
+
+@pytest.mark.parametrize("location", ["cvss", "metadata", "trivy"])
+def test_capture_rejects_multiline_description_outside_direct_vulnerability_field(
+    tmp_path: Path, location: str
+):
+    report = _valid_report()
+    unsafe_value = f"nested {location} line one\nnested {location} line two"
+    vulnerability = report["Results"][0]["Vulnerabilities"][0]
+    if location == "cvss":
+        vulnerability["CVSS"] = {"Description": unsafe_value}
+    elif location == "metadata":
+        report["Metadata"]["ImageConfig"] = {"Description": unsafe_value}
+    else:
+        report["Trivy"] = {"Description": unsafe_value}
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_string"
+    assert unsafe_value not in completed.stdout
+    assert unsafe_value not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "key",
+        "title",
+        "target",
+        "cvss_description",
+        "history_comment",
+        "metadata_description",
+        "trivy_description",
+        "history_wrong_depth",
+        "history_alias",
+        "history_wrong_root",
+        "vulnerability_alias",
+    ],
+)
+def test_capture_rejects_tab_outside_exact_trivy_projection_paths(
+    tmp_path: Path, location: str
+):
+    report = _valid_report()
+    unsafe_value = f"{location}\tmust-not-be-admitted"
+    vulnerability = report["Results"][0]["Vulnerabilities"][0]
+    if location == "key":
+        report["Metadata"][unsafe_value] = "benign-value"
+    elif location == "title":
+        vulnerability["Title"] = unsafe_value
+    elif location == "target":
+        report["Results"][0]["Target"] = unsafe_value
+    elif location == "cvss_description":
+        vulnerability["CVSS"] = {"Description": unsafe_value}
+    elif location == "history_comment":
+        report["Metadata"]["ImageConfig"] = {"history": [{"comment": unsafe_value}]}
+    elif location == "metadata_description":
+        report["Metadata"]["ImageConfig"] = {"Description": unsafe_value}
+    elif location == "trivy_description":
+        report["Trivy"] = {"Description": unsafe_value}
+    elif location == "history_wrong_depth":
+        report["Metadata"]["ImageConfig"] = {"history": {"created_by": unsafe_value}}
+    elif location == "history_alias":
+        report["Metadata"]["ImageConfig"] = {"history": [{"CreatedBy": unsafe_value}]}
+    elif location == "history_wrong_root":
+        report["Metadata"]["history"] = [{"created_by": unsafe_value}]
+    else:
+        vulnerability["description"] = unsafe_value
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_string"
+    assert unsafe_value not in completed.stdout
+    assert unsafe_value not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+_OTHER_CONTROL_CHARACTERS = tuple(
+    chr(codepoint)
+    for start, stop in ((0x00, 0x20), (0x7F, 0xA0))
+    for codepoint in range(start, stop)
+    if codepoint not in {0x09, 0x0A}
+)
+
+
+@pytest.mark.parametrize("character", _OTHER_CONTROL_CHARACTERS)
+def test_capture_rejects_every_other_cc_in_direct_vulnerability_description(
+    tmp_path: Path, character: str
+):
+    report = _valid_report()
+    unsafe_value = f"before{character}after"
+    report["Results"][0]["Vulnerabilities"][0]["Description"] = unsafe_value
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_string"
+    assert unsafe_value not in completed.stdout
+    assert unsafe_value not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+def test_capture_rejects_secret_like_image_history_created_by(tmp_path: Path):
+    report = _valid_report()
+    unsafe_value = "authorization: bearer opaque-sensitive-value"
+    report["Metadata"]["ImageConfig"] = {"history": [{"created_by": unsafe_value}]}
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_string"
+    assert unsafe_value not in completed.stdout
+    assert unsafe_value not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+@pytest.mark.parametrize(
+    "fingerprint",
+    [
+        7,
+        "sha512:" + "d" * 64,
+        "sha256:" + "D" * 64,
+        "sha256:" + "d" * 63,
+        "sha256:" + "d" * 65,
+    ],
+)
+def test_capture_rejects_malformed_trivy_fingerprint(tmp_path: Path, fingerprint: object):
+    report = _valid_report()
+    report["Results"][0]["Vulnerabilities"][0]["Fingerprint"] = fingerprint
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_vulnerability"
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_value"),
+    [
+        ("Description", "line one\rline two"),
+        ("Description", "line one\u0000line two"),
+        ("Description", "line one\u202eline two"),
+        ("Description", "authorization: bearer opaque-sensitive-value"),
+        ("Description", "x" * 8_193),
+        ("Target", "wolfi\nforged-target"),
+    ],
+)
+def test_capture_rejects_adjacent_multiline_description_hostiles(
+    tmp_path: Path, field: str, unsafe_value: str
+):
+    report = _valid_report()
+    if field == "Description":
+        report["Results"][0]["Vulnerabilities"][0][field] = unsafe_value
+    else:
+        report["Results"][0][field] = unsafe_value
+
+    completed = _run_capture(tmp_path, report=report)
+
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "trivy_diagnostic_string"
+    assert unsafe_value not in completed.stdout
+    assert unsafe_value not in completed.stderr
+    assert not (tmp_path / "trivy-failure-diagnostic-backend.json").exists()
+
+
 @pytest.mark.parametrize(
     ("case", "mutate"),
     [

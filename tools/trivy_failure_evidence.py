@@ -67,6 +67,7 @@ _VULNERABILITY_KEYS = {
     "CweIDs",
     "DataSource",
     "Description",
+    "Fingerprint",
     "FixedVersion",
     "InstalledVersion",
     "LastModifiedDate",
@@ -175,10 +176,16 @@ def _bounded_read(path: Path) -> bytes:
         os.close(descriptor)
 
 
-def _validate_string(value: str) -> None:
+def _validate_string(
+    value: str, *, allow_line_feed: bool = False, allow_tab: bool = False
+) -> None:
     if len(value) > MAX_STRING_LENGTH or _SECRET_VALUE.search(value):
         raise _error("trivy_diagnostic_string")
     for character in value:
+        if (allow_line_feed and character == "\n") or (
+            allow_tab and character == "\t"
+        ):
+            continue
         codepoint = ord(character)
         if 0xD800 <= codepoint <= 0xDFFF or unicodedata.category(character) in {"Cc", "Cf"}:
             raise _error("trivy_diagnostic_string")
@@ -224,11 +231,33 @@ def _is_secret_key(value: str) -> bool:
     )
 
 
+def _allows_line_feed(path: tuple[str | int, ...]) -> bool:
+    return (
+        len(path) == 5
+        and path[0] == "Results"
+        and isinstance(path[1], int)
+        and path[2] == "Vulnerabilities"
+        and isinstance(path[3], int)
+        and path[4] == "Description"
+    )
+
+
+def _allows_tab(path: tuple[str | int, ...]) -> bool:
+    return _allows_line_feed(path) or (
+        len(path) == 5
+        and path[0] == "Metadata"
+        and path[1] == "ImageConfig"
+        and path[2] == "history"
+        and isinstance(path[3], int)
+        and path[4] == "created_by"
+    )
+
+
 def _validate_bounds(document: Any) -> None:
     nodes = 0
-    stack: list[tuple[Any, int]] = [(document, 0)]
+    stack: list[tuple[Any, int, tuple[str | int, ...]]] = [(document, 0, ())]
     while stack:
-        value, depth = stack.pop()
+        value, depth, path = stack.pop()
         nodes += 1
         if nodes > MAX_NODES or depth > MAX_DEPTH:
             raise _error("trivy_diagnostic_bounds")
@@ -239,13 +268,19 @@ def _validate_bounds(document: Any) -> None:
                 if not isinstance(key, str) or _is_secret_key(key):
                     raise _error("trivy_diagnostic_key")
                 _validate_string(key)
-                stack.append((item, depth + 1))
+                stack.append((item, depth + 1, (*path, key)))
         elif isinstance(value, list):
             if len(value) > MAX_LIST_ITEMS:
                 raise _error("trivy_diagnostic_bounds")
-            stack.extend((item, depth + 1) for item in value)
+            stack.extend(
+                (item, depth + 1, (*path, index)) for index, item in enumerate(value)
+            )
         elif isinstance(value, str):
-            _validate_string(value)
+            _validate_string(
+                value,
+                allow_line_feed=_allows_line_feed(path),
+                allow_tab=_allows_tab(path),
+            )
         elif value is not None and not isinstance(value, (bool, int, float)):
             raise _error("trivy_diagnostic_type")
 
@@ -303,6 +338,12 @@ def _validate_report(document: Any, *, image_ref: str) -> tuple[int, dict[str, i
                 raise _error("trivy_diagnostic_vulnerability_keys")
             for required in ("VulnerabilityID", "PkgName", "InstalledVersion", "Severity"):
                 _string(vulnerability.get(required), "trivy_diagnostic_vulnerability")
+            if "Fingerprint" in vulnerability:
+                fingerprint = _string(
+                    vulnerability["Fingerprint"], "trivy_diagnostic_vulnerability"
+                )
+                if not _DIGEST.fullmatch(fingerprint):
+                    raise _error("trivy_diagnostic_vulnerability")
             severity = vulnerability["Severity"]
             if severity not in severity_counts:
                 raise _error("trivy_diagnostic_severity")

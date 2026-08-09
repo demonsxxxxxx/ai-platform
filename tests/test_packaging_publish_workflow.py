@@ -217,6 +217,7 @@ def test_trivy_failure_uploads_only_redacted_untrusted_run_bound_diagnostics():
 
     assert scan["id"] == "trivy-scan"
     assert "continue-on-error" not in scan
+    assert scan["env"] == {"TRIVY_LIST_ALL_PKGS": "false"}
     assert scan["with"] == {
         "scan-type": "image",
         "image-ref": "${{ matrix.subject }}@${{ steps.build.outputs.digest }}",
