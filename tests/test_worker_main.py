@@ -1788,13 +1788,21 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
     async def fake_close_pool():
         calls.append(("close_pool",))
 
+    async def fake_close_redis_client():
+        calls.append(("close_redis_client",))
+
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
+    monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
 
     with pytest.raises(asyncio.CancelledError):
         await worker_main.run_forever(poll_timeout_seconds=2)
 
-    assert calls == [("run_once", 2, True), ("close_pool",)]
+    assert calls == [
+        ("run_once", 2, True),
+        ("close_redis_client",),
+        ("close_pool",),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1815,9 +1823,13 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
     async def fake_close_pool():
         calls.append(("close_pool",))
 
+    async def fake_close_redis_client():
+        calls.append(("close_redis_client",))
+
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
+    monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
 
     with pytest.raises(asyncio.CancelledError):
         await worker_main.run_forever(poll_timeout_seconds=2, idle_sleep_seconds=0.25)
@@ -1827,6 +1839,7 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
         ("run_once", 2, True),
         ("sleep", 0.25),
         ("run_once", 2, True),
+        ("close_redis_client",),
         ("close_pool",),
     ]
 
@@ -1939,13 +1952,21 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
     async def fake_close_pool():
         calls.append(("close_pool",))
 
+    async def fake_close_redis_client():
+        calls.append(("close_redis_client",))
+
     monkeypatch.setattr(sys, "argv", ["worker", "--once", "--timeout", "7"])
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
+    monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
 
     worker_main.main()
 
-    assert calls == [("run_once", 7), ("close_pool",)]
+    assert calls == [
+        ("run_once", 7),
+        ("close_redis_client",),
+        ("close_pool",),
+    ]
     assert "WorkerOutcome(status='idle'" in capsys.readouterr().out
 
 
@@ -1953,7 +1974,7 @@ def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
     calls = []
 
     class Settings:
-        worker_concurrency = 4
+        worker_concurrency = 10
 
     async def fake_run_worker_pool(*, worker_count, poll_timeout_seconds=5):
         calls.append(("run_worker_pool", worker_count, poll_timeout_seconds))
@@ -1964,7 +1985,27 @@ def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
 
     worker_main.main()
 
-    assert calls == [("run_worker_pool", 4, 9)]
+    assert calls == [("run_worker_pool", 10, 9)]
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_still_closes_database_when_redis_close_fails(monkeypatch):
+    calls = []
+
+    async def fake_close_redis_client():
+        calls.append(("close_redis_client",))
+        raise RuntimeError("redis close failed")
+
+    async def fake_close_pool():
+        calls.append(("close_pool",))
+
+    monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
+    monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool)
+
+    with pytest.raises(RuntimeError, match="redis close failed"):
+        await worker_main._close_runtime_clients()
+
+    assert calls == [("close_redis_client",), ("close_pool",)]
 
 
 @pytest.mark.asyncio

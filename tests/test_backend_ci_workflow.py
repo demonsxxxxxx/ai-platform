@@ -1,3 +1,4 @@
+import ast
 import os
 import re
 import subprocess
@@ -6,8 +7,9 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from packaging.requirements import Requirement
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
@@ -15,6 +17,19 @@ FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 AGENT_RULES = ROOT / "AGENTS.md"
 ISSUE_WORKFLOW = ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
+TRUSTED_RUFF_REGEX = r"[0-9]+\.[0-9]+\.[0-9]+"
+TRUSTED_JSONSCHEMA_REGEX = r"[0-9]+(?:\.[0-9]+)+"
+TRUSTED_WORKFLOW_IMPORTS = (
+    ("import", (("importlib.metadata", None),)),
+    ("import", (("re", None),)),
+    ("import", (("subprocess", None),)),
+    ("import", (("sys", None),)),
+    ("import", (("tomllib", None),)),
+    ("from", "pathlib", 0, (("Path", None),)),
+    ("from", "packaging.requirements", 0, (("InvalidRequirement", None), ("Requirement", None))),
+    ("from", "packaging.utils", 0, (("canonicalize_name", None),)),
+    ("from", "packaging.version", 0, (("InvalidVersion", None), ("Version", None))),
+)
 
 
 def test_backend_required_check_is_stable_for_every_main_pull_request():
@@ -25,13 +40,54 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "- main" in pull_request_block
     assert "paths:" not in pull_request_block
     assert "name: backend required" in workflow
+    assert "needs: [sandbox-provider, backend-image]" in workflow
+    assert "name: packaged backend image build" in workflow
+    assert "if: ${{ always() }}" in workflow
     assert "python -m compileall -q app tools scripts" in workflow
     assert "tests/test_b2_sandbox_readiness.py" in workflow
     assert "tests/test_backend_ci_workflow.py" in workflow
+    assert "tests/test_packaging_publish_workflow.py" in workflow
+    assert "tests/test_release_image_manifest.py" in workflow
     assert "tests/test_governance_readiness.py" in workflow
     assert "tests/test_release_authority.py" in workflow
     assert "tests/test_contract.py" in workflow
     assert "tests/test_worker_main.py" in workflow
+
+
+def test_backend_required_ubuntu_job_executes_the_complete_trivy_diagnostic_module():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    sandbox_job = workflow.split("  sandbox-provider:", 1)[1].split("  backend-image:", 1)[0]
+    pytest_step = sandbox_job.split("- name: Run sandbox provider targeted tests", 1)[1]
+    required_job = workflow.split("  required:", 1)[1]
+    sse_selectors = (
+        "tests/test_sse_runtime_cutover.py",
+        "tests/test_streaming_redis.py",
+        "tests/test_streaming_control.py",
+        "tests/test_streaming_postgres.py",
+        "tests/test_streaming_repository.py",
+        "tests/test_runtime_callbacks.py",
+        "tests/test_worker.py",
+        "tests/test_lambchat_sse_v21.py",
+        "tests/test_runtime_launch_script.py",
+    )
+
+    assert "runs-on: ubuntu-latest" in sandbox_job
+    assert sandbox_job.count("- name: Enforce SSE v2.1 release-atomic cutover") == 1
+    assert sandbox_job.count("run: python tools/check_sse_runtime_cutover.py") == 1
+    assert "uv run --locked --extra test python -m pytest" in pytest_step
+    assert "tests/test_trivy_failure_evidence.py \\" in pytest_step
+    assert pytest_step.index("tests/test_trivy_failure_evidence.py") < pytest_step.index("-q \\")
+    assert "tests/test_s72_atomic_recovery_authority.py \\" in pytest_step
+    assert pytest_step.index("tests/test_s72_atomic_recovery_authority.py") < pytest_step.index("-q \\")
+    for selector in sse_selectors:
+        assert pytest_step.count(selector) == 1
+        assert pytest_step.index(selector) < pytest_step.index("-q \\")
+    assert "--collect-only" not in pytest_step
+    assert "--ignore" not in pytest_step
+    assert " -k " not in pytest_step
+    assert "runs-on: ubuntu-latest" in required_job
+    assert "needs: [sandbox-provider, backend-image]" in required_job
+    assert "if: ${{ always() }}" in required_job
 
 
 def test_backend_required_check_runs_on_every_main_push():
@@ -63,18 +119,265 @@ def test_ruff_is_pinned_in_the_test_extra_without_enabling_broad_linting():
     )
 
 
-def _frontend_ruff_requirement_resolver():
-    workflow = FRONTEND_WORKFLOW.read_text(encoding="utf-8")
+def _frontend_ruff_requirement_resolver(workflow: str | None = None):
+    if workflow is None:
+        workflow = FRONTEND_WORKFLOW.read_text(encoding="utf-8")
     install_step = workflow.split("- name: Install Python test dependencies", 1)[1].split(
         "- name: Verify static frontend Python contracts", 1
     )[0]
-    install_script = install_step.split("@'\n", 1)[1].split("\n'@ | python -", 1)[0]
-    resolver_source = textwrap.dedent(
-        install_script.split('with open("pyproject.toml", "rb") as handle:', 1)[0]
+    install_script = install_step.split("@'\n", 1)[1]
+    heredoc_end = re.search(r"(?m)^\s*'@ \| python -\s*$", install_script)
+    if heredoc_end is None:
+        raise RuntimeError("frontend workflow Python heredoc has no terminator")
+    script = textwrap.dedent(install_script[: heredoc_end.start()])
+    module = ast.parse(script)
+    imports = []
+    for statement in module.body:
+        if isinstance(statement, ast.Import):
+            imports.append(("import", tuple((alias.name, alias.asname) for alias in statement.names)))
+        elif isinstance(statement, ast.ImportFrom):
+            imports.append(
+                (
+                    "from",
+                    statement.module,
+                    statement.level,
+                    tuple((alias.name, alias.asname) for alias in statement.names),
+                )
+            )
+    if tuple(imports) != TRUSTED_WORKFLOW_IMPORTS:
+        raise RuntimeError("frontend workflow imports must match the trusted allowlist")
+
+    def trusted_regex_constant(name: str, pattern: str) -> None:
+        assignments = [
+            statement
+            for statement in module.body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id == name
+        ]
+        if len(assignments) != 1:
+            raise RuntimeError(f"frontend workflow must define exactly one {name} constant")
+        value = assignments[0].value
+        literal = ast.get_source_segment(script, value.args[0]) if isinstance(value, ast.Call) and value.args else None
+        if (
+            not isinstance(value, ast.Call)
+            or not isinstance(value.func, ast.Attribute)
+            or not isinstance(value.func.value, ast.Name)
+            or value.func.value.id != "re"
+            or value.func.attr != "compile"
+            or value.keywords
+            or len(value.args) != 1
+            or not isinstance(value.args[0], ast.Constant)
+            or value.args[0].value != pattern
+            or literal != f'r"{pattern}"'
+        ):
+            raise RuntimeError(f"frontend workflow {name} must be a trusted pure regex literal")
+
+    trusted_regex_constant("CANONICAL_RUFF_VERSION", TRUSTED_RUFF_REGEX)
+    trusted_regex_constant("CANONICAL_JSONSCHEMA_VERSION", TRUSTED_JSONSCHEMA_REGEX)
+    functions = [
+        statement
+        for statement in module.body
+        if isinstance(statement, ast.FunctionDef) and statement.name == "resolve_ruff_requirement"
+    ]
+    if len(functions) != 1:
+        raise RuntimeError("frontend workflow must define exactly one Ruff resolver")
+    resolver_definition = functions[0]
+    arguments = resolver_definition.args
+    argument_nodes = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+    if (
+        resolver_definition.decorator_list
+        or resolver_definition.returns is not None
+        or resolver_definition.type_comment is not None
+        or getattr(resolver_definition, "type_params", [])
+        or arguments.posonlyargs
+        or len(arguments.args) != 1
+        or arguments.args[0].arg != "test_dependencies"
+        or arguments.vararg is not None
+        or arguments.kwarg is not None
+        or arguments.kwonlyargs
+        or arguments.defaults
+        or any(default is not None for default in arguments.kw_defaults)
+        or any(argument.annotation is not None or argument.type_comment is not None for argument in argument_nodes)
+    ):
+        raise RuntimeError("frontend Ruff resolver has unsafe definition-time effects")
+
+    allowed_nodes = {
+        ast.FunctionDef, ast.arguments, ast.arg, ast.Assign, ast.Attribute, ast.BoolOp,
+        ast.Call, ast.Compare, ast.Constant, ast.Eq, ast.ExceptHandler, ast.Expr,
+        ast.For, ast.FormattedValue, ast.If, ast.IsNot, ast.JoinedStr, ast.List,
+        ast.Load, ast.Name, ast.Not, ast.NotEq, ast.Or, ast.Raise, ast.Return,
+        ast.Store, ast.Subscript, ast.Try, ast.UnaryOp,
+    }
+    unexpected = next(
+        (node for node in ast.walk(resolver_definition) if type(node) not in allowed_nodes),
+        None,
     )
-    namespace: dict[str, object] = {}
-    exec(resolver_source, namespace)  # noqa: S102 -- executes only the repository workflow snippet under test.
-    return namespace["resolve_ruff_requirement"]
+    if unexpected is not None:
+        raise RuntimeError(f"frontend Ruff resolver contains unsafe AST node {type(unexpected).__name__}")
+    if sum(isinstance(node, ast.FunctionDef) for node in ast.walk(resolver_definition)) != 1:
+        raise RuntimeError("frontend Ruff resolver cannot nest function definitions")
+
+    local_names = {
+        node.id
+        for node in ast.walk(resolver_definition)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+    local_names.add("test_dependencies")
+    local_names.update(
+        handler.name
+        for handler in ast.walk(resolver_definition)
+        if isinstance(handler, ast.ExceptHandler) and handler.name is not None
+    )
+    trusted_names = {
+        "CANONICAL_RUFF_VERSION", "InvalidRequirement", "Requirement", "RuntimeError",
+        "InvalidVersion", "Version", "canonicalize_name", "len", "list", "str",
+    }
+    for node in ast.walk(resolver_definition):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in local_names | trusted_names:
+            raise RuntimeError(f"frontend Ruff resolver uses unsafe name {node.id}")
+        if isinstance(node, ast.Attribute):
+            if not isinstance(node.value, ast.Name) or (node.value.id, node.attr) not in {
+                ("CANONICAL_RUFF_VERSION", "fullmatch"),
+                ("requirement", "name"),
+                ("ruff_requirements", "append"),
+                ("ruff_requirement", "url"),
+                ("ruff_requirement", "extras"),
+                ("ruff_requirement", "marker"),
+                ("ruff_requirement", "specifier"),
+                ("specifier", "operator"),
+                ("specifier", "version"),
+            }:
+                raise RuntimeError("frontend Ruff resolver uses an unsafe dynamic attribute")
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                allowed_call = node.func.id in {
+                    "Requirement", "RuntimeError", "Version", "canonicalize_name", "len", "list", "str",
+                }
+            elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+                allowed_call = (node.func.value.id, node.func.attr) in {
+                    ("CANONICAL_RUFF_VERSION", "fullmatch"), ("ruff_requirements", "append"),
+                }
+            else:
+                allowed_call = False
+            if not allowed_call or node.keywords:
+                raise RuntimeError("frontend Ruff resolver uses an unsafe call")
+        if isinstance(node, ast.Subscript) and (
+            not isinstance(node.value, ast.Name)
+            or node.value.id not in {"ruff_requirements", "specifiers"}
+            or not isinstance(node.slice, ast.Constant)
+            or node.slice.value != 0
+        ):
+            raise RuntimeError("frontend Ruff resolver uses an unsafe subscript")
+
+    trusted_definition = ast.FunctionDef(
+        name="resolve_ruff_requirement",
+        args=arguments,
+        body=resolver_definition.body,
+        decorator_list=[],
+        returns=None,
+        type_comment=None,
+        type_params=[],
+    )
+    namespace: dict[str, object] = {
+        "__name__": "frontend_workflow_contract",
+        "CANONICAL_RUFF_VERSION": re.compile(TRUSTED_RUFF_REGEX),
+        "InvalidRequirement": InvalidRequirement,
+        "Requirement": Requirement,
+        "RuntimeError": RuntimeError,
+        "InvalidVersion": InvalidVersion,
+        "Version": Version,
+        "canonicalize_name": canonicalize_name,
+    }
+    exec(  # noqa: S102 -- only a statically validated, definition-time-safe function is compiled.
+        compile(ast.fix_missing_locations(ast.Module(body=[trusted_definition], type_ignores=[])), "<frontend-ruff-resolver>", "exec"),
+        namespace,
+    )
+    resolver = namespace.get("resolve_ruff_requirement")
+    if not callable(resolver):
+        raise RuntimeError("frontend workflow does not define a Ruff resolver")
+    return resolver
+
+
+def test_frontend_ruff_requirement_resolver_extraction_does_not_run_installation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def reject_install(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"resolver extraction must not install dependencies: {args!r}")
+
+    monkeypatch.setattr(subprocess, "check_call", reject_install)
+
+    resolver = _frontend_ruff_requirement_resolver()
+
+    assert resolver(["pytest>=8.2.0", "ruff==0.11.13"]) == "ruff==0.11.13"
+
+
+def _mutate_frontend_workflow(before: str, after: str) -> str:
+    workflow = FRONTEND_WORKFLOW.read_text(encoding="utf-8")
+    assert workflow.count(before) == 1
+    return workflow.replace(before, after)
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        pytest.param(
+            'CANONICAL_RUFF_VERSION = re.compile(r"[0-9]+\\.[0-9]+\\.[0-9]+")',
+            'CANONICAL_RUFF_VERSION = subprocess.check_call([sys.executable, "-m", "pip", "install", "attacker"]) or re.compile(r"[0-9]+\\.[0-9]+\\.[0-9]+")',
+            id="assignment-call",
+        ),
+        pytest.param("          import re", "          import re as trusted_re", id="import-alias"),
+        pytest.param("          import re", "          import re\n          import attacker", id="piggyback-import"),
+        pytest.param(
+            "          def resolve_ruff_requirement(test_dependencies):",
+            '          @subprocess.check_call([sys.executable, "-m", "pip", "install", "attacker"])\n          def resolve_ruff_requirement(test_dependencies):',
+            id="decorator-call",
+        ),
+        pytest.param(
+            "          def resolve_ruff_requirement(test_dependencies):",
+            '          def resolve_ruff_requirement(test_dependencies=subprocess.check_call([sys.executable, "-m", "pip", "install", "attacker"])):',
+            id="default-call",
+        ),
+        pytest.param(
+            "          def resolve_ruff_requirement(test_dependencies):",
+            '          def resolve_ruff_requirement(test_dependencies, *, unused=subprocess.check_call([sys.executable, "-m", "pip", "install", "attacker"])):',
+            id="kw-default-call",
+        ),
+        pytest.param(
+            "          def resolve_ruff_requirement(test_dependencies):",
+            '          def resolve_ruff_requirement(test_dependencies: subprocess.check_call([sys.executable, "-m", "pip", "install", "attacker"])):',
+            id="annotation-call",
+        ),
+        pytest.param(
+            "              ruff_requirements = []",
+            '              subprocess.check_call([sys.executable, "-m", "pip", "install", "attacker"])\n              ruff_requirements = []',
+            id="body-subprocess-install",
+        ),
+        pytest.param(
+            "              ruff_requirements = []",
+            '              open("attacker", "w", encoding="utf-8")\n              ruff_requirements = []',
+            id="body-open",
+        ),
+        pytest.param(
+            "              ruff_requirements.append(requirement)",
+            '              getattr(ruff_requirements, "append")(requirement)',
+            id="dynamic-attribute",
+        ),
+    ],
+)
+def test_frontend_ruff_requirement_resolver_rejects_untrusted_workflow_ast(
+    before: str,
+    after: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def reject_install(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"workflow AST must not execute: {args!r}")
+
+    monkeypatch.setattr(subprocess, "check_call", reject_install)
+
+    with pytest.raises(RuntimeError, match="trusted|unsafe|resolver"):
+        _frontend_ruff_requirement_resolver(_mutate_frontend_workflow(before, after))
 
 
 def test_frontend_static_contracts_install_only_the_pinned_test_extra_ruff():
@@ -145,33 +448,80 @@ def test_frontend_ruff_requirement_resolver_rejects_noncanonical_declarations(
 def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
+    assert "permissions:\n  contents: read" in workflow
     assert "fetch-depth: 0" in workflow
     assert "ref: ${{ github.event.pull_request.base.sha || github.sha }}" in workflow
     assert "persist-credentials: false" in workflow
+    assert "persist-credentials: true" not in workflow
     assert "pull_request_target:" not in workflow
-    assert "ref: ${{ github.event.pull_request.head.sha" not in workflow
 
     governance_step = workflow.split("- name: Run code governance", 1)[1].split(
         "- name: Checkout validated pull request head for existing checks", 1
     )[0]
-    install_start = workflow.index("- name: Install backend dependencies")
+    install_start = workflow.index("- name: Install trusted-base governance dependency")
     governance_start = workflow.index("- name: Run code governance")
-    assert workflow.index("ref: ${{ github.event.pull_request.base.sha || github.sha }}") < install_start
+    pre_governance = workflow[:governance_start]
+    assert (
+        workflow.index("ref: ${{ github.event.pull_request.base.sha || github.sha }}")
+        < install_start
+    )
     assert install_start < governance_start
+    assert "github.event.pull_request.head" not in pre_governance
+    assert "refs/pull/" not in pre_governance
     assert "if: github.event_name == 'pull_request'" in governance_step
-    assert "GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}" in governance_step
-    assert "GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha }}" in governance_step
+    assert "GOVERNANCE_PR_NUMBER: ${{ github.event.number }}" in governance_step
+    assert (
+        "GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}"
+        in governance_step
+    )
+    assert (
+        "GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha }}"
+        in governance_step
+    )
     assert "GOVERNANCE_FETCH_TOKEN: ${{ github.token }}" in governance_step
     assert 'PYTHONSAFEPATH: "1"' in governance_step
     assert "set -euo pipefail" in governance_step
+    assert '[[ "$GOVERNANCE_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]' in governance_step
     assert '[[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]' in governance_step
     assert '[[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]' in governance_step
-    assert 'git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer $GOVERNANCE_FETCH_TOKEN" fetch --no-tags origin "$GOVERNANCE_HEAD_REF"' in governance_step
-    assert "unset GOVERNANCE_FETCH_TOKEN" in governance_step
-    assert 'git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"' in governance_step
-    assert 'git worktree add --detach "$GOVERNANCE_BASE_WORKTREE" "$GOVERNANCE_BASE_REF"' in governance_step
-    assert 'git worktree add --detach "$GOVERNANCE_HEAD_WORKTREE" "$GOVERNANCE_HEAD_REF"' in governance_step
-    assert 'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check' in governance_step
+    assert (
+        'GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"'
+        in governance_step
+    )
+    assert (
+        'GOVERNANCE_FETCH_BASIC="$(printf \'x-access-token:%s\' "$GOVERNANCE_FETCH_TOKEN" '
+        '| base64 --wrap=0)"' in governance_step
+    )
+    assert 'echo "::add-mask::$GOVERNANCE_FETCH_BASIC"' in governance_step
+    fetch_command = (
+        'git -c http.https://github.com/.extraheader="AUTHORIZATION: basic '
+        '$GOVERNANCE_FETCH_BASIC" fetch --no-tags origin '
+        '"+refs/pull/$GOVERNANCE_PR_NUMBER/head:$GOVERNANCE_PULL_REF"'
+    )
+    assert fetch_command in governance_step
+    assert "unset GOVERNANCE_FETCH_TOKEN GOVERNANCE_FETCH_BASIC" in governance_step
+    assert (
+        'test "$(git rev-parse "$GOVERNANCE_PULL_REF^{commit}")" = '
+        '"$GOVERNANCE_HEAD_REF"' in governance_step
+    )
+    assert 'git cat-file -e "$GOVERNANCE_BASE_REF^{commit}"' in governance_step
+    assert 'git cat-file -e "$GOVERNANCE_HEAD_REF^{commit}"' in governance_step
+    assert (
+        'git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"'
+        in governance_step
+    )
+    assert (
+        'git worktree add --detach "$GOVERNANCE_BASE_WORKTREE" "$GOVERNANCE_BASE_REF"'
+        in governance_step
+    )
+    assert (
+        'git worktree add --detach "$GOVERNANCE_HEAD_WORKTREE" "$GOVERNANCE_HEAD_REF"'
+        in governance_step
+    )
+    assert (
+        'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check'
+        in governance_step
+    )
     assert "python tools/code_governance.py" not in governance_step
     assert "git checkout" not in governance_step
     assert '--base-ref "$GOVERNANCE_BASE_REF"' in governance_step
@@ -182,6 +532,56 @@ def test_code_governance_uses_trusted_base_code_for_an_exact_pr_range():
     assert "${{" not in governance_run
     assert "github.event.pull_request.head.ref" not in workflow
     assert "github.event.pull_request.base.ref" not in workflow
+    assert "github.head_ref" not in workflow
+
+    governance_lines = [
+        line.strip() for line in governance_run.splitlines() if line.strip()
+    ]
+    fetch_index = governance_lines.index(fetch_command)
+    unset_index = governance_lines.index(
+        "unset GOVERNANCE_FETCH_TOKEN GOVERNANCE_FETCH_BASIC"
+    )
+    fetched_ref_check_index = governance_lines.index(
+        'test "$(git rev-parse "$GOVERNANCE_PULL_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"'
+    )
+    ancestry_index = governance_lines.index(
+        'git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"'
+    )
+    base_worktree_index = governance_lines.index(
+        'git worktree add --detach "$GOVERNANCE_BASE_WORKTREE" "$GOVERNANCE_BASE_REF"'
+    )
+    governance_command_index = next(
+        index
+        for index, line in enumerate(governance_lines)
+        if 'python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check'
+        in line
+    )
+    assert (
+        governance_lines.index('echo "::add-mask::$GOVERNANCE_FETCH_BASIC"')
+        < fetch_index
+    )
+    assert unset_index == fetch_index + 1
+    assert fetch_index < fetched_ref_check_index < ancestry_index < base_worktree_index
+    assert base_worktree_index < governance_command_index
+
+
+def test_code_governance_rejects_credential_and_untrusted_ref_fallbacks():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    governance_step = workflow.split("- name: Run code governance", 1)[1].split(
+        "- name: Checkout validated pull request head for existing checks", 1
+    )[0]
+    normalized = governance_step.lower()
+
+    assert "authorization: bearer" not in normalized
+    assert 'fetch --no-tags origin "$governance_head_ref"' not in normalized
+    assert "refs/heads/" not in normalized
+    assert "git config" not in normalized
+    assert "--local" not in normalized
+    assert "--global" not in normalized
+    assert "http.extraheader" not in normalized
+    assert "continue-on-error:" not in governance_step
+    assert "|| true" not in governance_step
+    assert "set +e" not in governance_step
 
 
 def test_python_safe_path_blocks_a_head_root_ruff_module(tmp_path: Path):
@@ -204,15 +604,18 @@ def test_python_safe_path_blocks_a_head_root_ruff_module(tmp_path: Path):
     assert "head ruff.py was imported" not in completed.stderr
 
 
-def test_code_governance_uses_test_extra_and_propagates_pr_failures():
+def test_code_governance_uses_exact_trusted_base_bootstrap_and_propagates_pr_failures():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    install_start = workflow.index("- name: Install backend dependencies")
+    install_start = workflow.index("- name: Install trusted-base governance dependency")
     governance_start = workflow.index("- name: Run code governance")
     governance_step = workflow[governance_start : workflow.index("- name: Run sandbox provider targeted tests")]
 
     assert install_start < governance_start
-    assert 'pyproject["project"]["optional-dependencies"]["test"]' in workflow
+    assert "python -m pip install ruff==0.11.13" in workflow
+    assert "python -m pip install --upgrade pip" not in workflow
+    assert "uv lock --check" in workflow
+    assert "uv sync --locked --extra test --no-install-project" in workflow
     assert "continue-on-error:" not in governance_step
     assert "|| true" not in governance_step
     assert "set +e" not in governance_step
@@ -224,17 +627,74 @@ def test_existing_pr_checks_switch_to_the_validated_head_after_governance():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     governance_start = workflow.index("- name: Run code governance")
-    head_checkout_start = workflow.index("- name: Checkout validated pull request head for existing checks")
+    head_checkout_start = workflow.index(
+        "- name: Checkout validated pull request head for existing checks"
+    )
     compile_start = workflow.index("- name: Compile backend sources")
+    locked_install_start = workflow.index(
+        "- name: Install candidate dependencies from the lock authority"
+    )
     pytest_start = workflow.index("- name: Run sandbox provider targeted tests")
     head_checkout = workflow[head_checkout_start:pytest_start]
 
-    assert governance_start < head_checkout_start < compile_start < pytest_start
+    assert (
+        governance_start
+        < head_checkout_start
+        < locked_install_start
+        < compile_start
+        < pytest_start
+    )
     assert "if: github.event_name == 'pull_request'" in head_checkout
-    assert "VALIDATED_PR_HEAD_REF: ${{ github.event.pull_request.head.sha }}" in head_checkout
+    assert (
+        "VALIDATED_PR_HEAD_REF: ${{ github.event.pull_request.head.sha }}"
+        in head_checkout
+    )
     assert '[[ "$VALIDATED_PR_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]' in head_checkout
-    assert 'test "$(git rev-parse "$VALIDATED_PR_HEAD_REF^{commit}")" = "$VALIDATED_PR_HEAD_REF"' in head_checkout
+    assert (
+        'test "$(git rev-parse "$VALIDATED_PR_HEAD_REF^{commit}")" = "$VALIDATED_PR_HEAD_REF"'
+        in head_checkout
+    )
     assert 'git checkout --detach "$VALIDATED_PR_HEAD_REF"' in head_checkout
+    assert 'test "$(git rev-parse HEAD)" = "$VALIDATED_PR_HEAD_REF"' in head_checkout
+
+
+def test_backend_image_job_builds_every_candidate_and_checks_the_runtime_contract():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    image_job = workflow.split("  backend-image:", 1)[1].split("  required:", 1)[0]
+    startup_step = image_job.split("- name: Verify backend image startup", 1)[1]
+
+    assert "paths:" not in workflow
+    assert "if:" not in image_job
+    assert "needs: sandbox-provider" in image_job
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in image_job
+    assert "persist-credentials: false" in image_job
+    assert "IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in image_job
+    assert "- name: Resolve image source repository" in image_job
+    assert 'if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then' in image_job
+    assert '[[ "$IMAGE_SOURCE_HEAD_REPOSITORY" =~ ^[A-Za-z0-9]' in image_job
+    assert 'image_source_repository="https://github.com/${IMAGE_SOURCE_HEAD_REPOSITORY}.git"' in image_job
+    assert 'printf \'IMAGE_SOURCE_REPOSITORY=%s\\n\' "$image_source_repository" >> "$GITHUB_ENV"' in image_job
+    assert "IMAGE_SOURCE_REPOSITORY: https://github.com/${{ github.repository }}.git" not in image_job
+    assert "docker build" in image_job
+    assert "-f Dockerfile" in image_job
+    assert "uv.lock" not in image_job  # The real Docker build proves lock consumption.
+    assert 'config["User"] == "10001:10001"' in image_job
+    assert 'config["Entrypoint"] == ["/app/docker-entrypoint.sh"]' in image_job
+    assert 'labels["org.opencontainers.image.revision"]' in image_job
+    assert 'labels["ai-platform.source-repository"]' in image_job
+    assert '--env IMAGE_SOURCE_COMMIT="$IMAGE_SOURCE_COMMIT"' in image_job
+    assert "import app.main, claude_agent_sdk" in image_job
+    assert "http://127.0.0.1:18020/api/ai/health" in image_job
+    assert "python - <<'PY'" not in startup_step
+    assert 'BACKEND_HEALTH_FILE="$RUNNER_TEMP/backend-health.json" python -c' in startup_step
+    assert "backend_container_state=" in startup_step
+    assert "docker logs --tail 80" in startup_step
+    assert "backend_redacted_container_log_tail_lines=" in startup_step
+    assert "backend_container_log_signal=redacted" in startup_step
+    assert "| sed -E" not in startup_step
+    assert "exit 1" in startup_step
+    assert "docker push" not in image_job
+    assert "docker compose" not in image_job.lower()
 
 
 def test_backend_required_contract_preserves_high_risk_design_triggers():

@@ -2113,10 +2113,10 @@ async def test_get_queue_insight_counts_tenant_queued_and_processing(monkeypatch
             "reclaimable": 0,
             "missing_metadata": 0,
         },
-        "capacity": {
-            "max_active_worker_runs": 3,
-            "processing_saturated": False,
-            "available_worker_slots": 1,
+            "capacity": {
+                "max_active_worker_runs": 10,
+                "processing_saturated": False,
+                "available_worker_slots": 8,
             "queue_tenant_processing_limit": 0,
             "queue_user_processing_limit": 0,
             "queue_lease_scan_limit": 50,

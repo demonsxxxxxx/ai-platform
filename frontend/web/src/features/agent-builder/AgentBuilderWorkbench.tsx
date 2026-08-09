@@ -17,6 +17,8 @@ import {
 import { AgentBuilderDialog } from "../../components/agent-builder/AgentBuilderDialog";
 import type { ModelOption } from "../../services/api/modelPublic";
 import type { PublicSkillResponse } from "../../types";
+import { AgentBuilderEnterpriseFields } from "./AgentBuilderEnterpriseFields";
+import { AgentBuilderLifecycle } from "./AgentBuilderLifecycle";
 import {
   agentBuilderBlockReason,
   getAgentProfilePublishBlock,
@@ -52,8 +54,10 @@ type PendingEditorAction =
   | { kind: "profile"; agentId: string }
   | { kind: "refresh" };
 
-function profileStatusLabel(status: "draft" | "published") {
-  return status === "published" ? "已发布" : "草稿";
+function profileStatusLabel(status: "draft" | "published" | "withdrawn") {
+  if (status === "published") return "已发布";
+  if (status === "withdrawn") return "已下架";
+  return "草稿";
 }
 
 function editorStatusLabel(editor: AgentBuilderEditor) {
@@ -115,7 +119,10 @@ export function AgentBuilderWorkbench({
   const saveBlock = getAgentProfileSaveBlock(activeEditor, currentCatalog);
   const publishBlock = getAgentProfilePublishBlock(activeEditor, currentCatalog);
   const mutationBusy =
-    workbench.mutation.phase === "saving" || workbench.mutation.phase === "publishing";
+    workbench.mutation.phase === "saving" ||
+    workbench.mutation.phase === "publishing" ||
+    workbench.mutation.phase === "unpublishing" ||
+    workbench.mutation.phase === "testing";
   const interactionBusy = mutationBusy || workbench.destructiveReloadPending;
   const modelCatalogResolved = catalog.modelsResolved;
   const skillCatalogResolved = catalog.skillsResolved && catalog.effectivePermissionsKnown;
@@ -142,7 +149,11 @@ export function AgentBuilderWorkbench({
           tone: "success" as const,
           message: workbench.mutation.action === "save"
             ? `草稿已保存为服务端 revision ${workbench.mutation.revision}。`
-            : `发布成功，当前服务端 revision 为 ${workbench.mutation.revision}。`,
+            : workbench.mutation.action === "publish"
+              ? `发布成功，当前服务端 revision 为 ${workbench.mutation.revision}。`
+              : workbench.mutation.action === "unpublish"
+                ? `已下架，当前服务端 revision 为 ${workbench.mutation.revision}。`
+                : "受控测试运行已创建。",
         }
       : null;
   const canRecoverServerRevision = workbench.mutation.phase === "error" &&
@@ -426,6 +437,17 @@ export function AgentBuilderWorkbench({
                 </div>
               </section>
 
+              <AgentBuilderEnterpriseFields
+                disabled={interactionBusy}
+                editor={activeEditor}
+                onChange={(patch) =>
+                  updateEditor((editor) => ({
+                    ...editor,
+                    ...patch,
+                  }))
+                }
+              />
+
               <section aria-labelledby="agent-instructions-heading" className="border-b border-[var(--theme-border)] py-6">
                 <div className="mb-4 flex items-center gap-2">
                   <FileText size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
@@ -634,6 +656,14 @@ export function AgentBuilderWorkbench({
                   {publishBlock ? <p data-agent-builder-publish-reason id="agent-builder-publish-reason">发布：{agentBuilderBlockReason(publishBlock)}</p> : null}
                 </div>
               </section>
+
+              <AgentBuilderLifecycle
+                disabled={interactionBusy}
+                editor={activeEditor}
+                mutation={workbench.mutation}
+                onRunTest={(message) => void controller.runActiveProfileTest(message)}
+                onUnpublish={() => void controller.unpublishActiveProfile()}
+              />
             </div>
           )}
         </section>

@@ -7,6 +7,8 @@ from fastapi import HTTPException
 from app.auth import AuthPrincipal
 from app.routes import lambchat_compat as lambchat
 
+pytestmark = pytest.mark.skip(reason="retired PG-poll live transport; covered by test_lambchat_sse_v21")
+
 
 @asynccontextmanager
 async def _transaction():

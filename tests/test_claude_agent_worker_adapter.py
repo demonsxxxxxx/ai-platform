@@ -269,6 +269,15 @@ class FakeSdkRuntimeError:
     error = "model gateway timeout"
 
 
+class FakeSdkCancelled:
+    used_sdk = True
+    message = "private partial text"
+    session_id = "sdk-session"
+    usage = {"input_tokens": 1}
+    error = "claude_agent_sdk_cancelled"
+    received_structured_terminal = False
+
+
 class FakeSdkStopSequence:
     used_sdk = True
     message = "completed at the requested stop sequence"
@@ -1513,6 +1522,23 @@ async def test_general_chat_keeps_real_sdk_errors_failed(monkeypatch):
 
     assert result.status == "failed"
     assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+
+
+@pytest.mark.asyncio
+async def test_general_chat_projects_sdk_cancellation_without_partial_text(monkeypatch):
+    adapter = ClaudeAgentWorkerAdapter()
+
+    async def sdk_cancelled(*args, **kwargs):
+        return FakeSdkCancelled()
+
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_cancelled)
+
+    result = await adapter._run_general_chat(payload())
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_cancelled"
+    assert result.result["message"] == "This run was cancelled before completion."
+    assert "private partial text" not in str(result.result)
 
 
 @pytest.mark.asyncio

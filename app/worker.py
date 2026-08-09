@@ -3,7 +3,6 @@ import hashlib
 import json
 import re
 import time as _time
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import partial as _partial
@@ -12,6 +11,10 @@ from typing import Any
 from pydantic import ValidationError
 
 from app import repositories
+from app.agent_apps.capability_state import (
+    exact_hook_invoked_skills,
+    project_agent_capability_state,
+)
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.capabilities import required_artifact_types_for_skill
 from app.capability_distribution import (
@@ -43,7 +46,6 @@ from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
-    PrincipalAuthorityDenied,
     resolve_current_principal,
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
@@ -55,6 +57,12 @@ from app.required_tool_contract import (
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.settings import get_settings
+from app.streaming.redis import RunStreamPublisher, canonical_assistant_delta_event
+from app.streaming.worker_projection import (
+    finalize_parent_and_publish,
+    persist_and_publish_worker_event,
+    publish_pending_run_terminal,
+)
 from app.skills.catalog import (
     RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY,
     RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY,
@@ -70,6 +78,12 @@ from app.tool_permission_lifecycle import (
 )
 from app.tool_policy import evaluate_tool_policy
 from app.validation import assert_safe_id
+from app.worker_principal_authority import (
+    _identity_mismatch_fields,
+    _locked_run_identity,
+    _payload_identity,
+    _resolve_current_principal_before_dispatch,
+)
 
 
 class _WorkerClock:
@@ -445,9 +459,6 @@ FORBIDDEN_ARTIFACT_KEYS = {
     "executable_path",
     "cwd",
 }
-NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native", "platform_controlled_runner"}
-
-
 AGENT_STEP_EVENT_STATUS = {
     "agent_step_started": "running",
     "agent_step_reused": "succeeded",
@@ -455,33 +466,6 @@ AGENT_STEP_EVENT_STATUS = {
     "agent_step_blocked": "failed",
     "agent_step_failed": "failed",
 }
-
-CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
-_ASSISTANT_DELTA_INPUT_STAGES = frozenset({"message", "assistant"})
-
-
-def _canonical_assistant_delta_event(
-    *,
-    stage: str,
-    payload: dict[str, Any] | None,
-) -> tuple[str, str, dict[str, Any]] | None:
-    """Return the sole persisted answer-delta shape accepted from executors."""
-    if stage not in _ASSISTANT_DELTA_INPUT_STAGES or not isinstance(payload, dict):
-        return None
-    delta = payload.get("delta")
-    if not isinstance(delta, str) or not delta:
-        return None
-    return (
-        "answer",
-        "",
-        {
-            "delta": delta,
-            "source": CHAT_ASSISTANT_DELTA_SOURCE,
-            "visible_to_user": True,
-            "severity": "info",
-        },
-    )
-
 
 def _sanitize_artifact_manifest(value: Any) -> Any:
     if isinstance(value, dict):
@@ -881,18 +865,32 @@ def _skill_snapshot_from_result(result: ExecutorResult) -> dict[str, list[str]]:
 
 
 def _native_used_skills_from_result(result: ExecutorResult) -> list[str]:
-    source = str(result.executor_payload.get("used_skills_source") or "").strip()
-    if source not in NATIVE_USED_SKILL_SOURCES:
-        return []
-    raw = result.executor_payload.get("used_skills")
+    semantic_evidence = {**result.result, **result.executor_payload}
+    exact_used = exact_hook_invoked_skills(semantic_evidence)
+    raw = semantic_evidence.get("used_skills")
     if not isinstance(raw, list):
         return []
     used: list[str] = []
     for item in raw:
         skill_name = str(item).strip()
-        if skill_name and skill_name not in used:
+        if skill_name in exact_used and skill_name not in used:
             used.append(skill_name)
     return used
+
+
+def _required_agent_skill_id(payload: QueueRunPayload) -> str | None:
+    profile = payload.agent_profile
+    if not isinstance(profile, dict):
+        return None
+    required_skill_id = str(profile.get("required_skill_id") or payload.skill_id).strip()
+    required_skill_version = str(
+        profile.get("required_skill_version") or payload.skill_version or ""
+    ).strip()
+    if required_skill_id != payload.skill_id:
+        return ""
+    if required_skill_version and required_skill_version != str(payload.skill_version or ""):
+        return ""
+    return required_skill_id
 
 
 def _inferred_used_skills_from_result(result: ExecutorResult) -> list[str]:
@@ -1042,36 +1040,6 @@ def _dependency_ids_from_manifest(item: dict[str, Any]) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [str(value) for value in raw]
-
-
-RUN_IDENTITY_FIELDS = ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "agent_id", "skill_id")
-
-
-def _payload_identity(payload: QueueRunPayload) -> dict[str, str]:
-    return {
-        "tenant_id": payload.tenant_id,
-        "workspace_id": payload.workspace_id,
-        "user_id": payload.user_id,
-        "session_id": payload.session_id,
-        "run_id": payload.run_id,
-        "agent_id": payload.agent_id,
-        "skill_id": payload.skill_id,
-    }
-
-
-def _locked_run_identity(payload: QueueRunPayload, locked_run: object) -> dict[str, str]:
-    if not isinstance(locked_run, dict):
-        return _payload_identity(payload)
-    identity: dict[str, str] = {}
-    for field in RUN_IDENTITY_FIELDS:
-        value = locked_run.get("id") if field == "run_id" else locked_run.get(field)
-        identity[field] = str(value) if value else ""
-    return identity
-
-
-def _identity_mismatch_fields(payload: QueueRunPayload, identity: dict[str, str]) -> list[str]:
-    payload_identity = _payload_identity(payload)
-    return [field for field in RUN_IDENTITY_FIELDS if str(payload_identity[field]) != str(identity[field])]
 
 
 LOCKED_RUN_SNAPSHOT_FIELDS = (
@@ -1308,16 +1276,11 @@ async def _reauthorize_worker_capabilities(
     payload: QueueRunPayload,
     run_identity: dict[str, str],
     attempt_id: str = "",
-    current_principal_resolver: Callable[..., Awaitable[AuthPrincipal]] | None = None,
+    current_principal: AuthPrincipal | None = None,
 ) -> _WorkerCapabilityAuthorization:
     decisions: list[_WorkerCapabilityDecision] = []
-    resolver = current_principal_resolver or resolve_current_principal
-    try:
-        principal = await resolver(
-            user_id=run_identity["user_id"],
-            tenant_id=run_identity["tenant_id"],
-        )
-    except PrincipalAuthorityDenied:
+    principal = current_principal
+    if principal is None:
         principal = AuthPrincipal(
             user_id=run_identity["user_id"],
             display_name=run_identity["user_id"],
@@ -2087,6 +2050,12 @@ async def process_run_payload(
     capability_authorization: _WorkerCapabilityAuthorization | None = None
     admin_bypass_audits: tuple[_WorkerAdminBypassAudit, ...] = ()
     try:
+        current_principal = await _resolve_current_principal_before_dispatch(
+            payload,
+            transaction_factory=transaction,
+            run_loader=repositories.get_run,
+            principal_resolver=resolve_current_principal,
+        )
         async with transaction() as conn:
             locked = await repositories.mark_run_running(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
             if not locked:
@@ -2209,6 +2178,7 @@ async def process_run_payload(
                 payload=payload,
                 run_identity=run_identity,
                 attempt_id=attempt_id,
+                current_principal=current_principal,
             )
             admin_bypass_audits = _worker_admin_bypass_audits(
                 authorization=capability_authorization,
@@ -2372,6 +2342,11 @@ async def process_run_payload(
                 terminal_after_transaction.payload,
                 terminal_after_transaction.reconciled_parent,
             )
+            await publish_pending_run_terminal(
+                transaction,
+                tenant_id=terminal_after_transaction.payload.tenant_id,
+                run_id=terminal_after_transaction.payload.run_id,
+            )
 
     run_payload = RunPayload(
         tenant_id=run_identity["tenant_id"],
@@ -2395,6 +2370,12 @@ async def process_run_payload(
         model_value=payload.model_value or "",
         agent_profile=payload.agent_profile or {},
     )
+    stream_publisher = RunStreamPublisher(
+        run_payload.tenant_id,
+        run_payload.run_id,
+        run_payload.attempt_id,
+        get_settings().ai_session_secret,
+    )
 
     async def event_sink(
         *,
@@ -2407,8 +2388,9 @@ async def process_run_payload(
         event_message = message
         event_payload = payload
         persist_event = True
+        public_delta = None
         if event_type == "assistant_delta":
-            canonical_delta = _canonical_assistant_delta_event(
+            canonical_delta = canonical_assistant_delta_event(
                 stage=stage,
                 payload=payload,
             )
@@ -2416,31 +2398,22 @@ async def process_run_payload(
                 persist_event = False
             else:
                 event_stage, event_message, event_payload = canonical_delta
-        async with transaction() as conn:
-            if persist_event:
-                await append_user_event(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                    event_type=event_type,
-                    stage=event_stage,
-                    message=event_message,
-                    payload=event_payload,
-                )
-                await _record_run_step_from_event(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                    event_type=event_type,
-                    message=event_message,
-                    payload=event_payload,
-                )
-            if await repositories.is_cancel_requested(
-                conn,
-                tenant_id=run_payload.tenant_id,
-                run_id=run_payload.run_id,
-            ):
-                raise WorkerRunCancelled
+                persist_event = False
+                public_delta = str(event_payload["delta"])
+        if public_delta is not None:
+            await stream_publisher.publish_assistant_delta(public_delta)
+        if await persist_and_publish_worker_event(
+            transaction,
+            stream_publisher=stream_publisher,
+            run_payload=run_payload,
+            persist_event=persist_event,
+            event_type=event_type,
+            stage=event_stage,
+            message=event_message,
+            payload=event_payload,
+            record_run_step=_record_run_step_from_event,
+        ):
+            raise WorkerRunCancelled
 
     async def release_runtime_sandbox_lease(conn, *, reason: str) -> None:
         nonlocal runtime_sandbox_lease_released
@@ -2459,6 +2432,11 @@ async def process_run_payload(
             return
 
     try:
+        async with transaction() as conn:
+            await stream_publisher.prepare(conn)
+        await stream_publisher.open()
+        async with transaction() as conn:
+            await stream_publisher.confirm(conn)
         if adapter is None:
             raise RuntimeError("executor_adapter_not_resolved")
 
@@ -2477,6 +2455,7 @@ async def process_run_payload(
             event_sink=event_sink,
             cancel_requested=cancel_requested,
         )
+        await stream_publisher.aclose()
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
         if capability_authorization is None:
@@ -2505,7 +2484,25 @@ async def process_run_payload(
                     "error_code": required_completion.reason,
                 },
             )
+        required_agent_skill_id = _required_agent_skill_id(payload)
+        if (
+            result.status == "succeeded"
+            and required_agent_skill_id is not None
+            and required_agent_skill_id
+            not in exact_hook_invoked_skills({**result.result, **result.executor_payload})
+        ):
+            result = replace(
+                result,
+                status="failed",
+                artifacts=[],
+                result={
+                    **result.result,
+                    "message": "Required Agent capability execution evidence is unavailable.",
+                    "error_code": "agent_app_required_skill_not_invoked",
+                },
+            )
     except WorkerRunCancelled:
+        await stream_publisher.aclose()
         reconciled_parent = None
         async with transaction() as conn:
             cancel_result = {"message": "任务已取消"}
@@ -2529,9 +2526,10 @@ async def process_run_payload(
                 result_json=cancel_result,
             )
             await release_runtime_sandbox_lease(conn, reason="run_cancelled")
-        await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
+        await stream_publisher.aclose()
         reconciled_parent = None
         failure_code, failure_message = _executor_exception_failure(exc)
         outcome_after_exception = WorkerOutcome(
@@ -2593,7 +2591,7 @@ async def process_run_payload(
                         },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
-        await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return outcome_after_exception
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
@@ -2616,12 +2614,24 @@ async def process_run_payload(
             }
         )
     skill_snapshot = _skill_snapshot_from_result(result)
+    agent_capability_state = (
+        project_agent_capability_state(
+            required_skill_id=required_agent_skill_id or "",
+            executor_payload={**result.result, **result.executor_payload},
+            run_succeeded=result.status == "succeeded",
+            durable_artifact_count=0,
+        )
+        if required_agent_skill_id is not None
+        else None
+    )
     public_result = {
         key: value
         for key, value in result.result.items()
         if key not in {"skill_manifests", "used_skills", "used_skills_source", "inferred_used_skills"}
     }
-    if "used_skills" in result.result or "used_skills" in result.executor_payload:
+    if required_agent_skill_id is None and (
+        "used_skills" in result.result or "used_skills" in result.executor_payload
+    ):
         public_result["used_skills"] = skill_snapshot["used_skills"]
     result_payload = {
         **public_result,
@@ -2646,8 +2656,10 @@ async def process_run_payload(
             "capabilities": result.capabilities,
         },
     }
-    if skill_snapshot:
+    if skill_snapshot and required_agent_skill_id is None:
         result_payload["skills"] = skill_snapshot
+    if agent_capability_state is not None:
+        result_payload["capability_state"] = agent_capability_state.public_projection()
     reconciled_parent = None
     try:
         async with transaction() as conn:
@@ -2705,6 +2717,65 @@ async def process_run_payload(
                     **result_payload,
                     "cancel_status": "cancel_requested_but_completed",
                 }
+            if agent_capability_state is not None:
+                agent_capability_state = project_agent_capability_state(
+                    required_skill_id=required_agent_skill_id or "",
+                    executor_payload={**result.result, **result.executor_payload},
+                    run_succeeded=result.status == "succeeded",
+                    durable_artifact_count=0,
+                )
+                result_payload["capability_state"] = agent_capability_state.public_projection()
+                semantic_events = (
+                    (
+                        "capability_staged",
+                        agent_capability_state.staged,
+                        "Agent capability loaded",
+                        "staged",
+                    ),
+                    (
+                        "capability_sdk_registered",
+                        agent_capability_state.sdk_registered,
+                        "Agent capability registered",
+                        "sdk_registered",
+                    ),
+                    (
+                        "capability_actually_invoked",
+                        agent_capability_state.actually_invoked,
+                        "Agent capability invoked",
+                        "actually_invoked",
+                    ),
+                    (
+                        "capability_completed",
+                        agent_capability_state.completed,
+                        "Agent capability completed",
+                        "completed",
+                    ),
+                )
+                for event_type, present, message, public_state in semantic_events:
+                    if not present:
+                        continue
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type=event_type,
+                        stage="capability",
+                        message=message,
+                        payload={"capability_state": public_state},
+                    )
+                if agent_capability_state.optional_not_invoked_count:
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="capability_optional_not_invoked",
+                        stage="capability",
+                        message="Optional Agent capabilities were not invoked",
+                        payload={
+                            "capability_state": "optional_not_invoked",
+                            "count": agent_capability_state.optional_not_invoked_count,
+                        },
+                    )
             for artifact in artifact_records:
                 manifest_json = artifact_manifest_contract(
                     artifact_type=artifact["artifact_type"],
@@ -2728,9 +2799,9 @@ async def process_run_payload(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
-                    event_type="artifact_created",
+                    event_type="artifact_ready",
                     stage="artifact",
-                    message=f"Artifact created: {artifact['label']}",
+                    message="Artifact is ready",
                     payload={
                         "artifact_id": artifact["id"],
                         "artifact_type": artifact["artifact_type"],
@@ -2738,6 +2809,14 @@ async def process_run_payload(
                         "lineage": lineage,
                     },
                 )
+            if agent_capability_state is not None:
+                agent_capability_state = project_agent_capability_state(
+                    required_skill_id=required_agent_skill_id or "",
+                    executor_payload={**result.result, **result.executor_payload},
+                    run_succeeded=result.status == "succeeded",
+                    durable_artifact_count=len(artifact_records),
+                )
+                result_payload["capability_state"] = agent_capability_state.public_projection()
             for item in _skill_manifests_for_persistence(result, payload):
                 skill_id = str(item.get("skill_id") or "").strip()
                 if not skill_id:
@@ -2779,7 +2858,11 @@ async def process_run_payload(
                         "artifact_count": len(result.artifacts),
                         "executor_type": result.executor_type,
                         "adapter_version": result.adapter_version,
-                        "skills": skill_snapshot,
+                        **(
+                            {"capability_state": agent_capability_state.public_projection()}
+                            if agent_capability_state is not None
+                            else {"skills": skill_snapshot}
+                        ),
                     },
                 )
                 await append_user_event(
@@ -2789,7 +2872,14 @@ async def process_run_payload(
                     event_type="assistant_message_created",
                     stage="message",
                     message="Assistant response is ready",
-                    payload={"artifact_count": len(result.artifacts), "skills": skill_snapshot},
+                    payload={
+                        "artifact_count": len(result.artifacts),
+                        **(
+                            {"capability_state": agent_capability_state.public_projection()}
+                            if agent_capability_state is not None
+                            else {"skills": skill_snapshot}
+                        ),
+                    },
                 )
                 if cancel_requested:
                     await append_user_event(
@@ -2823,7 +2913,14 @@ async def process_run_payload(
                         event_type="run_succeeded",
                         stage="worker",
                         message="Run succeeded",
-                        payload={"artifact_count": len(result.artifacts), "skills": skill_snapshot},
+                        payload={
+                            "artifact_count": len(result.artifacts),
+                            **(
+                                {"capability_state": agent_capability_state.public_projection()}
+                                if agent_capability_state is not None
+                                else {"skills": skill_snapshot}
+                            ),
+                        },
                         **terminal_event_kwargs,
                     )
                     await repositories.append_event(
@@ -3006,5 +3103,5 @@ async def process_run_payload(
                     terminal_outcome.error_code if final_status == "failed" else None,
                     terminal_outcome.error_message if final_status == "failed" else None,
                 )
-    await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+    await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
     return terminal_outcome

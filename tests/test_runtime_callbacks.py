@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -65,6 +66,28 @@ def patch_active_attempt(monkeypatch, runtime_callbacks, attempt_id="attempt-a")
         "list_current_sandbox_runtime_leases_for_attempt",
         list_current_leases,
     )
+
+
+def patch_callback_stream(monkeypatch, runtime_callbacks, published):
+    authority = SimpleNamespace(
+        tenant_scope="scope-a",
+        attempt_id="attempt-a",
+        stream_incarnation=1,
+        state="confirmed",
+    )
+
+    async def get_authority(conn, *, tenant_id, run_id, for_update=False):
+        return authority
+
+    class Bridge:
+        async def append(self, envelope):
+            published.append(envelope)
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
+    monkeypatch.setattr(runtime_callbacks, "RedisStreamBridge", Bridge)
 
 
 def test_parallel_same_run_attempts_each_use_their_exact_lease_and_token(monkeypatch):
@@ -783,7 +806,12 @@ def test_executor_callback_persists_exact_timeline_for_chat_and_history(monkeypa
 
     assert response.status_code == 200
     execution = persisted[1]
-    assert "source" not in execution["payload"]
+    assert execution["event_type"] == "executor_private_event"
+    assert execution["payload"] == {
+        "source": "executor_callback",
+        "source_event_type": "execution_step",
+        "visible_to_user": False,
+    }
     row = {
         "id": "evt_execution",
         "sequence": 2,
@@ -793,7 +821,7 @@ def test_executor_callback_persists_exact_timeline_for_chat_and_history(monkeypa
         "stage": execution["stage"],
         "message": execution["message"],
         "severity": "info",
-        "visible_to_user": True,
+        "visible_to_user": False,
         "payload_json": execution["payload"],
         "created_at": "2026-07-27T00:00:00Z",
     }
@@ -813,10 +841,7 @@ def test_executor_callback_persists_exact_timeline_for_chat_and_history(monkeypa
 
     records = lambchat_compat._compatibility_events_for_run(run, [row], [], principal)
 
-    assert len(records) == 1
-    assert records[0].stream_event_type == "execution_step"
-    assert records[0].stream_data == records[0].history_event["data"]
-    assert records[0].history_event["payload"] == records[0].stream_data
+    assert records == []
 
 
 def _arbitrary_v2_step(
@@ -937,6 +962,7 @@ def test_executor_callback_rejects_arbitrary_v2_lifecycles_without_public_persis
 def test_executor_callback_canonicalizes_assistant_delta_and_projects_lambchat_chunk(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     persisted = []
+    published = []
 
     class FakeTransaction:
         async def __aenter__(self):
@@ -952,16 +978,23 @@ def test_executor_callback_canonicalizes_assistant_delta_and_projects_lambchat_c
         persisted.append(event)
         return f"evt_{len(persisted)}"
 
+    async def fake_append_batch(conn, **receipt):
+        persisted.extend(receipt["events"])
+        return {"callback_received_at": "2026-08-09T00:00:00Z"}
+
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", fake_append_batch)
     patch_active_attempt(monkeypatch, runtime_callbacks)
+    patch_callback_stream(monkeypatch, runtime_callbacks, published)
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
         headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
         json=callback_payload(
+            batch_id="batch-a",
             new_message=None,
             state_patch={},
             events=[{
@@ -981,55 +1014,59 @@ def test_executor_callback_canonicalizes_assistant_delta_and_projects_lambchat_c
     )
 
     assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 2}
-    answer = persisted[1]
-    assert answer == {
-        "tenant_id": "tenant-a",
-        "run_id": "run-a",
-        "event_type": "assistant_delta",
-        "stage": "answer",
-        "message": "",
-        "payload": {
-            "delta": "safe answer",
-            "source": "worker_answer_delta_v1",
-            "visible_to_user": True,
-            "severity": "info",
-        },
-    }
-    assert not ({"command", "path", "token", "tool_name", "stdout", "stderr"} & set(answer["payload"]))
-    row = {
-        "id": "evt-delta",
-        "sequence": 2,
-        "trace_id": "trace-answer",
-        "schema_version": "ai-platform.event-envelope.v1",
-        "event_type": answer["event_type"],
-        "stage": answer["stage"],
-        "message": answer["message"],
-        "severity": "info",
-        "visible_to_user": True,
-        "payload_json": answer["payload"],
-        "created_at": "2026-07-27T00:00:00Z",
-    }
-    run = {
-        "id": "run-a",
-        "trace_id": "trace-answer",
-        "agent_id": "general-agent",
-        "skill_id": "general-chat",
-        "status": "running",
-        "result_json": {},
-        "error_code": None,
-        "error_message": None,
-    }
-    principal = AuthPrincipal(
-        user_id="user-a", display_name="User", tenant_id="tenant-a", roles=["user"]
+    assert response.json() == {"accepted": True, "event_count": 1}
+    assert [event["event_type"] for event in persisted] == ["executor_callback"]
+    assert len(published) == 1
+    assert published[0].event_type == "assistant_text_delta"
+    assert published[0].payload == {"delta": "safe answer"}
+    assert "private command" not in published[0].canonical_bytes.decode()
+
+
+def test_executor_callback_suppresses_delta_if_run_terminalizes_after_receipt_commit(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    persisted = []
+    published = []
+    identity_reads = 0
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        nonlocal identity_reads
+        identity_reads += 1
+        return {
+            "tenant_id": "tenant-a",
+            "id": run_id,
+            "session_id": "session-a",
+            "status": "running" if identity_reads == 1 else "succeeded",
+        }
+
+    async def append_batch(conn, **receipt):
+        persisted.extend(receipt["events"])
+        return {"callback_received_at": "2026-08-09T00:00:00Z"}
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
+    patch_callback_stream(monkeypatch, runtime_callbacks, published)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(batch_id="batch-a", new_message={"type": "assistant", "delta": "late"}, state_patch={}),
     )
 
-    records = lambchat_compat._compatibility_events_for_run(run, [row], [], principal)
-
-    assert len(records) == 1
-    assert records[0].stream_event_type == "message:chunk"
-    assert records[0].stream_data["content"] == "safe answer"
-    assert records[0].stream_data == records[0].history_event["data"]
+    assert response.status_code == 200
+    assert [event["event_type"] for event in persisted] == ["executor_callback"]
+    assert identity_reads == 2
+    assert published == []
 
 
 @pytest.mark.parametrize("delta", ["", 7])
@@ -1119,6 +1156,7 @@ def test_executor_callback_rejects_empty_or_non_string_new_message_delta(monkeyp
 def test_executor_callback_uses_text_when_delta_is_absent(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     persisted = []
+    published = []
 
     class FakeTransaction:
         async def __aenter__(self):
@@ -1134,26 +1172,29 @@ def test_executor_callback_uses_text_when_delta_is_absent(monkeypatch):
         persisted.append(event)
         return f"evt_{len(persisted)}"
 
+    async def fake_append_batch(conn, **receipt):
+        persisted.extend(receipt["events"])
+        return {"callback_received_at": "2026-08-09T00:00:00Z"}
+
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", fake_append_batch)
     patch_active_attempt(monkeypatch, runtime_callbacks)
+    patch_callback_stream(monkeypatch, runtime_callbacks, published)
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
         headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json=callback_payload(new_message={"type": "assistant", "text": "text fallback"}, state_patch={}),
+        json=callback_payload(
+            batch_id="batch-a",
+            new_message={"type": "assistant", "text": "text fallback"},
+            state_patch={},
+        ),
     )
 
     assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 2}
-    assert persisted[1]["event_type"] == "assistant_delta"
-    assert persisted[1]["stage"] == "answer"
-    assert persisted[1]["message"] == ""
-    assert persisted[1]["payload"] == {
-        "delta": "text fallback",
-        "source": "worker_answer_delta_v1",
-        "visible_to_user": True,
-        "severity": "info",
-    }
+    assert response.json() == {"accepted": True, "event_count": 1}
+    assert [event["event_type"] for event in persisted] == ["executor_callback"]
+    assert published[0].payload == {"delta": "text fallback"}

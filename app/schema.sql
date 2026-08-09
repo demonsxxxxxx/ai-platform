@@ -393,6 +393,14 @@ create table if not exists agent_profile_revisions (
   revision_status text not null check (revision_status in ('draft', 'published', 'withdrawn')),
   name text not null,
   description text not null default '',
+  welcome_message text not null default '',
+  starter_prompts jsonb not null default '[]'::jsonb,
+  capability_summary text not null default '',
+  recommended_tasks jsonb not null default '[]'::jsonb,
+  supported_input_types jsonb not null default '["text"]'::jsonb,
+  supported_file_types jsonb not null default '[]'::jsonb,
+  expected_outputs jsonb not null default '[]'::jsonb,
+  permissions_and_data_access_notice text not null default '',
   instructions text not null,
   model_id text not null,
   skill_id text not null references skills(id),
@@ -401,6 +409,7 @@ create table if not exists agent_profile_revisions (
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  avatar_asset_id text,
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
   visibility text not null,
@@ -468,6 +477,8 @@ create table if not exists sessions (
   agent_id text not null,
   title text not null default '',
   status text not null default 'active',
+  purpose text not null default 'conversation'
+    check (purpose in ('conversation', 'builder_test')),
   admitted_agent_profile_revision bigint,
   admitted_agent_profile_hash text,
   next_run_generation bigint not null default 0,
@@ -540,6 +551,11 @@ alter table runs add column if not exists principal_department_id text not null 
 alter table runs add column if not exists auth_source text;
 alter table sessions add column if not exists admitted_agent_profile_revision bigint;
 alter table sessions add column if not exists admitted_agent_profile_hash text;
+alter table sessions add column if not exists purpose text not null default 'conversation';
+alter table sessions drop constraint if exists chk_sessions_purpose;
+alter table sessions drop constraint if exists sessions_purpose_check;
+alter table sessions add constraint chk_sessions_purpose
+  check (purpose in ('conversation', 'builder_test'));
 create index if not exists idx_sessions_agent_conversation_history
   on sessions(
     tenant_id,
@@ -557,11 +573,20 @@ alter table agent_profile_revisions add column if not exists published_from_revi
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
 alter table agent_profile_revisions add column if not exists revision_status text;
 alter table agent_profile_revisions add column if not exists avatar_ref text;
+alter table agent_profile_revisions add column if not exists avatar_asset_id text;
 alter table agent_profile_revisions add column if not exists category text;
 alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
 alter table agent_profile_revisions add column if not exists allowed_roles jsonb;
 alter table agent_profile_revisions add column if not exists allowed_user_ids jsonb;
+alter table agent_profile_revisions add column if not exists welcome_message text not null default '';
+alter table agent_profile_revisions add column if not exists starter_prompts jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists capability_summary text not null default '';
+alter table agent_profile_revisions add column if not exists recommended_tasks jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists supported_input_types jsonb not null default '["text"]'::jsonb;
+alter table agent_profile_revisions add column if not exists supported_file_types jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists expected_outputs jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists permissions_and_data_access_notice text not null default '';
 alter table agent_profile_revisions add column if not exists legacy_compatibility_write boolean not null default false;
 alter table agent_profiles add column if not exists published_status text;
 
@@ -1806,10 +1831,18 @@ create table if not exists run_event_batches (
   attempt_id text not null, batch_id text not null,
   event_ids_json jsonb not null default '[]'::jsonb,
   first_sequence bigint, through_sequence bigint,
+  payload_digest text not null default '', projection_version text not null default 'legacy-run-event-v1',
+  item_count integer not null default 0 check (item_count >= 0), first_source_sequence integer, through_source_sequence integer,
   callback_received_at timestamptz not null default now(),
   durable_committed_at timestamptz,
   unique (tenant_id, run_id, attempt_id, batch_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
+
+alter table run_event_batches add column if not exists payload_digest text not null default '';
+alter table run_event_batches add column if not exists projection_version text not null default 'legacy-run-event-v1';
+alter table run_event_batches add column if not exists item_count integer not null default 0;
+alter table run_event_batches add column if not exists first_source_sequence integer;
+alter table run_event_batches add column if not exists through_source_sequence integer;
 
 create table if not exists run_event_terminal_drains (
   tenant_id text not null,
@@ -1818,6 +1851,56 @@ create table if not exists run_event_terminal_drains (
   batch_id text not null,
   primary key (tenant_id, run_id, attempt_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
+
+create table if not exists sse_stream_authorities (
+  tenant_id text not null, run_id text not null, attempt_id text not null,
+  design_id text not null, projection_version text not null, tenant_scope text not null,
+  stream_incarnation bigint not null check (stream_incarnation > 0), state text not null default 'admission_pending' check (state in ('admission_pending', 'confirmed', 'degraded', 'terminal')),
+  open_event_id text not null, open_payload_bytes text not null, open_payload_digest text not null,
+  authorization_epoch bigint not null default 1 check (authorization_epoch > 0), revocation_state text not null default 'active' check (revocation_state in ('active', 'committed', 'effective')),
+  admission_created_at timestamptz not null default clock_timestamp(), admission_confirmed_at timestamptz, degraded_at timestamptz,
+  revocation_committed_at timestamptz, revocation_effective_at timestamptz, updated_at timestamptz not null default clock_timestamp(),
+  primary key (tenant_id, run_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+create unique index if not exists uq_sse_stream_authority_attempt_incarnation
+  on sse_stream_authorities(tenant_id, run_id, attempt_id, stream_incarnation);
+
+create table if not exists sse_authority_leases (
+  id text primary key, tenant_id text not null, run_id text not null,
+  api_instance_id text not null, connection_id text not null, authorization_epoch bigint not null check (authorization_epoch > 0),
+  lease_not_after timestamptz not null, closed_at timestamptz, close_reason text,
+  created_at timestamptz not null default clock_timestamp(), updated_at timestamptz not null default clock_timestamp(),
+  unique (tenant_id, run_id, api_instance_id, connection_id),
+  foreign key (tenant_id, run_id) references sse_stream_authorities(tenant_id, run_id)
+);
+
+create index if not exists idx_sse_authority_leases_expiry
+  on sse_authority_leases(tenant_id, run_id, authorization_epoch, lease_not_after)
+  where closed_at is null;
+
+create table if not exists sse_terminal_publication_intents (
+  id text primary key, tenant_id text not null, run_id text not null, attempt_id text not null,
+  stream_incarnation bigint not null check (stream_incarnation > 0), schema_version text not null, projection_version text not null,
+  terminal_event_id text not null, end_event_id text not null,
+  terminal_payload_bytes text not null, terminal_payload_digest text not null, terminal_payload_size integer not null check (terminal_payload_size >= 0),
+  end_payload_bytes text not null, end_payload_digest text not null, end_payload_size integer not null check (end_payload_size >= 0),
+  emitted_at text not null,
+  state text not null default 'pending' check (state in ('pending', 'published', 'superseded')),
+  created_at timestamptz not null default clock_timestamp(), published_at timestamptz, updated_at timestamptz not null default clock_timestamp(),
+  unique (tenant_id, run_id, attempt_id),
+  foreign key (tenant_id, run_id) references runs(tenant_id, id)
+);
+
+alter table sse_terminal_publication_intents add column if not exists emitted_at text;
+update sse_terminal_publication_intents
+set emitted_at = to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+where emitted_at is null;
+alter table sse_terminal_publication_intents alter column emitted_at set not null;
+
+create index if not exists idx_sse_terminal_intents_pending
+  on sse_terminal_publication_intents(state, created_at)
+  where state = 'pending';
 
 do $$
 declare

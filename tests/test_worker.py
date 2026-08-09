@@ -44,6 +44,32 @@ _CURRENT_QUEUE_PAYLOAD = None
 _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
 
 
+@pytest.fixture(autouse=True)
+def admitted_sse_stream(monkeypatch):
+    published = []
+    class Publisher:
+        def __init__(self, tenant_id, run_id, attempt_id, authority_secret):
+            self.run_id = run_id
+
+        async def prepare(self, conn):
+            return None
+
+        async def open(self):
+            return None
+
+        async def confirm(self, conn):
+            return None
+
+        async def publish_assistant_delta(self, delta):
+            published.append(types.SimpleNamespace(event_type="assistant_text_delta", payload={"delta": delta}))
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(worker_module, "RunStreamPublisher", Publisher)
+    return published
+
+
 def test_worker_preserves_only_the_fixed_native_tool_admission_failure():
     private_token = "private-native-token"
     private_path = "/home/private/workspace/native-tool.sock"
@@ -697,6 +723,15 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
+    async def get_run(conn, *, tenant_id, run_id, for_update=False):
+        if _CURRENT_QUEUE_PAYLOAD is None:
+            return None
+        locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        locked_run["status"] = "queued"
+        return locked_run
+
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run, raising=False)
+
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return False
 
@@ -1116,6 +1151,34 @@ def base_payload(**overrides):
     return payload
 
 
+def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "required_skill_id": "qa-file-reviewer",
+        "required_skill_version": "hash-qa-file-reviewer",
+    }
+    payload = parse_queue_payload(base_payload(_leased=False, agent_profile=profile))
+
+    assert payload.agent_profile == profile
+    with pytest.raises(ValueError, match="agent_profile_required_skill_invalid"):
+        parse_queue_payload(
+            base_payload(
+                _leased=False,
+                agent_profile={**profile, "required_skill_id": "hostile-skill"},
+            )
+        )
+    with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+        parse_queue_payload(
+            base_payload(
+                _leased=False,
+                agent_profile={**profile, "required_skill_version": "hostile-version"},
+            )
+        )
+
+
 def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeypatch):
     captured = {}
 
@@ -1291,6 +1354,67 @@ def locked_run_from_payload(payload):
             }
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_worker_rechecks_queued_state_after_current_principal_http(monkeypatch):
+    calls = []
+    transaction_depth = 0
+    get_run_count = 0
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+        calls.append("transaction_enter")
+        try:
+            yield object()
+        finally:
+            calls.append("transaction_exit")
+            transaction_depth -= 1
+
+    async def get_run(_conn, **_kwargs):
+        nonlocal get_run_count
+        get_run_count += 1
+        calls.append(f"get_run_{get_run_count}")
+        run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        run["status"] = "queued" if get_run_count == 1 else "running"
+        return run
+
+    async def resolve_current_principal(*, user_id, tenant_id):
+        assert transaction_depth == 0
+        calls.append("current_principal_http")
+        return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
+
+    async def mark_run_running(_conn, **_kwargs):
+        assert transaction_depth == 1
+        calls.append("mark_run_running")
+        return None
+
+    async def append_event(_conn, **_kwargs):
+        calls.append("skip_event")
+        return "event-a"
+
+    monkeypatch.setattr("app.worker.transaction", recording_transaction)
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker.resolve_current_principal", resolve_current_principal)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+
+    outcome = await process_run_payload(base_payload())
+
+    assert outcome == WorkerOutcome("skipped", "run-a")
+    assert calls == [
+        "transaction_enter",
+        "get_run_1",
+        "transaction_exit",
+        "current_principal_http",
+        "transaction_enter",
+        "mark_run_running",
+        "get_run_2",
+        "skip_event",
+        "transaction_exit",
+    ]
 
 
 def test_multi_agent_result_summary_counts_pending_and_cancelled_steps_like_sse_snapshot():
@@ -4925,7 +5049,7 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
 
 
 @pytest.mark.asyncio
-async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypatch):
+async def test_worker_never_persists_platform_controlled_runner_as_actually_used(monkeypatch):
     snapshots = []
 
     class ControlledRunnerSkillAdapter:
@@ -5008,13 +5132,147 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
 
     assert outcome.status == "succeeded"
     assert snapshots[0]["skill_id"] == "qa-file-reviewer"
-    assert snapshots[0]["used"] is True
-    assert snapshots[0]["used_skills_source"] == "platform_controlled_runner"
-    assert snapshots[0]["inferred_used"] is False
+    assert snapshots[0]["used"] is False
+    assert snapshots[0]["used_skills_source"] == "inferred"
+    assert snapshots[0]["inferred_used"] is True
     assert snapshots[1]["skill_id"] == "minimax-docx"
     assert snapshots[1]["used"] is False
     assert snapshots[1]["used_skills_source"] == "inferred"
     assert snapshots[1]["inferred_used"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["executor_native", "platform_controlled_runner", "inferred"])
+async def test_agent_app_required_skill_without_exact_hook_forces_run_failure(monkeypatch, source):
+    failures = []
+
+    class NonHookAgentAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={
+                    "message": "executor claimed success",
+                    "staged_skills": ["qa-file-reviewer"],
+                    "used_skills": ["qa-file-reviewer"],
+                    "used_skills_source": source,
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def fail_run(conn, **kwargs):
+        failures.append(kwargs)
+        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(
+            agent_profile={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "Use the fixed enterprise expert policy.",
+                "required_skill_id": "qa-file-reviewer",
+                "required_skill_version": "hash-qa-file-reviewer",
+            }
+        ),
+        AdapterRegistry({"fake": NonHookAgentAdapter()}),
+    )
+
+    assert outcome.status == "failed", outcome.error_message
+    assert outcome.error_code == "agent_app_required_skill_not_invoked"
+    assert failures[0]["error_code"] == "agent_app_required_skill_not_invoked"
+    assert failures[0]["result_json"]["capability_state"]["actually_invoked"] is False
+    assert failures[0]["result_json"]["capability_state"]["completed"] is False
+    serialized = str(failures[0]["result_json"])
+    assert "used_skills_source" not in serialized
+    assert source not in serialized
+
+
+@pytest.mark.asyncio
+async def test_agent_app_capability_completed_waits_for_platform_terminal_contracts(monkeypatch):
+    failures = []
+    events = []
+
+    class ExactHookWithoutRequiredArtifactAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={"message": "executor claimed success"},
+                executor_payload={
+                    "staged_skills": ["qa-file-reviewer"],
+                    "used_skills": ["qa-file-reviewer"],
+                    "used_skills_source": "executor_hook",
+                    "sdk_used": True,
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        events.append(kwargs["event_type"])
+        return "evt-a"
+
+    async def fail_run(conn, **kwargs):
+        failures.append(kwargs)
+        return ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(
+            agent_profile={
+                "agent_id": "agt_support",
+                "revision": 7,
+                "content_hash": "a" * 64,
+                "instructions": "Use the fixed enterprise expert policy.",
+                "required_skill_id": "qa-file-reviewer",
+                "required_skill_version": "hash-qa-file-reviewer",
+            }
+        ),
+        AdapterRegistry({"fake": ExactHookWithoutRequiredArtifactAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "required_artifact_missing"
+    assert failures[0]["result_json"]["capability_state"] == {
+        "selected": True,
+        "staged": True,
+        "sdk_registered": True,
+        "actually_invoked": True,
+        "completed": False,
+        "artifact_ready": False,
+        "optional_not_invoked_count": 0,
+    }
+    assert "capability_actually_invoked" in events
+    assert "capability_completed" not in events
+    assert "artifact_ready" not in events
 
 
 @pytest.mark.asyncio
@@ -5294,7 +5552,7 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
     assert created[0]["manifest_json"]["artifact_type"] == "reviewed_docx"
     assert created[0]["manifest_json"]["source_file_id"] == "file-a"
     assert "local_path" not in created[0]["manifest_json"]
-    artifact_event = next(item for item in events if item["event_type"] == "artifact_created")
+    artifact_event = next(item for item in events if item["event_type"] == "artifact_ready")
     assert artifact_event["payload"]["artifact_id"] == created[0]["artifact_id"]
     assert artifact_event["payload"]["artifact_type"] == "reviewed_docx"
     assert artifact_event["payload"]["download_url"] == f"/api/ai/artifacts/{created[0]['artifact_id']}/download"
@@ -5502,6 +5760,7 @@ async def test_worker_skips_stale_queue_payload_when_run_row_is_missing(monkeypa
     assert outcome.status == "skipped"
     assert outcome.error_code == "stale_queue_payload"
     assert calls == [
+        ("get_run", "tenant-a", "run-a"),
         ("running", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
     ]
@@ -5986,6 +6245,7 @@ async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatc
     assert outcome.status == "skipped"
     assert not any(item[0] == "fail" for item in calls)
     assert calls == [
+        ("get_run", "tenant-a", "run-a"),
         ("running", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
         ("event", "skip", "worker"),
@@ -6070,6 +6330,7 @@ async def test_worker_skips_direct_runtime211_payload_for_terminal_run(monkeypat
     assert outcome.status == "skipped"
     assert not any(item[0] in {"adapter", "fail"} for item in calls)
     assert calls == [
+        ("get_run", "tenant-a", "run-a"),
         ("running", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
         ("event", "skip", "worker"),
@@ -6797,10 +7058,10 @@ async def test_worker_appends_user_visible_execution_timeline(monkeypatch):
     assert outcome.status == "succeeded"
     event_types = [item["event_type"] for item in events]
     assert "worker_started" in event_types
-    assert "artifact_created" in event_types
+    assert "artifact_ready" in event_types
     assert "assistant_message_created" in event_types
     assert "run_succeeded" in event_types
-    user_visible_types = {"worker_started", "artifact_created", "assistant_message_created", "run_succeeded"}
+    user_visible_types = {"worker_started", "artifact_ready", "assistant_message_created", "run_succeeded"}
     assert all(
         item["payload"].get("visible_to_user") is True
         for item in events
@@ -6874,15 +7135,7 @@ async def test_worker_records_general_chat_token_events(monkeypatch):
 
     assert outcome.status == "succeeded"
     assistant_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
-    assert len(assistant_deltas) == 1
-    assert assistant_deltas[0]["stage"] == "answer"
-    assert assistant_deltas[0]["message"] == ""
-    assert assistant_deltas[0]["payload"] == {
-        "delta": "你好",
-        "source": "worker_answer_delta_v1",
-        "visible_to_user": True,
-        "severity": "info",
-    }
+    assert assistant_deltas == []
 
 
 @pytest.mark.asyncio
@@ -6928,7 +7181,7 @@ async def test_worker_processes_embedded_poco_kernel_and_persists_stream_events(
     assert outcome.status == "succeeded"
     event_types = [event["event_type"] for event in events]
     assert "run_started" in event_types
-    assert "assistant_delta" in event_types
+    assert "assistant_delta" not in event_types
     assert "run_completed" in event_types
     assert "assistant_message_created" in event_types
     assert messages[0]["role"] == "assistant"
@@ -6987,6 +7240,7 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
 )
 async def test_worker_persists_only_public_capability_answer_and_ordered_deltas(
     monkeypatch,
+    admitted_sse_stream,
     public_chunks,
     public_answer,
 ):
@@ -7040,8 +7294,9 @@ async def test_worker_persists_only_public_capability_answer_and_ordered_deltas(
 
     assert outcome.status == "succeeded"
     persisted_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
-    assert [event["payload"]["delta"] for event in persisted_deltas] == public_chunks
-    assert [event["stage"] for event in persisted_deltas] == ["answer"] * len(public_chunks)
+    assert persisted_deltas == []
+    streamed = [item.payload["delta"] for item in admitted_sse_stream if item.event_type == "assistant_text_delta"]
+    assert streamed == public_chunks
     completed = next(event["result_json"] for event in events if event["event_type"] == "complete_run")
     assert completed["message"] == public_answer
     assert len(messages) == 1

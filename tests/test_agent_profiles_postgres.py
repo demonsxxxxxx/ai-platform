@@ -510,6 +510,94 @@ async def test_postgres_profile_revision_fence_serializes_real_concurrent_publis
 
 
 @pytest.mark.asyncio
+async def test_postgres_agent_conversation_duplicate_start_is_exactly_once(monkeypatch):
+    """Prove duplicate Start atomicity with two real PostgreSQL connections."""
+
+    from app.agent_apps.authority import AgentProfileAuthority
+    from app.auth import AuthPrincipal
+    from app.models import SelectedAgentProfileRequest
+
+    dsn = _postgres_dsn()
+    schema_name = f"agent_conversation_start_{uuid.uuid4().hex}"
+    first_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    second_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    observer_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    manifest = _profile_chat_manifest("profile-chat-skill")
+    try:
+        await first_conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        for conn in (first_conn, second_conn, observer_conn):
+            await _set_search_path(conn, schema_name)
+        await first_conn.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await _seed_profile_chat_storage(first_conn, skill_version=str(manifest["content_hash"]))
+
+        authority = AgentProfileAuthority()
+
+        async def validate(*_args, **_kwargs):
+            return (
+                {
+                    "skill_id": "profile-chat-skill",
+                    "skill_version": str(manifest["content_hash"]),
+                },
+                {"id": "model-a", "value": "provider-model-a"},
+            )
+
+        monkeypatch.setattr(authority, "_validate_definition", validate)
+        principal = AuthPrincipal(
+            user_id="user-profile-chat",
+            display_name="Profile Chat user",
+            tenant_id="tenant-profile-chat",
+            roles=["user"],
+        )
+        selection = SelectedAgentProfileRequest(
+            agent_id="agt_profile_chat",
+            expected_revision=1,
+        )
+        operation_id = uuid.UUID("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4")
+
+        async def start(conn: psycopg.AsyncConnection, *, title: str = ""):
+            async with conn.transaction():
+                return await authority.create_conversation(
+                    conn,
+                    principal=principal,
+                    workspace_id="workspace-profile-chat",
+                    selection=selection,
+                    title=title,
+                    operation_id=operation_id,
+                )
+
+        first, second = await asyncio.gather(start(first_conn), start(second_conn))
+        assert first.session_id == second.session_id == f"ses_agent_{operation_id.hex}"
+
+        session_count_cursor = await observer_conn.execute(
+            "select count(*) as count from sessions where id = %s",
+            (first.session_id,),
+        )
+        audit_count_cursor = await observer_conn.execute(
+            """
+            select count(*) as count
+            from audit_logs
+            where action = 'agent_conversation.created'
+              and payload_json->>'session_id' = %s
+            """,
+            (first.session_id,),
+        )
+        assert (await session_count_cursor.fetchone())["count"] == 1
+        assert (await audit_count_cursor.fetchone())["count"] == 1
+
+        replay = await start(first_conn)
+        assert replay.session_id == first.session_id
+        with pytest.raises(repositories.RepositoryConflictError, match="agent_conversation_operation_conflict"):
+            await start(second_conn, title="Different title")
+    finally:
+        try:
+            await observer_conn.close()
+            await second_conn.close()
+            await first_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        finally:
+            await first_conn.close()
+
+
+@pytest.mark.asyncio
 async def test_postgres_schema_repairs_fail_closed_and_enforces_current_publication():
     dsn = _postgres_dsn()
     schema_name = f"agent_profile_schema_{uuid.uuid4().hex}"

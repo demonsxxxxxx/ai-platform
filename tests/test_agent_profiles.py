@@ -11,10 +11,12 @@ from app.agent_profiles import (
     reject_profile_selector_conflicts,
     resolve_profile_for_admission,
 )
+from app.agent_apps.authority import _revision_hash
 from app.auth import AuthPrincipal
 from app.models import (
     AgentProfileAdminProjection,
     AgentProfileDraftRequest,
+    ChatSessionResponse,
     ChatStreamRequest,
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
@@ -83,7 +85,46 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "description": "Helps employees with approved support requests.",
         "avatar_ref": "builtin:agent",
         "category": "general",
+        "welcome_message": "",
+        "starter_prompts": [],
+        "capability_summary": "",
+        "recommended_tasks": [],
+        "supported_input_types": ["text"],
+        "supported_file_types": [],
+        "expected_outputs": [],
+        "permissions_and_data_access_notice": "",
+        "published_at": None,
     }
+    assert not {
+        "instructions",
+        "model_id",
+        "skill_id",
+        "skill_version",
+        "mcp_tool_ids",
+        "content_hash",
+    }.intersection(projection)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("welcome_message", "Welcome to the expert workspace."),
+        ("starter_prompts", ["Review this request"]),
+        ("capability_summary", "Reviews approved requests."),
+        ("recommended_tasks", ["Policy review"]),
+        ("supported_input_types", ["text", "file"]),
+        ("supported_file_types", ["application/pdf"]),
+        ("expected_outputs", ["Review memo"]),
+        ("permissions_and_data_access_notice", "Uses tenant-authorized files only."),
+        ("avatar_asset_id", "file-avatar-a"),
+    ],
+)
+def test_every_enterprise_profile_field_changes_the_immutable_revision_hash(field, value):
+    definition = AgentProfileDraftRequest.model_validate(profile_draft_payload("Private instruction"))
+
+    changed = definition.model_copy(update={field: value})
+
+    assert _revision_hash(changed) != _revision_hash(definition)
 
 
 def test_selected_profile_rejects_client_owned_capability_selectors():
@@ -184,9 +225,18 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                 "expected_revision": 4,
                 "name": "Support assistant",
                 "description": "Approved support helper.",
-                "avatar_ref": "builtin:agent",
-                "category": "general",
-            }
+                    "avatar_ref": "builtin:agent",
+                    "category": "general",
+                    "welcome_message": "",
+                    "starter_prompts": [],
+                    "capability_summary": "",
+                    "recommended_tasks": [],
+                    "supported_input_types": ["text"],
+                    "supported_file_types": [],
+                    "expected_outputs": [],
+                    "permissions_and_data_access_notice": "",
+                    "published_at": None,
+                }
         ]
     }
 
@@ -332,6 +382,7 @@ def test_agent_conversation_creation_maps_repository_failures_to_safe_4xx(
                 "agent_id": "agt_support",
                 "expected_revision": 4,
             },
+            "operation_id": "11111111-1111-4111-8111-111111111111",
         },
     )
 
@@ -339,6 +390,84 @@ def test_agent_conversation_creation_maps_repository_failures_to_safe_4xx(
         expected_status,
         expected_detail,
     )
+
+
+def test_agent_conversation_creation_binds_one_stable_operation_identity(monkeypatch):
+    observed: list[dict[str, object]] = []
+
+    async def create_conversation(_conn, **kwargs):
+        observed.append(kwargs)
+        return ChatSessionResponse(
+            session_id="ses_agent_33333333333343338333333333333333",
+            workspace_id="workspace-a",
+            agent_id="agt_support",
+            title="Support assistant",
+            purpose="conversation",
+            agent_conversation=None,
+        )
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles._authority.create_conversation",
+        create_conversation,
+    )
+    body = {
+        "workspace_id": "workspace-a",
+        "selected_agent_profile": {
+            "agent_id": "agt_support",
+            "expected_revision": 4,
+        },
+        "operation_id": "33333333-3333-4333-8333-333333333333",
+    }
+    client = TestClient(create_app())
+
+    first = client.post("/api/ai/agent-conversations", headers=ordinary_headers(), json=body)
+    second = client.post("/api/ai/agent-conversations", headers=ordinary_headers(), json=body)
+
+    assert first.status_code == second.status_code == 200
+    assert [call["operation_id"].hex for call in observed] == [
+        "33333333333343338333333333333333",
+        "33333333333343338333333333333333",
+    ]
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        "00000000-0000-0000-0000-000000000000",
+        "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+        "3d813cbb-47fb-32ba-91df-831e1593ac29",
+        "21f7f8de-8051-5b89-8680-0195ef798b6a",
+        "not-a-uuid",
+    ],
+    ids=["nil", "v1", "v3", "v5", "malformed"],
+)
+def test_agent_conversation_creation_rejects_non_v4_operation_identity(monkeypatch, operation_id):
+    async def must_not_create(*_args, **_kwargs):
+        raise AssertionError("invalid operation identity reached conversation authority")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.agent_profiles._authority.create_conversation",
+        must_not_create,
+    )
+
+    response = TestClient(create_app(), raise_server_exceptions=False).post(
+        "/api/ai/agent-conversations",
+        headers=ordinary_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "selected_agent_profile": {
+                "agent_id": "agt_support",
+                "expected_revision": 4,
+            },
+            "operation_id": operation_id,
+        },
+    )
+
+    assert response.status_code == 422
 
 
 async def test_agent_profile_repository_list_is_tenant_scoped():

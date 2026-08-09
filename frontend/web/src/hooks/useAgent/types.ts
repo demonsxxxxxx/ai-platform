@@ -125,6 +125,7 @@ export type EventType =
   | "heartbeat"
   | "complete"
   | "done"
+  | "end"
   | "error";
 
 export interface StreamEvent {

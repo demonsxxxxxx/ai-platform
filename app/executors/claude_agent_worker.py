@@ -103,6 +103,7 @@ _SELECTED_SKILL_INVOCATION_ERRORS = {
 }
 _SDK_ACTIONABLE_FAILURE_CODES = {
     *_SELECTED_SKILL_INVOCATION_ERRORS,
+    "claude_agent_sdk_cancelled",
     "claude_agent_sdk_missing_structured_terminal",
     "claude_agent_sdk_turn_limit_exceeded",
     "claude_agent_sdk_timeout",
@@ -658,7 +659,7 @@ class ClaudeAgentWorkerAdapter:
             executor_version=self.executor_version,
             capabilities=self.capabilities,
             result={
-                "message": "Claude Agent SDK is required for general chat runs.",
+                "message": self._sdk_failure_message(sdk_result),
                 "error_code": error_code,
                 "sdk_used": sdk_used,
                 "sdk_error": sdk_error,
@@ -694,6 +695,7 @@ class ClaudeAgentWorkerAdapter:
         if error_code in _SELECTED_SKILL_INVOCATION_ERRORS:
             return "The selected capability did not complete its required Skill execution. Please retry."
         messages = {
+            "claude_agent_sdk_cancelled": "This run was cancelled before completion.",
             "claude_agent_sdk_turn_limit_exceeded": (
                 "This run reached its turn limit. Continue in the same session or narrow the request."
             ),
@@ -707,6 +709,9 @@ class ClaudeAgentWorkerAdapter:
             "claude_agent_sdk_upstream_error": (
                 "The execution service failed. Please retry later."
             ),
+            "claude_agent_sdk_disabled": "Claude Agent SDK is required for general chat runs.",
+            "claude_agent_sdk_required": "Claude Agent SDK is required for general chat runs.",
+            "claude_agent_sdk_unavailable": "Claude Agent SDK is required for general chat runs.",
         }
         return messages.get(error_code, "Claude Agent SDK execution failed")
 

@@ -87,6 +87,11 @@ async def _temporary_ledger_schema() -> AsyncIterator[tuple[str, str]]:
               event_ids_json jsonb not null default '[]'::jsonb,
               first_sequence bigint,
               through_sequence bigint,
+              payload_digest text not null,
+              projection_version text not null,
+              item_count integer not null,
+              first_source_sequence integer,
+              through_source_sequence integer,
               callback_received_at timestamptz not null default now(),
               durable_committed_at timestamptz,
               unique (tenant_id, run_id, attempt_id, batch_id)
@@ -131,7 +136,7 @@ async def test_postgres_batch_receipt_replays_exactly_and_isolates_its_full_key(
                     run_id="run-a",
                     attempt_id="attempt-a",
                     batch_id="shared-batch",
-                    events=[],
+                    events=[_delta("once")],
                 )
             isolated = []
             for tenant_id, run_id, attempt_id in (
@@ -154,9 +159,39 @@ async def test_postgres_batch_receipt_replays_exactly_and_isolates_its_full_key(
             assert first.duplicate is False
             assert replay.duplicate is True
             assert replay.event_ids == first.event_ids
+            assert replay.payload_digest == first.payload_digest
+            assert replay.item_count == 1
             assert all(receipt.duplicate is False for receipt in isolated)
             count = await conn.execute("select count(*) as count from run_event_batches")
             assert (await count.fetchone())["count"] == 4
+        finally:
+            await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_batch_receipt_rejects_changed_content_for_same_identity():
+    async with _temporary_ledger_schema() as (dsn, schema_name):
+        conn = await _connect(dsn, schema_name)
+        try:
+            async with conn.transaction():
+                await postgres.append_batch(
+                    conn,
+                    tenant_id="tenant-a",
+                    run_id="run-a",
+                    attempt_id="attempt-a",
+                    batch_id="batch-a",
+                    events=[_delta("first")],
+                )
+            with pytest.raises(postgres.RunEventLedgerConflictError, match="run_event_batch_conflict"):
+                async with conn.transaction():
+                    await postgres.append_batch(
+                        conn,
+                        tenant_id="tenant-a",
+                        run_id="run-a",
+                        attempt_id="attempt-a",
+                        batch_id="batch-a",
+                        events=[_delta("changed")],
+                    )
         finally:
             await conn.close()
 

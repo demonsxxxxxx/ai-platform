@@ -1,8 +1,9 @@
 # ruff: noqa: B008
 
-import asyncio
 import json
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
@@ -48,10 +49,24 @@ from app.run_projection import (
     public_terminal_detail,
 )
 from app.settings import get_settings
-from app.streaming.authority import RunCursor, event_page, parse_last_event_id
+from app.streaming.authority import RunCursor, event_page
+from app.streaming.redis import (
+    SSE_AUTHORITY_LEASE_SECONDS,
+    RedisStreamBridge,
+    SseAuthorityConflictError,
+    StreamContractError,
+    StreamTransportUnavailable,
+    acquire_sse_authority_lease,
+    close_sse_authority_lease,
+    get_stream_authority,
+    get_terminal_intent,
+    mark_terminal_intent_published,
+    publish_terminal_intent,
+)
 from app.tool_permission_projection import tool_permission_public_event_payload
 
 router = APIRouter()
+_SSE_API_INSTANCE_ID = f"api_{uuid.uuid4().hex}"
 
 
 def _json_default(value: Any) -> str:
@@ -100,7 +115,6 @@ class _CompatibilityWireEvent:
     stream_data: dict[str, object]
     history_event: dict[str, object]
     terminal: bool = False
-    cursor_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -206,6 +220,18 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
     "capability_selected": _ChatPublicRunEventProjection(
         "capability_selected", "planning", "已加载授权处理能力，下一步将按所选流程分析请求", "completed"
     ),
+    "capability_staged": _ChatPublicRunEventProjection(
+        "capability_staged", "capability", "所需能力已加载到受控环境", "completed"
+    ),
+    "capability_sdk_registered": _ChatPublicRunEventProjection(
+        "capability_sdk_registered", "capability", "所需能力已注册到执行引擎", "completed"
+    ),
+    "capability_actually_invoked": _ChatPublicRunEventProjection(
+        "capability_actually_invoked", "capability", "所需能力已由执行引擎实际调用", "completed"
+    ),
+    "capability_optional_not_invoked": _ChatPublicRunEventProjection(
+        "capability_optional_not_invoked", "capability", "可选能力本次未调用", "completed"
+    ),
     "intent_detected": _ChatPublicRunEventProjection(
         "intent_detected", "preparation", "正在准备受控运行请求。", "active"
     ),
@@ -222,7 +248,10 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "file_bound", "context", "已识别授权附件，下一步将确认文件结构", "completed"
     ),
     "artifact_created": _ChatPublicRunEventProjection(
-        "artifact_created", "artifact", "已生成结果文件，正在完成可用性检查", "completed"
+        "artifact_ready", "artifact", "结果文件已可安全下载", "completed"
+    ),
+    "artifact_ready": _ChatPublicRunEventProjection(
+        "artifact_ready", "artifact", "结果文件已可安全下载", "completed"
     ),
     "mcp_tool_denied": _ChatPublicRunEventProjection(
         "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
@@ -533,16 +562,6 @@ def _event_sequence_sort_key(event: dict[str, Any], position: int) -> tuple[int,
         return (int(event.get("sequence")), position)
     except (TypeError, ValueError):
         return (2**63 - 1, position)
-
-
-def _durable_cursor_id(run_id: str, event: dict[str, Any]) -> str | None:
-    sequence = event.get("sequence")
-    if isinstance(sequence, bool) or not isinstance(sequence, int):
-        return None
-    try:
-        return RunCursor(run_id=run_id, sequence=sequence).event_id
-    except ValueError:
-        return None
 
 
 def _compatibility_events_for_run(
@@ -1397,14 +1416,10 @@ async def chat_session_stream(
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> StreamingResponse:
-    if not isinstance(last_event_id, str):
-        last_event_id = None
-    if last_event_id is not None:
-        cursor = parse_last_event_id(last_event_id, run_id=run_id)
-        if cursor is None:
-            raise HTTPException(status_code=400, detail="invalid_last_event_id")
-    else:
-        cursor = RunCursor(run_id=run_id, sequence=0)
+    last_event_id = last_event_id if isinstance(last_event_id, str) else None
+    connection_id = f"sse_{uuid.uuid4().hex}"
+    authority = None
+    lease = None
     async with transaction() as conn:
         initial_run = await repositories.get_authorized_run(
             conn,
@@ -1412,121 +1427,197 @@ async def chat_session_stream(
             user_id=principal.user_id,
             run_id=run_id,
         )
-    if initial_run is None or initial_run.get("session_id") != session_id:
-        raise HTTPException(status_code=404, detail="run_not_found")
-    fold_state = _CompatibilityFoldState(False, frozenset())
-    if last_event_id is not None and cursor.sequence:
-        # A reconnect has no connection-local fold state. Seed only public
-        # singleton/strict facts from its authorized durable prefix; emit none.
-        async with transaction() as conn:
-            seed_rows = await repositories.list_run_events(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
+        if initial_run is not None and initial_run.get("session_id") == session_id:
+            authority = await get_stream_authority(
+                conn, tenant_id=principal.tenant_id, run_id=run_id
             )
-        prefix_rows = [
-            row
-            for row in seed_rows
-            if isinstance(row.get("sequence"), int)
-            and not isinstance(row.get("sequence"), bool)
-            and 0 < row["sequence"] <= cursor.sequence
-        ]
-        _, fold_state = _compatibility_events_for_run_page(
-            initial_run,
-            prefix_rows,
-            [],
-            principal,
-            fold_state=fold_state,
-            include_terminal=False,
-        )
-
-    async def stream():
-        metadata_emitted = False
-        last_status = ""
-        last_cursor = cursor
-        emitted_artifact_ids: set[str] = set()
-        terminal_observed = False
-        stream_fold_state = fold_state
-        max_heartbeats = max(int(get_settings().run_event_stream_max_heartbeats), 1)
-        for _ in range(max_heartbeats):
-            async with transaction() as conn:
-                run = await repositories.get_authorized_run(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    run_id=run_id,
-                )
-                if run is None or run.get("session_id") != session_id:
-                    run_events = []
-                    artifacts = []
-                else:
-                    if last_cursor.sequence == 0 and last_event_id is None:
-                        run_events = await repositories.list_run_events(
-                            conn,
-                            tenant_id=principal.tenant_id,
-                            run_id=run_id,
-                        )
-                    else:
-                        run_events = await repositories.list_run_events(
-                            conn,
-                            tenant_id=principal.tenant_id,
-                            run_id=run_id,
-                            after_sequence=last_cursor.sequence,
-                        )
-                    artifacts = await repositories.list_run_artifacts(
+            if authority is not None:
+                try:
+                    lease = await acquire_sse_authority_lease(
                         conn,
                         tenant_id=principal.tenant_id,
                         run_id=run_id,
+                        api_instance_id=_SSE_API_INSTANCE_ID,
+                        connection_id=connection_id,
+                        lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
                     )
-            if run is None or run.get("session_id") != session_id:
-                yield _sse("error", {"error": "run_not_found"})
-                yield _sse("done", {})
-                return
-            if not metadata_emitted:
-                yield _sse("metadata", {"session_id": session_id, "run_id": run_id})
-                metadata_emitted = True
-            status = _platform_status(str(run["status"]))
-            previous_cursor = last_cursor
-            page = event_page(cursor=last_cursor, rows=run_events)
-            last_cursor = page.through_cursor
-            new_artifacts = [
-                artifact for artifact in artifacts if f"{artifact.get('id')}:artifact" not in emitted_artifact_ids
-            ]
-            try:
-                compatibility_events, stream_fold_state = _compatibility_events_for_run_page(
-                    run,
-                    [dict(durable.row) for durable in page.durable_rows],
-                    new_artifacts,
-                    principal,
-                    fold_state=stream_fold_state,
-                    include_terminal=False,
-                )
-            except HTTPException as exc:
-                yield _sse("error", {"error": str(exc.detail)})
-                yield _sse("done", {"status": "error"})
-                return
-            for record in compatibility_events:
-                if record.stream_event_type == "artifact_card":
-                    emitted_artifact_ids.add(record.id)
-                yield _sse(
-                    record.stream_event_type,
-                    record.stream_data,
-                    event_id=record.cursor_id or _durable_cursor_id(run_id, record.history_event),
-                )
-            if status in {"succeeded", "failed", "cancelled"}:
-                if terminal_observed and last_cursor == previous_cursor:
-                    for record in _compatibility_events_for_run(run, [], [], principal):
-                        yield _sse(record.stream_event_type, record.stream_data)
-                        if record.terminal:
-                            return
-                terminal_observed = True
-            else:
-                terminal_observed = False
-            if status != last_status and status in {"queued", "running"}:
-                yield _sse("queue_update", {"status": "processing" if status == "running" else "queued"})
-                last_status = status
-            await asyncio.sleep(1)
-        yield _sse("error", {"error": "stream_timeout"})
-        yield _sse("done", {"status": "timeout"})
+                except SseAuthorityConflictError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if initial_run is None or initial_run.get("session_id") != session_id:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    if authority is None:
+        raise HTTPException(status_code=409, detail="sse_stream_not_admitted")
+    if lease is None:
+        raise HTTPException(status_code=409, detail="sse_authority_lease_unavailable")
+    bridge = RedisStreamBridge()
+    try:
+        resume = await bridge.resolve_resume(
+            tenant_scope_value=authority.tenant_scope,
+            run_id=run_id,
+            current_stream_incarnation=authority.stream_incarnation,
+            last_event_id=last_event_id,
+        )
+    except StreamContractError as exc:
+        await bridge.aclose()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except StreamTransportUnavailable as exc:
+        await bridge.aclose()
+        raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    async def stream():
+        nonlocal lease
+        after = resume.after_redis_id or "0-0"
+        terminal_status: str | None = None
+        terminal_event_id: str | None = None
+
+        async def publish_pending_terminal() -> None:
+            async with transaction() as conn:
+                current_authority = await get_stream_authority(
+                    conn, tenant_id=principal.tenant_id, run_id=run_id
+                )
+                intent = await get_terminal_intent(
+                    conn, tenant_id=principal.tenant_id, run_id=run_id
+                )
+            if intent is None or intent.state != "pending":
+                return
+            if current_authority is None:
+                raise StreamContractError("stream_terminal_authority_missing")
+            await publish_terminal_intent(
+                bridge, authority=current_authority, intent=intent
+            )
+            async with transaction() as conn:
+                await mark_terminal_intent_published(conn, intent=intent)
+
+        try:
+            if resume.gap is not None:
+                yield _sse("gap", resume.gap.as_public_dict())
+                return
+            while True:
+                now = datetime.now(timezone.utc)
+                if not lease.allows_frame(
+                    now=now,
+                    local_authorization_epoch=lease.authorization_epoch,
+                    invalidated_through_epoch=lease.authorization_epoch - 1,
+                ):
+                    try:
+                        async with transaction() as conn:
+                            run = await repositories.get_authorized_run(
+                                conn,
+                                tenant_id=principal.tenant_id,
+                                user_id=principal.user_id,
+                                run_id=run_id,
+                            )
+                            if run is None or run.get("session_id") != session_id:
+                                return
+                            lease = await acquire_sse_authority_lease(
+                                conn,
+                                tenant_id=principal.tenant_id,
+                                run_id=run_id,
+                                api_instance_id=_SSE_API_INSTANCE_ID,
+                                connection_id=connection_id,
+                                lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
+                            )
+                    except (SseAuthorityConflictError, ValueError):
+                        return
+                await publish_pending_terminal()
+                entries = await bridge.read(
+                    tenant_scope_value=authority.tenant_scope,
+                    run_id=run_id,
+                    stream_incarnation=authority.stream_incarnation,
+                    after_redis_id=after,
+                    block_ms=5000,
+                )
+                if not entries:
+                    yield ": heartbeat\n\n"
+                    continue
+                for entry in entries:
+                    if not lease.allows_frame(
+                        now=datetime.now(timezone.utc),
+                        local_authorization_epoch=lease.authorization_epoch,
+                        invalidated_through_epoch=lease.authorization_epoch - 1,
+                    ):
+                        break
+                    after = entry.cursor.redis_id
+                    envelope = entry.envelope
+                    if envelope.event_type == "stream_open":
+                        yield _sse(
+                            "metadata",
+                            {
+                                "event_id": envelope.event_id,
+                                "session_id": session_id,
+                                "run_id": run_id,
+                            },
+                            entry.cursor.event_id,
+                        )
+                    elif envelope.event_type == "assistant_text_delta":
+                        yield _sse(
+                            "message:chunk",
+                            {
+                                "run_id": run_id,
+                                "event_id": envelope.event_id,
+                                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+                                "projection_kind": "assistant_delta",
+                                "content": envelope.payload["delta"],
+                            },
+                            entry.cursor.event_id,
+                        )
+                    elif envelope.event_type == "terminal":
+                        terminal_status = str(envelope.payload["status"])
+                        terminal_event_id = envelope.event_id
+                        yield _sse(
+                            "done",
+                            {
+                                "event_id": envelope.event_id,
+                                "run_id": run_id,
+                                "status": terminal_status,
+                            },
+                            entry.cursor.event_id,
+                        )
+                    elif envelope.event_type == "end":
+                        if (
+                            terminal_event_id is None
+                            or envelope.payload["terminal_event_id"]
+                            != terminal_event_id
+                        ):
+                            raise StreamContractError(
+                                "stream_end_without_observed_terminal"
+                            )
+                        yield _sse(
+                            "end",
+                            {
+                                "event_id": envelope.event_id,
+                                "run_id": run_id,
+                                "terminal_event_id": terminal_event_id,
+                            },
+                            entry.cursor.event_id,
+                        )
+                        return
+                    elif envelope.event_type in {"semantic_stage", "semantic_progress"}:
+                        public_event = str(envelope.payload["event"])
+                        public_data = dict(envelope.payload["data"])
+                        public_data.setdefault("event_id", envelope.event_id)
+                        public_data.setdefault("run_id", run_id)
+                        yield _sse(public_event, public_data, entry.cursor.event_id)
+                    else:
+                        raise StreamContractError("stream_public_event_unmapped")
+        except (StreamTransportUnavailable, StreamContractError):
+            yield _sse("error", {"error": "sse_stream_unavailable"})
+        finally:
+            await bridge.aclose()
+            try:
+                async with transaction() as conn:
+                    await close_sse_authority_lease(
+                        conn, lease_id=lease.lease_id, reason="connection_closed"
+                    )
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

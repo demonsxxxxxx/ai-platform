@@ -20,7 +20,12 @@ test("AgentWorkspaceRoute restores current or immutable historical Agent revisio
   assert.match(source, /loadedWorkspace\.agentId === agentId/);
   assert.match(source, /loadedWorkspace\.revision === revision/);
   assert.match(source, /agentWorkspaceSessionSource=\{conversationList\}/);
-  assert.match(source, /agentWorkspaceStartProfile=\{resolvedWorkspace\.startProfile\}/);
+  assert.match(
+    source,
+    /agentWorkspaceStartProfile=\{resolvedWorkspace\.startProfile \?\? undefined\}/,
+  );
+  assert.match(source, /agentWorkspaceReadOnly=\{resolvedWorkspace\.readOnly\}/);
+  assert.match(source, /readOnly: currentProfile === null/);
   assert.match(source, /<ChatAppContent[\s\S]*agentWorkspace=\{resolvedWorkspace\.profile\}/);
   assert.match(source, /<AppShell/);
   assert.match(source, /navigate\("\/agent-market", \{ replace: true \}\)/);
