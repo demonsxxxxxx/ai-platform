@@ -578,6 +578,8 @@ def test_helper_rejects_manifest_mismatch_and_closed_marker_state(tmp_path: path
         set -eu
         HELPER=$1; ROOT=$2
         . "$HELPER"
+        s72_loader_mode=test-source-eval
+        chown() { :; }
 
         mkdir -p "$ROOT/tree" "$ROOT/snapshot"
         printf 'sealed\n' > "$ROOT/tree/payload"
@@ -669,6 +671,7 @@ def test_helper_rejects_non_root_identity_and_records_authority_atomically(
         set -eu
         HELPER=$1; ROOT=$2
         . "$HELPER"
+        s72_loader_mode=test-source-eval
         mkdir -p "$ROOT/tree" "$ROOT/state"
         stat() {{ printf '1000\n'; }}
         ! s72_atomic_require_root_tree "$ROOT/tree"
@@ -845,6 +848,7 @@ def test_transaction_records_reject_torn_unknown_and_invalid_phase_state(
         mkdir -p "$records"
         chmod 0700 "$records"
         s72_loader_mode=test-source-eval
+        chown() { :; }
         s72_atomic_require_root_owned_directory() { test -d "$1" && test ! -L "$1"; }
         stat() {
           if test "$1:$2" = '-c:%u:%g:%a'; then
@@ -940,8 +944,9 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
         r'''
         set -eu
         INSTALLER=$1; ROLLBACK=$2; HELPER=$3; ROOT=$4; caller_uid=$5; caller_gid=$6
+        trap 'rc=$?; chown -R "$caller_uid:$caller_gid" "$ROOT" >/dev/null 2>&1 || :; exit "$rc"' EXIT
         unshare --mount --fork --pid --mount-proc --propagation private \
-          /bin/sh -eu -c '
+          /bin/sh -eux -c '
             INSTALLER=$1; ROLLBACK=$2; HELPER=$3; ROOT=$4
             mount -t tmpfs -o mode=0755 s72-run-test /run
             mount -t tmpfs -o mode=0755 s72-var-test /var/lib
@@ -1004,7 +1009,6 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
             ! /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             grep -qx truncated "$torn_record"
           ' s72-production-entry "$INSTALLER" "$ROLLBACK" "$HELPER" "$ROOT"
-        chown -R "$caller_uid:$caller_gid" "$ROOT"
         ''',
         INSTALLER,
         ROLLBACK,
@@ -1825,6 +1829,7 @@ def test_gateway_identity_creation_is_journaled_and_uses_a_private_runtime_stage
           test "$1" = -d || return 1
           mkdir "${@: -1}"
         }
+        chown() { :; }
         USER_ENTRY=; GROUP_ENTRY=
         getent() {
           database=$1; key=$2
