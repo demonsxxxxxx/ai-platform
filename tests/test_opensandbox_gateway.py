@@ -136,6 +136,7 @@ def create_payload(config: GatewayConfig, suffix: str = "one", workspace: str | 
         "ai-platform.external_egress.profile_id": config.profile_id,
         "ai-platform.external_egress.endpoint_sha256": hashlib.sha256(f"https://{PUBLIC_AUTHORITY}".encode()).hexdigest(),
         "ai-platform.external_egress.runtime_identity": "runsc",
+        "ai-platform.external_egress.network_mode": config.expected_network_mode,
         "ai-platform.runtime_subject": config.runtime_subject,
         "ai-platform.external_egress.gateway_policy_subject": config.gateway_policy_subject,
         "ai-platform.external_egress.callback_boundary_subject": config.callback_boundary_subject,
@@ -689,6 +690,40 @@ def test_signature_metadata_runtime_drift_and_route_auth_are_rejected() -> None:
     old = runtime.evidence[sandbox_id]
     runtime.evidence[sandbox_id] = RuntimeEvidence(**{**old.__dict__, "network_mode": "bridge"})
     assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}").status == 409
+
+
+def test_internal_test_bridge_profile_accepts_only_bridge_runtime_evidence() -> None:
+    config = replace(
+        gateway_config(),
+        profile_id="s72-internal-test-runsc-bridge-v1",
+        expected_network_mode="bridge",
+    )
+    lifecycle = InMemoryLifecycleTransport()
+
+    class BridgeRuntime(InMemoryRuntimeAdapter):
+        def provision(self, record) -> None:
+            super().provision(record)
+            self.evidence[record.sandbox_id] = replace(
+                self.evidence[record.sandbox_id],
+                network_mode="bridge",
+            )
+
+    runtime = BridgeRuntime()
+    app = GatewayApplication(config, lifecycle, runtime, InMemoryStateStore())
+
+    response = call(app, "POST", "/v1/sandboxes", create_payload(config, "bridge"))
+
+    assert response.status == 201
+    sandbox_id = decoded(response)["id"]
+    runtime.evidence[sandbox_id] = replace(runtime.evidence[sandbox_id], network_mode="none")
+    assert call(app, "GET", f"/v1/sandboxes/{sandbox_id}").status == 409
+
+
+def test_bridge_network_profile_configuration_fails_closed() -> None:
+    with pytest.raises(ValueError, match="internal-test"):
+        replace(gateway_config(), expected_network_mode="bridge").validate()
+    with pytest.raises(ValueError, match="network mode"):
+        replace(gateway_config(), expected_network_mode="host").validate()
 
 
 def test_live_root_user_is_rejected_before_lifecycle_read() -> None:

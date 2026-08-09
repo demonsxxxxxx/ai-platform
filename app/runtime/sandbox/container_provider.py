@@ -1129,6 +1129,7 @@ _OPENSANDBOX_CAPABILITY_PROFILE_FIELDS = {
     "expires_at",
     "opensandbox_endpoint",
     "runtime_identity",
+    "network_mode",
     "ai_platform_runtime_subject",
     "gateway_policy_subject",
     "callback_boundary_subject",
@@ -1177,6 +1178,7 @@ class OpenSandboxExternalEgressCapability:
     profile_id: str
     endpoint: str
     runtime_identity: str
+    network_mode: str
     runtime_subject: str
     gateway_policy_subject: str
     callback_boundary_subject: str
@@ -1258,8 +1260,8 @@ class OpenSandboxExternalEgressCapability:
         return build_governed_egress_proof(
             signing_key=signing_key,
             provider="opensandbox",
-            # OpenSandbox has no Docker bridge.  Its authenticated runsc
-            # capability supplies policy-bound enforcement instead.
+            # OpenSandbox network admission is capability-bound. Temporary
+            # bridge mode is accepted only by an explicitly signed profile.
             network_internal=False,
             key_id=key_id,
             issued_at=issued_at,
@@ -1290,6 +1292,7 @@ class OpenSandboxExternalEgressCapability:
             "ai-platform.external_egress.profile_version": "v1",
             "ai-platform.external_egress.profile_id": self.profile_id,
             "ai-platform.external_egress.runtime_identity": self.runtime_identity,
+            "ai-platform.external_egress.network_mode": self.network_mode,
             "ai-platform.runtime_subject": self.runtime_subject,
             "ai-platform.external_egress.gateway_policy_subject": self.gateway_policy_subject,
             "ai-platform.external_egress.callback_boundary_subject": self.callback_boundary_subject,
@@ -1540,6 +1543,10 @@ def _validate_opensandbox_external_egress_profile(
     runtime_identity = _required_capability_value(profile.get("runtime_identity"), field="runtime_identity")
     if runtime_identity != OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile runtime identity must be runsc") from None
+    network_mode = _required_capability_value(profile.get("network_mode"), field="network_mode")
+    configured_network_mode = str(getattr(settings, "opensandbox_expected_network_mode", "none") or "")
+    if configured_network_mode not in {"none", "bridge"} or network_mode != configured_network_mode:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile network mode drift detected") from None
 
     runtime_subject = _required_capability_value(
         getattr(settings, "sandbox_runtime_subject", ""), field="configured runtime subject"
@@ -1574,10 +1581,16 @@ def _validate_opensandbox_external_egress_profile(
     profile_image_digest = _required_profile_executor_image_digest(profile.get("executor_image_digest"))
     if profile_image_digest != requested_image_digest:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile executor image digest mismatch") from None
+    profile_id = _required_capability_value(profile.get("profile_id"), field="profile_id")
+    if network_mode == "bridge" and "internal-test" not in profile_id:
+        raise OpenSandboxCapabilityAdmissionError(
+            "OpenSandbox bridge network mode requires an internal-test profile"
+        ) from None
     return OpenSandboxExternalEgressCapability(
-        profile_id=_required_capability_value(profile.get("profile_id"), field="profile_id"),
+        profile_id=profile_id,
         endpoint=endpoint,
         runtime_identity=runtime_identity,
+        network_mode=network_mode,
         runtime_subject=runtime_subject,
         gateway_policy_subject=gateway_policy_subject,
         callback_boundary_subject=callback_boundary_subject,

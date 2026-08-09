@@ -55,6 +55,7 @@ def load_config(environ: Mapping[str, str] | None = None) -> tuple[GatewayConfig
         callback_upstream_base=_required(env, "OPENSANDBOX_GATEWAY_CALLBACK_BASE"),
         openai_upstream_base=_required(env, "OPENSANDBOX_GATEWAY_OPENAI_BASE"),
         anthropic_upstream_base=_required(env, "OPENSANDBOX_GATEWAY_ANTHROPIC_BASE"),
+        expected_network_mode=env.get("OPENSANDBOX_GATEWAY_EXPECTED_NETWORK_MODE", "none"),
         executor_entrypoint=tuple(json.loads(env.get("OPENSANDBOX_GATEWAY_EXECUTOR_ENTRYPOINT_JSON", '["/app/docker-entrypoint.sh","uvicorn"]'))),
         request_timeout_seconds=float(env.get("OPENSANDBOX_GATEWAY_TIMEOUT_SECONDS", "5")),
         dispatch_timeout_seconds=float(env.get("OPENSANDBOX_GATEWAY_DISPATCH_TIMEOUT_SECONDS", "3600")),

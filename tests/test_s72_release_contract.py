@@ -33,8 +33,9 @@ def _environment() -> dict[str, str]:
         "OPENSANDBOX_PROTOCOL": "http",
         "OPENSANDBOX_EXECUTOR_IMAGE": f"registry.example/executor@{digest}",
         "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST": digest,
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE": "none",
         "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL": (
-            "http://127.0.0.1:18043/v1/capabilities/governed-egress"
+            "http://127.0.0.1:18043/v1/capabilities/external-egress"
         ),
         "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN": "b" * 32,
         "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT": "s72/policy/v1",
@@ -183,6 +184,7 @@ def test_unsafe_sdk_or_sandbox_selection_fails_closed(
     [
         ("OPENSANDBOX_EXECUTOR_IMAGE", "registry.example/executor:latest", "immutable"),
         ("OPENSANDBOX_EXECUTOR_IMAGE_DIGEST", "sha256:1234", "immutable"),
+        ("OPENSANDBOX_EXPECTED_NETWORK_MODE", "host", "network mode"),
         ("AI_PLATFORM_MODEL_UPSTREAM", "http://postgres:5432", "model upstream"),
         ("SANDBOX_RUNTIME_SUBJECT", "contains whitespace", "identity subject"),
         ("SANDBOX_CALLBACK_TOKEN", "replace_me", "secret authority"),

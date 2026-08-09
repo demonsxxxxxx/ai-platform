@@ -1012,6 +1012,7 @@ class OpenSandboxSettings:
     opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
     opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
     opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+    opensandbox_expected_network_mode = "none"
     opensandbox_executor_image_digest = "sha256:" + "a" * 64
     opensandbox_external_egress_profile_max_ttl_seconds = 300
     opensandbox_external_egress_profile_max_issued_age_seconds = 120
@@ -1043,6 +1044,7 @@ def external_egress_capability_profile(
         "provider": "opensandbox",
         "opensandbox_endpoint": "http://opensandbox.local:8080",
         "runtime_identity": "runsc",
+        "network_mode": "none",
         "ai_platform_runtime_subject": "runtime-subject-a",
         "gateway_policy_subject": "gateway-policy-subject-a",
         "callback_boundary_subject": "callback-boundary-subject-a",
@@ -1065,6 +1067,57 @@ def external_egress_capability_profile(
             hashlib.sha256,
         ).hexdigest()
     return profile
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_admits_signed_internal_test_bridge_profile(monkeypatch) -> None:
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+
+    class BridgeSettings(ExternalEgressCapabilitySettings):
+        opensandbox_expected_network_mode = "bridge"
+
+    monkeypatch.setattr(container_provider, "get_settings", lambda: BridgeSettings())
+    lease = await opensandbox_provider(
+        capability_profile_fetcher=lambda *_args: external_egress_capability_profile(
+            profile_id="s72-internal-test-runsc-bridge-v1",
+            network_mode="bridge",
+        )
+    ).create_or_reuse(request(), workspace())
+
+    assert lease.labels["ai-platform.external_egress.network_mode"] == "bridge"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile_id", "network_mode", "message"),
+    (
+        ("s72-internal-test-runsc-bridge-v1", "none", "network mode drift"),
+        ("profile-a", "bridge", "internal-test profile"),
+    ),
+)
+async def test_opensandbox_provider_rejects_bridge_profile_drift(
+    monkeypatch,
+    profile_id: str,
+    network_mode: str,
+    message: str,
+) -> None:
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+
+    class BridgeSettings(ExternalEgressCapabilitySettings):
+        opensandbox_expected_network_mode = "bridge"
+
+    monkeypatch.setattr(container_provider, "get_settings", lambda: BridgeSettings())
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match=message):
+        await opensandbox_provider(
+            capability_profile_fetcher=lambda *_args: external_egress_capability_profile(
+                profile_id=profile_id,
+                network_mode=network_mode,
+            )
+        ).create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created == []
 
 
 def opensandbox_provider(

@@ -289,6 +289,7 @@ def governed_opensandbox_lease_labels(
                 capability.endpoint.encode("utf-8")
             ).hexdigest(),
             "ai-platform.external_egress.runtime_identity": capability.runtime_identity,
+            "ai-platform.external_egress.network_mode": capability.network_mode,
             "ai-platform.runtime_subject": capability.runtime_subject,
             "ai-platform.external_egress.gateway_policy_subject": capability.gateway_policy_subject,
             "ai-platform.external_egress.callback_boundary_subject": capability.callback_boundary_subject,
