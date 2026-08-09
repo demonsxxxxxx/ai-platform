@@ -9,6 +9,7 @@ from typing import Any
 RUN_INPUT_MAX_BYTES = 256 * 1024
 RUN_RESULT_MAX_BYTES = 256 * 1024
 RUN_EVENT_PAYLOAD_MAX_BYTES = 64 * 1024
+RUN_STEP_PAYLOAD_MAX_BYTES = 64 * 1024
 RUN_EVENT_MESSAGE_MAX_BYTES = 16 * 1024
 CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES = 256 * 1024
 ARTIFACT_MANIFEST_MAX_BYTES = 64 * 1024
@@ -23,12 +24,27 @@ class PersistenceSizeLimitError(ValueError):
         self.code = code
 
 
+def compact_json_dumps(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
+
+
 def json_size_bytes(value: Any) -> int:
-    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    return len(compact_json_dumps(value).encode("utf-8"))
 
 
 def ensure_json_size(value: Any, *, max_bytes: int, code: str) -> None:
-    if json_size_bytes(value) > max_bytes:
+    try:
+        size_bytes = json_size_bytes(value)
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        invalid_code = f"{code.removesuffix('_too_large')}_invalid"
+        raise PersistenceSizeLimitError(invalid_code) from exc
+    if size_bytes > max_bytes:
         raise PersistenceSizeLimitError(code)
 
 

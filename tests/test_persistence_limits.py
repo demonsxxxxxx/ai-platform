@@ -11,6 +11,8 @@ from app.persistence_limits import (
     RUN_INPUT_MAX_BYTES,
     RUN_RESULT_MAX_BYTES,
     PersistenceSizeLimitError,
+    compact_json_dumps,
+    ensure_json_size,
     ensure_text_size,
 )
 
@@ -28,6 +30,21 @@ def test_text_limits_count_utf8_bytes_not_python_characters():
     ensure_text_size("药" * 2, max_bytes=6, code="too_large")
     with pytest.raises(PersistenceSizeLimitError, match="too_large"):
         ensure_text_size("药" * 3, max_bytes=8, code="too_large")
+
+
+def test_json_limits_use_deterministic_compact_utf8_and_safe_invalid_errors():
+    payload = {"emoji": "🚀", "cjk": "药"}
+    serialized = compact_json_dumps(payload)
+    exact_size = len(serialized.encode("utf-8"))
+
+    assert serialized == '{"cjk":"药","emoji":"🚀"}'
+    ensure_json_size(payload, max_bytes=exact_size, code="payload_too_large")
+    with pytest.raises(PersistenceSizeLimitError, match="payload_too_large"):
+        ensure_json_size(payload, max_bytes=exact_size - 1, code="payload_too_large")
+    with pytest.raises(PersistenceSizeLimitError, match="payload_invalid"):
+        ensure_json_size({"value": float("nan")}, max_bytes=100, code="payload_too_large")
+    with pytest.raises(PersistenceSizeLimitError, match="payload_invalid"):
+        ensure_json_size({"value": "\ud800"}, max_bytes=100, code="payload_too_large")
 
 
 @pytest.mark.asyncio

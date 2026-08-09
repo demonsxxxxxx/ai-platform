@@ -9393,8 +9393,14 @@ async def test_upsert_run_step_merges_existing_payload_on_conflict():
         payload_json={"checkpoint_reused": True, "output": "code output"},
     )
 
-    sql, _params = conn.calls[0]
-    assert "payload_json = run_steps.payload_json || excluded.payload_json" in sql
+    assert conn.calls[0][0].startswith("select pg_advisory_xact_lock")
+    assert conn.calls[1][0].endswith("for update")
+    update_sql, update_params = conn.calls[2]
+    assert update_sql.startswith("update run_steps")
+    assert json.loads(update_params[5]) == {
+        "checkpoint_reused": True,
+        "output": "code output",
+    }
 
 
 @pytest.mark.asyncio
@@ -10205,17 +10211,23 @@ async def test_update_run_input_execution_snapshot_atomically_replaces_canonical
     )
 
     sql, params = conn.calls[0]
-    assert "update runs" in sql
-    assert "coalesce(input_json, '{}'::jsonb) || %s::jsonb" in sql
+    assert "select id, input_json" in sql
+    assert sql.endswith("for update")
     assert "tenant_id = %s and id = %s" in sql
     assert params == (
-        json.dumps(execution_snapshot, ensure_ascii=False),
         "default",
         "run-a",
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+    )
+    update_sql, update_params = conn.calls[1]
+    assert update_sql.startswith("update runs set input_json = %s::jsonb")
+    assert update_params == (
+        repositories.compact_json_dumps(execution_snapshot),
+        "default",
+        "run-a",
     )
 
 
@@ -10243,16 +10255,15 @@ async def test_update_run_input_execution_snapshot_explicitly_replaces_null_and_
         execution_snapshot=execution_snapshot,
     )
 
-    assert len(conn.calls) == 1
+    assert len(conn.calls) == 2
     _, params = conn.calls[0]
     assert params == (
-        json.dumps(execution_snapshot, ensure_ascii=False),
         "tenant-a",
         "run-empty",
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
-        json.dumps(execution_snapshot, ensure_ascii=False),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
+        repositories.compact_json_dumps(execution_snapshot),
     )
 
 

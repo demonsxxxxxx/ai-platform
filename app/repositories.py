@@ -49,7 +49,9 @@ from app.persistence_limits import (
     MESSAGE_METADATA_MAX_BYTES,
     RUN_INPUT_MAX_BYTES,
     RUN_RESULT_MAX_BYTES,
+    RUN_STEP_PAYLOAD_MAX_BYTES,
     PersistenceSizeLimitError,
+    compact_json_dumps,
     ensure_json_size,
     ensure_text_size,
 )
@@ -8627,6 +8629,74 @@ async def upsert_run_step(
     sequence: int,
     payload_json: dict[str, Any],
 ) -> str:
+    _require_json_size(
+        payload_json,
+        max_bytes=RUN_STEP_PAYLOAD_MAX_BYTES,
+        code="run_step_payload_too_large",
+    )
+    await conn.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"run-step:{tenant_id}:{run_id}:{step_key}",),
+    )
+    existing_cursor = await conn.execute(
+        """
+        select id, payload_json
+        from run_steps
+        where tenant_id = %s and run_id = %s and step_key = %s
+        for update
+        """,
+        (tenant_id, run_id, step_key),
+    )
+    existing = await existing_cursor.fetchone()
+    existing_payload = existing.get("payload_json") if existing is not None else {}
+    if not isinstance(existing_payload, dict):
+        existing_payload = {}
+    merged_payload = {**existing_payload, **payload_json}
+    _require_json_size(
+        merged_payload,
+        max_bytes=RUN_STEP_PAYLOAD_MAX_BYTES,
+        code="run_step_payload_too_large",
+    )
+    if existing is not None:
+        cursor = await conn.execute(
+            """
+            update run_steps
+            set step_kind = %s,
+                status = %s,
+                title = %s,
+                role = %s,
+                sequence = %s,
+                payload_json = %s::jsonb,
+                started_at = coalesce(
+                  started_at,
+                  case when %s in ('running', 'succeeded', 'failed') then now() else null end
+                ),
+                finished_at = coalesce(
+                  case when %s in ('succeeded', 'failed', 'cancelled') then now() else null end,
+                  finished_at
+                ),
+                updated_at = now()
+            where id = %s and tenant_id = %s and run_id = %s
+            returning id
+            """,
+            (
+                step_kind,
+                status,
+                title,
+                role,
+                sequence,
+                compact_json_dumps(merged_payload),
+                status,
+                status,
+                str(existing["id"]),
+                tenant_id,
+                run_id,
+            ),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise RepositoryConflictError("run_step_update_conflict")
+        return str(row["id"])
     step_id = new_id("step")
     cursor = await conn.execute(
         """
@@ -8640,17 +8710,6 @@ async def upsert_run_step(
           case when %s in ('running', 'succeeded', 'failed') then now() else null end,
           case when %s in ('succeeded', 'failed', 'cancelled') then now() else null end
         )
-        on conflict (tenant_id, run_id, step_key)
-        do update set
-          step_kind = excluded.step_kind,
-          status = excluded.status,
-          title = excluded.title,
-          role = excluded.role,
-          sequence = excluded.sequence,
-          payload_json = run_steps.payload_json || excluded.payload_json,
-          started_at = coalesce(run_steps.started_at, excluded.started_at),
-          finished_at = coalesce(excluded.finished_at, run_steps.finished_at),
-          updated_at = now()
         returning id
         """,
         (
@@ -8663,7 +8722,7 @@ async def upsert_run_step(
             title,
             role,
             sequence,
-            dumps_json(payload_json),
+            compact_json_dumps(merged_payload),
             status,
             status,
         ),
@@ -10344,10 +10403,11 @@ async def update_run_input_execution_snapshot(
 ) -> None:
     """Merge one canonical copied-run execution snapshot in a tenant-scoped update."""
     canonical_snapshot = copied_run_execution_snapshot(execution_snapshot)
+    serialized_snapshot = compact_json_dumps(canonical_snapshot)
     cursor = await conn.execute(
         """
-        update runs
-        set input_json = coalesce(input_json, '{}'::jsonb) || %s::jsonb
+        select id, input_json
+        from runs
         where tenant_id = %s
           and id = %s
           and (
@@ -10360,19 +10420,39 @@ async def update_run_input_execution_snapshot(
               and %s::jsonb->'context_snapshot'->>'context_snapshot_id' = context_snapshot_id
             )
           )
-        returning id
+        for update
         """,
         (
-            json.dumps(canonical_snapshot, ensure_ascii=False),
             tenant_id,
             run_id,
-            json.dumps(canonical_snapshot, ensure_ascii=False),
-            json.dumps(canonical_snapshot, ensure_ascii=False),
-            json.dumps(canonical_snapshot, ensure_ascii=False),
-            json.dumps(canonical_snapshot, ensure_ascii=False),
+            serialized_snapshot,
+            serialized_snapshot,
+            serialized_snapshot,
+            serialized_snapshot,
         ),
     )
-    if await cursor.fetchone() is None:
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryConflictError("context_snapshot_binding_invalid")
+    existing_input = row.get("input_json")
+    if not isinstance(existing_input, dict):
+        existing_input = {}
+    merged_input = {**existing_input, **canonical_snapshot}
+    _require_json_size(
+        merged_input,
+        max_bytes=RUN_INPUT_MAX_BYTES,
+        code="run_input_too_large",
+    )
+    updated = await conn.execute(
+        """
+        update runs
+        set input_json = %s::jsonb
+        where tenant_id = %s and id = %s
+        returning id
+        """,
+        (compact_json_dumps(merged_input), tenant_id, run_id),
+    )
+    if await updated.fetchone() is None:
         raise RepositoryConflictError("context_snapshot_binding_invalid")
 
 
