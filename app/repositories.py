@@ -5156,6 +5156,22 @@ async def create_context_snapshot(
                  %s::jsonb as file_ids,
                  %s::jsonb as artifact_ids,
                  %s::jsonb as memory_record_ids
+        ), locked_artifacts as materialized (
+          select artifacts.id
+          from scoped_run
+          cross join requested_members
+          cross join lateral jsonb_array_elements_text(requested_members.artifact_ids) requested(id)
+          join artifacts on artifacts.id = requested.id
+            and artifacts.tenant_id = scoped_run.tenant_id
+          join runs artifact_run on artifact_run.id = artifacts.run_id
+            and artifact_run.tenant_id = artifacts.tenant_id
+          where artifact_run.workspace_id = scoped_run.workspace_id
+            and artifact_run.user_id = scoped_run.user_id
+            and artifact_run.session_id = scoped_run.session_id
+            and artifact_run.agent_id = scoped_run.agent_id
+            and artifacts.lifecycle_state = 'active'
+            and (artifacts.expires_at is null or artifacts.expires_at > statement_timestamp())
+          for update of artifacts
         ), eligible_members as (
           select scoped_run.*, requested_members.*,
             (
@@ -5198,17 +5214,7 @@ async def create_context_snapshot(
             ) as eligible_file_count,
             (
               select count(*)
-              from jsonb_array_elements_text(requested_members.artifact_ids) requested(id)
-              join artifacts on artifacts.id = requested.id
-                and artifacts.tenant_id = scoped_run.tenant_id
-              join runs artifact_run on artifact_run.id = artifacts.run_id
-                and artifact_run.tenant_id = artifacts.tenant_id
-              where artifact_run.workspace_id = scoped_run.workspace_id
-                and artifact_run.user_id = scoped_run.user_id
-                and artifact_run.session_id = scoped_run.session_id
-                and artifact_run.agent_id = scoped_run.agent_id
-                and artifacts.lifecycle_state = 'active'
-                and (artifacts.expires_at is null or artifacts.expires_at > statement_timestamp())
+              from locked_artifacts
             ) as eligible_artifact_count,
             (
               select count(*)

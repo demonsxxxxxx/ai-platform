@@ -991,15 +991,26 @@ async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
 
 @pytest.mark.asyncio
 async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
-    conn = RecordingConnection()
+    class RetentionConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if len(self.calls) == 1:
+                return SingleRowCursor({"id": "artifact-a", "tenant_id": "tenant-a", "storage_key": "a"})
+            return FakeCursor()
+
+    conn = RetentionConnection()
 
     await repositories.queue_expired_artifacts_for_deletion(conn, limit=20)
-    sql, params = conn.calls[-1]
-    assert "for update of artifacts skip locked" in sql
-    assert "sessions.status <> 'active'" in sql
-    assert "snapshots.included_artifact_ids ? artifacts.id" in sql
-    assert "insert into object_deletion_outbox" in sql
-    assert params == (20,)
+    lock_sql, lock_params = conn.calls[0]
+    write_sql, write_params = conn.calls[1]
+    assert "for update of artifacts skip locked" in lock_sql
+    assert "sessions.status <> 'active'" in lock_sql
+    assert "snapshots.included_artifact_ids ? artifacts.id" in lock_sql
+    assert lock_params == (20,)
+    assert "insert into object_deletion_outbox" in write_sql
+    assert "snapshots.included_artifact_ids ? artifacts.id" in write_sql
+    assert json.loads(write_params[0]) == ["artifact-a"]
 
     await repositories.purge_deleted_memory_records(conn, grace_days=7, limit=25)
     sql, params = conn.calls[-1]
@@ -5180,6 +5191,8 @@ async def test_create_context_snapshot_persists_scope_and_context_contract():
     assert "eligible_message_count = jsonb_array_length(message_ids)" in sql
     assert "eligible_file_count = jsonb_array_length(file_ids)" in sql
     assert "eligible_artifact_count = jsonb_array_length(artifact_ids)" in sql
+    assert "locked_artifacts as materialized" in sql
+    assert "for update of artifacts" in sql
     assert "eligible_memory_record_count = jsonb_array_length(memory_record_ids)" in sql
     assert "runs.workspace_id = %s" not in sql
     assert "runs.session_id = %s" not in sql

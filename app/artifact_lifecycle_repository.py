@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from psycopg import AsyncConnection
@@ -12,21 +13,63 @@ async def queue_expired_artifacts_for_deletion(
     *,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """Tombstone reference-safe expired artifacts and create durable object work."""
+    """Lock a safe batch, then recheck references in a fresh statement snapshot."""
 
     resolved_limit = max(1, min(int(limit), 200))
     cursor = await conn.execute(
         """
-        with candidates as (
-          select artifacts.id, artifacts.tenant_id, artifacts.storage_key
-          from artifacts
-          join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
-          join sessions on sessions.id = runs.session_id and sessions.tenant_id = runs.tenant_id
-          where artifacts.lifecycle_state = 'active'
+        select artifacts.id, artifacts.tenant_id, artifacts.storage_key
+        from artifacts
+        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
+        join sessions on sessions.id = runs.session_id and sessions.tenant_id = runs.tenant_id
+        where artifacts.lifecycle_state = 'active'
+          and artifacts.expires_at is not null
+          and artifacts.expires_at <= now()
+          and runs.status not in ('queued', 'running')
+          and sessions.status <> 'active'
+          and not exists (
+            select 1 from run_context_snapshots snapshots
+            where snapshots.tenant_id = artifacts.tenant_id
+              and snapshots.included_artifact_ids ? artifacts.id
+          )
+          and not exists (
+            select 1 from audit_logs audit
+            where audit.tenant_id = artifacts.tenant_id
+              and audit.target_id = artifacts.id
+          )
+        order by artifacts.expires_at asc, artifacts.created_at asc, artifacts.id asc
+        limit %s
+        for update of artifacts skip locked
+        """,
+        (resolved_limit,),
+    )
+    candidates = list(await cursor.fetchall())
+    if not candidates:
+        return []
+
+    candidate_ids = [str(item["id"]) for item in candidates]
+    cursor = await conn.execute(
+        """
+        with requested as (
+          select jsonb_array_elements_text(%s::jsonb) as id
+        ), tombstoned as (
+          update artifacts
+          set lifecycle_state = 'delete_pending',
+              delete_requested_at = coalesce(delete_requested_at, now())
+          from requested
+          where artifacts.id = requested.id
+            and artifacts.lifecycle_state = 'active'
             and artifacts.expires_at is not null
             and artifacts.expires_at <= now()
-            and runs.status not in ('queued', 'running')
-            and sessions.status <> 'active'
+            and exists (
+              select 1
+              from runs
+              join sessions on sessions.id = runs.session_id and sessions.tenant_id = runs.tenant_id
+              where runs.id = artifacts.run_id
+                and runs.tenant_id = artifacts.tenant_id
+                and runs.status not in ('queued', 'running')
+                and sessions.status <> 'active'
+            )
             and not exists (
               select 1 from run_context_snapshots snapshots
               where snapshots.tenant_id = artifacts.tenant_id
@@ -37,15 +80,7 @@ async def queue_expired_artifacts_for_deletion(
               where audit.tenant_id = artifacts.tenant_id
                 and audit.target_id = artifacts.id
             )
-          order by artifacts.expires_at asc, artifacts.created_at asc, artifacts.id asc
-          limit %s
-          for update of artifacts skip locked
-        ), tombstoned as (
-          update artifacts
-          set lifecycle_state = 'delete_pending',
-              delete_requested_at = coalesce(delete_requested_at, now())
-          where (tenant_id, id) in (select tenant_id, id from candidates)
-          returning id, tenant_id, storage_key
+          returning artifacts.id, artifacts.tenant_id, artifacts.storage_key
         )
         insert into object_deletion_outbox(
           id, tenant_id, artifact_id, storage_key, state, available_at
@@ -62,9 +97,10 @@ async def queue_expired_artifacts_for_deletion(
             updated_at = now()
         returning id, tenant_id, artifact_id, state, attempts, created_at
         """,
-        (resolved_limit,),
+        (json.dumps(candidate_ids),),
     )
     return list(await cursor.fetchall())
+
 
 
 async def claim_object_deletions(
