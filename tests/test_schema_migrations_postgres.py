@@ -158,6 +158,49 @@ async def test_real_postgres_readiness_rejects_index_ledger_checksum_drift():
 
 
 @pytest.mark.asyncio
+async def test_real_postgres_readiness_rejects_and_migration_removes_orphan_index_ledger_row():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_index_ledger_orphan_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        await admin.execute(
+            """
+            insert into schema_index_migrations(
+              index_name, target_version, checksum_sha256, state, attempts
+            ) values ('idx_orphan_interrupted', 'old-version', repeat('0', 64), 'building', 1)
+            """
+        )
+
+        async with factory() as conn:
+            damaged = await schema_migrations.schema_status(conn)
+        assert damaged["ready"] is False
+        assert damaged["index_ledger_current"] is False
+
+        repaired = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert repaired["status"] == "applied"
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+        cursor = await admin.execute(
+            "select count(*) as count from schema_index_migrations where index_name = 'idx_orphan_interrupted'"
+        )
+        assert (await cursor.fetchone())["count"] == 0
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
 async def test_real_postgres_readiness_rejects_and_migration_repairs_wrong_index_definition():
     dsn = _postgres_dsn()
     schema_name = f"schema_index_definition_drift_{uuid.uuid4().hex}"

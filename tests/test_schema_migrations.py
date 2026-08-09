@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+import json
 
 import pytest
 
@@ -117,6 +118,12 @@ class FakeIndexConnection:
                 "failed" if "state = 'failed'" in normalized else "ready"
             )
             return FakeCursor(None)
+        if normalized.startswith("delete from schema_index_migrations"):
+            expected_names = set(json.loads(params[0]))
+            removed = [name for name in self.state.index_ledger if name not in expected_names]
+            for name in removed:
+                del self.state.index_ledger[name]
+            return FakeCursor(None if not removed else {"index_name": removed[0]})
         raise AssertionError(normalized)
 
     async def close(self):

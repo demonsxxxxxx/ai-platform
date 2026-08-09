@@ -295,6 +295,18 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
             (migration.name, TARGET_SCHEMA_VERSION, migration.checksum_sha256),
         )
         applied = True
+    cleanup = await conn.execute(
+        """
+        delete from schema_index_migrations
+        where index_name not in (
+          select jsonb_array_elements_text(%s::jsonb)
+        )
+        returning index_name
+        """,
+        (json.dumps([migration.name for migration in CONCURRENT_INDEX_MIGRATIONS]),),
+    )
+    if await cleanup.fetchone() is not None:
+        applied = True
     return applied
 
 
@@ -432,12 +444,12 @@ async def schema_status(conn: Any) -> dict[str, object]:
           and not exists (
             select 1
             from schema_index_migrations installed
-            where installed.target_version = %s
-              and installed.state = 'ready'
-              and not exists (
-                select 1 from expected_indexes expected
-                where expected.index_name = installed.index_name
-              )
+            left join expected_indexes expected
+              on expected.index_name = installed.index_name
+             and expected.target_version = installed.target_version
+             and expected.checksum_sha256 = installed.checksum_sha256
+             and installed.state = 'ready'
+            where expected.index_name is null
           ) as index_ledger_current
         """,
         (
@@ -447,7 +459,6 @@ async def schema_status(conn: Any) -> dict[str, object]:
             ),
             TARGET_SCHEMA_VERSION,
             checksum,
-            TARGET_SCHEMA_VERSION,
         ),
     )
     relation_row = await relation_cursor.fetchone() or {}
