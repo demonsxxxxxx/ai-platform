@@ -87,7 +87,11 @@ redacted, subject-bound remote evidence through that authorized procedure.
 
 `install-s72.sh` first opens and locks the trusted, pre-existing
 `/run/lock/opensandbox-gateway-s72-install.lock`; it performs no persistent
-bootstrap before this lock is held. It creates a private transaction-owned
+bootstrap before this lock is held. The parent must be root-owned and either
+the standard exact sticky mode `1777` or a three-digit mode with no group/world
+write bits; modes such as `0777`, `1775`, or `2777` fail closed. The lock file
+remains a root-owned, non-symlinked exact `0600` inode that is revalidated after
+open and after `flock`. It creates a private transaction-owned
 snapshot stage below `/var/lib/opensandbox-gateway-deploy/snapshots`, on the same
 filesystem as the final snapshot. The stage has a closed typed inventory: only
 the declared unit, configuration, ACL, authority, current-pointer, rollback-pointer,
