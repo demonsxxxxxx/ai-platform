@@ -2,12 +2,16 @@
   "schema_version": "ai-platform.code-governance-exception.v2",
   "candidate": {
     "base_ref": "74c41b49662924c0fed924e8a9aed0adea4b715b",
-    "scope_sha256": "2d4c8ae9400643a156a37b4c66b2440506539364b41a03e669aaa89603f4558a"
+    "scope_sha256": "0b7703d6913ba6ee665858b1881abea840d2b6a0872f1d629263d15a1c561c80"
   },
   "expires_on": "2026-08-23",
   "owner": "demonsxxxxxx",
   "reason": "Issue #843 requires one coherent crash-recovery state machine across the shared installer, rollback entrypoint, atomic authority helper, and their exact hostile recovery contracts. This exception covers only the emitted production net LOC and test hot-file growth limits; security, Ruff, test, review, CI, readiness, publication, rollback, and runtime gates remain mandatory.",
   "violations": [
+    {
+      "code": "hot_file_growth",
+      "path": "deploy/opensandbox/install-s72.sh"
+    },
     {
       "code": "production_net_loc",
       "path": null
